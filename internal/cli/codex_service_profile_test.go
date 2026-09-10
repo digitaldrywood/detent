@@ -2,9 +2,11 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -66,12 +68,17 @@ func TestPrepareCodexCommandForServiceCreatesLaunchdProfile(t *testing.T) {
 		filepath.Join(profileHome, "skills", ".system"),
 		filepath.Join(profileHome, "skills", "local"),
 	} {
-		info, err := os.Lstat(path)
+		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatalf("Lstat(%q) error = %v", path, err)
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			t.Fatalf("%s is not a symlink", path)
+		relative, err := filepath.Rel(profileHome, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceInfo, err := os.Stat(filepath.Join(sourceHome, relative))
+		if err != nil || !os.SameFile(info, sourceInfo) {
+			t.Fatalf("%s does not share its source: %v", path, err)
 		}
 	}
 	if _, err := os.Lstat(filepath.Join(profileHome, "skills", "templui-pro")); !errors.Is(err, os.ErrNotExist) {
@@ -158,9 +165,13 @@ func TestPrepareCodexCommandForServiceIsolatesInstructions(t *testing.T) {
 				}
 			}
 			for _, name := range []string{"auth.json", "config.toml"} {
-				target, err := os.Readlink(filepath.Join(profile, name))
-				if err != nil || target != filepath.Join(source, name) {
-					t.Fatalf("%s link = %q, %v", name, target, err)
+				target, err := os.Stat(filepath.Join(profile, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				original, err := os.Stat(filepath.Join(source, name))
+				if err != nil || !os.SameFile(target, original) {
+					t.Fatalf("%s does not share its source: %v", name, err)
 				}
 			}
 		})
@@ -271,6 +282,86 @@ func TestPrepareWorkerCodexHomeExistingInstructions(t *testing.T) {
 			}
 			if _, err := os.Stat(hostFile); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPrepareWorkerCodexHomeInstructionCase(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"agents.md", "agents.override.md", "AgEnTs.Md"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			source := t.TempDir()
+			if err := os.WriteFile(filepath.Join(source, name), []byte("Ask for confirmation"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			profile, _, err := prepareWorkerCodexHome(source, t.TempDir(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, err := os.ReadDir(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if codexInstructionFilename(entry.Name()) {
+					t.Fatalf("worker inherited %s", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+func TestEnsureWindowsCodexProfileLink(t *testing.T) {
+	t.Parallel()
+	for _, directory := range []bool{false, true} {
+		t.Run(fmt.Sprintf("directory=%t", directory), func(t *testing.T) {
+			t.Parallel()
+			if directory && runtime.GOOS != "windows" {
+				t.Skip("Windows junction support")
+			}
+			root := t.TempDir()
+			source := filepath.Join(root, "source & profile café")
+			destination := filepath.Join(root, "destination & profile")
+			if directory {
+				if err := os.Mkdir(source, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(source, []byte("credential fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := ensureWindowsCodexProfileLink(source, destination); err != nil {
+					t.Fatal(err)
+				}
+				original, err := os.Stat(source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				linked, err := os.Stat(destination)
+				if err != nil || !os.SameFile(original, linked) {
+					t.Fatalf("profile does not share source: %v", err)
+				}
+			}
+			if !directory {
+				replacement := filepath.Join(root, "replacement")
+				if err := os.WriteFile(replacement, []byte("refreshed credential"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(source); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, source); err != nil {
+					t.Fatal(err)
+				}
+				if err := ensureWindowsCodexProfileLink(source, destination); err != nil {
+					t.Fatal(err)
+				}
+				content, err := os.ReadFile(destination)
+				if err != nil || string(content) != "refreshed credential" {
+					t.Fatalf("refreshed profile = %q, %v", content, err)
+				}
 			}
 		})
 	}

@@ -90,8 +90,15 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 	if err := ensureLaunchdCodexProfile(profileHome); err != nil {
 		return "", nil, err
 	}
-	for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
-		path := filepath.Join(profileHome, name)
+	profileEntries, err := os.ReadDir(profileHome)
+	if err != nil {
+		return "", nil, fmt.Errorf("read worker Codex profile: %w", err)
+	}
+	for _, entry := range profileEntries {
+		if !codexInstructionFilename(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(profileHome, entry.Name())
 		local, err := removeManagedProfileLink(path)
 		if err != nil {
 			return "", nil, err
@@ -105,7 +112,7 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 		return "", nil, fmt.Errorf("read Codex home %s: %w", sourceHome, err)
 	}
 	for _, entry := range entries {
-		if entry.Name() == "AGENTS.md" || entry.Name() == "AGENTS.override.md" ||
+		if codexInstructionFilename(entry.Name()) ||
 			entry.Name() == workerCodexProfileDir || entry.Name() == launchdCodexProfileDir ||
 			(isLaunchd && entry.Name() == "skills") {
 			continue
@@ -221,7 +228,15 @@ func rejectProtectedAgentSkills(userHome string) error {
 	return fmt.Errorf("launchd cannot access protected ~/.agents/skills links: %s", strings.Join(protected, ", "))
 }
 
+func codexInstructionFilename(name string) bool {
+	return strings.EqualFold(name, "AGENTS.md") || strings.EqualFold(name, "AGENTS.override.md")
+}
+
 func ensureProfileLink(source string, destination string) error {
+	if runtime.GOOS == "windows" {
+		return ensureWindowsCodexProfileLink(source, destination)
+	}
+
 	info, err := os.Lstat(destination)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := os.Symlink(source, destination); err != nil {
@@ -315,4 +330,32 @@ func replaceCodexHomeAssignment(command string, profileHome string) string {
 	assignmentStart := match[0] + assignmentOffset
 	quotedProfile := "'" + strings.ReplaceAll(profileHome, "'", "'\\''") + "'"
 	return command[:assignmentStart] + "CODEX_HOME=" + quotedProfile + command[match[1]:]
+}
+
+func ensureWindowsCodexProfileLink(source string, destination string) error {
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("inspect Codex profile source %s: %w", source, err)
+	}
+	destinationInfo, err := os.Stat(destination)
+	if err == nil {
+		if os.SameFile(sourceInfo, destinationInfo) {
+			return nil
+		}
+		if sourceInfo.IsDir() {
+			return fmt.Errorf("codex profile directory %s does not reference %s", destination, source)
+		}
+		if err := os.Remove(destination); err != nil {
+			return fmt.Errorf("refresh Codex profile link %s: %w", destination, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect Codex profile entry %s: %w", destination, err)
+	}
+	if !sourceInfo.IsDir() {
+		if err := os.Link(source, destination); err != nil {
+			return fmt.Errorf("hard-link Codex profile entry %s: %w", destination, err)
+		}
+		return nil
+	}
+	return createCodexProfileJunction(source, destination)
 }
