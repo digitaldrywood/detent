@@ -3,7 +3,6 @@ package workspace
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -80,22 +79,14 @@ func windowsScratchProcessMatches(ctx context.Context, pid int, root string, own
 	}
 	environment, err := p.EnvironWithContext(ctx)
 	if err != nil {
-		alive, aliveErr := p.IsRunningWithContext(ctx)
-		if aliveErr == nil && !alive {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect worker scratch ownership for process %d: %w", pid, err)
+		return false, scratchProcessInspectionError(ctx, pid, "scratch ownership", err, p.IsRunningWithContext)
 	}
 	if workerScratchEnvironmentMatches(root, environment) {
 		return true, nil
 	}
 	cwd, err := p.CwdWithContext(ctx)
 	if err != nil {
-		alive, aliveErr := p.IsRunningWithContext(ctx)
-		if aliveErr == nil && !alive {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect worker directory for process %d: %w", pid, err)
+		return false, scratchProcessInspectionError(ctx, pid, "directory", err, p.IsRunningWithContext)
 	}
 	return filepath.IsAbs(cwd) && pathWithin(root, cwd), nil
 }
