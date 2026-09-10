@@ -534,16 +534,16 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
+	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, conditional)
 	if repository := branchRulesRepository(method, path); repository != "" {
 		if branchRulesUnavailableOnPlan(resp.StatusCode, raw) {
 			c.recordBranchRulesAvailability(ctx, repository, true)
 			return nil, errBranchRulesUnavailableOnPlan
 		}
-		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices || resp.StatusCode == http.StatusNotModified && conditional {
 			c.recordBranchRulesAvailability(ctx, repository, false)
 		}
 	}
-	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, method, path, resp.StatusCode, resp.Header, raw, receivedAt, conditional)
 	if resp.StatusCode == http.StatusNotModified {
 		if !conditional {
 			return nil, ErrInvalidResponse
@@ -1059,7 +1059,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	reset, hasReset := int64Header(headers, "X-RateLimit-Reset")
 	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
 	headerRateLimited := restStatusRateLimited(status, headers, nil)
-	rateLimited := restStatusRateLimited(status, headers, body)
+	// Plan limitations still consume quota, but are not throttling responses.
+	planUnavailable := branchRulesRepository(method, path) != "" && branchRulesUnavailableOnPlan(status, body)
+	rateLimited := !planUnavailable && restStatusRateLimited(status, headers, body)
 	family := restEndpointFamily(method, path)
 	resourceHeader := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
 	resource := restRateLimitResourceName(resourceHeader, family)

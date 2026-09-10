@@ -200,7 +200,20 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 					fmt.Fprint(w, `{"default_branch":"main"}`)
 					return
 				}
+				if tt.wantUnavailable {
+					w.Header().Set("X-RateLimit-Limit", "5000")
+					w.Header().Set("X-RateLimit-Remaining", "4900")
+					w.Header().Set("X-RateLimit-Used", "100")
+					w.Header().Set("X-RateLimit-Resource", "core")
+					w.Header().Set("Retry-After", "60")
+				}
+				if status == http.StatusOK {
+					w.Header().Set("ETag", `"rules"`)
+				}
 				w.WriteHeader(status)
+				if status == http.StatusNotModified {
+					return
+				}
 				if status == 200 {
 					fmt.Fprint(w, "[]")
 				} else {
@@ -221,6 +234,18 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 					policy, err := c.branchMergePolicy(t.Context(), "example/repo", "main")
 					if err != nil || policy.MergeQueue || !policy.RulesUnavailableOnPlan {
 						t.Fatalf("policy=%+v error=%v", policy, err)
+					}
+					usage := c.client.FlushRESTRateLimitUsage()
+					if !usage.HasRateLimit || usage.RateLimit.Remaining != 4900 || usage.RateLimited || !usage.BackoffUntil.IsZero() {
+						t.Fatalf("usage=%+v", usage)
+					}
+					var count, billable int64
+					for _, request := range usage.Requests {
+						count += request.Count
+						billable += request.Billable
+					}
+					if count != 2 || billable != 2 {
+						t.Fatalf("request count=%d billable=%d, want 2 each", count, billable)
 					}
 					if c.client.hasAuthHealth {
 						t.Fatal("plan response affected auth health")
@@ -247,6 +272,18 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 				if strings.Count(logs.String(), "level=INFO") != 2 {
 					t.Fatalf("logs after plan change: %s", &logs)
 				}
+				status = http.StatusNotModified
+				if err := c.RefreshMergeQueuePolicy(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				status = http.StatusForbidden
+				if err := c.RefreshMergeQueuePolicy(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(logs.String(), "level=INFO") != 3 {
+					t.Fatalf("logs after conditional recovery: %s", &logs)
+				}
+
 			}
 		})
 	}
