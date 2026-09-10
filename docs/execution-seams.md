@@ -107,8 +107,8 @@ artifact workflows. GitHub PR delivery remains the default.
 - The CI lint job keeps the project-pinned golangci-lint version and caches its
   binary so cache hits avoid a per-run `go install` without changing lint
   coverage.
-- `GoReleaser Snapshot` is a release-blocking check that runs on pull requests,
-  `main`, release tags, the nightly CI schedule, and manual workflow dispatch.
+- `GoReleaser Snapshot` validates integration on pushes to `main` and manual
+  workflow dispatch; it is not a PR-required check.
 
 ### Main Branch Protection
 
@@ -157,22 +157,21 @@ costs, and the assessment of repeated build and fixture work. Full browser
 selection, release hooks, all six release targets, archives, Linux packages,
 checksums, and minisign signing remain required work.
 
-The required portability checks are limited to build, vet, and the non-race
+The post-merge portability checks are limited to build, vet, and the non-race
 test suite. Windows runs packages sequentially with four-way test parallelism
 inside a `45m` job budget and retains per-package JSON evidence plus a failure
 classification summary. `Windows Core` owns only the command smoke, so no Go
-package has two required Windows test owners. Repeated race loops, the full
+package has two Windows test owners in CI. Repeated race loops, the full
 race suite on macOS and Windows, and the Windows SQLite artifact lifecycle
 stress loop run nightly and on manual dispatch in
 `.github/workflows/portability-stress.yml`. That workflow has a `45m` ceiling;
 failures are surfaced as failed `Portability Stress` workflow runs with the
 failing command output in the job log.
 
-Release and required portability checks also run on `main`, on `v*` release
-tags, on the nightly CI schedule, and from manual workflow dispatch. They are
-still release-blocking for pull requests; Detent must not promote or merge a PR
-head where one of these checks is missing, skipped, failed, cancelled, neutral,
-or still running.
+Portability, Windows Core, installer smoke, and snapshot jobs run only on
+main pushes and manual dispatch. They are excluded from PR-required checks;
+main failures create or update CI instance-health tracking issues through
+machine intake. PR promotion still requires the fast checks listed above.
 
 GitHub merge queue adoption is deferred. Detent currently owns merge ordering,
 rebases each head onto current `main`, validates that exact head, and merges it

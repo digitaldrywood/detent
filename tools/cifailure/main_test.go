@@ -46,7 +46,7 @@ func TestReport(t *testing.T) {
 			}
 			for _, draft := range backend.drafts {
 				origin, ok := issueorigin.Parse(draft.Body)
-				if !ok || origin.Kind != "doctor" || origin.Fingerprint == "" || !strings.Contains(draft.Body, "abc123") {
+				if !ok || origin.Kind != "doctor" || origin.Fingerprint == "" || !strings.Contains(draft.Body, "abc123") || !strings.Contains(draft.Body, "This tracks CI instance health") {
 					t.Fatalf("invalid draft: %+v", draft)
 				}
 			}

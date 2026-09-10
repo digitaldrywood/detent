@@ -88,7 +88,9 @@ the nightly schedule. A push to main runs the full set.
 Failed integration jobs on main (including manual runs on main) use the existing
 machine intake to open a tracking issue or comment on the open match, with
 origin kind `doctor` and a stable fingerprint per job name. The issue links to
-the failed job and records the commit. Reporting errors fail the reporting job.
+the failed job and records the commit. These track CI instance health; logs
+must establish a product defect before proposing product changes. Infrastructure
+failures remain attributed to the instance. Reporting errors fail the reporting job.
 
 The operator must update GitHub's required-checks list to match the four fast
 checks above, removing the six integration checks from branch protection and
