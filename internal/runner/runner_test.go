@@ -262,6 +262,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	if result.FinalMessage != "hello\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow." {
+		t.Fatalf("FinalMessage = %q", result.FinalMessage)
+	}
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
 	}

@@ -306,6 +306,9 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	metadata.BlockedRecovery.HoldReason = cause
 	metadata.BlockedRecovery.OperatorRemedy = humanAction
+	metadata.BlockedRecovery.WorkAttemptID = running.WorkAttemptID
+	metadata.BlockedRecovery.AttemptNumber = running.Attempt
+	metadata.BlockedRecovery.AttemptError = detail
 	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, cause, metadata, laneMutationRevokeWorker); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(eventName+" state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
@@ -340,6 +343,8 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	state.Blocked[issue.ID] = Blocked{
 		Issue:               issue,
 		Reason:              cause,
+		AttemptError:        detail,
+		WorkAttemptID:       running.WorkAttemptID,
 		RecoveryReason:      "human acknowledgement required",
 		RecoveryTarget:      autoPromoteReworkState,
 		RecoveryRemedy:      humanAction,
