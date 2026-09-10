@@ -458,6 +458,11 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
 	}
+	if waiting, err := o.humanQuestionWaiting(ctx, &issue); err != nil {
+		return dispatchIssueOutcome{reason: "human_question_unavailable", waitReason: err.Error()}
+	} else if waiting {
+		return dispatchIssueOutcome{reason: "human_question_wait", waitReason: "waiting for a reply on the original issue"}
+	}
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
 	}
@@ -851,7 +856,7 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 		MergeRefreshHeadSHA: reservation.RefreshHeadSHA,
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
-	o.attachHumanPrerequisiteTool(&request)
+	o.attachHumanQuestionTool(&request)
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		request.Execution = source.RunExecution(issue.ID)
 	}

@@ -916,6 +916,55 @@ paths:
                     items: {$ref: "#/components/schemas/GenericObject"}
         "400": {$ref: "#/components/responses/Problem"}
         "500": {$ref: "#/components/responses/Problem"}
+  /api/v1/projects/{project_id}/human-questions/migrate:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    post:
+      operationId: migrateHumanQuestion
+      summary: Move a selected generated human question to its original issue
+      description: Requires an unchanged source body hash and Kanban integration mode. Preserves history and unrelated dependencies without approving the decision. Retry with the same request after a partial failure.
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/human-questions/migrate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, dependent, source, source_body_sha256, question]
+              properties:
+                project_id: {type: string, minLength: 1}
+                dependent: {type: string, example: "owner/repo#647"}
+                source: {type: string, example: "owner/repo#685"}
+                source_body_sha256: {type: string, pattern: "^[a-f0-9]{64}$"}
+                question: {type: string, minLength: 1}
+                previously_generated_question:
+                  type: boolean
+                  default: false
+                  description: Explicit operator attestation that the selected source was a generated question whose dependency was already removed. Never set for an intentional standalone human task. The original issue may be closed and is not reopened.
+      responses:
+        "200":
+          description: Question migrated; no approval is inferred.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, decision]
+                properties:
+                  status: {type: string, enum: [migrated]}
+                  decision: {type: string, enum: [unresolved]}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/projects/{project_id}/issues/{issue_id}/priority:
     parameters:
       - $ref: "#/components/parameters/ProjectID"

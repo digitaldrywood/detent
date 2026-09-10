@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -13,10 +14,10 @@ import (
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
 	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
 	if err != nil {
-		return err
+		return errors.Join(connector.ErrCommentNotCreated, err)
 	}
 	if !ok {
-		return ErrCommentCreateFailed
+		return errors.Join(connector.ErrCommentNotCreated, ErrCommentCreateFailed)
 	}
 
 	var response struct {
@@ -24,7 +25,13 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 	}
 	repository := ref.Owner + "/" + ref.Name
 	body = c.protectPublicationText(ctx, repository, body)
+	if err := ctx.Err(); err != nil {
+		return errors.Join(connector.ErrCommentNotCreated, err)
+	}
 	if err := c.client.REST(ctx, http.MethodPost, restIssueCommentsPath(ref), map[string]any{"body": body}, &response); err != nil {
+		if commentPostRejected(err) {
+			return errors.Join(connector.ErrCommentNotCreated, fmt.Errorf("create github comment: %w", err))
+		}
 		return fmt.Errorf("create github comment: %w", err)
 	}
 	if strings.TrimSpace(response.NodeID) == "" {
@@ -32,6 +39,27 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 	}
 
 	return nil
+}
+
+func commentPostRejected(err error) bool {
+	if errors.Is(err, ErrMissingToken) || errors.Is(err, ErrRESTFanoutDeferred) || errors.Is(err, ErrRESTBudgetReserved) {
+		return true
+	}
+	var status *StatusError
+	if errors.As(err, &status) {
+		switch status.StatusCode {
+		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+			http.StatusMethodNotAllowed, http.StatusGone, http.StatusRequestEntityTooLarge,
+			http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+			return true
+		}
+	}
+	var network *net.OpError
+	if errors.As(err, &network) && network.Op == "dial" {
+		return true
+	}
+	var dns *net.DNSError
+	return errors.As(err, &dns)
 }
 
 func (c *Connector) UpdateIssueBody(ctx context.Context, issueID string, body string) error {

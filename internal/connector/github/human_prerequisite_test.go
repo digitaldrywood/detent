@@ -19,6 +19,7 @@ import (
 type prerequisiteTracker struct {
 	mu                              sync.Mutex
 	issues                          map[int]restIssue
+	comments                        map[int][]restComment
 	edges                           map[int][]int
 	creates, edgeWrites, bodyWrites int
 	failBody                        bool
@@ -40,7 +41,7 @@ func prerequisiteBody(t *testing.T) string {
 
 func newPrerequisiteTracker(t *testing.T) *prerequisiteTracker {
 	t.Helper()
-	tracker := &prerequisiteTracker{issues: map[int]restIssue{}, edges: map[int][]int{}}
+	tracker := &prerequisiteTracker{issues: map[int]restIssue{}, edges: map[int][]int{}, comments: map[int][]restComment{}}
 	for n := 1; n <= 4; n++ {
 		body := "Independent acceptance criteria\n\nDepends on: owner/repo#9\n"
 		tracker.issues[n] = restIssue{ID: n, NodeID: fmt.Sprintf("I_%d", n), Number: n, State: "open", Title: "Implement feature", Body: &body, Labels: []label{{Name: "detent:todo"}}}
@@ -101,12 +102,15 @@ func newPrerequisiteTracker(t *testing.T) *prerequisiteTracker {
 					http.Error(w, `{"message":"body temporarily forbidden"}`, http.StatusForbidden)
 					return
 				}
-				var body struct{ Body string }
+				var body struct{ Body, State string }
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Error(err)
 					return
 				}
 				issue.Body = &body.Body
+				if body.State != "" {
+					issue.State = body.State
+				}
 				tracker.issues[n] = issue
 				tracker.bodyWrites++
 			}
@@ -114,7 +118,9 @@ func newPrerequisiteTracker(t *testing.T) *prerequisiteTracker {
 			return
 		}
 		switch parts[1] {
-		case "comments", "timeline":
+		case "comments":
+			write(tracker.comments[n])
+		case "timeline":
 			write([]any{})
 		case "labels":
 			var input struct{ Labels []string }
@@ -129,6 +135,23 @@ func newPrerequisiteTracker(t *testing.T) *prerequisiteTracker {
 			tracker.issues[n] = issue
 			write(issue.Labels)
 		case "dependencies":
+			if len(parts) >= 3 && parts[2] == "blocking" {
+				rows := []restIssue{}
+				for dependent, refs := range tracker.edges {
+					if slices.Contains(refs, n) {
+						rows = append(rows, tracker.issues[dependent])
+					}
+				}
+				write(rows)
+				return
+			}
+			if r.Method == http.MethodDelete {
+				id, _ := strconv.Atoi(parts[3])
+				tracker.edges[n] = slices.DeleteFunc(tracker.edges[n], func(value int) bool { return value == id })
+				tracker.edgeWrites++
+				write(tracker.issues[id])
+				return
+			}
 			if r.Method == http.MethodPost {
 				var input struct {
 					ID int `json:"issue_id"`
@@ -166,58 +189,6 @@ func (tracker *prerequisiteTracker) connector(t *testing.T) *Connector {
 	return c
 }
 
-func TestEnsureHumanPrerequisiteConcurrentAndRestart(t *testing.T) {
-	t.Parallel()
-	tracker := newPrerequisiteTracker(t)
-	c := tracker.connector(t)
-	var workers sync.WaitGroup
-	for i := range 16 {
-		workers.Go(func() {
-			result, err := c.EnsureHumanPrerequisite(t.Context(), fmt.Sprintf("owner/repo#%d", 1+i%4), prerequisiteRequest())
-			if err != nil || result.Issue.Identifier != "owner/repo#100" {
-				t.Errorf("ensure = %s, %v", result.Issue.Identifier, err)
-			}
-		})
-	}
-	workers.Wait()
-	if _, err := tracker.connector(t).EnsureHumanPrerequisite(t.Context(), "owner/repo#1", prerequisiteRequest()); err != nil {
-		t.Fatal(err)
-	}
-	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
-	if tracker.creates != 1 || tracker.edgeWrites != 4 || tracker.bodyWrites != 4 {
-		t.Fatalf("writes: creates=%d edges=%d bodies=%d", tracker.creates, tracker.edgeWrites, tracker.bodyWrites)
-	}
-	for n := 1; n <= 4; n++ {
-		body := *tracker.issues[n].Body
-		if !strings.HasPrefix(body, "Independent acceptance criteria\n\nDepends on: owner/repo#9\n") || strings.Count(body, "Depends on: owner/repo#100") != 1 {
-			t.Fatalf("body was not preserved: %q", body)
-		}
-		if tracker.issues[n].Labels[0].Name != "detent:todo" {
-			t.Fatal("dependent left Todo")
-		}
-	}
-	if !slices.ContainsFunc(tracker.issues[100].Labels, func(label label) bool { return label.Name == "detent:backlog" }) {
-		t.Fatal("human prerequisite is not Backlog")
-	}
-}
-
-func TestEnsureHumanPrerequisitePartialWriteRetry(t *testing.T) {
-	t.Parallel()
-	tracker := newPrerequisiteTracker(t)
-	tracker.failBody = true
-	c := tracker.connector(t)
-	if _, err := c.EnsureHumanPrerequisite(t.Context(), "owner/repo#1", prerequisiteRequest()); err == nil {
-		t.Fatal("expected body failure")
-	}
-	if _, err := c.EnsureHumanPrerequisite(t.Context(), "owner/repo#1", prerequisiteRequest()); err != nil {
-		t.Fatal(err)
-	}
-	if tracker.creates != 1 || tracker.edgeWrites != 1 || tracker.bodyWrites != 1 {
-		t.Fatalf("retry duplicated writes: %+v", tracker)
-	}
-}
-
 func TestHumanPrerequisiteHydrationUsesCurrentEvidence(t *testing.T) {
 	t.Parallel()
 	tracker := newPrerequisiteTracker(t)
@@ -253,123 +224,18 @@ func TestHumanPrerequisiteHydrationUsesCurrentEvidence(t *testing.T) {
 	}
 }
 
-func TestEnsureHumanPrerequisiteRejectsInvalidEdges(t *testing.T) {
+func TestHumanPrerequisiteCreationDisabled(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct {
-		name, dependent, existing, body string
-		closed                          bool
-	}{
-		{name: "self", dependent: "owner/repo#1", existing: "#1"},
-		{name: "cross repository", dependent: "owner/repo#1", existing: "private/repo#1"},
-		{name: "foreign dependent", dependent: "private/repo#1"},
-		{name: "malformed", dependent: "owner/repo#1bad"},
-		{name: "closed software", dependent: "owner/repo#1", closed: true},
-		{name: "cycle", dependent: "owner/repo#1", existing: "#8", body: "Depends on: #1"},
-		{name: "malformed graph", dependent: "owner/repo#1", existing: "#8", body: "Depends on: #bad"},
-		{name: "private graph", dependent: "owner/repo#1", existing: "#8", body: "Depends on: private/repo#2"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, existing := range []string{"", "owner/repo#10"} {
+		t.Run(existing, func(t *testing.T) {
 			tracker := newPrerequisiteTracker(t)
-			body := prerequisiteBody(t) + "\n" + tt.body
-			tracker.issues[8] = restIssue{ID: 8, NodeID: "I_8", Number: 8, State: "open", Body: &body}
-			if tt.closed {
-				issue := tracker.issues[1]
-				issue.State = "closed"
-				tracker.issues[1] = issue
-			}
 			request := prerequisiteRequest()
-			request.ExistingIdentifier = tt.existing
-			if _, err := tracker.connector(t).EnsureHumanPrerequisite(t.Context(), tt.dependent, request); err == nil {
-				t.Fatal("invalid edge accepted")
+			request.ExistingIdentifier = existing
+			if _, err := tracker.connector(t).EnsureHumanPrerequisite(t.Context(), "owner/repo#1", request); err == nil {
+				t.Fatal("creation was not rejected")
 			}
 			if tracker.creates != 0 || tracker.edgeWrites != 0 || tracker.bodyWrites != 0 {
-				t.Fatal("invalid request mutated tracker")
-			}
-		})
-	}
-}
-
-func TestEnsureHumanPrerequisiteMigratesExistingIssue(t *testing.T) {
-	t.Parallel()
-	tracker := newPrerequisiteTracker(t)
-	body := "Human task: enable test authentication. Publishing still needs approval.\n\nDepends on: #9\n"
-	tracker.issues[8] = restIssue{ID: 8, NodeID: "I_8", Number: 8, State: "open", Body: &body}
-	request := prerequisiteRequest()
-	request.ExistingIdentifier = "#8"
-	c := tracker.connector(t)
-	for range 2 {
-		result, err := c.EnsureHumanPrerequisite(t.Context(), "owner/repo#1", request)
-		if err != nil || result.Created || result.Issue.Identifier != "owner/repo#8" {
-			t.Fatalf("migration=%+v %v", result, err)
-		}
-	}
-	if tracker.creates != 0 || tracker.edgeWrites != 1 || tracker.bodyWrites != 2 {
-		t.Fatalf("migration writes=%d %d %d", tracker.creates, tracker.edgeWrites, tracker.bodyWrites)
-	}
-	if !strings.HasPrefix(*tracker.issues[8].Body, body) {
-		t.Fatal("migration replaced human instructions")
-	}
-}
-
-func TestEnsureHumanPrerequisiteContractFailures(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name   string
-		change func(*connector.HumanPrerequisiteRequest, *prerequisiteTracker)
-	}{
-		{name: "invalid schema", change: func(r *connector.HumanPrerequisiteRequest, _ *prerequisiteTracker) { r.Task.Schema = 2 }},
-		{name: "empty title", change: func(r *connector.HumanPrerequisiteRequest, _ *prerequisiteTracker) { r.Title = "" }},
-		{name: "worker completion", change: func(r *connector.HumanPrerequisiteRequest, _ *prerequisiteTracker) {
-			r.Task.CompletionEvidence = "done"
-		}},
-		{name: "missing existing", change: func(r *connector.HumanPrerequisiteRequest, _ *prerequisiteTracker) {
-			r.ExistingIdentifier = "#700"
-			r.Task.Key = "another-key"
-		}},
-		{name: "changed approval", change: func(r *connector.HumanPrerequisiteRequest, _ *prerequisiteTracker) {
-			r.ExistingIdentifier = "#8"
-			r.Task.ApprovalConstraint = "Approved"
-		}},
-		{name: "duplicate registry", change: func(_ *connector.HumanPrerequisiteRequest, tr *prerequisiteTracker) {
-			issue := tr.issues[8]
-			issue.ID = 7
-			issue.Number = 7
-			issue.NodeID = "I_7"
-			tr.issues[7] = issue
-		}},
-		{name: "invalid existing marker", change: func(r *connector.HumanPrerequisiteRequest, tr *prerequisiteTracker) {
-			r.ExistingIdentifier = "#8"
-			issue := tr.issues[8]
-			body := "```detent-human\nschema: 2\nkey: test-account\n```"
-			issue.Body = &body
-			tr.issues[8] = issue
-		}},
-		{name: "closed prose only", change: func(r *connector.HumanPrerequisiteRequest, tr *prerequisiteTracker) {
-			r.ExistingIdentifier = "#8"
-			issue := tr.issues[8]
-			issue.State = "closed"
-			body := "old task"
-			issue.Body = &body
-			tr.issues[8] = issue
-		}},
-		{name: "malformed dependent edge", change: func(_ *connector.HumanPrerequisiteRequest, tr *prerequisiteTracker) {
-			issue := tr.issues[1]
-			body := "Depends on: #bad"
-			issue.Body = &body
-			tr.issues[1] = issue
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			tr := newPrerequisiteTracker(t)
-			body := prerequisiteBody(t)
-			tr.issues[8] = restIssue{ID: 8, NodeID: "I_8", Number: 8, State: "open", Body: &body}
-			request := prerequisiteRequest()
-			tt.change(&request, tr)
-			if _, err := tr.connector(t).EnsureHumanPrerequisite(t.Context(), "owner/repo#1", request); err == nil {
-				t.Fatal("invalid contract accepted")
-			}
-			if tr.creates != 0 || tr.edgeWrites != 0 || tr.bodyWrites != 0 {
-				t.Fatal("contract failure mutated tracker")
+				t.Fatal("disabled tool mutated tracker")
 			}
 		})
 	}

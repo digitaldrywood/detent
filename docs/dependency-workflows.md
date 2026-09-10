@@ -2,96 +2,76 @@
 
 [Back to README](../README.md#documentation)
 
-Use Todo for ordinary dependency waiting and preserve the phase of existing PR
-work. Human prerequisites remain non-dispatchable in Backlog.
+Use Todo for genuine software dependency waiting and preserve existing PR phases.
 
-## Human prerequisites
+## Human questions
 
-Human-owned work has a `human-owned` label or an issue-body `detent-human`
-block. Both exclude it from admission and dispatch, including blocker automatic
-promotion. A malformed block still excludes dispatch. Review opt-outs are not
-human ownership markers. Keep human tasks in **Backlog** until the human
-completes them. Tracking epics (`epic` label or `Epic:` title) also never execute;
-only independently scoped children do.
+Ask clarification and approval questions in normal comments on the original
+issue. Never create synthetic human-prerequisite issues, labels, or dependency
+edges. The old `ensure_human_prerequisite` mutation is disabled, including for
+existing issues. Intentional standalone human tasks remain non-executable.
 
-```detent-human
-schema: 1
-key: test-account-authentication
-owner: Account administrator
-action: Enable authentication for the test tenant
-completion_criteria: A test-account sign-in succeeds in the test tenant
-approval_constraint: Production publishing still requires explicit approval
+Finish independent technical work, stub-testable implementation, and authorized
+fallbacks first. Use `ask_human_question` with a stable `key` and a readable
+`question`: explain the concrete blocker, researched recommendation, practical
+alternatives, and exact decision. Keep the current lane and PR intact and leave
+the Workpad `in_progress`. Detent records the question and comment IDs in SQLite
+and releases the worker without completing the issue.
+
+An authorized ordinary-language reply resumes interpretation by the worker.
+Ambiguous replies require a focused follow-up in the same thread with a new
+key. No special command, YAML, completion evidence, or issue closure is required.
+A reply is never blanket approval: preserve action-specific authorization for
+live sends, publishing, deployment, charges, and destructive operations.
+
+Only one outstanding question can be reserved per issue. Posting intents are
+persisted before GitHub writes; retries reconcile a stable comment marker. An
+explicitly rejected post releases its unposted reservation so a retry can ask
+the question, including after restart. Confirmed comments are never released.
+An uncertain post is held for reconciliation rather than blindly reposted and
+is reported as a posting error, not as waiting for a human reply. Separate
+failure and operational parks are never cleared by the question mechanism.
+
+### Migrate a generated question
+
+After upgrading Detent, use the authenticated project-write endpoint
+`POST /api/v1/projects/{project_id}/human-questions/migrate` with a JSON body:
+
+```json
+{
+  "project_id": "<configured project ID>",
+  "dependent": "digitaldrywood/digitaldrywood#647",
+  "source": "digitaldrywood/digitaldrywood#685",
+  "source_body_sha256": "e09e09f2c8c2548f9efc44bb4ea8dc8d906f481081fa9da1e4997a8307bbbd90",
+  "previously_generated_question": true,
+  "question": "Newsletter delivery remains deferred and does not block completed #647. For future delivery work, should we use a human-operated Sender step with final content and consent-checked recipient review before each send? The investigation found that the ID-only send endpoint cannot pin the approved payload. I recommend a reviewed manual handoff; the alternative is to keep delivery unavailable until content and audience can be pinned. This decision does not authorize any actual send or reopen #647."
+}
 ```
 
-Choose a stable repository-scoped key for the smallest required milestone.
-The human records `completion_evidence` in this block when its criteria are
-satisfied, then closes the issue. A closed or Done human issue without that
-valid contract and evidence remains an unresolved prerequisite. Reopening it
-restores the wait. Record a safe verification summary, never a credential.
+The hash above selects #685 as inspected on September 9, 2026. Re-read the source
+and obtain its exact current body hash if it changes; do not automatically
+accept drift. Select only generated clarification/approval issues explicitly
+approved for migration, never intentional standalone human work or genuine
+software dependencies. Repeat for every original dependent of a selected source.
 
-Workers with a tool-capable backend and writable GitHub tracker receive
-`ensure_human_prerequisite`, scoped to their assigned issue. The supplemental
-tool preserves the worker's configured coding permissions and instructions.
-Pass `title`, `task` (the fields above), and optionally
-`existing_identifier`. Reuse the existing key and exact milestone contract.
-The tracker owner serializes concurrent requests, discovers existing markers
-from the repository issue listing rather than the eventually indexed search,
-and reuses the durable issue after restart. It creates the human issue through
-the configured tracker status source in Backlog, verifies the dependency graph,
-adds a native relation when supported, and appends an idempotent
-`Depends on: owner/repo#123` line while preserving the remaining body and edges.
-Partial writes are repaired on retry. Conflicting contracts, duplicates,
-self-dependencies, cycles, malformed graph references, and unverifiable graphs
-fail explicitly. Route every worker request through the same tracker owner;
-independent services or direct concurrent `gh issue create` calls do not share
-its serialization. The tool is not offered by read-only trackers.
+The concrete #647 issue was subsequently completed with delivery deferred and
+the #685 dependency removed. `previously_generated_question` explicitly attests
+to that previously generated question when no dependency remains. It defaults
+to false; never use it for intentional standalone human tasks. Migration may
+post on a closed original issue but never reopens it or creates a new dependency.
 
-The mutation stays inside the dependent repository. It neither reads nor copies
-private evidence from another repository. Supply a safe milestone description;
-publication protection also rejects protected cross-project details. For a
-cross-repository prerequisite, have the owning human establish a safe reference
-through the authorized tracker path without copying credentials or private
-project evidence across visibility boundaries.
+The endpoint reserves the internal wait and posts the readable question with
+source context before removing the selected body/native dependency and Workpad
+blocker. It retains unrelated blockers, PR state, and historical text. The source
+is retired as **not planned**, with a superseded explanation, only after no
+remaining body/native dependents exist. Its contract and history remain intact;
+no completion evidence is invented. Retries reuse the persisted question. A
+partial failure is safe to retry with the same request. An uncertain comment
+post remains held for reconciliation without generating a second question.
 
-Keep queued executable children in **Todo**, with a visible dependency wait.
-For an existing PR, retain its deliverable and **Rework** or **Merging** phase.
-A worker can declare a structured dependency wait with `status: blocked` and
-`human_action: null` without moving the issue to the Blocked lane; Detent
-persists the deferral, releases the claim, and restores the resumable lane.
-The structured status describes the wait, not the board lane. **Blocked** is
-reserved for delivery failures, repeated-failure or spend parks, and unresolved
-operational problems. Dependency closure never acknowledges those independent
-parks. The board and scheduler explanation identify a pending human prerequisite
-and retain the requirement for completion evidence even when it is closed.
-
-Do not add a dependency when stub-testable implementation, independent
-preparation, or an authorized fallback can satisfy the remaining scope. Finish
-those tasks first. Do not add dependencies to already completed software. If
-only account activation is required, use that milestone, not an entire release
-or tracking epic.
-
-### Migrate prose-only blockers
-
-1. Inspect the remaining scope, PR, native edges, Workpad, and current breaker
-   evidence. Separate actual human prerequisites from implementation work and
-   independently parked delivery failures.
-2. Reuse a focused human issue or use the worker tool to create one. For an
-   existing issue, pass `existing_identifier` and its exact human milestone to
-   add a marker without replacing its unrelated content. Preserve approval
-   constraints and move the human issue to Backlog through the tracker.
-3. Add each dependent's native relation and issue-body `Depends on:` line.
-   Workpad prose alone is insufficient. Preserve all existing dependencies.
-4. Put unstarted executable children in Todo and restore the prior PR phase
-   for started work. Leave independent breaker parks untouched; migration is
-   not permission to acknowledge a park.
-
-### External-action authorization
-
-Dependency readiness is scheduling evidence only. A human issue's closure,
-completion evidence, or label is never authorization to publish, deploy, spend,
-or perform destructive operations. Existing approval constraints and the
-specific action's authorization gate remain in force. A worker must not assert
-human completion evidence through the prerequisite-creation tool.
+Migration must go through the running service that owns SQLite; do not open or
+edit its database from a separate process. The endpoint does not restart Detent.
+Existing breaker parks remain subject to their own recovery rules.
 
 ## Dependency configuration
 

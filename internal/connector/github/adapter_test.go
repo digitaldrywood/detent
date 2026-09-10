@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -4983,6 +4984,56 @@ func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	body := requests[0]["body"].(map[string]any)
 	if body["body"] != "hello" {
 		t.Fatalf("body = %v, want hello", body["body"])
+	}
+}
+
+func TestConnectorCreateCommentClassifiesRejection(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		status   int
+		body     string
+		rejected bool
+	}{
+		{name: "rate limit", status: http.StatusTooManyRequests, body: `{"message":"rate limit"}`, rejected: true},
+		{name: "forbidden", status: http.StatusForbidden, body: `{"message":"forbidden"}`, rejected: true},
+		{name: "invalid", status: http.StatusUnprocessableEntity, body: `{"message":"invalid"}`, rejected: true},
+		{name: "server error uncertain", status: http.StatusInternalServerError, body: `{"message":"failed"}`},
+		{name: "request timeout uncertain", status: http.StatusRequestTimeout, body: `{"message":"timeout"}`},
+		{name: "missing response ID uncertain", status: http.StatusCreated, body: `{}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{status: tt.status, method: http.MethodPost, path: "/repos/example/repo/issues/1/comments", body: tt.body}})
+			c := newGitHubTestConnector(t, server, Config{})
+			c.projectCache.SetIssueRef("I_kw1", issueRef{Owner: "example", Name: "repo", Number: 1})
+			err := c.CreateComment(t.Context(), "I_kw1", "Question?")
+			if err == nil || errors.Is(err, connector.ErrCommentNotCreated) != tt.rejected {
+				t.Fatalf("CreateComment = %v, rejected = %v", err, tt.rejected)
+			}
+		})
+	}
+}
+
+func TestCommentPostRejectedBeforeDelivery(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		err      error
+		rejected bool
+	}{
+		{name: "missing token", err: ErrMissingToken, rejected: true},
+		{name: "reserved capacity", err: ErrRESTBudgetReserved, rejected: true},
+		{name: "fanout deferred", err: ErrRESTFanoutDeferred, rejected: true},
+		{name: "dial failed", err: &net.OpError{Op: "dial", Err: errors.New("refused")}, rejected: true},
+		{name: "DNS failed", err: &net.DNSError{Err: "lookup failed"}, rejected: true},
+		{name: "response read failed", err: &net.OpError{Op: "read", Err: errors.New("lost response")}},
+		{name: "unknown", err: errors.New("unknown outcome")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commentPostRejected(tt.err); got != tt.rejected {
+				t.Fatalf("rejected = %v, want %v", got, tt.rejected)
+			}
+		})
 	}
 }
 

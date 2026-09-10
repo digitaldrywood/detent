@@ -267,6 +267,18 @@ type HealthNotificationState struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type HumanQuestion struct {
+	ProjectID         string `json:"project_id"`
+	IssueID           string `json:"issue_id"`
+	QuestionKey       string `json:"question_key"`
+	IssueIdentifier   string `json:"issue_identifier"`
+	Body              string `json:"body"`
+	QuestionCommentID string `json:"question_comment_id"`
+	AnswerCommentID   string `json:"answer_comment_id"`
+	AnswerBody        string `json:"answer_body"`
+	WorkFingerprint   string `json:"work_fingerprint"`
+}
+
 type IssueParkAcknowledgement struct {
 	ProjectID      string         `json:"project_id"`
 	IssueKey       string         `json:"issue_key"`

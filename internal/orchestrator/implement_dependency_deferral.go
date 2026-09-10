@@ -132,6 +132,10 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 		if !ok || !record.DependencyDeferral || record.Reason != implementDependencyDeferralReason || len(record.DependencyBlockers) == 0 {
 			continue
 		}
+		record.DependencyBlockers = o.withoutMigratedHumanBlockers(ctx, issue, record.DependencyBlockers)
+		if len(record.DependencyBlockers) == 0 {
+			continue
+		}
 		candidate := &deferredCandidate{issue: issue, record: record, blocked: true, detail: "dependency resolution unavailable: no blocker identifiers"}
 		candidates[issue.ID] = candidate
 		for _, blocker := range record.DependencyBlockers {

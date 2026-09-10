@@ -51,27 +51,19 @@ blockers: []
 human_action: null
 ```
 
-Human prerequisites remain in Backlog and never execute. Mark each with a
-`detent-human` block (`schema: 1`, stable `key`, `action`, `owner`,
-`completion_criteria`, and `approval_constraint`); `human-owned` also excludes
-admission and dispatch. Use `ensure_human_prerequisite` when available to reuse
-or create the smallest blocking milestone through the tracker owner and append
-the dependency safely. Reuse existing contracts rather than creating duplicates.
-Never copy credentials or private-project evidence between visibility scopes.
-Finish stub-testable implementation, independent preparation, and authorized
-fallbacks first. Never add dependencies to completed software or execute an epic.
+For a missing human decision, finish independent work and authorized fallbacks
+first. Use `ask_human_question` to ask one concise, researched question on the
+assigned issue. Explain the recommendation, alternatives, and exact decision.
+Never create another issue, label, or dependency for clarification or approval,
+including through gh or tracker tools. Detent persists the wait internally.
+Keep the lane, PR, and an `in_progress` Workpad intact while waiting. Interpret
+ordinary authorized replies in the same thread; ask a focused follow-up if
+ambiguous. No YAML edit, special command, or issue closure is required. A reply
+authorizes only what it actually says; retain all external-action approvals.
+Never acknowledge an independent breaker park. Intentional standalone human
+work and tracking epics remain non-executable.
 
-Keep unstarted dependent work in Todo. Preserve Rework/Merging and the existing
-PR for started work. A structured `status: blocked` dependency signal with
-`human_action: null` does not require moving the issue into the Blocked lane.
-Detent restores its resumable phase after persisting the deferral. Blocked keeps
-delivery failures, breaker parks, and unresolved operational problems.
-Dependency completion never acknowledges an independent breaker park.
-
-A human task is ready only after its valid contract contains
-`completion_evidence` and the human closes it. Readiness never grants permission
-to publish, deploy, or perform destructive actions; preserve all action-specific
-approval requirements.
+The following applies only to genuine software dependencies.
 
 For dependency blockers, use this order:
 
