@@ -20,8 +20,10 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
@@ -2137,4 +2139,53 @@ func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {
 	}
 
 	return project.Event{}
+}
+
+func TestProjectLaneWriterUsesRestartedOrchestrator(t *testing.T) {
+	t.Parallel()
+	cfg := workflowConfig("memory")
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.APIKey = "test-token"
+	cfg.Tracker.Repository = "example/repo"
+	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	cfg.Intake = intake.Config{Sources: []intake.Source{{
+		Name: "alerts", Kind: intake.KindWebhook, Secret: "secret", DedupeBy: "fingerprint",
+		Creates: intake.Creates{Status: "Backlog", Title: "{summary}", Body: "{details}"},
+	}}}
+	tracker := memory.New(memory.Config{Stateful: true})
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workdir: t.TempDir(), Weight: 1},
+		Workflow: workflowconfig.Workflow{Config: cfg},
+	}, project.Dependencies{Connector: tracker, Runner: blockingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = got.Close() })
+	if err := got.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first := got.Orchestrator()
+	for _, phase := range []string{"initial", "restarted"} {
+		t.Run(phase, func(t *testing.T) {
+			if phase == "restarted" {
+				if err := got.Pause(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if err := got.Unpause(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if got.Orchestrator() == first {
+					t.Fatal("project reused stopped orchestrator")
+				}
+			}
+			body := []byte(fmt.Sprintf("{%q:%q,%q:%q}", "summary", phase, "fingerprint", phase))
+			if _, err := got.Intake().IngestWebhook(t.Context(), "alerts", body); err != nil {
+				t.Fatalf("ingest using %s owner: %v", phase, err)
+			}
+		})
+	}
+	issues, err := tracker.FetchIssuesByStates(t.Context(), []string{"Backlog"})
+	if err != nil || len(issues) != 2 {
+		t.Fatalf("lane writes after restart: issues=%v error=%v", issues, err)
+	}
 }

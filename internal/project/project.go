@@ -330,6 +330,13 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		}
 	}()
 	var orch *orchestrator.Orchestrator
+	var project *Project
+	laneOwner := func() *orchestrator.Orchestrator {
+		if project == nil {
+			return nil
+		}
+		return project.Orchestrator()
+	}
 	intakeDependencies := deps.IntakeDependencies
 	intakeDependencies.Root = intakeRoot(cfg.Project, workflow.Config)
 	intakeDependencies.ProjectID = string(id)
@@ -337,7 +344,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if intakeDependencies.Logger == nil {
 		intakeDependencies.Logger = logger
 	}
-	projectIntake, err := intake.New(workflow.Config.Intake, coordinatedIntakeStore(projectConnector, issueCoordinator, scheduledLaneWriter(func() *orchestrator.Orchestrator { return orch }, projectConnector, "intake")), intakeDependencies)
+	projectIntake, err := intake.New(workflow.Config.Intake, coordinatedIntakeStore(projectConnector, issueCoordinator, scheduledLaneWriter(laneOwner, projectConnector, "intake")), intakeDependencies)
 	if err != nil {
 		return nil, fmt.Errorf("create project intake: %w", err)
 	}
@@ -351,12 +358,12 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, fmt.Errorf("create project retro: %w", err)
 	}
 	if projectRetroStore != nil {
-		projectRetroStore = intakeLaneStore{IssueStore: projectRetroStore, write: scheduledLaneWriter(func() *orchestrator.Orchestrator { return orch }, projectConnector, "retro")}
+		projectRetroStore = intakeLaneStore{IssueStore: projectRetroStore, write: scheduledLaneWriter(laneOwner, projectConnector, "retro")}
 		productTracker := retroProductConnector
 		if productTracker == nil {
 			productTracker = projectConnector
 		}
-		productRetroStore = intakeLaneStore{IssueStore: productRetroStore, write: scheduledLaneWriter(func() *orchestrator.Orchestrator { return orch }, productTracker, "retro")}
+		productRetroStore = intakeLaneStore{IssueStore: productRetroStore, write: scheduledLaneWriter(laneOwner, productTracker, "retro")}
 	}
 	projectRetro, err := retro.New(retro.Settings{
 		ProjectID:     string(id),
@@ -373,7 +380,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Definitions:  workflow.Config.Routines,
 		SearchStates: workflow.Config.KanbanStateNames(),
 		Runner:       deps.Runner,
-		Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator, scheduledLaneWriter(func() *orchestrator.Orchestrator { return orch }, projectConnector, "routine")),
+		Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator, scheduledLaneWriter(laneOwner, projectConnector, "routine")),
 		Metrics:      deps.WorkflowMetrics,
 		ScheduleRuns: scheduleHealth,
 	}, deps.RoutineStore, logger, nil)
@@ -408,7 +415,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
 		Runner:              deps.Runner,
 		Issues:              admissionIssueStore(projectConnector),
-		LaneWriter:          admissionLaneWriter(func() *orchestrator.Orchestrator { return orch }),
+		LaneWriter:          admissionLaneWriter(laneOwner),
 		Scheduler:           projectScheduler,
 		GlobalDispatchGate:  deps.GlobalDispatchGate,
 		ProjectCandidate:    projectSchedulerCandidate(cfg.Project, workflow.Config),
@@ -477,7 +484,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	workflowModifiedAt := workflowFileModifiedAt(cfg.Project)
 
 	cfg.Project.ID = string(id)
-	project := &Project{
+	project = &Project{
 		id:                        id,
 		cfg:                       cfg.Project,
 		workflow:                  workflow,
