@@ -162,7 +162,7 @@ func TestConfigDocumentation(t *testing.T) {
 			}
 			test.info = info
 		}
-		if err := Generate(root, false); err != nil {
+		if err := generateArtifacts(root, false, fields, nodes); err != nil {
 			t.Fatal(err)
 		}
 		for _, test := range tests {
@@ -183,7 +183,7 @@ func TestConfigDocumentation(t *testing.T) {
 				}
 			})
 		}
-		if err := Generate(root, true); err != nil {
+		if err := generateArtifacts(root, true, fields, nodes); err != nil {
 			t.Fatal(err)
 		}
 	})

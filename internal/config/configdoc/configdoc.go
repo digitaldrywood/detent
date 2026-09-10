@@ -60,7 +60,10 @@ func Generate(root string, check bool) error {
 	if err != nil {
 		return err
 	}
+	return generateArtifacts(root, check, fields, nodes)
+}
 
+func generateArtifacts(root string, check bool, fields []fieldDetails, nodes []*schemaNode) error {
 	docsPath := filepath.Join(root, "docs", "config.md")
 	referencePath := filepath.Join(root, "config.reference.yaml")
 	currentDocs, err := os.ReadFile(docsPath)
