@@ -2,10 +2,7 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -21,7 +18,8 @@ func checkDoctorDispatchStalls(ctx context.Context, boot BootConfig, projectID s
 	}
 	stalls, err := readDoctorDispatchStalls(ctx, doctorLiveBoot(boot, &boot.Global), deps)
 	if err != nil {
-		check.Detail = "live dispatch-stall check skipped because no Detent instance was reachable"
+		check.Status = doctorWarn
+		check.Detail = "live dispatch-stall check unavailable: " + err.Error()
 		return check
 	}
 	projectID = strings.TrimSpace(projectID)
@@ -47,26 +45,11 @@ func checkDoctorDispatchStalls(ctx context.Context, boot BootConfig, projectID s
 }
 
 func readDoctorDispatchStalls(ctx context.Context, boot BootConfig, deps doctorDeps) ([]telemetry.DispatchStatus, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, doctorHealthProbeURL(boot), nil)
+	probe, err := probeDoctorHealth(ctx, boot, deps)
 	if err != nil {
 		return nil, err
 	}
-	response, err := deps.httpDo(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("health returned HTTP %d", response.StatusCode)
-	}
-	var health doctorHealthResponse
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(health.Mode) == "" || !doctorHealthHasDetentChecks(health.Checks) {
-		return nil, errors.New("response was not Detent health")
-	}
-	return health.DispatchStalls, nil
+	return probe.Health.DispatchStalls, nil
 }
 
 func doctorDispatchStallDetail(stall telemetry.DispatchStatus) string {

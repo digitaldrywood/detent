@@ -17,7 +17,8 @@ func checkDoctorStrandedActive(ctx context.Context, boot BootConfig, projectID s
 	}
 	probe, err := probeDoctorHealth(ctx, doctorLiveBoot(boot, &boot.Global), deps)
 	if err != nil {
-		check.Detail = "live stranded-work check skipped because no healthy Detent instance was reachable"
+		check.Status = doctorWarn
+		check.Detail = "live stranded-work check unavailable: " + err.Error()
 		return check
 	}
 	projectID = strings.TrimSpace(projectID)
