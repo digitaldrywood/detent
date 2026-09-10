@@ -103,20 +103,13 @@ func (c *Connector) CreateIssue(ctx context.Context, draft connector.IssueDraft)
 
 	body := c.protectPublicationText(ctx, repository, strings.TrimSpace(draft.Body))
 	if origin, machine := issueorigin.Parse(body); machine {
-		c.writeMu.Lock()
-		defer c.writeMu.Unlock()
-		existing, found, err := c.findOpenFingerprint(ctx, origin.Fingerprint)
-		if err != nil {
-			return connector.Issue{}, err
-		}
-		if found {
-			if err := c.CreateComment(ctx, existing.ID, issueorigin.Occurrence(body)); err != nil {
-				return connector.Issue{}, err
-			}
-			existing.PublicationReused = true
-			return existing, nil
-		}
+		draft.Title, draft.Body = title, body
+		return c.createMachineIssue(ctx, draft, origin.Fingerprint)
 	}
+	return c.createIssue(ctx, draft, title, body)
+}
+
+func (c *Connector) createIssue(ctx context.Context, draft connector.IssueDraft, title, body string) (connector.Issue, error) {
 	labels := normalizedIssueDraftLabels(draft.Labels)
 	payload := map[string]any{
 		"title": title,

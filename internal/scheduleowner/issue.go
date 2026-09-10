@@ -168,6 +168,10 @@ func (c *IssueCoordinator) ensure(
 				return intake.Issue{}, false, fmt.Errorf("reconcile coordinated issue: %w", findErr)
 			}
 			if exists && (issueClosed == nil || !issue.Closed) {
+				issue, err = commentExistingOccurrence(ctx, backend, issue, draft)
+				if err != nil {
+					return intake.Issue{}, false, err
+				}
 				completed, completeErr := c.completeDurably(ctx, key, effect.Token, issue)
 				return completed, false, completeErr
 			}

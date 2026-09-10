@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 func TestConnectorFetchesConfiguredIssues(t *testing.T) {
@@ -525,4 +527,39 @@ func issueIDs(issues []connector.Issue) []string {
 		ids = append(ids, issue.ID)
 	}
 	return ids
+}
+
+func TestMachineIssueFingerprint(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, fingerprint string
+		closed, reused    bool
+	}{
+		{"repeat", "disk", false, true},
+		{"different", "network", false, false},
+		{"closed", "disk", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New(Config{Stateful: true})
+			original, err := c.CreateIntakeIssue(t.Context(), intake.IssueDraft{Title: "Original", Body: issueorigin.Stamp("Original", issueorigin.Origin{Kind: "worker", Fingerprint: "disk"})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.closed {
+				if err := c.CloseIssue(t.Context(), original.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := c.CreateIntakeIssue(t.Context(), intake.IssueDraft{Title: "Occurrence", Body: issueorigin.Stamp("Occurrence", issueorigin.Origin{Kind: "routine", Fingerprint: tt.fingerprint})})
+			if err != nil || result.Reused != tt.reused {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if tt.reused && (len(c.issues) != 1 || len(c.issues[0].Comments) != 1 || result.Body != original.Body) {
+				t.Fatalf("issues=%+v", c.issues)
+			}
+			if !tt.reused && len(c.issues) != 2 {
+				t.Fatalf("issues=%+v", c.issues)
+			}
+		})
+	}
 }
