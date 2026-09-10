@@ -1249,6 +1249,8 @@ type PullRequest struct {
 }
 
 type PullRequestMergeQueueEntry struct {
+	HeadSHA                     string     `json:"head_sha,omitempty"`
+	BaseSHA                     string     `json:"base_sha,omitempty"`
 	ID                          string     `json:"id,omitempty"`
 	State                       string     `json:"state,omitempty"`
 	Position                    int        `json:"position,omitempty"`
