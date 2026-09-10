@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -284,6 +285,54 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 					t.Fatalf("logs after conditional recovery: %s", &logs)
 				}
 
+			}
+		})
+	}
+}
+
+func TestMergeQueueRefusalRefreshesCachedBranchPolicy(t *testing.T) {
+	t.Parallel()
+	for _, failRefresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refresh failure=%t", failRefresh), func(t *testing.T) {
+			var refreshes atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/repos/example/repo/pulls/42/merge":
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					fmt.Fprint(w, `{"message":"Repository rule violations found. Changes must be made through the merge queue"}`)
+				case "/repos/example/repo/rules/branches/release/stable":
+					refreshes.Add(1)
+					if failRefresh {
+						w.WriteHeader(http.StatusForbidden)
+						fmt.Fprint(w, `{"message":"forbidden"}`)
+						return
+					}
+					fmt.Fprint(w, `[{"type":"merge_queue","parameters":{"max_entries_to_build":2}}]`)
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "release/stable"})
+			err = c.MergePullRequest(t.Context(), "example/repo", 42, "head", "squash")
+			if !errors.Is(err, connector.ErrPullRequestMergeQueueRequired) {
+				t.Fatalf("error=%v", err)
+			}
+			if refreshes.Load() != 1 {
+				t.Fatalf("refreshes=%d", refreshes.Load())
+			}
+			cached, ok := c.branchMergePolicies["example/repo@release/stable"]
+			if failRefresh && ok {
+				t.Fatal("failed refresh retained stale policy")
+			}
+			if !failRefresh && (!ok || !cached.Policy.MergeQueue) {
+				t.Fatalf("policy=%+v", cached)
 			}
 		})
 	}

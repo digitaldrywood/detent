@@ -1036,6 +1036,9 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
 			continue
 		}
+		if nativeMergeQueueHasEntry(state, issue) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
+			continue
+		}
 		repository := mergeWorkerRepositoryKey(issue)
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg)
 		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) && decision.reason != string(AutoPromoteReasonCINotGreen) {
@@ -1540,7 +1543,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	out := make([]connector.Issue, 0, len(candidates))
 	selectedByState := map[string]int{}
 	for _, issue := range candidates {
-		if mergeFairnessBlocks(state, stickyID, issue, now) {
+		if nativeMergeQueueOwnsIssue(state, issue) || mergeFairnessBlocks(state, stickyID, issue, now) {
 			continue
 		}
 		issueID := strings.TrimSpace(issue.ID)
