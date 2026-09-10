@@ -527,8 +527,9 @@ func TestValidationQueueWaitBudgets(t *testing.T) {
 		wantReason string
 	}{
 		{name: "owner starts after queueing", activity: "owner starts", maxWait: time.Minute, wantWait: 1500 * time.Millisecond, wantReason: "no validation owner handoff"},
+		{name: "owner output appears", activity: "output appears", maxWait: time.Minute, wantWait: 1500 * time.Millisecond, wantReason: "no validation owner handoff"},
 		{name: "live stalled holder", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
-		{name: "queue advancement does not renew stalled holder", activity: "cancel older", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
+		{name: "queue advancement renews held owner wait", activity: "cancel older", maxWait: time.Minute, wantWait: 1500 * time.Millisecond, wantReason: "no validation owner handoff"},
 		{name: "new arrivals do not renew wait", activity: "new waiter", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
 		{name: "handoffs stop at total bound", activity: "handoff", maxWait: 2 * time.Second, wantWait: 2 * time.Second, wantReason: "total queue wait limit reached"},
 		{name: "cancellation after handoff", activity: "cancel", maxWait: time.Minute, wantWait: time.Second, wantReason: "context canceled"},
@@ -560,6 +561,11 @@ func TestValidationQueueWaitBudgets(t *testing.T) {
 						case "owner starts":
 							if calls == 1 {
 								holder = acquireTestLock(t, path)
+							}
+						case "output appears":
+							if calls == 1 {
+								recorder := newValidationActivityRecorder(path, io.Discard)
+								recorder.observe([]byte("test output\n"))
 							}
 						case "handoff", "cancel":
 							if err := holder.Close(); err != nil {
@@ -594,7 +600,7 @@ func TestValidationQueueWaitBudgets(t *testing.T) {
 				if (tt.activity == "handoff" || tt.activity == "cancel" || tt.activity == "owner starts") && !strings.Contains(stderr.String(), "reason=owner_handoff") {
 					t.Fatalf("missing renewal reason: %s", &stderr)
 				}
-				if tt.activity != "handoff" && tt.activity != "cancel" && tt.activity != "owner starts" && strings.Contains(stderr.String(), "renewing") {
+				if tt.activity != "handoff" && tt.activity != "cancel" && tt.activity != "owner starts" && tt.activity != "cancel older" && tt.activity != "output appears" && strings.Contains(stderr.String(), "renewing") {
 					t.Fatalf("non-progress renewed wait: %s", &stderr)
 				}
 				inspection, err := instancelock.Inspect(path)

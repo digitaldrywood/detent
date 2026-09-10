@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -370,6 +373,169 @@ func TestValidationCancellationHelper(t *testing.T) {
 	fmt.Fprintln(os.Stdout, "ready")
 	if _, err := io.ReadFull(os.Stdin, make([]byte, 1)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunBoundsInheritedOutputDrain(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("process group cleanup is Unix-specific")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "validation.lock")
+	criticalPath := filepath.Join(t.TempDir(), "critical.lock")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	var stderr bytes.Buffer
+	code := run(ctx, []string{
+		"-lock", path, "--", "env", "GOCOVERDIR=" + t.TempDir(), os.Args[0], "-test.run=^TestValidationInheritedOutputHelper$",
+		"--", "checklock-inherited-output", criticalPath,
+	}, reader, io.Discard, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), exec.ErrWaitDelay.Error()) || ctx.Err() != nil {
+		t.Fatalf("inherited output drain = %d, context=%v, stderr=%s", code, ctx.Err(), &stderr)
+	}
+	acquireTestLock(t, path)
+	acquireTestLock(t, criticalPath)
+}
+
+func TestValidationInheritedOutputHelper(t *testing.T) {
+	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "checklock-inherited-output" {
+		t.Skip("helper process")
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestValidationCancellationHelper$", "--", "checklock-cancel-child", os.Args[len(os.Args)-1])
+	coverageDir := filepath.Join(os.Getenv("GOCOVERDIR"), "child")
+	if err := os.Mkdir(coverageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(os.Environ(), "GOCOVERDIR="+coverageDir)
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(output, make([]byte, len("ready\n"))); err != nil {
+		t.Fatal(err)
+	}
+	if release := os.Getenv("DETENT_CHECKLOCK_PARENT_RELEASE"); release != "" {
+		fmt.Fprintln(os.Stdout, os.Getpid())
+		for {
+			if _, err := os.Stat(release); err == nil {
+				break
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if err := waitValidationPoll(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	os.Exit(0)
+}
+
+func TestRunWindowsRetainsInheritedOutputOwnership(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows retains inherited output until descendants exit")
+	}
+	for _, cancelParent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel=%t", cancelParent), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
+			defer cancel()
+			commandCtx, stop := context.WithCancel(ctx)
+			defer stop()
+			path := filepath.Join(t.TempDir(), "validation.lock")
+			criticalPath := filepath.Join(t.TempDir(), "critical.lock")
+			release := filepath.Join(t.TempDir(), "release")
+			t.Setenv("GOCOVERDIR", t.TempDir())
+			t.Setenv("DETENT_CHECKLOCK_PARENT_RELEASE", release)
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ready := newNotifyingWriter()
+			var stderr bytes.Buffer
+			done := make(chan struct{})
+			var code int
+			go func() {
+				code = run(commandCtx, []string{"-lock", path, "--", os.Args[0], "-test.run=^TestValidationInheritedOutputHelper$", "--", "checklock-inherited-output", criticalPath}, reader, ready, &stderr)
+				close(done)
+			}()
+			t.Cleanup(func() {
+				writer.Close()
+				stop()
+				select {
+				case <-done:
+				case <-time.After(validationIntegrationTimeout):
+					t.Error("validation did not stop after releasing descendant input")
+				}
+				reader.Close()
+			})
+			select {
+			case <-ready.notified:
+			case <-done:
+				t.Fatalf("parent exited before readiness: %d: %s", code, &stderr)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			ready.mu.Lock()
+			pid, err := strconv.Atoi(strings.TrimSpace(ready.data.String()))
+			ready.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent, err := os.FindProcess(pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer parent.Release()
+			if err := os.WriteFile(release, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := parent.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if cancelParent {
+				stop()
+			}
+			select {
+			case <-done:
+				t.Fatalf("gate released while descendant retained output: %d: %s", code, &stderr)
+			case <-time.After(10 * time.Second):
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			for _, heldPath := range []string{path, criticalPath} {
+				inspection, err := instancelock.Inspect(heldPath)
+				if err != nil || inspection.Status != instancelock.StatusHeld {
+					t.Fatalf("descendant ownership lost: %+v, %v", inspection, err)
+				}
+			}
+			if _, err := writer.Write([]byte{1}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			wantCode := 0
+			if cancelParent {
+				wantCode = 1
+			}
+			if code != wantCode {
+				t.Fatalf("released descendant: code=%d want=%d stderr=%s", code, wantCode, &stderr)
+			}
+			acquireTestLock(t, path)
+			acquireTestLock(t, criticalPath)
+		})
 	}
 }
 

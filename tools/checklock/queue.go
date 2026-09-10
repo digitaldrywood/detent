@@ -39,6 +39,7 @@ func acquireValidationLockWithTimeouts(ctx context.Context, path string, stderr 
 	lastPosition := 0
 	var lastOwner instancelock.Owner
 	var lastOwnerStatus instancelock.Status
+	lastActivity := started
 	waiter, err := registerValidationWaiter(ctx, path)
 	if err != nil {
 		return nil, false, fmt.Errorf("register validation waiter after %s: %w", time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
@@ -55,10 +56,10 @@ func acquireValidationLockWithTimeouts(ctx context.Context, path string, stderr 
 	for ctx := ctx; ; {
 		position, size, err := lookupPosition(ctx, path, waiter.name)
 		if err != nil {
-			return nil, waited, fmt.Errorf("wait for validation queue after %s: %w", time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
+			return nil, waited, fmt.Errorf("wait for validation queue after %s (last_position=%d; retry joins queue tail): %w", time.Since(started).Round(time.Millisecond), lastPosition, errors.Join(err, context.Cause(ctx)))
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, waited, fmt.Errorf("validation queue wait ended (position=%d queued=%d waited=%s; validation has not started): %w", position, size, time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
+			return nil, waited, fmt.Errorf("validation queue wait ended (position=%d queued=%d waited=%s; validation has not started; retry joins queue tail): %w", position, size, time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
 		}
 		if position == 1 {
 			lock, err := instancelock.Acquire(path)
@@ -73,44 +74,65 @@ func acquireValidationLockWithTimeouts(ctx context.Context, path string, stderr 
 		if err != nil {
 			return nil, waited, err
 		}
+		activity, activityKnown := readValidationActivity(path, owner)
 		progress := ""
 		if owner.Status == instancelock.StatusHeld && owner.MetadataError == nil {
 			if (!lastOwner.StartedAt.IsZero() && owner.Owner != lastOwner) || (lastPosition > 0 && lastOwnerStatus != instancelock.StatusHeld) {
 				progress = "owner_handoff"
 			}
-			lastOwner = owner.Owner
 		} else if owner.Status != instancelock.StatusHeld && lastPosition > position {
 			progress = "queue_advanced_without_owner"
+		}
+		if progress == "" && lastPosition > position && owner.Status == instancelock.StatusHeld {
+			progress = "queue_advanced"
+		}
+		if progress == "" && activityKnown && activity.Bytes > 0 && activity.At.After(lastActivity) && owner.Owner == lastOwner {
+			progress = "owner_output"
+		}
+		if activityKnown {
+			lastActivity = activity.At
+		}
+		if owner.MetadataError == nil {
+			lastOwner = owner.Owner
 		}
 		lastPosition = position
 		lastOwnerStatus = owner.Status
 		if err := ctx.Err(); err != nil {
-			return nil, waited, fmt.Errorf("validation queue wait ended (position=%d queued=%d waited=%s; validation has not started): %w", position, size, time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
+			return nil, waited, fmt.Errorf("validation queue wait ended (position=%d queued=%d waited=%s; validation has not started; retry joins queue tail): %w", position, size, time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
 		}
 		if progress != "" {
 			cancel()
 			ctx, cancel = validationIdleContext(maxCtx, idleTimeout)
 			lastProgress = time.Now()
-			fmt.Fprintf(stderr, "validation queue progress: reason=%s position=%d waited=%s; renewing idle wait budget=%s (total limit=%s)\n", progress, position, time.Since(started).Round(time.Millisecond), idleTimeout, maxTimeout)
+			if progress != "owner_output" || time.Since(lastReport) >= 30*time.Second {
+				fmt.Fprintf(stderr, "validation queue progress: reason=%s position=%d waited=%s; renewing idle wait budget=%s (total limit=%s)\n", progress, position, time.Since(started).Round(time.Millisecond), idleTimeout, maxTimeout)
+			}
 		}
 		diagnostic := fmt.Sprintf("position=%d queued=%d owner=%s", position, size, owner.Status)
 		if owner.Status == instancelock.StatusHeld && owner.MetadataError == nil {
 			diagnostic += fmt.Sprintf(" owner_pid=%d owner_since=%s", owner.Owner.PID, owner.Owner.StartedAt.Format(time.RFC3339Nano))
 		}
-		if diagnostic != lastDiagnostic || time.Since(lastReport) >= 30*time.Second {
+		reportKey := diagnostic
+		if activityKnown {
+			reportKey += activity.Phase
+			diagnostic += fmt.Sprintf(" owner_phase_hint=%s owner_activity_at=%s owner_output_bytes=%d", activity.Phase, activity.At.Format(time.RFC3339Nano), activity.Bytes)
+		} else {
+			diagnostic += " owner_activity=unknown"
+		}
+		if reportKey != lastDiagnostic || time.Since(lastReport) >= 30*time.Second {
 			fmt.Fprintf(stderr, "validation gate waiting: %s waited=%s idle=%s idle_limit=%s total_limit=%s\n", diagnostic, time.Since(started).Round(time.Millisecond), time.Since(lastProgress).Round(time.Millisecond), idleTimeout, maxTimeout)
-			lastDiagnostic = diagnostic
+			lastDiagnostic = reportKey
 			lastReport = time.Now()
 		}
 		waited = true
 		if err := waitValidationPoll(ctx); err != nil {
-			return nil, waited, fmt.Errorf("validation queue wait ended (%s waited=%s; validation has not started): %w", diagnostic, time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
+			return nil, waited, fmt.Errorf("validation queue wait ended (%s waited=%s; validation has not started; retry joins queue tail): %w", diagnostic, time.Since(started).Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
 		}
 	}
 }
 
 func validationIdleContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeoutCause(ctx, timeout, fmt.Errorf("no validation owner handoff or unheld queue advancement for %s: %w", timeout, context.DeadlineExceeded))
+	return context.WithTimeoutCause(ctx, timeout, fmt.Errorf("no validation owner handoff, output activity, or queue advancement for %s: %w", timeout, context.DeadlineExceeded))
 }
 
 func registerValidationWaiter(ctx context.Context, path string) (validationWaiter, error) {
