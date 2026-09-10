@@ -216,7 +216,10 @@ func linuxWorkspaceProcessIDs(path string) ([]int, error) {
 }
 
 func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
-	cmd := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
+	// Detent owns the scan deadline through CommandContext. Disable lsof's
+	// per-operation fork timeout machinery: on macOS its overhead grows with
+	// the host process count and can exhaust that deadline before any output.
+	cmd := exec.CommandContext(ctx, "lsof", "-O", "-a", "-d", "cwd", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
 	output, err := workspaceScanOutput(ctx, cmd)
 	if err != nil && len(output) == 0 {
 		var exitErr *exec.ExitError

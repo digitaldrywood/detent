@@ -309,3 +309,55 @@ func TestWorkspaceScanOutputStderr(t *testing.T) {
 		})
 	}
 }
+
+func TestLsofWorkspaceProcessIDs(t *testing.T) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Skip("lsof is unavailable")
+	}
+	root := t.TempDir()
+	tests := []struct {
+		name string
+		cwd  string
+		want bool
+	}{
+		{name: "workspace root", cwd: root, want: true},
+		{name: "nested directory with spaces", cwd: filepath.Join(root, "nested directory"), want: true},
+		{name: "sibling prefix", cwd: root + "-outside"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.MkdirAll(tt.cwd, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.want {
+				t.Cleanup(func() { _ = os.Remove(tt.cwd) })
+			}
+			cmd := exec.CommandContext(t.Context(), "sleep", "60")
+			cmd.Dir = tt.cwd
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			})
+			canonical, err := canonicalExistingPath(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			pids, err := lsofWorkspaceProcessIDs(ctx, canonical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, pid := range pids {
+				found = found || pid == cmd.Process.Pid
+			}
+			if found != tt.want {
+				t.Fatalf("scanner includes process %d = %t, want %t (pids=%v)", cmd.Process.Pid, found, tt.want, pids)
+			}
+		})
+	}
+}
