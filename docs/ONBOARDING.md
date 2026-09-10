@@ -3610,3 +3610,24 @@ workflow readiness rule. Do not use that mode for free-form human blockers
 without explicit dependency references. If auto-unblock is disabled, a
 dependency-waiting issue in `Blocked` will remain there even after the
 dependency clears.
+
+### GitHub credentials during systemd startup
+
+With `github_token: gh`, startup waits for `gh auth token` to return a nonempty
+credential. Failed acquisition retries after 5 seconds, doubling to a maximum
+of 60 seconds between attempts until successful or shutdown is requested. Each
+failure logs a warning with its attempt number and next delay. This accommodates
+keyring or secret-service startup delays; it does not validate a token against
+GitHub or change how GitHub rejects an acquired token. One-shot commands such as
+`detent doctor` still report credential failures promptly.
+
+Generated systemd units include `After=network-online.target` and
+`Wants=network-online.target`. `detent doctor` warns when an installed unit lacks
+these effective dependencies. A user manager's network target alone does not
+guarantee host DNS or tailnet readiness.
+
+If `gh` uses a secret service, add `After=` and `Wants=` dependencies in the
+`[Unit]` section of a `systemctl --user edit detent.service` drop-in for the
+actual secret-service unit installed on that host. Unit names vary by desktop
+and keyring provider; use the unit in the same user manager, and ensure its
+keyring can unlock unattended. Ordering does not unlock a locked keyring.

@@ -28,6 +28,7 @@ func TestAuthenticateNetworkClassification(t *testing.T) {
 		{name: "DNS unavailable", transportErr: &net.DNSError{Err: "no such host", Name: "api.github.com"}, want: ErrTransient, retryable: true},
 		{name: "dial unavailable", transportErr: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("network unreachable")}, want: ErrTransient, retryable: true},
 		{name: "unauthorized", status: http.StatusUnauthorized, want: ErrAuthenticationFailed},
+		{name: "forbidden", status: http.StatusForbidden, want: ErrAuthenticationFailed},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, err := NewConnector(Config{APIKey: "test-token", ProjectSlug: "PVT_1", HTTPClient: &http.Client{Transport: authPreflightTransport(func(*http.Request) (*http.Response, error) {

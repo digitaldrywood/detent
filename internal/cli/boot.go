@@ -72,7 +72,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 			ConfigPath: resolution,
 			Workflow:   workflowPath,
 			Flags:      flags,
-		}, runtimeDepsFromOptions(opts))
+		}, bootRuntimeDeps(opts))
 		if err != nil {
 			return BootConfig{}, err
 		}
@@ -103,7 +103,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 			ConfigPath: resolution,
 			Workflow:   workflowPath,
 			Flags:      flags,
-		}, runtimeDepsFromOptions(opts))
+		}, bootRuntimeDeps(opts))
 		if err != nil {
 			return BootConfig{}, err
 		}
@@ -130,7 +130,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 		ConfigPath: resolution,
 		Workflow:   workflowPath,
 		Flags:      flags,
-	}, runtimeDepsFromOptions(opts))
+	}, bootRuntimeDeps(opts))
 	if err != nil {
 		return BootConfig{}, err
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -343,6 +344,9 @@ func resolveRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, de
 func resolveConfiguredGitHubToken(ctx context.Context, token string, deps runtimeDeps) (RuntimeSecret, error) {
 	if githubTokenSentinel(token) {
 		resolved, err := deps.ghAuthToken(ctx)
+		if ctx.Err() != nil {
+			return RuntimeSecret{}, ctx.Err()
+		}
 		if err != nil {
 			cause := fmt.Errorf("resolve github_token via gh auth token: %w", err)
 			return RuntimeSecret{}, GitHubAuthError(hintedError(cause, cause.Error(), githubAuthHint, ghAuthLoginCommand))
@@ -568,6 +572,49 @@ func runtimeDepsFromOptions(opts options) runtimeDeps {
 		lookupEnv:   opts.lookupEnv,
 		ghAuthToken: opts.ghAuthToken,
 	}.withDefaults()
+}
+
+// bootRuntimeDeps retries local credential acquisition only during startup.
+// Doctor, reloads, and other one-shot callers retain bounded command execution.
+func bootRuntimeDeps(opts options) runtimeDeps {
+	deps := runtimeDepsFromOptions(opts)
+	resolve := deps.ghAuthToken
+	deps.ghAuthToken = func(ctx context.Context) (string, error) {
+		return retryBootGitHubToken(ctx, resolve, waitBootGitHubToken)
+	}
+	return deps
+}
+
+func retryBootGitHubToken(ctx context.Context, resolve func(context.Context) (string, error), wait func(context.Context, time.Duration) error) (string, error) {
+	delay := 5 * time.Second
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		token, err := resolve(ctx)
+		if err == nil && strings.TrimSpace(token) != "" {
+			return token, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		slog.WarnContext(ctx, "GitHub credentials unavailable; retrying startup", "attempt", attempt, "retry_in", delay)
+		if err := wait(ctx, delay); err != nil {
+			return "", err
+		}
+		delay = min(delay*2, time.Minute)
+	}
+}
+
+func waitBootGitHubToken(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func defaultGHAuthToken(ctx context.Context) (string, error) {
