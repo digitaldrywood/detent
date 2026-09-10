@@ -31,7 +31,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	flags.SetOutput(stderr)
 
 	lockPath := flags.String("lock", "", "validation lock path")
-	waitTimeout := flags.Duration("wait-timeout", 15*time.Minute, "maximum wait without an owner handoff or unheld queue advancement")
+	waitTimeout := flags.Duration("wait-timeout", 15*time.Minute, "maximum wait without an owner handoff, output activity, or queue advancement")
 	maxWaitTimeout := flags.Duration("max-wait-timeout", 4*time.Hour, "maximum total registration and queue wait")
 	eventsPath := flags.String("events", "", "append local gate timing events as JSON lines")
 
@@ -103,12 +103,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 1
 	}
+	activity := newValidationActivityRecorder(*lockPath, stderr)
 	cmd := &exec.Cmd{
-		Path:   commandPath,
-		Args:   command,
-		Stdin:  stdin,
-		Stdout: stdout,
-		Stderr: stderr,
+		Path:      commandPath,
+		Args:      command,
+		Stdin:     stdin,
+		Stdout:    validationActivityWriter{output: stdout, recorder: activity},
+		Stderr:    validationActivityWriter{output: stderr, recorder: activity},
+		WaitDelay: 5 * time.Second,
 	}
 	runStarted := time.Now()
 	commandErr := runValidationCommand(ctx, cmd)

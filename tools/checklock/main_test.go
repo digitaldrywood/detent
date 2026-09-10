@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -371,6 +373,58 @@ func TestValidationCancellationHelper(t *testing.T) {
 	if _, err := io.ReadFull(os.Stdin, make([]byte, 1)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunBoundsInheritedOutputDrain(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("process group cleanup is Unix-specific")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "validation.lock")
+	criticalPath := filepath.Join(t.TempDir(), "critical.lock")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	var stderr bytes.Buffer
+	code := run(ctx, []string{
+		"-lock", path, "--", "env", "GOCOVERDIR=" + t.TempDir(), os.Args[0], "-test.run=^TestValidationInheritedOutputHelper$",
+		"--", "checklock-inherited-output", criticalPath,
+	}, reader, io.Discard, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), exec.ErrWaitDelay.Error()) || ctx.Err() != nil {
+		t.Fatalf("inherited output drain = %d, context=%v, stderr=%s", code, ctx.Err(), &stderr)
+	}
+	acquireTestLock(t, path)
+	acquireTestLock(t, criticalPath)
+}
+
+func TestValidationInheritedOutputHelper(t *testing.T) {
+	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "checklock-inherited-output" {
+		t.Skip("helper process")
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestValidationCancellationHelper$", "--", "checklock-cancel-child", os.Args[len(os.Args)-1])
+	coverageDir := filepath.Join(os.Getenv("GOCOVERDIR"), "child")
+	if err := os.Mkdir(coverageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(os.Environ(), "GOCOVERDIR="+coverageDir)
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(output, make([]byte, len("ready\n"))); err != nil {
+		t.Fatal(err)
+	}
+	os.Exit(0)
 }
 
 func TestRunRetainsWaitAcrossHandoffs(t *testing.T) {
