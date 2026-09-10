@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -105,12 +106,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	activity := newValidationActivityRecorder(*lockPath, stderr)
 	cmd := &exec.Cmd{
-		Path:      commandPath,
-		Args:      command,
-		Stdin:     stdin,
-		Stdout:    validationActivityWriter{output: stdout, recorder: activity},
-		Stderr:    validationActivityWriter{output: stderr, recorder: activity},
-		WaitDelay: 5 * time.Second,
+		Path:   commandPath,
+		Args:   command,
+		Stdin:  stdin,
+		Stdout: validationActivityWriter{output: stdout, recorder: activity},
+		Stderr: validationActivityWriter{output: stderr, recorder: activity},
+	}
+	if runtime.GOOS != "windows" {
+		cmd.WaitDelay = 5 * time.Second
 	}
 	runStarted := time.Now()
 	commandErr := runValidationCommand(ctx, cmd)
