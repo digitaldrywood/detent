@@ -103,12 +103,15 @@ func preTurnAttempt(attempt telemetry.WorkAttempt) bool {
 func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, running Running, at time.Time) (connector.Issue, bool) {
 	issue := running.Issue
 	changed := false
-	target := strings.TrimSpace(running.DispatchSourceState)
+	target := strings.TrimSpace(running.CompletionLane)
+	if target == "" {
+		target = strings.TrimSpace(running.DispatchSourceState)
+	}
 	if target == "" && normalizeState(issue.State) == normalizeState(planImplementationState) && !terminalAttemptHasWorkProduct(issue, running.WorkProductPushed) {
 		target = terminalAttemptTodoState(o.cfg.ActiveStates)
 	}
 	if o.connector != nil && target != "" && normalizeState(issue.State) != normalizeState(target) && (running.DispatchTargetState == "" || normalizeState(issue.State) == normalizeState(running.DispatchTargetState)) {
-		if err := o.updateIssueState(ctx, state, issue, target, at, terminalAttemptWithoutWorkProductReason, laneMutationAcceptCompletion); err != nil {
+		if err := o.updateIssueState(ctx, state, issue, target, at, terminalAttemptWithoutWorkProductReason); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("pre-turn failure lane restoration failed", "issue_id", issue.ID, "error", err)
 			}

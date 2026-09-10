@@ -74,6 +74,13 @@ type leaseState struct {
 	Generation uint64 `json:"generation"`
 }
 
+func (m *Manager) CoordinationStore() coordination.Store {
+	if m == nil {
+		return nil
+	}
+	return m.store
+}
+
 func New(config Config, owner string, store coordination.Store, deps Dependencies) (*Manager, error) {
 	if store == nil {
 		return nil, ErrMissingStore

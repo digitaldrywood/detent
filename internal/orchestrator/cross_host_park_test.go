@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -67,6 +68,11 @@ func TestCrossHostParkRecovery(t *testing.T) {
 			if err := tracker.CreateComment(t.Context(), issue.ID, "Dependency blockers cleared. Moved this issue from Blocked to Todo. Cleared dependencies: #2108 (state: Done)"); err != nil {
 				t.Fatal(err)
 			}
+			value, err := json.Marshal(map[string]map[string]coordination.LaneWrite{"writers": {"peer": {InstanceIdentity: "peer", Issue: issue.ID, To: "Todo", FenceToken: 1, WrittenAt: tracker.now}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostA.laneCoordination = lanePeerReader{value: value}
 			stateA.Pipeline = cloneIssues(tracker.stateIssues)
 			hostA.refreshCurrentLaneEntries(t.Context(), &stateA, parkedAt.Add(5*time.Minute))
 			if err := storeA.Close(); err != nil {
@@ -306,7 +312,14 @@ func TestRecoveryParkAcknowledgementRearmsForNextPark(t *testing.T) {
 		candidate.State = "Todo"
 		observedAt := at.Add(time.Minute)
 		candidate.StageUpdatedAt = &observedAt
-		host.recordObservedLaneEntry(t.Context(), candidate, observedAt, provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{Login: "shared-user", Kind: "User"}))
+		value, err := json.Marshal(map[string]map[string]coordination.LaneWrite{"writers": {"peer": {InstanceIdentity: "peer", Issue: candidate.ID, To: candidate.State, FenceToken: uint64(cycle + 1), WrittenAt: at.Add(time.Second)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		host.laneCoordination = lanePeerReader{value: value}
+		if _, _, err := host.observeLane(t.Context(), &state, candidate, observedAt); err != nil {
+			t.Fatal(err)
+		}
 		host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{candidate})
 		if _, held := state.Blocked[issue.ID]; !held {
 			t.Fatalf("cycle %d reused an old acknowledgement", cycle)

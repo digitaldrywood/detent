@@ -135,6 +135,14 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
+	for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
+		if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("classify tracker lane before reconciliation failed", "issue_id", issue.ID, "error", err)
+			}
+			return
+		}
+	}
 	nativeQueueTerminalIssues := o.fetchUnsafeNativeMergeQueueTerminalIssues(ctx, state, now, reserve)
 	timing.next("reconciliation")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)

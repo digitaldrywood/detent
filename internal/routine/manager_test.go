@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -321,7 +320,7 @@ func TestManagerRoutineOptoutLabelPreventsAutoPromote(t *testing.T) {
 	}
 }
 
-func TestManagerRunOnceRecordsRoutineOrigin(t *testing.T) {
+func TestManagerRunOnceLeavesLaneEventsToOrchestrator(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC)
@@ -340,13 +339,8 @@ func TestManagerRunOnceRecordsRoutineOrigin(t *testing.T) {
 	if _, err := manager.RunOnce(context.Background(), "maintenance"); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	if len(metrics.events) != 1 {
-		t.Fatalf("events = %#v, want one lane entry", metrics.events)
-	}
-	metadata, ok := provenance.Parse(metrics.events[0].MetadataJSON)
-	if metrics.events[0].PhaseName != IssueState || metrics.events[0].Status != "entered" ||
-		!ok || metadata.Provenance.Origin != provenance.OriginRoutine {
-		t.Fatalf("event = %#v, metadata = %#v", metrics.events[0], metadata)
+	if len(metrics.events) != 0 {
+		t.Fatalf("routine wrote lane events outside the orchestrator: %#v", metrics.events)
 	}
 }
 

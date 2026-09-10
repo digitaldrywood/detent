@@ -176,7 +176,7 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 		if !closedCompletedIssueNeedsStatusReconciliation(issue, o.cfg.TerminalStates) {
 			continue
 		}
-		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_status_reconciled", laneMutationAcceptCompletion); err != nil {
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_status_reconciled"); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("reconcile closed completed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
@@ -289,62 +289,15 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		}
 
 		running := state.Running[id]
-		if pending, revoking := o.pendingLaneRevocations[id]; revoking {
-			if !pending.reapDone {
-				o.reapPendingLaneRevocation(ctx, state, pending)
-			}
-			if pending.completion != nil && pending.reapDone && !pending.mutationRead {
-				o.consumePendingLaneRevocation(ctx, pending, pending.completion.CompletedAt)
-			}
-			if pending.completion != nil && pending.reapDone && pending.mutationRead {
-				o.finishLaneRevocation(ctx, state, pending)
-			}
-			continue
+		refreshed := o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
+		if _, _, err := o.observeLane(ctx, state, refreshed, now); err != nil && o.logger != nil {
+			o.logger.Warn("running lane observation failed", "issue_id", id, "error", err)
 		}
-		mergeWorker := running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue)
-		refreshedRunning := running
-		refreshedRunning.Issue = o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
-		receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshedRunning.Issue)
-		if receiptErr != nil {
-			if o.logger != nil {
-				o.logger.Warn("running issue lane mutation receipt lookup failed", "issue_id", id, "error", receiptErr)
-			}
-			continue
+		if normalizeState(running.Issue.State) != normalizeState(refreshed.State) {
+			running.CompletionLane = refreshed.State
 		}
-		if receiptFound {
-			if receipt.Disposition == laneMutationRevokeWorker {
-				o.beginLaneRevocationForMutation(ctx, state, running, refreshedRunning.Issue, now, receipt)
-				continue
-			}
-			refreshedRunning.laneMutation = receipt
-			state.Running[id] = refreshedRunning
-			if claimed, ok := state.Claimed[id]; ok {
-				claimed.Issue = cloneIssue(refreshedRunning.Issue)
-				state.Claimed[id] = claimed
-			}
-			continue
-		}
-		if mergeWorker && running.Generation == 0 {
-			var revoked bool
-			refreshedRunning, revoked = o.revokeRunningMergeIfIneligible(ctx, state, refreshedRunning, now)
-			if revoked {
-				continue
-			}
-		}
-		if !stateIn(refreshedRunning.Issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshedRunning.Issue, o.cfg.TerminalStates) {
-			if accepted, ok := o.acceptCurrentAttemptCompletionLane(ctx, state, running, refreshedRunning.Issue, now); ok {
-				state.Running[id] = accepted
-				continue
-			}
-			if running.Generation == 0 && workspaceIssueTerminal(refreshedRunning.Issue, o.cfg.TerminalStates) {
-				o.completeTerminalRunning(ctx, state, id, refreshedRunning, terminalCompletedAt(refreshedRunning.Issue, o.cfg.TerminalStates, now), refreshedRunning.Tokens)
-				continue
-			}
-			o.beginLaneRevocation(ctx, state, running, refreshedRunning.Issue, now, laneRevocationStateChanged)
-			continue
-		}
-		running = refreshedRunning
-		if mergeWorker && running.Generation > 0 {
+		running.Issue = refreshed
+		if (running.Mode == runpkg.RunModeMerge || running.Mode == "" && running.CompletionLane == "" && mergeWorkerIssue(running.Issue)) && normalizeState(refreshed.State) == normalizeState(autoPromoteMergingState) {
 			var revoked bool
 			running, revoked = o.revokeRunningMergeIfIneligible(ctx, state, running, now)
 			if revoked {

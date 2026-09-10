@@ -92,78 +92,28 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if errors.As(event.Err, &running.Cancellation) {
 		state.Running[event.IssueID] = running
 	}
-	if o.handleLaneRevocationCompletion(ctx, state, event, running) {
-		return
-	}
 	if running.Generation > 0 {
-		beforeRefresh := running
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
 			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubBudgetMonitor) && !errors.Is(event.Err, runpkg.ErrWorkerGitHubTokenResolution) {
 				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 				return
 			}
-			if o.logger != nil {
-				o.logger.Warn("worker GitHub monitor completion lane refresh unavailable; preserving monitor deferral", "issue_id", event.IssueID, "error", err)
-			}
 		} else {
-			receiptAccepted := false
-			receipt, receiptFound, receiptErr := o.laneMutationReceipt(ctx, running, refreshed)
-			if receiptErr != nil {
-				o.deferTrackerUnavailableCompletion(ctx, state, event, running, fmt.Errorf("lane mutation receipt is unavailable: %w", receiptErr))
+			if _, _, err := o.observeLane(ctx, state, refreshed, event.CompletedAt); err != nil {
+				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 				return
 			}
-			if receiptFound {
-				if receipt.Disposition == laneMutationRevokeWorker {
-					if err := laneRevocationTransitionError(receipt.FromState, refreshed.State); err != nil {
-						o.deferTrackerUnavailableCompletion(ctx, state, event, beforeRefresh, err)
-						return
-					}
-				}
-				running.laneMutation = receipt
-				consumed, consumeErr := o.consumeLaneMutationReceipt(ctx, receipt, running, refreshed.State, event.CompletedAt)
-				if consumeErr != nil {
-					o.deferTrackerUnavailableCompletion(ctx, state, event, running, fmt.Errorf("lane mutation receipt could not be consumed: %w", consumeErr))
-					return
-				}
-				receipt = consumed
-				running.laneMutation = store.LaneMutationReceipt{}
-				switch receipt.Disposition {
-				case laneMutationPreserveOwnership:
-					receiptAccepted = true
-					if !stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates) {
-						running.CompletionLane = strings.TrimSpace(refreshed.State)
-						running.CompletionAcceptedAt = event.CompletedAt.UTC()
-					}
-				case laneMutationAcceptCompletion:
-					receiptAccepted = true
-					running.CompletionLane = strings.TrimSpace(refreshed.State)
-					running.CompletionAcceptedAt = event.CompletedAt.UTC()
-				case laneMutationRevokeWorker:
-					o.beginLaneRevocationForMutation(ctx, state, beforeRefresh, refreshed, event.CompletedAt, receipt)
-					o.handleLaneRevocationCompletion(ctx, state, event, beforeRefresh)
-					return
-				}
+			if normalizeState(running.Issue.State) != normalizeState(refreshed.State) ||
+				!stateIn(refreshed.State, o.cfg.ActiveStates) {
+				running.CompletionLane = refreshed.State
+				running.CompletionAcceptedAt = event.CompletedAt.UTC()
 			}
 			running.Issue = refreshed
 			state.Running[event.IssueID] = running
 			if claimed, found := state.Claimed[event.IssueID]; found {
 				claimed.Issue = cloneIssue(refreshed)
 				state.Claimed[event.IssueID] = claimed
-			}
-			if !receiptAccepted && (!stateIn(refreshed.State, o.cfg.ActiveStates) || workspaceIssueTerminal(refreshed, o.cfg.TerminalStates)) {
-				if accepted, ok := o.acceptCurrentAttemptCompletionLane(ctx, state, running, refreshed, event.CompletedAt); ok {
-					running = accepted
-				} else {
-					if err := laneRevocationTransitionError(beforeRefresh.Issue.State, refreshed.State); err != nil {
-						o.deferTrackerUnavailableCompletion(ctx, state, event, beforeRefresh, err)
-						return
-					}
-					o.rejectWorkerCompletion(ctx, state, event, running, "current tracker lane is not worker-owned", nil)
-					o.beginLaneRevocation(ctx, state, beforeRefresh, refreshed, event.CompletedAt, laneRevocationStateChanged)
-					o.handleLaneRevocationCompletion(ctx, state, event, beforeRefresh)
-					return
-				}
 			}
 		}
 	}
@@ -202,6 +152,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
+	if running.CompletionLane != "" {
+		o.finishObservedLaneRun(ctx, state, running, event)
+		return
+	}
 	if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
 		return
 	}
@@ -997,7 +951,7 @@ func (o *Orchestrator) parkInstantFailure(
 		running.DiffStats,
 	)
 	if targetState != "" {
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, instantFailureCircuitBreakerLaneReason, metadata, laneMutationRevokeWorker); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, instantFailureCircuitBreakerLaneReason, metadata); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"instant fail circuit breaker state transition failed",
@@ -1095,7 +1049,7 @@ func (o *Orchestrator) tripTokenCeilingCircuitBreaker(
 		running.DiffStats,
 	)
 	if targetState != "" {
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "token_ceiling_circuit_breaker", metadata, laneMutationRevokeWorker); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "token_ceiling_circuit_breaker", metadata); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"token ceiling circuit breaker state transition failed",
@@ -1287,7 +1241,7 @@ func (o *Orchestrator) parkRepeatedFailure(
 		applyGitHubRESTBudgetEvidence(metadata.BlockedRecovery, budgetEvidence)
 	}
 	if targetState != "" {
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker", metadata, laneMutationRevokeWorker); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker", metadata); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"repeated failure circuit breaker state transition failed",
@@ -1631,7 +1585,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		activityAt := event.CompletedAt.UTC()
 		mergedIssue.PullRequest.ActivityAt = &activityAt
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge", laneMutationAcceptCompletion); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge"); err != nil {
 		running.Issue = mergedIssue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
 		return true
@@ -2393,7 +2347,7 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 	if event.Result.MergePrecheck != nil {
 		metadata.LessonEvidence.ConflictPaths = event.Result.MergePrecheck.ConflictPaths
 	}
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, autoPromoteReworkState, event.CompletedAt, reason, metadata, laneMutationAcceptCompletion); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, autoPromoteReworkState, event.CompletedAt, reason, metadata); err != nil {
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
 		return
 	}
@@ -2545,7 +2499,7 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 		autoPromoteReworkState,
 		running.DiffStats,
 	)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, reason, metadata, laneMutationRevokeWorker); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, reason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_block_failed",
@@ -2661,7 +2615,7 @@ func (o *Orchestrator) completePlanRunning(
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created", laneMutationAcceptCompletion); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, "plan_transition_failed", err.Error())
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_transition_failed", err.Error(), "reviewing", "plan review transition failed")
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
@@ -2874,7 +2828,7 @@ func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context
 	if strings.TrimSpace(targetState) == "" {
 		return issue
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_running_done", laneMutationAcceptCompletion); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_running_done"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("mark closed completed running issue done failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 		}

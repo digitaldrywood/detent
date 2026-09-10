@@ -76,7 +76,7 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 	if targetState == "" {
 		return issue, false, false
 	}
-	if err := o.updateIssueState(ctx, state, issue, targetState, at, terminalAttemptWithoutWorkProductReason, laneMutationRevokeWorker); err != nil {
+	if err := o.updateIssueState(ctx, state, issue, targetState, at, terminalAttemptWithoutWorkProductReason); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"terminal attempt retry demotion failed",
@@ -308,7 +308,7 @@ func (o *Orchestrator) parkRetryCycleLimit(
 	metadata.BlockedRecovery.WorkAttemptID = latest.AttemptID
 	metadata.BlockedRecovery.AttemptNumber = latest.AttemptNumber
 	metadata.BlockedRecovery.AttemptError = attemptError
-	transitionErr := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, at, cause, metadata, laneMutationRevokeWorker)
+	transitionErr := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, at, cause, metadata)
 	if transitionErr != nil {
 		if o.logger != nil {
 			o.logger.Error("retry cycle limit state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", cause, "target_state", targetState, "error", transitionErr)

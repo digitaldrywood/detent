@@ -8,7 +8,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -42,14 +41,8 @@ func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
 	}
 	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "Proposed WORKFLOW.md change")
 	assertSingleRetroIssue(t, productIssues, PatternCompletedRedispatch, "classification: product")
-	if len(metrics.events) != 2 {
-		t.Fatalf("workflow events = %#v, want two retro lane entries", metrics.events)
-	}
-	for _, event := range metrics.events {
-		metadata, ok := provenance.Parse(event.MetadataJSON)
-		if event.Status != "entered" || !ok || metadata.Provenance.Origin != provenance.OriginRetro {
-			t.Fatalf("workflow event = %#v, metadata = %#v", event, metadata)
-		}
+	if len(metrics.events) != 0 {
+		t.Fatalf("retro wrote lane events outside the orchestrator: %#v", metrics.events)
 	}
 
 	telemetry.snapshot.PhaseEvents = append(telemetry.snapshot.PhaseEvents, PhaseEvent{Identifier: "issue-status-c", Reason: "workpad_status_invalid", StartedAt: now.Add(time.Minute)})

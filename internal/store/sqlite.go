@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,9 +18,10 @@ import (
 )
 
 type sqliteStore struct {
-	db      *sql.DB
-	queries *sqlc.Queries
-	path    string
+	laneWriteMu sync.Mutex
+	db          *sql.DB
+	queries     *sqlc.Queries
+	path        string
 }
 
 var _ Store = (*sqliteStore)(nil)

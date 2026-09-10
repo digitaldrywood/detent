@@ -37,6 +37,8 @@ type WorkflowMetricsMetadataUpdater interface {
 }
 
 type workflowLaneMetadata struct {
+	StateFieldID          int                                        `json:"-"`
+	StateFieldValue       string                                     `json:"-"`
 	LessonEvidence        reworkLessonEvidence                       `json:"-"`
 	Reconciliation        string                                     `json:"reconciliation,omitempty"`
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
@@ -122,9 +124,8 @@ func (o *Orchestrator) updateIssueState(
 	targetState string,
 	at time.Time,
 	reason string,
-	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByID(ctx, state, issue.ID, issue, targetState, at, reason, dispositions...)
+	return o.updateIssueStateByID(ctx, state, issue.ID, issue, targetState, at, reason)
 }
 
 func (o *Orchestrator) updateIssueStateByID(
@@ -135,9 +136,8 @@ func (o *Orchestrator) updateIssueStateByID(
 	targetState string,
 	at time.Time,
 	reason string,
-	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, at, reason, workflowLaneMetadata{}, dispositions...)
+	return o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, at, reason, workflowLaneMetadata{})
 }
 
 func (o *Orchestrator) updateIssueStateByIDWithMetadata(
@@ -149,9 +149,8 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadata(
 	at time.Time,
 	reason string,
 	metadata workflowLaneMetadata,
-	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, false, dispositions...)
+	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, false)
 }
 
 func (o *Orchestrator) updateIssueStateByIDStrictWithMetadata(
@@ -163,9 +162,8 @@ func (o *Orchestrator) updateIssueStateByIDStrictWithMetadata(
 	at time.Time,
 	reason string,
 	metadata workflowLaneMetadata,
-	dispositions ...laneMutationDisposition,
 ) error {
-	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, true, dispositions...)
+	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, true)
 }
 
 func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
@@ -178,23 +176,27 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	reason string,
 	metadata workflowLaneMetadata,
 	strict bool,
-	dispositions ...laneMutationDisposition,
 ) error {
-	receipt, running, leased, err := o.prepareLaneMutation(ctx, state, issueID, issue, targetState, at, reason, dispositions)
+	unlock := o.lockLaneWrites()
+	defer unlock()
+	if strings.TrimSpace(issue.ID) == "" {
+		issue.ID = issueID
+	}
+	write, err := o.prepareLaneWrite(ctx, issue, targetState, reason, at)
 	if err != nil {
 		return err
 	}
 	park := newTrackerRecoveryPark(targetState, metadata)
 	if err := o.publishTrackerRecoveryPark(ctx, issueID, park); err != nil {
-		return errors.Join(err, o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerFailed, at, err))
+		return errors.Join(err, o.resolveLaneWrite(ctx, write, "failed"))
 	}
-	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+	if err := o.writeTrackerLane(ctx, issueID, targetState, metadata); err != nil {
 		var parkErr error
 		if errors.Is(err, connector.ErrStateUpdateBlocked) {
 			parkErr = o.finishTrackerRecoveryPark(ctx, issueID, park, "cancelled")
 		}
 		if errors.Is(err, connector.ErrStateUpdateBlocked) && !strict {
-			if receiptErr := o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerBlocked, at, err); receiptErr != nil {
+			if receiptErr := o.resolveLaneWrite(ctx, write, "blocked"); receiptErr != nil {
 				return receiptErr
 			}
 			if o.logger != nil {
@@ -202,7 +204,11 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 			}
 			return parkErr
 		}
-		return errors.Join(err, parkErr, o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerFailed, at, err))
+		result := "uncertain"
+		if errors.Is(err, connector.ErrStateUpdateBlocked) {
+			result = "blocked"
+		}
+		return errors.Join(err, parkErr, o.resolveLaneWrite(ctx, write, result))
 	}
 	transitionAt := at
 	if normalizeState(issue.State) != normalizeState(targetState) {
@@ -212,7 +218,12 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 			transitionAt = mutationAt
 		}
 	}
-	receiptErr := o.resolveLaneMutation(ctx, receipt, store.LaneMutationTrackerApplied, transitionAt, nil)
+	if transitionAt.IsZero() {
+		transitionAt = write.WrittenAt
+	}
+	receiptErr := o.resolveLaneWrite(ctx, write, "applied")
+	observation := store.LaneObservation{State: targetState, EnteredAt: transitionAt, Origin: string(workflowLaneMutationAttribution(reason, metadata).Origin)}
+	receiptErr = errors.Join(receiptErr, o.saveLaneObservation(ctx, issueID, observation))
 	if stateIn(targetState, o.cfg.TerminalStates) {
 		terminalIssue := cloneIssue(issue)
 		if strings.TrimSpace(terminalIssue.ID) == "" {
@@ -238,9 +249,6 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	receiptErr = errors.Join(receiptErr, o.finishTrackerRecoveryPark(ctx, issueID, park, "applied"))
 	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) && normalizeState(issue.State) != normalizeState(targetState) {
 		o.captureReworkLesson(issue, at, reason, metadata.LessonEvidence)
-	}
-	if leased {
-		o.applyLaneMutationDisposition(ctx, state, running, receipt, issue, transitionAt)
 	}
 	return receiptErr
 }
@@ -520,67 +528,28 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 	if state == nil {
 		return
 	}
-
-	type timelineResult struct {
-		timeline store.WorkflowTimeline
-	}
-
-	previous := state.laneEntries
 	next := make(map[string]time.Time)
-	nextProvenance := make(map[string]provenance.Attribution)
-	timelines := make(map[string]timelineResult)
+	origins := make(map[string]provenance.Attribution)
 	for _, issue := range stateLaneEntryIssues(state) {
-		laneKey := workflowLaneEntryKey(issue)
-		if laneKey == "" {
+		key := workflowLaneEntryKey(issue)
+		if key == "" {
 			continue
 		}
-		if _, exists := next[laneKey]; exists {
+		if _, exists := next[key]; exists {
 			continue
 		}
-
-		identityKey := workflowIssueIdentityKey(issue)
-		result, exists := timelines[identityKey]
-		if !exists {
-			result.timeline, _ = o.issueWorkflowTimeline(ctx, issue)
-			timelines[identityKey] = result
-		}
-
-		latestEvent, eventBacked := latestCurrentLaneEntry(result.timeline.Events, issue.State)
-		trackerTransition := connector.IssueStateTransition{}
-		if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
-			trackerTransition = connector.IssueStateTransition{
-				EnteredAt: issue.StageUpdatedAt.UTC(),
-				Actor:     issue.StageUpdatedActor,
+		observation, origin, err := o.observeLane(ctx, state, issue, observedAt)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("observe tracker lane failed", "issue_id", issue.ID, "error", err)
 			}
-		} else if !eventBacked {
-			trackerTransition = o.trackerIssueStateTransition(ctx, issue)
+			continue
 		}
-		observedAttribution := observedLaneAttribution(state, issue, trackerTransition.Actor)
-		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], trackerTransition.EnteredAt, observedAt, result.timeline.Events)
-		if !enteredAt.IsZero() {
-			next[laneKey] = enteredAt
-		}
-		if !eventBacked || trackerTransition.EnteredAt.After(workflowLaneTransitionAt(latestEvent)) {
-			o.recordObservedLaneEntry(ctx, issue, enteredAt, observedAttribution)
-			if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
-				observed := cloneIssue(issue)
-				observed.State = ""
-				o.captureReworkLesson(observed, enteredAt, "tracker_state_observed")
-			}
-			latestEvent, eventBacked = latestCurrentLaneEntryForAt(result.timeline.Events, issue.State, enteredAt)
-		}
-		if eventBacked {
-			if metadata, ok := provenance.Parse(latestEvent.MetadataJSON); ok {
-				nextProvenance[laneKey] = metadata.Provenance
-			} else {
-				nextProvenance[laneKey] = provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{})
-			}
-		} else {
-			nextProvenance[laneKey] = observedAttribution
-		}
+		next[key] = observation.EnteredAt
+		origins[key] = origin
 	}
 	state.laneEntries = next
-	state.laneProvenance = nextProvenance
+	state.laneProvenance = origins
 }
 
 func (o *Orchestrator) trackerIssueStateTransition(ctx context.Context, issue connector.Issue) connector.IssueStateTransition {
@@ -600,40 +569,6 @@ func (o *Orchestrator) trackerIssueStateTransition(ctx context.Context, issue co
 		}
 	}
 	return connector.IssueStateTransition{}
-}
-
-func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connector.Issue, enteredAt time.Time, attribution provenance.Attribution) {
-	if o.workflowMetrics == nil || enteredAt.IsZero() || strings.TrimSpace(issue.State) == "" {
-		return
-	}
-	metadata := workflowLaneMetadata{
-		Provenance: attribution,
-	}
-	if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
-		provenance.NormalizeOrigin(attribution.Origin) == provenance.OriginIndeterminate &&
-		firstNonBlank(strings.TrimSpace(issue.BlockerReason), workpadParkCause(issue)) == "" {
-		metadata.BlockedCauseStatus = blockedCauseStatusUnrecorded
-	}
-	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(o.cfg.AdmissionTargetState)) &&
-		strings.TrimSpace(o.cfg.AdmissionTargetState) != "" {
-		metadata.Admission = &provenance.Admission{Attributed: false}
-	}
-	if _, err := o.workflowMetrics.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
-		ProjectID:      o.workflowMetricsProjectID(),
-		IssueID:        issue.ID,
-		Identifier:     issue.Identifier,
-		IssueURL:       issue.URL,
-		PRNumber:       workflowMetricsPRNumber(issue),
-		PhaseType:      store.WorkflowPhaseTypeLane,
-		PhaseName:      issue.State,
-		Reason:         "tracker_state_observed",
-		Status:         "entered",
-		StartedAt:      enteredAt,
-		MetadataJSON:   workflowLaneMetadataJSON(issue, metadata),
-		EndpointFamily: "tracker",
-	}); err != nil && o.logger != nil {
-		o.logger.Warn("record observed lane enter metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "error", err)
-	}
 }
 
 func stateLaneEntryIssues(state *State) []connector.Issue {

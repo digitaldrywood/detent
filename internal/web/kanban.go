@@ -22,10 +22,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
-	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type kanbanActionTarget struct {
+	projectID string
 	key       string
 	connector connector.Connector
 	workflow  workflowconfig.Config
@@ -189,48 +189,23 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			return nil
 		}
 
-		if target.kanban.IssueStateFieldID > 0 {
-			setter, ok := target.connector.(connector.IssueFieldSetter)
-			if !ok {
-				return connector.ErrNotImplemented
-			}
-			if err := setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, kanbanstate.MappedState(target.workflow, req.targetState)); err != nil {
-				return err
-			}
-			if err := closeLandedKanbanTerminalIssue(c.Request().Context(), target, snapshotIssue, req.issueID, req.targetState); err != nil {
-				return err
-			}
-			s.recordKanbanLaneTransition(
-				c.Request().Context(),
-				req.projectID,
-				snapshotIssue,
-				currentState,
-				req.targetState,
-				"kanban_move_field",
-				target.connector,
-				kanbanAdmissionTargetState(target.workflow),
-				kanbanMutationProvenanceSource(c),
-			)
-			s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
-			return nil
+		if s.operatorMoves == nil {
+			return errors.New("orchestrator lane writer is unavailable")
 		}
-		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
+		if _, err := s.operatorMoves.ReconcileOperatorMove(c.Request().Context(), orchestrator.OperatorMoveRequest{
+			Attribution:     provenance.AttributionFromSource(kanbanMutationProvenanceSource(c), provenance.Actor{}),
+			ProjectID:       target.projectID,
+			IssueID:         req.issueID,
+			Identifier:      moveIssueIdentifier,
+			FromState:       currentState,
+			ToState:         req.targetState,
+			WriteTracker:    true,
+			Reason:          "kanban_move",
+			StateFieldID:    target.kanban.IssueStateFieldID,
+			StateFieldValue: kanbanstate.MappedState(target.workflow, req.targetState),
+		}); err != nil {
 			return err
 		}
-		if err := closeLandedKanbanTerminalIssue(c.Request().Context(), target, snapshotIssue, req.issueID, req.targetState); err != nil {
-			return err
-		}
-		s.recordKanbanLaneTransition(
-			c.Request().Context(),
-			req.projectID,
-			snapshotIssue,
-			currentState,
-			req.targetState,
-			"kanban_move",
-			target.connector,
-			kanbanAdmissionTargetState(target.workflow),
-			kanbanMutationProvenanceSource(c),
-		)
 		s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 		return nil
 	})
@@ -298,30 +273,6 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		"runtime_block_cleared", runtimeMove.BlockedCleared,
 	)
 	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
-}
-
-func closeLandedKanbanTerminalIssue(
-	ctx context.Context,
-	target kanbanActionTarget,
-	issue telemetry.Issue,
-	issueID string,
-	targetState string,
-) error {
-	terminal := false
-	for _, state := range target.workflow.Tracker.TerminalStates {
-		if kanbanstate.NormalizeState(state) == kanbanstate.NormalizeState(targetState) {
-			terminal = true
-			break
-		}
-	}
-	if !terminal || issue.PullRequest == nil || !strings.EqualFold(strings.TrimSpace(issue.PullRequest.State), "merged") {
-		return nil
-	}
-	closer, ok := target.connector.(connector.IssueCloser)
-	if !ok {
-		return nil
-	}
-	return closer.CloseIssue(ctx, issueID)
 }
 
 func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, message string) error {
@@ -1204,6 +1155,7 @@ func (s *Server) kanbanActionTarget(projectID string) (kanbanActionTarget, strin
 		kanban := workflow.Server.Kanban
 		kanban.Normalize()
 		return kanbanActionTarget{
+			projectID: projectID,
 			key:       "project:" + projectID,
 			connector: trackedProject.Connector(),
 			workflow:  workflow,
@@ -1212,8 +1164,10 @@ func (s *Server) kanbanActionTarget(projectID string) (kanbanActionTarget, strin
 	}
 
 	workflow := s.kanbanWorkflow
+	selectedProjectID := ""
 	actionConnector := s.connector
 	if trackedProject := s.firstKanbanActionProject(); trackedProject != nil {
+		selectedProjectID = string(trackedProject.ID())
 		workflow = trackedProject.Workflow().Config
 		workflow.Server.Kanban = s.kanban
 		if projectConnector := trackedProject.Connector(); projectConnector != nil {
@@ -1224,6 +1178,7 @@ func (s *Server) kanbanActionTarget(projectID string) (kanbanActionTarget, strin
 		return kanbanActionTarget{}, "Connector not configured.", http.StatusServiceUnavailable
 	}
 	return kanbanActionTarget{
+		projectID: selectedProjectID,
 		key:       "connector:" + actionConnector.Name(),
 		connector: actionConnector,
 		workflow:  workflow,
@@ -1434,80 +1389,6 @@ func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID strin
 	return false, state, snapshotState, entry.Issue, dataSeq
 }
 
-func (s *Server) recordKanbanLaneTransition(
-	ctx context.Context,
-	projectID string,
-	issue telemetry.Issue,
-	currentState string,
-	targetState string,
-	reason string,
-	tracker connector.Connector,
-	admissionTargetState string,
-	provenanceSource provenance.Source,
-) {
-	if s.store == nil {
-		return
-	}
-	currentState = strings.TrimSpace(currentState)
-	targetState = strings.TrimSpace(targetState)
-	if targetState == "" || kanbanstate.NormalizeState(currentState) == kanbanstate.NormalizeState(targetState) {
-		return
-	}
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		projectID = strings.TrimSpace(issue.ProjectID)
-	}
-	if projectID == "" {
-		projectID = "default"
-	}
-	now := time.Now().UTC()
-	connectorIssue := connector.Issue{
-		ID:             issue.ID,
-		Identifier:     issue.Identifier,
-		URL:            issue.URL,
-		State:          currentState,
-		CreatedAt:      issue.CreatedAt,
-		UpdatedAt:      issue.UpdatedAt,
-		StageUpdatedAt: issue.StageUpdatedAt,
-	}
-	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
-		number := issue.PullRequest.Number
-		connectorIssue.PRNumber = &number
-	}
-	actor := provenance.Actor{}
-	if reader, ok := tracker.(connector.IssueStateTransitionReader); ok {
-		observed := connectorIssue
-		observed.State = targetState
-		transition, found, err := reader.IssueStateTransition(ctx, observed)
-		if err != nil {
-			if s.logger != nil {
-				s.logger.WarnContext(ctx, "read kanban lane transition actor failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "target_state", targetState, "error", err)
-			}
-		} else if found {
-			if !transition.EnteredAt.IsZero() {
-				now = transition.EnteredAt.UTC()
-			}
-			actor = provenance.Actor{Login: transition.Actor.Login, Kind: transition.Actor.Kind}
-		}
-	}
-	attribution := provenance.AttributionFromSource(provenanceSource, actor)
-	var admission *provenance.Admission
-	if strings.EqualFold(strings.TrimSpace(targetState), strings.TrimSpace(admissionTargetState)) &&
-		strings.TrimSpace(admissionTargetState) != "" {
-		admission = &provenance.Admission{Attributed: false}
-	}
-	if err := workflowmetrics.RecordLaneTransition(ctx, s.store, workflowmetrics.LaneTransition{
-		ProjectID:    projectID,
-		Issue:        connectorIssue,
-		TargetState:  targetState,
-		At:           now,
-		Reason:       strings.TrimSpace(reason),
-		MetadataJSON: provenance.Apply("{}", attribution, admission),
-	}); err != nil && s.logger != nil {
-		s.logger.WarnContext(ctx, "record kanban lane transition metric failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", currentState, "target_state", targetState, "error", err)
-	}
-}
-
 func kanbanMutationProvenanceSource(c echo.Context) provenance.Source {
 	if c == nil || c.Request() == nil {
 		return ""
@@ -1523,13 +1404,6 @@ func kanbanMutationProvenanceSource(c echo.Context) provenance.Source {
 		return provenance.SourceHumanSession
 	}
 	return ""
-}
-
-func kanbanAdmissionTargetState(cfg workflowconfig.Config) string {
-	if !cfg.BacklogAdmission.Enabled {
-		return ""
-	}
-	return cfg.BacklogAdmission.TargetState
 }
 
 func (s *Server) kanbanCommentTargetKnown(req kanbanCommentRequest) bool {

@@ -268,6 +268,7 @@ type doctorDeps struct {
 	scheduleOwnership    doctorScheduleOwnershipProbe
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
 	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
+	proposalLaneWriter   func(context.Context, string, workflowconfig.Config, connector.Connector, connector.Issue, string) error
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
 	executable           func() (string, error)
 	shipSkillProbe       func(string) (doctorShipSkill, error)

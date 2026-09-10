@@ -2870,7 +2870,7 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 			for _, want := range []string{
 				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
 				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
-				"Detent owns the completion-lane transition",
+				"The orchestrator is the only writer of tracker lane state",
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt missing %q", want)

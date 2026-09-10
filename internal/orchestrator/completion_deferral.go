@@ -79,7 +79,7 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 		DeferredAt:   deferredAt,
 	}
 	if fenceErr != nil {
-		record.Availability = deferredCompletionAvailability{Class: laneRevocationCompletionFenceUnavailable, Message: fenceErr.Error()}
+		record.Availability = deferredCompletionAvailability{Class: "completion_fence_unavailable", Message: fenceErr.Error()}
 	}
 	if availabilityErr, ok := connector.AsTrackerAvailability(fenceErr); ok {
 		record.Availability = deferredCompletionAvailability{

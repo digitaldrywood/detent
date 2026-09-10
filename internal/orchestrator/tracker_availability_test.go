@@ -200,10 +200,6 @@ func TestTrackerUnavailableCompletionFenceBecomesTypedWait(t *testing.T) {
 		Result:      runpkg.RunResult{FinalState: FinalStateCompleted},
 		CompletedAt: now,
 	})
-
-	if len(orch.pendingLaneRevocations) != 0 {
-		t.Fatalf("pending lane revocations = %#v, want none", orch.pendingLaneRevocations)
-	}
 	retry, ok := state.Retry[issue.ID]
 	if !ok || !retry.TrackerUnavailable || retry.Attempt != 2 {
 		t.Fatalf("Retry[%q] = %#v, want typed tracker wait", issue.ID, retry)

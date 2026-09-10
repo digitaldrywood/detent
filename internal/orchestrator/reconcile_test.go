@@ -137,7 +137,7 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 	}
 }
 
-func TestReconcileRunningIssuesStopsWorkerOutsideActiveLane(t *testing.T) {
+func TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 16, 18, 35, 0, 0, time.UTC)
@@ -164,11 +164,13 @@ func TestReconcileRunningIssuesStopsWorkerOutsideActiveLane(t *testing.T) {
 
 	orch.reconcileRunningIssues(t.Context(), &state, now)
 
-	select {
-	case <-runCtx.Done():
-	default:
-		t.Fatal("worker context remains active after the item moved to Blocked")
+	if context.Cause(runCtx) != nil {
+		t.Fatalf("worker stopped after human move: %v", context.Cause(runCtx))
 	}
+	if state.Running[issue.ID].Issue.State != "Blocked" {
+		t.Fatal("human lane was not routed")
+	}
+
 }
 
 func TestTrackBlockedStatusIssuesResolvesCauseByPrecedence(t *testing.T) {
@@ -482,6 +484,12 @@ func TestReconcileRunningIssuesRevokesIneligibleMerge(t *testing.T) {
 			}
 
 			orch.reconcileRunningIssues(t.Context(), &state, now)
+			if tt.reason == mergeRevocationStateChanged {
+				if context.Cause(runCtx) != nil {
+					t.Fatal("lane change stopped merge worker")
+				}
+				return
+			}
 
 			select {
 			case <-runCtx.Done():
@@ -582,6 +590,10 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	}
 
 	orch.tick(context.Background(), &state, now)
+	if _, active := state.Running[issue.ID]; !active {
+		t.Fatal("lane observation stopped worker before completion")
+	}
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
 
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after terminal reconciliation", issue.ID)
@@ -682,6 +694,10 @@ func TestTickCancelledRunningIssueAuditsWorkspaceCleanupAndReleasesLease(t *test
 	}
 
 	orch.tick(context.Background(), &state, now)
+	if _, active := state.Running[issue.ID]; !active {
+		t.Fatal("lane observation stopped worker before completion")
+	}
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
 
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after cancellation cleanup", issue.ID)
@@ -1000,6 +1016,10 @@ func TestTickMarksClosedCompletedRunningIssueDoneBeforeReaping(t *testing.T) {
 	}
 
 	orch.tick(context.Background(), &state, now)
+	if _, active := state.Running[issue.ID]; !active {
+		t.Fatal("lane observation stopped worker before completion")
+	}
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
 
 	if got, want := tracker.updates, []statusUpdate{{issueID: issue.ID, state: "Done"}}; !slices.Equal(got, want) {
 		t.Fatalf("updates = %#v, want %#v", got, want)
@@ -1068,6 +1088,10 @@ func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing
 	}
 
 	orch.tick(context.Background(), &state, now)
+	if _, active := state.Running[prior.ID]; !active {
+		t.Fatal("lane observation stopped worker before completion")
+	}
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: prior.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
 
 	if _, ok := state.Running[prior.ID]; ok {
 		t.Fatalf("Running[%q] present after terminal cleanup sweep", prior.ID)

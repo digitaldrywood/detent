@@ -105,6 +105,7 @@ type IssueStore interface {
 }
 
 type Settings struct {
+	LaneWriter          func(context.Context, string, string) error
 	DependencyReadiness string
 	dependencies        map[string]*runner.AdmissionDependencies
 	ProjectID           string
@@ -1631,7 +1632,11 @@ func (m *Manager) admitProposal(
 			return nil
 		}
 	}
-	if err := settings.Issues.UpdateIssueState(ctx, proposal.IssueID, proposal.TargetState); err != nil {
+	writeLane := settings.LaneWriter
+	if writeLane == nil {
+		writeLane = settings.Issues.UpdateIssueState
+	}
+	if err := writeLane(ctx, proposal.IssueID, proposal.TargetState); err != nil {
 		return fmt.Errorf("admit backlog issue %s to %s: %w", proposal.IssueIdentifier, proposal.TargetState, err)
 	}
 	decision.TransitionAt = m.now().UTC()

@@ -339,10 +339,10 @@ func TestBuildPromptBindsCompletionToCurrentAttempt(t *testing.T) {
 		t.Fatalf("BuildPrompt() error = %v", err)
 	}
 	for _, want := range []string{
-		"Detent owns the completion-lane transition after it accepts the attempt.",
+		"The orchestrator is the only writer of tracker lane state.",
 		"completion_work_attempt_id: \"3295\"",
 		"completion_generation: \"7\"",
-		"accepts only a handshake matching the current lease",
+		"Never change lane labels or status fields",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

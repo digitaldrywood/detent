@@ -725,12 +725,11 @@ func githubTrackerHostname(tracker config.Tracker) string {
 
 func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 	completionFields := ""
-	completionOwnership := "Detent owns the completion-lane transition after it accepts the attempt. Do not move the issue to a review or terminal lane yourself; leave the issue in its worker-owned lane and update the Workpad instead."
+	completionOwnership := "The orchestrator is the only writer of tracker lane state. Never change lane labels or status fields, including at startup, on blocking, or after merging. Report outcomes through the Workpad; the orchestrator writes every lane transition. These ownership instructions override workflow instructions that tell workers to move issues."
 	if opts.WorkAttemptID > 0 && opts.Generation > 0 {
 		completionFields = "fields:\n" +
 			"  completion_work_attempt_id: \"" + strconv.FormatInt(opts.WorkAttemptID, 10) + "\"\n" +
 			"  completion_generation: \"" + strconv.FormatUint(opts.Generation, 10) + "\"\n"
-		completionOwnership += " If project workflow instructions still require a completion-lane move, write the exact attempt fields shown below before making that move; Detent accepts only a handshake matching the current lease."
 	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Blocked handoff\n\n" +
 		"When writing a Workpad `detent-status` block, `status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid. " +

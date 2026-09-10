@@ -333,15 +333,8 @@ func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testin
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
 	}
-	if len(timeline.Events) != 1 {
-		t.Fatalf("workflow events = %#v, want one synthetic lane entry", timeline.Events)
-	}
-	if event := timeline.Events[0]; event.PhaseType != store.WorkflowPhaseTypeLane || event.PhaseName != "Blocked" || event.Status != "entered" || !event.StartedAt.Equal(enteredAt) {
-		t.Fatalf("workflow event = %#v, want Blocked entered at %v", event, enteredAt)
-	}
-	metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
-	if !ok || metadata.Provenance.Origin != provenance.OriginIndeterminate || metadata.Provenance.Initiator != provenance.InitiatorIndeterminate || metadata.Provenance.Actor != nil {
-		t.Fatalf("workflow metadata = %#v, want indeterminate origin without actor", metadata)
+	if len(timeline.Events) != 0 {
+		t.Fatalf("initial observation wrote phase events: %#v", timeline.Events)
 	}
 	if err := backend.Close(); err != nil {
 		t.Fatalf("backend.Close() error = %v", err)
@@ -398,16 +391,8 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 	if got := first.BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(enteredAt) {
 		t.Fatalf("first CurrentLaneEnteredAt = %v, want %v", got, enteredAt)
 	}
-	if got := first.BoardIssues[0].Origin; got != string(provenance.OriginIndeterminate) {
+	if got := first.BoardIssues[0].Origin; got != string(provenance.OriginHuman) {
 		t.Fatalf("first Origin = %q, want %q", got, provenance.OriginIndeterminate)
-	}
-	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: "issue-1162"})
-	if err != nil {
-		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
-	}
-	metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
-	if !ok || metadata.Admission == nil || metadata.Admission.Attributed {
-		t.Fatalf("observed transition metadata = %#v, want unattributed admission", metadata)
 	}
 
 	updatedAt = secondPollAt
@@ -490,7 +475,7 @@ func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
 		t.Fatalf("latest lane entry missing from timeline: %#v", timeline.Events)
 	}
 	metadata, ok := provenance.Parse(latest.MetadataJSON)
-	if !ok || metadata.Provenance.Actor == nil || metadata.Provenance.Actor.Login != "corylanou" {
+	if !ok || metadata.Provenance.Origin != provenance.OriginHuman {
 		t.Fatalf("latest lane provenance = %#v, want hydrated tracker actor", metadata.Provenance)
 	}
 }
@@ -683,15 +668,15 @@ func TestDetentLaneWriteEchoKeepsWriter(t *testing.T) {
 			if got := len(metrics.snapshot()); got != 2 {
 				t.Fatalf("events after write echo = %d, want only the original exit and entry", got)
 			}
-			if got := laneRevocationAttribution(&state, issue); got.Origin != provenance.OriginDetent || got.Basis != provenance.BasisDetentOperation {
+			if got := state.laneProvenance[workflowLaneEntryKey(issue)]; got.Origin != provenance.OriginDetent || got.Basis != provenance.BasisDetentOperation {
 				t.Fatalf("write echo attribution = %#v, want Detent", got)
 			}
 			later := trackerAt.Add(time.Minute)
 			issue.StageUpdatedAt = &later
 			state.BoardIssues = []connector.Issue{issue}
 			orch.refreshCurrentLaneEntries(t.Context(), &state, later)
-			if got := laneRevocationAttribution(&state, issue); got.Origin != provenance.OriginIndeterminate {
-				t.Fatalf("later shared-token reentry attribution = %#v, want indeterminate", got)
+			if got := state.laneProvenance[workflowLaneEntryKey(issue)]; got.Origin != provenance.OriginHuman {
+				t.Fatalf("later shared-token reentry attribution = %#v, want human", got)
 			}
 		})
 	}
@@ -822,54 +807,6 @@ func TestRefreshCurrentLaneEntriesCapturesObservedReworkOnce(t *testing.T) {
 	}
 	if len(patterns) != 1 || patterns[0].FailureKind != reworkTransitionFailureKind {
 		t.Fatalf("FailureKindPatterns() = %#v, want %q", patterns, reworkTransitionFailureKind)
-	}
-}
-
-func TestRecordObservedBlockedEntryClassifiesUnrecordedCause(t *testing.T) {
-	t.Parallel()
-
-	enteredAt := time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)
-	tests := []struct {
-		name        string
-		issue       connector.Issue
-		attribution provenance.Attribution
-		wantStatus  string
-	}{
-		{
-			name:        "indeterminate observation without cause",
-			issue:       connector.Issue{ID: "issue-1", State: "Blocked"},
-			attribution: provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{}),
-			wantStatus:  blockedCauseStatusUnrecorded,
-		},
-		{
-			name:        "tracker cause is recorded",
-			issue:       connector.Issue{ID: "issue-2", State: "Blocked", BlockerReason: "waiting for operator approval"},
-			attribution: provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{}),
-		},
-		{
-			name:        "agent provenance is already attributable",
-			issue:       connector.Issue{ID: "issue-3", State: "Blocked"},
-			attribution: provenance.AttributionFromSource(provenance.SourceDetentAgentSession, provenance.Actor{}),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			recorder := &workflowMetricsRecorderSpy{}
-			orch := &Orchestrator{cfg: normalizeConfig(Config{}), workflowMetrics: recorder}
-			orch.recordObservedLaneEntry(t.Context(), tt.issue, enteredAt, tt.attribution)
-			if len(recorder.events) != 1 {
-				t.Fatalf("events = %#v, want one", recorder.events)
-			}
-			metadata, ok := workflowLaneMetadataFromJSON(recorder.events[0].MetadataJSON)
-			if !ok {
-				t.Fatalf("metadata = %q, want valid lane metadata", recorder.events[0].MetadataJSON)
-			}
-			if metadata.BlockedCauseStatus != tt.wantStatus {
-				t.Fatalf("BlockedCauseStatus = %q, want %q", metadata.BlockedCauseStatus, tt.wantStatus)
-			}
-		})
 	}
 }
 

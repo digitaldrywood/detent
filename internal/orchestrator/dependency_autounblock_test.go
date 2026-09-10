@@ -889,7 +889,7 @@ func TestDependencyAutoUnblockIgnoresNonBlockedWorkpadFromPriorLaneOccupancy(t *
 	}
 }
 
-func TestTickAutoUnblocksDependencyParkNewerThanStickyHistory(t *testing.T) {
+func TestTickRetainsHumanParkNewerThanStickyHistory(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-current-dependency-park", "Blocked")
@@ -933,8 +933,8 @@ func TestTickAutoUnblocksDependencyParkNewerThanStickyHistory(t *testing.T) {
 
 	orch.tick(context.Background(), &state, parkedAt.Add(time.Minute))
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
-		t.Fatalf("updates = %#v, want newer dependency park moved to Todo", got)
+	if got := tracker.updates; len(got) != 0 {
+		t.Fatalf("updates = %#v, want unmatched human park retained", got)
 	}
 }
 

@@ -45,7 +45,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -114,7 +113,7 @@ func TestNewServerValidatesDependencies(t *testing.T) {
 				tt.deps.Hub = nil
 			}
 
-			_, err := web.NewServer(web.Config{}, tt.deps)
+			_, err := newServerWithLaneWriter(web.Config{}, tt.deps)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("NewServer() error = %v, want %v", err, tt.want)
 			}
@@ -125,7 +124,7 @@ func TestNewServerValidatesDependencies(t *testing.T) {
 func TestNewServerConfiguresHTTPTimeouts(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -185,7 +184,7 @@ func TestHealthReportsStartupLifecycle(t *testing.T) {
 			tt.transition(lifecycle)
 			deps := testDeps(t)
 			deps.StartupLifecycle = lifecycle
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -216,7 +215,7 @@ func TestServerRoutes(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: staticDir}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: staticDir}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -293,7 +292,7 @@ func TestServerRoutes(t *testing.T) {
 func TestCapacityClearEndpointIsIdempotentWithoutOutages(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -311,7 +310,7 @@ func TestCapacityClearEndpointIsIdempotentWithoutOutages(t *testing.T) {
 func TestCapacityClearEndpointAcceptsAsyncRequest(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -333,7 +332,7 @@ func TestCapacityClearEndpointAcceptsAsyncRequest(t *testing.T) {
 func TestTrackerAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -349,7 +348,7 @@ func TestTrackerAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testin
 func TestForgeAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -365,7 +364,7 @@ func TestForgeAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testing.
 func TestFailureBreakerCanaryEndpointIsIdempotentWithoutActiveBreakers(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -381,7 +380,7 @@ func TestFailureBreakerCanaryEndpointIsIdempotentWithoutActiveBreakers(t *testin
 func TestFailureBreakerCanaryEndpointRejectsUnknownProject(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -478,7 +477,7 @@ func TestLibraryPageFiltersRows(t *testing.T) {
 func TestAPITokenAuthProtectsAPIRoutes(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"},
 	}, testDeps(t))
 	if err != nil {
@@ -498,7 +497,7 @@ func TestAPITokenAuthProtectsAPIRoutes(t *testing.T) {
 func TestAPITokenEnvOverride(t *testing.T) {
 	t.Setenv("DETENT_API_TOKEN", "detent_env_token")
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfig: globalconfig.Config{APIToken: "detent_config_token"},
 	}, testDeps(t))
 	if err != nil {
@@ -517,7 +516,7 @@ func TestAPIFailsClosedWithoutTokenOnNonLoopbackBind(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
 		ServerAddress: "0.0.0.0:4000",
 	}, testDeps(t))
@@ -539,7 +538,7 @@ func TestAPIFailsClosedWithoutTokenOnNonLoopbackBind(t *testing.T) {
 func TestLoopbackPeerReadTrustRestrictsRoutesAndPeers(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		ServerAddress: "0.0.0.0:0",
 		GlobalConfig:  globalconfig.Config{TrustLoopbackPeerRead: true},
 	}, testDeps(t))
@@ -589,7 +588,7 @@ func TestLoopbackPeerReadTrustPreservesLoopbackBindAccess(t *testing.T) {
 	deps := testDeps(t)
 	deps.Store = openWebTestStore(t)
 	deps.Refresher = &refreshProbe{}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		ServerAddress: "127.0.0.1:0",
 		GlobalConfig:  globalconfig.Config{TrustLoopbackPeerRead: true},
 	}, deps)
@@ -618,7 +617,7 @@ func TestLoopbackPeerReadTrustPreservesLoopbackBindAccess(t *testing.T) {
 
 func TestLoopbackPeerReadTrustLiveReload(t *testing.T) {
 	cfg := globalconfig.Config{}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		ServerAddress:      "0.0.0.0:0",
 		GlobalConfig:       cfg,
 		GlobalConfigSource: func() globalconfig.Config { return cfg },
@@ -652,7 +651,7 @@ func TestLoopbackPeerReadTrustHonorsStaticTokenAndRejectsSuppliedFailures(t *tes
 	backend := openWebTestStore(t)
 	deps := testDeps(t)
 	deps.Store = backend
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		ServerAddress: "0.0.0.0:0",
 		GlobalConfig: globalconfig.Config{
 			APIToken:              "detent_admin_token",
@@ -725,7 +724,7 @@ func TestAPITokenDoesNotLeakToLogs(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 		GlobalConfig: globalconfig.Config{APIToken: "detent_real_token"},
 	}, testDeps(t))
@@ -765,7 +764,7 @@ func TestAPITokenAllowsDashboardHTMXWithUICookie(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfig: globalconfig.Config{APIToken: "detent_real_token"},
 	}, deps)
 	if err != nil {
@@ -1470,7 +1469,7 @@ func newDashboardHTMXAuthFixture(t *testing.T) dashboardHTMXAuthFixture {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		ServerAddress: "0.0.0.0:4000",
 	}, deps)
 	if err != nil {
@@ -1495,7 +1494,7 @@ func newAPIKeyDashboardHTMXTestServer(t *testing.T, apiToken string) (*web.Serve
 	if apiToken != "" {
 		cfg.GlobalConfig = globalconfig.Config{APIToken: apiToken}
 	}
-	server, err := web.NewServer(cfg, deps)
+	server, err := newServerWithLaneWriter(cfg, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -1678,7 +1677,7 @@ func TestWorkItemAPIRejectsUnsupportedTracker(t *testing.T) {
 
 	deps := testDeps(t)
 	mustSetWebGitHubLabelProject(t, deps.Registry, "github", "digitaldrywood/detent")
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"},
 	}, deps)
 	if err != nil {
@@ -1969,7 +1968,7 @@ func TestAPIUsageWritesDrainOnShutdown(t *testing.T) {
 func TestDemoScenarioHeadersAreGatedToScreenshotsMode(t *testing.T) {
 	t.Parallel()
 
-	normal, err := web.NewServer(web.Config{}, testDeps(t))
+	normal, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -1981,7 +1980,7 @@ func TestDemoScenarioHeadersAreGatedToScreenshotsMode(t *testing.T) {
 	}
 	requestJSONWithHeaders(t, normal, http.MethodGet, "/api/v1/demo/scenarios", http.StatusNotFound, nil)
 
-	demo, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+	demo, err := newServerWithLaneWriter(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2002,7 +2001,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	}
 	deps := testDeps(t)
 	deps.Store = backend
-	server, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, deps)
+	server, err := newServerWithLaneWriter(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2110,7 +2109,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2152,7 +2151,7 @@ func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
 func TestDemoScenarioKanbanFragments(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2231,7 +2230,7 @@ func TestKanbanActionsRejectReadOnlyMode(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2281,7 +2280,7 @@ func TestKanbanDialogFragmentRoutesRenderForms(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2435,7 +2434,7 @@ func TestKanbanMoveDialogUsesWorkflowAwareTargetDefaults(t *testing.T) {
 				Mode:               workflowconfig.KanbanModeIntegration,
 				AllowedTransitions: tt.allowedTransitions,
 			}, actionConnector)
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -2483,7 +2482,7 @@ func TestKanbanDialogValidationErrorsRenderInsideDialog(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2576,7 +2575,7 @@ func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -2648,7 +2647,7 @@ func TestKanbanMoveClosesOnlyLandedTerminalIssues(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -2699,7 +2698,7 @@ func TestKanbanMoveReconcilesOperatorMoveAfterTrackerSuccess(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2793,7 +2792,7 @@ func TestKanbanMoveRejectsMissingConnectorCapability(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -2830,7 +2829,7 @@ func TestKanbanMoveDialogRejectsMissingConnectorCapability(t *testing.T) {
 			"Todo": {"In Progress"},
 		},
 	}, reporter)
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2882,7 +2881,7 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -2923,14 +2922,7 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw559", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
 	}
-	events := metrics.workflowPhaseEvents()
-	if len(events) != 2 || events[0].Status != "exited" || events[1].Status != "entered" {
-		t.Fatalf("workflow phase events = %#v, want lane exit and entry", events)
-	}
-	metadata, ok := provenance.Parse(events[1].MetadataJSON)
-	if !ok || metadata.Provenance.Origin != provenance.OriginIndeterminate {
-		t.Fatalf("lane entry metadata = %#v, want indeterminate origin without trusted request evidence", metadata)
-	}
+
 }
 
 func TestKanbanPendingMoveSurvivesMissingProjectRefresh(t *testing.T) {
@@ -2960,7 +2952,7 @@ func TestKanbanPendingMoveSurvivesMissingProjectRefresh(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3067,7 +3059,7 @@ func TestKanbanPendingMoveSurvivesAuthorizationFilteredSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3137,7 +3129,7 @@ func TestKanbanMoveFailureDoesNotInsertPendingCard(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3239,7 +3231,7 @@ func TestKanbanMoveBlockedStateUpdateReturnsValidation(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -3312,7 +3304,7 @@ func TestKanbanRemoveBlockedStateUpdateReturnsValidation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3377,7 +3369,7 @@ func TestKanbanMoveAllowsFleetBoardMovePosts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3443,7 +3435,7 @@ func TestKanbanRemoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3506,7 +3498,7 @@ func TestKanbanRemoveClearsConfiguredIssueField(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3559,7 +3551,7 @@ func TestKanbanRemoveRejectsMissingConnectorCapability(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3602,7 +3594,7 @@ func TestKanbanRemoveReturnsVisibleErrorWhenUnsupported(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3648,7 +3640,7 @@ func TestKanbanDragMoveSuccessResponseRefreshesProjectBoardWithoutInlineFlash(t 
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3725,7 +3717,7 @@ func TestKanbanMoveUsesVisibleRuntimeStateForFreshness(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3790,7 +3782,7 @@ func TestKanbanMoveUsesConfiguredBoardStateOverRawRuntimeFreshness(t *testing.T)
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -3835,7 +3827,7 @@ func TestKanbanPendingOverlayDoesNotMutateLatestSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Kanban: workflowconfig.Kanban{
 			Mode: workflowconfig.KanbanModeIntegration,
 			AllowedTransitions: map[string][]string{
@@ -3913,7 +3905,7 @@ func TestKanbanMoveRejectsDefaultRestrictedActiveTransitions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4005,7 +3997,7 @@ func TestKanbanMoveAllowsConfiguredTransitionOverrides(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4050,7 +4042,7 @@ func TestKanbanActionsRouteCommentsToIssuesAndPullRequests(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4135,7 +4127,7 @@ func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4197,7 +4189,7 @@ func TestKanbanThreadCommentRefreshesIssueComments(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4261,7 +4253,7 @@ func TestKanbanFleetThreadCommentRoutesToOwningProject(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4389,7 +4381,7 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4439,7 +4431,7 @@ func TestKanbanActionsHidePullRequestCommentsWhenUnsupported(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4494,7 +4486,7 @@ func TestKanbanCommentRejectsTargetsOutsideCurrentBoard(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4579,7 +4571,7 @@ func TestKanbanMoveSerializesMutationsPerProject(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4663,7 +4655,7 @@ func TestKanbanMoveRejectsConcurrentTransitionFromStaleSource(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -4769,7 +4761,7 @@ func TestKanbanMoveUsesLiveStateTransitionForStaleCard(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -4905,7 +4897,7 @@ func TestKanbanMoveLogsOutcome(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{
+			server, err := newServerWithLaneWriter(web.Config{
 				Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 			}, deps)
 			if err != nil {
@@ -4977,7 +4969,7 @@ func TestKanbanMoveLogsOverlayRevert(t *testing.T) {
 		}
 	}
 	publish(7)
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 	}, deps)
 	if err != nil {
@@ -5054,7 +5046,7 @@ func TestKanbanMoveAllowsStaleAndRejectsPROnlyCards(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5108,11 +5100,11 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 			return "fallback.example.com", nil
 		},
 	}
-	server, err := web.NewServer(cfg, deps)
+	server, err := newServerWithLaneWriter(cfg, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	onboardingServer, err := web.NewServer(web.Config{
+	onboardingServer, err := newServerWithLaneWriter(web.Config{
 		Mode:         web.ModeOnboarding,
 		GlobalConfig: cfg.GlobalConfig,
 		Hostname:     cfg.Hostname,
@@ -5185,7 +5177,7 @@ func TestAPIStateSurfacesProjectAuthHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5225,7 +5217,7 @@ func TestAPIStateProjectsRunningBuildUnderInstance(t *testing.T) {
 			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{Build: buildinfo.Info{Version: tt.version, Commit: tt.commit}}, deps)
+			server, err := newServerWithLaneWriter(web.Config{Build: buildinfo.Info{Version: tt.version, Commit: tt.commit}}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -5258,7 +5250,7 @@ func TestAPIStateSurfacesSingleProjectAuthHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5279,7 +5271,7 @@ func TestServerUsesHostnameFallbackForInstanceName(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Hostname: func() (string, error) {
 			return "runner-01.example.com", nil
 		},
@@ -5309,7 +5301,7 @@ func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
 	}
 
 	current := globalconfig.Config{InstanceName: "first"}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfigSource: func() globalconfig.Config {
 			return current
 		},
@@ -5346,7 +5338,7 @@ func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
 func TestServerOmitsInstanceBadgeWhenNameEmpty(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Hostname: func() (string, error) {
 			return "", nil
 		},
@@ -5367,7 +5359,7 @@ func TestServerOmitsInstanceBadgeWhenNameEmpty(t *testing.T) {
 func TestServerEscapesInstanceName(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfig: globalconfig.Config{InstanceName: "<b>prod</b>"},
 		Hostname: func() (string, error) {
 			return "", nil
@@ -5403,11 +5395,11 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 	writeTestCSS(t, staticDir, css)
 	writeTestStaticAsset(t, staticDir, "img/detent-mark.svg", favicon)
 
-	server, err := web.NewServer(web.Config{StaticDir: staticDir}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: staticDir}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	onboardingServer, err := web.NewServer(web.Config{
+	onboardingServer, err := newServerWithLaneWriter(web.Config{
 		Mode:      web.ModeOnboarding,
 		StaticDir: staticDir,
 	}, web.Dependencies{})
@@ -5509,7 +5501,7 @@ func TestServerLegacyStaticAssetsRequireRevalidation(t *testing.T) {
 	css := "body{color:green}"
 	writeTestCSS(t, staticDir, css)
 
-	server, err := web.NewServer(web.Config{StaticDir: staticDir}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: staticDir}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5547,7 +5539,7 @@ func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing
 		}
 	}()
 
-	server, err := web.NewServer(web.Config{Mode: web.ModeOnboarding}, web.Dependencies{})
+	server, err := newServerWithLaneWriter(web.Config{Mode: web.ModeOnboarding}, web.Dependencies{})
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5594,7 +5586,7 @@ func shortTestHash(content string) string {
 func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Mode:      web.ModeOnboarding,
 		StaticDir: t.TempDir(),
 	}, web.Dependencies{})
@@ -5682,7 +5674,7 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5779,7 +5771,7 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 				}); err != nil {
 					t.Fatalf("Publish() error = %v", err)
 				}
-				server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+				server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 				if err != nil {
 					t.Fatalf("NewServer() error = %v", err)
 				}
@@ -5828,7 +5820,7 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5923,7 +5915,7 @@ func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -5967,7 +5959,7 @@ func TestProjectDashboardRouteLinksGitHubRepositoryIssues(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6030,7 +6022,7 @@ func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6174,7 +6166,7 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6334,7 +6326,7 @@ func TestProjectKanbanRouteRendersOnlyLiveBoard(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6395,7 +6387,7 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6469,7 +6461,7 @@ func TestBoardRouteRendersFleetBoard(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6539,7 +6531,7 @@ func TestFleetKanbanActionUsesRegistryConnector(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Kanban: workflowconfig.Kanban{
 			Mode: workflowconfig.KanbanModeIntegration,
 		},
@@ -6574,7 +6566,7 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		Mode: workflowconfig.KanbanModeReadOnly,
 	}, &kanbanActionConnector{name: "github"})
 	mustSetWebProject(t, deps.Registry, "docs", false)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6644,7 +6636,7 @@ func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	deps := testDeps(t)
 	mustSetWebProject(t, deps.Registry, "detent", false)
 	mustSetWebProject(t, deps.Registry, "docs-site", false)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6744,7 +6736,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6803,7 +6795,7 @@ func TestProjectDashboardRouteReturnsNotFoundForUnknownProject(t *testing.T) {
 
 	deps := testDeps(t)
 	mustSetWebProject(t, deps.Registry, "detent", false)
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6847,7 +6839,7 @@ func TestProjectStateAPIScopesSnapshot(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6900,7 +6892,7 @@ func TestStateAPICachesEnrichmentQueries(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -6959,7 +6951,7 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -6998,7 +6990,7 @@ func TestStateAndHealthReportWorkspaceCleanupFailures(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7033,7 +7025,7 @@ func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7102,7 +7094,7 @@ func TestHealthAndStateReportHostPressureAndAgentRSS(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7162,7 +7154,7 @@ func TestHealthReportsCICondition(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7201,7 +7193,7 @@ func TestHealthReportsUnevaluablePauseExitCondition(t *testing.T) {
 		NeedsAttention:      true,
 		EvaluatedAt:         time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
 	})
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7240,7 +7232,7 @@ func TestHealthReportsNotificationDeliveryFailures(t *testing.T) {
 		MaxAttempts: 5,
 		LastError:   "receiver unavailable",
 	}}}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7266,7 +7258,7 @@ func TestHealthReportsTotalSelectorExclusionAsNeedsHumanAttention(t *testing.T) 
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7314,7 +7306,7 @@ func TestHealthStatusIncludesOnlyFaultDispatchConditions(t *testing.T) {
 			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now(), DispatchStalls: []telemetry.DispatchStatus{stall}}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -7382,7 +7374,7 @@ func TestHealthReportsOnlyWorkerProcessesWithoutLiveSessions(t *testing.T) {
 			if err := deps.Hub.Publish(snapshot); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+			server, err := newServerWithLaneWriter(web.Config{Now: func() time.Time { return now }}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -7469,7 +7461,7 @@ func TestHealthReportsTickLivenessAndSnapshotAge(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+			server, err := newServerWithLaneWriter(web.Config{Now: func() time.Time { return now }}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -7605,7 +7597,7 @@ func TestHealthReportsProjectRefreshFailures(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+			server, err := newServerWithLaneWriter(web.Config{Now: func() time.Time { return now }}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -7648,7 +7640,7 @@ func TestProjectStateAPIRendersConfiguredProjectWithoutTelemetryRows(t *testing.
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7689,7 +7681,7 @@ func TestTimeSeriesAPIRoutesReturnChartDatasets(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7734,7 +7726,7 @@ func TestHealthReportsDraining(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7766,7 +7758,7 @@ func TestHealthReportsStrandedActiveIssues(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7795,7 +7787,7 @@ func TestHealthReportsActiveDispatchLoops(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7832,7 +7824,7 @@ func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *test
 		t.Fatalf("Registry.SetPending() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7913,7 +7905,7 @@ func TestHealthReportsProjectPinnedToLastGoodWorkflow(t *testing.T) {
 	if err := deps.Registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -7966,7 +7958,7 @@ func TestHealthRespondsDuringDrainWithoutSupplementalProjectReads(t *testing.T) 
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8027,7 +8019,7 @@ func TestHealthReportsRunningBuildDistinctFromAppliedUpdate(t *testing.T) {
 				t.Fatalf("Publish() error = %v", err)
 			}
 
-			server, err := web.NewServer(web.Config{Build: buildinfo.Info{Version: tt.version, Commit: tt.commit}}, deps)
+			server, err := newServerWithLaneWriter(web.Config{Build: buildinfo.Info{Version: tt.version, Commit: tt.commit}}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -8064,7 +8056,7 @@ func TestHealthReportsUpdateDeferralAge(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{Now: func() time.Time { return now }}, deps)
+	server, err := newServerWithLaneWriter(web.Config{Now: func() time.Time { return now }}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8081,7 +8073,7 @@ func TestHealthReportsUpdateDeferralAge(t *testing.T) {
 func TestHealthReportsEnvironmentPath(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8123,7 +8115,7 @@ func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8166,7 +8158,7 @@ func TestAPIStateReportsDraining(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8255,7 +8247,7 @@ func TestAPIStateRespondsDuringDrainWithoutStoreEnrichment(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8319,7 +8311,7 @@ func TestProjectStateAPIRespondsDuringConcurrentRefreshAndStoreEnrichment(t *tes
 	}
 	publish(0)
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	}, deps)
 	if err != nil {
@@ -8451,7 +8443,7 @@ func TestHealthReportsStateEndpointLatencyAndCancellation(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -8512,7 +8504,7 @@ func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 	}
 	deps.Hub.Close()
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8570,7 +8562,7 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8686,7 +8678,7 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 				t.Fatalf("Publish() error = %v", err)
 			}
 
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -8748,7 +8740,7 @@ func TestBoardFirstPaintColdBootRendersPlaceholders(t *testing.T) {
 			return store.RuntimeEvidence{}, nil
 		},
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8803,7 +8795,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8830,7 +8822,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 func TestDashboardRendersServerMetadata(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		StaticDir: t.TempDir(),
 		Version:   "v9.8.7",
 		Build: buildinfo.Info{
@@ -8885,7 +8877,7 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{DashboardURL: "http://localhost:4101"}, deps)
+	server, err := newServerWithLaneWriter(web.Config{DashboardURL: "http://localhost:4101"}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -8959,7 +8951,7 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 
 	deps := testDeps(t)
 	deps.Registry = registry
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		StaticDir:      t.TempDir(),
 		Version:        "v1.2.3",
 		GlobalConfig:   globalconfig.Config{Path: configPath},
@@ -9040,7 +9032,7 @@ func TestServerEventsReplaysLatestSnapshot(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9065,7 +9057,7 @@ func TestServerEventsStartsWithBuildVersion(t *testing.T) {
 	if err := deps.Hub.Publish(telemetry.Snapshot{}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Version:         "v9.8.7",
 		SSETickInterval: time.Hour,
 	}, deps)
@@ -9090,7 +9082,7 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9133,7 +9125,7 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9208,7 +9200,7 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9275,7 +9267,7 @@ func TestProjectKanbanRendersConfiguredDispatchPriorityLabel(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	server, err := newServerWithLaneWriter(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9325,7 +9317,7 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		SSETickInterval:     time.Hour,
 		SSEFragmentInterval: -1,
 		SSEHealthInterval:   -1,
@@ -9382,7 +9374,7 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9455,7 +9447,7 @@ func TestServerEventsPreservesStaticSidebarNavigation(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9485,7 +9477,7 @@ func TestServerEventsStreamsAnalyticsSnapshotForAnalyticsNav(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9537,7 +9529,7 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 	lastRefreshAt := now.Add(-90 * time.Second)
 	nextRefreshAt := now.Add(-30 * time.Second)
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour, Now: func() time.Time { return now }}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour, Now: func() time.Time { return now }}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9620,7 +9612,7 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 			deps := testDeps(t)
 			mustSetWebProject(t, deps.Registry, "detent", false)
 			mustSetWebProject(t, deps.Registry, "docs", false)
-			server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+			server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -9708,7 +9700,7 @@ func TestServerEventsEnrichesSnapshotOncePerPublish(t *testing.T) {
 					return nil, nil
 				},
 			}
-			server, err := web.NewServer(web.Config{SSETickInterval: time.Hour, Now: func() time.Time {
+			server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour, Now: func() time.Time {
 				if !tt.reverseClockOrder {
 					return time.Now()
 				}
@@ -9773,7 +9765,7 @@ func TestStateRequestCancellationDoesNotReachSnapshotEnrichment(t *testing.T) {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9804,7 +9796,7 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 	perDay := 25.0
 	perIssue := 5.0
 	deps := testDeps(t)
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9949,7 +9941,7 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 func TestServerEventsSendsTickEvents(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Millisecond}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Millisecond}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9968,7 +9960,7 @@ func TestServerEventsSendsTickEvents(t *testing.T) {
 func TestServerEventsStreamsPastHTTPTimeouts(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		SSETickInterval:       75 * time.Millisecond,
 		HTTPReadHeaderTimeout: 25 * time.Millisecond,
 		HTTPIdleTimeout:       25 * time.Millisecond,
@@ -9995,7 +9987,7 @@ func TestServerReadHeaderTimeoutDropsStalledHeaders(t *testing.T) {
 	t.Parallel()
 
 	readHeaderTimeout := 100 * time.Millisecond
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		HTTPReadHeaderTimeout: readHeaderTimeout,
 		HTTPIdleTimeout:       time.Second,
 	}, testDeps(t))
@@ -10222,7 +10214,7 @@ func TestServerAPIRoutes(t *testing.T) {
 	deps.Hub = events
 	deps.Refresher = refresher
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -10483,7 +10475,7 @@ func TestServerAPIStateSeparatesReadyWaitingAndBlocked(t *testing.T) {
 			if err := deps.Hub.Publish(snapshot); err != nil {
 				t.Fatalf("Publish() error = %v", err)
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -10545,7 +10537,7 @@ func TestAPIRefreshOverlaysManualRequestOnStaleDegradedState(t *testing.T) {
 	deps := testDeps(t)
 	deps.Hub = snapshots
 	deps.Refresher = refresher
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -10610,7 +10602,7 @@ func TestServerEventsOverlayManualRefreshOnStaleDegradedState(t *testing.T) {
 	deps := testDeps(t)
 	deps.Hub = snapshots
 	deps.Refresher = refresher
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -10671,7 +10663,7 @@ func TestAPIRefreshRefusesDuringGitHubGraphQLBackoff(t *testing.T) {
 	deps := testDeps(t)
 	deps.Hub = snapshots
 	deps.Refresher = refresher
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -10732,7 +10724,7 @@ func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
 	deps := testDeps(t)
 	deps.Hub = snapshots
 	deps.Refresher = refresher
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -10842,7 +10834,7 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	deps.Hub = snapshots
 	deps.Store = backend
 	deps.Registry = registry
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -10906,7 +10898,7 @@ func TestServerBudgetOverrideUIUsesSharedStore(t *testing.T) {
 	deps.Hub = snapshots
 	deps.Store = backend
 	deps.Registry = registry
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -10980,7 +10972,7 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 			}, nil
 		},
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11079,7 +11071,7 @@ func TestAdmissionProposalsRefreshOnDiagnosticsWithoutBoardFaults(t *testing.T) 
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11147,7 +11139,7 @@ func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
 			return nil, errors.New("store is busy")
 		},
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11191,7 +11183,7 @@ func TestServerSurfacesFleetSpendWhenBudgetCapsAreDisabled(t *testing.T) {
 	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: generatedAt}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11267,7 +11259,7 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 			deps.Hub = snapshots
 			deps.Registry = registry
 			deps.Store = storeProbe{budgetCostEvents: tt.budgetCostEvents}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
 			}
@@ -11314,7 +11306,7 @@ func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11366,7 +11358,7 @@ func TestFleetRendersGitHubQuotaMetric(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11410,7 +11402,7 @@ func TestServerAPIPreservesUnknownDiffStatus(t *testing.T) {
 	deps := testDeps(t)
 	deps.Hub = events
 
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11431,7 +11423,7 @@ func TestServerAPIPreservesUnknownDiffStatus(t *testing.T) {
 func TestServerAPIErrorRoutes(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11512,7 +11504,7 @@ func TestServerUsageAPIReportsAggregates(t *testing.T) {
 
 	deps := testDeps(t)
 	deps.Store = usageStore
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Pricing: budget.PricingTable{
 			"gpt-report": {
 				USDPerInputToken:  0.01,
@@ -11604,7 +11596,7 @@ func TestServerWorkflowTimelineAPI(t *testing.T) {
 
 	deps := testDeps(t)
 	deps.Store = backend
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11645,7 +11637,7 @@ func TestWorkflowMetricsStateAPIIncludesLaneTrendComparisons(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11714,7 +11706,7 @@ func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11768,7 +11760,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11804,7 +11796,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsTrends(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11850,7 +11842,7 @@ func TestProjectDiagnosticsRendersWorkflowFlowEfficiencyCharts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11890,7 +11882,7 @@ func TestServerUsageAPIRejectsInvalidParameters(t *testing.T) {
 
 	deps := testDeps(t)
 	deps.Store = openWebTestStore(t)
-	server, err := web.NewServer(web.Config{}, deps)
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -11926,7 +11918,7 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 
 	deps := testDeps(t)
 	deps.Store = usageStore
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		Pricing: budget.PricingTable{
 			"gpt-report": {
 				USDPerInputToken:  0.01,
@@ -12003,7 +11995,7 @@ func TestReportsDailyDigestReconcilesSeededDay(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{Pricing: budget.PricingTable{"gpt-digest": {USDPerInputToken: 0.01, USDPerCachedInputToken: 0.002, USDPerOutputToken: 0.01}}}, deps)
+	server, err := newServerWithLaneWriter(web.Config{Pricing: budget.PricingTable{"gpt-digest": {USDPerInputToken: 0.01, USDPerCachedInputToken: 0.002, USDPerOutputToken: 0.01}}}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -12214,7 +12206,7 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 	deps.Store = backend
 	deps.Registry = registry
 	deps.Connector = connectorProbe{name: "mixed"}
-	server, err := web.NewServer(web.Config{DashboardURL: "http://127.0.0.1:4000"}, deps)
+	server, err := newServerWithLaneWriter(web.Config{DashboardURL: "http://127.0.0.1:4000"}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -12266,7 +12258,7 @@ func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *loca
 	if err := deps.Registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		DashboardURL: "http://127.0.0.1:4000",
 		GlobalConfig: globalconfig.Config{
 			APIToken: apiToken,
@@ -12325,7 +12317,7 @@ func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *local
 	if err := deps.Registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
-	server, err := web.NewServer(web.Config{
+	server, err := newServerWithLaneWriter(web.Config{
 		DashboardURL: "http://127.0.0.1:4000",
 		GlobalConfig: globalconfig.Config{
 			APIToken: "detent_admin_token",
@@ -13263,13 +13255,6 @@ func (p *workflowPhaseEventStoreProbe) workflowPhaseEventCount() int {
 	defer p.mu.Unlock()
 
 	return len(p.events)
-}
-
-func (p *workflowPhaseEventStoreProbe) workflowPhaseEvents() []store.WorkflowPhaseEvent {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return append([]store.WorkflowPhaseEvent(nil), p.events...)
 }
 
 func (storeProbe) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
@@ -14211,7 +14196,7 @@ func TestCapacityClearEndpointRecoveryMode(t *testing.T) {
 		{"immediate", "missing", http.StatusNotFound},
 	} {
 		t.Run(tt.mode+tt.project, func(t *testing.T) {
-			server, err := web.NewServer(web.Config{}, testDeps(t))
+			server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -14246,7 +14231,7 @@ func TestCapacityClearEndpointProjectIsolation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			server, err := web.NewServer(web.Config{}, deps)
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
@@ -474,20 +473,7 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 			runErr = errors.Join(runErr, fmt.Errorf("set routine issue %s state: %w", proposal.DedupKey, stateErr))
 			continue
 		}
-		if metricsErr := workflowmetrics.RecordLaneTransition(ctx, settings.Metrics, workflowmetrics.LaneTransition{
-			ProjectID: settings.ProjectID,
-			Issue: connector.Issue{
-				ID:         issue.ID,
-				Identifier: issue.Identifier,
-				URL:        issue.URL,
-			},
-			TargetState:  definition.TargetState,
-			At:           m.now().UTC(),
-			Reason:       "routine",
-			MetadataJSON: provenance.Apply("{}", provenance.Attribution{Origin: provenance.OriginRoutine}, nil),
-		}); metricsErr != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("record routine issue %s state provenance: %w", proposal.DedupKey, metricsErr))
-		}
+
 	}
 	if result.Limited > 0 {
 		m.logger.WarnContext(ctx, "routine findings dropped by safety limits",

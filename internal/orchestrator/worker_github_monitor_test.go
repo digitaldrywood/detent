@@ -410,17 +410,6 @@ func TestWorkerGitHubMonitorCanaryReleasedByEarlierCompletionHandlers(t *testing
 				return orch.handleOperatorStopCompletion(t.Context(), state, event, running)
 			},
 		},
-		{
-			name: "lane revocation",
-			setup: func(orch *Orchestrator) {
-				orch.pendingLaneRevocations = map[string]*pendingLaneRevocation{
-					issue.ID: {issue: issue, reason: laneRevocationStateChanged, reapDone: true},
-				}
-			},
-			handle: func(orch *Orchestrator, state *State, event runpkg.Completion, running Running) bool {
-				return orch.handleLaneRevocationCompletion(t.Context(), state, event, running)
-			},
-		},
 	}
 
 	for _, tt := range tests {
