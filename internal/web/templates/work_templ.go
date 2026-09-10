@@ -52,6 +52,17 @@ func workToolbar(data DashboardData, view boardView) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
+		templ_7745c5c3_Err = workFilterGroup("Origin", "origin", []workFilterOption{
+			{Value: "operator", Label: "Operator"},
+			{Value: "routine", Label: "Machine · routine"},
+			{Value: "lesson", Label: "Machine · lesson"},
+			{Value: "worker", Label: "Machine · worker"},
+			{Value: "doctor", Label: "Machine · doctor"},
+			{Value: "audit", Label: "Machine · audit"},
+		}).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
 		templ_7745c5c3_Err = workFilterGroup("State", "state", workStateFilterOptions(view)).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
@@ -100,7 +111,7 @@ func workToolbar(data DashboardData, view boardView) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(len(view.Items)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 48, Col: 91}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 56, Col: 91}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -135,7 +146,7 @@ func workToolbar(data DashboardData, view boardView) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(workHealthTitle(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 62, Col: 231}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 70, Col: 231}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -156,7 +167,7 @@ func workToolbar(data DashboardData, view boardView) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(refreshFreshnessSummary(data.Snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 64, Col: 75}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 72, Col: 75}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -174,7 +185,7 @@ func workToolbar(data DashboardData, view boardView) templ.Component {
 			var templ_7745c5c3_Var8 templ.SafeURL
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(workNewIssueURL(data)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 77, Col: 45}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 85, Col: 45}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -221,7 +232,7 @@ func workFilterGroup(label string, name string, options []workFilterOption) temp
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 84, Col: 90}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 92, Col: 90}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -239,7 +250,7 @@ func workFilterGroup(label string, name string, options []workFilterOption) temp
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(option.Value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 88, Col: 77}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 96, Col: 77}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -252,7 +263,7 @@ func workFilterGroup(label string, name string, options []workFilterOption) temp
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 88, Col: 103}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 96, Col: 103}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -265,7 +276,7 @@ func workFilterGroup(label string, name string, options []workFilterOption) temp
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(option.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 89, Col: 25}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 97, Col: 25}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -283,7 +294,7 @@ func workFilterGroup(label string, name string, options []workFilterOption) temp
 				var templ_7745c5c3_Var14 string
 				templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(option.Count))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 91, Col: 76}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 99, Col: 76}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 				if templ_7745c5c3_Err != nil {
@@ -335,7 +346,7 @@ func workList(view boardView) templ.Component {
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(len(view.Items)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 102, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 110, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -348,7 +359,7 @@ func workList(view boardView) templ.Component {
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(len(view.Items)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 109, Col: 113}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 117, Col: 113}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -410,7 +421,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var19 string
 		templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs("work-row-" + item.Meta.Key)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 139, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 147, Col: 34}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 		if templ_7745c5c3_Err != nil {
@@ -435,7 +446,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(item.Card.Project)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 145, Col: 47}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 153, Col: 47}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {
@@ -448,7 +459,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(item.Card.Number)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 146, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 154, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 		if templ_7745c5c3_Err != nil {
@@ -461,7 +472,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs("Select " + item.Card.Number)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 148, Col: 99}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 156, Col: 99}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -474,7 +485,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var23 string
 		templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs("Select " + item.Card.Number)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 149, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 157, Col: 55}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 		if templ_7745c5c3_Err != nil {
@@ -487,7 +498,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.Key)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 150, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 158, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 		if templ_7745c5c3_Err != nil {
@@ -508,7 +519,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(item.Card.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 154, Col: 83}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 162, Col: 83}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 		if templ_7745c5c3_Err != nil {
@@ -526,7 +537,7 @@ func workListRow(item workItemView) templ.Component {
 			var templ_7745c5c3_Var26 string
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(item.Card.Project)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 156, Col: 101}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 164, Col: 101}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -552,7 +563,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var27 string
 		templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.State)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 161, Col: 75}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 169, Col: 75}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 		if templ_7745c5c3_Err != nil {
@@ -565,7 +576,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var28 string
 		templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(item.Card.PriorityDetail)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 163, Col: 89}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 171, Col: 89}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 		if templ_7745c5c3_Err != nil {
@@ -578,7 +589,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.Priority)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 163, Col: 112}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 171, Col: 112}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -613,7 +624,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var32 string
 		templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.ReadinessDetail)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 164, Col: 93}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 172, Col: 93}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 		if templ_7745c5c3_Err != nil {
@@ -626,7 +637,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var33 string
 		templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.Readiness)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 165, Col: 47}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 173, Col: 47}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 		if templ_7745c5c3_Err != nil {
@@ -644,7 +655,7 @@ func workListRow(item workItemView) templ.Component {
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(workBlockerLabel(item.Meta.BlockerCount))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 167, Col: 95}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 175, Col: 95}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
@@ -657,7 +668,7 @@ func workListRow(item workItemView) templ.Component {
 			var templ_7745c5c3_Var35 string
 			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs("· " + strconv.Itoa(item.Meta.BlockerCount))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 167, Col: 144}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 175, Col: 144}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 			if templ_7745c5c3_Err != nil {
@@ -675,7 +686,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.LeaseTitle)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 170, Col: 93}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 178, Col: 93}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 		if templ_7745c5c3_Err != nil {
@@ -688,7 +699,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var37 string
 		templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.Machine)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 171, Col: 22}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 179, Col: 22}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 		if templ_7745c5c3_Err != nil {
@@ -706,7 +717,7 @@ func workListRow(item workItemView) templ.Component {
 			var templ_7745c5c3_Var38 string
 			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.LeaseAge)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 173, Col: 85}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 181, Col: 85}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {
@@ -724,7 +735,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var39 string
 		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.PullRequestTitle)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 176, Col: 89}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 184, Col: 89}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 		if templ_7745c5c3_Err != nil {
@@ -743,7 +754,7 @@ func workListRow(item workItemView) templ.Component {
 			var templ_7745c5c3_Var40 string
 			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.PullRequest)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 180, Col: 27}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 188, Col: 27}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 			if templ_7745c5c3_Err != nil {
@@ -779,7 +790,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var43 string
 		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.SyncTitle)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 183, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 191, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 		if templ_7745c5c3_Err != nil {
@@ -792,7 +803,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var44 string
 		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.SyncKey)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 183, Col: 131}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 191, Col: 131}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 		if templ_7745c5c3_Err != nil {
@@ -813,7 +824,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var45 string
 		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.Sync)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 185, Col: 25}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 193, Col: 25}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 		if templ_7745c5c3_Err != nil {
@@ -826,7 +837,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.UpdatedTitle + "; " + item.Meta.StageAgeTitle)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 187, Col: 127}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 195, Col: 127}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 		if templ_7745c5c3_Err != nil {
@@ -839,7 +850,7 @@ func workListRow(item workItemView) templ.Component {
 		var templ_7745c5c3_Var47 string
 		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(item.Meta.Updated)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 188, Col: 22}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 196, Col: 22}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 		if templ_7745c5c3_Err != nil {
@@ -857,7 +868,7 @@ func workListRow(item workItemView) templ.Component {
 			var templ_7745c5c3_Var48 string
 			templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs("· " + item.Meta.StageAge)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 190, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 198, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 			if templ_7745c5c3_Err != nil {
@@ -943,7 +954,7 @@ func workStateList(message string) templ.Component {
 		var templ_7745c5c3_Var51 string
 		templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(message)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 220, Col: 155}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/work.templ`, Line: 228, Col: 155}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
 		if templ_7745c5c3_Err != nil {
@@ -978,7 +989,7 @@ func workViewScript() templ.Component {
 			templ_7745c5c3_Var52 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "<script>\n\t\t(function () {\n\t\t\tif (window.__detentWorkViewRegistered) return;\n\t\t\twindow.__detentWorkViewRegistered = true;\n\t\t\tvar filterNames = [\"state\", \"readiness\", \"priority\", \"project\", \"sync\"];\n\t\t\tvar bulkSelection = new Set();\n\t\t\tvar state = null;\n\t\t\tfunction surface() {\n\t\t\t\treturn document.querySelector(\"[data-work-surface]\");\n\t\t\t}\n\t\t\tfunction settledSnapshot(event) {\n\t\t\t\tvar detailTarget = event.detail && event.detail.target;\n\t\t\t\tvar target = detailTarget instanceof Element ? detailTarget : event.target;\n\t\t\t\tif (!(target instanceof Element)) return false;\n\t\t\t\treturn target.id === \"snapshot\" || Boolean(target.closest(\"#snapshot\"));\n\t\t\t}\n\t\t\tfunction storageKey(kind) {\n\t\t\t\tvar root = surface();\n\t\t\t\treturn \"detent.ui.work.\" + kind + \".v1.\" + (root ? root.dataset.workKey : \"fleet\");\n\t\t\t}\n\t\t\tfunction storedJSON(key) {\n\t\t\t\ttry {\n\t\t\t\t\treturn JSON.parse(window.localStorage.getItem(key) || \"null\");\n\t\t\t\t} catch (_) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction readState() {\n\t\t\t\tvar url = new URL(window.location.href);\n\t\t\t\tvar saved = storedJSON(storageKey(\"query\")) || {};\n\t\t\t\tvar viewInURL = url.searchParams.has(\"view\");\n\t\t\t\tvar hasQuery = [\"q\", \"state\", \"readiness\", \"priority\", \"project\", \"sync\", \"sort\"].some(function (name) {\n\t\t\t\t\treturn url.searchParams.has(name);\n\t\t\t\t});\n\t\t\t\tvar mode = url.searchParams.get(\"view\");\n\t\t\t\tif (mode !== \"board\" && mode !== \"list\") {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tmode = window.localStorage.getItem(storageKey(\"view\"));\n\t\t\t\t\t} catch (_) {}\n\t\t\t\t}\n\t\t\t\tif (mode !== \"list\") mode = \"board\";\n\t\t\t\tvar next = {\n\t\t\t\t\tmode: mode,\n                    page: Math.max(1, Math.min(1000000, parseInt(url.searchParams.get(\"page\"), 10) || 1)),\n\t\t\t\t\tviewInURL: viewInURL || mode === \"list\",\n\t\t\t\t\tq: hasQuery ? (url.searchParams.get(\"q\") || \"\") : (saved.q || \"\"),\n\t\t\t\t\tsort: hasQuery ? (url.searchParams.get(\"sort\") || \"priority\") : (saved.sort || \"priority\"),\n\t\t\t\t\tfocus: url.searchParams.get(\"focus\") || \"\",\n\t\t\t\t\tissue: url.searchParams.get(\"issue\") || \"\",\n\t\t\t\t\tissueProject: url.searchParams.get(\"issue_project\") || \"\",\n\t\t\t\t\tfilters: {}\n\t\t\t\t};\n\t\t\t\tfilterNames.forEach(function (name) {\n\t\t\t\t\tnext.filters[name] = hasQuery ? url.searchParams.getAll(name).map(function (value) { return value.toLowerCase(); }) : (Array.isArray(saved[name]) ? saved[name] : []);\n\t\t\t\t});\n\t\t\t\treturn next;\n\t\t\t}\n\t\t\tfunction storeState() {\n\t\t\t\ttry {\n\t\t\t\t\twindow.localStorage.setItem(storageKey(\"view\"), state.mode);\n\t\t\t\t\tvar saved = { q: state.q, sort: state.sort };\n\t\t\t\t\tfilterNames.forEach(function (name) { saved[name] = state.filters[name]; });\n\t\t\t\t\twindow.localStorage.setItem(storageKey(\"query\"), JSON.stringify(saved));\n\t\t\t\t} catch (_) {}\n\t\t\t}\n\t\t\tfunction updateURL() {\n\t\t\t\tvar url = new URL(window.location.href);\n\t\t\t\tif (state.viewInURL || state.mode === \"list\") url.searchParams.set(\"view\", state.mode);\n\t\t\t\telse url.searchParams.delete(\"view\");\n\t\t\t\tif (state.page > 1) url.searchParams.set(\"page\", String(state.page));\n                else url.searchParams.delete(\"page\");\n\t\t\t\tif (state.q) url.searchParams.set(\"q\", state.q);\n\t\t\t\telse url.searchParams.delete(\"q\");\n\t\t\t\tif (state.sort && state.sort !== \"priority\") url.searchParams.set(\"sort\", state.sort);\n\t\t\t\telse url.searchParams.delete(\"sort\");\n\t\t\t\tfilterNames.forEach(function (name) {\n\t\t\t\t\turl.searchParams.delete(name);\n\t\t\t\t\tstate.filters[name].forEach(function (value) { url.searchParams.append(name, value); });\n\t\t\t\t});\n\t\t\t\tif (state.focus) url.searchParams.set(\"focus\", state.focus);\n\t\t\t\telse url.searchParams.delete(\"focus\");\n\t\t\t\tif (state.issue) url.searchParams.set(\"issue\", state.issue);\n\t\t\t\telse url.searchParams.delete(\"issue\");\n\t\t\t\tif (state.issueProject) url.searchParams.set(\"issue_project\", state.issueProject);\n\t\t\t\telse url.searchParams.delete(\"issue_project\");\n\t\t\t\twindow.history.replaceState(null, \"\", url);\n\t\t\t\tstoreState();\n\t\t\t}\n\t\t\tfunction matches(item) {\n\t\t\t\tif (state.q && !(item.dataset.workSearch || \"\").includes(state.q.toLowerCase())) return false;\n\t\t\t\tfor (var index = 0; index < filterNames.length; index += 1) {\n\t\t\t\t\tvar name = filterNames[index];\n\t\t\t\t\tvar selected = state.filters[name];\n\t\t\t\t\tif (selected.length > 0 && !selected.includes(item.dataset[\"work\" + name.charAt(0).toUpperCase() + name.slice(1)] || \"\")) return false;\n\t\t\t\t}\n\t\t\t\treturn true;\n\t\t\t}\n\t\t\tfunction activeItems() {\n\t\t\t\treturn Array.from(document.querySelectorAll('[data-work-item][data-work-representation=\"' + state.mode + '\"]')).filter(function (item) {\n\t\t\t\t\treturn !item.hidden;\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction sortList() {\n\t\t\t\tvar body = document.querySelector(\"[data-work-list-body]\");\n\t\t\t\tif (!body) return;\n\t\t\t\tvar rows = Array.from(body.querySelectorAll('[data-work-item][data-work-representation=\"list\"]'));\n\t\t\t\trows.sort(function (left, right) {\n\t\t\t\t\tvar comparison = 0;\n\t\t\t\t\tif (state.sort === \"updated\") comparison = Number(right.dataset.workUpdated || 0) - Number(left.dataset.workUpdated || 0);\n\t\t\t\t\telse if (state.sort === \"state\") comparison = (left.dataset.workState || \"\").localeCompare(right.dataset.workState || \"\");\n\t\t\t\t\telse if (state.sort === \"identifier\") comparison = (left.dataset.workIdentity || \"\").localeCompare(right.dataset.workIdentity || \"\", undefined, { numeric: true });\n\t\t\t\t\telse comparison = Number(left.dataset.workPriorityRank || 5) - Number(right.dataset.workPriorityRank || 5);\n\t\t\t\t\tif (comparison !== 0) return comparison;\n\t\t\t\t\treturn (left.dataset.workIdentity || \"\").localeCompare(right.dataset.workIdentity || \"\", undefined, { numeric: true });\n\t\t\t\t});\n\t\t\t\trows.forEach(function (row) { body.appendChild(row); });\n\t\t\t}\n\t\t\tfunction filtersActive() {\n\t\t\t\treturn Boolean(state.q) || filterNames.some(function (name) { return state.filters[name].length > 0; });\n\t\t\t}\n\t\t\tfunction applyLaneCounts() {\n\t\t\t\tdocument.querySelectorAll(\"[data-board-lane]\").forEach(function (lane) {\n\t\t\t\t\tvar cards = Array.from(lane.querySelectorAll('[data-work-item][data-work-representation=\"board\"]'));\n\t\t\t\t\tvar visible = cards.filter(function (card) { return !card.hidden; }).length;\n\t\t\t\t\tvar count = lane.querySelector(\"[data-work-lane-count]\");\n\t\t\t\t\tif (count) count.textContent = filtersActive() ? visible + \"/\" + cards.length : count.dataset.workLaneLabel;\n\t\t\t\t\tvar empty = lane.querySelector(\"[data-work-filter-empty]\");\n\t\t\t\t\tif (empty) empty.hidden = !filtersActive() || visible > 0 || cards.length === 0;\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction applyBulk() {\n\t\t\t\tvar visible = activeItems().filter(function (item) { return item.dataset.workRepresentation === \"list\"; });\n\t\t\t\tdocument.querySelectorAll(\"[data-work-bulk-checkbox]\").forEach(function (checkbox) {\n\t\t\t\t\tcheckbox.checked = bulkSelection.has(checkbox.value);\n\t\t\t\t\tvar row = checkbox.closest(\"[data-work-item]\");\n\t\t\t\t\tif (row) row.dataset.workSelected = checkbox.checked ? \"true\" : \"false\";\n\t\t\t\t});\n\t\t\t\tvar all = document.querySelector(\"[data-work-bulk-all]\");\n\t\t\t\tif (all) {\n\t\t\t\t\tvar selectedVisible = visible.filter(function (item) { return bulkSelection.has(item.dataset.workKey); }).length;\n\t\t\t\t\tall.checked = visible.length > 0 && selectedVisible === visible.length;\n\t\t\t\t\tall.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;\n\t\t\t\t}\n\t\t\t\tvar bar = document.querySelector(\"[data-work-bulk-bar]\");\n\t\t\t\tvar count = document.querySelector(\"[data-work-bulk-count]\");\n\t\t\t\tif (count) count.textContent = bulkSelection.size + \" selected\";\n\t\t\t\tif (bar) {\n\t\t\t\t\tbar.hidden = bulkSelection.size === 0;\n\t\t\t\t\tbar.classList.toggle(\"hidden\", bulkSelection.size === 0);\n\t\t\t\t\tbar.classList.toggle(\"flex\", bulkSelection.size > 0);\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction applyControls() {\n\t\t\t\tdocument.documentElement.dataset.workView = state.mode;\n\t\t\t\tdocument.querySelectorAll(\"[data-work-view-panel]\").forEach(function (panel) {\n\t\t\t\t\tpanel.hidden = panel.dataset.workViewPanel !== state.mode;\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"button[data-work-view]\").forEach(function (button) {\n\t\t\t\t\tvar active = button.dataset.workView === state.mode;\n\t\t\t\t\tbutton.setAttribute(\"aria-pressed\", active ? \"true\" : \"false\");\n\t\t\t\t\tbutton.classList.toggle(\"bg-elev\", active);\n\t\t\t\t\tbutton.classList.toggle(\"text-text\", active);\n\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"[data-work-board-only]\").forEach(function (node) { node.hidden = state.mode !== \"board\"; });\n\t\t\t\tdocument.querySelectorAll(\"[data-work-list-only]\").forEach(function (node) { node.hidden = state.mode !== \"list\"; });\n\t\t\t\tvar search = document.querySelector(\"[data-work-search-input]\");\n\t\t\t\tif (search && search.value !== state.q) search.value = state.q;\n\t\t\t\tvar sort = document.querySelector(\"[data-work-sort]\");\n\t\t\t\tif (sort) sort.value = state.sort;\n\t\t\t\tdocument.querySelectorAll(\"[data-work-filter]\").forEach(function (checkbox) {\n\t\t\t\t\tcheckbox.checked = state.filters[checkbox.dataset.workFilter].includes(checkbox.value.toLowerCase());\n\t\t\t\t});\n\t\t\t\tvar count = filterNames.reduce(function (total, name) { return total + state.filters[name].length; }, state.q ? 1 : 0);\n\t\t\t\tvar badge = document.querySelector(\"[data-work-filter-count]\");\n\t\t\t\tif (badge) {\n\t\t\t\t\tbadge.textContent = String(count);\n\t\t\t\t\tbadge.hidden = count === 0;\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction applyItems() {\n\t\t\t\tsortList();\n                var rows = Array.from(document.querySelectorAll('[data-work-item][data-work-representation=\"list\"]')).filter(matches);\n                var pages = Math.max(1, Math.ceil(rows.length / 50));\n                state.page = Math.min(state.page, pages);\n                var pageKeys = new Set(rows.slice((state.page - 1) * 50, state.page * 50).map(function (row) { return row.dataset.workKey; }));\n                document.querySelectorAll(\"[data-work-item]\").forEach(function (item) {\n\t\t\t\t\titem.hidden = item.dataset.workRepresentation === \"list\" ? !pageKeys.has(item.dataset.workKey) : !matches(item);\n\t\t\t\t});\n                document.querySelectorAll(\"[data-work-page-step]\").forEach(function (button) { button.disabled = Number(button.dataset.workPageStep) < 0 ? state.page <= 1 : state.page >= pages; });\n                var pageSummary = document.querySelector(\"[data-work-page-summary]\");\n                if (pageSummary) pageSummary.textContent = \"Page \" + state.page + \" of \" + pages;\n\t\t\t\tapplyLaneCounts();\n\t\t\t\tvar visible = activeItems();\n\t\t\t\tvar summary = visible.length + (visible.length === 1 ? \" issue\" : \" issues\");\n\t\t\t\tdocument.querySelectorAll(\"[data-work-result-count], [data-work-list-summary]\").forEach(function (node) { node.textContent = summary; });\n\t\t\t\tvar empty = document.querySelector(\"[data-work-list-empty]\");\n\t\t\t\tif (empty) empty.hidden = visible.length > 0 || state.mode !== \"list\";\n\t\t\t\tapplyBulk();\n\t\t\t}\n\t\t\tfunction applyState(restoreFocus) {\n\t\t\t\tif (!surface()) return;\n\t\t\t\tapplyControls();\n\t\t\t\tapplyItems();\n\t\t\t\tupdateURL();\n\t\t\t\tif (restoreFocus && state.focus) {\n\t\t\t\t\tvar target = activeItems().find(function (item) { return item.dataset.workKey === state.focus; });\n\t\t\t\t\tif (target) target.focus({ preventScroll: true });\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction setSelection(item) {\n\t\t\t\tstate.issue = item ? (item.dataset.workIdentity || \"\") : \"\";\n\t\t\t\tstate.issueProject = item ? (item.dataset.workProject || \"\") : \"\";\n\t\t\t\tupdateURL();\n\t\t\t}\n\t\t\tfunction restoreSelection() {\n\t\t\t\tif (!state.issue) return;\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tif (host && host.querySelector(\"[data-detail-sheet]\")) return;\n\t\t\t\tvar target = activeItems().find(function (item) {\n\t\t\t\t\treturn item.dataset.workIdentity === state.issue && (!state.issueProject || item.dataset.workProject === state.issueProject.toLowerCase());\n\t\t\t\t});\n\t\t\t\tif (target) window.requestAnimationFrame(function () { target.click(); });\n\t\t\t}\n\t\t\tstate = readState();\n\t\t\tapplyState(Boolean(state.focus));\n\t\t\trestoreSelection();\n\t\t\tdocument.addEventListener(\"input\", function (event) {\n\t\t\t\tvar search = event.target.closest(\"[data-work-search-input]\");\n\t\t\t\tif (!search) return;\n\t\t\t\tstate.q = search.value.trim();\n                state.page = 1;\n\t\t\t\tapplyState(false);\n\t\t\t});\n\t\t\tdocument.addEventListener(\"change\", function (event) {\n\t\t\t\tvar sort = event.target.closest(\"[data-work-sort]\");\n\t\t\t\tif (sort) {\n\t\t\t\t\tstate.sort = sort.value;\n                    state.page = 1;\n\t\t\t\t\tapplyState(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar checkbox = event.target.closest(\"[data-work-bulk-checkbox]\");\n\t\t\t\tif (checkbox) {\n\t\t\t\t\tif (checkbox.checked) bulkSelection.add(checkbox.value);\n\t\t\t\t\telse bulkSelection.delete(checkbox.value);\n\t\t\t\t\tapplyBulk();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-work-bulk-all]\")) {\n\t\t\t\t\tvar checked = event.target.checked;\n\t\t\t\t\tactiveItems().forEach(function (item) {\n\t\t\t\t\t\tif (checked) bulkSelection.add(item.dataset.workKey);\n\t\t\t\t\t\telse bulkSelection.delete(item.dataset.workKey);\n\t\t\t\t\t});\n\t\t\t\t\tapplyBulk();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar pageButton = event.target.closest(\"[data-work-page-step]\");\n                if (pageButton) {\n                    state.page = Math.max(1, state.page + Number(pageButton.dataset.workPageStep));\n                    applyState(false);\n                    return;\n                }\n                var filter = event.target.closest(\"[data-work-filter]\");\n\t\t\t\tif (filter) {\n\t\t\t\t\tstate.page = 1;\n                    var name = filter.dataset.workFilter;\n\t\t\t\t\tvar value = filter.value.toLowerCase();\n\t\t\t\t\tvar selected = state.filters[name];\n\t\t\t\t\tstate.filters[name] = selected.includes(value) ? selected.filter(function (item) { return item !== value; }) : selected.concat(value);\n\t\t\t\t\tapplyState(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar view = event.target.closest(\"button[data-work-view]\");\n\t\t\t\tif (view) {\n\t\t\t\t\tvar focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest(\"[data-work-item]\") : null;\n\t\t\t\t\tif (focused) state.focus = focused.dataset.workKey || state.focus;\n\t\t\t\t\tstate.mode = view.dataset.workView;\n\t\t\t\t\tstate.viewInURL = true;\n\t\t\t\t\tapplyState(true);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-work-clear-filters]\")) {\n\t\t\t\t\tstate.q = \"\";\n                    state.page = 1;\n\t\t\t\t\tfilterNames.forEach(function (name) { state.filters[name] = []; });\n\t\t\t\t\tapplyState(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-work-bulk-clear]\")) {\n\t\t\t\t\tbulkSelection.clear();\n\t\t\t\t\tapplyBulk();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-sheet-close]\")) setSelection(null);\n\t\t\t\tvar item = event.target.closest(\"[data-work-item]\");\n\t\t\t\tif (item && !event.target.closest(\"a, button, input, select, label, [data-work-bulk]\")) setSelection(item);\n\t\t\t}, true);\n\t\t\tdocument.addEventListener(\"focusin\", function (event) {\n\t\t\t\tvar item = event.target.closest(\"[data-work-item]\");\n\t\t\t\tif (!item || item.dataset.workRepresentation !== state.mode) return;\n\t\t\t\tstate.focus = item.dataset.workKey || \"\";\n\t\t\t\tupdateURL();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"keydown\", function (event) {\n\t\t\t\tif (event.key === \"Escape\") {\n\t\t\t\t\tsetSelection(null);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar formControl = event.target.closest(\"input, select, textarea\");\n\t\t\t\tif (event.key === \"/\" && !formControl) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tvar search = document.querySelector(\"[data-work-search-input]\");\n\t\t\t\t\tif (search) search.focus();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar current = event.target.closest(\"[data-work-item]\");\n\t\t\t\tif (!current || current.dataset.workRepresentation !== state.mode) return;\n\t\t\t\tif (event.key === \"Enter\") {\n\t\t\t\t\tvar interactive = event.target.closest(\"a, button, input, select, textarea, label, [data-work-bulk]\");\n\t\t\t\t\tif (interactive && interactive !== current) return;\n\t\t\t\t\tsetSelection(current);\n\t\t\t\t\tif (!current.matches('[role=\"button\"]')) {\n\t\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\t\tcurrent.click();\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar items = activeItems();\n\t\t\t\tvar index = items.indexOf(current);\n\t\t\t\tvar next = index;\n\t\t\t\tif (event.key === \"ArrowDown\" || event.key === \"j\") next = Math.min(items.length - 1, index + 1);\n\t\t\t\telse if (event.key === \"ArrowUp\" || event.key === \"k\") next = Math.max(0, index - 1);\n\t\t\t\telse if (event.key === \"Home\") next = 0;\n\t\t\t\telse if (event.key === \"End\") next = items.length - 1;\n\t\t\t\telse return;\n\t\t\t\tif (items[next]) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\titems[next].focus();\n\t\t\t\t\titems[next].scrollIntoView({ block: \"nearest\", inline: \"nearest\" });\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:beforeRequest\", function (event) {\n\t\t\t\tvar trigger = event.detail && event.detail.elt;\n\t\t\t\tif (trigger instanceof Element && trigger.matches(\"[data-detail-sheet-trigger][data-work-item]\")) setSelection(trigger);\n\t\t\t});\n\t\t\tdocument.addEventListener(\"kanbanActionSucceeded\", function () { setSelection(null); });\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", function (event) {\n\t\t\t\tif (!settledSnapshot(event)) return;\n\t\t\t\tapplyState(false);\n\t\t\t\trestoreSelection();\n\t\t\t});\n\t\t\twindow.addEventListener(\"popstate\", function () {\n\t\t\t\tstate = readState();\n\t\t\t\tapplyState(Boolean(state.focus));\n\t\t\t\trestoreSelection();\n\t\t\t});\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "<script>\n\t\t(function () {\n\t\t\tif (window.__detentWorkViewRegistered) return;\n\t\t\twindow.__detentWorkViewRegistered = true;\n\t\t\tvar filterNames = [\"state\", \"readiness\", \"priority\", \"project\", \"sync\", \"origin\"];\n\t\t\tvar bulkSelection = new Set();\n\t\t\tvar state = null;\n\t\t\tfunction surface() {\n\t\t\t\treturn document.querySelector(\"[data-work-surface]\");\n\t\t\t}\n\t\t\tfunction settledSnapshot(event) {\n\t\t\t\tvar detailTarget = event.detail && event.detail.target;\n\t\t\t\tvar target = detailTarget instanceof Element ? detailTarget : event.target;\n\t\t\t\tif (!(target instanceof Element)) return false;\n\t\t\t\treturn target.id === \"snapshot\" || Boolean(target.closest(\"#snapshot\"));\n\t\t\t}\n\t\t\tfunction storageKey(kind) {\n\t\t\t\tvar root = surface();\n\t\t\t\treturn \"detent.ui.work.\" + kind + \".v1.\" + (root ? root.dataset.workKey : \"fleet\");\n\t\t\t}\n\t\t\tfunction storedJSON(key) {\n\t\t\t\ttry {\n\t\t\t\t\treturn JSON.parse(window.localStorage.getItem(key) || \"null\");\n\t\t\t\t} catch (_) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction readState() {\n\t\t\t\tvar url = new URL(window.location.href);\n\t\t\t\tvar saved = storedJSON(storageKey(\"query\")) || {};\n\t\t\t\tvar viewInURL = url.searchParams.has(\"view\");\n\t\t\t\tvar hasQuery = [\"q\", \"state\", \"readiness\", \"priority\", \"project\", \"sync\", \"sort\"].some(function (name) {\n\t\t\t\t\treturn url.searchParams.has(name);\n\t\t\t\t});\n\t\t\t\tvar mode = url.searchParams.get(\"view\");\n\t\t\t\tif (mode !== \"board\" && mode !== \"list\") {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tmode = window.localStorage.getItem(storageKey(\"view\"));\n\t\t\t\t\t} catch (_) {}\n\t\t\t\t}\n\t\t\t\tif (mode !== \"list\") mode = \"board\";\n\t\t\t\tvar next = {\n\t\t\t\t\tmode: mode,\n                    page: Math.max(1, Math.min(1000000, parseInt(url.searchParams.get(\"page\"), 10) || 1)),\n\t\t\t\t\tviewInURL: viewInURL || mode === \"list\",\n\t\t\t\t\tq: hasQuery ? (url.searchParams.get(\"q\") || \"\") : (saved.q || \"\"),\n\t\t\t\t\tsort: hasQuery ? (url.searchParams.get(\"sort\") || \"priority\") : (saved.sort || \"priority\"),\n\t\t\t\t\tfocus: url.searchParams.get(\"focus\") || \"\",\n\t\t\t\t\tissue: url.searchParams.get(\"issue\") || \"\",\n\t\t\t\t\tissueProject: url.searchParams.get(\"issue_project\") || \"\",\n\t\t\t\t\tfilters: {}\n\t\t\t\t};\n\t\t\t\tfilterNames.forEach(function (name) {\n\t\t\t\t\tnext.filters[name] = hasQuery ? url.searchParams.getAll(name).map(function (value) { return value.toLowerCase(); }) : (Array.isArray(saved[name]) ? saved[name] : []);\n\t\t\t\t});\n\t\t\t\treturn next;\n\t\t\t}\n\t\t\tfunction storeState() {\n\t\t\t\ttry {\n\t\t\t\t\twindow.localStorage.setItem(storageKey(\"view\"), state.mode);\n\t\t\t\t\tvar saved = { q: state.q, sort: state.sort };\n\t\t\t\t\tfilterNames.forEach(function (name) { saved[name] = state.filters[name]; });\n\t\t\t\t\twindow.localStorage.setItem(storageKey(\"query\"), JSON.stringify(saved));\n\t\t\t\t} catch (_) {}\n\t\t\t}\n\t\t\tfunction updateURL() {\n\t\t\t\tvar url = new URL(window.location.href);\n\t\t\t\tif (state.viewInURL || state.mode === \"list\") url.searchParams.set(\"view\", state.mode);\n\t\t\t\telse url.searchParams.delete(\"view\");\n\t\t\t\tif (state.page > 1) url.searchParams.set(\"page\", String(state.page));\n                else url.searchParams.delete(\"page\");\n\t\t\t\tif (state.q) url.searchParams.set(\"q\", state.q);\n\t\t\t\telse url.searchParams.delete(\"q\");\n\t\t\t\tif (state.sort && state.sort !== \"priority\") url.searchParams.set(\"sort\", state.sort);\n\t\t\t\telse url.searchParams.delete(\"sort\");\n\t\t\t\tfilterNames.forEach(function (name) {\n\t\t\t\t\turl.searchParams.delete(name);\n\t\t\t\t\tstate.filters[name].forEach(function (value) { url.searchParams.append(name, value); });\n\t\t\t\t});\n\t\t\t\tif (state.focus) url.searchParams.set(\"focus\", state.focus);\n\t\t\t\telse url.searchParams.delete(\"focus\");\n\t\t\t\tif (state.issue) url.searchParams.set(\"issue\", state.issue);\n\t\t\t\telse url.searchParams.delete(\"issue\");\n\t\t\t\tif (state.issueProject) url.searchParams.set(\"issue_project\", state.issueProject);\n\t\t\t\telse url.searchParams.delete(\"issue_project\");\n\t\t\t\twindow.history.replaceState(null, \"\", url);\n\t\t\t\tstoreState();\n\t\t\t}\n\t\t\tfunction matches(item) {\n\t\t\t\tif (state.q && !(item.dataset.workSearch || \"\").includes(state.q.toLowerCase())) return false;\n\t\t\t\tfor (var index = 0; index < filterNames.length; index += 1) {\n\t\t\t\t\tvar name = filterNames[index];\n\t\t\t\t\tvar selected = state.filters[name];\n\t\t\t\t\tif (selected.length > 0 && !selected.includes(item.dataset[\"work\" + name.charAt(0).toUpperCase() + name.slice(1)] || \"\")) return false;\n\t\t\t\t}\n\t\t\t\treturn true;\n\t\t\t}\n\t\t\tfunction activeItems() {\n\t\t\t\treturn Array.from(document.querySelectorAll('[data-work-item][data-work-representation=\"' + state.mode + '\"]')).filter(function (item) {\n\t\t\t\t\treturn !item.hidden;\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction sortList() {\n\t\t\t\tvar body = document.querySelector(\"[data-work-list-body]\");\n\t\t\t\tif (!body) return;\n\t\t\t\tvar rows = Array.from(body.querySelectorAll('[data-work-item][data-work-representation=\"list\"]'));\n\t\t\t\trows.sort(function (left, right) {\n\t\t\t\t\tvar comparison = 0;\n\t\t\t\t\tif (state.sort === \"updated\") comparison = Number(right.dataset.workUpdated || 0) - Number(left.dataset.workUpdated || 0);\n\t\t\t\t\telse if (state.sort === \"state\") comparison = (left.dataset.workState || \"\").localeCompare(right.dataset.workState || \"\");\n\t\t\t\t\telse if (state.sort === \"identifier\") comparison = (left.dataset.workIdentity || \"\").localeCompare(right.dataset.workIdentity || \"\", undefined, { numeric: true });\n\t\t\t\t\telse comparison = Number(left.dataset.workPriorityRank || 5) - Number(right.dataset.workPriorityRank || 5);\n\t\t\t\t\tif (comparison !== 0) return comparison;\n\t\t\t\t\treturn (left.dataset.workIdentity || \"\").localeCompare(right.dataset.workIdentity || \"\", undefined, { numeric: true });\n\t\t\t\t});\n\t\t\t\trows.forEach(function (row) { body.appendChild(row); });\n\t\t\t}\n\t\t\tfunction filtersActive() {\n\t\t\t\treturn Boolean(state.q) || filterNames.some(function (name) { return state.filters[name].length > 0; });\n\t\t\t}\n\t\t\tfunction applyLaneCounts() {\n\t\t\t\tdocument.querySelectorAll(\"[data-board-lane]\").forEach(function (lane) {\n\t\t\t\t\tvar cards = Array.from(lane.querySelectorAll('[data-work-item][data-work-representation=\"board\"]'));\n\t\t\t\t\tvar visible = cards.filter(function (card) { return !card.hidden; }).length;\n\t\t\t\t\tvar count = lane.querySelector(\"[data-work-lane-count]\");\n\t\t\t\t\tif (count) count.textContent = filtersActive() ? visible + \"/\" + cards.length : count.dataset.workLaneLabel;\n\t\t\t\t\tvar empty = lane.querySelector(\"[data-work-filter-empty]\");\n\t\t\t\t\tif (empty) empty.hidden = !filtersActive() || visible > 0 || cards.length === 0;\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction applyBulk() {\n\t\t\t\tvar visible = activeItems().filter(function (item) { return item.dataset.workRepresentation === \"list\"; });\n\t\t\t\tdocument.querySelectorAll(\"[data-work-bulk-checkbox]\").forEach(function (checkbox) {\n\t\t\t\t\tcheckbox.checked = bulkSelection.has(checkbox.value);\n\t\t\t\t\tvar row = checkbox.closest(\"[data-work-item]\");\n\t\t\t\t\tif (row) row.dataset.workSelected = checkbox.checked ? \"true\" : \"false\";\n\t\t\t\t});\n\t\t\t\tvar all = document.querySelector(\"[data-work-bulk-all]\");\n\t\t\t\tif (all) {\n\t\t\t\t\tvar selectedVisible = visible.filter(function (item) { return bulkSelection.has(item.dataset.workKey); }).length;\n\t\t\t\t\tall.checked = visible.length > 0 && selectedVisible === visible.length;\n\t\t\t\t\tall.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;\n\t\t\t\t}\n\t\t\t\tvar bar = document.querySelector(\"[data-work-bulk-bar]\");\n\t\t\t\tvar count = document.querySelector(\"[data-work-bulk-count]\");\n\t\t\t\tif (count) count.textContent = bulkSelection.size + \" selected\";\n\t\t\t\tif (bar) {\n\t\t\t\t\tbar.hidden = bulkSelection.size === 0;\n\t\t\t\t\tbar.classList.toggle(\"hidden\", bulkSelection.size === 0);\n\t\t\t\t\tbar.classList.toggle(\"flex\", bulkSelection.size > 0);\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction applyControls() {\n\t\t\t\tdocument.documentElement.dataset.workView = state.mode;\n\t\t\t\tdocument.querySelectorAll(\"[data-work-view-panel]\").forEach(function (panel) {\n\t\t\t\t\tpanel.hidden = panel.dataset.workViewPanel !== state.mode;\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"button[data-work-view]\").forEach(function (button) {\n\t\t\t\t\tvar active = button.dataset.workView === state.mode;\n\t\t\t\t\tbutton.setAttribute(\"aria-pressed\", active ? \"true\" : \"false\");\n\t\t\t\t\tbutton.classList.toggle(\"bg-elev\", active);\n\t\t\t\t\tbutton.classList.toggle(\"text-text\", active);\n\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"[data-work-board-only]\").forEach(function (node) { node.hidden = state.mode !== \"board\"; });\n\t\t\t\tdocument.querySelectorAll(\"[data-work-list-only]\").forEach(function (node) { node.hidden = state.mode !== \"list\"; });\n\t\t\t\tvar search = document.querySelector(\"[data-work-search-input]\");\n\t\t\t\tif (search && search.value !== state.q) search.value = state.q;\n\t\t\t\tvar sort = document.querySelector(\"[data-work-sort]\");\n\t\t\t\tif (sort) sort.value = state.sort;\n\t\t\t\tdocument.querySelectorAll(\"[data-work-filter]\").forEach(function (checkbox) {\n\t\t\t\t\tcheckbox.checked = state.filters[checkbox.dataset.workFilter].includes(checkbox.value.toLowerCase());\n\t\t\t\t});\n\t\t\t\tvar count = filterNames.reduce(function (total, name) { return total + state.filters[name].length; }, state.q ? 1 : 0);\n\t\t\t\tvar badge = document.querySelector(\"[data-work-filter-count]\");\n\t\t\t\tif (badge) {\n\t\t\t\t\tbadge.textContent = String(count);\n\t\t\t\t\tbadge.hidden = count === 0;\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction applyItems() {\n\t\t\t\tsortList();\n                var rows = Array.from(document.querySelectorAll('[data-work-item][data-work-representation=\"list\"]')).filter(matches);\n                var pages = Math.max(1, Math.ceil(rows.length / 50));\n                state.page = Math.min(state.page, pages);\n                var pageKeys = new Set(rows.slice((state.page - 1) * 50, state.page * 50).map(function (row) { return row.dataset.workKey; }));\n                document.querySelectorAll(\"[data-work-item]\").forEach(function (item) {\n\t\t\t\t\titem.hidden = item.dataset.workRepresentation === \"list\" ? !pageKeys.has(item.dataset.workKey) : !matches(item);\n\t\t\t\t});\n                document.querySelectorAll(\"[data-work-page-step]\").forEach(function (button) { button.disabled = Number(button.dataset.workPageStep) < 0 ? state.page <= 1 : state.page >= pages; });\n                var pageSummary = document.querySelector(\"[data-work-page-summary]\");\n                if (pageSummary) pageSummary.textContent = \"Page \" + state.page + \" of \" + pages;\n\t\t\t\tapplyLaneCounts();\n\t\t\t\tvar visible = activeItems();\n\t\t\t\tvar summary = visible.length + (visible.length === 1 ? \" issue\" : \" issues\");\n\t\t\t\tdocument.querySelectorAll(\"[data-work-result-count], [data-work-list-summary]\").forEach(function (node) { node.textContent = summary; });\n\t\t\t\tvar empty = document.querySelector(\"[data-work-list-empty]\");\n\t\t\t\tif (empty) empty.hidden = visible.length > 0 || state.mode !== \"list\";\n\t\t\t\tapplyBulk();\n\t\t\t}\n\t\t\tfunction applyState(restoreFocus) {\n\t\t\t\tif (!surface()) return;\n\t\t\t\tapplyControls();\n\t\t\t\tapplyItems();\n\t\t\t\tupdateURL();\n\t\t\t\tif (restoreFocus && state.focus) {\n\t\t\t\t\tvar target = activeItems().find(function (item) { return item.dataset.workKey === state.focus; });\n\t\t\t\t\tif (target) target.focus({ preventScroll: true });\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction setSelection(item) {\n\t\t\t\tstate.issue = item ? (item.dataset.workIdentity || \"\") : \"\";\n\t\t\t\tstate.issueProject = item ? (item.dataset.workProject || \"\") : \"\";\n\t\t\t\tupdateURL();\n\t\t\t}\n\t\t\tfunction restoreSelection() {\n\t\t\t\tif (!state.issue) return;\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tif (host && host.querySelector(\"[data-detail-sheet]\")) return;\n\t\t\t\tvar target = activeItems().find(function (item) {\n\t\t\t\t\treturn item.dataset.workIdentity === state.issue && (!state.issueProject || item.dataset.workProject === state.issueProject.toLowerCase());\n\t\t\t\t});\n\t\t\t\tif (target) window.requestAnimationFrame(function () { target.click(); });\n\t\t\t}\n\t\t\tstate = readState();\n\t\t\tapplyState(Boolean(state.focus));\n\t\t\trestoreSelection();\n\t\t\tdocument.addEventListener(\"input\", function (event) {\n\t\t\t\tvar search = event.target.closest(\"[data-work-search-input]\");\n\t\t\t\tif (!search) return;\n\t\t\t\tstate.q = search.value.trim();\n                state.page = 1;\n\t\t\t\tapplyState(false);\n\t\t\t});\n\t\t\tdocument.addEventListener(\"change\", function (event) {\n\t\t\t\tvar sort = event.target.closest(\"[data-work-sort]\");\n\t\t\t\tif (sort) {\n\t\t\t\t\tstate.sort = sort.value;\n                    state.page = 1;\n\t\t\t\t\tapplyState(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar checkbox = event.target.closest(\"[data-work-bulk-checkbox]\");\n\t\t\t\tif (checkbox) {\n\t\t\t\t\tif (checkbox.checked) bulkSelection.add(checkbox.value);\n\t\t\t\t\telse bulkSelection.delete(checkbox.value);\n\t\t\t\t\tapplyBulk();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-work-bulk-all]\")) {\n\t\t\t\t\tvar checked = event.target.checked;\n\t\t\t\t\tactiveItems().forEach(function (item) {\n\t\t\t\t\t\tif (checked) bulkSelection.add(item.dataset.workKey);\n\t\t\t\t\t\telse bulkSelection.delete(item.dataset.workKey);\n\t\t\t\t\t});\n\t\t\t\t\tapplyBulk();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar pageButton = event.target.closest(\"[data-work-page-step]\");\n                if (pageButton) {\n                    state.page = Math.max(1, state.page + Number(pageButton.dataset.workPageStep));\n                    applyState(false);\n                    return;\n                }\n                var filter = event.target.closest(\"[data-work-filter]\");\n\t\t\t\tif (filter) {\n\t\t\t\t\tstate.page = 1;\n                    var name = filter.dataset.workFilter;\n\t\t\t\t\tvar value = filter.value.toLowerCase();\n\t\t\t\t\tvar selected = state.filters[name];\n\t\t\t\t\tstate.filters[name] = selected.includes(value) ? selected.filter(function (item) { return item !== value; }) : selected.concat(value);\n\t\t\t\t\tapplyState(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar view = event.target.closest(\"button[data-work-view]\");\n\t\t\t\tif (view) {\n\t\t\t\t\tvar focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest(\"[data-work-item]\") : null;\n\t\t\t\t\tif (focused) state.focus = focused.dataset.workKey || state.focus;\n\t\t\t\t\tstate.mode = view.dataset.workView;\n\t\t\t\t\tstate.viewInURL = true;\n\t\t\t\t\tapplyState(true);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-work-clear-filters]\")) {\n\t\t\t\t\tstate.q = \"\";\n                    state.page = 1;\n\t\t\t\t\tfilterNames.forEach(function (name) { state.filters[name] = []; });\n\t\t\t\t\tapplyState(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-work-bulk-clear]\")) {\n\t\t\t\t\tbulkSelection.clear();\n\t\t\t\t\tapplyBulk();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-sheet-close]\")) setSelection(null);\n\t\t\t\tvar item = event.target.closest(\"[data-work-item]\");\n\t\t\t\tif (item && !event.target.closest(\"a, button, input, select, label, [data-work-bulk]\")) setSelection(item);\n\t\t\t}, true);\n\t\t\tdocument.addEventListener(\"focusin\", function (event) {\n\t\t\t\tvar item = event.target.closest(\"[data-work-item]\");\n\t\t\t\tif (!item || item.dataset.workRepresentation !== state.mode) return;\n\t\t\t\tstate.focus = item.dataset.workKey || \"\";\n\t\t\t\tupdateURL();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"keydown\", function (event) {\n\t\t\t\tif (event.key === \"Escape\") {\n\t\t\t\t\tsetSelection(null);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar formControl = event.target.closest(\"input, select, textarea\");\n\t\t\t\tif (event.key === \"/\" && !formControl) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tvar search = document.querySelector(\"[data-work-search-input]\");\n\t\t\t\t\tif (search) search.focus();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar current = event.target.closest(\"[data-work-item]\");\n\t\t\t\tif (!current || current.dataset.workRepresentation !== state.mode) return;\n\t\t\t\tif (event.key === \"Enter\") {\n\t\t\t\t\tvar interactive = event.target.closest(\"a, button, input, select, textarea, label, [data-work-bulk]\");\n\t\t\t\t\tif (interactive && interactive !== current) return;\n\t\t\t\t\tsetSelection(current);\n\t\t\t\t\tif (!current.matches('[role=\"button\"]')) {\n\t\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\t\tcurrent.click();\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar items = activeItems();\n\t\t\t\tvar index = items.indexOf(current);\n\t\t\t\tvar next = index;\n\t\t\t\tif (event.key === \"ArrowDown\" || event.key === \"j\") next = Math.min(items.length - 1, index + 1);\n\t\t\t\telse if (event.key === \"ArrowUp\" || event.key === \"k\") next = Math.max(0, index - 1);\n\t\t\t\telse if (event.key === \"Home\") next = 0;\n\t\t\t\telse if (event.key === \"End\") next = items.length - 1;\n\t\t\t\telse return;\n\t\t\t\tif (items[next]) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\titems[next].focus();\n\t\t\t\t\titems[next].scrollIntoView({ block: \"nearest\", inline: \"nearest\" });\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:beforeRequest\", function (event) {\n\t\t\t\tvar trigger = event.detail && event.detail.elt;\n\t\t\t\tif (trigger instanceof Element && trigger.matches(\"[data-detail-sheet-trigger][data-work-item]\")) setSelection(trigger);\n\t\t\t});\n\t\t\tdocument.addEventListener(\"kanbanActionSucceeded\", function () { setSelection(null); });\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", function (event) {\n\t\t\t\tif (!settledSnapshot(event)) return;\n\t\t\t\tapplyState(false);\n\t\t\t\trestoreSelection();\n\t\t\t});\n\t\t\twindow.addEventListener(\"popstate\", function () {\n\t\t\t\tstate = readState();\n\t\t\t\tapplyState(Boolean(state.focus));\n\t\t\t\trestoreSelection();\n\t\t\t});\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

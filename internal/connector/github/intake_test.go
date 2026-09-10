@@ -42,7 +42,7 @@ func TestConnectorFindIntakeIssueSearchesDurableMarker(t *testing.T) {
 func TestConnectorUpdateIntakeIssuePatchesContentAndAddsLabels(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{method: http.MethodGet, body: `{"node_id":"I_42","number":42,"body":"original body","state":"open"}`},
 		{
 			method: http.MethodPatch,
 			path:   "/repos/example/repo/issues/42",
@@ -69,11 +69,11 @@ func TestConnectorUpdateIntakeIssuePatchesContentAndAddsLabels(t *testing.T) {
 		t.Fatalf("issue = %#v", issue)
 	}
 	requests := server.requests()
-	patchBody := requests[0]["body"].(map[string]any)
+	patchBody := requests[1]["body"].(map[string]any)
 	if patchBody["title"] != "Updated alert" || patchBody["body"] != "updated body" {
 		t.Fatalf("patch body = %#v", patchBody)
 	}
-	labels := requests[1]["body"].(map[string]any)["labels"].([]any)
+	labels := requests[2]["body"].(map[string]any)["labels"].([]any)
 	if len(labels) != 1 || labels[0] != "bug" {
 		t.Fatalf("labels = %#v, want [bug]", labels)
 	}
@@ -82,7 +82,7 @@ func TestConnectorUpdateIntakeIssuePatchesContentAndAddsLabels(t *testing.T) {
 func TestConnectorUpdateIssueBodyPatchesOnlyBody(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{method: http.MethodGet, body: `{"node_id":"I_42","number":42,"body":"original body","state":"open"}`}, {
 		method: http.MethodPatch,
 		path:   "/repos/example/repo/issues/42",
 		body:   `{"node_id":"I_42","number":42,"title":"Existing title","body":"updated body","state":"open","html_url":"https://github.com/example/repo/issues/42"}`,
@@ -93,7 +93,7 @@ func TestConnectorUpdateIssueBodyPatchesOnlyBody(t *testing.T) {
 	if err := connector.UpdateIssueBody(context.Background(), "I_42", "updated body"); err != nil {
 		t.Fatalf("UpdateIssueBody() error = %v", err)
 	}
-	body := server.requests()[0]["body"].(map[string]any)
+	body := server.requests()[1]["body"].(map[string]any)
 	if len(body) != 1 || body["body"] != "updated body" {
 		t.Fatalf("patch body = %#v, want only updated body", body)
 	}

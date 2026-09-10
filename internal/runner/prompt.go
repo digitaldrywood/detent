@@ -673,7 +673,8 @@ func appendFollowupsBlock(prompt string, cfg config.Followups) string {
 
 	const block = `## Out-of-scope discoveries
 
-When this run surfaces a meaningful problem or improvement unrelated to the current issue, file a separate tracker issue instead of expanding the current issue's scope.
+When this run surfaces a meaningful problem or improvement unrelated to the current issue, use the file_machine_issue tool to file a follow-up. Never bypass it with gh issue create or a direct tracker creation tool. If unavailable, record the finding on the assigned issue for orchestrator intake.
+- Search open issues in the same repository first. Reuse their detent-origin fingerprint or legacy detent-audit-fp fingerprint when the underlying problem is the same. Supply a stable problem key, excluding title wording, timestamps and attempt IDs. Use a key describing the affected subsystem and underlying problem. The tool stamps the instance and attempt, comments on an open match, and creates only when no match exists.
 - Place the follow-up issue in the project's Backlog state through the configured status source.
 - Include a fenced ` + "`detent-agent`" + ` block with ` + "`schema: 1`" + ` and a best-guess ` + "`effort`" + ` chosen from the project's effort rubric.
 - If the configured status source cannot be set from this session, file the issue without a state and say so in the final handoff.`

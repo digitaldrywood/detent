@@ -1832,12 +1832,39 @@ type coordinatedIntakeIssueStore struct {
 	coordinator *scheduleowner.IssueCoordinator
 }
 
+func (s coordinatedIntakeIssueStore) CreateComment(ctx context.Context, issueID, body string) error {
+	commenter, ok := s.IssueStore.(intake.OccurrenceCommenter)
+	if !ok {
+		return connector.ErrNotImplemented
+	}
+	return commenter.CreateComment(ctx, issueID, body)
+}
+
 func (s coordinatedIntakeIssueStore) EnsureIntakeIssue(
 	ctx context.Context,
 	marker string,
 	draft intake.IssueDraft,
 ) (intake.Issue, bool, error) {
-	return s.coordinator.Ensure(ctx, marker, draft, s.IssueStore)
+	return s.coordinator.EnsureRecurring(ctx, marker, draft, s)
+}
+
+func (s coordinatedIntakeIssueStore) IntakeIssueClosed(ctx context.Context, issueID string) (bool, error) {
+	reader, ok := s.IssueStore.(interface {
+		FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error)
+	})
+	if !ok {
+		return false, connector.ErrNotImplemented
+	}
+	issues, err := reader.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		return false, err
+	}
+	for _, issue := range issues {
+		if issue.ID == issueID {
+			return issue.Closed, nil
+		}
+	}
+	return false, nil
 }
 
 func coordinatedIntakeStore(projectConnector connector.Connector, coordinator *scheduleowner.IssueCoordinator, writers ...func(context.Context, string, string) error) intake.IssueStore {
@@ -1862,6 +1889,14 @@ func routineIssueStore(projectConnector connector.Connector) routine.IssueStore 
 type coordinatedRoutineStore struct {
 	routine.IssueStore
 	coordinator *scheduleowner.IssueCoordinator
+}
+
+func (s coordinatedRoutineStore) CreateComment(ctx context.Context, issueID, body string) error {
+	commenter, ok := s.IssueStore.(intake.OccurrenceCommenter)
+	if !ok {
+		return connector.ErrNotImplemented
+	}
+	return commenter.CreateComment(ctx, issueID, body)
 }
 
 func (s coordinatedRoutineStore) EnsureRoutineIssue(

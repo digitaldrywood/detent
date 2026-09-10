@@ -18,6 +18,14 @@ templ workToolbar(data DashboardData, view boardView) {
 				<span class="rounded-chip bg-accent/15 px-1.5 py-0.5 font-mono text-2xs text-accent" data-work-filter-count hidden>0</span>
 			</summary>
 			<div class="absolute right-0 top-full z-40 mt-1 grid max-h-[calc(100vh-8rem)] w-[min(28rem,calc(100vw-2.5rem))] gap-3 overflow-y-auto rounded-card border border-line bg-elev p-3 shadow-lg">
+				@workFilterGroup("Origin", "origin", []workFilterOption{
+					{Value: "operator", Label: "Operator"},
+					{Value: "routine", Label: "Machine · routine"},
+					{Value: "lesson", Label: "Machine · lesson"},
+					{Value: "worker", Label: "Machine · worker"},
+					{Value: "doctor", Label: "Machine · doctor"},
+					{Value: "audit", Label: "Machine · audit"},
+				})
 				@workFilterGroup("State", "state", workStateFilterOptions(view))
 				@workFilterGroup("Readiness", "readiness", []workFilterOption{
 					{Value: "ready", Label: "Ready"},
@@ -226,7 +234,7 @@ templ workViewScript() {
 		(function () {
 			if (window.__detentWorkViewRegistered) return;
 			window.__detentWorkViewRegistered = true;
-			var filterNames = ["state", "readiness", "priority", "project", "sync"];
+			var filterNames = ["state", "readiness", "priority", "project", "sync", "origin"];
 			var bulkSelection = new Set();
 			var state = null;
 			function surface() {

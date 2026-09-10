@@ -39,6 +39,7 @@ func (a AuthorAssociation) Valid() bool {
 }
 
 type Issue struct {
+	PublicationReused bool                 `json:"-" yaml:"-"`
 	ID                string               `json:"id,omitempty" yaml:"id,omitempty"`
 	Identifier        string               `json:"identifier,omitempty" yaml:"identifier,omitempty"`
 	Number            int                  `json:"number,omitempty" yaml:"number,omitempty"`

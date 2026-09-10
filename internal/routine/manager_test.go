@@ -708,3 +708,5 @@ func (s *fakeIssueStore) SetIntakeIssueState(_ context.Context, _ string, state 
 	s.states = append(s.states, state)
 	return s.stateErr
 }
+
+func (s *fakeIssueStore) CreateComment(context.Context, string, string) error { return nil }

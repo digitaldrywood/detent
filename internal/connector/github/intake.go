@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 const intakeIssueSearchPageSize = 100
@@ -35,7 +36,7 @@ func (c *Connector) FindIntakeIssue(ctx context.Context, marker string) (intake.
 			return intake.Issue{}, false, fmt.Errorf("find github intake issue: %w", err)
 		}
 		for _, item := range response.Items {
-			if item.PullRequest != nil || item.Body == nil || !strings.Contains(*item.Body, marker) {
+			if item.PullRequest != nil || item.Body == nil || strings.EqualFold(item.State, "closed") || !strings.Contains(*item.Body, marker) {
 				continue
 			}
 			ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
@@ -61,7 +62,7 @@ func (c *Connector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDra
 	if err != nil {
 		return intake.Issue{}, err
 	}
-	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
+	if !issue.PublicationReused && !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
 		if err := c.addIntakeIssueToProject(ctx, issue.ID); err != nil {
 			return intakeIssue(issue), err
 		}
@@ -77,6 +78,11 @@ func (c *Connector) UpdateIntakeIssue(ctx context.Context, issueID string, draft
 	if !ok {
 		return intake.Issue{}, ErrStatusUpdateFailed
 	}
+	previous, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return intake.Issue{}, err
+	}
+	draft.Body = issueorigin.Preserve(draft.Body, previous.Body)
 	repository := ref.Owner + "/" + ref.Name
 	payload := map[string]any{
 		"title": c.protectPublicationText(ctx, repository, strings.TrimSpace(draft.Title)),
@@ -148,7 +154,7 @@ func (c *Connector) addIntakeIssueToProject(ctx context.Context, issueID string)
 func restIntakeIssueSearchPath(repo pullRequestRepo, marker string, page int) string {
 	token := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(marker), "<!--"), "-->"))
 	values := url.Values{}
-	values.Set("q", "repo:"+repo.Owner+"/"+repo.Name+" is:issue in:body \""+token+"\"")
+	values.Set("q", "repo:"+repo.Owner+"/"+repo.Name+" is:issue is:open in:body \""+token+"\"")
 	values.Set("per_page", strconv.Itoa(intakeIssueSearchPageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + values.Encode()
@@ -171,5 +177,6 @@ func intakeIssue(issue connector.Issue) intake.Issue {
 		URL:        strings.TrimSpace(issue.URL),
 		Body:       issue.Description,
 		Closed:     issue.Closed,
+		Reused:     issue.PublicationReused,
 	}
 }

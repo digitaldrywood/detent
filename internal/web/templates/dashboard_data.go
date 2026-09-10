@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -625,6 +626,7 @@ type projectKanbanLane struct {
 }
 
 type projectKanbanCard struct {
+	CreationOrigin        string
 	IssueNumber           string
 	Identity              string
 	Identifier            string
@@ -3183,6 +3185,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		ProjectColor:          projectColorForID(issue.ProjectID, data.Projects),
 		Title:                 issueTitle(issue),
 		Description:           issueDescriptionPreview(issue),
+		CreationOrigin:        issueorigin.Marker(issue.Description),
 		URL:                   strings.TrimSpace(issue.URL),
 		PullRequestLabel:      projectKanbanPullRequestLabel(issue),
 		TimeInStage:           prPipelineAge(stageAt, now),

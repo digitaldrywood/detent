@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 const (
@@ -144,7 +145,8 @@ func (c *IssueCoordinator) ensure(
 					return c.createReserved(ctx, key, marker, draft, backend, reserved, reservationToken, issueClosed)
 				}
 			}
-			return effect.Issue, false, nil
+			issue, err := commentExistingOccurrence(ctx, backend, effect.Issue, draft)
+			return issue, false, err
 		case effectReserved:
 			if c.now().Before(record.ModifiedAt.Add(c.config.LeaseTTL() + c.config.MaxClockSkew())) {
 				if err := c.wait(ctx, c.config.RetryInterval()); err != nil {
@@ -217,6 +219,10 @@ func (c *IssueCoordinator) createReserved(
 		return intake.Issue{}, false, fmt.Errorf("reconcile coordinated issue before create: %w", err)
 	}
 	if found && (issueClosed == nil || !issue.Closed) {
+		issue, err = commentExistingOccurrence(ctx, backend, issue, draft)
+		if err != nil {
+			return intake.Issue{}, false, err
+		}
 		completed, completeErr := c.completeDurably(ctx, key, token, issue)
 		return completed, false, completeErr
 	}
@@ -232,7 +238,7 @@ func (c *IssueCoordinator) createReserved(
 		return intake.Issue{}, false, errors.Join(ErrIssueCreateUncertain, createErr, findErr)
 	}
 	completed, err := c.completeDurably(ctx, key, token, issue)
-	return completed, true, err
+	return completed, !issue.Reused, err
 }
 
 func (c *IssueCoordinator) completeDurably(ctx context.Context, key string, token string, issue intake.Issue) (intake.Issue, error) {
@@ -301,4 +307,15 @@ func decodeEffect(value []byte) (effectState, error) {
 		return effectState{}, ErrIssueCreateUncertain
 	}
 	return effect, nil
+}
+
+func commentExistingOccurrence(ctx context.Context, backend IssueBackend, issue intake.Issue, draft intake.IssueDraft) (intake.Issue, error) {
+	if _, ok := issueorigin.Parse(draft.Body); !ok {
+		return issue, nil
+	}
+	if err := intake.CommentOccurrence(ctx, backend, issue.ID, draft.Body); err != nil {
+		return issue, err
+	}
+	issue.Reused = true
+	return issue, nil
 }
