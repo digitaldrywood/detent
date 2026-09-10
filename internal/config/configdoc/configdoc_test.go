@@ -1,6 +1,7 @@
 package configdoc
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -151,8 +152,12 @@ func TestConfigDocumentation(t *testing.T) {
 			if err := os.WriteFile(test.path, []byte(test.old), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			info, err := os.Stat(test.path)
+			file, err := os.Open(test.path)
 			if err != nil {
+				t.Fatal(err)
+			}
+			info, statErr := file.Stat()
+			if err := errors.Join(statErr, file.Close()); err != nil {
 				t.Fatal(err)
 			}
 			test.info = info
