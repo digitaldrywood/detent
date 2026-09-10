@@ -537,6 +537,28 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 		var status *StatusError
 		if errors.As(err, &status) && status.StatusCode == http.StatusMethodNotAllowed {
 			message := strings.ToLower(status.Body)
+			if strings.Contains(message, "changes must be made through the merge queue") || strings.Contains(message, "must be merged using the merge queue") {
+				// Refresh known branch policies immediately. Inspection resolves
+				// the actual base branch when no policy has been cached yet.
+				c.mu.Lock()
+				var branches []string
+				for key, snapshot := range c.branchMergePolicies {
+					if strings.HasPrefix(key, strings.ToLower(repository)+"@") {
+						branches = append(branches, snapshot.Policy.Branch)
+						delete(c.branchMergePolicies, key)
+					}
+				}
+				c.mu.Unlock()
+				for _, branch := range branches {
+					policy, refreshErr := c.RepositoryBranchMergePolicy(ctx, repository, branch)
+					if refreshErr != nil {
+						err = errors.Join(err, refreshErr)
+						continue
+					}
+					c.cacheBranchMergePolicy(repository, policy)
+				}
+				return fmt.Errorf("merge github pull request: %w: %w", connector.ErrPullRequestMergeQueueRequired, err)
+			}
 			if strings.Contains(message, "head branch is out of date") || strings.Contains(message, "base branch was modified") {
 				return fmt.Errorf("merge github pull request: %w: %w", connector.ErrPullRequestBaseOutOfDate, err)
 			}
