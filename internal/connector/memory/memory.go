@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 const (
@@ -304,6 +305,26 @@ func (c *Connector) CreateIssue(_ context.Context, draft connector.IssueDraft) (
 	defer c.mu.Unlock()
 
 	now := c.now().UTC()
+	if origin, machine := issueorigin.Parse(draft.Body); machine {
+		for index := range c.issues {
+			existing := &c.issues[index]
+			previous, ok := issueorigin.Parse(existing.Description)
+			if existing.Closed || !ok || previous.Fingerprint != origin.Fingerprint {
+				continue
+			}
+			body := issueorigin.Occurrence(draft.Body)
+			existing.Comments = append(existing.Comments, connector.IssueComment{
+				ID: memoryCommentID(*existing, len(existing.Comments)+1), Backend: connector.BackendMemory.String(),
+				Body: body, AuthorLogin: "memory", AuthorAuthorized: true, CreatedAt: &now,
+				Local: true, TargetType: connector.IssueCommentTargetIssue,
+			})
+			existing.UpdatedAt = &now
+			c.send(Event{Kind: EventKindComment, IssueID: existing.ID, Body: body})
+			result := cloneIssue(*existing)
+			result.PublicationReused = true
+			return result, nil
+		}
+	}
 	issueID := "issue-" + strconv.Itoa(len(c.issues)+1)
 	issue := connector.NewIssue()
 	issue.ID = issueID
@@ -324,7 +345,7 @@ func (c *Connector) FindIntakeIssue(_ context.Context, marker string) (intake.Is
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, issue := range c.issues {
-		if strings.Contains(issue.Description, marker) {
+		if !issue.Closed && strings.Contains(issue.Description, marker) {
 			return memoryIntakeIssue(issue), true, nil
 		}
 	}
@@ -584,6 +605,7 @@ func memoryIntakeIssue(issue connector.Issue) intake.Issue {
 		URL:        issue.URL,
 		Body:       issue.Description,
 		Closed:     issue.Closed,
+		Reused:     issue.PublicationReused,
 	}
 }
 

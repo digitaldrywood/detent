@@ -38,7 +38,11 @@ repository label access for label mode. Issue-field writes use the issue field
 values API and require issue or pull request repository write permission plus
 push access to the repository. Label mode uses repository label reads/writes and
 issue label updates. If Kanban integration mode is enabled in a release that
-supports it, comment submission also requires issue/PR comment write.
+supports it, comment submission also requires issue/PR comment write. Machine
+issue filing also requires Contents repository read/write: fingerprint
+publication records use the existing GitHub-ref coordinator on the target
+repository’s `detent-schedule-coordination` branch. If coordination fails,
+Detent returns the error without creating an uncoordinated issue.
 
 2. Choose the GitHub status source.
 

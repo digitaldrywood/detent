@@ -13,6 +13,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -69,7 +70,6 @@ type Manager struct {
 	now       func() time.Time
 	triggers  chan string
 	updates   chan struct{}
-	issues    map[string]intake.Issue
 }
 
 func New(settings Settings, store TelemetryStore, logger *slog.Logger, now func() time.Time) (*Manager, error) {
@@ -85,7 +85,6 @@ func New(settings Settings, store TelemetryStore, logger *slog.Logger, now func(
 		now:      now,
 		triggers: make(chan string, 1),
 		updates:  make(chan struct{}, 1),
-		issues:   map[string]intake.Issue{},
 	}
 	if err := manager.Update(settings); err != nil {
 		return nil, err
@@ -112,7 +111,6 @@ func (m *Manager) Update(settings Settings) error {
 	m.mu.Lock()
 	m.settings = settings
 	m.mu.Unlock()
-	m.issues = map[string]intake.Issue{}
 	m.signalUpdate()
 	return nil
 }
@@ -236,7 +234,7 @@ func (m *Manager) RunOnce(ctx context.Context, trigger string) (Result, error) {
 		if finding.Scope == ScopeProduct {
 			issueStore = settings.ProductIssues
 		}
-		outcome, err := m.upsertFinding(ctx, issueStore, settings, finding, remaining > 0)
+		outcome, err := m.upsertFinding(ctx, issueStore, settings, finding, remaining > 0, startedAt)
 		if outcome.created {
 			result.Filed++
 			remaining--
@@ -259,64 +257,62 @@ type upsertOutcome struct {
 	capped  bool
 }
 
-func (m *Manager) upsertFinding(ctx context.Context, issueStore intake.IssueStore, settings Settings, finding Finding, allowCreate bool) (upsertOutcome, error) {
+func (m *Manager) upsertFinding(ctx context.Context, issueStore intake.IssueStore, settings Settings, finding Finding, allowCreate bool, startedAt time.Time) (upsertOutcome, error) {
 	fingerprint := Fingerprint(settings.ProjectID, finding)
 	marker := "<!-- detent-retro fingerprint=" + fingerprint + " -->"
 	draft := intake.IssueDraft{
 		Title:  "[retro] " + finding.Title,
-		Body:   findingIssueBody(settings.ProjectID, finding, marker),
+		Body:   issueorigin.Stamp(findingIssueBody(settings.ProjectID, finding, marker), issueorigin.Origin{Kind: "lesson", Source: settings.ProjectID + "/" + startedAt.Format(time.RFC3339Nano), Fingerprint: fingerprint}),
 		Labels: append([]string(nil), settings.Config.Labels...),
 	}
 	pendingDraft := draft
 	pendingDraft.Body = draft.Body + "\n\n" + pendingStateMarker
-	cacheKey := finding.Scope + "\x00" + marker
-	issue, found := m.issues[cacheKey]
-	if !found {
-		var err error
-		issue, found, err = issueStore.FindIntakeIssue(ctx, marker)
-		if err != nil {
-			return upsertOutcome{}, err
-		}
+	issue, found, err := issueStore.FindIntakeIssue(ctx, marker)
+	if err != nil {
+		return upsertOutcome{}, err
 	}
-	if found {
+	if found && !issue.Closed {
+		if !strings.Contains(issue.Body, pendingStateMarker) {
+			err := intake.CommentOccurrence(ctx, issueStore, issue.ID, draft.Body)
+			return upsertOutcome{updated: err == nil}, err
+		}
+		draft.Body = issueorigin.Preserve(draft.Body, issue.Body)
 		if strings.Contains(issue.Body, pendingStateMarker) {
-			updated, err := issueStore.UpdateIntakeIssue(ctx, issue.ID, pendingDraft)
+			_, err := issueStore.UpdateIntakeIssue(ctx, issue.ID, pendingDraft)
 			if err != nil {
 				return upsertOutcome{}, err
 			}
-			m.issues[cacheKey] = updated
 			if err := issueStore.SetIntakeIssueState(ctx, issue.ID, settings.Config.TargetState); err != nil {
 				return upsertOutcome{}, err
 			}
 		}
 		draft.Body = preserveFindingOutcome(draft.Body, issue.Body)
 		if strings.TrimSpace(issue.Body) == strings.TrimSpace(draft.Body) {
-			m.issues[cacheKey] = issue
 			return upsertOutcome{}, nil
 		}
-		updated, err := issueStore.UpdateIntakeIssue(ctx, issue.ID, draft)
+		_, err := issueStore.UpdateIntakeIssue(ctx, issue.ID, draft)
 		if err != nil {
 			return upsertOutcome{}, err
 		}
-		m.issues[cacheKey] = updated
 		return upsertOutcome{updated: true}, nil
 	}
 	if !allowCreate {
 		return upsertOutcome{capped: true}, nil
 	}
-	issue, err := issueStore.CreateIntakeIssue(ctx, pendingDraft)
+	issue, err = issueStore.CreateIntakeIssue(ctx, pendingDraft)
 	if err != nil {
 		return upsertOutcome{}, err
 	}
-	m.issues[cacheKey] = issue
+	if issue.Reused {
+		return upsertOutcome{updated: true}, nil
+	}
 	if err := issueStore.SetIntakeIssueState(ctx, issue.ID, settings.Config.TargetState); err != nil {
 		return upsertOutcome{created: true}, err
 	}
-	updated, err := issueStore.UpdateIntakeIssue(ctx, issue.ID, draft)
+	_, err = issueStore.UpdateIntakeIssue(ctx, issue.ID, draft)
 	if err != nil {
 		return upsertOutcome{created: true}, err
 	}
-	m.issues[cacheKey] = updated
 	return upsertOutcome{created: true}, nil
 }
 

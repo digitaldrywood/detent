@@ -12,6 +12,7 @@ import (
 )
 
 type workItemMetadata struct {
+	CreationOrigin   string
 	Key              string
 	Identity         string
 	Search           string
@@ -93,6 +94,7 @@ func workItemMetadataFromCard(data DashboardData, card projectKanbanCard, view b
 		pullRequestTitle = view.PRStatus
 	}
 	metadata := workItemMetadata{
+		CreationOrigin:   view.CreationOrigin,
 		Key:              boardCardScopedSlug(view.Project, view.Identity),
 		Identity:         view.Identity,
 		State:            card.Stage,
@@ -317,6 +319,7 @@ func workItemDataAttributes(meta workItemMetadata, representation string) templ.
 		"data-work-machine":        meta.MachineKey,
 		"data-work-pr":             meta.PullRequestKey,
 		"data-work-sync":           meta.SyncKey,
+		"data-work-origin":         meta.CreationOrigin,
 		"data-work-updated":        strconv.FormatInt(meta.UpdatedUnix, 10),
 		"data-work-search":         meta.Search,
 	}

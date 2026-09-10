@@ -14,6 +14,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 )
 
@@ -38,6 +39,7 @@ type Event struct {
 }
 
 type Issue struct {
+	Reused     bool   `json:"-"`
 	ID         string `json:"id,omitempty"`
 	Identifier string `json:"identifier,omitempty"`
 	Number     int    `json:"number,omitempty"`
@@ -121,7 +123,6 @@ type Manager struct {
 	scannerFactory ScannerFactory
 	logger         *slog.Logger
 	now            func() time.Time
-	issues         map[string]Issue
 	updates        chan struct{}
 	projectID      string
 	scheduleRuns   schedulehealth.Recorder
@@ -152,7 +153,6 @@ func New(cfg Config, store IssueStore, deps Dependencies) (*Manager, error) {
 		scannerFactory: scannerFactory,
 		logger:         logger,
 		now:            now,
-		issues:         map[string]Issue{},
 		updates:        make(chan struct{}, 1),
 		projectID:      strings.TrimSpace(deps.ProjectID),
 		scheduleRuns:   deps.ScheduleRuns,
@@ -415,19 +415,17 @@ func (m *Manager) process(ctx context.Context, source Source, store IssueStore, 
 		Body:   appendMarker(render(source.Creates.Body, fields), marker),
 		Labels: append([]string(nil), source.Creates.Labels...),
 	}
+	draft.Body = issueorigin.Stamp(draft.Body, issueorigin.Origin{Kind: "audit", Source: source.Name + "/" + m.now().UTC().Format(time.RFC3339Nano), Fingerprint: fingerprint})
 	pendingDraft := draft
 	pendingDraft.Body = appendMarker(draft.Body, pendingStateMarker)
 
 	m.processMu.Lock()
 	defer m.processMu.Unlock()
-	if cached, ok := m.issues[marker]; ok {
-		return m.updateExisting(ctx, source, store, marker, cached, draft, pendingDraft, result)
-	}
 	issue, found, err := store.FindIntakeIssue(ctx, marker)
 	if err != nil {
 		return result, fmt.Errorf("find intake issue: %w", err)
 	}
-	if found {
+	if found && !issue.Closed {
 		return m.updateExisting(ctx, source, store, marker, issue, draft, pendingDraft, result)
 	}
 	created := true
@@ -439,9 +437,11 @@ func (m *Manager) process(ctx context.Context, source Source, store IssueStore, 
 	if err != nil {
 		return result, fmt.Errorf("create intake issue: %w", err)
 	}
-	m.issues[marker] = issue
 	result.Issue = issue
-	result.Created = created
+	result.Created = created && !issue.Reused
+	if issue.Reused {
+		return result, nil
+	}
 	if err := store.SetIntakeIssueState(ctx, issue.ID, source.Creates.Status); err != nil {
 		return result, fmt.Errorf("set intake issue %s state: %w", issue.Identifier, err)
 	}
@@ -449,7 +449,6 @@ func (m *Manager) process(ctx context.Context, source Source, store IssueStore, 
 	if err != nil {
 		return result, fmt.Errorf("complete intake issue %s state handoff: %w", issue.Identifier, err)
 	}
-	m.issues[marker] = issue
 	result.Issue = issue
 	return result, nil
 }
@@ -464,12 +463,16 @@ func (m *Manager) updateExisting(
 	pendingDraft IssueDraft,
 	result Result,
 ) (Result, error) {
+	if !strings.Contains(issue.Body, pendingStateMarker) && !issue.Closed {
+		result.Issue = issue
+		return result, CommentOccurrence(ctx, store, issue.ID, draft.Body)
+	}
+	draft.Body = issueorigin.Preserve(draft.Body, issue.Body)
 	if strings.Contains(issue.Body, pendingStateMarker) {
 		updated, err := store.UpdateIntakeIssue(ctx, issue.ID, pendingDraft)
 		if err != nil {
 			return result, fmt.Errorf("update pending intake issue %s: %w", issue.Identifier, err)
 		}
-		m.issues[marker] = updated
 		result.Issue = updated
 		if err := store.SetIntakeIssueState(ctx, issue.ID, source.Creates.Status); err != nil {
 			return result, fmt.Errorf("set intake issue %s state: %w", issue.Identifier, err)
@@ -479,7 +482,6 @@ func (m *Manager) updateExisting(
 	if err != nil {
 		return result, fmt.Errorf("update intake issue %s: %w", issue.Identifier, err)
 	}
-	m.issues[marker] = updated
 	result.Issue = updated
 	return result, nil
 }

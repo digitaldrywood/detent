@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -19,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/factory"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -447,15 +449,23 @@ func createDoctorWorkflowImprovementProposalIssues(
 		if err != nil {
 			return nil, err
 		}
+		if reused && !issue.Closed {
+			body := issueorigin.Stamp(proposal.IssueBody, issueorigin.Origin{Kind: "doctor", Source: time.Now().UTC().Format(time.RFC3339Nano), Fingerprint: issueorigin.Fingerprint(proposal.IssueMarker)})
+			if err := projectConnector.CreateComment(ctx, issue.ID, issueorigin.Occurrence(body)); err != nil {
+				return nil, err
+			}
+		}
 		if !reused {
 			issue, err = projectConnector.CreateIssue(ctx, connector.IssueDraft{
 				Title: proposal.Title,
-				Body:  proposal.IssueBody,
+				Body:  issueorigin.Stamp(proposal.IssueBody, issueorigin.Origin{Kind: "doctor", Source: time.Now().UTC().Format(time.RFC3339Nano), Fingerprint: issueorigin.Fingerprint(proposal.IssueMarker)}),
 			})
 			if err != nil {
 				return nil, err
 			}
-			if err := deps.proposalLaneWriter(ctx, projectID, cfg, projectConnector, issue, doctorWorkflowProposalBacklogState); errors.Is(err, connector.ErrStateUpdateBlocked) {
+			if issue.PublicationReused {
+				reused = true
+			} else if err := deps.proposalLaneWriter(ctx, projectID, cfg, projectConnector, issue, doctorWorkflowProposalBacklogState); errors.Is(err, connector.ErrStateUpdateBlocked) {
 				slog.Default().Debug("skip blocked self-improvement proposal state update", "issue_id", issue.ID, "target_state", doctorWorkflowProposalBacklogState, "error", err)
 			} else if err != nil {
 				return nil, err
@@ -572,7 +582,7 @@ func doctorWorkflowExistingProposalIssue(ctx context.Context, projectConnector d
 		return connector.Issue{}, false, err
 	}
 	for _, issue := range issues {
-		if strings.Contains(issue.Description, proposal.IssueMarker) {
+		if !issue.Closed && strings.Contains(issue.Description, proposal.IssueMarker) {
 			return issue, true, nil
 		}
 	}

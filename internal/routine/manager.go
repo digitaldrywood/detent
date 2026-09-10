@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
@@ -328,10 +329,10 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, definition con
 	if proposalErr != nil {
 		return result, proposalErr
 	}
-	return m.fileProposals(ctx, settings, definition, proposals)
+	return m.fileProposals(ctx, settings, definition, proposals, startedAt)
 }
 
-func (m *Manager) fileProposals(ctx context.Context, settings Settings, definition config.Routine, proposals []Proposal) (Result, error) {
+func (m *Manager) fileProposals(ctx context.Context, settings Settings, definition config.Routine, proposals []Proposal, startedAt time.Time) (Result, error) {
 	result := Result{Proposed: len(proposals)}
 	if len(proposals) == 0 {
 		return result, nil
@@ -367,7 +368,7 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 	if err := m.store.CloseRoutineIssues(ctx, settings.ProjectID, definition.Name, closedIssueIDs); err != nil {
 		return result, fmt.Errorf("close filed routine issues: %w", err)
 	}
-	openMarkers := map[string]struct{}{}
+	openMarkers := map[string]string{}
 	openFindings := len(filedIssueSet)
 	scopeMarker := routineScopeMarker(settings.ProjectID, definition.Name)
 	for _, issue := range issues {
@@ -387,7 +388,7 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 		for _, proposal := range proposals {
 			marker := proposalMarker(settings.ProjectID, definition.Name, proposal.DedupKey)
 			if strings.Contains(issue.Description, marker) {
-				openMarkers[marker] = struct{}{}
+				openMarkers[marker] = issue.ID
 			}
 		}
 	}
@@ -401,7 +402,12 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 			continue
 		}
 		marker := proposalMarker(settings.ProjectID, definition.Name, proposal.DedupKey)
-		if _, ok := openMarkers[marker]; ok {
+		if issueID, ok := openMarkers[marker]; ok {
+			body := issueorigin.Stamp(proposal.Body, issueorigin.Origin{Kind: "routine", Source: definition.Name + "/" + startedAt.Format(time.RFC3339Nano), Fingerprint: proposal.DedupKey})
+			if err := intake.CommentOccurrence(ctx, settings.Issues, issueID, body); err != nil {
+				runErr = errors.Join(runErr, err)
+				continue
+			}
 			result.Deduplicated++
 			continue
 		}
@@ -415,6 +421,11 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 			break
 		}
 		if found && !existing.Closed {
+			body := issueorigin.Stamp(proposal.Body, issueorigin.Origin{Kind: "routine", Source: definition.Name + "/" + startedAt.Format(time.RFC3339Nano), Fingerprint: proposal.DedupKey})
+			if err := intake.CommentOccurrence(ctx, settings.Issues, existing.ID, body); err != nil {
+				runErr = errors.Join(runErr, err)
+				continue
+			}
 			record := IssueRecord{ID: existing.ID, Identifier: existing.Identifier, URL: existing.URL}
 			if strings.TrimSpace(record.ID) != "" {
 				if _, ok := filedIssueSet[strings.TrimSpace(record.ID)]; !ok {
@@ -428,7 +439,7 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 			} else {
 				openFindings++
 			}
-			openMarkers[marker] = struct{}{}
+			openMarkers[marker] = existing.ID
 			result.Deduplicated++
 			continue
 		}
@@ -440,11 +451,11 @@ func (m *Manager) fileProposals(ctx context.Context, settings Settings, definiti
 		labels := proposalLabels(definition, proposal)
 		issue, created, createErr := createRoutineIssue(ctx, settings.Issues, marker, intake.IssueDraft{
 			Title:  proposal.Title,
-			Body:   scopeMarker + "\n" + marker + "\n\n" + proposal.Body,
+			Body:   issueorigin.Stamp(scopeMarker+"\n"+marker+"\n\n"+proposal.Body, issueorigin.Origin{Kind: "routine", Source: definition.Name + "/" + startedAt.Format(time.RFC3339Nano), Fingerprint: proposal.DedupKey}),
 			Labels: labels,
 		})
 		openFindings++
-		openMarkers[marker] = struct{}{}
+		openMarkers[marker] = issue.ID
 		record := IssueRecord{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL}
 		if strings.TrimSpace(record.ID) != "" {
 			if !created {
@@ -503,7 +514,7 @@ func createRoutineIssue(
 		return creator.EnsureIntakeIssue(ctx, marker, draft)
 	}
 	issue, err := store.CreateIntakeIssue(ctx, draft)
-	return issue, true, err
+	return issue, !issue.Reused, err
 }
 
 func (m *Manager) nextScheduled(ctx context.Context) (time.Time, string, bool, error) {
@@ -561,7 +572,7 @@ func Due(schedule string, lastRun time.Time, now time.Time) (bool, error) {
 func proposalTool() runner.AgentTool {
 	return runner.AgentTool{
 		Name:        ProposalToolName,
-		Description: "Record one actionable maintenance issue proposal for Detent to validate, deduplicate, and file after the routine finishes.",
+		Description: "Record one actionable maintenance issue proposal for Detent to validate, deduplicate, and file after the routine finishes. The dedup_key is a repository-wide problem fingerprint, shared across origin kinds; reuse existing detent-origin or detent-audit-fp fingerprints and exclude timestamps or wording variations.",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["dedup_key","title","body"],"properties":{"dedup_key":{"type":"string","minLength":1,"maxLength":256},"title":{"type":"string","minLength":1,"maxLength":256},"body":{"type":"string","minLength":1,"maxLength":262144},"labels":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}}}`),
 	}
 }

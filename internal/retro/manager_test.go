@@ -50,10 +50,19 @@ func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce(second) error = %v", err)
 	}
-	if second.Filed != 0 || second.Updated != 1 {
-		t.Fatalf("RunOnce(second) = %#v, want only the recurring finding updated", second)
+	if second.Filed != 0 || second.Updated != 2 {
+		t.Fatalf("RunOnce(second) = %#v, want occurrence comments for both findings", second)
 	}
-	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "occurrences: 3")
+	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "occurrences: 2")
+	issues, err := projectIssues.FetchIssuesByStates(t.Context(), []string{"Backlog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments, err := projectIssues.FetchIssueComments(t.Context(), issues[0])
+	if err != nil || len(comments) != 1 || !strings.Contains(comments[0].Body, "occurrences: 3") {
+		t.Fatalf("occurrence comments = %+v, %v", comments, err)
+	}
+
 	assertSingleRetroIssue(t, productIssues, PatternCompletedRedispatch, "classification: product")
 }
 
@@ -104,8 +113,8 @@ func TestManagerPreservesReviewedOutcomeOnRecurrence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce(second) error = %v", err)
 	}
-	if result.Updated != 1 {
-		t.Fatalf("RunOnce(second).Updated = %d, want only recurring evidence updated", result.Updated)
+	if result.Updated != 2 {
+		t.Fatalf("RunOnce(second).Updated = %d, want occurrence comments for both findings", result.Updated)
 	}
 	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "- status: accepted")
 }

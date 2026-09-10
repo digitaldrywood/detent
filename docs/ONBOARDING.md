@@ -305,7 +305,9 @@ the operator explicitly accepts that setting for this customer/project.
    Apps should grant Issue Fields organization read for issue-field mode,
    repository label access for label mode, Issues repository read/write when
    status moves or comments are enabled, Pull requests read/checks read for PR
-   gates, and selected repository access.
+   gates, and selected repository access. Machine issue filing additionally
+   requires Contents repository read/write to create and update fingerprint
+   records on the target repository’s `detent-schedule-coordination` branch.
 
 3. **Confirm Codex is installed and signed in.** Detent dispatches agents
    through the Codex app-server. Verify:

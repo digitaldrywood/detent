@@ -46,11 +46,11 @@ func TestManagerCreatesThenUpdatesDeduplicatedWebhookIssue(t *testing.T) {
 	if second.Created || !second.Matched || second.Issue.ID != "issue-1" {
 		t.Fatalf("second result = %#v", second)
 	}
-	if len(store.created) != 1 || len(store.updated) != 2 {
-		t.Fatalf("create/update counts = %d/%d, want 1/2", len(store.created), len(store.updated))
+	if len(store.created) != 1 || len(store.updated) != 1 || len(store.comments) != 1 {
+		t.Fatalf("create/update counts = %d/%d, want 1/1", len(store.created), len(store.updated))
 	}
-	if store.updated[1].Title != "[alerts] Database still unavailable" {
-		t.Fatalf("updated title = %q", store.updated[1].Title)
+	if !strings.Contains(store.comments[0], "Replica also failed") {
+		t.Fatalf("comment = %q", store.comments[0])
 	}
 	if len(store.states) != 1 {
 		t.Fatalf("state writes = %#v, recurring event reset starting state", store.states)
@@ -93,8 +93,8 @@ func TestManagerUpdatesDurableFingerprintMatch(t *testing.T) {
 	if result.Created || result.Issue.ID != "existing" {
 		t.Fatalf("result = %#v, want existing issue update", result)
 	}
-	if len(store.updated) != 1 || len(store.states) != 0 {
-		t.Fatalf("updates/states = %d/%d, want 1/0", len(store.updated), len(store.states))
+	if len(store.updated) != 0 || len(store.comments) != 1 || len(store.states) != 0 {
+		t.Fatalf("updates/states = %d/%d, want 0/0", len(store.updated), len(store.states))
 	}
 }
 
@@ -238,6 +238,7 @@ type fakeIssueStore struct {
 	findCalls   int
 	created     []IssueDraft
 	updated     []IssueDraft
+	comments    []string
 	states      []string
 	stateErrors []error
 }
@@ -249,12 +250,14 @@ func (s *fakeIssueStore) FindIntakeIssue(context.Context, string) (Issue, bool, 
 
 func (s *fakeIssueStore) CreateIntakeIssue(_ context.Context, draft IssueDraft) (Issue, error) {
 	s.created = append(s.created, draft)
-	return Issue{ID: "issue-1", Identifier: "example/repo#1", Number: 1, Body: draft.Body}, nil
+	s.found = Issue{ID: "issue-1", Identifier: "example/repo#1", Number: 1, Body: draft.Body}
+	return s.found, nil
 }
 
 func (s *fakeIssueStore) UpdateIntakeIssue(_ context.Context, issueID string, draft IssueDraft) (Issue, error) {
 	s.updated = append(s.updated, draft)
-	return Issue{ID: issueID, Identifier: "example/repo#1", Number: 1, Body: draft.Body}, nil
+	s.found = Issue{ID: issueID, Identifier: "example/repo#1", Number: 1, Body: draft.Body}
+	return s.found, nil
 }
 
 func (s *fakeIssueStore) SetIntakeIssueState(_ context.Context, issueID string, state string) error {
@@ -283,4 +286,9 @@ type fakeScanner struct {
 
 func (s fakeScanner) Scan(context.Context) ([]Event, error) {
 	return append([]Event(nil), s.events...), nil
+}
+
+func (s *fakeIssueStore) CreateComment(_ context.Context, _, body string) error {
+	s.comments = append(s.comments, body)
+	return nil
 }

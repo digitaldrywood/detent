@@ -978,6 +978,7 @@ type boardCardView struct {
 	State             string
 	Origin            string
 	OriginDetail      string
+	CreationOrigin    string
 	AuthorDetail      string
 	Signals           []boardCardSignal
 	ExtraKind         primitives.Kind
@@ -1497,6 +1498,10 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.BlockerSummary = card.BlockerSummary
 	view.ParkSummary, view.ParkDetail = boardCardParkSummary(card.ParkSummary)
 	view.ProgressSummary, view.ProgressDetail, view.ProgressKind = boardCardCompletionProgress(card.CompletionProgress)
+	view.CreationOrigin = card.CreationOrigin
+	if view.CreationOrigin == "" {
+		view.CreationOrigin = "operator"
+	}
 	view.OriginDetail = boardCardOriginDetail(card.Origin, card.OriginActor)
 	view.AuthorDetail = boardCardAuthorDetail(card.AuthorID, card.OriginActor)
 	if card.BlockedReason == "" && card.BlockedRecoveryAction == "" && card.BlockedRecoveryReason == "" {

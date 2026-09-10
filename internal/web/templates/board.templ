@@ -667,6 +667,13 @@ templ boardCardView2(card boardCardView) {
 						@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "flex-none max-w-full break-all tabular-nums")
 					</span>
 				}
+				<span class="text-dim" data-board-creation-origin={ card.CreationOrigin }>
+					if card.CreationOrigin == "operator" {
+						<span>Operator</span>
+					} else {
+						<span>{ "Machine · " + card.CreationOrigin }</span>
+					}
+				</span>
 			</div>
 		</div>
 		<span class="hidden" data-board-card-state>{ card.State }</span>

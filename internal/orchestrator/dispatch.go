@@ -857,6 +857,7 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
 	o.attachHumanQuestionTool(&request)
+	o.attachMachineIssueTool(&request)
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		request.Execution = source.RunExecution(issue.ID)
 	}

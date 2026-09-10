@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
@@ -70,6 +71,11 @@ func (c *Connector) UpdateIssueBody(ctx context.Context, issueID string, body st
 	if !ok {
 		return ErrStatusUpdateFailed
 	}
+	previous, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return err
+	}
+	body = issueorigin.Preserve(body, previous.Body)
 	repository := ref.Owner + "/" + ref.Name
 	body = c.protectPublicationText(ctx, repository, body)
 	var response restIssue
@@ -96,6 +102,14 @@ func (c *Connector) CreateIssue(ctx context.Context, draft connector.IssueDraft)
 	}
 
 	body := c.protectPublicationText(ctx, repository, strings.TrimSpace(draft.Body))
+	if origin, machine := issueorigin.Parse(body); machine {
+		draft.Title, draft.Body = title, body
+		return c.createMachineIssue(ctx, draft, origin.Fingerprint)
+	}
+	return c.createIssue(ctx, draft, title, body)
+}
+
+func (c *Connector) createIssue(ctx context.Context, draft connector.IssueDraft, title, body string) (connector.Issue, error) {
 	labels := normalizedIssueDraftLabels(draft.Labels)
 	payload := map[string]any{
 		"title": title,

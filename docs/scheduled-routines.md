@@ -38,11 +38,20 @@ configured maximum clock skew before takeover, so failover is bounded without
 allowing clock drift to create two active holders. Changing ownership backend
 settings requires a Detent restart.
 
-Issue fingerprints use durable records on the same branch. A creator reserves
+Scheduled operation markers use durable records on the configured branch. A creator reserves
 the fingerprint before posting and records the resulting issue. If a create
 response becomes uncertain, successors reconcile the marker and do not issue a
 second POST. `detent doctor` fails when scheduled operations lack ownership,
 the backend is unreachable, or no active owner is renewing the project lease.
+
+Machine issue fingerprints additionally use the same publication coordinator
+on the target repository's `detent-schedule-coordination` branch, with a
+repository-and-fingerprint key shared by every connector and instance. This
+publication coordination applies to worker and doctor filings as well as
+scheduled sources, even when schedule ownership is disabled. The credential
+needs Contents read/write on the target repository. Failure to coordinate
+returns an error without an issue POST. Matching open issues receive occurrence
+comments; closed issues allow a new publication. This adds no daily cap.
 
 ## Alert and Scheduled Intake
 

@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
-func TestIntakeWebhookCreatesAndUpdatesWithoutResettingPromotedState(t *testing.T) {
+func TestIntakeWebhookCommentsWithoutResettingPromotedState(t *testing.T) {
 	t.Parallel()
 
 	server, connector, refresher := newIntakeWebhookServer(t, "level:error")
@@ -33,6 +33,7 @@ func TestIntakeWebhookCreatesAndUpdatesWithoutResettingPromotedState(t *testing.
 	if len(issues) != 1 || issues[0].State != "Backlog" {
 		t.Fatalf("issues = %#v, want one Backlog issue", issues)
 	}
+	originalBody := issues[0].Description
 	if err := connector.UpdateIssueState(context.Background(), issues[0].ID, "Todo"); err != nil {
 		t.Fatalf("UpdateIssueState() error = %v", err)
 	}
@@ -47,8 +48,11 @@ func TestIntakeWebhookCreatesAndUpdatesWithoutResettingPromotedState(t *testing.
 	if err != nil {
 		t.Fatalf("FetchCandidateIssues() error = %v", err)
 	}
-	if len(issues) != 1 || issues[0].State != "Todo" || issues[0].Title != "[alerts] Database still down" {
-		t.Fatalf("updated issues = %#v, want one promoted updated issue", issues)
+	if len(issues) != 1 || issues[0].State != "Todo" || issues[0].Title != "[alerts] Database down" || issues[0].Description != originalBody {
+		t.Fatalf("updated issues = %#v, want the original promoted issue", issues)
+	}
+	if len(issues[0].Comments) != 1 || !strings.Contains(issues[0].Comments[0].Body, "Replica failed") || !strings.Contains(issues[0].Comments[0].Body, "detent-origin") {
+		t.Fatalf("occurrence comments = %+v", issues[0].Comments)
 	}
 	if refresher.targetCalls != 2 {
 		t.Fatalf("target refresh calls = %d, want 2", refresher.targetCalls)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/publication"
 )
@@ -109,6 +110,7 @@ type Config struct {
 }
 
 type Connector struct {
+	machineIssueStore   coordination.Store
 	branchMergePolicies map[string]branchMergePolicySnapshot
 	client              *Client
 	statusSource        string
