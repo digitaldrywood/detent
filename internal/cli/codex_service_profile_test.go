@@ -121,32 +121,47 @@ func TestPrepareCodexCommandForServiceRewritesConfiguredHome(t *testing.T) {
 	}
 }
 
-func TestPrepareCodexCommandForServiceLeavesNonLaunchdCommandUnchanged(t *testing.T) {
+func TestPrepareCodexCommandForServiceIsolatesInstructions(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name    string
-		goos    string
-		manager string
-	}{
-		{name: "manual macOS", goos: "darwin", manager: string(servicepkg.ManagerManual)},
-		{name: "Linux service", goos: "linux", manager: string(servicepkg.ManagerLaunchd)},
-	}
-	for _, tt := range tests {
+	for _, tt := range []struct{ name, goos, manager string }{
+		{"manual macOS", "darwin", "manual"},
+		{"Linux service", "linux", "systemd"},
+		{"launchd", "darwin", "launchd"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			prepared, err := prepareCodexCommandForService(
-				"codex app-server",
-				tt.goos,
-				tt.manager,
-				func(string) (string, bool) { return "", false },
-				func() (string, error) { return "", errors.New("must not resolve home") },
-			)
-			if err != nil {
-				t.Fatalf("prepareCodexCommandForService() error = %v", err)
+			home := t.TempDir()
+			source := filepath.Join(home, ".codex")
+			if err := os.MkdirAll(source, 0o700); err != nil {
+				t.Fatal(err)
 			}
-			if prepared.Command != "codex app-server" || len(prepared.Environment) != 0 {
-				t.Fatalf("prepared = %#v, want unchanged command", prepared)
+			for _, name := range []string{"AGENTS.md", "AGENTS.override.md", "auth.json", "config.toml"} {
+				if err := os.WriteFile(filepath.Join(source, name), []byte("Ask for confirmation before bulk changes"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prepared, err := prepareCodexCommandForService("codex app-server", tt.goos, tt.manager,
+				func(string) (string, bool) { return "", false }, func() (string, error) { return home, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := prepared.Environment["CODEX_HOME"]
+			if profile == "" || profile == source {
+				t.Fatalf("worker CODEX_HOME = %q", profile)
+			}
+			for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
+				if _, err := os.Stat(filepath.Join(profile, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("worker sees %s: %v", name, err)
+				}
+				if _, err := os.Stat(filepath.Join(source, name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, name := range []string{"auth.json", "config.toml"} {
+				target, err := os.Readlink(filepath.Join(profile, name))
+				if err != nil || target != filepath.Join(source, name) {
+					t.Fatalf("%s link = %q, %v", name, target, err)
+				}
 			}
 		})
 	}
@@ -214,5 +229,49 @@ func TestLaunchdProtectedSkillLinkResolvesSymlinkedParent(t *testing.T) {
 	}
 	if !protected {
 		t.Fatal("launchdProtectedSkillLink() = false, want true")
+	}
+}
+
+func TestPrepareWorkerCodexHomeExistingInstructions(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		link bool
+	}{{"legacy symlink", true}, {"local file", false}} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			source := filepath.Join(home, ".codex")
+			profile := filepath.Join(source, launchdCodexProfileDir)
+			if err := ensureLaunchdCodexProfile(profile); err != nil {
+				t.Fatal(err)
+			}
+			hostFile := filepath.Join(source, "AGENTS.md")
+			if err := os.WriteFile(hostFile, []byte("Ask for confirmation"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(profile, "AGENTS.md")
+			if tt.link {
+				if err := os.Symlink(hostFile, target); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(target, []byte("Local instructions"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := prepareWorkerCodexHome(source, home, true)
+			if tt.link {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("legacy link remains: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), target) {
+				t.Fatalf("error = %v, want local instruction path", err)
+			}
+			if _, err := os.Stat(hostFile); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
