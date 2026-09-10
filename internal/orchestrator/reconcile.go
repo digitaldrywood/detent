@@ -297,7 +297,7 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 			running.CompletionLane = refreshed.State
 		}
 		running.Issue = refreshed
-		if (running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue)) && normalizeState(refreshed.State) == normalizeState(autoPromoteMergingState) {
+		if (running.Mode == runpkg.RunModeMerge || running.Mode == "" && running.CompletionLane == "" && mergeWorkerIssue(running.Issue)) && normalizeState(refreshed.State) == normalizeState(autoPromoteMergingState) {
 			var revoked bool
 			running, revoked = o.revokeRunningMergeIfIneligible(ctx, state, running, now)
 			if revoked {

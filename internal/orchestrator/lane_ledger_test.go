@@ -316,3 +316,33 @@ func TestObservedLanePreTurnFailureRemainsInstanceOwned(t *testing.T) {
 		})
 	}
 }
+
+func TestHumanMoveToMergingDoesNotChangeWorkerMode(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{runpkg.RunModeImplement, runpkg.RunModePlan, ""} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+			issue := laneRevocationIssue("mode", "example/repo#7", "In Progress")
+			moved := cloneIssue(issue)
+			moved.State = "Merging"
+			moved.PullRequest = &connector.PullRequest{Number: 7, State: "OPEN", Draft: true}
+			tracker := &runningStateConnector{issues: []connector.Issue{moved}}
+			cfg := laneMutationTestConfig()
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			runCtx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			state.Running[issue.ID] = Running{Issue: issue, Mode: mode, stop: cancel}
+			for index := range 2 {
+				orch.reconcileRunningIssues(t.Context(), &state, at.Add(time.Duration(index)*time.Hour))
+			}
+			if context.Cause(runCtx) != nil || len(orch.pendingMergeRevocations) != 0 {
+				t.Fatalf("lane move invoked merge-worker cancellation: cause=%v pending=%v", context.Cause(runCtx), orch.pendingMergeRevocations)
+			}
+			if running := state.Running[issue.ID]; running.Mode != mode || running.CompletionLane != "Merging" {
+				t.Fatalf("worker mode=%q completion lane=%q", running.Mode, running.CompletionLane)
+			}
+		})
+	}
+}
