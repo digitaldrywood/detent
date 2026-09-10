@@ -21,6 +21,8 @@ func TestSystemdUnitIncludesRuntimeAndShutdownSettings(t *testing.T) {
 	for _, want := range []string{
 		`ExecStart="/opt/Detent Release/detent" "--config" "/home/user/.config/detent/global.yaml" "--port" "4100" "--headless"`,
 		`Environment="PATH=/home/user/bin:/usr/bin:%%h/bin"`,
+		"After=network-online.target",
+		"Wants=network-online.target",
 		"Restart=on-failure",
 		"KillMode=control-group",
 		"WantedBy=default.target",

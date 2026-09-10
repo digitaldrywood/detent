@@ -520,6 +520,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 	jobs = append(jobs,
 		doctorCheckJob{
+			Name: "Systemd network ordering",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return checkDoctorSystemdNetwork(jobCtx, resolution.Path, opts)
+			},
+		},
+		doctorCheckJob{
 			Name: "Remote Detent service",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return checkDoctorDetentService(jobCtx, liveBoot, cfg.Build, deps)
