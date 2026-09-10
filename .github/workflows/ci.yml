@@ -212,6 +212,7 @@ jobs:
           retention-days: 14
 
   portability-verify:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 10 }}
@@ -260,6 +261,7 @@ jobs:
           retention-days: 14
 
   windows-core:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Windows Core
     runs-on: windows-latest
     steps:
@@ -277,6 +279,7 @@ jobs:
         run: .\tmp\detent.exe --help
 
   installer-smoke:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Installer Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -366,6 +369,7 @@ jobs:
           & $binary version
 
   goreleaser-snapshot:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -397,3 +401,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key
           MINISIGN_PASSWORD: ""
+
+  report-integration-failures:
+    name: Report integration failures
+    needs: [portability-verify, windows-core, installer-smoke, goreleaser-snapshot]
+    if: failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write # Existing machine intake coordinates fingerprint publication via Git refs.
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - name: Report failed jobs through machine intake
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/ci-jobs.json"
+          go run ./tools/cifailure < "$RUNNER_TEMP/ci-jobs.json"

@@ -59,9 +59,9 @@ or cannot prove the final rebase was source-clean, it must run the full
 configured gate again.
 
 CI waiting should poll current-head REST check runs with backoff, not loop on
-GraphQL-heavy PR status commands. Required release checks must run on the PR
-head before merge; post-merge-only failures cannot be part of the merge
-decision. Merge handoff telemetry should record the
+GraphQL-heavy PR status commands. Required checks must run on the PR
+head before merge; post-merge integration failures are tracked separately.
+Merge handoff telemetry should record the
 quiet-window wait, GitHub queue/start wait, local merge-gate duration,
 current-head PR CI duration, active slow-check runtimes, and whether post-merge
 `main` CI is still running. The quiet window, current-head required CI, and
@@ -72,9 +72,28 @@ duplicated non-blocking post-merge work are optimization targets.
 The repository CI caches the project-pinned golangci-lint binary and only builds
 it with `go install` on cache miss. CI builds golangci-lint `v2.9.0` with the
 repository Go toolchain so analyzer behavior and toolchain provenance stay
-aligned. `GoReleaser Snapshot` runs on pull requests, `main`, release tags,
-nightly schedule, and manual dispatch so packaging signal is available before
-and after merge.
+aligned.
+
+PR-required checks are `Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and
+`Browser Visual`. `Security` also runs on every PR. These jobs run for docs-only
+PRs too; Browser Visual uses its existing smoke path for nonvisual changes.
+The same set runs for merge groups.
+
+`Portability Verify (macos-latest)`, `Portability Verify (windows-latest)`,
+`Windows Core`, `Installer Smoke (ubuntu-latest)`,
+`Installer Smoke (windows-latest)`, and `GoReleaser Snapshot` run only on pushes
+to `main` and manual dispatch. They do not run for PRs, merge groups, tag pushes, or
+the nightly schedule. A push to main runs the full set.
+
+Failed integration jobs on main (including manual runs on main) use the existing
+machine intake to open a tracking issue or comment on the open match, with
+origin kind `doctor` and a stable fingerprint per job name. The issue links to
+the failed job and records the commit. Reporting errors fail the reporting job.
+
+The operator must update GitHub's required-checks list to match the four fast
+checks above, removing the six integration checks from branch protection and
+rulesets. Preserve any separately required Security policy. Changing this
+workflow does not change GitHub protection settings.
 
 When implementation workers fill project or global capacity, a clean PR with
 passing current-head checks and a known base can complete through the existing

@@ -125,12 +125,17 @@ real gate because non-UI pull requests run a Detent binary smoke instead of a
 green no-op.
 
 Required PR merge checks, branch protection/rulesets, and
-`gate.required_status_checks` must name the same release-blocking checks:
+`gate.required_status_checks` must name the same merge-blocking checks:
 
 - `Lint` - budget: `2m`
 - `Verify (ubuntu-latest)` - budget: `30m`
 - `Test Coverage` - budget: `4m`
 - `Browser Visual` - budget: `15m`
+
+Security also runs on every PR. The following integration checks run only on
+main pushes and manual dispatch, and must be removed from the PR-required list
+by the operator (see [Merge Train](merge-train.md)):
+
 - `Portability Verify (macos-latest)` - budget: `8m`
 - `Portability Verify (windows-latest)` - budget: `45m`
 - `Windows Core` - budget: `4m`

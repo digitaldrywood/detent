@@ -37,7 +37,7 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 		name:     "Test Coverage",
 		budget:   "4m",
 		jobStart: "  test-cover:",
-		jobEnd:   "  browser-visual:",
+		jobEnd:   "  security:",
 		markers:  []string{"name: Test Coverage", "make test-cover-packages"},
 	},
 	{
@@ -47,6 +47,9 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 		jobEnd:   "  portability-verify:",
 		markers:  []string{"name: Browser Visual", "timeout-minutes: 15", "Run full browser visual gate", "Run browser smoke gate"},
 	},
+}
+
+var integrationStatusChecks = []requiredStatusCheck{
 	{
 		name:     "Portability Verify (macos-latest)",
 		budget:   "8m",
@@ -86,7 +89,7 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 		name:     "GoReleaser Snapshot",
 		budget:   "15m",
 		jobStart: "  goreleaser-snapshot:",
-		jobEnd:   "",
+		jobEnd:   "  report-integration-failures:",
 		markers:  []string{"name: GoReleaser Snapshot", "timeout-minutes: 15", "args: release --snapshot --clean", "MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key"},
 	},
 }
@@ -312,6 +315,41 @@ func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 			if strings.Contains(job, forbidden) {
 				t.Fatalf("required check %q contains green no-op marker %q", check.name, forbidden)
 			}
+		}
+	}
+}
+
+func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
+	t.Parallel()
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	for _, check := range integrationStatusChecks {
+		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
+			job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
+			want := "    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
+			if !strings.Contains(job, want) {
+				t.Fatalf("integration job %q must run only on main pushes or dispatch", check.name)
+			}
+			for _, marker := range check.markers {
+				if !strings.Contains(job, marker) {
+					t.Fatalf("integration job %q missing %q", check.name, marker)
+				}
+			}
+		})
+	}
+	security := workflowBetween(t, workflow, "  security:", "  browser-visual:")
+	if strings.Contains(security, "    if:") || !strings.Contains(security, "make security") {
+		t.Fatal("Security must continue running on every PR")
+	}
+	reporter := workflowBetween(t, workflow, "  report-integration-failures:", "")
+	for _, marker := range []string{
+		"needs: [portability-verify, windows-core, installer-smoke, goreleaser-snapshot]",
+		"if: failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')",
+		"/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100",
+		"go run ./tools/cifailure",
+	} {
+		if !strings.Contains(reporter, marker) {
+			t.Fatalf("failure reporting missing %q", marker)
 		}
 	}
 }
