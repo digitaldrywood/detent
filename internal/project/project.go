@@ -1692,13 +1692,14 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 		return releaseCoordinatorBuild{}, errors.New("create release coordinator: connector does not support releases")
 	}
 	return releaseCoordinatorBuild{coordinator: releasepkg.New(releasepkg.Config{
-		Enabled:         cfg.Release.Enabled,
-		MinMergedIssues: cfg.Release.MinMergedIssues,
-		MaxAge:          time.Duration(cfg.Release.MaxAgeHours) * time.Hour,
-		RequireGreenCI:  cfg.Release.RequireGreenCI,
-		VersionBump:     cfg.Release.VersionBump,
-		RerunFlakyOnce:  cfg.Release.RerunFlakyOnce,
-		FlakyCheckNames: append([]string(nil), cfg.Release.FlakyCheckNames...),
+		Enabled:            cfg.Release.Enabled,
+		MinMergedIssues:    cfg.Release.MinMergedIssues,
+		MaxAge:             time.Duration(cfg.Release.MaxAgeHours) * time.Hour,
+		RequireGreenCI:     cfg.Release.RequireGreenCI,
+		VersionBump:        cfg.Release.VersionBump,
+		RerunFlakyOnce:     cfg.Release.RerunFlakyOnce,
+		FlakyCheckNames:    append([]string(nil), cfg.Release.FlakyCheckNames...),
+		RequiredCheckNames: append([]string(nil), cfg.Release.RequiredCheckNames...),
 	}, releaseBackend)}, nil
 }
 

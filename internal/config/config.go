@@ -879,13 +879,14 @@ type StalenessWebhook struct {
 }
 
 type Release struct {
-	Enabled         bool     `yaml:"enabled"`
-	MinMergedIssues int      `yaml:"min_merged_issues"`
-	MaxAgeHours     int      `yaml:"max_age_hours"`
-	RequireGreenCI  bool     `yaml:"require_green_ci"`
-	VersionBump     string   `yaml:"version_bump"`
-	RerunFlakyOnce  bool     `yaml:"rerun_flaky_once,omitempty"`
-	FlakyCheckNames []string `yaml:"flaky_check_names,omitempty"`
+	Enabled            bool     `yaml:"enabled"`
+	MinMergedIssues    int      `yaml:"min_merged_issues"`
+	MaxAgeHours        int      `yaml:"max_age_hours"`
+	RequireGreenCI     bool     `yaml:"require_green_ci"`
+	VersionBump        string   `yaml:"version_bump"`
+	RerunFlakyOnce     bool     `yaml:"rerun_flaky_once,omitempty"`
+	FlakyCheckNames    []string `yaml:"flaky_check_names,omitempty"`
+	RequiredCheckNames []string `yaml:"required_check_names,omitempty"`
 }
 
 func (r *Release) normalize() {

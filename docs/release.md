@@ -22,3 +22,29 @@ pull requests, on the nightly schedule, and from manual workflow dispatch so
 release packaging is validated before the PR merge lane and after it lands.
 Required branch checks must not pass as path- or event-dependent no-ops on pull
 requests when the same check name runs real validation on `main`.
+
+## Automatic coordination
+
+The coordinator enforces `gate.required_status_checks` together with any
+additional `release.required_check_names`. Configure the complete list of mandatory
+check-run and status-context names for release candidates. Names are exact and
+case-sensitive. An empty combined manifest pauses automatic tagging. Every mandatory check must be present
+for the exact candidate SHA, completed, and successful. Missing or truncated
+responses, stale evidence, and cancelled, neutral, or skipped checks keep tagging
+closed. The coordinator continues to reject failing optional checks as well.
+
+When `release.rerun_flaky_once` is enabled, a durable intent comment on the
+originating issue reserves the existing single rerun before the request is sent.
+A restart or lost acknowledgment never grants another automatic rerun. If the
+process stops between reservation and dispatch, the reservation remains consumed;
+the issue report records the uncertainty for operator investigation. Current
+candidate checks are inspected again on every evaluation.
+
+Release progress and blockers use fingerprinted comments on the first sorted
+originating issue reference, without creating new coordination issues. Comment
+reconciliation reads all pages directly, avoiding search-index lag. Origin
+references are preserved in annotated tag metadata for reporting after restart.
+Tag publication reconciles the exact tag target before mutation and after an
+uncertain response; a tag pointing elsewhere is a failure. These operations rely
+on Detent's single service owner per project; concurrent evaluations within that
+owner are serialized.

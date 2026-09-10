@@ -1178,6 +1178,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `release.max_age_hours` | `integer` | `24` | No | must be greater than 0 when release.enabled is true |
 | `release.min_merged_issues` | `integer` | `5` | No | must be greater than 0 when release.enabled is true |
 | `release.require_green_ci` | `boolean` | `true` | No | must be true when release.enabled is true |
+| `release.required_check_names` | `list<string>` | `[]` | No | None |
 | `release.rerun_flaky_once` | `boolean` | `false` | No | release.flaky_check_names must not be empty when release.rerun_flaky_once is true |
 | `release.version_bump` | `string` | `"auto"` | No | must be auto |
 | `retro` | `object` | `see child fields` | No | None |

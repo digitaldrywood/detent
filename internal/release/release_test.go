@@ -2,6 +2,8 @@ package release
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -67,9 +69,9 @@ func TestServiceCountTriggerCreatesOneTagAndObservesRelease(t *testing.T) {
 			{SHA: "one", Message: "feat: add release", MergedAt: now.Add(-30 * time.Minute), IssueRefs: []string{"example/repo#1"}},
 			{SHA: "two", Message: "fix: harden release", MergedAt: now.Add(-20 * time.Minute), IssueRefs: []string{"example/repo#2"}},
 		},
-		Checks: []Check{{Name: "CI", Status: "completed", Conclusion: "success"}},
+		Checks: []Check{{SHA: "head", Name: "CI", Status: "completed", Conclusion: "success"}},
 	}, workflow: WorkflowRun{ID: 7, Status: "completed", Conclusion: "success"}, workflowFound: true}
-	service := New(Config{Enabled: true, MinMergedIssues: 2, MaxAge: 24 * time.Hour, RequireGreenCI: true, VersionBump: "auto"}, backend)
+	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 2, MaxAge: 24 * time.Hour, RequireGreenCI: true, VersionBump: "auto"}, backend)
 
 	var wg sync.WaitGroup
 	for range 8 {
@@ -108,9 +110,9 @@ func TestServiceRedCIFilesOneIssueAndNoTag(t *testing.T) {
 		LatestTag: "v1.2.3",
 		LatestSHA: "previous",
 		Commits:   []Commit{{Message: "fix: broken", MergedAt: now.Add(-time.Hour), IssueRefs: []string{"example/repo#1"}}},
-		Checks:    []Check{{Name: "CI", Status: "completed", Conclusion: "failure"}},
+		Checks:    []Check{{SHA: "head", Name: "CI", Status: "completed", Conclusion: "failure"}},
 	}}
-	service := New(Config{Enabled: true, MinMergedIssues: 1, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
+	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 1, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
 
 	service.Evaluate(context.Background(), now)
 	service.Evaluate(context.Background(), now.Add(time.Minute))
@@ -135,9 +137,9 @@ func TestServiceAgeTrigger(t *testing.T) {
 		LatestTag: "v1.2.3",
 		LatestSHA: "previous",
 		Commits:   []Commit{{Message: "fix: aged change", MergedAt: now.Add(-25 * time.Hour), IssueRefs: []string{"example/repo#1"}}},
-		Checks:    []Check{{Name: "CI", Status: "completed", Conclusion: "success"}},
+		Checks:    []Check{{SHA: "head", Name: "CI", Status: "completed", Conclusion: "success"}},
 	}}
-	service := New(Config{Enabled: true, MinMergedIssues: 5, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
+	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 5, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
 	status, _ := service.Evaluate(context.Background(), now)
 	if status.State != "release_pending" {
 		t.Fatalf("Evaluate() state = %q, want release_pending", status.State)
@@ -174,34 +176,34 @@ func TestTriggered(t *testing.T) {
 	}
 }
 
-func TestServiceExistingTagIsNotAFailure(t *testing.T) {
+func TestServiceTagConflictIsAFailure(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
 	backend := &fakeBackend{
-		tagErr: ErrTagExists,
+		tagErr: errors.New("existing tag targets another candidate"),
 		repo: Repository{
 			Name:      "example/repo",
 			HeadSHA:   "head",
 			LatestTag: "v1.2.3",
 			LatestSHA: "previous",
 			Commits:   []Commit{{Message: "fix: retry status", MergedAt: now.Add(-time.Hour), IssueRefs: []string{"example/repo#1"}}},
-			Checks:    []Check{{Name: "CI", Status: "completed", Conclusion: "success"}},
+			Checks:    []Check{{SHA: "head", Name: "CI", Status: "completed", Conclusion: "success"}},
 		},
 	}
-	service := New(Config{Enabled: true, MinMergedIssues: 1, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
+	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 1, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
 
 	status, decision := service.Evaluate(context.Background(), now)
-	if status.State != "release_pending" || status.PendingTag != "v1.2.4" {
-		t.Fatalf("Evaluate() status = %#v, want release_pending v1.2.4", status)
+	if status.State != "failed" {
+		t.Fatalf("Evaluate() status = %#v, want failed", status)
 	}
-	if decision.Action != "tag_created" {
-		t.Fatalf("Evaluate() decision = %#v, want tag_created", decision)
+	if decision.Action != "tag_failed" {
+		t.Fatalf("Evaluate() decision = %#v, want tag_failed", decision)
 	}
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if len(backend.failures) != 0 {
-		t.Fatalf("failure issues = %#v, want none", backend.failures)
+	if len(backend.failures) != 2 {
+		t.Fatalf("release reports = %#v, want intent and failure", backend.failures)
 	}
 }
 
@@ -213,7 +215,7 @@ func TestServiceFailedReleaseWorkflowFilesIssue(t *testing.T) {
 		workflow:      WorkflowRun{ID: 9, URL: "https://example.test/runs/9", Status: "completed", Conclusion: "failure"},
 		workflowFound: true,
 	}
-	service := New(Config{Enabled: true}, backend)
+	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true}, backend)
 	status, _ := service.Evaluate(context.Background(), time.Now())
 	if status.State != "failed" {
 		t.Fatalf("Evaluate() state = %q, want failed", status.State)
@@ -247,7 +249,9 @@ type fakeBackend struct {
 	inspectCalls  int
 	tags          []Tag
 	tagErr        error
-	failures      []Failure
+	failures      []Report
+	reruns        int
+	rerunErr      error
 }
 
 func (f *fakeBackend) Inspect(context.Context) (Repository, error) {
@@ -277,10 +281,13 @@ func (f *fakeBackend) ReleaseWorkflow(context.Context, string) (WorkflowRun, boo
 }
 
 func (f *fakeBackend) RerunFailedChecks(context.Context, []Check) error {
-	return nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reruns++
+	return f.rerunErr
 }
 
-func (f *fakeBackend) EnsureFailureIssue(_ context.Context, failure Failure) (bool, error) {
+func (f *fakeBackend) EnsureReleaseReport(_ context.Context, failure Report) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, existing := range f.failures {
@@ -290,4 +297,69 @@ func (f *fakeBackend) EnsureFailureIssue(_ context.Context, failure Failure) (bo
 	}
 	f.failures = append(f.failures, failure)
 	return true, nil
+}
+
+func TestMandatoryEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, sha, status, conclusion string
+		required                      []string
+		wantTag                       bool
+	}{
+		{"success", "head", "completed", "success", []string{"CI"}, true},
+		{"missing manifest", "head", "completed", "success", nil, false},
+		{"missing check", "head", "completed", "success", []string{"CI", "Security"}, false},
+		{"stale", "old", "completed", "success", []string{"CI"}, false},
+		{"unknown sha", "", "completed", "success", []string{"CI"}, false},
+		{"cancelled", "head", "completed", "cancelled", []string{"CI"}, false},
+		{"skipped", "head", "completed", "skipped", []string{"CI"}, false},
+		{"neutral", "head", "completed", "neutral", []string{"CI"}, false},
+		{"pending", "head", "queued", "success", []string{"CI"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeBackend{repo: Repository{Name: "example/repo", HeadSHA: "head", Commits: []Commit{{IssueRefs: []string{"example/repo#1"}}}, Checks: []Check{{Name: "CI", SHA: tc.sha, Status: tc.status, Conclusion: tc.conclusion}}}}
+			New(Config{Enabled: true, MinMergedIssues: 1, RequiredCheckNames: tc.required}, backend).Evaluate(t.Context(), time.Now())
+			if (len(backend.tags) == 1) != tc.wantTag {
+				t.Fatalf("tags = %v", backend.tags)
+			}
+		})
+	}
+}
+
+func TestRerunSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	for _, lost := range []bool{false, true} {
+		t.Run(map[bool]string{false: "acknowledged", true: "response lost"}[lost], func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeBackend{repo: Repository{Name: "example/repo", HeadSHA: "head", Commits: []Commit{{IssueRefs: []string{"example/repo#1"}}}, Checks: []Check{{Name: "CI", SHA: "head", Status: "completed", Conclusion: "failure", RunID: 42}}}}
+			if lost {
+				backend.rerunErr = errors.New("response lost")
+			}
+			cfg := Config{Enabled: true, MinMergedIssues: 1, RequiredCheckNames: []string{"CI"}, RerunFlakyOnce: true, FlakyCheckNames: []string{"CI"}}
+			New(cfg, backend).Evaluate(t.Context(), time.Now())
+			var wg sync.WaitGroup
+			for range 8 {
+				wg.Go(func() { New(cfg, backend).Evaluate(t.Context(), time.Now()) })
+			}
+			wg.Wait()
+			if backend.reruns != 1 || len(backend.tags) != 0 {
+				t.Fatalf("reruns = %d, tags = %v", backend.reruns, backend.tags)
+			}
+		})
+	}
+}
+
+func TestRepositoryMandatoryChecksCannotBeWaived(t *testing.T) {
+	t.Parallel()
+	for _, configured := range [][]string{nil, {"CI"}, {"Security"}} {
+		t.Run(fmt.Sprint(configured), func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeBackend{repo: Repository{Name: "example/repo", HeadSHA: "head", RequiredCheckNames: []string{"CI", "Security"}, Commits: []Commit{{IssueRefs: []string{"example/repo#1"}}}, Checks: []Check{{Name: "CI", SHA: "head", Status: "completed", Conclusion: "success"}}}}
+			New(Config{Enabled: true, MinMergedIssues: 1, RequiredCheckNames: configured}, backend).Evaluate(t.Context(), time.Now())
+			if len(backend.tags) != 0 {
+				t.Fatalf("tags = %v", backend.tags)
+			}
+		})
+	}
 }

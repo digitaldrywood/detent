@@ -2,7 +2,7 @@ package release
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -11,16 +11,15 @@ import (
 	"time"
 )
 
-var ErrTagExists = errors.New("release tag already exists")
-
 type Config struct {
-	Enabled         bool
-	MinMergedIssues int
-	MaxAge          time.Duration
-	RequireGreenCI  bool
-	VersionBump     string
-	RerunFlakyOnce  bool
-	FlakyCheckNames []string
+	Enabled            bool
+	MinMergedIssues    int
+	MaxAge             time.Duration
+	RequireGreenCI     bool
+	VersionBump        string
+	RerunFlakyOnce     bool
+	FlakyCheckNames    []string
+	RequiredCheckNames []string
 }
 
 type Commit struct {
@@ -31,6 +30,7 @@ type Commit struct {
 }
 
 type Check struct {
+	SHA        string
 	Name       string
 	Status     string
 	Conclusion string
@@ -38,13 +38,15 @@ type Check struct {
 }
 
 type Repository struct {
-	Name      string
-	HeadSHA   string
-	LatestTag string
-	LatestSHA string
-	TaggedAt  time.Time
-	Commits   []Commit
-	Checks    []Check
+	RequiredCheckNames []string
+	IssueRefs          []string
+	Name               string
+	HeadSHA            string
+	LatestTag          string
+	LatestSHA          string
+	TaggedAt           time.Time
+	Commits            []Commit
+	Checks             []Check
 }
 
 type WorkflowRun struct {
@@ -60,7 +62,8 @@ type Tag struct {
 	Message string
 }
 
-type Failure struct {
+type Report struct {
+	IssueRefs   []string
 	Fingerprint string
 	Title       string
 	Body        string
@@ -71,7 +74,7 @@ type Backend interface {
 	CreateTag(context.Context, Tag) error
 	ReleaseWorkflow(context.Context, string) (WorkflowRun, bool, error)
 	RerunFailedChecks(context.Context, []Check) error
-	EnsureFailureIssue(context.Context, Failure) (bool, error)
+	EnsureReleaseReport(context.Context, Report) (bool, error)
 }
 
 type Status struct {
@@ -97,13 +100,11 @@ type Coordinator interface {
 }
 
 type Service struct {
-	cfg      Config
-	backend  Backend
-	mu       sync.Mutex
-	status   Status
-	rerunSHA string
-	lastKey  string
-	reported map[string]struct{}
+	cfg     Config
+	backend Backend
+	mu      sync.Mutex
+	status  Status
+	lastKey string
 }
 
 func New(cfg Config, backend Backend) *Service {
@@ -114,7 +115,6 @@ func New(cfg Config, backend Backend) *Service {
 			Enabled: cfg.Enabled,
 			State:   stateForEnabled(cfg.Enabled),
 		},
-		reported: make(map[string]struct{}),
 	}
 }
 
@@ -157,36 +157,50 @@ func (s *Service) Evaluate(ctx context.Context, now time.Time) (Status, Decision
 		return status, Decision{}
 	}
 
+	required := append(append([]string(nil), repo.RequiredCheckNames...), s.cfg.RequiredCheckNames...)
+	if !completeChecks(repo.HeadSHA, required, repo.Checks) {
+		status.State = "waiting_for_ci"
+		s.status = status
+		return s.reportProgress(ctx, repo, status, "ci_missing", "candidate is missing exact-SHA mandatory check evidence", false)
+	}
 	failed, pending := classifyChecks(repo.Checks)
 	if len(pending) > 0 {
 		status.State = "waiting_for_ci"
 		s.status = status
-		return status, s.decision("ci_pending", "candidate checks are still running", false)
+		return s.reportProgress(ctx, repo, status, "ci_pending", "candidate checks are still running", false)
 	}
 	if len(failed) > 0 {
-		if s.shouldRerun(repo.HeadSHA, failed) {
+		if s.shouldRerun(failed) {
+			created, err := s.backend.EnsureReleaseReport(ctx, releaseReport(repo, "ci_rerun_intent", "Reserved the configured one-time flaky rerun. If interrupted, the outcome may be uncertain; automatic retry remains consumed.\n"+checkEvidence(failed)))
+			if err != nil {
+				return s.failedStatus("record rerun intent: " + err.Error()), s.decision("ci_rerun_journal_failed", err.Error(), false)
+			}
+			if !created {
+				return s.fileFailure(ctx, repo, status, "ci_failed", "rerun already reserved; observed checks: "+checkEvidence(failed))
+			}
 			if err := s.backend.RerunFailedChecks(ctx, failed); err != nil {
 				return s.fileFailure(ctx, repo, status, "ci_rerun_failed", err.Error())
 			}
-			s.rerunSHA = repo.HeadSHA
 			status.State = "rerunning_ci"
 			s.status = status
-			return status, s.decision("ci_rerun", "reran configured flaky checks once", true)
+			return status, s.decision("ci_rerun", "configured flaky rerun reserved; awaiting updated checks", true)
 		}
 		return s.fileFailure(ctx, repo, status, "ci_failed", checkEvidence(failed))
-	}
-	if len(repo.Checks) == 0 {
-		status.State = "waiting_for_ci"
-		s.status = status
-		return status, s.decision("ci_missing", "candidate has no reported checks", false)
 	}
 
 	next, err := NextVersion(repo.LatestTag, repo.Commits)
 	if err != nil {
 		return s.failedStatus(err.Error()), s.decision("version_failed", err.Error(), false)
 	}
-	tag := Tag{Name: next, SHA: repo.HeadSHA, Message: Changelog(next, repo.Commits)}
-	if err := s.backend.CreateTag(ctx, tag); err != nil && !errors.Is(err, ErrTagExists) {
+	origins, err := json.Marshal(releaseReport(repo, "", "").IssueRefs)
+	if err != nil {
+		return s.failedStatus(err.Error()), s.decision("release_origins_failed", err.Error(), false)
+	}
+	tag := Tag{Name: next, SHA: repo.HeadSHA, Message: Changelog(next, repo.Commits) + "\n\n<!-- detent-release-origins:" + string(origins) + " -->"}
+	if _, err := s.backend.EnsureReleaseReport(ctx, releaseReport(repo, "tag_intent", "Creating "+tag.Name+" after all mandatory candidate checks succeeded.")); err != nil {
+		return s.failedStatus(err.Error()), s.decision("release_report_failed", err.Error(), false)
+	}
+	if err := s.backend.CreateTag(ctx, tag); err != nil {
 		return s.fileFailure(ctx, repo, status, "tag_failed", err.Error())
 	}
 	status.State = "release_pending"
@@ -201,10 +215,10 @@ func (s *Service) observeRelease(ctx context.Context, repo Repository, status St
 		return s.failedStatus(err.Error()), s.decision("release_watch_failed", err.Error(), false)
 	}
 	status.PendingTag = repo.LatestTag
-	if !found || strings.EqualFold(run.Status, "queued") || strings.EqualFold(run.Status, "in_progress") {
+	if !found || !strings.EqualFold(run.Status, "completed") {
 		status.State = "release_pending"
 		s.status = status
-		return status, s.decision("release_pending", "waiting for release workflow for "+repo.LatestTag, false)
+		return s.reportProgress(ctx, repo, status, "release_pending", "waiting for release workflow for "+repo.LatestTag, false)
 	}
 	if !successfulConclusion(run.Conclusion) {
 		return s.fileFailure(ctx, repo, status, "release_failed", fmt.Sprintf("workflow %d concluded %s (%s)", run.ID, run.Conclusion, run.URL))
@@ -215,35 +229,37 @@ func (s *Service) observeRelease(ctx context.Context, repo Repository, status St
 	status.LastRelease = repo.LatestTag
 	status.LastReleaseAt = repo.TaggedAt
 	s.status = status
-	return status, s.decision("release_succeeded", repo.LatestTag+" release workflow completed", true)
+	return s.reportProgress(ctx, repo, status, "release_succeeded", repo.LatestTag+" release workflow completed", true)
 }
 
 func (s *Service) fileFailure(ctx context.Context, repo Repository, status Status, kind string, evidence string) (Status, Decision) {
-	fingerprint := kind + ":" + repo.Name + ":" + repo.HeadSHA
-	title := "fix(release): investigate " + strings.ReplaceAll(kind, "_", " ") + " for " + repo.Name
-	body := fmt.Sprintf("```detent-agent\nschema: 1\neffort: high\n```\n\nAuto-release stopped without retrying.\n\n- Repository: `%s`\n- Candidate: `%s`\n- Failure: `%s`\n\nEvidence:\n\n```text\n%s\n```\n\n<!-- detent-auto-release:%s -->", repo.Name, repo.HeadSHA, kind, evidence, fingerprint)
-	if _, ok := s.reported[fingerprint]; ok {
-		status.State = "failed"
-		status.LastError = kind + ": " + evidence
-		s.status = status
-		return status, s.decision(kind, "failure issue already exists: "+evidence, false)
-	}
-	created, err := s.backend.EnsureFailureIssue(ctx, Failure{Fingerprint: fingerprint, Title: title, Body: body})
+	report := releaseReport(repo, kind, evidence)
+	created, err := s.backend.EnsureReleaseReport(ctx, report)
 	if err != nil {
-		status.LastError = kind + ": " + evidence + "; file issue: " + err.Error()
+		status.LastError = kind + ": " + evidence + "; report on originating issue: " + err.Error()
 		status.State = "failed"
 		s.status = status
 		return status, s.decision("failure_issue_failed", status.LastError, false)
 	}
-	s.reported[fingerprint] = struct{}{}
 	status.State = "failed"
 	status.LastError = kind + ": " + evidence
 	s.status = status
-	reason := "failure issue already exists"
+	reason := "release report already exists"
 	if created {
-		reason = "filed failure issue"
+		reason = "reported release blocker"
 	}
 	return status, s.decision(kind, reason+": "+evidence, false)
+}
+
+func (s *Service) reportProgress(ctx context.Context, repo Repository, status Status, action, reason string, selected bool) (Status, Decision) {
+	created, err := s.backend.EnsureReleaseReport(ctx, releaseReport(repo, action, reason))
+	if err != nil {
+		return s.failedStatus("report release progress: " + err.Error()), s.decision("release_report_failed", err.Error(), false)
+	}
+	if !created {
+		return status, Decision{}
+	}
+	return status, s.decision(action, reason, selected)
 }
 
 func (s *Service) failedStatus(message string) Status {
@@ -261,8 +277,8 @@ func (s *Service) decision(action string, reason string, selected bool) Decision
 	return Decision{Action: action, Reason: reason, Selected: selected}
 }
 
-func (s *Service) shouldRerun(sha string, failed []Check) bool {
-	if !s.cfg.RerunFlakyOnce || sha == s.rerunSHA || len(failed) == 0 {
+func (s *Service) shouldRerun(failed []Check) bool {
+	if !s.cfg.RerunFlakyOnce || len(failed) == 0 {
 		return false
 	}
 	allowed := make(map[string]struct{}, len(s.cfg.FlakyCheckNames))
@@ -271,6 +287,43 @@ func (s *Service) shouldRerun(sha string, failed []Check) bool {
 	}
 	for _, check := range failed {
 		if _, ok := allowed[strings.ToLower(strings.TrimSpace(check.Name))]; !ok || check.RunID == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func releaseReport(repo Repository, kind, evidence string) Report {
+	refs := append([]string(nil), repo.IssueRefs...)
+	for _, commit := range repo.Commits {
+		refs = append(refs, commit.IssueRefs...)
+	}
+	fingerprint := kind + ":" + repo.Name + ":" + repo.HeadSHA
+	return Report{
+		IssueRefs: uniqueStrings(refs), Fingerprint: fingerprint,
+		Title: "Release " + kind,
+		Body:  fmt.Sprintf("Release coordination for `%s` at `%s`: %s\n\n%s\n\n<!-- detent-auto-release:%s -->", repo.Name, repo.HeadSHA, kind, evidence, fingerprint),
+	}
+}
+
+func completeChecks(sha string, required []string, checks []Check) bool {
+	if sha == "" || len(required) == 0 {
+		return false
+	}
+	for _, name := range required {
+		found := false
+		if strings.TrimSpace(name) == "" {
+			return false
+		}
+		for _, check := range checks {
+			if check.SHA != sha {
+				return false
+			}
+			if check.Name == name {
+				found = true
+			}
+		}
+		if !found {
 			return false
 		}
 	}
@@ -309,7 +362,7 @@ func classifyChecks(checks []Check) (failed []Check, pending []Check) {
 
 func successfulConclusion(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "success", "neutral", "skipped":
+	case "success":
 		return true
 	default:
 		return false
@@ -345,7 +398,7 @@ func oldestMergedIssueAt(commits []Commit) time.Time {
 func checkEvidence(checks []Check) string {
 	parts := make([]string, 0, len(checks))
 	for _, check := range checks {
-		parts = append(parts, check.Name+"="+check.Conclusion)
+		parts = append(parts, fmt.Sprintf("%s=%s (status=%s, sha=%s, run=%d)", check.Name, check.Conclusion, check.Status, check.SHA, check.RunID))
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
