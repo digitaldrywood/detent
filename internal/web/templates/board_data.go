@@ -1360,19 +1360,19 @@ func boardBlockedExceptionSummary(data DashboardData, rows []telemetry.Blocked, 
 	exception := primitives.Exception{
 		ID:     "exception-" + boardCardScopedSlug(projectID, identity),
 		Kind:   primitives.KindErr,
-		Title:  "Needs review",
+		Title:  "Needs you",
 		Repo:   projectID,
 		Ref:    projectKanbanIssueNumber(row.Issue),
 		RefURL: strings.TrimSpace(row.URL),
 		Rest:   boardExceptionDetail(row, pipelineNow(data.Snapshot)),
 	}
 	if len(rows) == 1 {
-		exception.ActionLabel = "Review"
+		exception.ActionLabel = "Open"
 		exception.ActionAttrs = sheetOpenAttrs(projectID, identity, projectKanbanBoardScope(data), boardActions)
 		return exception
 	}
 	exception.ID = "exception-blocked-review"
-	exception.Title = formatCount(len(rows)) + " blocked items need review"
+	exception.Title = formatCount(len(rows)) + " blocked items need you"
 	exception.Rest = strings.TrimSpace(exception.Rest + " · " + boardMoreBlockedLabel(len(rows)-1))
 	return exception
 }
@@ -1506,7 +1506,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		attention := card.AttentionLabel != "" || card.ConflictReason != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))
 		if attention {
 			if view.ExtraText == "" {
-				view.ExtraText = "Needs review"
+				view.ExtraText = "Needs you"
 				view.ExtraKind = primitives.KindErr
 				view.ExtraChip = true
 			}
@@ -1699,9 +1699,11 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
 	switch {
 	case view.DispatchStatus != "" && (card.AttentionLabel != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))):
-		add("Needs review", primitives.KindErr)
+		add("Needs you", primitives.KindErr)
 	case view.DispatchStatus != "" && card.ConflictReason != "":
 		add("Merge conflict", primitives.KindWarn)
+	case view.DispatchStatus == "Waiting" && card.HumanDependencyWait != "":
+		add("Needs you", primitives.KindWarn)
 	case view.DispatchStatus == "Waiting" && len(card.Blockers) > 0:
 		add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
 	case view.DispatchStatus != "":
@@ -1709,17 +1711,17 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	case strings.HasPrefix(view.ExtraText, "Stranded "):
 		add("Stranded · no worker", primitives.KindWarn)
 	case !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold")):
-		add("Needs review", primitives.KindErr)
+		add("Needs you", primitives.KindErr)
 	case len(card.Blockers) > 0:
 		if card.HumanDependencyWait != "" {
-			add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
+			add("Needs you", primitives.KindWarn)
 		} else {
 			add("Blocked · "+strconv.Itoa(len(card.Blockers)), primitives.KindErr)
 		}
 	case waiting:
 		add("Waiting", primitives.KindWarn)
 	case card.AttentionLabel != "":
-		add("Needs review", primitives.KindErr)
+		add("Needs you", primitives.KindErr)
 	case card.ConflictReason != "":
 		add("Merge conflict", primitives.KindWarn)
 	case strings.EqualFold(view.State, "Blocked"):
@@ -1738,6 +1740,8 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		add(view.MergeLaneStatus, view.MergeLaneKind)
 	}
 	switch {
+	case strings.EqualFold(view.State, "Human Review") && card.HumanActionRequired:
+		add("Needs you", primitives.KindInfo)
 	case card.GatePending:
 		add("Awaiting checks", primitives.KindInfo)
 	case card.WaitDetail != "":
@@ -1752,8 +1756,6 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		add("Running", primitives.KindOK)
 	case view.Waiting && view.DispatchStatus == "":
 		add("No live attempt", primitives.KindNeutral)
-	case strings.EqualFold(view.State, "Human Review"):
-		add("Needs review", primitives.KindInfo)
 	case strings.EqualFold(view.State, "Rework"):
 		add("Rework needed", primitives.KindWarn)
 	case strings.EqualFold(view.State, "Merging"):
@@ -1890,7 +1892,7 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 		return primitives.KindWarn, boardCardBlockedWaitingText(card), true
 	}
 	if reason := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason); reason != "" {
-		return primitives.KindErr, "needs review - " + reason, true
+		return primitives.KindErr, "Needs you · " + reason, true
 	}
 	if label := strings.TrimSpace(card.AttentionLabel); label != "" {
 		return primitives.KindErr, "blocked — " + label, true

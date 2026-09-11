@@ -1006,6 +1006,9 @@ func demoPipelineIssue(projectID string, id string, identifier string, title str
 		issue.PullRequest.CodexReviewState = "P1"
 		issue.PullRequest.SlowChecks = []telemetry.PullRequestCheck{{Name: "go test -race", Status: "completed", Conclusion: "failure", DurationSeconds: 620}}
 	}
+	if state == "Human Review" {
+		issue.RequiredGate = &telemetry.RequiredGate{State: "waiting", PRNumber: pr, HumanAction: fmt.Sprintf("Review pull request #%d.", pr)}
+	}
 	if state == "Merging" {
 		issue.PullRequest.MergeQueueEntry = &telemetry.PullRequestMergeQueueEntry{
 			ID:                          "demo-native-merge-queue-entry",
