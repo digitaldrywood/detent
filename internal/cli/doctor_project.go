@@ -531,6 +531,8 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " external branch worktrees")
 		checks = append(checks, checkDoctorExternalBranchWorktrees(ctx, id, expandedSourceRoot, workflow.Config.Workspace.Root, deps))
 	}
+	setDoctorCurrentCheck("Project " + id + " invariants")
+	checks = append(checks, checkDoctorInvariants(ctx, id, expandedSourceRoot, runDoctorInvariants)...)
 	setDoctorCurrentCheck("Project " + id + " issue effort guidance")
 	checks = append(checks, checkDoctorIssueEffortGuidance(id, expandedSourceRoot))
 	setDoctorCurrentCheck("Project " + id + " skills")

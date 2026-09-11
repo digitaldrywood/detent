@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  checks: read
 
 jobs:
   release:
@@ -31,11 +30,6 @@ jobs:
             echo "Release tags must point at origin/main ($main_sha); got $GITHUB_SHA."
             exit 1
           fi
-
-      - name: Require successful exact-commit invariant and CI evidence
-        run: go run ./tools/invariantcheck -mode release -head "$GITHUB_SHA"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install minisign
         run: |

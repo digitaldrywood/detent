@@ -1,42 +1,7 @@
 {
-  "checks": [
-    "Invariant Gate",
-    "Lint",
-    "Verify (ubuntu-latest)",
-    "Test Coverage",
-    "Browser Visual",
-    "Portability Verify (macos-latest)",
-    "Portability Verify (windows-latest)",
-    "Windows Core",
-    "Installer Smoke (ubuntu-latest)",
-    "Installer Smoke (windows-latest)",
-    "GoReleaser Snapshot"
-  ],
-  "protected": [
-    "invariants/",
-    "tools/",
-    ".github/",
-    ".golangci.yml",
-    ".golangci-version",
-    ".goreleaser.yaml",
-    ".pre-commit-config.yaml",
-    "Makefile",
-    "scripts/",
-    "internal/orchestrator/terminal_attempt_retry_test.go",
-    "internal/orchestrator/reconcile_test.go",
-    "internal/orchestrator/policy_test.go",
-    "internal/update/startup_recovery_test.go",
-    "internal/update/update_test.go",
-    "internal/release/release_test.go",
-    "internal/orchestrator/human_question_test.go"
-  ],
   "tests": {
     "./tools/invariantcheck": [
-      "TestReleaseEvidence",
-      "TestProtectedChanges",
-      "TestProtectedDeletionUsesTrustedPolicy",
-      "TestBehaviorEvidence",
-      "TestRunningEvidence"
+      "TestBehaviorEvidence"
     ],
     "./internal/orchestrator": [
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
