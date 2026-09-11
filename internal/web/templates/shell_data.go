@@ -105,6 +105,7 @@ func appShellNavGroups(data DashboardShellData) []appNavGroup {
 			Label: "Insights",
 			Items: []appNavItem{
 				{ID: "reports", Label: "Reports", Href: "/reports", Icon: "file-chart-column", Active: active == "reports"},
+				{ID: "operations", Label: "Operations", Href: "/operations", Icon: "list-checks", Active: active == "operations"},
 				{ID: "library", Label: "Library", Href: "/library", Icon: "library", Active: active == "library"},
 			},
 		},
@@ -133,7 +134,7 @@ func appShellActiveNav(data DashboardShellData) string {
 		return "board"
 	case "fleet":
 		return "fleet"
-	case "library", "reports", "analytics", "diagnostics", "health", "api-keys", "settings":
+	case "operations", "library", "reports", "analytics", "diagnostics", "health", "api-keys", "settings":
 		return nav
 	}
 	return ""
