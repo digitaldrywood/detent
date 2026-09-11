@@ -12,3 +12,29 @@ Browser verification used the real receipt and recovery handlers through a tempo
 ![Recovery receipt and blocked action feedback](recovery.png)
 
 Skill draft: no — existing recovery and isolated-preview skills cover the method.
+
+## Merge-group rework
+
+Merge-group run 34558337339 exhausted Go's default 10-minute package
+budget. Its four active tests were only 6–19 seconds old. Hundreds of
+subtests waited in `testing.waitParallel`; the active stacks showed a
+runnable SQLite migration owner and waiters on `store.migrationMu`, not
+an unchanged worker wait. The `runner panic: boom` messages are recovered
+panic-fixture outcomes several minutes before the timeout.
+
+After rebasing onto f4e55b02, `go test ./internal/orchestrator -race -count=1`
+passed on macOS arm64 in 157.424 seconds. The same full suite passed in an
+isolated Linux arm64 container limited to four CPUs in 184.630 seconds.
+A second sample using the exact `tools/testgate -race -parallel 4 -timeout 20m`
+command passed in 183.210 seconds, including all safety fuzz seeds.
+These samples do not reproduce hosted amd64 speed; the recorded hosted
+failure remains the evidence for cumulative budget exhaustion.
+
+Both race entry points now use existing `tools/testgate` for orchestrator,
+with four parallel tests and a bounded 20-minute package budget. This
+provides headroom beyond the observed hosted 10-minute exhaustion without
+changing individual deadlines, test selection, assertions, migration work,
+or production scheduling. Other package budgets remain unchanged. CI
+uploads raw test events and timing summaries; its outer verification job
+allows 45 minutes for the existing Hub gate plus the orchestrator gate and
+other checks. Local coverage still includes the complete orchestrator suite.

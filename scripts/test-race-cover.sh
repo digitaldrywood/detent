@@ -26,7 +26,16 @@ if [ "${#packages[@]}" -eq 0 ]; then
     echo "No remaining test packages" >&2
     exit 1
 fi
-env -u DETENT_API_TOKEN go test -race "${packages[@]}"
+# Keep orchestrator timing evidence and its cumulative fixture budget identical
+# to make test-race; ordinary coverage still includes this package below.
+env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel "$4" -timeout "$5" -output tmp/orchestrator-race-evidence ./internal/orchestrator
+race_packages=()
+for package in "${packages[@]}"; do
+    if [ "$package" != github.com/digitaldrywood/detent/internal/orchestrator ]; then
+        race_packages+=("$package")
+    fi
+done
+env -u DETENT_API_TOKEN go test -race "${race_packages[@]}"
 env -u DETENT_API_TOKEN go test -coverprofile="$profile_dir/rest.out" "${packages[@]}"
 go run ./tools/covermerge "$profile_dir/hub.out" "$profile_dir/rest.out" > "$profile_dir/merged.out"
 publish_path="$(mktemp "$3.XXXXXX")"

@@ -190,7 +190,7 @@ func (o *Orchestrator) applyWorkAttemptRetryIntent(ctx context.Context, state *S
 			if found && dated && parkedAt.Equal(intent.ParkedAt) && sameBlockedRecoveryPark(current, *intent.Park) {
 				target := terminalAttemptTodoState(o.cfg.ActiveStates)
 				metadata := workflowLaneMetadata{BlockedRecovery: intent.Park}
-				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, now, "operator_configuration_recovery", metadata, laneMutationRevokeWorker); err != nil {
+				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, now, "operator_configuration_recovery", metadata); err != nil {
 					return receipt, err
 				}
 				issue.State = target

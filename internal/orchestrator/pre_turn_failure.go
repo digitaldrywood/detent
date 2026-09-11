@@ -15,7 +15,7 @@ import (
 )
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
-	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
+	if issueConfigurationFailure(event.Err, "", "") || event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
 		return ""
 	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {

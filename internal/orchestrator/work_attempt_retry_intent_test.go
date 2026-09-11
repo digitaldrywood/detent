@@ -420,7 +420,7 @@ func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
 
 func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 	t.Parallel()
-	for _, form := range []string{"typed", "wrapped", "restored"} {
+	for _, form := range []string{"typed", "wrapped", "restored", "observed lane"} {
 		t.Run(form, func(t *testing.T) {
 			db := openWorkAttemptRecoveryStore(t, t.Context())
 			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -429,6 +429,11 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 			attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now.Add(-time.Minute))
 			state := newState(host.cfg)
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID, Attempt: 1, StartedAt: now.Add(-time.Minute)}
+			if form == "observed lane" {
+				running := state.Running[issue.ID]
+				running.CompletionLane = issue.State
+				state.Running[issue.ID] = running
+			}
 			var failure error = &runpkg.IssueConfigurationError{Field: "effort", Reason: "explicit effort is unsupported by the selected model"}
 			switch form {
 			case "wrapped":
@@ -438,10 +443,13 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 			}
 			host.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: failure, CompletedAt: now})
 			attempt, err := db.WorkAttempt(t.Context(), attemptID)
-			if err != nil || attempt.ErrorClass != "issue_configuration" || len(state.Retry) != 0 || state.FailureBreaker.Active() {
+			if err != nil || attempt.ErrorClass != "issue_configuration" || len(state.Retry) != 0 || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
 				t.Fatalf("completion class=%s retry=%v breaker=%v err=%v", attempt.ErrorClass, state.Retry, state.FailureBreaker, err)
 			}
-			if state.Blocked[issue.ID].Reason != "issue_configuration" {
+			if form == "observed lane" && len(state.Blocked) != 0 {
+				t.Fatalf("configuration failure replaced the observed lane: %v", state.Blocked)
+			}
+			if form != "observed lane" && state.Blocked[issue.ID].Reason != "issue_configuration" {
 				t.Fatalf("missing actionable configuration hold: %v", state.Blocked)
 			}
 		})

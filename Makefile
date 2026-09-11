@@ -34,6 +34,9 @@ GOSEC_DETERMINISM_RUNS ?= 8
 GO_TEST := env -u DETENT_API_TOKEN go test
 HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
+# Persisted orchestrator fixtures serialize migrations; retain the full race suite.
+ORCHESTRATOR_RACE_TIMEOUT ?= 20m
+ORCHESTRATOR_RACE_PARALLEL ?= 4
 GOLANGCI_LINT_VERSION_FILE := .golangci-version
 GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))
 GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)
@@ -49,7 +52,7 @@ GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 CHECK_LOCK_WAIT ?= 15m
 CHECK_LOCK_MAX_WAIT ?= 4h
 
-.PHONY: dev generate check-migrations check-generated css css-watch build test test-race test-race-hub test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch build test test-race test-race-hub test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -100,16 +103,19 @@ build: generate
 test:
 	$(GO_TEST) ./...
 
-test-race: test-race-hub
+test-race: test-race-hub test-race-orchestrator
 	@packages="$$(go list ./...)" && \
-	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver"')" && \
+	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver" && $$0 != "github.com/digitaldrywood/detent/internal/orchestrator"')" && \
 	$(GO_TEST) -race $$packages
 
 test-race-hub:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -output tmp/hub-race-evidence ./internal/hubserver
 
+test-race-orchestrator:
+	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(ORCHESTRATOR_RACE_PARALLEL) -timeout $(ORCHESTRATOR_RACE_TIMEOUT) -output tmp/orchestrator-race-evidence ./internal/orchestrator
+
 test-race-cover:
-	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_TIMEOUT)" "$(COVERPROFILE_RAW)"
+	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)"
 	@$(MAKE) coverage-check
 	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
 
