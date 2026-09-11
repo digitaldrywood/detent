@@ -6234,7 +6234,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 	}{
 		{name: "GitHub readiness", current: "GitHub readiness", lastCompleted: "Project alpha skills"},
 		{name: "local workflow overlay", current: "local workflow overlay", lastCompleted: "Project alpha capabilities", blockOverlay: true},
-		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha merge queue recommendation", blockDependency: true},
+		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha INV-5 CI once per ready head", blockDependency: true},
 	}
 
 	for _, tt := range tests {
