@@ -41,7 +41,7 @@ detent report --html status.html --format json`),
 			}
 			result, err := runReportHTML(cmd.Context(), client, htmlPath)
 			if err != nil {
-				return classifyDashboardReadError(err)
+				return classifyReportReadError(err)
 			}
 			return out.Write(func(writer io.Writer) error {
 				_, err := fmt.Fprintf(writer, "Wrote %s (%s, data time %s, %d bytes)\n", result.Path, result.Instance, result.DataTime, result.Bytes)
@@ -97,7 +97,9 @@ func (c *DashboardReadClient) Operations(ctx context.Context) (operations.Report
 }
 
 // The exported page is read away from the dashboard, so service-relative
-// evidence links must carry the service origin to stay clickable.
+// evidence links must carry the service origin to stay clickable. API
+// explanation links need a bearer token a browser never sends, so they
+// become the issue's dashboard page, which a web session can open.
 func absolutizeReportLinks(report *operations.Report, base *url.URL) {
 	if base == nil {
 		return
@@ -118,7 +120,21 @@ func absolutizeReportLink(link string, base *url.URL) string {
 	if err != nil {
 		return link
 	}
+	if projectID, ok := strings.CutPrefix(parsed.Path, "/api/v1/projects/"); ok && strings.HasSuffix(projectID, "/issues/explanation") {
+		projectID = strings.TrimSuffix(projectID, "/issues/explanation")
+		if reference := strings.TrimSpace(parsed.Query().Get("reference")); projectID != "" && reference != "" {
+			parsed = &url.URL{Path: "/projects/" + projectID + "/issues/" + reference}
+		}
+	}
 	return base.ResolveReference(parsed).String()
+}
+
+func classifyReportReadError(err error) error {
+	var response *DashboardResponseError
+	if errors.As(err, &response) && response.StatusCode == http.StatusNotFound {
+		return NewClassifiedError(ErrDashboardUnsupportedModel, errorCodeUnsupportedModelVersion, "running service does not serve the operations report API", "Upgrade or restart Detent so the running service provides /api/v1/operations.", nil)
+	}
+	return classifyDashboardReadError(err)
 }
 
 func writeFileAtomically(path string, content []byte) (returnErr error) {

@@ -79,7 +79,7 @@ func TestRunReportHTMLWritesSelfContainedPage(t *testing.T) {
 	for _, want := range []string{
 		`id="operations-stats"`, `id="operations-actions"`, `id="operations-decisions"`,
 		"mac-studio", "2026-09-11T18:00:00Z", "<style>", "operator_routine:stale_merging", "Merge or close?",
-		`href="` + server.URL + `/api/v1/projects/detent/issues/explanation?reference=%232483"`,
+		`href="` + server.URL + `/projects/detent/issues/%232483"`,
 		`href="https://github.com/digitaldrywood/detent/issues/2482"`,
 	} {
 		if !strings.Contains(page, want) {
@@ -110,3 +110,15 @@ func TestReportCommandRequiresHTMLPath(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 }
+
+func TestClassifyReportReadErrorNamesOperationsEndpoint(t *testing.T) {
+	t.Parallel()
+	err := classifyReportReadError(&DashboardResponseError{StatusCode: http.StatusNotFound, Message: "Not Found"})
+	if err == nil || !strings.Contains(err.Error(), "operations report API") {
+		t.Fatalf("error = %v, want operations endpoint classification", err)
+	}
+	if got := classifyReportReadError(&DashboardResponseError{StatusCode: http.StatusUnauthorized}); got == nil || strings.Contains(got.Error(), "operations report API") {
+		t.Fatalf("unauthorized = %v, want shared classification", got)
+	}
+}
+
