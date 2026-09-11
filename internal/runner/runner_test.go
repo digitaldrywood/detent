@@ -7607,3 +7607,21 @@ func TestAgentRunProgressRetainsLastCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"OPEN", "CLOSED", "MERGED", " closed "} {
+		t.Run(state, func(t *testing.T) {
+			got := workspaceIssue("project", connector.Issue{PullRequest: &connector.PullRequest{
+				State: state, HeadSHA: "old-head", BaseSHA: "old-base", BaseRef: "main",
+			}})
+			if state == "OPEN" {
+				if got.PullRequestHeadSHA != "old-head" || got.BaseRef != "old-base" || got.ProgressBaseRef != "main" {
+					t.Fatalf("open PR comparison = %+v", got)
+				}
+			} else if got.PullRequestHeadSHA != "" || got.BaseRef != "" || got.ProgressBaseRef != "" {
+				t.Fatalf("terminal PR must use default base only: %+v", got)
+			}
+		})
+	}
+}
