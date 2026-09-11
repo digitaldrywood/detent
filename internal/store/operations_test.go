@@ -20,7 +20,7 @@ func TestOperationsRecordedHistory(t *testing.T) {
 				statements := []string{
 					`INSERT INTO efficiency_receipts(project_id,issue_id,pr_number,attempts,total_tokens,first_dispatched_at,completed_at) VALUES ('p','1',1,1,100,'2026-09-10T00:00:00Z','2026-09-11T10:00:00Z'),('p','2',NULL,2,300,'2026-09-10T00:00:00Z','2026-09-11T11:00:00Z'),('p','future',3,1,900,'2026-09-10T00:00:00Z','2026-09-11T12:00:00Z')`,
 					`INSERT INTO workflow_phase_events(project_id,issue_id,phase_type,phase_name,status,started_at,event_day) VALUES ('p','1','lane','In Progress','entered','2026-09-01T10:00:00Z','2026-09-01'),('p','1','lane','In Progress','entered','2026-09-10T10:00:00Z','2026-09-10'),('p','1','lane','Done','entered','2026-09-11T10:00:00Z','2026-09-11'),('p','1','lane','Done','entered','2026-09-11T11:00:00Z','2026-09-11'),('p','2','lane','In Progress','entered','2026-09-11T09:00:00Z','2026-09-11'),('p','2','lane','Done','entered','2026-09-11T11:00:00Z','2026-09-11'),('p','1','lane','Blocked','entered','2026-09-11T08:00:00Z','2026-09-11'),('p','1','lane','Blocked','entered','2026-09-11T09:00:00Z','2026-09-11'),('q','1','lane','Blocked','entered','2026-09-11T09:00:00Z','2026-09-11')`,
-					`INSERT INTO lane_ledger(project_id,issue_id,from_state,to_state,reason,written_at,result) VALUES ('p','1','Blocked','Todo','operator_routine:return_retired_parks','2026-09-11T10:00:00Z','applied'),('p','2','Blocked','Todo','operator_routine:return_retired_parks','2026-09-11T10:00:00Z','failed')`,
+					`INSERT INTO lane_ledger(project_id,issue_id,from_state,to_state,reason,written_at,result,origin,action_kind,resolved_at) VALUES ('p','1','Blocked','Todo','blocked_cause_recovery','2026-09-11T10:00:00Z','applied','operator_routine','return_retired_parks','2026-09-11T10:00:01Z'),('p','2','Blocked','Todo','blocked_cause_recovery','2026-09-11T10:00:00Z','failed','operator_routine','return_retired_parks','2026-09-11T10:00:01Z'),('p','3','Blocked','Todo','blocked_cause_recovery','2026-09-11T10:00:00Z','applied','','','2026-09-11T10:00:01Z')`,
 					`INSERT INTO human_questions(project_id,issue_id,question_key,issue_identifier,body,question_comment_id,answer_comment_id) VALUES ('p','1','choice','owner/repo#1','Choose a delivery target?','123',''),('p','2','answered','owner/repo#2','Old question','124','125'),('p','3','unpublished','owner/repo#3','Not sent','','')`,
 					`INSERT INTO scheduler_decisions(project_id,issue_id,identifier,lane,result,reason,selected,decision_at) VALUES ('p','1','owner/repo#1','Todo','selected','ready',1,'2026-09-11T10:00:00Z'),('p','2','owner/repo#2','Todo','skipped','capacity',0,'2026-09-11T10:00:00Z')`,
 				}
@@ -67,5 +67,21 @@ func TestOperationsRecordedHistory(t *testing.T) {
 				t.Fatalf("refresh: %#v %v", refreshed, err)
 			}
 		})
+	}
+}
+
+func TestOperationsReportUsesResolutionTimeForActions(t *testing.T) {
+	t.Parallel()
+	s := openTestStore(t, t.Context()).(*sqliteStore)
+	if _, err := s.db.ExecContext(t.Context(), `INSERT INTO lane_ledger(project_id,issue_id,from_state,to_state,reason,written_at,result,origin,action_kind,resolved_at) VALUES ('p','late','Blocked','Todo','blocked_cause_recovery','2026-09-11T09:00:00Z','applied','operator_routine','return_retired_parks','2026-09-11T11:30:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	report, err := s.OperationsReport(t.Context(), now, time.Date(2026, 9, 11, 11, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Actions) != 1 || report.Actions[0].Issue != "late" || report.Actions[0].Kind != "return_retired_parks" || report.Actions[0].Reason != "blocked_cause_recovery" {
+		t.Fatalf("actions = %#v, want the write resolved after the cursor even though it was prepared before it", report.Actions)
 	}
 }

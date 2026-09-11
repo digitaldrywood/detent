@@ -6,7 +6,10 @@ INSERT INTO lane_ledger (project_id, issue_id, from_state, to_state, reason, wri
 VALUES (?, ?, ?, ?, ?, ?) RETURNING *;
 
 -- name: ResolveLaneWrite :execrows
-UPDATE lane_ledger SET result = ? WHERE id = ?;
+UPDATE lane_ledger SET result = ?, resolved_at = ? WHERE id = ?;
+
+-- name: RecordLaneWriteAction :execrows
+UPDATE lane_ledger SET origin = ?, action_kind = ? WHERE id = ?;
 
 -- name: LatestLaneWrite :one
 SELECT * FROM lane_ledger WHERE project_id = ? AND issue_id = ? ORDER BY id DESC LIMIT 1;

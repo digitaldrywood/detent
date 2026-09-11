@@ -27,7 +27,7 @@ func (s *sqliteStore) OperationsReport(ctx context.Context, now, since time.Time
 		}
 		report.Stats = append(report.Stats, w)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, project_id, issue_id, reason, written_at FROM lane_ledger WHERE result = 'applied' AND reason GLOB 'operator_routine:*' AND julianday(written_at) > julianday(?) AND julianday(written_at) <= julianday(?) ORDER BY id`, since.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	rows, err := s.db.QueryContext(ctx, `SELECT id, project_id, issue_id, reason, action_kind, COALESCE(resolved_at, written_at) FROM lane_ledger WHERE result = 'applied' AND origin <> '' AND julianday(COALESCE(resolved_at, written_at)) > julianday(?) AND julianday(COALESCE(resolved_at, written_at)) <= julianday(?) ORDER BY id`, since.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return operations.Report{}, fmt.Errorf("operations actions: %w", err)
 	}
@@ -35,14 +35,13 @@ func (s *sqliteStore) OperationsReport(ctx context.Context, now, since time.Time
 	for rows.Next() {
 		var a operations.Action
 		var at string
-		if err := rows.Scan(&a.ID, &a.ProjectID, &a.Issue, &a.Reason, &at); err != nil {
+		if err := rows.Scan(&a.ID, &a.ProjectID, &a.Issue, &a.Reason, &a.Kind, &at); err != nil {
 			return operations.Report{}, err
 		}
 		a.At, err = parseStoredTime(at)
 		if err != nil {
 			return operations.Report{}, err
 		}
-		a.Kind = strings.TrimPrefix(a.Reason, "operator_routine:")
 		report.Actions = append(report.Actions, a)
 	}
 	if err := rows.Err(); err != nil {
