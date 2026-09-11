@@ -5,7 +5,7 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   schedule:
@@ -21,8 +21,21 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  pr-required-placeholders:
+    # Required checks are enforced in the merge queue (merge_group) and on main.
+    # GitHub refuses to enqueue a pull request whose required checks never
+    # reported, so pull_request events satisfy the four names instantly here.
+    if: github.event_name == 'pull_request'
+    strategy:
+      matrix:
+        check: ["Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"]
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "Required checks run in the merge queue; nothing to do on pull requests."
   invariants:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Invariant Gate
     runs-on: ubuntu-latest
     steps:
@@ -35,7 +48,7 @@ jobs:
         run: make check-invariants
 
   lint:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Lint
     runs-on: ubuntu-latest
     steps:
@@ -69,7 +82,7 @@ jobs:
   verify:
     name: Verify (ubuntu-latest)
     needs: [verify-fast, verify-race]
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -80,7 +93,7 @@ jobs:
         run: test "$FAST_RESULT" = success && test "$RACE_RESULT" = success
 
   verify-fast:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Verify build and vet
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -112,7 +125,7 @@ jobs:
         run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
 
   verify-race:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Verify race (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -149,7 +162,7 @@ jobs:
           retention-days: 14
 
   test-cover:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Test Coverage
     runs-on: ubuntu-latest
     steps:
@@ -164,7 +177,7 @@ jobs:
         run: make test-cover-packages
 
   security:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Security
     runs-on: ubuntu-latest
     steps:
@@ -179,7 +192,7 @@ jobs:
         run: make security
 
   browser-visual:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Browser Visual
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -336,8 +336,8 @@ func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
 		})
 	}
 	security := workflowBetween(t, workflow, "  security:", "  browser-visual:")
-	if !strings.Contains(security, "github.event.pull_request.draft == false") || !strings.Contains(security, "make security") {
-		t.Fatal("Security must continue running on every ready PR")
+	if !strings.Contains(security, "if: github.event_name != 'pull_request'") || !strings.Contains(security, "make security") {
+		t.Fatal("Security must run in the merge queue and on main, never on pull_request events")
 	}
 	reporter := workflowBetween(t, workflow, "  report-integration-failures:", "")
 	for _, marker := range []string{
@@ -497,14 +497,20 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 func TestCIDraftAndVerifyDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]") {
-		t.Fatal("PR CI must run on readiness and later head updates")
+	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review]") {
+		t.Fatal("pull_request events exist only to satisfy required checks with placeholders")
+	}
+	placeholders := workflowBetween(t, workflow, "  pr-required-placeholders:\n", "  invariants:\n")
+	for _, want := range []string{"if: github.event_name == 'pull_request'", `check: ["Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"]`, "name: ${{ matrix.check }}"} {
+		if !strings.Contains(placeholders, want) {
+			t.Errorf("placeholder job missing %q", want)
+		}
 	}
 	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual"} {
 		t.Run(job, func(t *testing.T) {
 			section := workflowBetween(t, workflow, "  "+job+":\n", "    steps:")
-			if !strings.Contains(section, "github.event_name != 'pull_request' || github.event.pull_request.draft == false") {
-				t.Fatal("job must skip drafts and retain non-PR triggers")
+			if !strings.Contains(section, "if: github.event_name != 'pull_request'") && !strings.Contains(section, "if: always() && github.event_name != 'pull_request'") {
+				t.Fatal("real CI jobs must not run on pull_request events")
 			}
 		})
 	}
