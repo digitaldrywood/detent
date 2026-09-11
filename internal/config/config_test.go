@@ -722,7 +722,6 @@ func TestLifetimeLimitConfiguration(t *testing.T) {
 		raw          string
 		wantSessions int64
 		wantTokens   int64
-		wantCooldown int
 		wantOverride string
 		wantErr      string
 	}{
@@ -731,7 +730,6 @@ func TestLifetimeLimitConfiguration(t *testing.T) {
 			raw:          "---\ntracker:\n  kind: memory\n---\nPrompt\n",
 			wantSessions: DefaultLifetimeSessionLimit,
 			wantTokens:   DefaultLifetimeTokenLimit,
-			wantCooldown: DefaultLifetimeLimitCooldownSeconds,
 			wantOverride: DefaultLifetimeLimitOverrideLabel,
 		},
 		{
@@ -739,7 +737,6 @@ func TestLifetimeLimitConfiguration(t *testing.T) {
 			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 20\n  lifetime_token_limit: 50000000\n  lifetime_limit_cooldown_seconds: 7200\n  lifetime_limit_override_label: Allow-Hard-Issue\n---\nPrompt\n",
 			wantSessions: 20,
 			wantTokens:   50_000_000,
-			wantCooldown: 7200,
 			wantOverride: "allow-hard-issue",
 		},
 		{
@@ -758,9 +755,11 @@ func TestLifetimeLimitConfiguration(t *testing.T) {
 			wantErr: "agent.lifetime_token_limit must be greater than or equal to 0",
 		},
 		{
-			name:    "enabled limit requires cooldown",
-			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 1\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
-			wantErr: "agent.lifetime_limit_cooldown_seconds must be greater than 0 when a lifetime limit is enabled",
+			name:         "legacy cooldown ignored with enabled limits",
+			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 1\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
+			wantSessions: 1,
+			wantTokens:   DefaultLifetimeTokenLimit,
+			wantOverride: DefaultLifetimeLimitOverrideLabel,
 		},
 	}
 
@@ -781,8 +780,8 @@ func TestLifetimeLimitConfiguration(t *testing.T) {
 				t.Fatalf("ParseWorkflow() error = %v", err)
 			}
 			agent := workflow.Config.Agent
-			if agent.LifetimeSessionLimit != tt.wantSessions || agent.LifetimeTokenLimit != tt.wantTokens || agent.LifetimeLimitCooldownSeconds != tt.wantCooldown || agent.LifetimeLimitOverrideLabel != tt.wantOverride {
-				t.Fatalf("lifetime config = sessions %d tokens %d cooldown %d override %q", agent.LifetimeSessionLimit, agent.LifetimeTokenLimit, agent.LifetimeLimitCooldownSeconds, agent.LifetimeLimitOverrideLabel)
+			if agent.LifetimeSessionLimit != tt.wantSessions || agent.LifetimeTokenLimit != tt.wantTokens || agent.LifetimeLimitOverrideLabel != tt.wantOverride {
+				t.Fatalf("lifetime config = sessions %d tokens %d override %q", agent.LifetimeSessionLimit, agent.LifetimeTokenLimit, agent.LifetimeLimitOverrideLabel)
 			}
 		})
 	}

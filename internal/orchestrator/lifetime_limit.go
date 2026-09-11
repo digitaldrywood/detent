@@ -16,9 +16,7 @@ import (
 const (
 	lifetimeLimitReason                    = "lifetime_limit"
 	lifetimeLimitBlockedReasonPrefix       = "lifetime issue limit: "
-	blockedRecoveryPredicateLifetimeLimit  = "cooldown_or_override"
-	workflowActionLifetimeLimitRecovery    = "lifetime_limit_cooldown_recovery"
-	lifetimeLimitCooldownWaitingReason     = "lifetime_limit_cooldown"
+	blockedRecoveryPredicateLifetimeLimit  = "cooldown_or_override" // Retained for persisted parks; time no longer releases them.
 	lifetimeLimitEvidenceUnavailableReason = "lifetime_limit_evidence_unavailable"
 )
 
@@ -74,7 +72,7 @@ func (o *Orchestrator) enforceLifetimeLimits(ctx context.Context, state *State, 
 			continue
 		}
 		decision := evaluateLifetimeLimit(usage, o.cfg.LifetimeSessionLimit, o.cfg.LifetimeTokenLimit)
-		if !decision.reached() || o.lifetimeLimitOverride(issue) || o.lifetimeLimitRecoveryPermit(ctx, issue, usage) {
+		if !decision.reached() || o.lifetimeLimitOverride(issue) {
 			continue
 		}
 		if !projectHistoryLoaded {
@@ -127,18 +125,6 @@ func (o *Orchestrator) lifetimeLimitOverride(issue connector.Issue) bool {
 	return false
 }
 
-func (o *Orchestrator) lifetimeLimitRecoveryPermit(ctx context.Context, issue connector.Issue, usage store.TokenSpend) bool {
-	signature := lifetimeLimitUsageSignature(usage)
-	_, ok := o.workflowTimelineLaneActionSignature(
-		ctx,
-		issue,
-		workflowActionLifetimeLimitRecovery,
-		workflowActionLifetimeLimitRecovery,
-		signature,
-	)
-	return ok
-}
-
 func lifetimeLimitUsageSignature(usage store.TokenSpend) string {
 	return "sessions=" + strconv.FormatInt(usage.Sessions, 10) + ";tokens=" + strconv.FormatInt(usage.TotalTokens, 10)
 }
@@ -150,7 +136,6 @@ func (o *Orchestrator) parkLifetimeLimit(
 	decision lifetimeLimitDecision,
 	now time.Time,
 ) {
-	resumeAt := now.Add(o.cfg.LifetimeLimitCooldown)
 	runMode := o.dispatchMode(ctx, state, issue)
 	metadata := o.newBlockedRecoveryMetadata(
 		ctx,
@@ -161,7 +146,6 @@ func (o *Orchestrator) parkLifetimeLimit(
 		issue.State,
 		DiffStats{},
 	)
-	metadata.BlockedRecovery.ResumeAt = resumeAt.UTC().Format(time.RFC3339Nano)
 	metadata.BlockedRecovery.LifetimeSessions = decision.Usage.Sessions
 	metadata.BlockedRecovery.LifetimeTokens = decision.Usage.TotalTokens
 	metadata.BlockedRecovery.LifetimeSessionLimit = decision.SessionLimit
@@ -177,7 +161,7 @@ func (o *Orchestrator) parkLifetimeLimit(
 		issue.State = blockedStatusState
 	}
 	if transitioned && o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, o.lifetimeLimitComment(issue, decision, resumeAt)); err != nil && o.logger != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, o.lifetimeLimitComment(issue, decision)); err != nil && o.logger != nil {
 			o.logger.Warn("lifetime issue limit comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 		}
 	}
@@ -191,11 +175,11 @@ func (o *Orchestrator) parkLifetimeLimit(
 	state.Blocked[issue.ID] = Blocked{
 		Issue:                   cloneIssue(issue),
 		Reason:                  lifetimeLimitBlockedReason(decision),
-		RecoveryAction:          "defer",
-		RecoveryReason:          lifetimeLimitCooldownWaitingReason,
+		RecoveryAction:          "hold",
+		RecoveryReason:          lifetimeLimitReason,
 		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
-		RecoveryRemedy:          lifetimeLimitRecoveryRemedy(o.cfg.LifetimeLimitOverrideLabel, resumeAt),
-		RecoveryReachability:    blockedRecoveryReachability("defer"),
+		RecoveryRemedy:          lifetimeLimitRecoveryRemedy(o.cfg.LifetimeLimitOverrideLabel),
+		RecoveryReachability:    blockedRecoveryReachability("hold"),
 		RecoveryIntentResumable: true,
 		BlockedAt:               now,
 		Source:                  BlockedSourceProjectStatus,
@@ -218,7 +202,6 @@ func (o *Orchestrator) parkLifetimeLimit(
 			"session_limit", decision.SessionLimit,
 			"total_tokens", decision.Usage.TotalTokens,
 			"token_limit", decision.TokenLimit,
-			"resume_at", resumeAt,
 		)
 	}
 }
@@ -234,7 +217,7 @@ func lifetimeLimitBlockedReason(decision lifetimeLimitDecision) string {
 	return lifetimeLimitBlockedReasonPrefix + strings.Join(parts, ", ")
 }
 
-func (o *Orchestrator) lifetimeLimitComment(issue connector.Issue, decision lifetimeLimitDecision, resumeAt time.Time) string {
+func (o *Orchestrator) lifetimeLimitComment(issue connector.Issue, decision lifetimeLimitDecision) string {
 	var b strings.Builder
 	b.WriteString("Detent parked this issue because its cumulative agent usage reached a configured lifetime limit.\n\n")
 	b.WriteString("- issue: ")
@@ -263,9 +246,7 @@ func (o *Orchestrator) lifetimeLimitComment(issue connector.Issue, decision life
 		b.WriteString(strconv.FormatInt(decision.ProjectHistory.CompletedIssues, 10))
 		b.WriteString(" completed issues")
 	}
-	b.WriteString("\n- cooldown_until: ")
-	b.WriteString(resumeAt.UTC().Format(time.RFC3339))
-	b.WriteString("\n\nAfter the cooldown, Detent permits one additional session before re-evaluating cumulative usage.")
+	b.WriteString("\n\nThis park is held until the override label is applied or the configured limits no longer apply.")
 	if label := strings.TrimSpace(o.cfg.LifetimeLimitOverrideLabel); label != "" {
 		b.WriteString(" Apply the `")
 		b.WriteString(label)
@@ -281,8 +262,8 @@ func formatLifetimeLimit(limit int64) string {
 	return strconv.FormatInt(limit, 10)
 }
 
-func lifetimeLimitRecoveryRemedy(label string, resumeAt time.Time) string {
-	remedy := "Detent will permit one additional session after " + resumeAt.UTC().Format(time.RFC3339) + "."
+func lifetimeLimitRecoveryRemedy(label string) string {
+	remedy := "Raise the configured lifetime limits above current usage."
 	if label = strings.TrimSpace(label); label != "" {
 		remedy += " Apply the " + label + " label for an explicit bypass."
 	}
@@ -313,13 +294,8 @@ func (o *Orchestrator) reconcileLifetimeLimitPark(
 	}
 	decision := evaluateLifetimeLimit(usage, o.cfg.LifetimeSessionLimit, o.cfg.LifetimeTokenLimit)
 	override := o.lifetimeLimitOverride(issue)
-	resumeAt, resumeErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(park.ResumeAt))
-	if !override && decision.reached() && (resumeErr != nil || now.Before(resumeAt)) {
-		reason := lifetimeLimitCooldownWaitingReason
-		if resumeErr != nil {
-			reason = lifetimeLimitEvidenceUnavailableReason
-		}
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, lifetimeLimitUsageSignature(usage))
+	if !override && decision.reached() {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", lifetimeLimitReason, &park, lifetimeLimitUsageSignature(usage))
 		return true, false
 	}
 
@@ -328,8 +304,7 @@ func (o *Orchestrator) reconcileLifetimeLimitPark(
 		targetState = "Todo"
 	}
 	signature := lifetimeLimitUsageSignature(usage)
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionLifetimeLimitRecovery, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, workflowActionLifetimeLimitRecovery, metadata); err != nil {
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, "lifetime_limit_recovered", workflowLaneMetadata{}); err != nil {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "transition_failed", &park, signature)
 		return true, false
 	}
@@ -337,8 +312,6 @@ func (o *Orchestrator) reconcileLifetimeLimitPark(
 		reason := "the configured lifetime limit no longer applies"
 		if override {
 			reason = "the configured override label is present"
-		} else if decision.reached() {
-			reason = "the cooldown elapsed and one additional session is permitted"
 		}
 		comment := fmt.Sprintf("Lifetime usage park cleared for %s because %s. Moved the issue to `%s`.", issueLabel(issue), reason, targetState)
 		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {

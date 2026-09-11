@@ -144,55 +144,70 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 	}
 }
 
-func TestLifetimeLimitCooldownRecoveryPermitsOneSession(t *testing.T) {
+func TestLifetimeLimitParkReconciliation(t *testing.T) {
 	t.Parallel()
-
-	cfg := lifetimeLimitTestConfig()
-	tracker := &backendCapacityTestConnector{}
-	usage := &lifetimeUsageStoreStub{spend: store.TokenSpend{Sessions: 15, TotalTokens: 12_000_000}}
-	metrics := &lifetimeWorkflowMetricsStub{}
-	orch := &Orchestrator{
-		cfg:             cfg,
-		connector:       tracker,
-		lifetimeUsage:   usage,
-		workflowMetrics: metrics,
-	}
-	state := newState(cfg)
-	issue := lifetimeLimitTestIssue()
-	parkedAt := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	orch.enforceLifetimeLimits(t.Context(), &state, []connector.Issue{issue}, parkedAt)
-	blocked := state.Blocked[issue.ID]
-	if blocked.Recovery == nil {
-		t.Fatal("blocked recovery metadata is nil")
-	}
-	park := *blocked.Recovery
-	blockedIssue := blocked.Issue
-
-	handled, transitioned := orch.reconcileLifetimeLimitPark(t.Context(), &state, blockedIssue, park, parkedAt.Add(30*time.Minute))
-	if !handled || transitioned {
-		t.Fatalf("pre-cooldown recovery = handled %t transitioned %t, want true/false", handled, transitioned)
-	}
-	if got := len(tracker.updates); got != 1 {
-		t.Fatalf("pre-cooldown tracker updates = %d, want initial park only", got)
-	}
-
-	handled, transitioned = orch.reconcileLifetimeLimitPark(t.Context(), &state, blockedIssue, park, parkedAt.Add(time.Hour))
-	if !handled || !transitioned {
-		t.Fatalf("post-cooldown recovery = handled %t transitioned %t, want true/true", handled, transitioned)
-	}
-	if got := tracker.updates[len(tracker.updates)-1].state; got != issue.State {
-		t.Fatalf("recovery target = %q, want %q", got, issue.State)
-	}
-	if _, exists := state.Blocked[issue.ID]; exists {
-		t.Fatal("blocked state retained after cooldown recovery")
-	}
-	if !orch.lifetimeLimitRecoveryPermit(t.Context(), issue, usage.spend) {
-		t.Fatal("same lifetime usage was not permitted after cooldown")
-	}
-	advanced := usage.spend
-	advanced.Sessions++
-	if orch.lifetimeLimitRecoveryPermit(t.Context(), issue, advanced) {
-		t.Fatal("cooldown recovery permitted more than one additional session")
+	for _, tt := range []struct {
+		name        string
+		override    bool
+		raised      bool
+		legacy      bool
+		wantRelease bool
+	}{
+		{name: "limit holds indefinitely"},
+		{name: "legacy timer holds indefinitely", legacy: true},
+		{name: "override releases", override: true, wantRelease: true},
+		{name: "raised limits release", raised: true, wantRelease: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := lifetimeLimitTestConfig()
+			tracker := &backendCapacityTestConnector{}
+			metrics := &lifetimeWorkflowMetricsStub{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, lifetimeUsage: &lifetimeUsageStoreStub{spend: store.TokenSpend{Sessions: 15, TotalTokens: 40_000_000}}, workflowMetrics: metrics}
+			state := newState(cfg)
+			issue := lifetimeLimitTestIssue()
+			now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+			orch.enforceLifetimeLimits(t.Context(), &state, []connector.Issue{issue}, now)
+			blocked := state.Blocked[issue.ID]
+			if blocked.Recovery == nil {
+				t.Fatal("missing park")
+			}
+			park := *blocked.Recovery
+			if tt.legacy {
+				park.ResumeAt = now.Add(time.Hour).Format(time.RFC3339Nano)
+			}
+			issue = blocked.Issue
+			if tt.override {
+				issue.Labels = []string{"ALLOW-LIFETIME-LIMIT"}
+			}
+			if tt.raised {
+				orch.cfg.LifetimeSessionLimit = 16
+				orch.cfg.LifetimeTokenLimit = 40_000_001
+			}
+			for _, elapsed := range []time.Duration{30 * time.Minute, time.Hour, 24 * time.Hour, 365 * 24 * time.Hour} {
+				handled, released := orch.reconcileLifetimeLimitPark(t.Context(), &state, issue, park, now.Add(elapsed))
+				if !handled || released != tt.wantRelease {
+					t.Fatalf("after %s: handled=%t released=%t, want release=%t", elapsed, handled, released, tt.wantRelease)
+				}
+				if tt.wantRelease {
+					if len(tracker.updates) != 2 || tracker.updates[1].state != "In Progress" {
+						t.Fatalf("updates = %#v", tracker.updates)
+					}
+					if _, ok := state.Blocked[issue.ID]; ok {
+						t.Fatal("released issue still blocked")
+					}
+					break
+				}
+				if len(tracker.updates) != 1 {
+					t.Fatalf("park released after %s: %#v", elapsed, tracker.updates)
+				}
+			}
+			for _, event := range metrics.events {
+				if strings.Contains(event.MetadataJSON, "lifetime_limit_cooldown_recovery") {
+					t.Fatal("recorded cooldown recovery")
+				}
+			}
+		})
 	}
 }
 
@@ -203,7 +218,6 @@ func lifetimeLimitTestConfig() Config {
 		TerminalStates:             []string{"Done"},
 		LifetimeSessionLimit:       15,
 		LifetimeTokenLimit:         40_000_000,
-		LifetimeLimitCooldown:      time.Hour,
 		LifetimeLimitOverrideLabel: "allow-lifetime-limit",
 	})
 }
