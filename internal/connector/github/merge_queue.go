@@ -18,7 +18,7 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
       headRefOid
       baseRefName
       timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-        nodes { ... on RemovedFromMergeQueueEvent { beforeCommit { oid } reason } }
+        nodes { ... on RemovedFromMergeQueueEvent { beforeCommit { oid } reason createdAt } }
       }
       mergeQueue { url entries { totalCount } configuration { maximumEntriesToBuild } }
       mergeQueueEntry {
@@ -98,7 +98,8 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 				BaseRefName   string `json:"baseRefName"`
 				TimelineItems struct {
 					Nodes []struct {
-						Reason       string `json:"reason"`
+						CreatedAt    *time.Time `json:"createdAt"`
+						Reason       string     `json:"reason"`
 						BeforeCommit struct {
 							OID string `json:"oid"`
 						} `json:"beforeCommit"`
@@ -147,6 +148,7 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 	}
 	if len(pullRequest.TimelineItems.Nodes) > 0 {
 		status.RemovalObserved = true
+		status.RemovedAt = cloneGitHubTime(pullRequest.TimelineItems.Nodes[0].CreatedAt)
 		status.RemovalReason = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].Reason)
 		status.RemovedHeadSHA = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].BeforeCommit.OID)
 	}

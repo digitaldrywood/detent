@@ -36,7 +36,7 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			name:        "rejected queue entry",
 			response:    mergeQueueFixture(t, "rejected_entry.json"),
 			available:   true,
-			wantRemoval: "Required check build failed",
+			wantRemoval: "failed_checks",
 		},
 		{
 			name:      "recognizes existing queue entry",
@@ -77,6 +77,11 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			if status.RemovalReason != tt.wantRemoval {
 				t.Fatalf("removal reason = %q, want %q", status.RemovalReason, tt.wantRemoval)
 			}
+			if tt.wantRemoval != "" {
+				if status.RemovedAt == nil || !status.RemovedAt.Equal(*mergeQueueTestTime("2026-09-11T03:50:00Z")) || status.RemovedHeadSHA == status.HeadSHA {
+					t.Fatalf("removal timestamp or non-head identity lost: %+v", status)
+				}
+			}
 			if !reflect.DeepEqual(status.Entry, tt.wantEntry) {
 				t.Fatalf("entry = %#v, want %#v", status.Entry, tt.wantEntry)
 			}
@@ -85,7 +90,7 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			}
 			request := server.requests()[0]
 			query := request["query"].(string)
-			if !strings.Contains(query, "configuration { maximumEntriesToBuild }") || strings.Contains(query, "mergeStateStatus") {
+			if !strings.Contains(query, "createdAt") || !strings.Contains(query, "configuration { maximumEntriesToBuild }") || strings.Contains(query, "mergeStateStatus") {
 				t.Fatalf("query = %q, want mergeQueue capability field without mergeStateStatus", query)
 			}
 			variables := request["variables"].(map[string]any)

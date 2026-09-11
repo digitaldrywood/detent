@@ -152,6 +152,7 @@ type PullRequestMergeQueue interface {
 
 type PullRequestMergeQueueStatus struct {
 	RemovalObserved   bool
+	RemovedAt         *time.Time
 	RemovedHeadSHA    string
 	RemovalReason     string
 	Depth             int
