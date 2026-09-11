@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -104,6 +105,25 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 			want:   map[string]doctorStatus{"INV-4": doctorFail, "INV-8": doctorFail},
 		},
 		{
+			name: "successful programmatic merge beside a queue",
+			statements: []string{
+				`INSERT INTO workflow_phase_events(project_id,identifier,phase_name,previous_phase_name,reason,started_at) VALUES ('alpha','owner/repo#4','Done','Merging','merge_worker_programmatic_merge','` + recent + `')`,
+				`INSERT INTO lane_ledger(project_id,written_at) VALUES ('alpha','` + recent + `')`,
+			},
+			policy: ghconnector.BranchMergePolicy{Branch: "main", MergeQueue: true},
+			want:   map[string]doctorStatus{"INV-4": doctorFail},
+		},
+		{
+			name: "post-turn runner error is not an infrastructure park",
+			statements: []string{
+				`INSERT INTO work_attempts(project_id,identifier,error_class,completed_at) VALUES ('alpha','owner/repo#8','runner_error','` + recent + `')`,
+				`INSERT INTO workflow_phase_events(project_id,identifier,phase_name,previous_phase_name,reason,started_at) VALUES ('alpha','owner/repo#8','Blocked','In Progress','terminal_attempt_retry_limit','` + later + `')`,
+				`INSERT INTO lane_ledger(project_id,written_at) VALUES ('alpha','` + recent + `')`,
+			},
+			policy: ghconnector.BranchMergePolicy{Branch: "main"},
+			want:   map[string]doctorStatus{"INV-2": doctorOK},
+		},
+		{
 			name:   "rules unavailable on plan",
 			policy: ghconnector.BranchMergePolicy{RulesUnavailableOnPlan: true},
 			want:   map[string]doctorStatus{"INV-8": doctorOK},
@@ -132,20 +152,47 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 func TestDoctorInvariantWorkflowVerdict(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name string
-		yaml string
-		want doctorStatus
+		name    string
+		sources map[string][]byte
+		want    doctorStatus
+		detail  string
 	}{
-		{"no pull_request trigger", "on:\n  merge_group:\n    types: [checks_requested]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n", doctorOK},
-		{"placeholders only", "on:\n  pull_request:\n    types: [opened]\njobs:\n  placeholders:\n    if: github.event_name == 'pull_request'\n  verify:\n    if: github.event_name != 'pull_request'\n", doctorOK},
-		{"real jobs on every push", "on:\n  pull_request:\njobs:\n  lint:\n    runs-on: ubuntu-latest\n  verify:\n    if: github.event.pull_request.draft == false\n", doctorWarn},
-		{"malformed", "on: [\n", doctorWarn},
+		{"no pull_request trigger", map[string][]byte{"ci.yml": []byte("on:\n  merge_group:\n    types: [checks_requested]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request trigger"},
+		{"placeholders only", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\n    types: [opened]\njobs:\n  placeholders:\n    if: github.event_name == 'pull_request'\n  verify:\n    if: github.event_name != 'pull_request'\n")}, doctorOK, "placeholder"},
+		{"real jobs on every push", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  lint:\n    runs-on: ubuntu-latest\n  verify:\n    if: github.event.pull_request.draft == false\n")}, doctorWarn, "ci.yml:lint, ci.yml:verify"},
+		{"second workflow file runs on pull requests", map[string][]byte{
+			"ci.yml":     []byte("on:\n  merge_group:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"),
+			"extra.yaml": []byte("on:\n  pull_request:\njobs:\n  smoke:\n    runs-on: ubuntu-latest\n"),
+		}, doctorWarn, "extra.yaml:smoke"},
+		{"malformed", map[string][]byte{"ci.yml": []byte("on: [\n")}, doctorWarn, "could not be parsed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := doctorInvariantWorkflowVerdict("alpha", []byte(tt.yaml)); got.Status != tt.want {
-				t.Fatalf("status = %s (%s), want %s", got.Status, got.Detail, tt.want)
+			got := doctorInvariantWorkflowVerdict("alpha", tt.sources)
+			if got.Status != tt.want || !strings.Contains(got.Detail, tt.detail) {
+				t.Fatalf("status = %s (%s), want %s containing %q", got.Status, got.Detail, tt.want, tt.detail)
 			}
 		})
+	}
+}
+
+func TestDoctorInvariantWorkflowCheckReadsEverySourceRootWorkflow(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workflows := filepath.Join(root, ".github", "workflows")
+	if err := os.MkdirAll(workflows, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflows, "ci.yml"), []byte("on:\n  merge_group:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflows, "preview.yaml"), []byte("on:\n  pull_request:\njobs:\n  preview:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := doctorInvariantWorkflowCheck("alpha", root); got.Status != doctorWarn || !strings.Contains(got.Detail, "preview.yaml:preview") {
+		t.Fatalf("check = %#v", got)
+	}
+	if got := doctorInvariantWorkflowCheck("alpha", filepath.Join(root, "missing")); got.Status != doctorOK {
+		t.Fatalf("missing checkout = %#v", got)
 	}
 }
