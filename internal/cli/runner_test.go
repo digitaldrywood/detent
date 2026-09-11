@@ -178,6 +178,14 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 }
 
 func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
+	// The Claude stub leaves no orphan processes. Keep its route assertions
+	// independent of host-wide lsof scans, which can time out on busy macOS hosts.
+	scanDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scanDir, "lsof"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatalf("write empty workspace scan stub: %v", err)
+	}
+	t.Setenv("PATH", scanDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	source := initRunnerSourceRepo(t)
 	claudeCommand, argsPath, stdinPath := writeRunnerClaudeStub(t)
 	sessionStore := &runnerSessionStore{sessionID: 833}
