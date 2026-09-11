@@ -14,7 +14,12 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
-const doctorInvariantWindow = 7 * 24 * time.Hour
+const (
+	doctorInvariantWindow = 7 * 24 * time.Hour
+	// A queue may have been enabled recently; only merges after the previous
+	// day are evidence that Detent bypassed it.
+	doctorInvariantQueueWindow = 24 * time.Hour
+)
 
 // checkDoctorInvariantEvidence reports runtime evidence against docs/invariants.md.
 // Each check is named by its invariant ID so a failing fleet points at the
@@ -27,7 +32,7 @@ func checkDoctorInvariantEvidence(ctx context.Context, id string, project global
 	db, err := deps.openSQLiteReadOnly(ctx, storePath)
 	if err != nil {
 		checks = append(checks, doctorInvariantCheck(id, "INV-1", "single lane writer", doctorOK, "runtime store unavailable; no lane evidence to measure ("+err.Error()+")"))
-		return append(checks, doctorInvariantRepositoryChecks(ctx, id, project, cfg, deps, nil, since)...)
+		return append(checks, doctorInvariantRepositoryChecks(ctx, id, project, cfg, deps, nil, deps.now().Add(-doctorInvariantQueueWindow).UTC().Format(time.RFC3339Nano))...)
 	}
 	defer func() {
 		if closeErr := db.Close(); closeErr != nil {
@@ -62,7 +67,7 @@ func checkDoctorInvariantEvidence(ctx context.Context, id string, project global
 		checks = append(checks, doctorInvariantCheck(id, "INV-9", "retired mechanisms", doctorOK, "no retired reason codes recorded in 7d"))
 	}
 
-	return append(checks, doctorInvariantRepositoryChecks(ctx, id, project, cfg, deps, db, since)...)
+	return append(checks, doctorInvariantRepositoryChecks(ctx, id, project, cfg, deps, db, deps.now().Add(-doctorInvariantQueueWindow).UTC().Format(time.RFC3339Nano))...)
 }
 
 func doctorInvariantCheck(id, inv, short string, status doctorStatus, detail string) doctorCheck {
@@ -110,11 +115,11 @@ func doctorInvariantQueueCheck(ctx context.Context, id, repository, branch strin
 		return doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorWarn, "evidence query failed: "+err.Error())
 	}
 	if failed+merged > 0 {
-		check := doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorFail, fmt.Sprintf("%s: merge queue present on %s but %d programmatic merge(s) succeeded and %d failed outside it in 7d", repository, branch, merged, failed))
+		check := doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorFail, fmt.Sprintf("%s: merge queue present on %s but %d programmatic merge(s) succeeded and %d failed outside it in 24h", repository, branch, merged, failed))
 		check.Hint = "Merges must go through the queue (docs/invariants.md INV-4)."
 		return check
 	}
-	return doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorOK, repository+": merge queue present on "+branch+"; no programmatic merge attempts in 7d")
+	return doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorOK, repository+": merge queue present on "+branch+"; no programmatic merge attempts in 24h")
 }
 
 // doctorInvariantWorkflowCheck reports whether any of the project's own
@@ -172,8 +177,7 @@ func doctorInvariantWorkflowVerdict(id string, sources map[string][]byte) doctor
 		}
 		triggered = true
 		for job, spec := range workflow.Jobs {
-			condition := strings.TrimSpace(spec.If)
-			if strings.Contains(condition, "github.event_name != 'pull_request'") || condition == "github.event_name == 'pull_request'" {
+			if doctorWorkflowJobSkipsPullRequests(spec.If) {
 				continue
 			}
 			realOnPR = append(realOnPR, file+":"+job)
@@ -188,6 +192,16 @@ func doctorInvariantWorkflowVerdict(id string, sources map[string][]byte) doctor
 	check := doctorInvariantCheck(id, "INV-5", "CI once per ready head", doctorWarn, fmt.Sprintf("%d job(s) run on every pull_request push (%s); the default is one run per ready head, but this is the project's choice", len(realOnPR), strings.Join(sortedStrings(realOnPR), ", ")))
 	check.Hint = "docs/invariants.md INV-5: guard jobs with github.event_name != 'pull_request' or gate CI with gate.ci_trigger_label."
 	return check
+}
+
+// A job stays off pull_request events when its condition excludes them or
+// names only other events; the bare pull_request equality is a placeholder.
+func doctorWorkflowJobSkipsPullRequests(condition string) bool {
+	condition = strings.TrimSpace(condition)
+	if condition == "github.event_name == 'pull_request'" || strings.Contains(condition, "github.event_name != 'pull_request'") {
+		return true
+	}
+	return strings.Contains(condition, "github.event_name ==") && !strings.Contains(condition, "'pull_request'")
 }
 
 func mapKeys(values map[string][]byte) []string {
