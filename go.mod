@@ -31,9 +31,9 @@ require (
 	github.com/spf13/pflag v1.0.9
 	github.com/templui/templui v1.12.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.45.0
-	golang.org/x/net v0.55.0
+	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
@@ -41,6 +41,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.51.0
 )
+
+require golang.org/x/mod v0.38.0 // indirect
 
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect
@@ -93,6 +95,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/tools v0.48.0
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

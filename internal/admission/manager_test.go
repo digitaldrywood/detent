@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -4307,7 +4308,7 @@ func admissionTestSettings(tracker IssueStore, backend runner.Backend) Settings 
 		MaxOpenProposals:    10,
 		ProposalExpiryDays:  7,
 	}
-	return Settings{
+	settings := Settings{
 		ProjectID:      "detent",
 		Config:         cfg,
 		Criteria:       admissionTestCriteria(),
@@ -4315,6 +4316,10 @@ func admissionTestSettings(tracker IssueStore, backend runner.Backend) Settings 
 		Runner:         backend,
 		Issues:         tracker,
 	}
+	if tracker != nil {
+		settings.LaneWriter = tracker.UpdateIssueState
+	}
+	return settings
 }
 
 func admissionTestEffortRubric() config.AdmissionEffortRubric {
@@ -4605,5 +4610,39 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 		if !strings.Contains(untrackedComment, want) {
 			t.Fatalf("proposalComment(untracked) missing %q: %s", want, untrackedComment)
 		}
+	}
+}
+
+func TestAdmissionRequiresLedgerWriter(t *testing.T) {
+	t.Parallel()
+	for _, injected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("injected=%t", injected), func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+			settings.LaneWriter = nil
+			calls := 0
+			writerErr := errors.New("ledger write rejected")
+			if injected {
+				settings.LaneWriter = func(context.Context, string, string) error { calls++; return writerErr }
+			}
+			backend := openManagerTestStore(t)
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+			proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+			err := manager.admitProposal(t.Context(), settings, issue, proposal, admissionmodel.Decision{})
+			if injected {
+				if !errors.Is(err, writerErr) || calls != 1 {
+					t.Fatalf("admit = %v, calls = %d", err, calls)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "orchestrator lane writer") {
+				t.Fatalf("admit = %v", err)
+			}
+			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+			if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+				t.Fatalf("tracker mutated without ledger: %v, %v", issues, err)
+			}
+		})
 	}
 }

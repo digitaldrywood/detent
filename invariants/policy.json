@@ -12,7 +12,11 @@
       "TestHumanQuestionRestartAndConcurrentRequests",
       "TestHumanQuestionReplyAuthorization",
       "TestHumanQuestionIndependentRework",
-      "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane"
+      "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
+      "TestPreTurnFailuresDrainInstance",
+      "TestObservedLanePreTurnFailureRemainsInstanceOwned",
+      "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
+      "TestMachineIssueTool"
     ],
     "./internal/release": [
       "TestMandatoryEvidence"
@@ -22,6 +26,26 @@
       "TestStartupRecoveryAttemptsOneUpdatePerVersion",
       "TestReplaceBinaryRollsBackWhenVerificationFails",
       "TestVerifyMinisignSignatureRejectsTamper"
+    ],
+    "./internal/invariants": [
+      "TestRepositorySources",
+      "TestRepositoryWorkflow",
+      "TestSourceViolations",
+      "TestWorkflowViolations",
+      "TestMutationDocuments"
+    ],
+    "./internal/admission": [
+      "TestAdmissionRequiresLedgerWriter"
+    ],
+    "./internal/cli": [
+      "TestPrepareCodexCommandForServiceIsolatesInstructions",
+      "TestPrepareWorkerCodexHomeExistingInstructions",
+      "TestDoctorMergeQueueRecordedHistory"
+    ],
+    "./internal/connector/github": [
+      "TestMachineIssueDuplicate",
+      "TestMachineIssueSeparateConnectors",
+      "TestMachineOriginSurvivesBodyUpdates"
     ]
   }
 }

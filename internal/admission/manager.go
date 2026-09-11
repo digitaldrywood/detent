@@ -1651,7 +1651,7 @@ func (m *Manager) admitProposal(
 	}
 	writeLane := settings.LaneWriter
 	if writeLane == nil {
-		writeLane = settings.Issues.UpdateIssueState
+		return errors.New("admission requires an orchestrator lane writer")
 	}
 	if err := writeLane(ctx, proposal.IssueID, proposal.TargetState); err != nil {
 		return fmt.Errorf("admit backlog issue %s to %s: %w", proposal.IssueIdentifier, proposal.TargetState, err)

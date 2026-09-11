@@ -4,6 +4,8 @@
 
 Fixes #N
 
+Invariants touched: none, or INV IDs with a link to the same-PR invariant edit.
+
 ## UI Surface Contract
 
 - [ ] N/A, or the linked issue explicitly authorizes any high-impact UI surface, layout, density, first-viewport, or responsive visibility tradeoff.
