@@ -162,7 +162,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleGitHubMonitorCompletion(ctx, state, event, running) {
 		return
 	}
-	if mergeWorkerIssue(running.Issue) && nativeMergeQueueOwnsIssue(state, running.Issue) {
+	if mergeWorkerIssue(running.Issue) && nativeMergeQueueOwnsIssue(state, running.Issue, o.cfg) {
 		o.completeNativeMergeQueueWorker(ctx, state, event, running, running.Issue)
 		return
 	}
@@ -1440,7 +1440,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if state != nil && state.Draining {
 		return false
 	}
-	if nativeMergeQueueOwnsIssue(state, issue) {
+	if nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
 		return true
 	}
@@ -1462,7 +1462,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	issue = refreshedIssue
-	if nativeMergeQueueOwnsIssue(state, issue) {
+	if nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
 		return true
 	}
