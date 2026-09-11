@@ -86,6 +86,13 @@ exercises native queue delegation. `TestRepositoryWorkflow` requires
 their chosen settings; Detent detects the queue and uses its serialized merge
 worker where no queue exists. These tests do not inspect live GitHub settings.
 
+`detent doctor` reports runtime evidence: with a queue present, any
+`merge_worker_programmatic_merge` lane event or `programmatic_merge_failed`
+attempt in the last 24 hours fails the check. The store records no queue
+activation time, so a merge from before a queue was enabled can fail the
+check until it ages out of that day; a second queue removal routing to Human
+Review is the budget, not a bypass.
+
 **Change:** Edit INV-4 and the queue delegation tests in the same PR before
 changing the ownership or fallback behavior.
 
@@ -105,6 +112,12 @@ The worker convention is to finish local validation/review before marking ready;
 Rework can produce a new ready head. Workflow assertions cannot deduplicate
 manual reruns or repeated ready/reopened events. Other projects may opt into
 label gating or their own CI convention.
+
+`detent doctor` also reads every workflow under the project's source root and
+warns when a job runs on pull_request events: a job is exempt only when its
+`if` contains `github.event_name != 'pull_request'`, is exactly the placeholder
+equality, or is made of `||` alternatives that each require some other
+`github.event_name`. Projects may keep per-push CI; the verdict is a warning.
 
 **Change:** Edit INV-5 and workflow assertions in the same PR when changing these
 triggers, draft handling, or the documented manual-run exception.

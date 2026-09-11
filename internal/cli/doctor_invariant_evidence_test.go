@@ -114,6 +114,16 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 			want:   map[string]doctorStatus{"INV-4": doctorFail},
 		},
 		{
+			name: "programmatic merges before the queue window are not evidence",
+			statements: []string{
+				`INSERT INTO workflow_phase_events(project_id,identifier,phase_name,previous_phase_name,reason,started_at) VALUES ('alpha','owner/repo#5','Done','Merging','merge_worker_programmatic_merge','` + now.Add(-36*time.Hour).Format(time.RFC3339Nano) + `')`,
+				`INSERT INTO work_attempts(project_id,identifier,error_class,completed_at) VALUES ('alpha','owner/repo#5','programmatic_merge_failed','` + now.Add(-30*time.Hour).Format(time.RFC3339Nano) + `')`,
+				`INSERT INTO lane_ledger(project_id,written_at) VALUES ('alpha','` + recent + `')`,
+			},
+			policy: ghconnector.BranchMergePolicy{Branch: "main", MergeQueue: true},
+			want:   map[string]doctorStatus{"INV-4": doctorOK},
+		},
+		{
 			name: "post-turn runner error is not an infrastructure park",
 			statements: []string{
 				`INSERT INTO work_attempts(project_id,identifier,error_class,completed_at) VALUES ('alpha','owner/repo#8','runner_error','` + recent + `')`,
@@ -160,10 +170,12 @@ func TestDoctorInvariantWorkflowVerdict(t *testing.T) {
 		{"no pull_request trigger", map[string][]byte{"ci.yml": []byte("on:\n  merge_group:\n    types: [checks_requested]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request trigger"},
 		{"placeholders only", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\n    types: [opened]\njobs:\n  placeholders:\n    if: github.event_name == 'pull_request'\n  verify:\n    if: github.event_name != 'pull_request'\n")}, doctorOK, "placeholder"},
 		{"real jobs on every push", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  lint:\n    runs-on: ubuntu-latest\n  verify:\n    if: github.event.pull_request.draft == false\n")}, doctorWarn, "ci.yml:lint, ci.yml:verify"},
+		{"push-only integration jobs", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\n  push:\njobs:\n  placeholders:\n    if: github.event_name == 'pull_request'\n  portability:\n    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'\n  verify:\n    if: github.event_name != 'pull_request'\n")}, doctorOK, "placeholder"},
 		{"second workflow file runs on pull requests", map[string][]byte{
 			"ci.yml":     []byte("on:\n  merge_group:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"),
 			"extra.yaml": []byte("on:\n  pull_request:\njobs:\n  smoke:\n    runs-on: ubuntu-latest\n"),
 		}, doctorWarn, "extra.yaml:smoke"},
+		{"other-event alternative does not exempt", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  smoke:\n    if: github.event_name == 'push' || github.event.action == 'opened'\n")}, doctorWarn, "ci.yml:smoke"},
 		{"malformed", map[string][]byte{"ci.yml": []byte("on: [\n")}, doctorWarn, "could not be parsed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
