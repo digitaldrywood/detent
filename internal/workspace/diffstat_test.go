@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -635,5 +636,49 @@ func TestIsMissingWorkspaceErrorIgnoresUnmarkedNotExist(t *testing.T) {
 	err := &os.PathError{Op: "read", Path: filepath.Join(t.TempDir(), "index"), Err: os.ErrNotExist}
 	if IsMissingWorkspaceError(err) {
 		t.Fatalf("IsMissingWorkspaceError(%v) = true, want false", err)
+	}
+}
+
+func TestLocalGitRecoveryStateExcludesBaseCommits(t *testing.T) {
+	t.Parallel()
+	for _, withWork := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unpushed_work_%t", withWork), func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			oldHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			runGit(t, source, "commit", "--allow-empty", "-m", "base advancement")
+			runGit(t, source, "push", "origin", "main")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "base-comparison", BaseRef: oldHead, ProgressBaseRef: "main", PullRequestHeadSHA: oldHead}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withWork {
+				runGit(t, info.Path, "commit", "--allow-empty", "-m", "issue work")
+			}
+			got, err := backend.(RecoveryStateProvider).RecoveryState(t.Context(), info, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if withWork {
+				want = 1
+			}
+			if !got.PullRequestComparisonAvailable || len(got.CommitsNotInPullRequest) != want || got.UnpushedCommits != want {
+				t.Fatalf("RecoveryState = %+v, want %d work commits", got, want)
+			}
+			if withWork && !strings.Contains(got.CommitsNotInPullRequest[0], "issue work") {
+				t.Fatal(got.CommitsNotInPullRequest)
+			}
+		})
 	}
 }

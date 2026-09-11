@@ -65,7 +65,11 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	unpushedCommits, unpushedCommitRefs, err := gitUnpushedCommitEvidence(ctx, normalized.Path)
+	base, err := l.localProgressBase(ctx, normalized.Path, issue)
+	if err != nil {
+		return RecoveryState{}, fmt.Errorf("resolve recovery base: %w", err)
+	}
+	unpushedCommits, unpushedCommitRefs, err := gitUnpushedCommitEvidence(ctx, normalized.Path, base)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -87,6 +91,7 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 		normalized.Path,
 		head,
 		issue.PullRequestHeadSHA,
+		base,
 	)
 	if err != nil {
 		return RecoveryState{}, err
@@ -222,7 +227,7 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, err
 	return gitDiffStatWithEnv(ctx, workspacePath, env, "HEAD")
 }
 
-func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string) (int, []string, error) {
+func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base string) (int, []string, error) {
 	remoteRefs, err := runGitAt(ctx, workspacePath, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes")
 	if err != nil {
 		return 0, nil, fmt.Errorf("git list remote refs: %w", err)
@@ -230,7 +235,7 @@ func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string) (int, 
 	if strings.TrimSpace(remoteRefs) == "" {
 		return 0, nil, nil
 	}
-	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", "HEAD", "--not", "--remotes", base)
 	if err != nil {
 		return 0, nil, fmt.Errorf("git count unpushed commits: %w", err)
 	}
@@ -241,7 +246,7 @@ func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string) (int, 
 	if count == 0 {
 		return 0, nil, nil
 	}
-	refs, err := gitCommitEvidence(ctx, workspacePath, "HEAD", "--not", "--remotes")
+	refs, err := gitCommitEvidence(ctx, workspacePath, "HEAD", "--not", "--remotes", base)
 	if err != nil {
 		return 0, nil, fmt.Errorf("git list unpushed commits: %w", err)
 	}
@@ -269,6 +274,7 @@ func gitCommitsNotInPullRequest(
 	workspacePath string,
 	head string,
 	pullRequestHead string,
+	base string,
 ) ([]string, bool, error) {
 	head = strings.TrimSpace(head)
 	pullRequestHead = strings.TrimSpace(pullRequestHead)
@@ -281,7 +287,7 @@ func gitCommitsNotInPullRequest(
 	if _, err := runGitAt(ctx, workspacePath, "cat-file", "-e", pullRequestHead+"^{commit}"); err != nil {
 		return nil, false, nil
 	}
-	refs, err := gitCommitEvidence(ctx, workspacePath, head, "--not", pullRequestHead)
+	refs, err := gitCommitEvidence(ctx, workspacePath, head, "--not", pullRequestHead, base)
 	if err != nil {
 		return nil, false, fmt.Errorf("git compare workspace commits to pull request: %w", err)
 	}

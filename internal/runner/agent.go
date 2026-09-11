@@ -4068,6 +4068,12 @@ func effectiveModel(values ...string) string {
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
+	if issue.PullRequest != nil {
+		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
+		case "CLOSED", "MERGED":
+			issue.PullRequest = nil
+		}
+	}
 	baseRef := ""
 	progressBaseRef := ""
 	if issue.PullRequest != nil {
