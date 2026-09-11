@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -69,13 +68,7 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 					t.Logf("workspace holder: pid=%d cwd=%q lock=%q; outside holder: pid=%d cwd=%q lock=%q",
 						backend.command.Process.Pid, backend.command.Dir, lockPath,
 						observer.command.Process.Pid, observer.command.Dir, observerLockPath)
-					if runtime.GOOS != "linux" {
-						probeCtx, cancelProbe := context.WithTimeout(ctx, 5*time.Second)
-						probeStarted := time.Now()
-						output, err := exec.CommandContext(probeCtx, "lsof", "-FpcRfn", "+D", path).CombinedOutput()
-						t.Logf("workspace file matches before reap: elapsed=%s context_error=%v error=%v\n%s", time.Since(probeStarted), probeCtx.Err(), err, output)
-						cancelProbe()
-					}
+
 					reapStarted := time.Now()
 					reaped, reapErr = workspace.ReapProcesses(ctx, path, grace)
 					t.Logf("workspace reap: elapsed=%s count=%d error=%v holder_exited=%t observer_exited=%t",
