@@ -663,16 +663,19 @@ func TestRunInstallerCommand(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		script     string
-		missing    bool
-		cancelWith error
-		expired    bool
-		wantStage  string
-		wantError  error
-		wantExit   int
-		wantStdout string
-		wantStderr string
+		name               string
+		script             string
+		missing            bool
+		cancelWith         error
+		expired            bool
+		wantStage          string
+		wantError          error
+		wantExit           int
+		wantStdout         string
+		wantStderr         string
+		wantChild          bool
+		exitDuringSnapshot bool
+		snapshotAfterExit  bool
 	}{
 		{name: "success", script: "printf stdout; printf stderr >&2", wantStdout: "stdout", wantStderr: "stderr"},
 		{name: "expired before start", expired: true, wantStage: "start", wantError: context.DeadlineExceeded},
@@ -680,6 +683,9 @@ func TestRunInstallerCommand(t *testing.T) {
 		{name: "exit failure", script: "printf stdout; printf stderr >&2; exit 23", wantStage: "wait", wantExit: 23, wantStdout: "stdout", wantStderr: "stderr"},
 		{name: "canceled running command", script: "printf ready; read line <&3", cancelWith: context.Canceled, wantStage: "wait", wantError: context.Canceled, wantStdout: "ready"},
 		{name: "deadline during wait", script: "printf ready; read line <&3", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready"},
+		{name: "deadline in nested command", script: "sh -c 'printf ready; read line <&3' & wait", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", wantChild: true},
+		{name: "exit during deadline snapshot", script: "printf ready; read line <&3; exit 0", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", exitDuringSnapshot: true},
+		{name: "completed before snapshot", script: "printf ready; read line <&3; exit 0", cancelWith: context.DeadlineExceeded, wantStdout: "ready", exitDuringSnapshot: true, snapshotAfterExit: true},
 		{name: "descendant holds stdout", script: "(read line <&3) 2>/dev/null & printf stdout; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStdout: "stdout"},
 		{name: "descendant holds stderr", script: "(read line <&3) >/dev/null & printf stderr >&2; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStderr: "stderr"},
 	}
@@ -719,8 +725,37 @@ func TestRunInstallerCommand(t *testing.T) {
 				cmd.Stdout = installerReadyWriter{output: &stdout, cancel: func() { cancel(tt.cancelWith) }}
 			}
 
+			snapshot := installerProcessEvidence
+			observedExit := false
+			if tt.exitDuringSnapshot {
+				snapshot = func(group int) installerProcessSnapshot {
+					var evidence installerProcessSnapshot
+					if !tt.snapshotAfterExit {
+						evidence = installerProcessEvidence(group)
+					}
+					_ = release.Close()
+					deadline := time.NewTimer(10 * time.Second)
+					defer deadline.Stop()
+					tick := time.NewTicker(time.Millisecond)
+					defer tick.Stop()
+					for {
+						if errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+							observedExit = true
+							if tt.snapshotAfterExit {
+								return installerProcessEvidence(group)
+							}
+							return evidence
+						}
+						select {
+						case <-deadline.C:
+							return evidence
+						case <-tick.C:
+						}
+					}
+				}
+			}
 			done := make(chan error, 1)
-			go func() { done <- runInstallerCommand(ctx, cmd) }()
+			go func() { done <- runInstallerCommandWithEvidence(ctx, cmd, snapshot) }()
 			select {
 			case err = <-done:
 			case <-time.After(30 * time.Second):
@@ -734,6 +769,9 @@ func TestRunInstallerCommand(t *testing.T) {
 				t.Fatal("installer command did not finish; output pipe remained open")
 			}
 			_ = inherited.Close()
+			if tt.exitDuringSnapshot && !observedExit {
+				t.Fatal("command did not exit while collecting process evidence")
+			}
 			if deadlineErr := exited.SetReadDeadline(time.Now().Add(10 * time.Second)); deadlineErr != nil {
 				t.Fatal(deadlineErr)
 			}
@@ -749,6 +787,15 @@ func TestRunInstallerCommand(t *testing.T) {
 			}
 			if tt.wantError != nil && !errors.Is(err, tt.wantError) {
 				t.Fatalf("runInstallerCommand() error = %v, want %v", err, tt.wantError)
+			}
+			if tt.cancelWith != nil && tt.wantError != nil {
+				want := fmt.Sprintf("pid=%d ppid=", cmd.Process.Pid)
+				if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "executable=") {
+					t.Fatalf("runInstallerCommand() error = %v, want process evidence containing %q and executable", err, want)
+				}
+			}
+			if tt.wantChild && !strings.Contains(err.Error(), fmt.Sprintf("ppid=%d pgid=%d", cmd.Process.Pid, cmd.Process.Pid)) {
+				t.Fatalf("runInstallerCommand() error = %v, want nested command captured before cleanup", err)
 			}
 			if tt.wantExit != 0 {
 				var exitErr *exec.ExitError
@@ -775,9 +822,15 @@ func (w installerReadyWriter) Write(p []byte) (int, error) {
 }
 
 func runInstallerCommand(ctx context.Context, cmd *exec.Cmd) error {
+	return runInstallerCommandWithEvidence(ctx, cmd, installerProcessEvidence)
+}
+
+func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapshot func(int) installerProcessSnapshot) error {
 	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var processEvidence installerProcessSnapshot
 	cmd.Cancel = func() error {
+		processEvidence = snapshot(cmd.Process.Pid)
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
@@ -792,10 +845,16 @@ func runInstallerCommand(ctx context.Context, cmd *exec.Cmd) error {
 	startDuration := time.Since(started)
 	waiting := time.Now()
 	err := cmd.Wait()
+	if err == nil && processEvidence.live {
+		err = context.Cause(ctx)
+	}
 	if err == nil {
 		return nil
 	}
 	waitDuration := time.Since(waiting)
+	if processEvidence.description == "" {
+		processEvidence = snapshot(cmd.Process.Pid)
+	}
 	if killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
 		err = errors.Join(err, fmt.Errorf("clean up command process group: %w", killErr))
 	}
@@ -803,8 +862,76 @@ func runInstallerCommand(ctx context.Context, cmd *exec.Cmd) error {
 	if errors.Is(err, exec.ErrWaitDelay) {
 		stage = "output drain"
 	}
-	return fmt.Errorf("command %q args=%q pid=%d stage=%s start=%s wait=%s: %w", cmd.Path, cmd.Args[1:], cmd.Process.Pid, stage,
-		startDuration.Round(time.Millisecond), waitDuration.Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
+	return fmt.Errorf("command %q args=%q pid=%d stage=%s start=%s wait=%s processes=%q: %w", cmd.Path, cmd.Args[1:], cmd.Process.Pid, stage,
+		startDuration.Round(time.Millisecond), waitDuration.Round(time.Millisecond), processEvidence.description, errors.Join(err, context.Cause(ctx)))
+}
+
+type installerProcessSnapshot struct {
+	description string
+	live        bool
+}
+
+func installerProcessEvidence(group int) installerProcessSnapshot {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,pgid=,stat=,comm=")
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.WaitDelay = time.Second
+	output, err := cmd.Output()
+	if err != nil {
+		return installerProcessSnapshot{description: fmt.Sprintf("snapshot unavailable: %v", errors.Join(err, context.Cause(ctx)))}
+	}
+	return installerProcessGroup(string(output), group)
+}
+
+func installerProcessGroup(output string, group int) installerProcessSnapshot {
+	var processes []string
+	var snapshot installerProcessSnapshot
+	for line := range strings.SplitSeq(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[2] != strconv.Itoa(group) {
+			continue
+		}
+		processes = append(processes, fmt.Sprintf("pid=%s ppid=%s pgid=%s state=%s executable=%s", fields[0], fields[1], fields[2], fields[3], strings.Join(fields[4:], " ")))
+		if !strings.HasPrefix(fields[3], "Z") {
+			snapshot.live = true
+		}
+	}
+	if len(processes) == 0 {
+		return installerProcessSnapshot{description: "no process group members observed"}
+	}
+	snapshot.description = strings.Join(processes, "; ")
+	return snapshot
+}
+
+func TestInstallerProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		output   string
+		want     string
+		wantLive bool
+	}{
+		{name: "empty", want: "no process group members observed"},
+		{name: "unrelated groups", output: "123 1 123 S unrelated\n456 1 456 R other", want: "no process group members observed"},
+		{name: "malformed rows", output: "\n100 1 100\n100 1 invalid S sh", want: "no process group members observed"},
+		{name: "shell and child", output: " 100 1 100 S /bin/sh\n101 100 100 R /bin/rm\n102 1 102 S unrelated", want: "pid=100 ppid=1 pgid=100 state=S executable=/bin/sh; pid=101 ppid=100 pgid=100 state=R executable=/bin/rm", wantLive: true},
+		{name: "executable contains spaces", output: "101 100 100 S /path with spaces/tool", want: "pid=101 ppid=100 pgid=100 state=S executable=/path with spaces/tool", wantLive: true},
+		{name: "child after shell exit", output: "101 1 100 S rm", want: "pid=101 ppid=1 pgid=100 state=S executable=rm", wantLive: true},
+		{name: "zombie only", output: "100 1 100 Z sh", want: "pid=100 ppid=1 pgid=100 state=Z executable=sh"},
+		{name: "zombie parent with live child", output: "100 1 100 Z sh\n101 100 100 S rm", want: "pid=100 ppid=1 pgid=100 state=Z executable=sh; pid=101 ppid=100 pgid=100 state=S executable=rm", wantLive: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := installerProcessGroup(tt.output, 100)
+			if got.description != tt.want || got.live != tt.wantLive {
+				t.Fatalf("installerProcessGroup() = %+v, want description %q and live=%t", got, tt.want, tt.wantLive)
+			}
+		})
+	}
 }
 
 func reservePort(t *testing.T) int {
