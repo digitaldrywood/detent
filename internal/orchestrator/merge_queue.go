@@ -132,6 +132,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			continue
 		}
 		if !nativeMergeQueueCandidate(candidate, o.cfg) {
+			o.logNativeMergeQueueExcluded(state, candidate)
 			continue
 		}
 		if status.AdmissionLimit <= 0 || status.Depth >= status.AdmissionLimit {
@@ -165,9 +166,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 
 func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
-		return false
-	}
-	if gateRequiresPullRequest(cfg.AutoPromote.Gate) {
 		return false
 	}
 	if gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled {
@@ -310,8 +308,46 @@ func (o *Orchestrator) logNativeMergeQueueFailure(issue connector.Issue, reason 
 // nativeMergeQueueOwnsIssue keeps provider-owned work out of every worker path,
 // including snapshots that omit the queue entry. Availability expires only when
 // a fresh provider inspection confirms the queue is unavailable.
-func nativeMergeQueueOwnsIssue(state *State, issue connector.Issue) bool {
-	return nativeMergeQueueHasEntry(state, issue) || state != nil && state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)].Available
+func nativeMergeQueueOwnsIssue(state *State, issue connector.Issue, cfg Config) bool {
+	if nativeMergeQueueHasEntry(state, issue) {
+		return true
+	}
+	return state != nil && state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)].Available && nativeMergeQueueCandidate(issue, cfg)
+}
+
+func nativeMergeQueueExclusionReason(issue connector.Issue, cfg Config) string {
+	switch {
+	case issue.PullRequest == nil:
+		return "pull_request_missing"
+	case gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled:
+		return "security_audit_enabled"
+	case pullRequestHydrationBlocksProgress(issue.PullRequest):
+		return "pull_request_hydration_unavailable"
+	case issue.PullRequest.Draft:
+		return "draft_pull_request"
+	case !mergeWorkerCIGreen(issue.PullRequest.CIStatus):
+		return "ci_not_green"
+	}
+	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
+		return "merge_approval_revoked"
+	}
+	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
+		return "ci_trigger_revoked"
+	}
+	return "not_a_candidate"
+}
+
+func (o *Orchestrator) logNativeMergeQueueExcluded(state *State, issue connector.Issue) {
+	if o.logger == nil || state == nil || issue.PullRequest == nil {
+		return
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	head := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	if state.nativeMergeQueueExcluded[issueID] == head {
+		return
+	}
+	state.nativeMergeQueueExcluded[issueID] = head
+	o.logger.Info("merge_worker_native_queue_excluded", mergeWorkerLogAttrs(issue, "reason", nativeMergeQueueExclusionReason(issue, o.cfg))...)
 }
 
 func nativeMergeQueueHasEntry(state *State, issue connector.Issue) bool {

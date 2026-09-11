@@ -1543,7 +1543,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	out := make([]connector.Issue, 0, len(candidates))
 	selectedByState := map[string]int{}
 	for _, issue := range candidates {
-		if nativeMergeQueueOwnsIssue(state, issue) || mergeFairnessBlocks(state, stickyID, issue, now) {
+		if nativeMergeQueueOwnsIssue(state, issue, o.cfg) || mergeFairnessBlocks(state, stickyID, issue, now) {
 			continue
 		}
 		issueID := strings.TrimSpace(issue.ID)

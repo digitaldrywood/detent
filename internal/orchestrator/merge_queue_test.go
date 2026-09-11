@@ -344,7 +344,7 @@ func TestDelegateNativeMergeQueueIssuesRefreshesQueueOwnership(t *testing.T) {
 				t.Fatalf("queue mutations: enqueue=%v dequeue=%v", tracker.enqueued, tracker.dequeued)
 			}
 			for _, issue := range second {
-				if got := nativeMergeQueueOwnsIssue(&state, issue); got != (tt.wantWorkers == 0) {
+				if got := nativeMergeQueueOwnsIssue(&state, issue, orch.cfg); got != (tt.wantWorkers == 0) {
 					t.Fatalf("%s ownership=%t", issue.ID, got)
 				}
 			}
@@ -868,7 +868,7 @@ func TestNativeMergeQueueWorkerHandoff(t *testing.T) {
 			if tracker.inspections != 1 {
 				t.Fatalf("inspections=%d", tracker.inspections)
 			}
-			if !nativeMergeQueueOwnsIssue(&state, issue) {
+			if !nativeMergeQueueOwnsIssue(&state, issue, orch.cfg) {
 				t.Fatal("lost queue ownership")
 			}
 			if strings.Contains(logs.String(), "merge_worker_retry_exhausted") {
