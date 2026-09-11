@@ -56,7 +56,6 @@ mutation DetentEnqueuePullRequest($pullRequestId: ID!, $expectedHeadOid: GitObje
       }
     }
   }
-  rateLimit { limit used remaining cost resetAt }
 }`
 
 const dequeuePullRequestMutation = `
@@ -64,7 +63,6 @@ mutation DetentDequeuePullRequest($mergeQueueEntryId: ID!) {
   dequeuePullRequest(input: {id: $mergeQueueEntryId}) {
     mergeQueueEntry { id }
   }
-  rateLimit { limit used remaining cost resetAt }
 }`
 
 type mergeQueueEntryNode struct {
