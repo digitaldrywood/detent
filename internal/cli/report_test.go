@@ -121,4 +121,3 @@ func TestClassifyReportReadErrorNamesOperationsEndpoint(t *testing.T) {
 		t.Fatalf("unauthorized = %v, want shared classification", got)
 	}
 }
-
