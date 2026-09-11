@@ -61,9 +61,6 @@ type workspaceProcessScanner func(context.Context, string) ([]int, error)
 
 func scanOwnedWorkspaceProcessIDs(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
 	pids, err := scan(ctx, path)
-	if err != nil {
-		return nil, err
-	}
 	owned := make([]int, 0, len(pids))
 	seen := make(map[int]struct{}, len(pids))
 	for _, pid := range pids {
@@ -76,7 +73,7 @@ func scanOwnedWorkspaceProcessIDs(ctx context.Context, path string, scan workspa
 		seen[pid] = struct{}{}
 		owned = append(owned, pid)
 	}
-	return owned, nil
+	return owned, err
 }
 
 type Backend interface {
