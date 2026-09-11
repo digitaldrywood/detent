@@ -34,6 +34,7 @@ type OperatorMoveResult struct {
 	ClaimCleared         bool
 	RetryCleared         bool
 	FailureMemoryCleared bool
+	DispatchLoopCleared  bool
 }
 
 type operatorMoveRequest struct {
@@ -135,6 +136,7 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 	delete(state.AutoPromoteDecisions, issueID)
 
 	result := OperatorMoveResult{Reconciled: true}
+	result.DispatchLoopCleared = resetDispatchLoopState(state, issue, at)
 	if blocked, ok := state.Blocked[issueID]; ok && blocked.Source == BlockedSourceProjectStatus {
 		delete(state.Blocked, issueID)
 		result.BlockedCleared = true
@@ -184,6 +186,7 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 			"claim_cleared", result.ClaimCleared,
 			"retry_cleared", result.RetryCleared,
 			"failure_memory_cleared", result.FailureMemoryCleared,
+			"dispatch_loop_cleared", result.DispatchLoopCleared,
 		)
 	}
 	return result
@@ -251,6 +254,9 @@ func operatorMoveEventMessage(issue connector.Issue, fromState string, toState s
 	message := "reconciled " + issueLabel(issue) + " after operator Kanban move from " + fromState + " to " + toState
 	if result.BlockedCleared {
 		message += "; cleared stale project-status runtime block"
+	}
+	if result.DispatchLoopCleared {
+		message += "; cleared acknowledged dispatch-loop history"
 	}
 	return message
 }

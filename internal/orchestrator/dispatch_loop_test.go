@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -186,6 +187,104 @@ func TestEvaluateDispatchLoopProgress(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEvaluateDispatchLoopProgressStartsAtOneAfterOperatorMove(t *testing.T) {
+	t.Parallel()
+
+	movedAt := time.Date(2026, 8, 18, 14, 30, 0, 0, time.UTC)
+	operatorMove := store.WorkflowPhaseEvent{
+		ID:                2,
+		IssueID:           "issue-loop",
+		PhaseType:         store.WorkflowPhaseTypeLane,
+		PhaseName:         "Rework",
+		PreviousPhaseName: "Blocked",
+		Reason:            "kanban_move",
+		Status:            "entered",
+		StartedAt:         movedAt,
+	}
+	automaticMove := operatorMove
+	automaticMove.Reason = workflowActionBlockedReadyPRReconciliation
+	tests := []struct {
+		name      string
+		metrics   *dispatchLoopTimelineRecorder
+		wantCount int
+		wantBlock bool
+	}{
+		{
+			name:      "kanban move",
+			metrics:   &dispatchLoopTimelineRecorder{timeline: store.WorkflowTimeline{Events: []store.WorkflowPhaseEvent{operatorMove}}},
+			wantCount: 1,
+		},
+		{
+			name: "park acknowledgement CLI",
+			metrics: &dispatchLoopTimelineRecorder{summary: &store.ParkSummary{
+				ProjectID: "detent", IssueID: "issue-loop", ParkCount: 1, AcknowledgedParkSequence: 1, AcknowledgedAt: &movedAt,
+			}},
+			wantCount: 1,
+		},
+		{
+			name:      "automatic unpark retains history",
+			metrics:   &dispatchLoopTimelineRecorder{timeline: store.WorkflowTimeline{Events: []store.WorkflowPhaseEvent{automaticMove}}},
+			wantCount: 3,
+			wantBlock: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			history := []store.WorkAttempt{
+				dispatchLoopHistoryAttempt(2, store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, implementProgressDiffStats{Status: "clean"}, nil, 2),
+				dispatchLoopHistoryAttempt(1, store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, implementProgressDiffStats{Status: "clean"}, nil, 1),
+			}
+			orch := &Orchestrator{
+				cfg:             Config{Project: scheduler.ProjectCandidate{ID: "detent"}},
+				workAttempts:    &implementProgressAttemptStore{history: history},
+				workflowMetrics: tt.metrics,
+			}
+			running := dispatchLoopRunning("Rework", DiffStats{Status: "clean"})
+			running.DispatchLoopStart = dispatchLoopTestStart("Rework", autoPromoteReworkSignature{}, implementProgressDiffStats{HeadSHA: "same-workspace-head", Status: "clean"})
+			decision := dispatchLoopDecision("Rework", store.WorkAttemptTerminalSuccess, autoPromoteReworkSignature{}, DiffStats{Status: "clean"})
+
+			got := orch.evaluateDispatchLoopProgress(t.Context(), running, decision)
+
+			if got.ConsecutiveNoProgress != tt.wantCount || got.Block != tt.wantBlock {
+				t.Fatalf("evaluateDispatchLoopProgress() = count %d block %v reason %q, want count %d block %v", got.ConsecutiveNoProgress, got.Block, got.Reason, tt.wantCount, tt.wantBlock)
+			}
+		})
+	}
+}
+
+type dispatchLoopTimelineRecorder struct {
+	timeline store.WorkflowTimeline
+	summary  *store.ParkSummary
+}
+
+func (r *dispatchLoopTimelineRecorder) RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseEvent) (int64, error) {
+	return 0, nil
+}
+
+func (r *dispatchLoopTimelineRecorder) IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error) {
+	return r.timeline, nil
+}
+
+func (r *dispatchLoopTimelineRecorder) IssueParkSummary(context.Context, store.IssueIdentity) (store.ParkSummary, error) {
+	if r.summary == nil {
+		return store.ParkSummary{}, store.ErrNotFound
+	}
+	return *r.summary, nil
+}
+
+func (r *dispatchLoopTimelineRecorder) IssueParkSummaries(context.Context, []store.IssueIdentity) (map[store.IssueIdentity]store.ParkSummary, error) {
+	return map[store.IssueIdentity]store.ParkSummary{}, nil
+}
+
+func (r *dispatchLoopTimelineRecorder) ListIssueParkSummaries(context.Context, string) ([]store.ParkSummary, error) {
+	return []store.ParkSummary{}, nil
+}
+
+func (r *dispatchLoopTimelineRecorder) AcknowledgeIssueParks(context.Context, store.IssueIdentity, int64, time.Time) error {
+	return nil
 }
 
 func TestEvaluateDispatchLoopProgressCreditsWithinAttemptProgress(t *testing.T) {

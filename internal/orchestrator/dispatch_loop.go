@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -79,6 +82,7 @@ func (o *Orchestrator) evaluateDispatchLoopProgress(
 		}
 		return decision
 	}
+	attempts = dispatchLoopAttemptsAfter(attempts, o.dispatchLoopAcknowledgedAt(ctx, decision.Issue))
 
 	current := dispatchLoopFingerprintFromDecision(decision, currentLane)
 	withinAttemptAdvanced, withinAttemptComplete := dispatchLoopWithinAttemptProgress(
@@ -109,6 +113,102 @@ func (o *Orchestrator) evaluateDispatchLoopProgress(
 	decision.Block = true
 	decision.DependencyDeferral = false
 	return decision
+}
+
+func (o *Orchestrator) dispatchLoopAcknowledgedAt(ctx context.Context, issue connector.Issue) time.Time {
+	var acknowledgedAt time.Time
+	if timeline, ok := o.issueWorkflowTimeline(ctx, issue); ok {
+		for _, event := range timeline.Events {
+			if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") ||
+				normalizeState(event.PreviousPhaseName) != normalizeState(blockedStatusState) || !recoveryParkEventMatchesIssue(event, issue) {
+				continue
+			}
+			metadata, _ := workflowLaneMetadataFromJSON(event.MetadataJSON)
+			if operatorAcknowledgesRecoveryPark(event, metadata) {
+				acknowledgedAt = laterDispatchLoopTime(acknowledgedAt, workflowLaneTransitionAt(event))
+			}
+		}
+	}
+	if reader, ok := o.workflowMetrics.(store.ParkSummaryStore); ok {
+		summary, err := reader.IssueParkSummary(ctx, store.IssueIdentity{
+			ProjectID:  o.workflowMetricsProjectID(),
+			IssueID:    issue.ID,
+			Identifier: issue.Identifier,
+			IssueURL:   issue.URL,
+		})
+		if err == nil && summary.ParkCount > 0 && summary.AcknowledgedParkSequence >= summary.ParkCount && summary.AcknowledgedAt != nil {
+			acknowledgedAt = laterDispatchLoopTime(acknowledgedAt, *summary.AcknowledgedAt)
+		}
+	}
+	return acknowledgedAt
+}
+
+func operatorAcknowledgesRecoveryPark(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata) bool {
+	if event.Reason == "operator_move" && metadata.Provenance.Origin == provenance.OriginHuman {
+		return true
+	}
+	if metadata.Provenance.Initiator == provenance.InitiatorHuman && metadata.Provenance.Basis == provenance.BasisAuthenticatedHuman {
+		return true
+	}
+	switch event.Reason {
+	case "kanban_move", "kanban_move_field":
+		return true
+	default:
+		return false
+	}
+}
+
+func dispatchLoopAttemptsAfter(attempts []store.WorkAttempt, acknowledgedAt time.Time) []store.WorkAttempt {
+	if acknowledgedAt.IsZero() {
+		return attempts
+	}
+	kept := make([]store.WorkAttempt, 0, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.CompletedAt.IsZero() || attempt.CompletedAt.After(acknowledgedAt) {
+			kept = append(kept, attempt)
+		}
+	}
+	return kept
+}
+
+func resetDispatchLoopState(state *State, issue connector.Issue, acknowledgedAt time.Time) bool {
+	if state == nil || acknowledgedAt.IsZero() {
+		return false
+	}
+	key := workflowIssueIdentityKey(issue)
+	if key == "" {
+		return false
+	}
+	if state.dispatchLoopResets == nil {
+		state.dispatchLoopResets = map[string]time.Time{}
+	}
+	state.dispatchLoopResets[key] = laterDispatchLoopTime(state.dispatchLoopResets[key], acknowledgedAt)
+	cleared := false
+	for _, attempt := range state.WorkAttempts {
+		matches := snapshotIssueMatches(telemetryIssue(issue, 0, 0, acknowledgedAt, nil), attempt.IssueID, attempt.Identifier, attempt.IssueURL)
+		if matches && strings.EqualFold(strings.TrimSpace(attempt.Status), string(store.WorkAttemptStatusTerminal)) &&
+			attempt.CompletedAt != nil && !attempt.CompletedAt.After(acknowledgedAt) {
+			record, ok := implementProgressRecordFromAnyAttempt(store.WorkAttempt{
+				TerminalState:      store.WorkAttemptTerminalState(attempt.TerminalState),
+				WorkerMetadataJSON: attempt.WorkerMetadataJSON,
+			})
+			cleared = cleared || ok && record.ConsecutiveNoProgress > 0
+		}
+	}
+	return cleared
+}
+
+func dispatchLoopSnapshotAttemptVisible(issue telemetry.Issue, attempt telemetry.WorkAttempt, resets map[string]time.Time) bool {
+	key := workflowIssueIdentityKey(connector.Issue{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL})
+	resetAt := resets[key]
+	return resetAt.IsZero() || attempt.CompletedAt == nil || attempt.CompletedAt.After(resetAt)
+}
+
+func laterDispatchLoopTime(current, candidate time.Time) time.Time {
+	if candidate.After(current) {
+		return candidate
+	}
+	return current
 }
 
 func dispatchLoopPreservesSpecificDecision(decision implementCompletionProgressDecision) bool {

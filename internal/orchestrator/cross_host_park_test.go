@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestCrossHostParkRecovery(t *testing.T) {
@@ -362,6 +363,12 @@ func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
 			}
 			for range 2 {
 				state := newState(host.cfg)
+				state.BoardIssues = []connector.Issue{issue}
+				attempt := dispatchLoopHistoryAttempt(4, store.WorkAttemptTerminalNoProgress, autoPromoteReworkSignature{}, implementProgressDiffStats{Status: "clean"}, nil, 4)
+				attempt.IssueID = issue.ID
+				attempt.Identifier = issue.Identifier
+				attempt.CompletedAt = now.Add(-time.Minute)
+				state.WorkAttempts = []telemetry.WorkAttempt{telemetryWorkAttempt(attempt, now)}
 				state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: dispatchLoopDetectedReason, Recovery: park.BlockedRecovery}
 				if independent {
 					state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceDependency, Reason: "dependency remains open"}
@@ -370,6 +377,16 @@ func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
 				blocked, held := state.Blocked[issue.ID]
 				if held != independent || independent && blocked.Source != BlockedSourceDependency {
 					t.Fatalf("acknowledged park reconciliation = %#v, held %v", blocked, held)
+				}
+				if got := len(state.WorkAttempts); got != 1 {
+					t.Fatalf("retained work attempts = %d, want complete history", got)
+				}
+				wantLoops := 0
+				if independent {
+					wantLoops = 1
+				}
+				if got := len(state.Snapshot(now).DispatchLoops); got != wantLoops {
+					t.Fatalf("dispatch-loop snapshots = %d, want %d", got, wantLoops)
 				}
 			}
 			if !independent {

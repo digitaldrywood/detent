@@ -90,6 +90,13 @@ dispatch refresh (#2509). Closed tracker state releases ordinary dependencies
 without requiring a terminal lane observation; human completion evidence remains
 required. This consolidates dependency readiness without adding a recovery loop.
 
+An operator acknowledgement that moves an issue out of Blocked resets that issue's
+dispatch-loop history at the acknowledgement timestamp (#2517). Kanban moves and
+`detent issue --acknowledge-parks` share the existing recovery-park acknowledgement
+predicate and durable record; automatic unparks and unrelated issue history remain
+untouched. This consolidates operator retry intent with the existing acknowledgement
+path instead of adding another breaker or recovery loop.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

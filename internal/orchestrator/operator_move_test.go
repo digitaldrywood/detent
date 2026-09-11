@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
@@ -34,6 +36,24 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	state.InstantFailures[unrelated.ID] = InstantFailure{Issue: unrelated, Count: 1}
 	state.RepeatedFailures[moved.ID] = RepeatedFailure{Issue: moved, Count: 2}
 	state.RepeatedFailures[unrelated.ID] = RepeatedFailure{Issue: unrelated, Count: 1}
+	state.WorkAttempts = []telemetry.WorkAttempt{
+		{
+			AttemptID:          4,
+			IssueID:            moved.ID,
+			Identifier:         moved.Identifier,
+			Status:             string(store.WorkAttemptStatusTerminal),
+			CompletedAt:        timePointer(at.Add(-time.Minute)),
+			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "no_progress", Reason: dispatchLoopDetectedReason, TrackerState: "Rework", ConsecutiveNoProgress: 4, NoProgressLimit: 3}}),
+		},
+		{
+			AttemptID:          2,
+			IssueID:            unrelated.ID,
+			Identifier:         unrelated.Identifier,
+			Status:             string(store.WorkAttemptStatusTerminal),
+			CompletedAt:        timePointer(at.Add(-2 * time.Minute)),
+			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "no_progress", Reason: dispatchLoopDetectedReason, TrackerState: "Blocked", ConsecutiveNoProgress: 2, NoProgressLimit: 3}}),
+		},
+	}
 	state.FailureBreaker.Failures[class] = []ProjectFailure{
 		{IssueID: unrelated.ID, At: at.Add(-time.Minute)},
 		{IssueID: moved.ID, At: at},
@@ -59,6 +79,7 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 		ClaimCleared:         true,
 		RetryCleared:         true,
 		FailureMemoryCleared: true,
+		DispatchLoopCleared:  true,
 	}) {
 		t.Fatalf("handleOperatorMove() = %#v", result)
 	}
@@ -108,6 +129,16 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	}
 	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "operator_kanban_move_reconciled" {
 		t.Fatalf("RecentEvents = %#v, want operator move audit event", state.RecentEvents)
+	}
+	if loops := snapshot.DispatchLoops; len(loops) != 1 || loops[0].IssueID != unrelated.ID {
+		t.Fatalf("DispatchLoops = %#v, want only unrelated issue", loops)
+	}
+	progress := snapshot.BoardIssues[0].CompletionProgress
+	if progress.Outcome != "no_progress" || progress.Reason != dispatchLoopDetectedReason || progress.ConsecutiveNoProgress != 0 || progress.NoProgressLimit != 3 {
+		t.Fatalf("moved issue CompletionProgress = %#v, want preserved result with reset counter", progress)
+	}
+	if got := len(snapshot.WorkAttempts); got != 2 {
+		t.Fatalf("WorkAttempts len = %d, want complete history", got)
 	}
 }
 
