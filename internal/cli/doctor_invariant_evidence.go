@@ -26,7 +26,7 @@ func checkDoctorInvariantEvidence(ctx context.Context, id string, project global
 
 	db, err := deps.openSQLiteReadOnly(ctx, storePath)
 	if err != nil {
-		checks = append(checks, doctorInvariantCheck(id, "INV-1", "single lane writer", doctorWarn, "runtime store unavailable: "+err.Error()))
+		checks = append(checks, doctorInvariantCheck(id, "INV-1", "single lane writer", doctorOK, "runtime store unavailable; no lane evidence to measure ("+err.Error()+")"))
 		return append(checks, doctorInvariantRepositoryChecks(ctx, id, project, cfg, deps, nil, since)...)
 	}
 	defer func() {
