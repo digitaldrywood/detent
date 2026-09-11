@@ -27,7 +27,7 @@ func TestCombinedCoveragePublishesOnlyCurrentSuccessfulRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"pass", "hub-fail", "rest-fail", "list-fail", "missing-hub", "overlap", "changed-selection", "rest-race-fail"} {
+	for _, mode := range []string{"pass", "hub-fail", "rest-fail", "list-fail", "missing-hub", "overlap", "changed-selection", "rest-race-fail", "orchestrator-fail"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -38,7 +38,7 @@ set -eu
 if [ "$1" = list ]; then
     [ "$FIXTURE_MODE" != list-fail ] || exit 1
     if [ "$2" = ./... ]; then
-        printf '%s\n' github.com/digitaldrywood/detent/internal/hubserver example.com/rest
+        printf '%s\n' github.com/digitaldrywood/detent/internal/hubserver github.com/digitaldrywood/detent/internal/orchestrator example.com/rest
     elif [ "$FIXTURE_MODE" = changed-selection ] && [ "$2" = -race ]; then
         printf '%s\n' changed.go
     else
@@ -49,11 +49,18 @@ elif [ "$1 $2" = 'run ./tools/covermerge' ]; then
     exec "$FIXTURE_MERGER" "$@"
 else
     [ -z "${DETENT_API_TOKEN:-}" ] || exit 9
+    if [ "$1" = run ] && [ "${!#}" = ./internal/orchestrator ]; then
+        [ "$FIXTURE_MODE" != orchestrator-fail ]
+        exit
+    fi
     group=rest
     if [ "$1" = run ]; then group=hub; fi
     profile_mode=set
     if [ "$group" = hub ]; then profile_mode=atomic; fi
     if [ "$1 $2" = 'test -race' ]; then
+        for argument in "$@"; do
+            [ "$argument" != github.com/digitaldrywood/detent/internal/orchestrator ] || exit 7
+        done
         [ "$FIXTURE_MODE" != rest-race-fail ]
         exit
     fi
@@ -90,7 +97,7 @@ fi
 				t.Fatal(err)
 			}
 			for _, input := range []string{"1", "2"} {
-				command := exec.CommandContext(t.Context(), bash, "gate.sh", "2", "15m", outputPath)
+				command := exec.CommandContext(t.Context(), bash, "gate.sh", "2", "15m", outputPath, "4", "20m")
 				command.Dir = dir
 				command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "DETENT_API_TOKEN=fixture-token", "FIXTURE_MODE="+mode, "FIXTURE_INPUT="+input, "FIXTURE_MERGER="+merger)
 				output, err := command.CombinedOutput()

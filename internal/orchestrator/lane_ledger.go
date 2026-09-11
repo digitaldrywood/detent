@@ -48,13 +48,17 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
 		return
 	}
+	errorClass := ""
+	if issueConfigurationFailure(event.Err, "", "") {
+		errorClass = "issue_configuration"
+	}
 	terminal := terminalStateForRun(event.Err, event.Result.FinalState)
 	cleanliness := o.evaluateCompletionCleanliness(ctx, running, running.Issue, running.DiffStats)
 	metadata := completionCleanlinessMetadata(cleanliness)
 	if terminal == store.WorkAttemptTerminalSuccess && (!cleanliness.Attempted || cleanliness.Outcome == completionCleanlinessAccepted) {
 		resetWorkerFailureBreakers(state, event.IssueID)
 	}
-	if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, "", errorString(event.Err), "completed", string(terminal), metadata) && o.workAttempts != nil && running.WorkAttemptID > 0 {
+	if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, errorClass, errorString(event.Err), "completed", string(terminal), metadata) && o.workAttempts != nil && running.WorkAttemptID > 0 {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist completed work attempt failed"))
 		return
 	}

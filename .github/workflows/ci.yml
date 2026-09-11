@@ -54,7 +54,7 @@ jobs:
   verify:
     name: Verify (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -91,6 +91,15 @@ jobs:
           name: hub-race-evidence
           path: tmp/hub-race-evidence
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload orchestrator race evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orchestrator-race-evidence
+          path: tmp/orchestrator-race-evidence
+          if-no-files-found: warn
           retention-days: 14
 
   test-cover:
