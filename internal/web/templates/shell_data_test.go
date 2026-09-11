@@ -248,7 +248,7 @@ func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
 	}{
 		{id: "primary", items: []string{"board"}},
 		{id: "monitor", label: "Monitor", items: []string{"fleet", "diagnostics", "health"}},
-		{id: "insights", label: "Insights", items: []string{"reports", "library"}},
+		{id: "insights", label: "Insights", items: []string{"reports", "operations", "library"}},
 		{id: "system", label: "System", items: []string{"analytics", "api-keys", "settings"}},
 	}
 	if len(groups) != len(wantGroups) {
