@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   schedule:
@@ -21,6 +22,7 @@ concurrency:
 
 jobs:
   lint:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Lint
     runs-on: ubuntu-latest
     steps:
@@ -53,8 +55,22 @@ jobs:
 
   verify:
     name: Verify (ubuntu-latest)
+    needs: [verify-fast, verify-race]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 1
+    steps:
+      - name: Require every Verify job to succeed
+        env:
+          FAST_RESULT: ${{ needs.verify-fast.result }}
+          RACE_RESULT: ${{ needs.verify-race.result }}
+        run: test "$FAST_RESULT" = success && test "$RACE_RESULT" = success
+
+  verify-fast:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    name: Verify build and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -79,30 +95,48 @@ jobs:
         run: go test ./...
 
       - name: Repeat subprocess lifecycle readiness
+        if: github.event_name != 'pull_request'
         run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
 
-      - name: Race test
-        run: make test-race
-
-      - name: Upload Hub race evidence
+  verify-race:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    name: Verify race (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: false
+      - name: Cache race build and modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: verify-race-${{ runner.os }}-${{ runner.arch }}-go1.26.6-${{ matrix.shard }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            verify-race-${{ runner.os }}-${{ runner.arch }}-go1.26.6-${{ matrix.shard }}-
+      - name: Race test shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: bash scripts/ci-race-shard.sh "$SHARD"
+      - name: Upload race evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hub-race-evidence
-          path: tmp/hub-race-evidence
+          name: race-evidence-${{ matrix.shard }}
+          path: tmp/*-race-evidence
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload orchestrator race evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: orchestrator-race-evidence
-          path: tmp/orchestrator-race-evidence
-          if-no-files-found: warn
-          retention-days: 14
-
   test-cover:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Test Coverage
     runs-on: ubuntu-latest
     steps:
@@ -117,6 +151,7 @@ jobs:
         run: make test-cover-packages
 
   security:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Security
     runs-on: ubuntu-latest
     steps:
@@ -131,6 +166,7 @@ jobs:
         run: make security
 
   browser-visual:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Browser Visual
     runs-on: ubuntu-latest
     timeout-minutes: 15
