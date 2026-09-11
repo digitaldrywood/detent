@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/local"
@@ -3381,34 +3383,71 @@ func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
 
 func TestManagerRecoversAfterRunnerErrors(t *testing.T) {
 	t.Parallel()
+	for _, kind := range []string{"authentication", backendcapacity.StartupTimeoutKind, backendcapacity.StartupFailureKind, "usage_limit_exceeded", "server_overloaded"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 4, 12, 50, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			wantErr := errors.New("backend authentication failed")
+			deferred := kind == "usage_limit_exceeded" || kind == "server_overloaded"
+			if kind != "authentication" {
+				details := backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: kind}
+				if kind == "usage_limit_exceeded" {
+					details.Type = backendcapacity.ErrorTypeUsageLimit
+				}
+				if !deferred {
+					details.Startup = &backendcapacity.StartupEvidence{Stage: "thread/start"}
+				}
+				wantErr = backendcapacity.NewError(backendcapacity.Scope{BackendKind: "codex"}, details, errors.New("private backend output"))
+			}
+			agent := &recoveringAdmissionRunner{errorsRemaining: 4, err: wantErr}
+			backend := openManagerTestStore(t)
+			settings := admissionTestSettings(tracker, agent)
+			settings.Scheduler = scheduler.NewCountingSemaphore(scheduler.Config{Capacity: 1})
+			manager := newAdmissionTestManager(
+				t,
+				settings,
+				backend,
+				func() time.Time { return now },
+			)
 
-	now := time.Date(2026, 9, 4, 12, 50, 0, 0, time.UTC)
-	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
-	wantErr := errors.New("backend authentication failed")
-	agent := &recoveringAdmissionRunner{errorsRemaining: 4, err: wantErr}
-	backend := openManagerTestStore(t)
-	manager := newAdmissionTestManager(
-		t,
-		admissionTestSettings(tracker, agent),
-		backend,
-		func() time.Time { return now },
-	)
+			for attempt := 1; attempt <= 4; attempt++ {
+				result, err := manager.RunOnce(t.Context())
+				if deferred {
+					if err != nil || result.DeferredReason != "agent_backend_capacity" {
+						t.Fatalf("RunOnce() capacity deferral = %#v, %v", result, err)
+					}
+				} else if !errors.Is(err, wantErr) || result.DeferredReason != "" {
+					t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+				}
+				if len(result.Malformed) != 0 {
+					t.Fatalf("backend error recorded as malformed output: %#v", result.Malformed)
+				}
+			}
+			result, err := manager.RunOnce(t.Context())
+			if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID || agent.calls != 5 {
+				t.Fatalf("corrected RunOnce() = %#v, %v; runner calls = %d", result, err, agent.calls)
+			}
+			runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 5)
+			wantOutcome := "failed"
+			if deferred {
+				wantOutcome = "deferred"
+			}
+			if err != nil || len(runs) != 5 || runs[1].Outcome != wantOutcome || len(runs[1].Malformed) != 0 {
+				t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+			}
+			if !deferred && !strings.Contains(runs[1].Error, "runner_error") {
+				t.Fatalf("failed run lost error: %#v", runs[1])
+			}
+			if strings.Contains(runs[1].Error, "private backend output") {
+				t.Fatalf("admission history contains private output: %s", runs[1].Error)
+			}
+			if backendcapacity.IsStartupFailureKind(kind) && !strings.Contains(runs[1].Error, kind) {
+				t.Fatalf("admission history lost startup kind: %s", runs[1].Error)
+			}
 
-	for attempt := 1; attempt <= 4; attempt++ {
-		result, err := manager.RunOnce(t.Context())
-		if !errors.Is(err, wantErr) || len(result.Malformed) != 0 {
-			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
-		}
-	}
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID || agent.calls != 5 {
-		t.Fatalf("corrected RunOnce() = %#v, %v; runner calls = %d", result, err, agent.calls)
-	}
-	runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 5)
-	if err != nil || len(runs) != 5 || runs[1].Outcome != "failed" || len(runs[1].Malformed) != 0 ||
-		!strings.Contains(runs[1].Error, "runner_error") {
-		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+		})
 	}
 }
 
@@ -4269,7 +4308,7 @@ func admissionTestSettings(tracker IssueStore, backend runner.Backend) Settings 
 		MaxOpenProposals:    10,
 		ProposalExpiryDays:  7,
 	}
-	return Settings{
+	settings := Settings{
 		ProjectID:      "detent",
 		Config:         cfg,
 		Criteria:       admissionTestCriteria(),
@@ -4277,6 +4316,10 @@ func admissionTestSettings(tracker IssueStore, backend runner.Backend) Settings 
 		Runner:         backend,
 		Issues:         tracker,
 	}
+	if tracker != nil {
+		settings.LaneWriter = tracker.UpdateIssueState
+	}
+	return settings
 }
 
 func admissionTestEffortRubric() config.AdmissionEffortRubric {
@@ -4567,5 +4610,39 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 		if !strings.Contains(untrackedComment, want) {
 			t.Fatalf("proposalComment(untracked) missing %q: %s", want, untrackedComment)
 		}
+	}
+}
+
+func TestAdmissionRequiresLedgerWriter(t *testing.T) {
+	t.Parallel()
+	for _, injected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("injected=%t", injected), func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+			settings.LaneWriter = nil
+			calls := 0
+			writerErr := errors.New("ledger write rejected")
+			if injected {
+				settings.LaneWriter = func(context.Context, string, string) error { calls++; return writerErr }
+			}
+			backend := openManagerTestStore(t)
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+			proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+			err := manager.admitProposal(t.Context(), settings, issue, proposal, admissionmodel.Decision{})
+			if injected {
+				if !errors.Is(err, writerErr) || calls != 1 {
+					t.Fatalf("admit = %v, calls = %d", err, calls)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "orchestrator lane writer") {
+				t.Fatalf("admit = %v", err)
+			}
+			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+			if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+				t.Fatalf("tracker mutated without ledger: %v, %v", issues, err)
+			}
+		})
 	}
 }

@@ -901,7 +901,6 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.max_session_tokens` | `integer` | `0` | No | must be greater than or equal to 0 |
 | `agent.max_turn_duration_ms` | `integer` | `0` | No | must be greater than or equal to 0 |
 | `agent.max_turns` | `integer` | `20` | No | must be greater than 0 |
-| `agent.merge_fallback_max_duration_ms` | `integer` | `1200000` | No | must be greater than 0 |
 | `agent.merge_fast_path` | `object` | `see child fields` | No | None |
 | `agent.merge_fast_path.enabled` | `boolean` | `true` | No | None |
 | `agent.merge_fast_path.fairness_age_seconds` | `integer` | `7200` | No | must be greater than 0 |
@@ -1160,6 +1159,9 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `observability.staleness.webhook.timeout_ms` | `integer` | `5000` | No | None |
 | `observability.staleness.webhook.url` | `string` | `none` | No | must be an absolute http or https URL |
 | `observability.stranded_active_threshold_seconds` | `integer` | `600` | No | must be greater than 0 |
+| `operator` | `object` | `see child fields` | No | None |
+| `operator.actions` | `list<string>` | `["return_retired_parks","clear_closed_dependencies","restore_stuck_merging"]` | No | must contain only return_retired_parks, clear_closed_dependencies, restore_stuck_merging, merge_when_wedged |
+| `operator.merge_wedge_seconds` | `integer` | `7200` | No | must be greater than 0 |
 | `plan` | `object` | `see child fields` | No | agents.backends.options.permission_mode must not be plan for unattended workers |
 | `plan.approval_label` | `string` | `"plan-approved"` | No | None |
 | `plan.enabled` | `boolean` | `false` | No | None |
@@ -1385,6 +1387,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].pull_request.latest_codex_review_submitted_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry` | `object` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.base_sha` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.batching` | `object` | `see child fields` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.batching.max_group_size` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.batching.min_group_size` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.batching.min_group_wait_seconds` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.depth` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.enqueued_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.estimated_time_to_merge_seconds` | `integer` | `0 when configured` | No | None |

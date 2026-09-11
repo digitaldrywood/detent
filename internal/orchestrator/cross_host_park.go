@@ -92,6 +92,10 @@ func (o *Orchestrator) trackerRecoveryParkHold(ctx context.Context, issue connec
 			return "tracker_recovery_park_unavailable"
 		}
 	}
+	return o.trackerRecoveryParkCommentsHold(issue, comments)
+}
+
+func (o *Orchestrator) trackerRecoveryParkCommentsHold(issue connector.Issue, comments []connector.IssueComment) string {
 	settled := map[string]bool{}
 	for _, comment := range comments {
 		park, valid := parseTrackerRecoveryPark(comment.Body)

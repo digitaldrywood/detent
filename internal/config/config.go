@@ -84,7 +84,6 @@ const (
 	DefaultOverloadRetryDelayMS              = 45000
 	DefaultMergeWorkerStartupTimeoutMS       = 4 * 60 * 1000
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
-	DefaultMergeFallbackMaxDurationMS        = 20 * 60 * 1000
 	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
 	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
@@ -177,6 +176,7 @@ type Config struct {
 	Intake            intake.Config        `yaml:"intake,omitempty"`
 	Retro             retro.Config         `yaml:"retro,omitempty"`
 	Routines          []Routine            `yaml:"routines,omitempty"`
+	Operator          Operator             `yaml:"operator,omitempty"`
 	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
 
 	configuredFields map[string]struct{}
@@ -345,7 +345,6 @@ type Agent struct {
 	CheckpointIntervalMS         int                          `yaml:"checkpoint_interval_ms"`
 	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
-	MergeFallbackMaxDurationMS   int                          `yaml:"merge_fallback_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
 	NoProgressTokenLimit         int64                        `yaml:"no_progress_token_limit"`
@@ -1035,6 +1034,74 @@ func (c Claims) Validate(prefix string) []string {
 	return problems
 }
 
+const (
+	OperatorActionReturnRetiredParks      = "return_retired_parks"
+	OperatorActionClearClosedDependencies = "clear_closed_dependencies"
+	OperatorActionRestoreStuckMerging     = "restore_stuck_merging"
+	OperatorActionMergeWhenWedged         = "merge_when_wedged"
+	DefaultOperatorMergeWedgeSeconds      = 2 * 60 * 60
+)
+
+// Operator allowlists the routine's action kinds. The first three are the
+// consolidated recovery loops and default on; merge_when_wedged defaults off.
+type Operator struct {
+	Actions           []string `yaml:"actions"`
+	MergeWedgeSeconds int      `yaml:"merge_wedge_seconds"`
+}
+
+func DefaultOperatorActions() []string {
+	return []string{OperatorActionReturnRetiredParks, OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging}
+}
+
+func OperatorActionKinds() []string {
+	return []string{OperatorActionReturnRetiredParks, OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging, OperatorActionMergeWhenWedged}
+}
+
+func (o *Operator) Normalize() {
+	if o == nil {
+		return
+	}
+	if o.Actions == nil {
+		o.Actions = DefaultOperatorActions()
+	}
+	seen := map[string]bool{}
+	actions := make([]string, 0, len(o.Actions))
+	for _, action := range o.Actions {
+		action = strings.ToLower(strings.TrimSpace(action))
+		if action == "" || seen[action] {
+			continue
+		}
+		seen[action] = true
+		actions = append(actions, action)
+	}
+	o.Actions = actions
+	if o.MergeWedgeSeconds == 0 {
+		o.MergeWedgeSeconds = DefaultOperatorMergeWedgeSeconds
+	}
+}
+
+func (o Operator) Validate(prefix string) []string {
+	o.Normalize()
+	var problems []string
+	known := map[string]bool{}
+	for _, kind := range OperatorActionKinds() {
+		known[kind] = true
+	}
+	for _, action := range o.Actions {
+		if !known[action] {
+			problems = append(problems, prefix+".actions must contain only "+strings.Join(OperatorActionKinds(), ", "))
+			break
+		}
+	}
+	validatePositive(prefix+".merge_wedge_seconds", o.MergeWedgeSeconds, &problems)
+	return problems
+}
+
+func (o Operator) ActionEnabled(kind string) bool {
+	o.Normalize()
+	return slices.Contains(o.Actions, kind)
+}
+
 func (d *DependencyAutoUnblock) Normalize() {
 	if d == nil {
 		return
@@ -1445,7 +1512,6 @@ func Default() Config {
 			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
 			MergeWorkerStartupTimeoutMS: DefaultMergeWorkerStartupTimeoutMS,
 			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
-			MergeFallbackMaxDurationMS:  DefaultMergeFallbackMaxDurationMS,
 			MaxRetryBackoffMS:           300000,
 			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
 			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
@@ -1593,6 +1659,7 @@ func (c *Config) Validate() error {
 	problems = append(problems, c.ActiveHours.Validate("active_hours")...)
 	c.validateTracker(&problems)
 	problems = append(problems, c.Dependencies.Validate("dependencies")...)
+	problems = append(problems, c.Operator.Validate("operator")...)
 	validateNonNegative("recovery.terminal_attempt_retry_limit", c.Recovery.EffectiveTerminalAttemptRetryLimit(), &problems)
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
 	validatePositive("polling.refresh_failure_threshold", c.Polling.RefreshFailureThreshold, &problems)
@@ -1792,6 +1859,7 @@ func (c *Config) normalize() {
 	c.Tracker.LocalSQLite.Normalize()
 	c.Tracker.Claims.Normalize()
 	c.Tracker.DependencyAutoUnblock.Normalize()
+	c.Operator.Normalize()
 	c.Tracker.BlockedRecovery.Normalize()
 	c.Tracker.BlockerAutoPromote.Normalize()
 	c.Tracker.Authorization.Normalize()
@@ -1813,9 +1881,6 @@ func (c *Config) normalize() {
 	}
 	if c.Agent.MergeWorkerMaxDurationMS == 0 {
 		c.Agent.MergeWorkerMaxDurationMS = DefaultMergeWorkerMaxDurationMS
-	}
-	if c.Agent.MergeFallbackMaxDurationMS == 0 {
-		c.Agent.MergeFallbackMaxDurationMS = DefaultMergeFallbackMaxDurationMS
 	}
 	if c.Agent.MergeFastPath.FairnessAgeSeconds == 0 {
 		c.Agent.MergeFastPath.FairnessAgeSeconds = DefaultMergeFairnessAgeSeconds
@@ -2289,7 +2354,6 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	validatePositive(prefix+".merge_worker_startup_timeout_ms", a.MergeWorkerStartupTimeoutMS, problems)
 	validatePositive(prefix+".merge_worker_max_duration_ms", a.MergeWorkerMaxDurationMS, problems)
-	validatePositive(prefix+".merge_fallback_max_duration_ms", a.MergeFallbackMaxDurationMS, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
 	validatePositive(prefix+".overload_retry_delay_ms", a.OverloadRetryDelayMS, problems)
 	if a.MaxSessionTokens < 0 {

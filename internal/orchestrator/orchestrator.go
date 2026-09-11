@@ -65,7 +65,6 @@ const (
 	mergeWorkerRetryExhaustedReason            = "merge_worker_retry_exhausted"
 	mergeWorkerCurrentHeadCIWaitExceededReason = scheduler.DecisionReasonMergeWorkerCurrentHeadCIExceeded
 	mergeWorkerDurationExceededReason          = "merge_worker_duration_exceeded"
-	mergeFallbackBudgetExceededReason          = "merge_fallback_budget_exceeded"
 	mergeFallbackRequiresReworkReason          = "merge_fallback_requires_rework"
 )
 
@@ -116,6 +115,7 @@ type Config struct {
 	StatusLabelPrefix             string
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	BlockedRecovery               BlockedRecoveryConfig
+	Operator                      OperatorConfig
 	BlockerAutoPromote            BlockerAutoPromoteConfig
 	AdmissionTargetState          string
 	ActiveStates                  []string
@@ -273,6 +273,8 @@ type Orchestrator struct {
 	laneWriteMu             sync.Mutex
 	laneWrites              map[string]coordination.LaneWrite
 	laneWriteResults        map[string]string
+	laneWriteOrigin         string
+	laneWriteAction         string
 	laneObservations        map[string]store.LaneObservation
 	efficiency              efficiency.Recorder
 	lifecycleExporter       efficiency.LifecycleExporter

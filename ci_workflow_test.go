@@ -28,10 +28,10 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 	},
 	{
 		name:     "Verify (ubuntu-latest)",
-		budget:   "45m",
+		budget:   "8m",
 		jobStart: "  verify:",
-		jobEnd:   "  test-cover:",
-		markers:  []string{"name: Verify (ubuntu-latest)", "runs-on: ubuntu-latest", "timeout-minutes: 45"},
+		jobEnd:   "  verify-fast:",
+		markers:  []string{"name: Verify (ubuntu-latest)", "needs: [verify-fast, verify-race]", "FAST_RESULT", "RACE_RESULT"},
 	},
 	{
 		name:     "Test Coverage",
@@ -305,9 +305,7 @@ func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 	for _, check := range requiredPRStatusChecks {
 		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
 		for _, forbidden := range []string{
-			"github.event_name",
 			"EVENT_NAME",
-			"pull_request",
 			"steps.policy.outputs",
 			"Skip ",
 			" skipped:",
@@ -338,8 +336,8 @@ func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
 		})
 	}
 	security := workflowBetween(t, workflow, "  security:", "  browser-visual:")
-	if strings.Contains(security, "    if:") || !strings.Contains(security, "make security") {
-		t.Fatal("Security must continue running on every PR")
+	if !strings.Contains(security, "if: github.event_name != 'pull_request'") || !strings.Contains(security, "make security") {
+		t.Fatal("Security must run in the merge queue and on main, never on pull_request events")
 	}
 	reporter := workflowBetween(t, workflow, "  report-integration-failures:", "")
 	for _, marker := range []string{
@@ -494,4 +492,171 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 		t.Fatalf("workflow missing end marker %q after %q", endMarker, startMarker)
 	}
 	return section[:len(startMarker)+end]
+}
+
+func TestCIDraftAndVerifyDependencies(t *testing.T) {
+	t.Parallel()
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review]") {
+		t.Fatal("pull_request events exist only to satisfy required checks with placeholders")
+	}
+	placeholders := workflowBetween(t, workflow, "  pr-required-placeholders:\n", "  invariants:\n")
+	for _, want := range []string{"if: github.event_name == 'pull_request'", `check: ["Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"]`, "name: ${{ matrix.check }}"} {
+		if !strings.Contains(placeholders, want) {
+			t.Errorf("placeholder job missing %q", want)
+		}
+	}
+	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual"} {
+		t.Run(job, func(t *testing.T) {
+			section := workflowBetween(t, workflow, "  "+job+":\n", "    steps:")
+			if !strings.Contains(section, "if: github.event_name != 'pull_request'") && !strings.Contains(section, "if: always() && github.event_name != 'pull_request'") {
+				t.Fatal("real CI jobs must not run on pull_request events")
+			}
+		})
+	}
+	aggregate := workflowBetween(t, workflow, "  verify:\n", "  verify-fast:\n")
+	for _, want := range []string{"needs: [verify-fast, verify-race]", "if: always()", `test "$FAST_RESULT" = success && test "$RACE_RESULT" = success`} {
+		if !strings.Contains(aggregate, want) {
+			t.Errorf("aggregate must reject failed, cancelled and skipped dependencies: missing %q", want)
+		}
+	}
+	race := workflowBetween(t, workflow, "  verify-race:\n", "  test-cover:\n")
+	for _, want := range []string{"shard: [0, 1, 2, 3]", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
+		if !strings.Contains(race, want) {
+			t.Errorf("race shards missing %q", want)
+		}
+	}
+}
+
+func TestCIRacePartition(t *testing.T) {
+	t.Parallel()
+	awk, err := exec.LookPath("awk")
+	if err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("Linux CI partition uses awk")
+		}
+		t.Fatal(err)
+	}
+	const prefix = "github.com/digitaldrywood/detent/"
+	packages := []string{prefix + "internal/hubserver", prefix + "internal/orchestrator", prefix + "internal/cli", prefix + "internal/config", prefix + "tools/testgate", "github.com/digitaldrywood/detent"}
+	partition := func(input []string) map[string]int {
+		t.Helper()
+		result := make(map[string]int)
+		for _, shard := range []string{"0", "1", "2", "3"} {
+			cmd := exec.CommandContext(t.Context(), awk, "-v", "shard="+shard, "-f", "scripts/ci-race-packages.awk")
+			cmd.Stdin = strings.NewReader(strings.Join(input, "\n") + "\n")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("partition: %v: %s", err, out)
+			}
+			for _, pkg := range strings.Fields(string(out)) {
+				if _, exists := result[pkg]; exists {
+					t.Fatalf("package %s assigned more than once", pkg)
+				}
+				result[pkg] = int(shard[0] - '0')
+			}
+		}
+		if len(result) != len(input) {
+			t.Fatalf("assigned %d of %d packages", len(result), len(input))
+		}
+		return result
+	}
+	original := partition(packages)
+	for _, tc := range []struct {
+		name  string
+		input []string
+	}{
+		{"reordered", []string{packages[5], packages[4], packages[3], packages[2], packages[1], packages[0]}},
+		{"added", append(append([]string{}, packages...), prefix+"internal/newpackage")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := partition(tc.input)
+			for pkg, shard := range original {
+				if got[pkg] != shard {
+					t.Errorf("%s moved from shard %d to %d", pkg, shard, got[pkg])
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		pkg   string
+		shard int
+	}{{packages[0], 0}, {packages[1], 1}} {
+		if original[tc.pkg] != tc.shard {
+			t.Errorf("%s must have dedicated shard %d", tc.pkg, tc.shard)
+		}
+	}
+	for _, pkg := range packages[2:] {
+		if original[pkg] < 2 {
+			t.Errorf("%s shares a dedicated runner", pkg)
+		}
+	}
+}
+
+func TestCIRaceShardFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux CI runner script uses bash")
+	}
+	for _, tc := range []struct {
+		name        string
+		shard       string
+		listExit    string
+		testExit    string
+		wantSuccess bool
+		wantTests   bool
+	}{
+		{"success", "2", "0", "0", true, true},
+		{"discovery failure", "2", "1", "0", false, false},
+		{"race failure survives tee", "2", "0", "1", false, true},
+		{"invalid shard", "4", "0", "0", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, dir := range []string{"scripts", "bin"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, file := range []string{"ci-race-shard.sh", "ci-race-packages.awk"} {
+				if err := os.WriteFile(filepath.Join(root, "scripts", file), []byte(readNormalizedFile(t, "scripts/"+file)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fakeGo := `#!/bin/sh
+case "$1" in
+list)
+  printf '%s\n' github.com/digitaldrywood/detent/internal/cli github.com/digitaldrywood/detent/internal/config
+  exit "$LIST_EXIT"
+  ;;
+test)
+  test -z "${DETENT_API_TOKEN:-}" || exit 99
+  echo invoked > invoked
+  echo '{"Action":"pass"}'
+  exit "$TEST_EXIT"
+  ;;
+esac
+exit 98
+`
+			if err := os.WriteFile(filepath.Join(root, "bin", "go"), []byte(fakeGo), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), "bash", "scripts/ci-race-shard.sh", tc.shard)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "LIST_EXIT="+tc.listExit, "TEST_EXIT="+tc.testExit, "DETENT_API_TOKEN=fixture-token")
+			out, err := cmd.CombinedOutput()
+			if (err == nil) != tc.wantSuccess {
+				t.Fatalf("success=%v, want %v: %s", err == nil, tc.wantSuccess, out)
+			}
+			_, err = os.Stat(filepath.Join(root, "invoked"))
+			if (err == nil) != tc.wantTests {
+				t.Fatalf("tests invoked=%v, want %v: %s", err == nil, tc.wantTests, out)
+			}
+			if tc.wantTests {
+				data, err := os.ReadFile(filepath.Join(root, "tmp", "shard-2-race-evidence", "tests.jsonl"))
+				if err != nil || !strings.Contains(string(data), `"Action":"pass"`) {
+					t.Fatalf("missing race evidence: %v: %s", err, data)
+				}
+			}
+		})
+	}
 }

@@ -1100,7 +1100,6 @@ agent:
   no_progress_timeout_ms: 1800000
   merge_worker_startup_timeout_ms: 180000
   merge_worker_max_duration_ms: 7200000
-  merge_fallback_max_duration_ms: 1200000
   max_session_tokens: 10000000
   max_session_context_multiplier: 3.5
   max_session_token_override_label: Allow-Large-Session
@@ -1363,9 +1362,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.MergeWorkerMaxDurationMS != 7200000 {
 		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want 7200000", cfg.Agent.MergeWorkerMaxDurationMS)
-	}
-	if cfg.Agent.MergeFallbackMaxDurationMS != 1200000 {
-		t.Fatalf("Agent.MergeFallbackMaxDurationMS = %d, want 1200000", cfg.Agent.MergeFallbackMaxDurationMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 10000000 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want 10000000", cfg.Agent.MaxSessionTokens)
@@ -1753,9 +1749,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MergeWorkerMaxDurationMS != DefaultMergeWorkerMaxDurationMS {
 		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want %d", cfg.Agent.MergeWorkerMaxDurationMS, DefaultMergeWorkerMaxDurationMS)
-	}
-	if cfg.Agent.MergeFallbackMaxDurationMS != DefaultMergeFallbackMaxDurationMS {
-		t.Fatalf("Agent.MergeFallbackMaxDurationMS = %d, want %d", cfg.Agent.MergeFallbackMaxDurationMS, DefaultMergeFallbackMaxDurationMS)
 	}
 	if cfg.Agent.MaxSessionDurationMS != DefaultMaxSessionDurationMS {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want %d", cfg.Agent.MaxSessionDurationMS, DefaultMaxSessionDurationMS)
@@ -3738,7 +3731,6 @@ agent:
   no_progress_timeout_ms: -1
   merge_worker_startup_timeout_ms: -1
   merge_worker_max_duration_ms: -1
-  merge_fallback_max_duration_ms: -1
   max_session_tokens: -1
   max_session_context_multiplier: -0.5
   output_truncation:
@@ -3781,7 +3773,6 @@ Prompt
 				"agent.no_progress_timeout_ms must be greater than or equal to 0",
 				"agent.merge_worker_startup_timeout_ms must be greater than 0",
 				"agent.merge_worker_max_duration_ms must be greater than 0",
-				"agent.merge_fallback_max_duration_ms must be greater than 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
 				"agent.max_session_context_multiplier must be greater than or equal to 0",
 				"agent.output_truncation.max_bytes must be greater than or equal to 0",
@@ -4652,5 +4643,26 @@ func TestBackendThreadSandboxOverridesInferredPolicy(t *testing.T) {
 				t.Fatal("global policy changed")
 			}
 		})
+	}
+}
+
+func TestOperatorConfig(t *testing.T) {
+	t.Parallel()
+	var operator Operator
+	operator.Normalize()
+	if got, want := operator.Actions, DefaultOperatorActions(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("default actions = %v, want %v", got, want)
+	}
+	if operator.MergeWedgeSeconds != DefaultOperatorMergeWedgeSeconds || operator.ActionEnabled(OperatorActionMergeWhenWedged) {
+		t.Fatalf("defaults = %#v", operator)
+	}
+	explicit := Operator{Actions: []string{" Merge_When_Wedged ", "merge_when_wedged"}}
+	explicit.Normalize()
+	if !reflect.DeepEqual(explicit.Actions, []string{OperatorActionMergeWhenWedged}) || explicit.ActionEnabled(OperatorActionReturnRetiredParks) {
+		t.Fatalf("explicit = %#v", explicit)
+	}
+	problems := Operator{Actions: []string{"file_deduped_issue"}, MergeWedgeSeconds: -1}.Validate("operator")
+	if len(problems) != 2 || !strings.Contains(problems[0], "operator.actions must contain only") || !strings.Contains(problems[1], "operator.merge_wedge_seconds must be greater than 0") {
+		t.Fatalf("problems = %v", problems)
 	}
 }

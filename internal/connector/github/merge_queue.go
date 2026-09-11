@@ -20,7 +20,7 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
       timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
         nodes { ... on RemovedFromMergeQueueEvent { beforeCommit { oid } reason createdAt } }
       }
-      mergeQueue { url entries { totalCount } configuration { maximumEntriesToBuild } }
+      mergeQueue { url entries { totalCount } configuration { maximumEntriesToBuild maximumEntriesToMerge minimumEntriesToMerge minimumEntriesToMergeWaitTime } }
       mergeQueueEntry {
         headCommit { oid }
         baseCommit { oid }
@@ -32,6 +32,7 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
         mergeQueue {
           url
           entries { totalCount }
+          configuration { maximumEntriesToMerge minimumEntriesToMerge minimumEntriesToMergeWaitTime }
         }
       }
     }
@@ -53,6 +54,7 @@ mutation DetentEnqueuePullRequest($pullRequestId: ID!, $expectedHeadOid: GitObje
       mergeQueue {
         url
         entries { totalCount }
+        configuration { maximumEntriesToMerge minimumEntriesToMerge minimumEntriesToMergeWaitTime }
       }
     }
   }
@@ -82,7 +84,23 @@ type mergeQueueEntryNode struct {
 		Entries struct {
 			TotalCount int `json:"totalCount"`
 		} `json:"entries"`
+		Configuration mergeQueueConfigurationNode `json:"configuration"`
 	} `json:"mergeQueue"`
+}
+
+type mergeQueueConfigurationNode struct {
+	MaximumEntriesToBuild         int `json:"maximumEntriesToBuild"`
+	MaximumEntriesToMerge         int `json:"maximumEntriesToMerge"`
+	MinimumEntriesToMerge         int `json:"minimumEntriesToMerge"`
+	MinimumEntriesToMergeWaitTime int `json:"minimumEntriesToMergeWaitTime"`
+}
+
+func (n mergeQueueConfigurationNode) batching() connector.MergeQueueBatching {
+	return connector.MergeQueueBatching{
+		MaxGroupSize:    n.MaximumEntriesToMerge,
+		MinGroupSize:    n.MinimumEntriesToMerge,
+		MinGroupWaitSec: int64(n.MinimumEntriesToMergeWaitTime) * 60,
+	}
 }
 
 func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue connector.Issue) (connector.PullRequestMergeQueueStatus, error) {
@@ -110,9 +128,7 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 					Entries struct {
 						TotalCount int `json:"totalCount"`
 					} `json:"entries"`
-					Configuration struct {
-						MaximumEntriesToBuild int `json:"maximumEntriesToBuild"`
-					} `json:"configuration"`
+					Configuration mergeQueueConfigurationNode `json:"configuration"`
 				} `json:"mergeQueue"`
 				MergeQueueEntry *mergeQueueEntryNode `json:"mergeQueueEntry"`
 			} `json:"pullRequest"`
@@ -145,6 +161,7 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 	if pullRequest.MergeQueue != nil {
 		status.Depth = pullRequest.MergeQueue.Entries.TotalCount
 		status.AdmissionLimit = pullRequest.MergeQueue.Configuration.MaximumEntriesToBuild
+		status.Batching = pullRequest.MergeQueue.Configuration.batching()
 	}
 	if len(pullRequest.TimelineItems.Nodes) > 0 {
 		status.RemovalObserved = true
@@ -153,6 +170,9 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 		status.RemovedHeadSHA = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].BeforeCommit.OID)
 	}
 	status.Entry = connectorMergeQueueEntry(pullRequest.MergeQueueEntry)
+	if status.Entry != nil && status.Entry.Batching == (connector.MergeQueueBatching{}) {
+		status.Entry.Batching = status.Batching
+	}
 	return status, nil
 }
 
@@ -245,6 +265,7 @@ func connectorMergeQueueEntry(entry *mergeQueueEntryNode) *connector.PullRequest
 	if entry.MergeQueue != nil {
 		out.Depth = entry.MergeQueue.Entries.TotalCount
 		out.URL = strings.TrimSpace(entry.MergeQueue.URL)
+		out.Batching = entry.MergeQueue.Configuration.batching()
 	}
 	return out
 }

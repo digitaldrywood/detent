@@ -70,6 +70,20 @@ func attachStartupProcessEvidence(err error, transport Transport) {
 	startupErr.Evidence.Process = provider.StartupProcessEvidence()
 }
 
+func attachStartupProcessEvidenceBeforeCleanup(err error, transport Transport) {
+	if _, ok := transport.(interface {
+		StartupProcessEvidence() backendcapacity.StartupProcessEvidence
+	}); !ok {
+		return
+	}
+	attachStartupProcessEvidence(err, transport)
+	var startupErr *StartupError
+	if errors.As(err, &startupErr) && startupErr != nil {
+		before := startupErr.Evidence.Process
+		startupErr.Evidence.BeforeCleanup = &before
+	}
+}
+
 func markTransportReady(transport Transport, readyAt time.Time) {
 	marker, ok := transport.(interface {
 		MarkStartupReady(time.Time)

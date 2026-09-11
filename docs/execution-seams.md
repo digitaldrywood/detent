@@ -128,7 +128,7 @@ Required PR merge checks, branch protection/rulesets, and
 `gate.required_status_checks` must name the same merge-blocking checks:
 
 - `Lint` - budget: `2m`
-- `Verify (ubuntu-latest)` - budget: `45m`
+- `Verify (ubuntu-latest)` - budget: `8m`
 - `Test Coverage` - budget: `4m`
 - `Browser Visual` - budget: `15m`
 
@@ -189,6 +189,22 @@ Push, tag, schedule, and manual runs use a unique run group and must not be
 cancelled by later runs. The workflow test in `ci_workflow_test.go` checks this
 section against `.github/workflows/ci.yml` so job-name, required-check, wall-time
 budget, confidence-check, and green no-op drift fails in local validation.
+
+### Verify sharding
+
+CI skips draft pull-request jobs and starts work on `ready_for_review` and
+subsequent ready-head pushes. GitHub may display a skipped workflow run for a
+draft event; no runner executes its jobs. Converting back to draft cancels the
+previous PR run through the existing concurrency group. Merge groups run all PR checks plus
+the repeated subprocess lifecycle tests. Main pushes retain integration jobs.
+
+`Verify (ubuntu-latest)` aggregates build/vet/tests and four race runners, failing
+if any dependency fails, is cancelled, or is skipped. Hub and orchestrator each
+have a dedicated runner; the remaining import paths are deterministically hashed
+across two runners. Each shard retains JSON test evidence and caches Go modules
+and compiled race packages by OS, architecture, Go version, shard, and `go.sum`.
+The eight-minute budget is a wall-clock target, not a shortened test timeout.
+
 
 ## Still Git/PR Coupled
 

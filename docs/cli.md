@@ -258,6 +258,18 @@ The one-MiB shared-client response limit also bounds non-collection content.
 JSON is written to stdout, pretty output is only a human-readable projection,
 and diagnostics remain on stderr.
 
+### Operations report export
+
+`detent report --html <path>` reads `GET /api/v1/operations` from the running
+service and writes it as one self-contained HTML file: inline styles, no
+scripts, no external assets, so it reads correctly from a synced folder or an
+email attachment away from the tailnet. The page states the producing instance
+and its data time and refreshes itself every five minutes when left open in a
+browser. Service-relative evidence links are rewritten to the service origin.
+The file is written to a temporary sibling and renamed into place, so readers
+never see a partial page. Pretty output reports the path, instance, data time,
+and size; `--format json` returns the same fields.
+
 ## Provider capacity recovery
 
 After restoring subscription usage, request full configured dispatch capacity:

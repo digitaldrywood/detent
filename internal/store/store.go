@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/retro"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
@@ -79,6 +80,7 @@ type Store interface {
 }
 
 type StatsStore interface {
+	OperationsReport(context.Context, time.Time, time.Time) (operations.Report, error)
 	StartRun(context.Context, RunStart) (int64, error)
 	UpdateRun(context.Context, int64, RunUpdate) error
 	StopRun(context.Context, int64, RunStop) error

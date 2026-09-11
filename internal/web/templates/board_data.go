@@ -1205,13 +1205,49 @@ func boardVisibilityKey(data DashboardData) string {
 
 func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 	workload := telemetry.CurrentBoardWorkload(snapshot)
-	return []primitives.Figure{
+	figures := []primitives.Figure{
 		{ID: "fig-running", Value: runningCountLabel(snapshot), Label: "running"},
 		{ID: "fig-ready", Value: boardWorkloadCountLabel(snapshot, workload.Todo), Label: "ready"},
 		{ID: "fig-waiting", Value: boardWorkloadCountLabel(snapshot, workload.Waiting), Label: "waiting"},
 		{ID: "fig-blocked", Value: boardWorkloadCountLabel(snapshot, workload.Blocked), Label: "blocked", Err: workload.Blocked > 0},
 		{ID: "fig-completed", Value: formatCount(completedCount(snapshot)), Label: "completed"},
 	}
+
+	if len(snapshot.Projects) > 0 {
+		ready, blocked, excluded := 0, 0, 0
+		for _, project := range snapshot.Projects {
+			id := strings.TrimSpace(project.Project.ID)
+			if boardProjectWorkloadUnavailable(snapshot, project) {
+				excluded++
+				continue
+			}
+			counts := telemetry.CurrentBoardWorkloadForProject(snapshot, id)
+			ready += counts.Todo
+			blocked += counts.Blocked
+		}
+		if excluded > 0 {
+			note := "(" + boardCountLabel(excluded, "project", "projects") + " unknown)"
+			figures[1].Value = formatCount(ready)
+			figures[3].Value = formatCount(blocked)
+			if excluded == len(snapshot.Projects) {
+				figures[1].Value = "unknown"
+				figures[3].Value = "unknown"
+			}
+			figures[1].Note = note
+			figures[3].Note = note
+			figures[3].Err = blocked > 0
+		}
+	}
+	return figures
+}
+
+// boardProjectWorkloadUnavailable keeps header exclusions and sidebar count
+// explanations aligned, including complete snapshots retained from a failed refresh.
+func boardProjectWorkloadUnavailable(snapshot telemetry.Snapshot, project telemetry.ProjectSnapshot) bool {
+	id := strings.TrimSpace(project.Project.ID)
+	return id == "" || !telemetry.BoardWorkloadCompleteForProject(snapshot, id) ||
+		project.Refresh.Status == telemetry.RefreshStatusDegraded || project.Refresh.Stale(snapshot.GeneratedAt) ||
+		project.Tracker.Source == telemetry.SnapshotSourceCached || project.Runtime.Source == telemetry.SnapshotSourceCached
 }
 
 func boardWorkloadCountLabel(snapshot telemetry.Snapshot, count int) string {

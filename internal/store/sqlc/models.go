@@ -299,14 +299,17 @@ type IssueProgressCredit struct {
 }
 
 type LaneLedger struct {
-	ID        int64  `json:"id"`
-	ProjectID string `json:"project_id"`
-	IssueID   string `json:"issue_id"`
-	FromState string `json:"from_state"`
-	ToState   string `json:"to_state"`
-	Reason    string `json:"reason"`
-	WrittenAt string `json:"written_at"`
-	Result    string `json:"result"`
+	ID         int64          `json:"id"`
+	ProjectID  string         `json:"project_id"`
+	IssueID    string         `json:"issue_id"`
+	FromState  string         `json:"from_state"`
+	ToState    string         `json:"to_state"`
+	Reason     string         `json:"reason"`
+	WrittenAt  string         `json:"written_at"`
+	Result     string         `json:"result"`
+	Origin     string         `json:"origin"`
+	ActionKind string         `json:"action_kind"`
+	ResolvedAt sql.NullString `json:"resolved_at"`
 }
 
 type LaneLedgerInstance struct {

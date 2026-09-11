@@ -93,8 +93,11 @@ type State struct {
 	nativeMergeQueueRepos    map[string]nativeMergeQueueRepository
 	nativeMergeQueueDeferred map[string]struct{}
 	nativeMergeQueueExcluded map[string]string
+	nativeMergeQueueRemovals map[string][]string
 	TransientCheckRetries    map[string]TransientCheckRetry
 	DependencyAutoUnblocks   map[string]DependencyAutoUnblockRecord
+	dependencyUnblockCursor  string
+	dependencyUnblockEarly   bool
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
 	InstantFailures          map[string]InstantFailure
@@ -409,6 +412,7 @@ func newState(cfg Config) State {
 		nativeMergeQueueRepos:    map[string]nativeMergeQueueRepository{},
 		nativeMergeQueueDeferred: map[string]struct{}{},
 		nativeMergeQueueExcluded: map[string]string{},
+		nativeMergeQueueRemovals: map[string][]string{},
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
@@ -503,8 +507,11 @@ func (s State) clone() State {
 		nativeMergeQueueRepos:    maps.Clone(s.nativeMergeQueueRepos),
 		nativeMergeQueueDeferred: maps.Clone(s.nativeMergeQueueDeferred),
 		nativeMergeQueueExcluded: maps.Clone(s.nativeMergeQueueExcluded),
+		nativeMergeQueueRemovals: cloneNativeMergeQueueRemovals(s.nativeMergeQueueRemovals),
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		DependencyAutoUnblocks:   maps.Clone(s.DependencyAutoUnblocks),
+		dependencyUnblockCursor:  s.dependencyUnblockCursor,
+		dependencyUnblockEarly:   s.dependencyUnblockEarly,
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),

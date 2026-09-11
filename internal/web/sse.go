@@ -87,6 +87,8 @@ func staticSidebarNav(value string) string {
 		return "analytics"
 	case "reports":
 		return "reports"
+	case "operations":
+		return "operations"
 	case "settings":
 		return "settings"
 	default:

@@ -268,9 +268,6 @@ func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []c
 	for _, repo := range repos {
 		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
-			if restFanoutOrReserveDeferred(err) {
-				continue
-			}
 			return err
 		}
 		attachMatchingPullRequestMergeStates(repo, issues, byRepo[repo], pullRequests)

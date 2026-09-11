@@ -103,13 +103,22 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 	}
 
 	transitioned := map[string]struct{}{}
-	for _, issue := range issuesInStates(issues, cfg.SourceStates) {
+	for _, issue := range dependencyAutoUnblockOrder(issues, cfg.SourceStates, state.dependencyUnblockCursor) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
 		}
-		hydrated, ok := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
+		hydrated, ok, err := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
+		if err != nil {
+			o.recordDependencyAutoUnblockError(state, issue, err, now)
+			continue
+		}
 		if !ok || connector.NonExecutableReason(hydrated) != "" {
+			continue
+		}
+		hydrated, err = o.refreshDependencyAutoUnblockComments(ctx, hydrated)
+		if err != nil {
+			o.recordDependencyAutoUnblockError(state, issue, err, now)
 			continue
 		}
 		hydrated, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, hydrated)
@@ -136,12 +145,20 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if len(hydrated.BlockedBy) == 0 {
 			continue
 		}
-		if reason := o.trackerRecoveryParkHold(ctx, hydrated); reason != "" {
+		if reason := o.trackerRecoveryParkCommentsHold(hydrated, hydrated.Comments); reason != "" {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, nil, "")
 			continue
 		}
 		o.logDependencyProseOnly(hydrated)
-		blockers := o.resolveDependencyBlockers(ctx, hydrated)
+		blockers, err := o.resolveDependencyBlockersWithError(ctx, hydrated)
+		if err != nil {
+			o.recordDependencyAutoUnblockError(state, issue, err, now)
+			continue
+		}
+		if slices.ContainsFunc(blockers, func(blocker dependencyBlocker) bool { return !blocker.Resolved }) {
+			o.logDependencyAutoUnblockDecision(hydrated, "hold", "blockers_not_ready", blockers, "")
+			continue
+		}
 		workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
 		if reason := o.blockedCauseHoldReason(hydrated, state, workpadBlockers, cfg, workpadCurrent); reason != "" {
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, blockers, "")
@@ -174,6 +191,37 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func (o *Orchestrator) recordDependencyAutoUnblockError(state *State, issue connector.Issue, err error, now time.Time) {
+	deferral, ok := connector.ErrorLocalDeferral(err)
+	if !ok || deferral.Reason != connector.LocalDeferralReasonRESTFanoutCap {
+		if o.logger != nil {
+			o.logger.Warn("dependency auto-unblock check failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return
+	}
+	o.logDependencyAutoUnblockDecision(issue, "defer", deferral.Reason, nil, "")
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "dependency_auto_unblock_deferred",
+		Message: fmt.Sprintf("dependency recovery deferred for %s: %s; the rotating unblock scan receives priority on alternating refreshes", issueLabel(issue), deferral.Reason),
+	})
+}
+
+// dependencyAutoUnblockOrder rotates the existing scan after the last priority
+// identity. Sorting makes the turn independent of tracker or map iteration order.
+func dependencyAutoUnblockOrder(issues []connector.Issue, sourceStates []string, after string) []connector.Issue {
+	ordered := slices.DeleteFunc(issuesInStates(issues, sourceStates), func(issue connector.Issue) bool { return strings.TrimSpace(issue.ID) == "" })
+	slices.SortFunc(ordered, func(a, b connector.Issue) int { return strings.Compare(a.ID, b.ID) })
+	if after == "" {
+		return ordered
+	}
+	index := slices.IndexFunc(ordered, func(issue connector.Issue) bool { return issue.ID > after })
+	if index <= 0 {
+		return ordered
+	}
+	return append(append([]connector.Issue(nil), ordered[index:]...), ordered[:index]...)
 }
 
 func dependencyAutoUnblockWorkpadHold(issue connector.Issue, current bool) bool {
@@ -366,21 +414,18 @@ func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
 	ctx context.Context,
 	issue connector.Issue,
 	sourceStates []string,
-) (connector.Issue, bool) {
+) (connector.Issue, bool, error) {
 	issue = o.issueWithDependencyRefs(issue)
 	if strings.TrimSpace(issue.Identifier) == "" {
-		return issue, stateIn(issue.State, sourceStates)
+		return issue, stateIn(issue.State, sourceStates), nil
 	}
 	resolver, ok := o.connector.(connector.IssueReferenceResolver)
 	if !ok {
-		return issue, stateIn(issue.State, sourceStates)
+		return issue, stateIn(issue.State, sourceStates), nil
 	}
 	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, []string{issue.Identifier})
 	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn("hydrate dependency auto-unblock issue failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-		return connector.Issue{}, false
+		return connector.Issue{}, false, err
 	}
 	for _, hydrated := range issues {
 		if !sameIssueIdentity(issue, hydrated) {
@@ -390,9 +435,26 @@ func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
 		merged := mergeIssueTrackerFields(issue, hydrated)
 		merged.BlockedBy = mergeDependencyBlockedRefs(merged.BlockedBy, previousBlockedBy)
 		merged = o.issueWithDependencyRefs(merged)
-		return merged, stateIn(merged.State, sourceStates)
+
+		return merged, stateIn(merged.State, sourceStates), nil
 	}
-	return issue, stateIn(issue.State, sourceStates)
+	return connector.Issue{}, false, nil
+}
+
+func (o *Orchestrator) refreshDependencyAutoUnblockComments(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		return issue, nil
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		return connector.Issue{}, err
+	}
+	issue.Comments = comments
+	issue.WorkpadSignal = nil
+	issue.BlockerReason = ""
+	issue.WorkpadSignal, _ = autoPromoteIssueWorkpadSignal(issue)
+	return o.issueWithDependencyRefs(issue), nil
 }
 
 func (o *Orchestrator) issueWithDependencyRefs(issue connector.Issue) connector.Issue {
@@ -593,6 +655,12 @@ func dependencyRefsFromIssueText(issue connector.Issue) []connector.BlockedRef {
 	appendRefs(dependencyLineRefs(issue.Description, repo))
 	appendRefs(dependencyRefsInText(dependencyMarkdownSectionText(issue.Description, "Blockers"), repo))
 	appendRefs(dependencyReasonRefs(issue.BlockerReason, repo))
+	for _, comment := range issue.Comments {
+		if autoPromoteIsWorkpadComment(comment.Body) {
+			continue
+		}
+		appendRefs(dependencyLineRefs(comment.Body, repo))
+	}
 	return refs
 }
 
@@ -751,6 +819,14 @@ func sameIssueIdentity(left connector.Issue, right connector.Issue) bool {
 }
 
 func (o *Orchestrator) resolveDependencyBlockers(ctx context.Context, issue connector.Issue) []dependencyBlocker {
+	blockers, err := o.resolveDependencyBlockersWithError(ctx, issue)
+	if err != nil && o.logger != nil {
+		o.logger.Warn("resolve dependency blockers failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	return blockers
+}
+
+func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, issue connector.Issue) ([]dependencyBlocker, error) {
 	blockers := make([]dependencyBlocker, 0, len(issue.BlockedBy))
 	identifiers := make([]string, 0, len(issue.BlockedBy))
 	seen := map[string]struct{}{}
@@ -775,14 +851,11 @@ func (o *Orchestrator) resolveDependencyBlockers(ctx context.Context, issue conn
 
 	resolver, ok := o.connector.(connector.IssueReferenceResolver)
 	if !ok || len(identifiers) == 0 {
-		return blockers
+		return blockers, nil
 	}
 	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
 	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn("resolve dependency blockers failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-		return blockers
+		return blockers, err
 	}
 
 	byIdentifier := make(map[string]connector.Issue, len(issues))
@@ -811,7 +884,7 @@ func (o *Orchestrator) resolveDependencyBlockers(ctx context.Context, issue conn
 			blockers[index].Ref.TrackerState = connector.BlockedRefTrackerStateClosed
 		}
 	}
-	return blockers
+	return blockers, nil
 }
 
 func dependencyResolvedBlockerRefs(blockers []dependencyBlocker) []connector.BlockedRef {
@@ -978,9 +1051,7 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 		},
 	}
 	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, targetState, now, "dependency_auto_unblock", metadata); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("dependency auto-unblock transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
-		}
+		o.recordDependencyAutoUnblockError(state, issue, err, now)
 		return false
 	}
 

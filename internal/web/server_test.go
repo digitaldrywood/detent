@@ -14255,3 +14255,40 @@ func TestCapacityClearEndpointProjectIsolation(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardHeaderProjectExclusions(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, ready, blocked, waiting, note string
+	}{
+		{"live", "3", "3", "8", ""},
+		{"partial", "2", "2", "8+", " (1 project unknown)"},
+		{"unknown", "unknown", "unknown", "8+", " (3 projects unknown)"},
+		{"single-cached", "unknown", "unknown", "8", " (1 project unknown)"},
+		{"complete-degraded", "2", "2", "8", " (1 project unknown)"},
+		{"paused-complete", "3", "3", "8", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server, err := newServerWithLaneWriter(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			page := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{web.DemoScenarioHeader: "board-counts-" + tt.name})
+			figures := regexp.MustCompile(`(?s)id="board-figures".*?id="fig-completed"`).FindString(page)
+			text := strings.Join(strings.Fields(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(figures, " ")), " ")
+			for _, want := range []string{
+				tt.ready + " ready" + tt.note,
+				tt.blocked + " blocked" + tt.note,
+				tt.waiting + " waiting",
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("header %q missing %q", text, want)
+				}
+			}
+			if tt.name == "partial" && !strings.Contains(page, "Authorization selector declined: issues are authorized for other hosts.") {
+				t.Error("project tooltip is missing its unknown reason")
+			}
+		})
+	}
+}

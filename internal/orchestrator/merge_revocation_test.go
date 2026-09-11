@@ -520,7 +520,7 @@ func TestAutoPromoteParksIssueAfterRepeatedIdenticalMergeRevocations(t *testing.
 	for _, fragment := range []string{
 		"reason: merge_revocation_limit",
 		"revocation_reason: draft_pull_request",
-		"consecutive_revocations: 3",
+		"consecutive_revocations: 2",
 		"human_action:",
 	} {
 		if !strings.Contains(tracker.comments[2].body, fragment) {

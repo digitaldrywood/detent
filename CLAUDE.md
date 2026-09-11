@@ -92,3 +92,9 @@ source of incidents.
 - `make setup` installs Air, Templ, sqlc, goose, and golangci-lint v2.
 - `make sqlc` uses `sqlc/sqlc.yaml` by default.
 - `make db-migrate` uses goose against `internal/store/migrations` by default.
+
+## Repository invariants
+
+Follow [docs/invariants.md](docs/invariants.md). Changes to an invariant or its
+enforcement must update that document in the same PR and identify the invariant
+in the PR template. Run `make check`, including the existing invariant gate.

@@ -34,6 +34,94 @@ Read the served build directly from the live page:
 curl -fsS http://127.0.0.1:4000/ | rg -o 'data-detent-served-version="[^"]+"' -m 1
 ```
 
+## Codex startup stalls
+
+A `backend_startup_timeout` identifies a missed handshake deadline, not a
+provider outage. The `codex app-server startup failed` log event contains
+payload-free `startup` evidence even for admission runs. Issue attempts also
+persist it in `work_attempts.worker_metadata_json.backend_startup`.
+
+Compare `before_cleanup` with `process` (after cleanup). An absent
+`before_cleanup` means the older runtime or transport did not capture it;
+do not interpret absent counters as observed zeroes. Counters are cumulative
+for that app-server process, including initialization and optional account
+checks. They contain no methods, arguments, credentials, prompts, or stderr
+contents.
+
+| Observation | Interpretation and next check |
+|---|---|
+| `ready: false` | Initialization did not complete. Check executable/version, spawn errors, and local process pressure before investigating thread configuration. |
+| `ready: true`, sent messages advance, received messages do not | Bytes were written to the provider pipe, but no additional complete RPC frame was decoded. This does not prove the provider consumed the request. Capture a bounded process sample to distinguish local blocking from remote I/O. |
+| `receive_queue_depth` grows or `read_failed: true` | Investigate RPC decoding or consumer backpressure. A nonempty queue alone does not establish deadlock. |
+| `stderr_bytes` grows | The provider emitted diagnostics. Inspect them locally under the operator's privacy rules; the startup event intentionally records only the count. |
+| `before_cleanup.exit_observed: true` | The process exited before Detent began closing the transport. Check its exit status and launch environment. |
+| Exit observed only after `termination_requested: true` | Detent requested termination during cleanup. A resulting `signal: killed` is not evidence of an earlier crash or OOM. |
+| `exit_observed: true`, `cleanup_complete: false` | Process exit was observed, but the transport wait/drainers have not finished. Check inherited pipes and descendants. `cleanup_complete` records transport completion, not successful termination of every descendant. |
+
+Response waits use one `read_timeout_ms` deadline across notifications and
+server requests. Streaming turns retain their separate activity/stall rules.
+A close timeout is retained in the error chain, but cannot turn an explicit
+startup rejection or EOF into a startup timeout for capacity classification.
+Retries retain workspace state and the existing startup failure breaker.
+Admission startup failures retain their error in failed-run records instead
+of becoming generic capacity deferrals. Quota and provider-overload errors
+continue to defer admission without marking model output malformed.
+
+For a recurrence, capture only the affected worker, without restarting or
+signaling the live Detent service:
+
+1. Record the attempt/session IDs, startup event, executable version, and
+   failed stage. Correlate the PID with `codex_sessions.worker_pid` and
+   `worker_started_at` and verify its executable and start time before sampling;
+   a stale PID may belong to a different process.
+2. During the stall, take a one-second macOS `sample <worker-pid> 1 1 -file
+   "$TMPDIR/codex-startup.sample"` with an outer five-second command deadline.
+   Record `ps -p <worker-pid> -o pid,ppid,lstart,state,%cpu,rss` alongside
+   host memory/CPU pressure. Keep the raw sample private; report only relevant
+   stack symbols and aggregate metrics. Existing worker concurrency and free
+   disk space cannot exclude memory pressure or per-process blocking.
+3. Reproduce `initialize`, `initialized`, and `thread/start` in an isolated
+   app-server process with an absolute temporary workspace, no prompt or
+   `turn/start`, a fixed request deadline, and guaranteed process-group cleanup.
+   Match the installed protocol schema and runtime model/config. Compare a
+   minimal Codex home with the configured plugins, hooks, and skills restored
+   one category at a time. Keep credentials local and never print RPC payloads.
+4. For launchd-only failures, compare an isolated temporary launch agent with
+   a direct process. A matching TCC denial or blocking filesystem stack supports
+   fixing access to that particular skill/config path; a successful direct
+   launch alone does not. Do not mutate operator-owned links during diagnosis.
+5. Apply a remedy only to the established cause: correct a rejected startup
+   setting; remove or repair the isolated failing plugin/hook; repair the proven
+   launchd access restriction; reduce spawn pressure when correlated resource
+   evidence supports it; or use the provider's recovery guidance when remote
+   response/connection evidence establishes an outage. Preserve existing work
+   and let the existing instance breaker limit repeated pre-turn failures. Do not increase the
+   timeout or restart the service to substitute for diagnosis.
+
+### September 9, 2026 incident (#2376)
+
+Read-only recorded history shows attempts 4959, 4960, and 4961 initialized
+within 533–791 ms, then spent 5000–5001 ms waiting for `thread/start`. Attempt
+4964 initialized within 338 ms and still failed after 30000 ms. All four
+recorded one concurrent startup, with 8–10 active workers, and exited with
+`signal: killed` after a further close deadline. Sessions 5844–5846 and 5849
+were subsequently recorded as already exited by worker cleanup. Admission
+session 5848 failed during the same interval and was also reaped.
+Its admission run 9529 (00:45:00–00:46:10 UTC) instead recorded `deferred`,
+`agent_backend_capacity`, and no error text. That loss of startup failure
+attribution is reproduced by the admission regression and corrected here.
+
+Attempt 4966 began at 00:48:20 UTC and obtained a provider identity around
+00:49, before the unsuccessful timeout trial was reverted around 00:50.
+The unpushed workspace commit was preserved across the failed retries.
+The incident therefore establishes intermittent post-initialization silence
+and bounded termination, not a cause or a timeout-setting remedy. The recorded
+history lacks pre-cleanup I/O counters and process samples, so it cannot
+distinguish provider deadlock, configuration/plugin I/O, resource pressure, or
+external service failure retroactively. The notification deadline renewal and
+cleanup-error misclassification regressions reproduce independently; neither
+is claimed as the cause of these four silent waits.
+
 ## Ready-to-paste SQLite queries
 
 These queries default to a rolling 24-hour window. Replace `'-24 hours'` or

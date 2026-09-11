@@ -90,7 +90,7 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			}
 			request := server.requests()[0]
 			query := request["query"].(string)
-			if !strings.Contains(query, "createdAt") || !strings.Contains(query, "configuration { maximumEntriesToBuild }") || strings.Contains(query, "mergeStateStatus") {
+			if !strings.Contains(query, "createdAt") || !strings.Contains(query, "configuration { maximumEntriesToBuild maximumEntriesToMerge minimumEntriesToMerge minimumEntriesToMergeWaitTime }") || strings.Contains(query, "mergeStateStatus") {
 				t.Fatalf("query = %q, want mergeQueue capability field without mergeStateStatus", query)
 			}
 			variables := request["variables"].(map[string]any)

@@ -35,30 +35,35 @@ type LocalTransportFactory struct {
 }
 
 type localTransport struct {
-	cmd            *exec.Cmd
-	processGroupID int
-	workerProcess  procgroup.Identity
-	startedAt      time.Time
-	readyAt        time.Time
-	exitedAt       time.Time
-	exitStatus     string
-	stdin          io.WriteCloser
-	stdout         io.ReadCloser
-	stderr         io.ReadCloser
-	stderrTail     *tailBuffer
-	codec          *Codec
-	received       chan transportResult
-	readStop       chan struct{}
-	readDone       chan struct{}
-	stderrDone     chan error
-	done           chan struct{}
-	sendLock       chan struct{}
-	waitErr        error
-	waitMu         sync.Mutex
-	readStopOnce   sync.Once
-	closeOnce      sync.Once
-	closeErr       error
-	readDrainErr   error
+	cmd                  *exec.Cmd
+	processGroupID       int
+	workerProcess        procgroup.Identity
+	startedAt            time.Time
+	readyAt              time.Time
+	exitedAt             time.Time
+	exitStatus           string
+	stdin                io.WriteCloser
+	stdout               io.ReadCloser
+	stderr               io.ReadCloser
+	stderrTail           *tailBuffer
+	codec                *Codec
+	received             chan transportResult
+	readStop             chan struct{}
+	readDone             chan struct{}
+	stderrDone           chan error
+	done                 chan struct{}
+	sendLock             chan struct{}
+	waitErr              error
+	waitMu               sync.Mutex
+	readStopOnce         sync.Once
+	closeOnce            sync.Once
+	closeErr             error
+	readDrainErr         error
+	sentMessages         uint64
+	receivedMessages     uint64
+	readFailed           bool
+	terminationRequested bool
+	cleanupComplete      bool
 }
 
 type transportResult struct {
@@ -67,9 +72,10 @@ type transportResult struct {
 }
 
 type tailBuffer struct {
-	mu    sync.Mutex
-	limit int
-	buf   []byte
+	mu      sync.Mutex
+	limit   int
+	buf     []byte
+	written int64
 }
 
 type workerTempDirContextKey struct{}
@@ -230,7 +236,13 @@ func (t *localTransport) Send(ctx context.Context, msg Message) error {
 
 	writeDone := make(chan error, 1)
 	go func() {
-		writeDone <- t.codec.WriteMessage(msg)
+		err := t.codec.WriteMessage(msg)
+		if err == nil {
+			t.waitMu.Lock()
+			t.sentMessages++
+			t.waitMu.Unlock()
+		}
+		writeDone <- err
 	}()
 
 	select {
@@ -287,6 +299,9 @@ func (t *localTransport) Close(ctx context.Context) error {
 		return errors.Join(closeErr, waitErr)
 	case <-ctx.Done():
 		var killErr error
+		t.waitMu.Lock()
+		t.terminationRequested = true
+		t.waitMu.Unlock()
 		killErr = procgroup.TerminateTree(t.cmd, t.processGroupID)
 
 		select {
@@ -328,12 +343,23 @@ func (t *localTransport) StartupProcessEvidence() backendcapacity.StartupProcess
 		startedAt = t.workerProcess.StartedAt.UTC()
 	}
 	evidence := backendcapacity.StartupProcessEvidence{
-		StartedAt:    timePointer(startedAt),
-		Ready:        !t.readyAt.IsZero(),
-		ReadyAt:      timePointer(t.readyAt),
-		ExitObserved: !t.exitedAt.IsZero(),
-		ExitedAt:     timePointer(t.exitedAt),
-		ExitStatus:   strings.TrimSpace(t.exitStatus),
+		StartedAt:            timePointer(startedAt),
+		Ready:                !t.readyAt.IsZero(),
+		ReadyAt:              timePointer(t.readyAt),
+		ExitObserved:         !t.exitedAt.IsZero(),
+		ExitedAt:             timePointer(t.exitedAt),
+		ExitStatus:           strings.TrimSpace(t.exitStatus),
+		SentMessages:         t.sentMessages,
+		ReceivedMessages:     t.receivedMessages,
+		ReceiveQueueDepth:    len(t.received),
+		ReadFailed:           t.readFailed,
+		TerminationRequested: t.terminationRequested,
+		CleanupComplete:      t.cleanupComplete,
+	}
+	if t.stderrTail != nil {
+		t.stderrTail.mu.Lock()
+		evidence.StderrBytes = t.stderrTail.written
+		t.stderrTail.mu.Unlock()
 	}
 	if !startedAt.IsZero() && !t.readyAt.IsZero() {
 		evidence.ReadyAfterMS = max(t.readyAt.Sub(startedAt).Milliseconds(), 0)
@@ -398,6 +424,9 @@ func (t *localTransport) readLoop() {
 	for {
 		msg, err := t.codec.ReadMessage()
 		if err != nil {
+			t.waitMu.Lock()
+			t.readFailed = !errors.Is(err, io.EOF)
+			t.waitMu.Unlock()
 			if !t.readingStopped() {
 				t.publishReceived(transportResult{err: err})
 			}
@@ -406,6 +435,9 @@ func (t *localTransport) readLoop() {
 			}
 			return
 		}
+		t.waitMu.Lock()
+		t.receivedMessages++
+		t.waitMu.Unlock()
 
 		if t.readingStopped() {
 			continue
@@ -421,6 +453,12 @@ func (t *localTransport) readStderr() {
 
 func (t *localTransport) wait() {
 	err := t.cmd.Wait()
+	t.waitMu.Lock()
+	t.exitedAt = time.Now().UTC()
+	if t.cmd != nil && t.cmd.ProcessState != nil {
+		t.exitStatus = t.cmd.ProcessState.String()
+	}
+	t.waitMu.Unlock()
 	if cleanupErr := procgroup.Cleanup(t.processGroupID); cleanupErr != nil {
 		err = errors.Join(err, cleanupErr)
 	}
@@ -436,10 +474,7 @@ func (t *localTransport) wait() {
 	}
 	t.waitMu.Lock()
 	t.waitErr = err
-	t.exitedAt = time.Now().UTC()
-	if t.cmd != nil && t.cmd.ProcessState != nil {
-		t.exitStatus = t.cmd.ProcessState.String()
-	}
+	t.cleanupComplete = true
 	t.waitMu.Unlock()
 	close(t.done)
 }
@@ -547,6 +582,7 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	b.written += int64(len(p))
 	b.buf = append(b.buf, p...)
 	if len(b.buf) > b.limit {
 		b.buf = append([]byte(nil), b.buf[len(b.buf)-b.limit:]...)

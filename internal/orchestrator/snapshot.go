@@ -1263,6 +1263,8 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
 	out := &telemetry.PullRequest{
+		HumanQuestionWorkFingerprint: humanQuestionWorkFingerprint(issue),
+
 		Number:                     pullRequest.Number,
 		URL:                        pullRequest.URL,
 		BranchName:                 pullRequest.BranchName,
@@ -1298,6 +1300,9 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 			EstimatedTimeToMergeSeconds: pullRequest.MergeQueueEntry.EstimatedTimeToMergeSeconds,
 			EnqueuedAt:                  cloneTime(pullRequest.MergeQueueEntry.EnqueuedAt),
 			URL:                         pullRequest.MergeQueueEntry.URL,
+			MaxGroupSize:                pullRequest.MergeQueueEntry.Batching.MaxGroupSize,
+			MinGroupSize:                pullRequest.MergeQueueEntry.Batching.MinGroupSize,
+			MinGroupWaitSeconds:         pullRequest.MergeQueueEntry.Batching.MinGroupWaitSec,
 		}
 	}
 	return out

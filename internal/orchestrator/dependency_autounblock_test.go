@@ -1745,7 +1745,7 @@ func (c *dependencyAutoUnblockConnector) FetchIssueStatesByIdentifiers(_ context
 		c.identifierCalls = append(c.identifierCalls, normalized)
 	}
 	out := make([]connector.Issue, 0, len(c.hydratedIssues)+len(c.blockers))
-	for _, issue := range append(c.hydratedIssues, c.blockers...) {
+	for _, issue := range mergeIssueSlices(mergeIssueSlices(c.hydratedIssues, c.stateIssues), c.blockers) {
 		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.Identifier))]; ok {
 			out = append(out, cloneIssue(issue))
 		}

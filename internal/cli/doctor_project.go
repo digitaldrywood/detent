@@ -460,6 +460,8 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " merge queue recommendation")
 		checks = append(checks, checkDoctorMergeQueue(ctx, id, project, workflow.Config, storePath, deps))
 	}
+	setDoctorCurrentCheck("Project " + id + " invariant evidence")
+	checks = append(checks, checkDoctorInvariantEvidence(ctx, id, project, workflow.Config, storePath, deps)...)
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceLabel {
 			setDoctorCurrentCheck("Project " + id + " label status drift")
@@ -531,6 +533,8 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " external branch worktrees")
 		checks = append(checks, checkDoctorExternalBranchWorktrees(ctx, id, expandedSourceRoot, workflow.Config.Workspace.Root, deps))
 	}
+	setDoctorCurrentCheck("Project " + id + " invariants")
+	checks = append(checks, checkDoctorInvariants(ctx, id, expandedSourceRoot, runDoctorInvariants)...)
 	setDoctorCurrentCheck("Project " + id + " issue effort guidance")
 	checks = append(checks, checkDoctorIssueEffortGuidance(id, expandedSourceRoot))
 	setDoctorCurrentCheck("Project " + id + " skills")

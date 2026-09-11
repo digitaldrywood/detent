@@ -1,0 +1,51 @@
+{
+  "tests": {
+    "./tools/invariantcheck": [
+      "TestBehaviorEvidence"
+    ],
+    "./internal/orchestrator": [
+      "TestPolicyMismatchStopsDispatchWithoutAttempt",
+      "TestAttemptMetadataRetainsApprovedPolicy",
+      "TestConfiguredTerminalRetryAfterStoreRestart",
+      "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
+      "TestServiceRestartsRecoverRetainedWorkAndDispatch",
+      "TestHumanQuestionRestartAndConcurrentRequests",
+      "TestHumanQuestionReplyAuthorization",
+      "TestHumanQuestionIndependentRework",
+      "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
+      "TestPreTurnFailuresDrainInstance",
+      "TestObservedLanePreTurnFailureRemainsInstanceOwned",
+      "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
+      "TestMachineIssueTool"
+    ],
+    "./internal/release": [
+      "TestMandatoryEvidence"
+    ],
+    "./internal/update": [
+      "TestStartupRecoveryPersistsCrashLoopAcrossProcesses",
+      "TestStartupRecoveryAttemptsOneUpdatePerVersion",
+      "TestReplaceBinaryRollsBackWhenVerificationFails",
+      "TestVerifyMinisignSignatureRejectsTamper"
+    ],
+    "./internal/invariants": [
+      "TestRepositorySources",
+      "TestRepositoryWorkflow",
+      "TestSourceViolations",
+      "TestWorkflowViolations",
+      "TestMutationDocuments"
+    ],
+    "./internal/admission": [
+      "TestAdmissionRequiresLedgerWriter"
+    ],
+    "./internal/cli": [
+      "TestPrepareCodexCommandForServiceIsolatesInstructions",
+      "TestPrepareWorkerCodexHomeExistingInstructions",
+      "TestDoctorMergeQueueRecordedHistory"
+    ],
+    "./internal/connector/github": [
+      "TestMachineIssueDuplicate",
+      "TestMachineIssueSeparateConnectors",
+      "TestMachineOriginSurvivesBodyUpdates"
+    ]
+  }
+}

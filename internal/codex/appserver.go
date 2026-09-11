@@ -426,11 +426,15 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		return RunTurnResult{}, startupStageError(fmt.Errorf("start codex app-server transport: %w", err), "process/start", now, now, 0)
 	}
 	defer func() {
+		attachStartupProcessEvidenceBeforeCleanup(err, transport)
 		closeErr := closeTransport(ctx, transport, s.readTimeout)
 		if closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 		attachStartupProcessEvidence(err, transport)
+		if evidence, ok := startupEvidence(err); ok {
+			s.logger.WarnContext(context.WithoutCancel(ctx), "codex app-server startup failed", "startup", evidence)
+		}
 	}()
 
 	if identity := transportProcessIdentity(transport); identity != "" {
@@ -1086,8 +1090,17 @@ func (s *AppServer) awaitResponse(
 	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
 ) (json.RawMessage, error) {
+	ctx = contextOrBackground(ctx)
+	if s.readTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = s.timeoutContext(ctx, s.readTimeout, nil)
+		defer cancel()
+	}
 	for {
-		msg, err := receiveWithTimeout(ctx, transport, s.readTimeout, s.timeoutContext)
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("wait for %s response: %w", requestName(requestID), err)
+		}
+		msg, err := transport.Receive(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("wait for %s response: %w", requestName(requestID), err)
 		}

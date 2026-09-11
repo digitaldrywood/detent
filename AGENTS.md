@@ -45,3 +45,9 @@ source of incidents.
   around a mechanism. Fix the mechanism.
 - Machine-filed issues carry an origin stamp and a fingerprint; never file a
   duplicate of an open issue, comment on it instead.
+
+## Repository invariants
+
+Follow [docs/invariants.md](docs/invariants.md). Changes to an invariant or its
+enforcement must update that document in the same PR and identify the invariant
+in the PR template. Run `make check`, including the existing invariant gate.

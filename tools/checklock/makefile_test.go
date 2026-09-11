@@ -25,12 +25,14 @@ func TestMakeCheckGeneratedPreflight(t *testing.T) {
 		name      string
 		stale     bool
 		change    bool
+		invalid   bool
 		wantTrace string
 		wantError bool
 	}{
-		{"stale before admission", true, false, "migrations\ngenerated\n", true},
-		{"changed during admission", false, true, "migrations\ngenerated\nlock\nmigrations\ngenerated\n", true},
-		{"unchanged inputs", false, false, "migrations\ngenerated\nlock\nmigrations\ngenerated\n", false},
+		{"stale before admission", true, false, false, "migrations\ngenerated\n", true},
+		{"changed during admission", false, true, false, "migrations\ngenerated\nlock\ninvariants\nmigrations\ngenerated\n", true},
+		{"unchanged inputs", false, false, false, "migrations\ngenerated\nlock\ninvariants\nmigrations\ngenerated\n", false},
+		{"invariant failure", false, false, true, "migrations\ngenerated\nlock\ninvariants\n", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -53,10 +55,17 @@ func TestMakeCheckGeneratedPreflight(t *testing.T) {
 			if tt.change {
 				write("change-at-admission", "", 0o600)
 			}
+			if tt.invalid {
+				write("invalid-invariants", "", 0o600)
+			}
 			write("git", "#!/bin/sh\npwd\n", 0o700)
 			write("go", `#!/bin/sh
 set -eu
 case "$*" in
+  'run ./tools/invariantcheck')
+    echo invariants >> trace
+    test ! -f invalid-invariants
+    ;;
   'run ./tools/migrationcheck')
     echo migrations >> trace
     ;;

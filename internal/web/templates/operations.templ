@@ -1,0 +1,125 @@
+package templates
+
+import (
+	"fmt"
+	"github.com/digitaldrywood/detent/internal/operations"
+	"time"
+)
+
+templ OperationsPage(shell DashboardShellData, report operations.Report) {
+	@AppShell(shell, nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+			<div id="snapshot" class="flex flex-col gap-5 px-5 py-5" hx-swap="morph:innerHTML">
+				@OperationsSnapshot(report)
+			</div>
+		</main>
+	}
+}
+
+templ OperationsSnapshot(report operations.Report) {
+	<header class="flex flex-wrap items-center justify-between gap-3">
+		<div><p class="text-xs text-sec">{ report.Instance } · Data time { report.DataTime.Format(time.RFC3339) }</p></div>
+		<button type="button" class="rounded border border-line px-3 py-2 text-sm" hx-get={ "/operations?since=" + report.DataTime.Format(time.RFC3339Nano) } hx-target="#snapshot" hx-swap="morph:innerHTML">Refresh</button>
+	</header>
+	@operationsSections(report)
+}
+
+templ OperationsDocument(report operations.Report) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta http-equiv="refresh" content="300"/>
+			<title>{ report.Instance } · Operations</title>
+			<style>
+				body{margin:0;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5;color:#1f2937;background:#f9fafb}
+				main{display:flex;flex-direction:column;gap:20px;padding:20px;max-width:960px;margin:0 auto}
+				h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:0}h3{font-size:14px;margin:0}h4{font-size:13px;margin:12px 0 4px}
+				section{display:flex;flex-direction:column;gap:8px}
+				article{border:1px solid #e5e7eb;border-radius:6px;padding:12px;background:#fff}
+				dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px 0;margin:0}
+				@media(min-width:768px){dl{grid-template-columns:repeat(4,minmax(0,1fr))}}
+				dt{font-size:12px;color:#6b7280}dd{margin:0}
+				p{margin:0}.text-xs{font-size:12px}.text-sec{color:#6b7280}a{color:#1d4ed8}
+			</style>
+		</head>
+		<body>
+			<main class="flex flex-col gap-5 px-5 py-5">
+				<header>
+					<h1>Operations</h1>
+					<p class="text-xs text-sec">{ report.Instance } · Data time { report.DataTime.Format(time.RFC3339) } · Exported by detent report</p>
+				</header>
+				@operationsSections(report)
+			</main>
+		</body>
+	</html>
+}
+
+templ operationsSections(report operations.Report) {
+	<section id="operations-stats" class="flex flex-col gap-3" aria-labelledby="operations-stats-title">
+		<h2 id="operations-stats-title" class="text-sm font-semibold">Stats</h2>
+		<p class="text-xs text-sec">Completion receipts count closes and merges with a linked PR. Cycle time uses first In Progress to first Done. Blocked nights use UTC calendar dates. Missing measurements are shown as unavailable.</p>
+		<p class="text-sm">
+			{ fmt.Sprintf("Merge queue depth: %d · Merge-group size: ", report.QueueDepth) }
+			if report.MergeGroupSize == nil {
+				<span>Unavailable</span>
+			} else {
+				<span>{ fmt.Sprint(*report.MergeGroupSize) }</span>
+				if report.MergeGroupWait != nil {
+					<span>{ fmt.Sprintf(" · Group wait: %ds", *report.MergeGroupWait) }</span>
+				}
+			}
+		</p>
+		for _, w := range report.Stats {
+			<article class="rounded border border-line bg-surface p-4" data-operations-window={ w.Label }>
+				<h3 class="font-semibold">{ w.Label }</h3>
+				<dl class="grid grid-cols-2 gap-3 py-3 md:grid-cols-4">
+					<div><dt class="text-xs text-sec">Merges per day</dt><dd>{ fmt.Sprintf("%.2f (%d total)", w.MergesPerDay, w.Merges) }</dd></div>
+					<div><dt class="text-xs text-sec">Closes per day</dt><dd>{ fmt.Sprintf("%.2f (%d total)", w.ClosesPerDay, w.Closes) }</dd></div>
+					<div><dt class="text-xs text-sec">Cycle median / p75 seconds</dt><dd>{ operationsNumber(w.CycleMedianSeconds) + " / " + operationsNumber(w.CycleP75Seconds) }</dd></div>
+					<div><dt class="text-xs text-sec">Clean-attempt rate (one attempt)</dt><dd>{ operationsNumber(w.CleanAttemptRate) }</dd></div>
+					<div><dt class="text-xs text-sec">Tokens per completed issue</dt><dd>{ operationsNumber(w.TokensPerCompletedIssue) }</dd></div>
+				</dl>
+				<h4 class="text-sm font-semibold">Distinct issues entering Blocked per night (UTC)</h4>
+				if len(w.BlockedNights) == 0 {
+					<p class="text-xs text-sec">No Blocked entries in this window.</p>
+				}
+				for _, night := range w.BlockedNights {
+					<p class="text-sm">{ fmt.Sprintf("%s: %d", night.Date, night.Issues) }</p>
+				}
+				<h4 class="mt-3 text-sm font-semibold">Dispatches and top skip reasons</h4>
+				if len(w.Projects) == 0 {
+					<p class="text-xs text-sec">No scheduler decisions in this window.</p>
+				}
+				for _, project := range w.Projects {
+					<div class="py-2 text-sm">
+						<p>{ fmt.Sprintf("%s · %d dispatches", project.ID, project.Dispatches) }</p>
+						for _, reason := range project.SkipReasons {
+							<p class="text-xs text-sec">{ fmt.Sprintf("%s: %d", reason.Reason, reason.Count) }</p>
+						}
+					</div>
+				}
+			</article>
+		}
+	</section>
+	<section id="operations-actions" class="flex flex-col gap-2" aria-labelledby="operations-actions-title">
+		<h2 id="operations-actions-title" class="text-sm font-semibold">Actions taken</h2>
+		<p class="text-xs text-sec">Applied operator-routine actions since the previous refresh; the first render shows 24 hours.</p>
+		if len(report.Actions) == 0 {
+			<p class="text-sm">No actions in this interval.</p>
+		}
+		for _, action := range report.Actions {
+			<article id={ fmt.Sprintf("operation-action-%d", action.ID) } class="rounded border border-line p-3 text-sm"><a class="underline" href={ templ.SafeURL(action.EvidenceURL) }>{ action.Issue }</a><p>{ action.Kind + " · " + action.Reason }</p></article>
+		}
+	</section>
+	<section id="operations-decisions" class="flex flex-col gap-2" aria-labelledby="operations-decisions-title">
+		<h2 id="operations-decisions-title" class="text-sm font-semibold">Decisions needed</h2>
+		if len(report.Decisions) == 0 {
+			<p class="text-sm">No human decisions needed.</p>
+		}
+		for _, decision := range report.Decisions {
+			<article class="rounded border border-line p-3 text-sm"><a class="underline" href={ templ.SafeURL(decision.URL) }>{ decision.Issue }</a><p>{ decision.Question }</p></article>
+		}
+	</section>
+}
