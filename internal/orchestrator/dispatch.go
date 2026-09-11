@@ -449,7 +449,7 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 	allowMergeControl bool,
 	retryState *Retry,
 ) dispatchIssueOutcome {
-	if mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue) {
+	if mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "waiting for native merge queue"}
 	}
 	if err := o.checkDispatchPolicy(ctx); err != nil {

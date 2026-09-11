@@ -131,7 +131,10 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			applyNativeMergeQueueEntry(out, issueID, state.nativeMergeQueueEntries[issueID].Entry)
 			continue
 		}
-		if !nativeMergeQueueCandidate(candidate, o.cfg) {
+		if reason := nativeMergeQueueExclusion(state, candidate, o.cfg); reason != "" {
+			if o.logger != nil {
+				o.logger.Info("merge_worker_native_queue_excluded", mergeWorkerLogAttrs(candidate, "reason", reason)...)
+			}
 			continue
 		}
 		if status.AdmissionLimit <= 0 || status.Depth >= status.AdmissionLimit {
@@ -163,32 +166,44 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	return out
 }
 
-func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
+func nativeMergeQueueCandidate(state *State, issue connector.Issue, cfg Config) bool {
+	return nativeMergeQueueExclusion(state, issue, cfg) == ""
+}
+
+func nativeMergeQueueExclusion(state *State, issue connector.Issue, cfg Config) string {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
-		return false
+		return "missing issue or pull request"
 	}
-	if gateRequiresPullRequest(cfg.AutoPromote.Gate) {
-		return false
+	effective := gate.Effective(cfg.AutoPromote.Gate)
+	if effective.SecurityAudit.Enabled {
+		return "security audit requires worker validation"
 	}
-	if gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled {
-		return false
+	if gateRequiresPullRequest(effective) {
+		if effective.Kind != gate.KindCommand {
+			return "gate requires worker validation"
+		}
+		if state == nil {
+			return "command gate has no current passed evidence"
+		}
+		required := state.RequiredGates[issue.ID]
+		if required.State != "passed" || required.PRNumber != issue.PullRequest.Number || required.HeadSHA != strings.TrimSpace(issue.PullRequest.HeadSHA) || required.BaseSHA != strings.TrimSpace(issue.PullRequest.BaseSHA) {
+			return "command gate has no current passed evidence"
+		}
 	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
-		return false
+		return "merge approval revoked"
 	}
 	pullRequest := issue.PullRequest
 	if pullRequestHydrationBlocksProgress(pullRequest) {
-		return false
+		return "pull request hydration unavailable"
 	}
 	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
-		return false
+		return "CI trigger approval revoked"
 	}
-	return normalizePullRequestState(pullRequest.State) == "open" &&
-		!pullRequest.Draft &&
-		strings.TrimSpace(pullRequest.HeadSHA) != "" &&
-		mergeWorkerCIGreen(pullRequest.CIStatus) &&
-		pullRequestRepository(issue) != "" &&
-		pullRequestNumber(issue) > 0
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft || strings.TrimSpace(pullRequest.HeadSHA) == "" || !mergeWorkerCIGreen(pullRequest.CIStatus) || pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 {
+		return "pull request is not ready for queue admission"
+	}
+	return ""
 }
 
 func nativeMergeQueueRepositoryKey(issue connector.Issue) string {
@@ -308,10 +323,10 @@ func (o *Orchestrator) logNativeMergeQueueFailure(issue connector.Issue, reason 
 }
 
 // nativeMergeQueueOwnsIssue keeps provider-owned work out of every worker path,
-// including snapshots that omit the queue entry. Availability expires only when
-// a fresh provider inspection confirms the queue is unavailable.
-func nativeMergeQueueOwnsIssue(state *State, issue connector.Issue) bool {
-	return nativeMergeQueueHasEntry(state, issue) || state != nil && state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)].Available
+// including snapshots that omit the queue entry. Repository availability owns
+// only candidates; excluded projects retain their existing worker path.
+func nativeMergeQueueOwnsIssue(state *State, issue connector.Issue, cfg Config) bool {
+	return nativeMergeQueueHasEntry(state, issue) || state != nil && state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)].Available && nativeMergeQueueCandidate(state, issue, cfg)
 }
 
 func nativeMergeQueueHasEntry(state *State, issue connector.Issue) bool {

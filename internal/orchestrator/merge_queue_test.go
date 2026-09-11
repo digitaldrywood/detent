@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t *testing.T) {
@@ -344,7 +345,7 @@ func TestDelegateNativeMergeQueueIssuesRefreshesQueueOwnership(t *testing.T) {
 				t.Fatalf("queue mutations: enqueue=%v dequeue=%v", tracker.enqueued, tracker.dequeued)
 			}
 			for _, issue := range second {
-				if got := nativeMergeQueueOwnsIssue(&state, issue); got != (tt.wantWorkers == 0) {
+				if got := nativeMergeQueueOwnsIssue(&state, issue, cfg); got != (tt.wantWorkers == 0) {
 					t.Fatalf("%s ownership=%t", issue.ID, got)
 				}
 			}
@@ -448,7 +449,7 @@ func TestNativeMergeQueueCandidate(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&issue)
 			}
-			if got := nativeMergeQueueCandidate(issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
+			if got := nativeMergeQueueCandidate(nil, issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
 				t.Fatalf("nativeMergeQueueCandidate() = %t, want %t", got, tt.want)
 			}
 		})
@@ -463,7 +464,7 @@ func TestNativeMergeQueueCandidateRejectsNonAtomicSecurityAuditGate(t *testing.T
 		Kind:          gate.KindArtifact,
 		SecurityAudit: gate.SecurityAuditConfig{Enabled: true},
 	}}})
-	if nativeMergeQueueCandidate(issue, cfg) {
+	if nativeMergeQueueCandidate(nil, issue, cfg) {
 		t.Fatal("nativeMergeQueueCandidate() = true, want programmatic exact-head merge")
 	}
 }
@@ -868,7 +869,7 @@ func TestNativeMergeQueueWorkerHandoff(t *testing.T) {
 			if tracker.inspections != 1 {
 				t.Fatalf("inspections=%d", tracker.inspections)
 			}
-			if !nativeMergeQueueOwnsIssue(&state, issue) {
+			if !nativeMergeQueueOwnsIssue(&state, issue, cfg) {
 				t.Fatal("lost queue ownership")
 			}
 			if strings.Contains(logs.String(), "merge_worker_retry_exhausted") {
@@ -963,6 +964,94 @@ func TestNativeMergeQueueUnadmittedFailureReconciles(t *testing.T) {
 			}
 			if len(tracker.enqueued) != 0 || len(tracker.merges) != 0 || len(tracker.dequeued) != 0 {
 				t.Fatal("unexpected queue or merge mutation")
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueProjectRouting(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		audit     bool
+		passed    bool
+		wantQueue bool
+	}{
+		{"passed command", false, true, true},
+		{"pending command", false, false, false},
+		{"security audit", true, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(2465, "success")
+			issue.PullRequest.BaseSHA = "base-1"
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, MaxConcurrentAgents: 1, ActiveStates: []string{"Merging"}})
+			cfg.AutoPromote.Gate.Kind = gate.KindCommand
+			cfg.AutoPromote.Gate.SecurityAudit.Enabled = tt.audit
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			var logs strings.Builder
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			orch.cfg.Project.ID = "detent"
+			orch.cfg.ServiceIdentity = "detent:detent"
+			memo := newSecurityAuditMemoryStore()
+			memo.runs = append(memo.runs, securityAuditPassingRun(issue))
+			orch.securityAuditStore = memo
+			state := newState(cfg)
+			if tt.passed {
+				state.RequiredGates = map[string]telemetry.RequiredGate{issue.ID: {State: "passed", PRNumber: issue.PullRequest.Number, HeadSHA: issue.PullRequest.HeadSHA, BaseSHA: issue.PullRequest.BaseSHA}}
+			}
+			now := time.Now()
+			issues := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if got := len(tracker.enqueued) == 1; got != tt.wantQueue {
+				t.Errorf("enqueued=%v, want queue=%t", tracker.enqueued, tt.wantQueue)
+			}
+			workers := orch.mergeWorkerDispatchCandidates(&state, issues, now)
+			if got := len(workers) == 0; got != tt.wantQueue {
+				t.Errorf("workers=%d, want queue=%t", len(workers), tt.wantQueue)
+			}
+			if !tt.wantQueue && !strings.Contains(logs.String(), "merge_worker_native_queue_excluded") {
+				t.Error("missing exclusion log")
+			}
+			if tt.passed {
+				event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}}
+				running := Running{Issue: issues[0], StartedAt: now}
+				if !orch.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issues[0]) {
+					t.Fatal("completion not handled")
+				}
+				wantMerges := 0
+				if tt.audit {
+					wantMerges = 1
+				}
+				if len(tracker.merges) != wantMerges {
+					t.Fatalf("merges=%d, want %d; logs=%s", len(tracker.merges), wantMerges, logs.String())
+				}
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueCommandGateEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		change func(*telemetry.RequiredGate)
+		want   bool
+	}{
+		{"current pass", func(*telemetry.RequiredGate) {}, true},
+		{"failed", func(g *telemetry.RequiredGate) { g.State = "failed" }, false},
+		{"old head", func(g *telemetry.RequiredGate) { g.HeadSHA = "old" }, false},
+		{"old base", func(g *telemetry.RequiredGate) { g.BaseSHA = "old" }, false},
+		{"different PR", func(g *telemetry.RequiredGate) { g.PRNumber++ }, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(2465, "success")
+			cfg := nativeMergeQueueTestConfig(Config{})
+			cfg.AutoPromote.Gate.Kind = gate.KindCommand
+			state := newState(cfg)
+			evidence := telemetry.RequiredGate{State: "passed", PRNumber: issue.PullRequest.Number, HeadSHA: issue.PullRequest.HeadSHA, BaseSHA: issue.PullRequest.BaseSHA}
+			tt.change(&evidence)
+			state.RequiredGates = map[string]telemetry.RequiredGate{issue.ID: evidence}
+			if got := nativeMergeQueueCandidate(&state, issue, cfg); got != tt.want {
+				t.Fatalf("candidate=%t, want %t", got, tt.want)
 			}
 		})
 	}
