@@ -55,3 +55,34 @@ orchestrator’s question-wait rule. This filtering precedes gate deduplication
 so a superseded question cannot hide a current human-action gate. Issue links, including durable GitHub question-comment links when
 available, provide the context needed to answer. Decisions are independent of
 the action cursor.
+
+## Exporting the page
+
+`detent report --html <path>` writes the same report as a self-contained HTML
+file for readers away from the dashboard. It replaces the external
+`monitor.py` watcher and `repair.py` repair script, which are retired; actions
+now come from the operator routine and are visible in the report itself. A
+launchd agent keeps a synced copy current:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.detent-report</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/detent</string>
+    <string>report</string>
+    <string>--html</string>
+    <string>/Users/operator/Dropbox/Detent/Detent Status.html</string>
+  </array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>EnvironmentVariables</key>
+  <dict><key>DETENT_API_TOKEN</key><string>replace-with-your-token</string></dict>
+</dict>
+</plist>
+```
+
+On Linux, a systemd user timer calling the same command is equivalent.
+

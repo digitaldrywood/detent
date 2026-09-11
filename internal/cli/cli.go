@@ -507,6 +507,7 @@ detent --format json config path`),
 		newStateCommand(&configPath, &host, &port, opts),
 		newOnboardingCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),
+		newReportCommand(&configPath, &host, &port, opts),
 		newRemoveProjectCommand(&configPath, opts),
 	)
 	cmd.SetHelpCommand(newHelpCommand(cmd, opts))
