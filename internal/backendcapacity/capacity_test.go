@@ -1,9 +1,45 @@
 package backendcapacity
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
+
+func TestStartupEvidenceSnapshotsAreIndependent(t *testing.T) {
+	t.Parallel()
+	for _, beforeCleanup := range []bool{false, true} {
+		name := "after cleanup"
+		if beforeCleanup {
+			name = "before cleanup"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC()
+			process := StartupProcessEvidence{StartedAt: &now, ReadyAt: &now, ExitedAt: &now, SentMessages: 3}
+			evidence := &StartupEvidence{Process: process, BeforeCleanup: &process}
+			err := NewError(Scope{}, Details{Startup: evidence}, errors.New("startup failed"))
+			first, ok := As(err)
+			if !ok {
+				t.Fatal("missing capacity error")
+			}
+			selected := &first.Details.Startup.Process
+			if beforeCleanup {
+				selected = first.Details.Startup.BeforeCleanup
+			}
+			*selected.StartedAt = time.Time{}
+			*selected.ReadyAt = time.Time{}
+			*selected.ExitedAt = time.Time{}
+			selected.SentMessages = 0
+			second, _ := As(err)
+			for _, snapshot := range []*StartupProcessEvidence{&second.Details.Startup.Process, second.Details.Startup.BeforeCleanup, &evidence.Process, evidence.BeforeCleanup} {
+				if !snapshot.StartedAt.Equal(now) || !snapshot.ReadyAt.Equal(now) || !snapshot.ExitedAt.Equal(now) || snapshot.SentMessages != 3 {
+					t.Fatalf("consumer mutated original snapshot: %+v", snapshot)
+				}
+			}
+		})
+	}
+}
 
 func TestClassify(t *testing.T) {
 	t.Parallel()

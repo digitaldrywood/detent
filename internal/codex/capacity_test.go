@@ -146,6 +146,23 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			err:  fmt.Errorf("run agent turn: wait for output: %w", context.DeadlineExceeded),
 		},
 		{
+			name: "startup rejection with cleanup deadline",
+			err: errors.Join(&StartupError{
+				Evidence: backendcapacity.StartupEvidence{Stage: "thread/start"},
+				Err:      &ResponseError{Request: "thread/start", Code: -32602, Message: "invalid model"},
+			}, &TransportCloseError{Err: context.DeadlineExceeded}),
+		},
+		{
+			name: "startup EOF with cleanup deadline",
+			err: errors.Join(&StartupError{
+				Evidence: backendcapacity.StartupEvidence{Stage: "thread/start"},
+				Err:      io.EOF,
+			}, &TransportCloseError{Err: context.DeadlineExceeded}),
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantKind: backendcapacity.StartupFailureKind,
+		},
+		{
 			name: "invalid request",
 			err:  &TurnFailedError{Status: "failed", Body: `{"error":{"type":"invalid_request_error"}}`},
 		},

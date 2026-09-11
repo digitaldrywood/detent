@@ -21,6 +21,7 @@ import (
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/agentoverride"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
@@ -551,6 +552,19 @@ type malformedEvaluation struct {
 	output     []byte
 }
 
+type startupEvaluationError struct {
+	kind string
+	err  error
+}
+
+func (e startupEvaluationError) Error() string {
+	return "agent backend " + e.kind
+}
+
+func (e startupEvaluationError) Unwrap() error {
+	return e.err
+}
+
 func (m *Manager) evaluateCandidate(
 	ctx context.Context,
 	settings Settings,
@@ -567,6 +581,9 @@ func (m *Manager) evaluateCandidate(
 		AgentToolHandler: collector.handle,
 	})
 	if err != nil {
+		if capacityErr, ok := backendcapacity.As(err); ok && backendcapacity.IsStartupFailureKind(capacityErr.Details.Kind) {
+			return AgentEvaluation{}, nil, "", startupEvaluationError{kind: strings.TrimSpace(capacityErr.Details.Kind), err: err}
+		}
 		if runner.IsCapacityError(err) {
 			return AgentEvaluation{}, nil, "agent_backend_capacity", nil
 		}
