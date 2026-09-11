@@ -67,6 +67,12 @@ func laneWriterAllowed(file string) bool {
 	return false
 }
 
+// The doctor names retired reasons only to prove they are absent from the
+// runtime store. Keep this list file-specific.
+func retiredDetectorAllowed(file string) bool {
+	return file == "internal/cli/doctor_invariant_evidence.go"
+}
+
 func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []string {
 	var problems []string
 	allowed := make(map[string]bool)
@@ -107,7 +113,7 @@ func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []str
 				value := pkg.TypesInfo.Types[n].Value
 				if value != nil && value.Kind() == constant.String {
 					text := constant.StringVal(value)
-					if retiredSymbol(text) {
+					if retiredSymbol(text) && !retiredDetectorAllowed(name) {
 						report(n.Pos(), "INV-9 retired mechanism string")
 					}
 					if mutationRateLimit(text) {
