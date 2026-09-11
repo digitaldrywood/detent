@@ -194,14 +194,23 @@ func doctorInvariantWorkflowVerdict(id string, sources map[string][]byte) doctor
 	return check
 }
 
-// A job stays off pull_request events when its condition excludes them or
-// names only other events; the bare pull_request equality is a placeholder.
+// A job stays off pull_request events when its condition excludes them, or
+// when every || alternative requires a non-pull_request event; the bare
+// pull_request equality is a placeholder. Anything looser counts as a real job.
 func doctorWorkflowJobSkipsPullRequests(condition string) bool {
 	condition = strings.TrimSpace(condition)
 	if condition == "github.event_name == 'pull_request'" || strings.Contains(condition, "github.event_name != 'pull_request'") {
 		return true
 	}
-	return strings.Contains(condition, "github.event_name ==") && !strings.Contains(condition, "'pull_request'")
+	if condition == "" || strings.Contains(condition, "'pull_request'") {
+		return false
+	}
+	for _, alternative := range strings.Split(condition, "||") {
+		if !strings.Contains(alternative, "github.event_name ==") {
+			return false
+		}
+	}
+	return true
 }
 
 func mapKeys(values map[string][]byte) []string {

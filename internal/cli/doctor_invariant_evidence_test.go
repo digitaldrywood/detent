@@ -175,6 +175,7 @@ func TestDoctorInvariantWorkflowVerdict(t *testing.T) {
 			"ci.yml":     []byte("on:\n  merge_group:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"),
 			"extra.yaml": []byte("on:\n  pull_request:\njobs:\n  smoke:\n    runs-on: ubuntu-latest\n"),
 		}, doctorWarn, "extra.yaml:smoke"},
+		{"other-event alternative does not exempt", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  smoke:\n    if: github.event_name == 'push' || github.event.action == 'opened'\n")}, doctorWarn, "ci.yml:smoke"},
 		{"malformed", map[string][]byte{"ci.yml": []byte("on: [\n")}, doctorWarn, "could not be parsed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
