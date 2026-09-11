@@ -2293,7 +2293,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 
 	o.validatorMu.Lock()
 	if o.validatorRuns == nil {
-		o.validatorRuns = map[string]struct{}{}
+		o.validatorRuns = map[string]Running{}
 	}
 	if o.validatorResults == nil {
 		o.validatorResults = map[string]validatorStageResult{}
@@ -2323,7 +2323,10 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		return
 	}
-	o.validatorRuns[identity.Key] = struct{}{}
+	running := Running{Issue: cloneIssue(issue), StartedAt: now.UTC(), WorkerHost: "local"}
+	progress := newWorkerProgress(running, store.WorkAttemptHeartbeat{}, nil, o.cfg.OutputTruncationMaxBytes)
+	running.progress = progress
+	o.validatorRuns[identity.Key] = running
 	if capacityProbeKey != "" {
 		o.markBackendCapacityProbe(state, capacityProbeKey, "validator:"+identity.IssueID, now)
 	}
@@ -2337,12 +2340,14 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 	}
 	go func() {
 		defer o.validatorWG.Done()
+		defer progress.close()
 
 		result, err := o.validator.Validate(ctx, ValidatorRequest{
 			Issue:            issue,
 			StartedAt:        now.UTC(),
 			SelectorContext:  selectorContext,
 			OnActivityUpdate: o.activityUpdateHandler(ctx, issue),
+			OnUsageUpdate:    func(update runpkg.UsageUpdate) error { return progress.observe(ctx, update) },
 		})
 
 		completedAt := o.clockNow().UTC()
