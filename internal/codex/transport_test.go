@@ -2,11 +2,13 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
@@ -28,6 +31,114 @@ const (
 	helperDrainWriteStartedSignal       = "drain write started"
 	helperDrainWriteCompletedSignal     = "drain write completed"
 )
+
+func TestStartupTimeoutCapturesCleanupEvidence(t *testing.T) {
+	t.Parallel()
+	for _, timeout := range []time.Duration{5 * time.Second, 30 * time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			t.Parallel()
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				return helperCommand(ctx, "startup-stall")
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport, err := factory.NewTransport(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			local := transport.(*localTransport)
+			t.Cleanup(func() {
+				select {
+				case <-local.done:
+				default:
+					if err := recoverLocalTransportTest(local); err != nil {
+						t.Errorf("recover transport: %v", err)
+					}
+				}
+			})
+			controlled := &controlledStartupTransport{localTransport: local, test: t}
+			var logs bytes.Buffer
+			server, err := NewAppServer(staticTransportFactory{transport: controlled}, WithReadTimeout(timeout), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			timers := newControlledTimeoutFactory()
+			server.timeoutContext = timers.context
+			err = runWithTimeoutExpiration(t, timers, timeout, nil, func() error {
+				_, err := server.RunTurn(t.Context(), RunTurnRequest{}, nil)
+				return err
+			})
+			if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrTransportClose) {
+				t.Fatalf("startup error = %v, want startup and cleanup deadlines", err)
+			}
+			evidence, ok := startupEvidence(err)
+			if !ok || evidence.Stage != "thread/start" || evidence.DeadlineMS != timeout.Milliseconds() {
+				t.Fatalf("startup evidence = %+v", evidence)
+			}
+			before := evidence.BeforeCleanup
+			if before == nil || !before.Ready || before.ExitObserved || before.TerminationRequested || before.CleanupComplete || before.SentMessages != 3 || before.ReceivedMessages != 1 || before.StderrBytes == 0 {
+				t.Fatalf("before cleanup = %+v", before)
+			}
+			if !evidence.Process.TerminationRequested || !evidence.Process.ExitObserved || !evidence.Process.CleanupComplete {
+				t.Fatalf("after cleanup = %+v", evidence.Process)
+			}
+			encoded, encodeErr := json.Marshal(evidence)
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			if strings.Contains(string(encoded), "private") {
+				t.Fatalf("private output in evidence: %s", encoded)
+			}
+			if strings.Contains(logs.String(), "private") || !strings.Contains(logs.String(), `"before_cleanup"`) || !strings.Contains(logs.String(), `"termination_requested":true`) {
+				t.Fatalf("startup log lacks safe diagnostics: %s", &logs)
+			}
+			details, ok := ClassifyCapacityError(err, nil, time.Now())
+			if !ok || details.Kind != backendcapacity.StartupTimeoutKind {
+				t.Fatalf("startup classification = %+v", details)
+			}
+			assertLocalTransportClosed(t, local, "startup timeout")
+		})
+	}
+}
+
+type controlledStartupTransport struct {
+	*localTransport
+	test       *testing.T
+	threadSent bool
+}
+
+func (t *controlledStartupTransport) Send(ctx context.Context, msg Message) error {
+	if msg.Method == "thread/start" {
+		t.threadSent = true
+	}
+	return t.localTransport.Send(ctx, msg)
+}
+
+func (t *controlledStartupTransport) Receive(ctx context.Context) (Message, error) {
+	if t.threadSent {
+		waitForLocalTransportStderr(t.test, t.localTransport, "private startup marker")
+		ctx.(*controlledTimeoutContext).activate()
+	}
+	return t.localTransport.Receive(ctx)
+}
+
+func (t *controlledStartupTransport) Close(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok || ctx.Err() != nil {
+		t.test.Errorf("cleanup context must have a fresh bounded deadline")
+	}
+	expired := &controlledTimeoutContext{done: make(chan struct{})}
+	expired.expire(context.DeadlineExceeded)
+	err := t.localTransport.Close(expired)
+	timer := time.NewTimer(transportTestDeadlockTimeout)
+	defer timer.Stop()
+	select {
+	case <-t.done:
+	case <-timer.C:
+		t.test.Error("startup cleanup did not finish")
+	}
+	return err
+}
 
 func TestLocalTransportRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -703,6 +814,13 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 	case "block-send":
 		time.Sleep(time.Hour)
 	case "ignore-close":
+		time.Sleep(time.Hour)
+	case "startup-stall":
+		codec := NewCodec(os.Stdin, os.Stdout)
+		helperBackpressureRespond(codec, initializeRequestID, "initialize", json.RawMessage(`{"userAgent":"private"}`))
+		helperBackpressureExpect(codec, 0, "initialized")
+		helperBackpressureExpect(codec, threadStartRequestID, "thread/start")
+		helperBackpressureSignal("private startup marker")
 		time.Sleep(time.Hour)
 	case "exit":
 		return

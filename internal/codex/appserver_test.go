@@ -12,11 +12,54 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 )
+
+func TestAppServerResponseDeadlineSurvivesNotifications(t *testing.T) {
+	t.Parallel()
+	for _, requestID := range []int{initializeRequestID, threadStartRequestID, threadResumeRequestID, turnStartRequestID} {
+		t.Run(requestName(requestID), func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				transport := &notifyingStartupTransport{requestID: requestID}
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(3*time.Second))
+				if err != nil {
+					t.Fatal(err)
+				}
+				startedAt := time.Now()
+				_, err = server.awaitResponse(t.Context(), transport, requestID, nil, nil, nil)
+				if !errors.Is(err, context.DeadlineExceeded) || time.Since(startedAt) != 3*time.Second {
+					t.Fatalf("response wait = %v after %s, want deadline after 3s", err, time.Since(startedAt))
+				}
+			})
+		})
+	}
+}
+
+type notifyingStartupTransport struct {
+	fakeAppServerTransport
+	requestID int
+	messages  int
+}
+
+func (t *notifyingStartupTransport) Receive(ctx context.Context) (Message, error) {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return Message{}, ctx.Err()
+	case <-timer.C:
+		t.messages++
+		if t.messages == 10 {
+			return Message{ID: requestID(t.requestID), Result: json.RawMessage(`{}`)}, nil
+		}
+		return Message{Method: "private/notification", Params: json.RawMessage(`{"private":"payload"}`)}, nil
+	}
+}
 
 func TestAppServerStartupFailuresIdentifyStageAndDeadline(t *testing.T) {
 	t.Parallel()
@@ -167,6 +210,9 @@ func TestAppServerStartupFailureRetainsProcessReadinessAndExit(t *testing.T) {
 	}
 	if !evidence.Process.Ready || evidence.Process.ReadyAt == nil || !evidence.Process.ExitObserved || evidence.Process.ExitedAt == nil || evidence.Process.ExitStatus != "closed after startup failure" {
 		t.Fatalf("process evidence = %#v, want ready and exit observations", evidence.Process)
+	}
+	if evidence.BeforeCleanup == nil || !evidence.BeforeCleanup.Ready || evidence.BeforeCleanup.ExitObserved {
+		t.Fatalf("before cleanup = %+v, want initialized process without an observed exit", evidence.BeforeCleanup)
 	}
 }
 

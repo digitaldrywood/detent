@@ -76,26 +76,34 @@ type Details struct {
 }
 
 type StartupEvidence struct {
-	Stage              string                 `json:"stage"`
-	StageStartedAt     time.Time              `json:"stage_started_at"`
-	FailedAt           time.Time              `json:"failed_at"`
-	ElapsedMS          int64                  `json:"elapsed_ms"`
-	DeadlineMS         int64                  `json:"deadline_ms"`
-	WorkerHost         string                 `json:"worker_host"`
-	ConcurrentStartups int                    `json:"concurrent_startups"`
-	ActiveWorkers      int                    `json:"active_workers"`
-	Process            StartupProcessEvidence `json:"process"`
+	Stage              string                  `json:"stage"`
+	StageStartedAt     time.Time               `json:"stage_started_at"`
+	FailedAt           time.Time               `json:"failed_at"`
+	ElapsedMS          int64                   `json:"elapsed_ms"`
+	DeadlineMS         int64                   `json:"deadline_ms"`
+	WorkerHost         string                  `json:"worker_host"`
+	ConcurrentStartups int                     `json:"concurrent_startups"`
+	ActiveWorkers      int                     `json:"active_workers"`
+	Process            StartupProcessEvidence  `json:"process"`
+	BeforeCleanup      *StartupProcessEvidence `json:"before_cleanup,omitempty"`
 }
 
 type StartupProcessEvidence struct {
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	Ready        bool       `json:"ready"`
-	ReadyAt      *time.Time `json:"ready_at,omitempty"`
-	ReadyAfterMS int64      `json:"ready_after_ms,omitempty"`
-	ExitObserved bool       `json:"exit_observed"`
-	ExitedAt     *time.Time `json:"exited_at,omitempty"`
-	ExitAfterMS  int64      `json:"exit_after_ms,omitempty"`
-	ExitStatus   string     `json:"exit_status,omitempty"`
+	StartedAt            *time.Time `json:"started_at,omitempty"`
+	Ready                bool       `json:"ready"`
+	ReadyAt              *time.Time `json:"ready_at,omitempty"`
+	ReadyAfterMS         int64      `json:"ready_after_ms,omitempty"`
+	ExitObserved         bool       `json:"exit_observed"`
+	ExitedAt             *time.Time `json:"exited_at,omitempty"`
+	ExitAfterMS          int64      `json:"exit_after_ms,omitempty"`
+	ExitStatus           string     `json:"exit_status,omitempty"`
+	SentMessages         uint64     `json:"sent_messages"`
+	ReceivedMessages     uint64     `json:"received_messages"`
+	ReceiveQueueDepth    int        `json:"receive_queue_depth"`
+	ReadFailed           bool       `json:"read_failed"`
+	StderrBytes          int64      `json:"stderr_bytes"`
+	TerminationRequested bool       `json:"termination_requested"`
+	CleanupComplete      bool       `json:"cleanup_complete"`
 }
 
 type Error struct {
@@ -219,6 +227,13 @@ func cloneDetails(details Details) Details {
 		startup.Process.StartedAt = cloneTime(details.Startup.Process.StartedAt)
 		startup.Process.ReadyAt = cloneTime(details.Startup.Process.ReadyAt)
 		startup.Process.ExitedAt = cloneTime(details.Startup.Process.ExitedAt)
+		if details.Startup.BeforeCleanup != nil {
+			before := *details.Startup.BeforeCleanup
+			before.StartedAt = cloneTime(before.StartedAt)
+			before.ReadyAt = cloneTime(before.ReadyAt)
+			before.ExitedAt = cloneTime(before.ExitedAt)
+			startup.BeforeCleanup = &before
+		}
 		details.Startup = &startup
 	}
 	return details

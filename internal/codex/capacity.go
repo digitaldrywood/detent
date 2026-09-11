@@ -72,9 +72,15 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	}
 	text := codexCapacityErrorText(err)
 	startup, hasStartupEvidence := startupEvidence(err)
+	startupCause := err
+	var startupErr *StartupError
+	if errors.As(err, &startupErr) && startupErr != nil && startupErr.Err != nil {
+		startupCause = startupErr.Err
+	}
+	startupText := strings.ToLower(codexCapacityErrorText(startupCause))
 	if hasStartupEvidence || codexStartupOperation(text) {
 		switch {
-		case errors.Is(err, context.DeadlineExceeded):
+		case errors.Is(startupCause, context.DeadlineExceeded):
 			return backendcapacity.Details{
 				Type:    backendcapacity.ErrorTypeTransientOverload,
 				Kind:    backendcapacity.StartupTimeoutKind,
@@ -82,7 +88,7 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 				Trigger: boundedCapacityTrigger(text),
 				Startup: startupEvidencePointer(startup, hasStartupEvidence),
 			}, true
-		case errors.Is(err, io.EOF), strings.Contains(strings.ToLower(text), "process exited"), strings.Contains(strings.ToLower(text), "start codex app-server transport"):
+		case errors.Is(startupCause, io.EOF), strings.Contains(startupText, "process exited"), strings.Contains(startupText, "start codex app-server transport"):
 			return backendcapacity.Details{
 				Type:    backendcapacity.ErrorTypeTransientOverload,
 				Kind:    backendcapacity.StartupFailureKind,
