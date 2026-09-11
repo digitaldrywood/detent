@@ -21,6 +21,42 @@ templ OperationsSnapshot(report operations.Report) {
 		<div><p class="text-xs text-sec">{ report.Instance } · Data time { report.DataTime.Format(time.RFC3339) }</p></div>
 		<button type="button" class="rounded border border-line px-3 py-2 text-sm" hx-get={ "/operations?since=" + report.DataTime.Format(time.RFC3339Nano) } hx-target="#snapshot" hx-swap="morph:innerHTML">Refresh</button>
 	</header>
+	@operationsSections(report)
+}
+
+templ OperationsDocument(report operations.Report) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta http-equiv="refresh" content="300"/>
+			<title>{ report.Instance } · Operations</title>
+			<style>
+				body{margin:0;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5;color:#1f2937;background:#f9fafb}
+				main{display:flex;flex-direction:column;gap:20px;padding:20px;max-width:960px;margin:0 auto}
+				h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:0}h3{font-size:14px;margin:0}h4{font-size:13px;margin:12px 0 4px}
+				section{display:flex;flex-direction:column;gap:8px}
+				article{border:1px solid #e5e7eb;border-radius:6px;padding:12px;background:#fff}
+				dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px 0;margin:0}
+				@media(min-width:768px){dl{grid-template-columns:repeat(4,minmax(0,1fr))}}
+				dt{font-size:12px;color:#6b7280}dd{margin:0}
+				p{margin:0}.text-xs{font-size:12px}.text-sec{color:#6b7280}a{color:#1d4ed8}
+			</style>
+		</head>
+		<body>
+			<main class="flex flex-col gap-5 px-5 py-5">
+				<header>
+					<h1>Operations</h1>
+					<p class="text-xs text-sec">{ report.Instance } · Data time { report.DataTime.Format(time.RFC3339) } · Exported by detent report</p>
+				</header>
+				@operationsSections(report)
+			</main>
+		</body>
+	</html>
+}
+
+templ operationsSections(report operations.Report) {
 	<section id="operations-stats" class="flex flex-col gap-3" aria-labelledby="operations-stats-title">
 		<h2 id="operations-stats-title" class="text-sm font-semibold">Stats</h2>
 		<p class="text-xs text-sec">Completion receipts count closes and merges with a linked PR. Cycle time uses first In Progress to first Done. Blocked nights use UTC calendar dates. Missing measurements are shown as unavailable.</p>
