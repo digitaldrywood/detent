@@ -131,6 +131,14 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			applyNativeMergeQueueEntry(out, issueID, state.nativeMergeQueueEntries[issueID].Entry)
 			continue
 		}
+		if gate.Effective(o.cfg.AutoPromote.Gate).Kind == gate.KindCommand {
+			// Review findings and activity can change without a new head/base.
+			// Evaluate the same snapshot that is about to enter the queue.
+			if state.RequiredGates == nil {
+				state.RequiredGates = make(map[string]telemetry.RequiredGate)
+			}
+			state.RequiredGates[issueID] = o.requiredGateEvidence(ctx, state, candidate, now)
+		}
 		if reason := nativeMergeQueueExclusion(state, candidate, o.cfg); reason != "" {
 			if o.logger != nil {
 				o.logger.Info("merge_worker_native_queue_excluded", mergeWorkerLogAttrs(candidate, "reason", reason)...)

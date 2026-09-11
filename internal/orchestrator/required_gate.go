@@ -14,7 +14,6 @@ import (
 func (o *Orchestrator) refreshRequiredGateEvidence(ctx context.Context, state *State, issues []connector.Issue) []connector.Issue {
 	issues = cloneIssues(issues)
 	now := time.Now()
-	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	state.RequiredGates = make(map[string]telemetry.RequiredGate, len(issues))
 	for i, issue := range issues {
 		if issue.PullRequest == nil {
@@ -26,15 +25,20 @@ func (o *Orchestrator) refreshRequiredGateEvidence(ctx context.Context, state *S
 				issues[i] = refreshed
 			}
 		}
-		summary := AutoPromoteSummaryFromIssue(issue)
-		summary.SecurityAudit = o.securityAuditEvaluation(ctx, issue)
-		if gate.Effective(cfg.Gate).Validator.Enabled {
-			summary.Validator, _, _ = o.validatorStageResult(ctx, issue)
-		}
-		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
-		state.RequiredGates[issue.ID] = requiredGateFromSummary(issue, summary, cfg, now)
+		state.RequiredGates[issue.ID] = o.requiredGateEvidence(ctx, state, issue, now)
 	}
 	return issues
+}
+
+func (o *Orchestrator) requiredGateEvidence(ctx context.Context, state *State, issue connector.Issue, now time.Time) telemetry.RequiredGate {
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	summary := AutoPromoteSummaryFromIssue(issue)
+	summary.SecurityAudit = o.securityAuditEvaluation(ctx, issue)
+	if gate.Effective(cfg.Gate).Validator.Enabled {
+		summary.Validator, _, _ = o.validatorStageResult(ctx, issue)
+	}
+	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
+	return requiredGateFromSummary(issue, summary, cfg, now)
 }
 
 func requiredGateFromSummary(issue connector.Issue, summary AutoPromoteSummary, cfg AutoPromoteConfig, now time.Time) telemetry.RequiredGate {

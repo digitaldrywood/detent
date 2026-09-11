@@ -986,7 +986,11 @@ func TestNativeMergeQueueProjectRouting(t *testing.T) {
 			issue.PullRequest.BaseSHA = "base-1"
 			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, MaxConcurrentAgents: 1, ActiveStates: []string{"Merging"}})
 			cfg.AutoPromote.Gate.Kind = gate.KindCommand
+			cfg.AutoPromote.Gate.RequireAutomatedReview = new(false)
 			cfg.AutoPromote.Gate.SecurityAudit.Enabled = tt.audit
+			if !tt.passed {
+				issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{}}
+			}
 			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
 			var logs strings.Builder
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}
@@ -1046,12 +1050,51 @@ func TestNativeMergeQueueCommandGateEvidence(t *testing.T) {
 			issue := nativeMergeQueueTestIssue(2465, "success")
 			cfg := nativeMergeQueueTestConfig(Config{})
 			cfg.AutoPromote.Gate.Kind = gate.KindCommand
+			cfg.AutoPromote.Gate.RequireAutomatedReview = new(false)
 			state := newState(cfg)
 			evidence := telemetry.RequiredGate{State: "passed", PRNumber: issue.PullRequest.Number, HeadSHA: issue.PullRequest.HeadSHA, BaseSHA: issue.PullRequest.BaseSHA}
 			tt.change(&evidence)
 			state.RequiredGates = map[string]telemetry.RequiredGate{issue.ID: evidence}
 			if got := nativeMergeQueueCandidate(&state, issue, cfg); got != tt.want {
 				t.Fatalf("candidate=%t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueReevaluatesCurrentSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		change    func(*connector.Issue, time.Time)
+		wantQueue bool
+	}{
+		{"unchanged", func(*connector.Issue, time.Time) {}, true},
+		{"new unresolved thread", func(i *connector.Issue, _ time.Time) {
+			i.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{}}
+		}, false},
+		{"new activity", func(i *connector.Issue, now time.Time) { i.PullRequest.ActivityAt = &now }, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			issue := nativeMergeQueueTestIssue(2465, "success")
+			old := now.Add(-time.Hour)
+			issue.PullRequest.ActivityAt = &old
+			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging"}})
+			cfg.AutoPromote.Gate.Kind = gate.KindCommand
+			cfg.AutoPromote.Gate.RequireAutomatedReview = new(false)
+			cfg.AutoPromote.QuietDuration = time.Minute
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			orch.refreshRequiredGateEvidence(t.Context(), &state, []connector.Issue{issue})
+			if state.RequiredGates[issue.ID].State != "passed" {
+				t.Fatalf("initial gate=%+v", state.RequiredGates[issue.ID])
+			}
+			tt.change(&issue, now)
+			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if got := len(tracker.enqueued) == 1; got != tt.wantQueue {
+				t.Fatalf("enqueued=%v, want queue=%t", tracker.enqueued, tt.wantQueue)
 			}
 		})
 	}
