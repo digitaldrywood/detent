@@ -35,7 +35,7 @@ jobs:
     steps:
       - run: echo "Required checks run in the merge queue; nothing to do on pull requests."
   invariants:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request'
     name: Invariant Gate
     runs-on: ubuntu-latest
     steps:
