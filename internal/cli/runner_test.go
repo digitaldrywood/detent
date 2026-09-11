@@ -178,13 +178,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 }
 
 func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
-	// The Claude stub leaves no orphan processes. Keep its route assertions
-	// independent of host-wide lsof scans, which can time out on busy macOS hosts.
-	scanDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(scanDir, "lsof"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
-		t.Fatalf("write empty workspace scan stub: %v", err)
-	}
-	t.Setenv("PATH", scanDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
 	claudeCommand, argsPath, stdinPath := writeRunnerClaudeStub(t)
@@ -239,9 +233,20 @@ Prompt {{ issue.identifier }}
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	run, err := buildRunner(workflow, "detent", source, globalconfig.Memory{}, sessionStore, nil)
+	deps, err := buildRunnerDependencies(workflow, "detent", source, globalconfig.Memory{}, sessionStore, nil)
 	if err != nil {
-		t.Fatalf("buildRunner() error = %v", err)
+		t.Fatalf("buildRunnerDependencies() error = %v", err)
+	}
+	// The Claude stub leaves no orphan processes. Substitute the existing
+	// reaper dependency rather than spawning a PATH stub under a real deadline.
+	var reapedPaths []string
+	deps.ReapWorkspaceProcesses = func(_ context.Context, path string, _ time.Duration) (int, error) {
+		reapedPaths = append(reapedPaths, path)
+		return 0, nil
+	}
+	run, err := runnerpkg.NewRunner(deps)
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -257,6 +262,15 @@ Prompt {{ issue.identifier }}
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+
+	if len(reapedPaths) == 0 {
+		t.Fatal("workspace reaper was not called")
+	}
+	for _, path := range reapedPaths {
+		if !filepath.IsAbs(path) || !strings.HasPrefix(path, workflow.Config.Workspace.Root+string(os.PathSeparator)) {
+			t.Errorf("reaped path = %q, want a workspace beneath %q", path, workflow.Config.Workspace.Root)
+		}
 	}
 
 	if result.FinalState != runnerpkg.FinalStateCompleted || result.Output != "claude streamed" {
