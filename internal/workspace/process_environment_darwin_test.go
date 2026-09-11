@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -41,11 +42,13 @@ func TestReadDarwinScratchEnvironment(t *testing.T) {
 		alive      bool
 		inspectErr error
 		cancel     bool
+		firstDelay time.Duration
 		want       error
 		wantReads  int
 	}{
 		{name: "exec transition", first: unix.EIO, alive: true, wantReads: 2},
 		{name: "stack transition", first: unix.EINVAL, alive: true, wantReads: 2},
+		{name: "loaded stack transition", first: unix.EINVAL, alive: true, firstDelay: 150 * time.Millisecond, wantReads: 2},
 		{name: "exited", first: unix.EINVAL, wantReads: 1},
 		{name: "missing", first: unix.ESRCH, wantReads: 1},
 		{name: "permission denied", first: unix.EPERM, alive: true, want: unix.EPERM, wantReads: 1},
@@ -59,6 +62,17 @@ func TestReadDarwinScratchEnvironment(t *testing.T) {
 			data, err := readDarwinScratchEnvironment(ctx, func() ([]byte, error) {
 				reads++
 				if reads == 1 {
+					if tt.firstDelay > 0 {
+						// Model a loaded process whose user stack remains unavailable
+						// beyond the former private 100 ms inspection deadline.
+						timer := time.NewTimer(tt.firstDelay)
+						select {
+						case <-ctx.Done():
+							timer.Stop()
+							return nil, ctx.Err()
+						case <-timer.C:
+						}
+					}
 					if tt.cancel {
 						cancel()
 					}

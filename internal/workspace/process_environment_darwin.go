@@ -44,8 +44,8 @@ func scratchEnvironmentProcessIDs(ctx context.Context, root string) ([]int, erro
 }
 
 func readDarwinScratchEnvironment(ctx context.Context, read func() ([]byte, error), alive func() (bool, error)) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
+	// XNU can report EINVAL while exec or exit leaves a live process without a
+	// readable user stack. The reap operation's context owns the bounded wait.
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
