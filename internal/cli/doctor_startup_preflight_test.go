@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -76,5 +78,43 @@ func TestRunDoctorStartupPreflightRejectsUnresolvableBootConfig(t *testing.T) {
 	assertDoctorCheck(t, report, "Candidate startup", doctorFail, "cannot resolve global config")
 	if !report.HasFailures() {
 		t.Fatal("HasFailures() = false, want candidate rejection")
+	}
+}
+
+func TestStartupPreflightDoesNotRetryCredentials(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(map[bool]string{false: "failed command", true: "empty credential"}[empty], func(t *testing.T) {
+			dir := t.TempDir()
+			workflow := filepath.Join(dir, "WORKFLOW.md")
+			if err := os.WriteFile(workflow, []byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n---\nPrompt\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(dir, "global.yaml")
+			global := validDoctorGlobalWithProjects(configPath, "alpha")
+			global.GitHubToken = "gh"
+			global.Projects[0].Workflow = workflow
+			global.Projects[0].Workdir = dir
+			opts := successfulDoctorOptionsWithConfig(configPath, global)
+			opts.lookupEnv = func(string) string { return "" }
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			opts.ghAuthToken = func(context.Context) (string, error) {
+				calls++
+				// A second call cancels a regressed retry loop instead of hanging the suite.
+				if calls > 1 {
+					cancel()
+				}
+				if empty {
+					return "", nil
+				}
+				return "", errors.New("keyring unavailable")
+			}
+			report := runDoctorStartupPreflight(ctx, doctorConfig{ConfigPath: configPath}, opts, successfulDoctorDeps())
+			if calls != 1 {
+				t.Fatalf("credential calls=%d, want 1", calls)
+			}
+			assertDoctorCheck(t, report, "Candidate startup", doctorFail, "gh auth token")
+		})
 	}
 }

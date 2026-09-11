@@ -58,6 +58,10 @@ const (
 )
 
 func resolveBootConfig(ctx context.Context, configPath string, host string, flags runtimeFlags, opts options) (BootConfig, error) {
+	return resolveBootConfigWithRuntimeDeps(ctx, configPath, host, flags, opts, runtimeDepsFromOptions(opts))
+}
+
+func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, host string, flags runtimeFlags, opts options, deps runtimeDeps) (BootConfig, error) {
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
 		return BootConfig{}, err
@@ -72,7 +76,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 			ConfigPath: resolution,
 			Workflow:   workflowPath,
 			Flags:      flags,
-		}, bootRuntimeDeps(opts))
+		}, deps)
 		if err != nil {
 			return BootConfig{}, err
 		}
@@ -103,7 +107,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 			ConfigPath: resolution,
 			Workflow:   workflowPath,
 			Flags:      flags,
-		}, bootRuntimeDeps(opts))
+		}, deps)
 		if err != nil {
 			return BootConfig{}, err
 		}
@@ -130,7 +134,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 		ConfigPath: resolution,
 		Workflow:   workflowPath,
 		Flags:      flags,
-	}, bootRuntimeDeps(opts))
+	}, deps)
 	if err != nil {
 		return BootConfig{}, err
 	}
