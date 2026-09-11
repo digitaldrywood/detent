@@ -1314,6 +1314,12 @@
 #     max_findings_per_run: 3
 #     # routines[].max_open_findings | type: integer | default: 10 when configured | required: No | validation: must be greater than 0
 #     max_open_findings: 10
+# # operator | type: object | default: see child fields | required: No | validation: None
+# operator:
+#   # operator.actions | type: list<string> | default: ["return_retired_parks","clear_closed_dependencies","restore_stuck_merging"] | required: No | validation: must contain only return_retired_parks, clear_closed_dependencies, restore_stuck_merging, merge_when_wedged
+#   actions: ["return_retired_parks","clear_closed_dependencies","restore_stuck_merging"]
+#   # operator.merge_wedge_seconds | type: integer | default: 7200 | required: No | validation: must be greater than 0
+#   merge_wedge_seconds: 7200
 # # backlog_admission | type: object | default: see child fields | required: No | validation: None
 # backlog_admission:
 #   # backlog_admission.enabled | type: boolean | default: false | required: No | validation: None

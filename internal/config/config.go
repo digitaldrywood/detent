@@ -1091,7 +1091,8 @@ func (o Operator) Validate(prefix string) []string {
 	}
 	for _, action := range o.Actions {
 		if !known[action] {
-			problems = append(problems, prefix+".actions contains unknown action "+action+"; allowed: "+strings.Join(OperatorActionKinds(), ", "))
+			problems = append(problems, prefix+".actions must contain only "+strings.Join(OperatorActionKinds(), ", "))
+			break
 		}
 	}
 	validatePositive(prefix+".merge_wedge_seconds", o.MergeWedgeSeconds, &problems)

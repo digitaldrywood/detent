@@ -4646,3 +4646,24 @@ func TestBackendThreadSandboxOverridesInferredPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestOperatorConfig(t *testing.T) {
+	t.Parallel()
+	var operator Operator
+	operator.Normalize()
+	if got, want := operator.Actions, DefaultOperatorActions(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("default actions = %v, want %v", got, want)
+	}
+	if operator.MergeWedgeSeconds != DefaultOperatorMergeWedgeSeconds || operator.ActionEnabled(OperatorActionMergeWhenWedged) {
+		t.Fatalf("defaults = %#v", operator)
+	}
+	explicit := Operator{Actions: []string{" Merge_When_Wedged ", "merge_when_wedged"}}
+	explicit.Normalize()
+	if !reflect.DeepEqual(explicit.Actions, []string{OperatorActionMergeWhenWedged}) || explicit.ActionEnabled(OperatorActionReturnRetiredParks) {
+		t.Fatalf("explicit = %#v", explicit)
+	}
+	problems := Operator{Actions: []string{"file_deduped_issue"}, MergeWedgeSeconds: -1}.Validate("operator")
+	if len(problems) != 2 || !strings.Contains(problems[0], "operator.actions must contain only") || !strings.Contains(problems[1], "operator.merge_wedge_seconds must be greater than 0") {
+		t.Fatalf("problems = %v", problems)
+	}
+}
