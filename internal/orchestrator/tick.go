@@ -100,8 +100,23 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if o.trackerAvailabilityPaused(ctx, state, now) && o.scheduling == nil {
 		return
 	}
-	if !state.Draining && !o.dispatchQuiesced() {
-		o.retryDeferredDependencyAutoUnblock(ctx, state, now)
+	// Place the existing unblock scan before other consumers every other refresh.
+	// Only its starting identity is retained; readiness always comes from fresh reads.
+	earlyDependencyUnblock := state.dependencyUnblockEarly
+	state.dependencyUnblockEarly = !earlyDependencyUnblock
+	var earlyUnblocked map[string]struct{}
+	if earlyDependencyUnblock && o.cfg.DependencyAutoUnblock.Enabled && !state.Draining && !o.dispatchQuiesced() {
+		cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+		issues := dependencyAutoUnblockOrder(mergeIssueSlices(state.BoardIssues, previous.blockedStatusIssues), cfg.SourceStates, state.dependencyUnblockCursor)
+		if len(issues) > 0 {
+			for i, issue := range issues {
+				issues[i] = connector.Issue{ID: issue.ID, Identifier: issue.Identifier, State: issue.State}
+			}
+			earlyUnblocked = o.autoUnblockDependencyIssues(ctx, state, issues, now)
+			// Advance even if the first identity cannot fit inside the cap. The late
+			// scan never changes this cursor, so it cannot undo priority progress.
+			state.dependencyUnblockCursor = issues[0].ID
+		}
 	}
 	if !o.retryDeferredCompletions(ctx, state, now) && o.scheduling == nil {
 		return
@@ -139,6 +154,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
+	fetched = filterReconciledTickIssues(state, fetched, earlyUnblocked)
 	for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
 		if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
 			if o.logger != nil {
@@ -195,11 +211,13 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 		)
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.autoUnblockDependencyIssues(ctx, state, fetched.status, now),
-		)
+		if !earlyDependencyUnblock {
+			fetched = filterReconciledTickIssues(
+				state,
+				fetched,
+				o.autoUnblockDependencyIssues(ctx, state, fetched.status, now),
+			)
+		}
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,

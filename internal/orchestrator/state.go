@@ -95,8 +95,8 @@ type State struct {
 	nativeMergeQueueExcluded map[string]string
 	TransientCheckRetries    map[string]TransientCheckRetry
 	DependencyAutoUnblocks   map[string]DependencyAutoUnblockRecord
-	dependencyUnblockQueue   []connector.Issue
-	dependencyUnblockYield   bool
+	dependencyUnblockCursor  string
+	dependencyUnblockEarly   bool
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
 	InstantFailures          map[string]InstantFailure
@@ -507,8 +507,8 @@ func (s State) clone() State {
 		nativeMergeQueueExcluded: maps.Clone(s.nativeMergeQueueExcluded),
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		DependencyAutoUnblocks:   maps.Clone(s.DependencyAutoUnblocks),
-		dependencyUnblockQueue:   cloneIssues(s.dependencyUnblockQueue),
-		dependencyUnblockYield:   s.dependencyUnblockYield,
+		dependencyUnblockCursor:  s.dependencyUnblockCursor,
+		dependencyUnblockEarly:   s.dependencyUnblockEarly,
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),

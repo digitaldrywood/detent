@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -88,6 +89,8 @@ type dependencyBudgetConnector struct {
 	*dependencyAutoUnblockConnector
 	client                   *githubconnector.Client
 	competingReads           int
+	candidateErr             error
+	identifierReads          map[string]int
 	extraReads               map[string]int
 	lastRefreshBudget        *connector.RESTFanoutBudget
 	successfulCompetingReads int
@@ -113,7 +116,7 @@ func newDependencyBudgetConnector(t *testing.T, cap int64, competingReads int) *
 		base.stateIssues = append(base.stateIssues, issue)
 		base.hydratedIssues = append(base.hydratedIssues, issue)
 	}
-	return &dependencyBudgetConnector{dependencyAutoUnblockConnector: base, client: client, competingReads: competingReads}
+	return &dependencyBudgetConnector{dependencyAutoUnblockConnector: base, client: client, competingReads: competingReads, identifierReads: map[string]int{}}
 }
 
 func (c *dependencyBudgetConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
@@ -124,11 +127,12 @@ func (c *dependencyBudgetConnector) FetchCandidateIssues(ctx context.Context) ([
 		}
 		c.successfulCompetingReads++
 	}
-	return nil, nil
+	return nil, c.candidateErr
 }
 
 func (c *dependencyBudgetConnector) FetchIssueStatesByIdentifiers(ctx context.Context, identifiers []string) ([]connector.Issue, error) {
 	for _, identifier := range identifiers {
+		c.identifierReads[identifier]++
 		for range 1 + c.extraReads[identifier] {
 			if err := c.client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/issues/1", nil, nil); err != nil {
 				return nil, err
@@ -158,7 +162,7 @@ func (c *dependencyBudgetConnector) UpdateIssueState(ctx context.Context, issueI
 
 func TestDeferredDependencyUnblockRevalidatesEvidence(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"ready", "reopened dependency", "missing dependency", "missing issue", "human evidence removed", "workpad hold", "operator stop", "new dependency", "new comment dependency", "native-only comment"} {
+	for _, name := range []string{"ready", "human owned issue", "changed source state", "reopened dependency", "missing dependency", "missing issue", "human evidence removed", "workpad hold", "operator stop", "new dependency", "new comment dependency", "native-only comment"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := newDependencyBudgetConnector(t, 9, 9)
@@ -169,15 +173,16 @@ func TestDeferredDependencyUnblockRevalidatesEvidence(t *testing.T) {
 			now := time.Date(2026, 9, 8, 23, 20, 0, 0, time.UTC)
 			_, _ = tracker.FetchCandidateIssues(t.Context())
 			orch.autoUnblockDependencyIssues(t.Context(), &state, base.stateIssues[:1], now)
-			if len(state.dependencyUnblockQueue) != 1 {
-				t.Fatalf("queue = %v, want one deferred identity", state.dependencyUnblockQueue)
-			}
-			queued := state.dependencyUnblockQueue[0]
-			if len(queued.BlockedBy) > 0 || queued.WorkpadSignal != nil {
-				t.Fatal("queue retained stale evidence")
-			}
+			state.BoardIssues = cloneIssues(base.stateIssues[:1])
+			state.dependencyUnblockEarly = true
+			tracker.candidateErr = errors.New("ordinary fetch unavailable")
+			tracker.competingReads = 0
 			tracker.FlushRESTRateLimitUsage()
 			switch name {
+			case "human owned issue":
+				base.hydratedIssues[0].Labels = []string{"human-owned"}
+			case "changed source state":
+				base.hydratedIssues[0].State = "In Progress"
 			case "reopened dependency":
 				base.blockers[0].State = "In Progress"
 			case "missing dependency":
@@ -192,7 +197,7 @@ func TestDeferredDependencyUnblockRevalidatesEvidence(t *testing.T) {
 			case "workpad hold":
 				tracker.currentComments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: wait for approval\n```"}}
 			case "operator stop":
-				state.Blocked[queued.ID] = Blocked{Issue: base.stateIssues[0], Source: BlockedSourceOperatorStop, Reason: "operator stop"}
+				state.Blocked[base.stateIssues[0].ID] = Blocked{Issue: base.stateIssues[0], Source: BlockedSourceOperatorStop, Reason: "operator stop"}
 			case "new dependency":
 				base.hydratedIssues[0].Description = "Depends on: #200"
 			case "new comment dependency", "native-only comment":
@@ -201,7 +206,7 @@ func TestDeferredDependencyUnblockRevalidatesEvidence(t *testing.T) {
 					orch.cfg.DependencySource = "native_only"
 				}
 			}
-			orch.retryDeferredDependencyAutoUnblock(t.Context(), &state, now.Add(time.Minute))
+			orch.tick(t.Context(), &state, now.Add(time.Minute))
 			want := 0
 			if name == "ready" || name == "native-only comment" {
 				want = 1
@@ -225,7 +230,7 @@ func (c *dependencyBudgetCommentConnector) FetchIssueComments(ctx context.Contex
 	return c.currentComments, nil
 }
 
-func TestDeferredDependencyUnblockQueueFairness(t *testing.T) {
+func TestDependencyUnblockScanFairness(t *testing.T) {
 	t.Parallel()
 	tracker := newDependencyBudgetConnector(t, 9, 9)
 	tracker.extraReads = map[string]int{tracker.stateIssues[0].Identifier: 10}
@@ -246,8 +251,8 @@ func TestDeferredDependencyUnblockQueueFairness(t *testing.T) {
 	if !slices.Equal(tracker.updates, want) {
 		t.Fatalf("transitions = %v, want FIFO progress %v despite oversized first item", tracker.updates, want)
 	}
-	if len(state.dependencyUnblockQueue) != 1 || state.dependencyUnblockQueue[0].ID != "issue-1" {
-		t.Fatalf("queue = %v, want oversized issue retained once", state.dependencyUnblockQueue)
+	if tracker.stateIssues[0].State != "Blocked" {
+		t.Fatal("oversized issue must remain blocked for a later scan")
 	}
 }
 
@@ -288,8 +293,11 @@ func TestDeferredDependencyUnblockPreservesProviderLimits(t *testing.T) {
 			orch := dependencyAutoUnblockOrchestrator(tracker.dependencyAutoUnblockConnector, DependencyAutoUnblockConfig{Enabled: true})
 			orch.connector = tracker
 			state := newState(orch.cfg)
-			state.dependencyUnblockQueue = []connector.Issue{{ID: tracker.stateIssues[0].ID, Identifier: tracker.stateIssues[0].Identifier, State: "Blocked"}}
-			orch.retryDeferredDependencyAutoUnblock(connector.WithRESTFanoutBudget(t.Context(), "refresh"), &state, time.Now())
+			state.BoardIssues = cloneIssues(tracker.stateIssues[:1])
+			state.dependencyUnblockEarly = true
+			tracker.candidateErr = errors.New("ordinary fetch unavailable")
+			tracker.competingReads = 0
+			orch.tick(t.Context(), &state, time.Now())
 			if len(tracker.updates) != 0 || calls.Load() != 1 {
 				t.Fatalf("transitions = %v, requests = %d, want no transition or request past provider limit", tracker.updates, calls.Load())
 			}
@@ -336,10 +344,43 @@ func TestDeferredDependencyUnblockYieldsRefreshBudget(t *testing.T) {
 	for cycle := range 4 {
 		orch.tick(t.Context(), &state, now.Add(time.Duration(cycle)*time.Minute))
 	}
+	if got := tracker.identifierReads[tracker.stateIssues[0].Identifier]; got != 4 {
+		t.Fatalf("unblock scans = %d, want exactly one per refresh", got)
+	}
 	if tracker.successfulCompetingReads <= 9 {
 		t.Fatalf("ordinary reads = %d, want continued progress after an oversized recovery is queued", tracker.successfulCompetingReads)
 	}
-	if len(tracker.updates) != 0 || len(state.dependencyUnblockQueue) != 1 {
-		t.Fatalf("transitions = %v, queue = %v, want oversized recovery retained", tracker.updates, state.dependencyUnblockQueue)
+	if len(tracker.updates) != 0 || tracker.stateIssues[0].State != "Blocked" {
+		t.Fatalf("transitions = %v, want oversized issue left blocked", tracker.updates)
+	}
+}
+
+func TestDependencyAutoUnblockScanOrder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		after string
+		want  []string
+	}{
+		{name: "initial", want: []string{"a", "b", "d"}},
+		{name: "next identity", after: "a", want: []string{"b", "d", "a"}},
+		{name: "removed cursor", after: "c", want: []string{"d", "a", "b"}},
+		{name: "wrap", after: "z", want: []string{"a", "b", "d"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			issues := []connector.Issue{{ID: "d", State: "Blocked"}, {ID: "", State: "Blocked"}, {ID: "b", State: "Blocked"}, {ID: "c", State: "Todo"}, {ID: "a", State: "Blocked"}}
+			ordered := dependencyAutoUnblockOrder(issues, []string{"Blocked"}, tc.after)
+			var got []string
+			for _, issue := range ordered {
+				got = append(got, issue.ID)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("order = %v, want %v", got, tc.want)
+			}
+			if issues[0].ID != "d" {
+				t.Fatal("scan mutated shared board snapshot")
+			}
+		})
 	}
 }

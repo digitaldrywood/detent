@@ -103,12 +103,9 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 	}
 
 	transitioned := map[string]struct{}{}
-	for _, issue := range issuesInStates(issues, cfg.SourceStates) {
+	for _, issue := range dependencyAutoUnblockOrder(issues, cfg.SourceStates, state.dependencyUnblockCursor) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
-			continue
-		}
-		if slices.ContainsFunc(state.dependencyUnblockQueue, func(pending connector.Issue) bool { return pending.ID == issueID }) {
 			continue
 		}
 		hydrated, ok, err := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
@@ -204,38 +201,27 @@ func (o *Orchestrator) recordDependencyAutoUnblockError(state *State, issue conn
 		}
 		return
 	}
-	if !slices.ContainsFunc(state.dependencyUnblockQueue, func(pending connector.Issue) bool { return pending.ID == issue.ID }) {
-		state.dependencyUnblockQueue = append(state.dependencyUnblockQueue, connector.Issue{ID: issue.ID, Identifier: issue.Identifier, State: issue.State})
-	}
 	o.logDependencyAutoUnblockDecision(issue, "defer", deferral.Reason, nil, "")
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
 		Event:   "dependency_auto_unblock_deferred",
-		Message: fmt.Sprintf("dependency recovery deferred for %s: %s; %d queued for priority retry on subsequent refreshes", issueLabel(issue), deferral.Reason, len(state.dependencyUnblockQueue)),
+		Message: fmt.Sprintf("dependency recovery deferred for %s: %s; the rotating unblock scan receives priority on alternating refreshes", issueLabel(issue), deferral.Reason),
 	})
 }
 
-// retryDeferredDependencyAutoUnblock gives one waiting identity the first budget
-// turn every other refresh. Repeated deferrals rotate to the tail; ordinary
-// consumers retain full-budget turns even when an item cannot fit in the cap.
-func (o *Orchestrator) retryDeferredDependencyAutoUnblock(ctx context.Context, state *State, now time.Time) {
-	if !o.cfg.DependencyAutoUnblock.Enabled {
-		state.dependencyUnblockQueue = nil
-		state.dependencyUnblockYield = false
-		return
+// dependencyAutoUnblockOrder rotates the existing scan after the last priority
+// identity. Sorting makes the turn independent of tracker or map iteration order.
+func dependencyAutoUnblockOrder(issues []connector.Issue, sourceStates []string, after string) []connector.Issue {
+	ordered := slices.DeleteFunc(issuesInStates(issues, sourceStates), func(issue connector.Issue) bool { return strings.TrimSpace(issue.ID) == "" })
+	slices.SortFunc(ordered, func(a, b connector.Issue) int { return strings.Compare(a.ID, b.ID) })
+	if after == "" {
+		return ordered
 	}
-	if len(state.dependencyUnblockQueue) == 0 {
-		state.dependencyUnblockYield = false
-		return
+	index := slices.IndexFunc(ordered, func(issue connector.Issue) bool { return issue.ID > after })
+	if index <= 0 {
+		return ordered
 	}
-	if state.dependencyUnblockYield {
-		state.dependencyUnblockYield = false
-		return
-	}
-	state.dependencyUnblockYield = true
-	issue := state.dependencyUnblockQueue[0]
-	state.dependencyUnblockQueue = state.dependencyUnblockQueue[1:]
-	o.autoUnblockDependencyIssues(ctx, state, []connector.Issue{issue}, now)
+	return append(append([]connector.Issue(nil), ordered[index:]...), ordered[:index]...)
 }
 
 func dependencyAutoUnblockWorkpadHold(issue connector.Issue, current bool) bool {
