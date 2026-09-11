@@ -59,7 +59,7 @@ func report(ctx context.Context, input io.Reader, backend issueCreator, sha stri
 		if !integrationJob(j.Name) || (j.Conclusion != "failure" && j.Conclusion != "timed_out") {
 			continue
 		}
-		body := fmt.Sprintf("Post-merge integration job **%s** failed on main.\n\nJob: %s\nCommit: %s\n\nThis tracks CI instance health; it does not attribute a defect to the merged issue or change. Diagnose the linked logs before proposing a fix. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. Propose product changes only when the logs establish a product defect.\n\n```detent-agent\nschema: 1\neffort: low\n```", j.Name, j.URL, sha)
+		body := fmt.Sprintf("Post-merge integration job **%s** failed on main.\n\nJob: %s\nCommit: %s\n\nThis tracks CI instance health; it does not attribute a defect to the merged issue or change. Diagnose the linked logs before proposing a fix. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. Propose product changes only when the logs establish a product defect.\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.URL, sha)
 		body = issueorigin.Stamp(body, issueorigin.Origin{
 			Kind: "doctor", Instance: "github-actions", Source: j.URL,
 			Fingerprint: issueorigin.Fingerprint("ci integration job " + j.Name),
