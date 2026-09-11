@@ -136,9 +136,6 @@ func operatorMergeWedgedCandidate(issue connector.Issue, state *State, cfg Confi
 		if nativeMergeQueueHasEntry(state, issue) || staleMergingPullRequestDispatchActive(state, strings.TrimSpace(issue.ID)) {
 			return false
 		}
-		if len(state.nativeMergeQueueRemovals[strings.TrimSpace(issue.ID)]) > 0 {
-			return false
-		}
 	}
 	return true
 }

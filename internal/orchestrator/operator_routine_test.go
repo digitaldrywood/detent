@@ -120,7 +120,6 @@ func TestOperatorMergeWedgedCandidate(t *testing.T) {
 		{"queue entry present", func(i *connector.Issue, s *State) {
 			s.nativeMergeQueueEntries[i.ID] = nativeMergeQueueEntry{Entry: connector.PullRequestMergeQueueEntry{ID: "MQE"}, HeadSHA: i.PullRequest.HeadSHA, CheckedAt: now}
 		}, false},
-		{"queue removal recorded", func(i *connector.Issue, s *State) { s.nativeMergeQueueRemovals[i.ID] = []string{"CI failed"} }, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
