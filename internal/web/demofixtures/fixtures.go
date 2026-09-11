@@ -34,6 +34,8 @@ func ProjectByID(projects []templates.ProjectSmallMultiple, id string) (template
 func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	switch variant {
+	case "board-counts-live", "board-counts-partial", "board-counts-unknown":
+		snapshot = demoBoardCountsSnapshot(variant)
 	case "empty":
 		snapshot = demoEmptySnapshot()
 		snapshot.GeneratedAt = time.Time{}
@@ -1104,6 +1106,21 @@ func demoInt64Ptr(value int64) *int64 {
 }
 
 func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
+	if strings.HasPrefix(variant, "board-counts-") {
+		snapshot := demoBoardCountsSnapshot(variant)
+		var projects []templates.ProjectSmallMultiple
+		for _, project := range snapshot.Projects {
+			counts := telemetry.CurrentBoardWorkloadForProject(snapshot, project.Project.ID)
+			projects = append(projects, templates.ProjectSmallMultiple{
+				ID: project.Project.ID, Name: project.Project.DisplayName,
+				Refresh: project.Refresh, Dispatch: project.Dispatch,
+				BoardLoad: counts.Load, BoardTodo: counts.Todo, BoardBlocked: counts.Blocked, BoardWaiting: counts.Waiting,
+				BoardWorkloadIncomplete: !telemetry.BoardWorkloadCompleteForProject(snapshot, project.Project.ID),
+			})
+		}
+		return projects
+	}
+
 	now := demoBaseTime
 	if variant == "empty" || variant == "settings-empty" {
 		return nil

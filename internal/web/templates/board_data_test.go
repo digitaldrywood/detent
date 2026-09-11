@@ -1779,7 +1779,11 @@ func TestPartialProjectRefreshPresentation(t *testing.T) {
 				t.Fatalf("boardAlerts() = %#v, want %d", alerts, tt.wantAlerts)
 			}
 			for _, figure := range boardFigures(tt.snapshot) {
-				if figure.ID != "fig-completed" && figure.Value != tt.wantCount {
+				wantCount := tt.wantCount
+				if tt.wantAlerts > 0 && (figure.ID == "fig-ready" || figure.ID == "fig-blocked") {
+					wantCount = "0"
+				}
+				if figure.ID != "fig-completed" && figure.Value != wantCount {
 					t.Fatalf("%s value = %q, want %q", figure.ID, figure.Value, tt.wantCount)
 				}
 			}
@@ -4733,6 +4737,40 @@ func TestTodoDispatchEvidencePreservesAttention(t *testing.T) {
 			signals := boardCardSignals(view, tt.card)
 			if len(signals) == 0 || signals[0].Text != tt.signal {
 				t.Fatalf("signals = %+v, want %q", signals, tt.signal)
+			}
+		})
+	}
+}
+
+func TestBoardFiguresExcludeUnavailableProjectCounts(t *testing.T) {
+	t.Parallel()
+	live := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true}
+	for _, tt := range []struct {
+		name    string
+		section telemetry.SnapshotSection
+		refresh telemetry.Refresh
+	}{
+		{"unknown", telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}, telemetry.Refresh{}},
+		{"cached", telemetry.SnapshotSection{Source: telemetry.SnapshotSourceCached, Complete: true}, telemetry.Refresh{}},
+		{"degraded", live, telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := telemetry.Snapshot{
+				Tracker: live, Runtime: live,
+				Projects: []telemetry.ProjectSnapshot{
+					{Project: telemetry.Project{ID: "live"}, Tracker: live, Runtime: live},
+					{Project: telemetry.Project{ID: "excluded"}, Tracker: tt.section, Runtime: live, Refresh: tt.refresh},
+				},
+				BoardIssues: []telemetry.Issue{{ID: "old-blocked", ProjectID: "excluded", State: "Blocked"}},
+			}
+			for _, figure := range boardFigures(snapshot) {
+				if figure.ID != "fig-ready" && figure.ID != "fig-blocked" {
+					continue
+				}
+				if figure.Value != "0" || figure.Err || figure.Note != "(1 project unknown)" {
+					t.Fatalf("figure = %+v, want zero live count and one exclusion", figure)
+				}
 			}
 		})
 	}

@@ -7,6 +7,8 @@ type Figure struct {
 	ID    string
 	Value string
 	Label string
+	// Note explains partial totals without crowding adjacent mobile figures.
+	Note string
 	// Err colors the value only when the figure demands attention
 	// (e.g. blocked > 0). Zero stays neutral — no red zeros, ever.
 	Err bool
@@ -27,7 +29,7 @@ templ FigureRow(figures []Figure) {
 	<div class="grid min-w-0 grid-cols-3 items-baseline gap-x-3 gap-y-2 text-xs text-sec md:flex md:flex-wrap md:gap-x-7">
 		for _, f := range figures {
 			<span
-				class="min-w-0 whitespace-nowrap"
+				class={ "min-w-0", templ.KV("whitespace-nowrap", f.Note == ""), templ.KV("whitespace-normal md:whitespace-nowrap", f.Note != "") }
 				if f.ID != "" {
 					id={ f.ID }
 				}
@@ -38,6 +40,9 @@ templ FigureRow(figures []Figure) {
 				<span class={ f.valueClass() }>{ f.Value }</span>
 				{ " " }
 				{ f.Label }
+				if f.Note != "" {
+					<span class="block whitespace-normal md:inline">{ " " + f.Note }</span>
+				}
 			</span>
 		}
 		<span class="hidden flex-1 md:block"></span>

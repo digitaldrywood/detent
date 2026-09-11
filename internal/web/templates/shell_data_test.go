@@ -772,3 +772,26 @@ func TestDashboardStreamOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestUnknownProjectTooltipReasons(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		project ProjectSmallMultiple
+		want    string
+	}{
+		{"stale", ProjectSmallMultiple{BoardWorkloadIncomplete: true}, "Snapshot is stale or incomplete"},
+		{"refresh error", ProjectSmallMultiple{BoardWorkloadIncomplete: true, Refresh: telemetry.Refresh{LastError: "tracker refresh failed"}}, "tracker refresh failed"},
+		{"selector", ProjectSmallMultiple{BoardWorkloadIncomplete: true, Dispatch: telemetry.DispatchStatus{WaitReason: "selector declined"}}, "selector declined"},
+		{"paused", ProjectSmallMultiple{BoardWorkloadIncomplete: true, Paused: true, PauseReason: "operator maintenance"}, "Paused: operator maintenance"},
+		{"complete", ProjectSmallMultiple{}, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := appProjectUnknownReason(tt.project)
+			if tt.want == "" && got != "" || !strings.Contains(got, tt.want) {
+				t.Fatalf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
