@@ -73,6 +73,11 @@ a snapshot is not evidence of compliance.
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.
 
+Lifetime-limit parks remove the cooldown timer, timed recovery transition, and
+signature permit (#2486). The vocabulary consolidates onto the existing
+`lifetime_limit_recovered` reason, emitted only when an override is present or
+the configured limits no longer apply. Elapsed time cannot release the park.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

@@ -295,7 +295,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Agent.LifetimeSessionLimit = 21
 	cfg.Agent.LifetimeTokenLimit = 52_000_000
-	cfg.Agent.LifetimeLimitCooldownSeconds = 7200
 	cfg.Agent.LifetimeLimitOverrideLabel = " Allow-Hard-Issue "
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
@@ -408,9 +407,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.LifetimeSessionLimit != 21 || got.LifetimeTokenLimit != 52_000_000 {
 		t.Fatalf("lifetime limits = %d sessions/%d tokens, want 21/52000000", got.LifetimeSessionLimit, got.LifetimeTokenLimit)
-	}
-	if got.LifetimeLimitCooldown != 2*time.Hour {
-		t.Fatalf("LifetimeLimitCooldown = %s, want 2h", got.LifetimeLimitCooldown)
 	}
 	if got.LifetimeLimitOverrideLabel != "allow-hard-issue" {
 		t.Fatalf("LifetimeLimitOverrideLabel = %q, want allow-hard-issue", got.LifetimeLimitOverrideLabel)

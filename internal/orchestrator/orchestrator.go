@@ -102,7 +102,6 @@ type Config struct {
 	NoProgressSpendLimitUSD       float64
 	LifetimeSessionLimit          int64
 	LifetimeTokenLimit            int64
-	LifetimeLimitCooldown         time.Duration
 	LifetimeLimitOverrideLabel    string
 	BillingMode                   string
 	RateWindowPacing              workflowconfig.RateWindowPacing

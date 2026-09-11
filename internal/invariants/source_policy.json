@@ -19,7 +19,7 @@
     "github_rest_budget_recovery",
     "instant_fail_circuit_breaker",
     "lifetime_limit",
-    "lifetime_limit_cooldown_recovery",
+    "lifetime_limit_recovered",
     "merge_required_check_park_recovery",
     "merge_revocation_limit",
     "merge_worker_duration_exceeded",

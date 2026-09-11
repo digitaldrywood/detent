@@ -76,7 +76,6 @@ const (
 	DefaultNoProgressSpendLimitUSD           = 3.0
 	DefaultLifetimeSessionLimit              = 120
 	DefaultLifetimeTokenLimit                = 750_000_000
-	DefaultLifetimeLimitCooldownSeconds      = 3600
 	DefaultLifetimeLimitOverrideLabel        = "allow-lifetime-limit"
 	DefaultFailureBreakerSameClassLimit      = 5
 	DefaultFailureBreakerWindowSeconds       = 3600
@@ -352,7 +351,6 @@ type Agent struct {
 	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
 	LifetimeSessionLimit         int64                        `yaml:"lifetime_session_limit"`
 	LifetimeTokenLimit           int64                        `yaml:"lifetime_token_limit"`
-	LifetimeLimitCooldownSeconds int                          `yaml:"lifetime_limit_cooldown_seconds"`
 	LifetimeLimitOverrideLabel   string                       `yaml:"lifetime_limit_override_label"`
 	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
@@ -1507,22 +1505,21 @@ func Default() Config {
 			GitHubRESTPollIntervalMS:       60000,
 		},
 		Agent: Agent{
-			MaxConcurrentAgents:          10,
-			RateWindowPacing:             DefaultRateWindowPacing(),
-			MaxTurns:                     20,
-			MaxSessionDurationMS:         DefaultMaxSessionDurationMS,
-			NoProgressTimeoutMS:          DefaultNoProgressTimeoutMS,
-			MergeWorkerStartupTimeoutMS:  DefaultMergeWorkerStartupTimeoutMS,
-			MergeWorkerMaxDurationMS:     DefaultMergeWorkerMaxDurationMS,
-			MaxRetryBackoffMS:            300000,
-			OverloadRetryDelayMS:         DefaultOverloadRetryDelayMS,
-			NoProgressTokenLimit:         DefaultNoProgressTokenLimit,
-			NoProgressSpendLimitUSD:      DefaultNoProgressSpendLimitUSD,
-			LifetimeSessionLimit:         DefaultLifetimeSessionLimit,
-			LifetimeTokenLimit:           DefaultLifetimeTokenLimit,
-			LifetimeLimitCooldownSeconds: DefaultLifetimeLimitCooldownSeconds,
-			LifetimeLimitOverrideLabel:   DefaultLifetimeLimitOverrideLabel,
-			StopRun:                      StopRun{TargetState: "Blocked"},
+			MaxConcurrentAgents:         10,
+			RateWindowPacing:            DefaultRateWindowPacing(),
+			MaxTurns:                    20,
+			MaxSessionDurationMS:        DefaultMaxSessionDurationMS,
+			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
+			MergeWorkerStartupTimeoutMS: DefaultMergeWorkerStartupTimeoutMS,
+			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
+			MaxRetryBackoffMS:           300000,
+			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
+			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
+			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
+			LifetimeSessionLimit:        DefaultLifetimeSessionLimit,
+			LifetimeTokenLimit:          DefaultLifetimeTokenLimit,
+			LifetimeLimitOverrideLabel:  DefaultLifetimeLimitOverrideLabel,
+			StopRun:                     StopRun{TargetState: "Blocked"},
 			MergeFastPath: MergeFastPath{
 				Enabled:            true,
 				FairnessAgeSeconds: DefaultMergeFairnessAgeSeconds,
@@ -2376,9 +2373,6 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	if a.LifetimeTokenLimit < 0 {
 		*problems = append(*problems, prefix+".lifetime_token_limit must be greater than or equal to 0")
-	}
-	if (a.LifetimeSessionLimit > 0 || a.LifetimeTokenLimit > 0) && a.LifetimeLimitCooldownSeconds <= 0 {
-		*problems = append(*problems, prefix+".lifetime_limit_cooldown_seconds must be greater than 0 when a lifetime limit is enabled")
 	}
 	validatePositive(prefix+".failure_breaker.same_class_limit", a.FailureBreaker.SameClassLimit, problems)
 	validatePositive(prefix+".failure_breaker.window_seconds", a.FailureBreaker.WindowSeconds, problems)
