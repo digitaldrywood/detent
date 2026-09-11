@@ -926,7 +926,9 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 			return nil, err
 		}
 		if ok {
-			c.hydrateIssueBlockedByRefs(ctx, &issue)
+			if err := c.hydrateIssueBlockedByRefsWithError(ctx, &issue); err != nil {
+				return nil, err
+			}
 			issues = append(issues, issue)
 		}
 	}

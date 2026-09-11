@@ -53,6 +53,7 @@ func (o *Orchestrator) tickManual(ctx context.Context, state *State, request man
 }
 
 func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
+	ctx = connector.WithRESTFanoutBudget(ctx, "refresh")
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
 	completed := false
@@ -98,6 +99,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}
 	if o.trackerAvailabilityPaused(ctx, state, now) && o.scheduling == nil {
 		return
+	}
+	if !state.Draining && !o.dispatchQuiesced() {
+		o.retryDeferredDependencyAutoUnblock(ctx, state, now)
 	}
 	if !o.retryDeferredCompletions(ctx, state, now) && o.scheduling == nil {
 		return
