@@ -19,9 +19,9 @@ arguments directly, without a shell. Exit codes: 0 means every named test passed
 2 means invalid CLI arguments. A skipped subtest also fails the gate. Output is
 human-readable diagnostics; consumers should use the exit code.
 
-Add package-boundary tests by registering their package and exact names here.
-#2479 owns `docs/invariants.md` and additional package-boundary coverage, building
-on this interface. The current manifest reuses question persistence/concurrency,
+The [repository invariants](../docs/invariants.md) register package-boundary,
+reason-vocabulary, retired-mechanism, and workflow tests from `internal/invariants`
+through this same interface. The current manifest reuses question persistence/concurrency,
 scoped replies, independent rework, bounded retry, retained work, and release and
 update verification tests. These tests exercise specific behavior; they cannot
 prove every natural-language product decision or prevent an operator credential
