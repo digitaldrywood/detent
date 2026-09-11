@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -104,12 +106,20 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 			wantResolution: completionCleanlinessDiscarded,
 		},
 		{
-			name:         "clean retry without explicit resolution escalates",
-			evidence:     DiffStats{Status: "clean", HeadSHA: "resolved-head"},
-			history:      []store.WorkAttempt{previousRejected},
-			wantOutcome:  completionCleanlinessEscalated,
-			wantRejected: 2,
-			wantBlock:    true,
+			name:           "clean retry without explicit resolution",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "resolved-head"},
+			history:        []store.WorkAttempt{previousRejected, previousRejected},
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+		},
+		{
+			name:           "repeated unpushed completion escalates",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "head", UnpushedCommits: 1},
+			history:        []store.WorkAttempt{previousRejected},
+			wantOutcome:    completionCleanlinessEscalated,
+			wantResolution: "required",
+			wantRejected:   2,
+			wantBlock:      true,
 		},
 		{
 			name: "recovery evidence unavailable",
@@ -343,6 +353,47 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 				}
 			} else if !strings.Contains(comment, "preserve debug.log for operator inspection") {
 				t.Fatalf("comment missing intentional-left statement:\n%s", comment)
+			}
+		})
+	}
+}
+
+func TestHandleRunResultCleanRetryUsesPRGate(t *testing.T) {
+	t.Parallel()
+	for _, rejections := range []int{1, 2} {
+		t.Run(fmt.Sprintf("after_%d_rejections", rejections), func(t *testing.T) {
+			t.Parallel()
+			issue := completionTransitionIssue("In Progress", "OPEN")
+			issue.PullRequest = &connector.PullRequest{Number: 2493, State: "OPEN", CIStatus: "pass", UnresolvedReviewThreads: []connector.PullRequestReviewThread{{Path: "worker.go", Line: 1}}}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\nblockers: []\nhuman_action: null\n```"}}
+			history := make([]store.WorkAttempt, rejections)
+			for i := range history {
+				history[i] = store.WorkAttempt{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: marshalWorkAttemptJSON(completionCleanlinessMetadata(completionCleanlinessDecision{Attempted: true, Outcome: completionCleanlinessRejected}))}
+			}
+			attempts := &implementProgressAttemptStore{history: history}
+			tracker := &implementProgressConnector{refreshed: issue, hydrated: issue}
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindHumanReview}}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			now := time.Date(2026, 9, 11, 15, 0, 0, 0, time.UTC)
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 2493, Generation: 7, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute)}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement, WorkAttemptID: 2493, Generation: 7}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "head", RecoveryStateExpected: true, RecoveryStateAvailable: true}}})
+			if _, blocked := state.Blocked[issue.ID]; blocked {
+				t.Fatal("clean retry was parked")
+			}
+			if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
+				t.Fatalf("updates = %#v, want Rework", tracker.updates)
+			}
+			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "unresolved review thread") {
+				t.Fatalf("comments = %#v, want PR gate reason", tracker.comments)
+			}
+			if len(attempts.completions) != 1 {
+				t.Fatalf("completions = %#v", attempts.completions)
+			}
+			record, ok := completionCleanlinessRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: attempts.completions[0].WorkerMetadataJSON})
+			if !ok || record.Outcome != completionCleanlinessAccepted {
+				t.Fatalf("cleanliness = %#v", record)
 			}
 		})
 	}
