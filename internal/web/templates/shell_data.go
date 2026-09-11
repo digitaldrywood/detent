@@ -11,6 +11,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -210,6 +211,7 @@ func appLiveStatusAt(data DashboardShellData) time.Time {
 }
 
 type appShellProject struct {
+	UnknownReason              string
 	ID                         string
 	Name                       string
 	Initials                   string
@@ -238,7 +240,16 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 		if id == "" {
 			continue
 		}
+		for _, snapshotProject := range data.Snapshot.Projects {
+			if strings.TrimSpace(snapshotProject.Project.ID) == id && boardProjectWorkloadUnavailable(data.Snapshot, snapshotProject) {
+				project.BoardWorkloadIncomplete = true
+				project.Refresh = snapshotProject.Refresh
+				project.Dispatch = snapshotProject.Dispatch
+				break
+			}
+		}
 		item := appShellProject{
+			UnknownReason:           appProjectUnknownReason(project),
 			ID:                      id,
 			Name:                    projectSmallMultipleName(project),
 			Href:                    projectOpenPath(id),
@@ -457,11 +468,31 @@ func appProjectHelpTitle(project appShellProject) string {
 	return project.Name
 }
 
+func appProjectUnknownReason(project ProjectSmallMultiple) string {
+	if !project.BoardWorkloadIncomplete && !project.Paused && project.Refresh.Status != telemetry.RefreshStatusDegraded {
+		return ""
+	}
+	var reasons []string
+	if project.Paused {
+		reasons = append(reasons, "Paused: "+strings.TrimSpace(project.PauseReason))
+	}
+	if reason := strings.TrimSpace(project.Refresh.LastError); reason != "" {
+		reasons = append(reasons, reason)
+	}
+	if reason := strings.TrimSpace(project.Dispatch.WaitReason); reason != "" {
+		reasons = append(reasons, reason)
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "Snapshot is stale or incomplete; waiting for live project data.")
+	}
+	return ". " + strings.Join(reasons, "; ")
+}
+
 func appProjectHelpDescription(project appShellProject) string {
 	if project.ActiveHoursVisible {
-		return project.ActiveHoursHelpDescription + " Board: " + appProjectBreakdown(project) + "."
+		return project.ActiveHoursHelpDescription + " Board: " + appProjectBreakdown(project) + "." + project.UnknownReason
 	}
-	return appProjectBreakdown(project)
+	return appProjectBreakdown(project) + project.UnknownReason
 }
 
 func appProjectAriaLabel(project appShellProject) string {
