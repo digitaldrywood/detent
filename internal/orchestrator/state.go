@@ -121,6 +121,7 @@ type State struct {
 	graphQLUsageSamples      []graphQLUsageSample
 	laneEntries              map[string]time.Time
 	laneProvenance           map[string]provenance.Attribution
+	dispatchLoopResets       map[string]time.Time
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
@@ -434,6 +435,7 @@ func newState(cfg Config) State {
 		CleanupFailures:          map[string]string{},
 		laneEntries:              map[string]time.Time{},
 		laneProvenance:           map[string]provenance.Attribution{},
+		dispatchLoopResets:       map[string]time.Time{},
 		planRework:               map[string]struct{}{},
 		pendingEpicParentLookups: map[string]connector.Issue{},
 	}
@@ -535,6 +537,7 @@ func (s State) clone() State {
 		graphQLUsageSamples:      append([]graphQLUsageSample(nil), s.graphQLUsageSamples...),
 		laneEntries:              maps.Clone(s.laneEntries),
 		laneProvenance:           maps.Clone(s.laneProvenance),
+		dispatchLoopResets:       maps.Clone(s.dispatchLoopResets),
 		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
 		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),

@@ -150,7 +150,8 @@ func (o *Orchestrator) trackerRecoveryParkCommentsHold(issue connector.Issue, co
 
 func (o *Orchestrator) retainUnacknowledgedRecoveryParks(ctx context.Context, state *State, issues []connector.Issue) {
 	for _, issue := range issues {
-		if !stateIn(issue.State, o.cfg.ActiveStates) {
+		active := stateIn(issue.State, o.cfg.ActiveStates)
+		if !active && normalizeState(issue.State) != normalizeState(blockedStatusState) {
 			continue
 		}
 		if _, running := state.Running[issue.ID]; running {
@@ -161,6 +162,9 @@ func (o *Orchestrator) retainUnacknowledgedRecoveryParks(ctx context.Context, st
 		}
 		timeline, ok := o.issueWorkflowTimeline(ctx, issue)
 		if !ok {
+			if !active {
+				continue
+			}
 			if _, available := o.workflowMetrics.(WorkflowMetricsTimelineReader); available {
 				state.Blocked[issue.ID] = Blocked{Issue: cloneIssue(issue), Source: BlockedSourceProjectStatus, Reason: "recovery_park_history_unavailable"}
 			}
@@ -169,7 +173,8 @@ func (o *Orchestrator) retainUnacknowledgedRecoveryParks(ctx context.Context, st
 		var park *workflowLaneBlockedRecoveryMetadata
 		var parkedAt time.Time
 		var acknowledgedPark *workflowLaneBlockedRecoveryMetadata
-		var acknowledgedAt time.Time
+		var parkReleasedAt time.Time
+		var dispatchLoopResetAt time.Time
 		for _, event := range timeline.Events {
 			if event.PhaseType != store.WorkflowPhaseTypeLane || event.Status != "entered" || !recoveryParkEventMatchesIssue(event, issue) {
 				continue
@@ -188,19 +193,30 @@ func (o *Orchestrator) retainUnacknowledgedRecoveryParks(ctx context.Context, st
 			}
 			if park != nil && recoveryParkAcknowledged(event, metadata, *park) {
 				acknowledgedPark = park
-				acknowledgedAt = workflowLaneTransitionAt(event)
+				parkReleasedAt = workflowLaneTransitionAt(event)
+				if operatorAcknowledgesRecoveryPark(event, metadata) {
+					dispatchLoopResetAt = laterDispatchLoopTime(dispatchLoopResetAt, parkReleasedAt)
+				}
 				park = nil
 			}
 		}
-		acknowledged := park != nil && (o.recoveryParkSequenceAcknowledged(ctx, issue, parkedAt) || o.recoveryIntentAcknowledgesPark(ctx, issue, *park, parkedAt))
+		parkSequenceAcknowledgedAt, parkSequenceAcknowledged := o.recoveryParkSequenceAcknowledged(ctx, issue, parkedAt)
+		acknowledged := park != nil && (parkSequenceAcknowledged || o.recoveryIntentAcknowledgesPark(ctx, issue, *park, parkedAt))
 		if acknowledged {
-			if blocked, held := state.Blocked[issue.ID]; held && blocked.Source == BlockedSourceProjectStatus && blocked.Reason == park.Cause {
+			if parkSequenceAcknowledged {
+				dispatchLoopResetAt = laterDispatchLoopTime(dispatchLoopResetAt, parkSequenceAcknowledgedAt)
+			}
+			if blocked, held := state.Blocked[issue.ID]; active && held && blocked.Source == BlockedSourceProjectStatus && blocked.Reason == park.Cause {
 				delete(state.Blocked, issue.ID)
 			}
 			park = nil
 		}
+		resetDispatchLoopState(state, issue, dispatchLoopResetAt)
+		if !active {
+			continue
+		}
 		if park == nil {
-			if blocked, held := state.Blocked[issue.ID]; held && blocked.Source == BlockedSourceProjectStatus && acknowledgedPark != nil && blocked.Reason == acknowledgedPark.Cause && recoveryBlockPredatesAcknowledgement(blocked, acknowledgedAt) {
+			if blocked, held := state.Blocked[issue.ID]; held && blocked.Source == BlockedSourceProjectStatus && acknowledgedPark != nil && blocked.Reason == acknowledgedPark.Cause && recoveryBlockPredatesAcknowledgement(blocked, parkReleasedAt) {
 				delete(state.Blocked, issue.ID)
 			}
 			if blocked, ok := state.Blocked[issue.ID]; ok && (blocked.RecoveryReason == "park_acknowledgement_required" || blocked.Reason == "recovery_park_history_unavailable") {
@@ -225,13 +241,16 @@ func recoveryBlockPredatesAcknowledgement(blocked Blocked, acknowledgedAt time.T
 	return !parkedAt.After(acknowledgedAt)
 }
 
-func (o *Orchestrator) recoveryParkSequenceAcknowledged(ctx context.Context, issue connector.Issue, parkedAt time.Time) bool {
+func (o *Orchestrator) recoveryParkSequenceAcknowledged(ctx context.Context, issue connector.Issue, parkedAt time.Time) (time.Time, bool) {
 	reader, ok := o.workflowMetrics.(store.ParkSummaryStore)
 	if !ok || parkedAt.IsZero() {
-		return false
+		return time.Time{}, false
 	}
 	summary, err := reader.IssueParkSummary(ctx, store.IssueIdentity{ProjectID: o.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL})
-	return err == nil && summary.ParkCount > 0 && summary.AcknowledgedParkSequence >= summary.ParkCount && summary.AcknowledgedAt != nil && !summary.AcknowledgedAt.Before(parkedAt)
+	if err != nil || summary.ParkCount <= 0 || summary.AcknowledgedParkSequence < summary.ParkCount || summary.AcknowledgedAt == nil || summary.AcknowledgedAt.Before(parkedAt) {
+		return time.Time{}, false
+	}
+	return *summary.AcknowledgedAt, true
 }
 
 func recoveryParkEventMatchesIssue(event store.WorkflowPhaseEvent, issue connector.Issue) bool {
@@ -245,17 +264,10 @@ func recoveryParkEventMatchesIssue(event store.WorkflowPhaseEvent, issue connect
 }
 
 func recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata) bool {
-	if event.Reason == "operator_move" && metadata.Provenance.Origin == provenance.OriginHuman {
+	if operatorAcknowledgesRecoveryPark(event, metadata) {
 		return true
 	}
 	if event.Reason == "operator_configuration_recovery" && configurationRecoveryParkCause(park.Cause) && metadata.BlockedRecovery != nil && sameBlockedRecoveryPark(*metadata.BlockedRecovery, park) {
-		return true
-	}
-	if metadata.Provenance.Initiator == provenance.InitiatorHuman && metadata.Provenance.Basis == provenance.BasisAuthenticatedHuman {
-		return true
-	}
-	switch event.Reason {
-	case "kanban_move", "kanban_move_field":
 		return true
 	}
 	if metadata.Provenance.Initiator != provenance.InitiatorDetentInstance {

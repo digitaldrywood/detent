@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestCrossHostParkRecovery(t *testing.T) {
@@ -362,6 +363,12 @@ func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
 			}
 			for range 2 {
 				state := newState(host.cfg)
+				state.BoardIssues = []connector.Issue{issue}
+				attempt := dispatchLoopHistoryAttempt(4, store.WorkAttemptTerminalNoProgress, autoPromoteReworkSignature{}, implementProgressDiffStats{Status: "clean"}, nil, 4)
+				attempt.IssueID = issue.ID
+				attempt.Identifier = issue.Identifier
+				attempt.CompletedAt = now.Add(-time.Minute)
+				state.WorkAttempts = []telemetry.WorkAttempt{telemetryWorkAttempt(attempt, now)}
 				state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: dispatchLoopDetectedReason, Recovery: park.BlockedRecovery}
 				if independent {
 					state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceDependency, Reason: "dependency remains open"}
@@ -370,6 +377,16 @@ func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
 				blocked, held := state.Blocked[issue.ID]
 				if held != independent || independent && blocked.Source != BlockedSourceDependency {
 					t.Fatalf("acknowledged park reconciliation = %#v, held %v", blocked, held)
+				}
+				if got := len(state.WorkAttempts); got != 1 {
+					t.Fatalf("retained work attempts = %d, want complete history", got)
+				}
+				wantLoops := 0
+				if independent {
+					wantLoops = 1
+				}
+				if got := len(state.Snapshot(now).DispatchLoops); got != wantLoops {
+					t.Fatalf("dispatch-loop snapshots = %d, want %d", got, wantLoops)
 				}
 			}
 			if !independent {
@@ -381,6 +398,44 @@ func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBlockedRecoveryParkSummaryAcknowledgementResetsDispatchLoop(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 11, 16, 30, 0, 0, time.UTC)
+	parkedAt := now.Add(-time.Hour)
+	issue := recoveryTestIssue()
+	db := openWorkAttemptRecoveryStore(t, t.Context())
+	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+	park := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: dispatchLoopDetectedReason, CauseFingerprint: "park-4"}}
+	host.recordLaneTransition(t.Context(), issue, blockedStatusState, parkedAt, dispatchLoopDetectedReason, park)
+	identity := store.IssueIdentity{ProjectID: "detent", IssueID: issue.ID}
+	summary, err := db.(store.ParkSummaryStore).IssueParkSummary(t.Context(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.(store.ParkSummaryStore).AcknowledgeIssueParks(t.Context(), identity, summary.ParkCount, now); err != nil {
+		t.Fatal(err)
+	}
+	issue.State = blockedStatusState
+	issue.StageUpdatedAt = &parkedAt
+	attempt := dispatchLoopHistoryAttempt(4, store.WorkAttemptTerminalNoProgress, autoPromoteReworkSignature{}, implementProgressDiffStats{Status: "clean"}, nil, 4)
+	attempt.IssueID = issue.ID
+	attempt.Identifier = issue.Identifier
+	attempt.CompletedAt = now.Add(-time.Minute)
+	state := newState(host.cfg)
+	state.BoardIssues = []connector.Issue{issue}
+	state.WorkAttempts = []telemetry.WorkAttempt{telemetryWorkAttempt(attempt, now)}
+	state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: dispatchLoopDetectedReason, Recovery: park.BlockedRecovery}
+
+	host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
+
+	if _, held := state.Blocked[issue.ID]; !held {
+		t.Fatal("CLI acknowledgement removed the tracker Blocked lane projection")
+	}
+	if got := len(state.Snapshot(now).DispatchLoops); got != 0 {
+		t.Fatalf("dispatch-loop snapshots = %d, want acknowledged loop reset while issue remains Blocked", got)
 	}
 }
 
@@ -418,6 +473,12 @@ func TestCrossHostParkPreservesConfiguredCooldownRecovery(t *testing.T) {
 			host.workflowMetrics = openValidatorMemoStore(t)
 			host.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{ConfigFingerprint: "unchanged", Health: "ready"}}
 			state := newState(host.cfg)
+			state.BoardIssues = []connector.Issue{issue}
+			attempt := dispatchLoopHistoryAttempt(4, store.WorkAttemptTerminalNoProgress, autoPromoteReworkSignature{}, implementProgressDiffStats{Status: "clean"}, nil, 4)
+			attempt.IssueID = issue.ID
+			attempt.Identifier = issue.Identifier
+			attempt.CompletedAt = now.Add(-time.Minute)
+			state.WorkAttempts = []telemetry.WorkAttempt{telemetryWorkAttempt(attempt, now)}
 			metadata := host.newBlockedRecoveryMetadata(t.Context(), issue, RunModeImplement, cause, blockedRecoveryPredicateFingerprintChange, "Todo", DiffStats{})
 			if err := host.updateIssueStateByIDStrictWithMetadata(t.Context(), &state, issue.ID, issue, "Blocked", now, cause, metadata); err != nil {
 				t.Fatal(err)
@@ -429,6 +490,9 @@ func TestCrossHostParkPreservesConfiguredCooldownRecovery(t *testing.T) {
 			host.retainUnacknowledgedRecoveryParks(t.Context(), &state, tracker.stateIssues)
 			if _, held := state.Blocked[issue.ID]; held {
 				t.Fatal("dispatch guard rejected configured cooldown recovery")
+			}
+			if got := len(state.Snapshot(tracker.now).DispatchLoops); got != 1 {
+				t.Fatalf("dispatch-loop snapshots = %d, want automatic recovery to preserve history", got)
 			}
 		})
 	}
