@@ -80,8 +80,8 @@ func TestNativeMergeQueueExcludedLogsOncePerHead(t *testing.T) {
 	if got := strings.Count(logs.String(), "merge_worker_native_queue_excluded"); got != 1 {
 		t.Fatalf("logged %d times for the same head, want 1: %s", got, logs.String())
 	}
-	if !strings.Contains(logs.String(), "security_audit_enabled") {
-		t.Fatalf("missing exclusion reason: %s", logs.String())
+	if !strings.Contains(logs.String(), "security_audit=true") {
+		t.Fatalf("missing exclusion attributes: %s", logs.String())
 	}
 
 	issue.PullRequest.HeadSHA = "0000000000000000000000000000000000000001"
@@ -91,26 +91,24 @@ func TestNativeMergeQueueExcludedLogsOncePerHead(t *testing.T) {
 	}
 }
 
-func TestNativeMergeQueueExclusionReason(t *testing.T) {
+func TestNativeMergeQueueCandidateUnresolvedReviewThreads(t *testing.T) {
 	t.Parallel()
-	cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging"}})
 	for _, tt := range []struct {
-		name  string
-		issue connector.Issue
-		want  string
+		name string
+		kind string
+		want bool
 	}{
-		{"no pull request", connector.Issue{ID: "issue-1"}, "pull_request_missing"},
-		{"draft", func() connector.Issue {
-			i := nativeMergeQueueTestIssue(1, "success")
-			i.PullRequest.Draft = true
-			return i
-		}(), "draft_pull_request"},
-		{"ci red", nativeMergeQueueTestIssue(2, "failure"), "ci_not_green"},
+		{"command gate blocks on threads", gate.KindCommand, false},
+		{"artifact gate ignores threads", gate.KindArtifact, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := nativeMergeQueueExclusionReason(tt.issue, cfg); got != tt.want {
-				t.Fatalf("reason = %q, want %q", got, tt.want)
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging"}})
+			cfg.AutoPromote.Gate.Kind = tt.kind
+			issue := nativeMergeQueueTestIssue(2465, "success")
+			issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{}}
+			if got := nativeMergeQueueCandidate(issue, cfg); got != tt.want {
+				t.Fatalf("nativeMergeQueueCandidate() = %t, want %t", got, tt.want)
 			}
 		})
 	}

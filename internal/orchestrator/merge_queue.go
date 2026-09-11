@@ -178,6 +178,9 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if pullRequestHydrationBlocksProgress(pullRequest) {
 		return false
 	}
+	if gateRequiresPullRequest(cfg.AutoPromote.Gate) && len(pullRequest.UnresolvedReviewThreads) > 0 {
+		return false
+	}
 	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
 		return false
 	}
@@ -315,28 +318,6 @@ func nativeMergeQueueOwnsIssue(state *State, issue connector.Issue, cfg Config) 
 	return state != nil && state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)].Available && nativeMergeQueueCandidate(issue, cfg)
 }
 
-func nativeMergeQueueExclusionReason(issue connector.Issue, cfg Config) string {
-	switch {
-	case issue.PullRequest == nil:
-		return "pull_request_missing"
-	case gate.Effective(cfg.AutoPromote.Gate).SecurityAudit.Enabled:
-		return "security_audit_enabled"
-	case pullRequestHydrationBlocksProgress(issue.PullRequest):
-		return "pull_request_hydration_unavailable"
-	case issue.PullRequest.Draft:
-		return "draft_pull_request"
-	case !mergeWorkerCIGreen(issue.PullRequest.CIStatus):
-		return "ci_not_green"
-	}
-	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
-		return "merge_approval_revoked"
-	}
-	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
-		return "ci_trigger_revoked"
-	}
-	return "not_a_candidate"
-}
-
 func (o *Orchestrator) logNativeMergeQueueExcluded(state *State, issue connector.Issue) {
 	if o.logger == nil || state == nil || issue.PullRequest == nil {
 		return
@@ -347,7 +328,12 @@ func (o *Orchestrator) logNativeMergeQueueExcluded(state *State, issue connector
 		return
 	}
 	state.nativeMergeQueueExcluded[issueID] = head
-	o.logger.Info("merge_worker_native_queue_excluded", mergeWorkerLogAttrs(issue, "reason", nativeMergeQueueExclusionReason(issue, o.cfg))...)
+	o.logger.Info("merge_worker_native_queue_excluded", mergeWorkerLogAttrs(issue,
+		"draft", issue.PullRequest.Draft,
+		"ci_status", issue.PullRequest.CIStatus,
+		"unresolved_review_threads", len(issue.PullRequest.UnresolvedReviewThreads),
+		"security_audit", gate.Effective(o.cfg.AutoPromote.Gate).SecurityAudit.Enabled,
+	)...)
 }
 
 func nativeMergeQueueHasEntry(state *State, issue connector.Issue) bool {
