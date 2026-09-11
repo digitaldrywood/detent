@@ -1,0 +1,27 @@
+{
+  "tests": {
+    "./tools/invariantcheck": [
+      "TestBehaviorEvidence"
+    ],
+    "./internal/orchestrator": [
+      "TestPolicyMismatchStopsDispatchWithoutAttempt",
+      "TestAttemptMetadataRetainsApprovedPolicy",
+      "TestConfiguredTerminalRetryAfterStoreRestart",
+      "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
+      "TestServiceRestartsRecoverRetainedWorkAndDispatch",
+      "TestHumanQuestionRestartAndConcurrentRequests",
+      "TestHumanQuestionReplyAuthorization",
+      "TestHumanQuestionIndependentRework",
+      "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane"
+    ],
+    "./internal/release": [
+      "TestMandatoryEvidence"
+    ],
+    "./internal/update": [
+      "TestStartupRecoveryPersistsCrashLoopAcrossProcesses",
+      "TestStartupRecoveryAttemptsOneUpdatePerVersion",
+      "TestReplaceBinaryRollsBackWhenVerificationFails",
+      "TestVerifyMinisignSignatureRejectsTamper"
+    ]
+  }
+}
