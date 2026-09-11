@@ -795,3 +795,37 @@ func TestUnknownProjectTooltipReasons(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectTooltipExplainsCompleteUnavailableSnapshot(t *testing.T) {
+	t.Parallel()
+	live := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true}
+	for _, tt := range []struct {
+		name    string
+		section telemetry.SnapshotSection
+		refresh telemetry.Refresh
+		paused  bool
+		want    string
+	}{
+		{"cached", telemetry.SnapshotSection{Source: telemetry.SnapshotSourceCached, Complete: true}, telemetry.Refresh{LastError: "cached after refresh failure"}, false, "cached after refresh failure"},
+		{"degraded", live, telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"}, false, "tracker unavailable"},
+		{"paused", live, telemetry.Refresh{}, true, "Paused: operator maintenance"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := DashboardShellData{
+				Snapshot: telemetry.Snapshot{Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "project"}, Tracker: tt.section, Runtime: live, Refresh: tt.refresh}}},
+				Projects: []ProjectSmallMultiple{{ID: "project", BoardLoad: 1, BoardTodo: 1, Refresh: tt.refresh, Paused: tt.paused, PauseReason: "operator maintenance"}},
+			}
+			projects := appShellProjects(data)
+			if len(projects) != 1 {
+				t.Fatalf("projects = %+v", projects)
+			}
+			if got := appProjectHelpDescription(projects[0]); !strings.Contains(got, tt.want) {
+				t.Fatalf("tooltip = %q, want %q", got, tt.want)
+			}
+			if !tt.paused && (!projects[0].BoardWorkloadIncomplete || projects[0].Count != "1+") {
+				t.Fatalf("unavailable count = %+v, want lower bound", projects[0])
+			}
+		})
+	}
+}

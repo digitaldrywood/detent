@@ -6,7 +6,11 @@ func demoBoardCountsSnapshot(variant string) telemetry.Snapshot {
 	live := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true, ObservedAt: demoBaseTime}
 	snapshot := telemetry.Snapshot{GeneratedAt: demoBaseTime, Tracker: live, Runtime: live,
 		Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, LastRefreshAt: &demoBaseTime}}
-	for i, id := range []string{"dogfood", "billing-api", "parable"} {
+	ids := []string{"dogfood", "billing-api", "parable"}
+	if variant == "board-counts-single-cached" {
+		ids = ids[:1]
+	}
+	for i, id := range ids {
 		project := telemetry.ProjectSnapshot{Project: telemetry.Project{ID: id, DisplayName: id}, Tracker: live, Runtime: live,
 			Refresh: snapshot.Refresh}
 		if variant == "board-counts-unknown" || (variant == "board-counts-partial" && i == 2) {
@@ -21,6 +25,15 @@ func demoBoardCountsSnapshot(variant string) telemetry.Snapshot {
 			snapshot.BoardIssues = append(snapshot.BoardIssues,
 				telemetry.Issue{ID: id + "-ready", ProjectID: id, State: "Todo", Title: "Ready work"},
 				telemetry.Issue{ID: id + "-blocked", ProjectID: id, State: "Blocked", Title: "Blocked work"})
+		}
+		if variant == "board-counts-single-cached" {
+			project.Tracker.Source = telemetry.SnapshotSourceCached
+			project.Refresh.Status = telemetry.RefreshStatusDegraded
+			project.Refresh.LastError = "Cached snapshot after tracker refresh failure."
+		}
+		if variant == "board-counts-complete-degraded" && id == "parable" {
+			project.Refresh.Status = telemetry.RefreshStatusDegraded
+			project.Refresh.LastError = "Tracker refresh failed with complete sections retained."
 		}
 		snapshot.Projects = append(snapshot.Projects, project)
 	}

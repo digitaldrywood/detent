@@ -4775,3 +4775,25 @@ func TestBoardFiguresExcludeUnavailableProjectCounts(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardFiguresExcludeOnlyCachedProject(t *testing.T) {
+	t.Parallel()
+	for _, source := range []telemetry.SnapshotSource{telemetry.SnapshotSourceCached, telemetry.SnapshotSourceLive} {
+		t.Run(string(source), func(t *testing.T) {
+			t.Parallel()
+			section := telemetry.SnapshotSection{Source: source, Complete: true}
+			snapshot := telemetry.Snapshot{Tracker: section, Runtime: section,
+				Projects:    []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "only"}, Tracker: section, Runtime: section, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusDegraded}}},
+				BoardIssues: []telemetry.Issue{{ID: "blocked", ProjectID: "only", State: "Blocked"}},
+			}
+			for _, figure := range boardFigures(snapshot) {
+				if figure.ID != "fig-ready" && figure.ID != "fig-blocked" {
+					continue
+				}
+				if figure.Value != "unknown" || figure.Note != "(1 project unknown)" || figure.Err {
+					t.Fatalf("figure = %+v, want unknown only project", figure)
+				}
+			}
+		})
+	}
+}

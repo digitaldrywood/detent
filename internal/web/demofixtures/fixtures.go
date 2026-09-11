@@ -34,7 +34,7 @@ func ProjectByID(projects []templates.ProjectSmallMultiple, id string) (template
 func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	switch variant {
-	case "board-counts-live", "board-counts-partial", "board-counts-unknown":
+	case "board-counts-live", "board-counts-partial", "board-counts-unknown", "board-counts-single-cached", "board-counts-complete-degraded", "board-counts-paused-complete":
 		snapshot = demoBoardCountsSnapshot(variant)
 	case "empty":
 		snapshot = demoEmptySnapshot()
@@ -1111,12 +1111,17 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 		var projects []templates.ProjectSmallMultiple
 		for _, project := range snapshot.Projects {
 			counts := telemetry.CurrentBoardWorkloadForProject(snapshot, project.Project.ID)
-			projects = append(projects, templates.ProjectSmallMultiple{
+			item := templates.ProjectSmallMultiple{
 				ID: project.Project.ID, Name: project.Project.DisplayName,
 				Refresh: project.Refresh, Dispatch: project.Dispatch,
 				BoardLoad: counts.Load, BoardTodo: counts.Todo, BoardBlocked: counts.Blocked, BoardWaiting: counts.Waiting,
 				BoardWorkloadIncomplete: !telemetry.BoardWorkloadCompleteForProject(snapshot, project.Project.ID),
-			})
+			}
+			if variant == "board-counts-paused-complete" && item.ID == "parable" {
+				item.Paused = true
+				item.PauseReason = "Operator maintenance"
+			}
+			projects = append(projects, item)
 		}
 		return projects
 	}

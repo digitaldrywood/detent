@@ -14264,6 +14264,9 @@ func TestBoardHeaderProjectExclusions(t *testing.T) {
 		{"live", "3", "3", "8", ""},
 		{"partial", "2", "2", "8+", " (1 project unknown)"},
 		{"unknown", "unknown", "unknown", "8+", " (3 projects unknown)"},
+		{"single-cached", "unknown", "unknown", "8", " (1 project unknown)"},
+		{"complete-degraded", "2", "2", "8", " (1 project unknown)"},
+		{"paused-complete", "3", "3", "8", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

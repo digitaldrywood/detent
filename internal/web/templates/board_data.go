@@ -1213,13 +1213,11 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 		{ID: "fig-completed", Value: formatCount(completedCount(snapshot)), Label: "completed"},
 	}
 
-	if len(snapshot.Projects) > 1 {
+	if len(snapshot.Projects) > 0 {
 		ready, blocked, excluded := 0, 0, 0
 		for _, project := range snapshot.Projects {
 			id := strings.TrimSpace(project.Project.ID)
-			if id == "" || !telemetry.BoardWorkloadCompleteForProject(snapshot, id) ||
-				project.Refresh.Status == telemetry.RefreshStatusDegraded || project.Refresh.Stale(snapshot.GeneratedAt) ||
-				project.Tracker.Source == telemetry.SnapshotSourceCached || project.Runtime.Source == telemetry.SnapshotSourceCached {
+			if boardProjectWorkloadUnavailable(snapshot, project) {
 				excluded++
 				continue
 			}
@@ -1241,6 +1239,15 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 		}
 	}
 	return figures
+}
+
+// boardProjectWorkloadUnavailable keeps header exclusions and sidebar count
+// explanations aligned, including complete snapshots retained from a failed refresh.
+func boardProjectWorkloadUnavailable(snapshot telemetry.Snapshot, project telemetry.ProjectSnapshot) bool {
+	id := strings.TrimSpace(project.Project.ID)
+	return id == "" || !telemetry.BoardWorkloadCompleteForProject(snapshot, id) ||
+		project.Refresh.Status == telemetry.RefreshStatusDegraded || project.Refresh.Stale(snapshot.GeneratedAt) ||
+		project.Tracker.Source == telemetry.SnapshotSourceCached || project.Runtime.Source == telemetry.SnapshotSourceCached
 }
 
 func boardWorkloadCountLabel(snapshot telemetry.Snapshot, count int) string {
