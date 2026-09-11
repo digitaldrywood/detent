@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -275,36 +276,94 @@ func TestOutboxReclaimsInterruptedProcessingAfterTimeout(t *testing.T) {
 func TestServiceCloseCancelsAndDrainsOutboxWorker(t *testing.T) {
 	t.Parallel()
 
-	backend := &blockingOutboxBackend{started: make(chan struct{})}
-	service, err := Open(t.Context(), Config{
-		DatabasePath:       filepath.Join(t.TempDir(), "hub.db"),
-		Logger:             discardLogger(),
-		OutboxBackend:      backend,
-		OutboxPollInterval: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	repositoryID, issueID := seedProjection(t, service.database.db)
-	appendTestWorkpadEvent(t, service, repositoryID, issueID, "blocking-key", "coding")
-	select {
-	case <-backend.started:
-	case <-time.After(2 * time.Second):
-		service.Close()
-		t.Fatal("outbox worker did not start delivery")
-	}
-
-	closed := make(chan error, 1)
-	go func() {
-		closed <- service.Close()
-	}()
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatalf("Close() error = %v", err)
+	for _, holdConnection := range []bool{false, true} {
+		name := "available database"
+		if holdConnection {
+			name = "held database connection"
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close() did not cancel and drain the outbox worker")
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := &blockingOutboxBackend{
+				started: make(chan struct{}), canceled: make(chan struct{}),
+				release: make(chan struct{}), returned: make(chan struct{}),
+			}
+			release := sync.OnceFunc(func() { close(backend.release) })
+			path := filepath.Join(t.TempDir(), "hub.db")
+			service, err := Open(t.Context(), Config{
+				DatabasePath: path, Logger: discardLogger(),
+				OutboxBackend: backend, OutboxPollInterval: time.Hour,
+			})
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			closed := make(chan struct{})
+			var closeErr error
+			startClose := sync.OnceFunc(func() {
+				go func() {
+					closeErr = service.Close()
+					close(closed)
+				}()
+			})
+			t.Cleanup(func() {
+				release()
+				startClose()
+				waitForOutboxShutdownStage(t, closed, "cleanup Close")
+			})
+			repositoryID, issueID := seedProjection(t, service.database.db)
+			appendTestWorkpadEvent(t, service, repositoryID, issueID, "blocking-key", "coding")
+			waitForOutboxShutdownStage(t, backend.started, "delivery start")
+
+			var releaseConnection func()
+			if holdConnection {
+				conn, err := service.database.db.Conn(t.Context())
+				if err != nil {
+					t.Fatalf("hold database connection: %v", err)
+				}
+				releaseConnection = sync.OnceFunc(func() {
+					if err := conn.Close(); err != nil {
+						t.Errorf("release database connection: %v", err)
+					}
+				})
+				t.Cleanup(releaseConnection)
+			}
+			startClose()
+			waitForOutboxShutdownStage(t, backend.canceled, "delivery cancellation")
+			select {
+			case <-closed:
+				t.Fatal("Close returned before the active backend was released")
+			default:
+			}
+			release()
+			waitForOutboxShutdownStage(t, backend.returned, "backend return")
+			if releaseConnection != nil {
+				select {
+				case <-closed:
+					t.Fatal("Close returned before canceled delivery could be persisted")
+				default:
+				}
+				releaseConnection()
+			}
+			waitForOutboxShutdownStage(t, closed, "worker drain and database close")
+			if closeErr != nil {
+				t.Fatalf("Close() error = %v", closeErr)
+			}
+			reopened := openTestService(t, Config{DatabasePath: path})
+			assertOutboxStatus(t, reopened.database.db, "blocking-key", outboxRetrying, 1)
+		})
+	}
+}
+
+func waitForOutboxShutdownStage(t *testing.T, done <-chan struct{}, stage string) {
+	t.Helper()
+	// SQLite shutdown involves OS I/O; this bounds deadlocks, not expected latency.
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		stacks := make([]byte, 1<<20)
+		t.Fatalf("outbox shutdown stalled at %s:\n%s", stage, stacks[:runtime.Stack(stacks, true)])
 	}
 }
 
@@ -359,13 +418,19 @@ func (b *recordingOutboxBackend) keys() []string {
 }
 
 type blockingOutboxBackend struct {
-	started chan struct{}
-	once    sync.Once
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+	returned chan struct{}
+	once     sync.Once
 }
 
 func (b *blockingOutboxBackend) Execute(ctx context.Context, _ OutboxItem) error {
 	b.once.Do(func() { close(b.started) })
 	<-ctx.Done()
+	close(b.canceled)
+	<-b.release
+	defer close(b.returned)
 	return ctx.Err()
 }
 
