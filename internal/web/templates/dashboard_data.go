@@ -414,6 +414,11 @@ type ProjectSmallMultiple struct {
 	PauseExitEvaluable        bool
 	PauseExitError            string
 	PauseExitResolver         string
+	ReviewPolicyConfigured    bool
+	AutoPromoteEnabled        bool
+	AutoPromoteOptoutLabel    string
+	AutoPromoteAllowedLabels  []string
+	AutoPromoteGateKind       string
 	ActiveHours               telemetry.ActiveHours
 	Dispatch                  telemetry.DispatchStatus
 	Refresh                   telemetry.Refresh
@@ -646,6 +651,7 @@ type projectKanbanCard struct {
 	TimeInStageTitle      string
 	WaitDetail            string
 	GatePending           bool
+	HumanActionRequired   bool
 	BlockedSource         telemetry.BlockedSource
 	BlockedReason         string
 	BlockedRecoveryAction string
@@ -3194,6 +3200,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		TimeInStageTitle:      prPipelineAgeTitle(state, stageAt, now),
 		WaitDetail:            prPipelineWaitDetail(issue),
 		GatePending:           issue.GatePending,
+		HumanActionRequired:   projectKanbanHumanActionRequired(data, issue, state),
 		BlockedSource:         telemetry.BlockedSource(strings.TrimSpace(issue.Metadata[projectKanbanBlockedSourceMetadataKey])),
 		BlockedReason:         strings.TrimSpace(issue.Metadata[projectKanbanBlockedReasonMetadataKey]),
 		BlockedRecoveryAction: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey]),
@@ -3254,6 +3261,48 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 	}
 	card.DispatchPriorityLabel, card.DispatchPriorityRank = projectKanbanDispatchPriority(data, card.ProjectID, card.Labels)
 	return card
+}
+
+func projectKanbanHumanActionRequired(data DashboardData, issue telemetry.Issue, state string) bool {
+	if issue.RequiredGate != nil && strings.TrimSpace(issue.RequiredGate.HumanAction) != "" {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(state), "Human Review") {
+		return false
+	}
+	projectID := strings.TrimSpace(issue.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.ProjectID)
+	}
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.Snapshot.Project.ID)
+	}
+	for _, project := range data.Projects {
+		if strings.EqualFold(strings.TrimSpace(project.ID), projectID) {
+			if !project.ReviewPolicyConfigured || !project.AutoPromoteEnabled {
+				return project.ReviewPolicyConfigured
+			}
+			if projectKanbanLabelsIntersect(issue.Labels, []string{project.AutoPromoteOptoutLabel}) {
+				return true
+			}
+			if len(project.AutoPromoteAllowedLabels) > 0 && !projectKanbanLabelsIntersect(issue.Labels, project.AutoPromoteAllowedLabels) {
+				return true
+			}
+			return strings.EqualFold(strings.TrimSpace(project.AutoPromoteGateKind), "human_review")
+		}
+	}
+	return false
+}
+
+func projectKanbanLabelsIntersect(labels []string, candidates []string) bool {
+	for _, label := range labels {
+		for _, candidate := range candidates {
+			if candidate = strings.TrimSpace(candidate); candidate != "" && strings.EqualFold(strings.TrimSpace(label), candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func WithKanbanCardComments(card projectKanbanCard, comments []telemetry.IssueComment) projectKanbanCard {
@@ -3334,7 +3383,7 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 			if ref.HumanCompletionReady {
 				cleared = append(cleared, "human prerequisite "+label+" (completion evidence recorded)")
 			} else {
-				active = append(active, "human prerequisite "+label+" (completion evidence required)")
+				active = append(active, "human prerequisite "+label+" (closure and completion evidence required)")
 			}
 			continue
 		}

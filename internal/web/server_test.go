@@ -2053,7 +2053,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	alertsBoard := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "fleet-kanban-blocked-alerts",
 	})
-	for _, want := range []string{`id="board-exceptions"`, "Needs review", "after_create hook exited 2"} {
+	for _, want := range []string{`id="board-exceptions"`, "Needs you", "after_create hook exited 2"} {
 		if !strings.Contains(alertsBoard, want) {
 			t.Fatalf("blocked-alerts board scenario missing %q:\n%s", want, alertsBoard)
 		}
