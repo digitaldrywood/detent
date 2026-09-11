@@ -460,6 +460,8 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " merge queue recommendation")
 		checks = append(checks, checkDoctorMergeQueue(ctx, id, project, workflow.Config, storePath, deps))
 	}
+	setDoctorCurrentCheck("Project " + id + " invariant evidence")
+	checks = append(checks, checkDoctorInvariantEvidence(ctx, id, project, workflow.Config, storePath, deps)...)
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceLabel {
 			setDoctorCurrentCheck("Project " + id + " label status drift")
