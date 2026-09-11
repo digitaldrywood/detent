@@ -133,6 +133,9 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 			if blocked.Recovery == nil || blocked.Recovery.Predicate != blockedRecoveryPredicateLifetimeLimit {
 				t.Fatalf("blocked recovery = %#v, want lifetime predicate", blocked.Recovery)
 			}
+			if !blocked.NeedsHumanAttention {
+				t.Fatal("lifetime hold must immediately need human attention")
+			}
 			if blocked.Recovery.LifetimeSessions != test.usage.Sessions || blocked.Recovery.LifetimeTokens != test.usage.TotalTokens {
 				t.Fatalf("blocked recovery usage = %#v, want sessions=%d tokens=%d", blocked.Recovery, test.usage.Sessions, test.usage.TotalTokens)
 			}

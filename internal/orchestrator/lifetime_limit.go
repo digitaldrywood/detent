@@ -176,6 +176,7 @@ func (o *Orchestrator) parkLifetimeLimit(
 		Issue:                   cloneIssue(issue),
 		Reason:                  lifetimeLimitBlockedReason(decision),
 		RecoveryAction:          "hold",
+		NeedsHumanAttention:     true,
 		RecoveryReason:          lifetimeLimitReason,
 		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
 		RecoveryRemedy:          lifetimeLimitRecoveryRemedy(o.cfg.LifetimeLimitOverrideLabel),
