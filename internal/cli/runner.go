@@ -123,24 +123,45 @@ func buildRunner(
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
 ) (orchestrator.Runner, error) {
+	deps, err := buildRunnerDependencies(workflow, projectID, projectWorkdir, memory, sessionStore, logger)
+	if err != nil {
+		return nil, err
+	}
+	run, err := runnerpkg.NewRunner(deps)
+	if err != nil {
+		return nil, fmt.Errorf("create runner: %w", err)
+	}
+	return run, nil
+}
+
+// buildRunnerDependencies assembles production wiring independently of runner
+// construction so integration tests can substitute host process discovery.
+func buildRunnerDependencies(
+	workflow workflowconfig.Workflow,
+	projectID string,
+	projectWorkdir string,
+	memory globalconfig.Memory,
+	sessionStore runnerpkg.SessionStore,
+	logger *slog.Logger,
+) (runnerpkg.Dependencies, error) {
 	cfg := workflow.Config
 
 	backend, err := buildWorkspaceBackend(cfg, projectWorkdir, logger)
 	if err != nil {
-		return nil, err
+		return runnerpkg.Dependencies{}, err
 	}
 
 	pricing, err := budget.PricingForConfig(budget.Config{
 		PricingPath: cfg.Budget.PricingPath,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("load pricing: %w", err)
+		return runnerpkg.Dependencies{}, fmt.Errorf("load pricing: %w", err)
 	}
 	budgetGuardBuilder := func(cfg workflowconfig.Budget) (runnerpkg.BudgetChecker, runnerpkg.DispatchEstimator, error) {
 		return buildBudgetDispatchGuards(projectID, cfg, sessionStore, pricing)
 	}
 
-	run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{
+	return runnerpkg.Dependencies{
 		ProjectID:           projectID,
 		Workflow:            workflow,
 		Workspace:           backend,
@@ -151,11 +172,7 @@ func buildRunner(
 		MaxAgentRSSBytes:    uint64(memory.MaxAgentRSSBytes),
 		RSSPollInterval:     time.Duration(memory.PollIntervalMS) * time.Millisecond,
 		Logger:              logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create runner: %w", err)
-	}
-	return run, nil
+	}, nil
 }
 
 func buildBudgetDispatchGuards(
