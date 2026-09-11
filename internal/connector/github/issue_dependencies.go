@@ -137,8 +137,14 @@ func (c *Connector) hydrateBlockedByRefs(ctx context.Context, issues []connector
 }
 
 func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connector.Issue) {
-	if c == nil || issue == nil {
+	if err := c.hydrateIssueBlockedByRefsWithError(ctx, issue); err != nil {
 		return
+	}
+}
+
+func (c *Connector) hydrateIssueBlockedByRefsWithError(ctx context.Context, issue *connector.Issue) error {
+	if c == nil || issue == nil {
+		return nil
 	}
 	ref, ok := issueRefFromIdentifier(issue.Identifier)
 	if !ok {
@@ -146,40 +152,44 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 	}
 	if !ok {
 		markBlockedRefsSource(issue.BlockedBy, connector.BlockedRefSourceProse)
-		return
+		return nil
 	}
 
-	nativeRefs, nativeAvailable := c.fetchNativeBlockedByRefs(ctx, ref)
+	nativeRefs, nativeAvailable, err := c.fetchNativeBlockedByRefs(ctx, ref)
 	if !nativeAvailable {
 		markBlockedRefsSource(issue.BlockedBy, connector.BlockedRefSourceProse)
 		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
-		return
+		return err
 	}
 
 	if c.dependencySource == dependencySourceNativeOnly {
 		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(nativeRefs, issue.Identifier)
-		return
+		return nil
 	}
 
 	issue.BlockedBy = mergeGitHubDependencyBlockedRefs(nativeRefs, issue.BlockedBy)
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+	return nil
 }
 
-func (c *Connector) fetchNativeBlockedByRefs(ctx context.Context, ref issueRef) ([]connector.BlockedRef, bool) {
+func (c *Connector) fetchNativeBlockedByRefs(ctx context.Context, ref issueRef) ([]connector.BlockedRef, bool, error) {
 	repo := ref.Owner + "/" + ref.Name
 	if cap, ok := c.nativeDependencyCapability(repo); ok {
 		if cap.Status != nativeDependencyStatusAvailable {
-			return nil, false
+			return nil, false, nil
 		}
 	}
 
 	refs, err := c.restNativeBlockedByRefs(ctx, ref)
 	if err != nil {
 		c.handleNativeDependencyFetchError(ctx, repo, err)
-		return nil, false
+		if nativeDependencyRetryableError(err) {
+			return nil, false, err
+		}
+		return nil, false, nil
 	}
 	c.recordNativeDependencyCapability(repo, nativeDependencyStatusAvailable, "")
-	return refs, true
+	return refs, true, nil
 }
 
 func (c *Connector) nativeDependencyCapability(repo string) (nativeDependencyCapability, bool) {
