@@ -180,6 +180,11 @@ check: check-migrations check-generated
 check-unlocked: check-invariants check-migrations check-generated build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
 
+.PHONY: check-fast
+check-fast: check-invariants check-migrations check-generated build lint vet
+	$(GO_TEST) ./...
+	@echo "Fast checks passed (race, coverage, and nilaway run in the merge queue)."
+
 .PHONY: check-invariants
 check-invariants:
 	go run ./tools/invariantcheck
