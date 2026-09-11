@@ -141,6 +141,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	o.enforceLifetimeLimits(ctx, state, issues, now)
 	o.observePullRequestHydrationRecovery(state, issues, now)
 	planner := o.dispatchPlanner()
+	blockerCache := make(map[string]dependencyBlocker)
 	o.logOwnershipEligibilityStartup(planner, issues)
 	var lastDispatchFailure string
 	decisions := make([]dispatchPlanDecision, 0, len(issues))
@@ -149,7 +150,14 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		rankingIssues: rankingIssues,
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
-			return o.hydrateDispatchIssue(ctx, state, issue, now)
+			hydrated, ok := o.hydrateDispatchIssue(ctx, state, issue, now)
+			if ok {
+				hydrated = o.hydrateDispatchDependencies(ctx, hydrated, blockerCache)
+				if blocked, exists := state.Blocked[hydrated.ID]; exists && blockedFromDependency(blocked) && !todoBlockedByNonTerminal(hydrated, o.cfg.TerminalStates) {
+					delete(state.Blocked, hydrated.ID)
+				}
+			}
+			return hydrated, ok
 		},
 		beforeDispatch: func(_ connector.Issue, continuationIndex int) bool {
 			if continuationIndex < 0 {
@@ -278,6 +286,34 @@ func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
 		return false
 	}
 	return !o.mergeWorkerLocalSlotsAvailable(state)
+}
+
+// hydrateDispatchDependencies shares blocker reads across candidates in one dispatch refresh.
+func (o *Orchestrator) hydrateDispatchDependencies(ctx context.Context, issue connector.Issue, cache map[string]dependencyBlocker) connector.Issue {
+	if !todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+		return issue
+	}
+	issue = cloneIssue(issue)
+	for i, ref := range issue.BlockedBy {
+		if !todoBlockedByNonTerminal(connector.Issue{State: issue.State, BlockedBy: []connector.BlockedRef{ref}}, o.cfg.TerminalStates) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
+		blocker, cached := cache[key]
+		if !cached {
+			blockers := o.resolveDependencyBlockers(ctx, connector.Issue{ID: issue.ID, Identifier: issue.Identifier, BlockedBy: []connector.BlockedRef{ref}})
+			if len(blockers) > 0 {
+				blocker = blockers[0]
+			}
+			cache[key] = blocker
+		}
+		if blocker.Resolved {
+			resolved := blocker.Ref
+			resolved.Source = ref.Source
+			issue.BlockedBy[i] = resolved
+		}
+	}
+	return issue
 }
 
 func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, state *State, issue connector.Issue, now time.Time) (connector.Issue, bool) {
@@ -1321,7 +1357,7 @@ func todoBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bo
 		if strings.TrimSpace(blocker.State) == "" {
 			continue
 		}
-		if !stateIn(blocker.State, terminalStates) {
+		if !dependencyBlockerReady(dependencyBlocker{Ref: blocker}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, terminalStates) {
 			return true
 		}
 	}

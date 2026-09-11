@@ -4209,3 +4209,48 @@ func TestSampledGateRefusalRemainsDurableAfterSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		closed      bool
+		missing     bool
+		human       bool
+		wantRunning int
+	}{
+		{name: "closed Backlog blocker", closed: true, wantRunning: 2},
+		{name: "open Backlog blocker"},
+		{name: "missing blocker", missing: true},
+		{name: "closed human blocker without evidence", closed: true, human: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			blocker := connector.Issue{ID: "blocker", Identifier: "owner/repo#10", State: "Backlog", Closed: tt.closed}
+			candidates := []connector.Issue{dispatchTestIssue("one", "Todo"), dispatchTestIssue("two", "Todo")}
+			for i := range candidates {
+				candidates[i].Fields = map[string]string{"Status": "Todo"}
+				candidates[i].BlockedBy = []connector.BlockedRef{{Identifier: blocker.Identifier, State: "Backlog"}}
+			}
+			tracker := &dependencyAutoUnblockConnector{hydratedIssues: candidates, blockers: []connector.Issue{blocker}}
+			if tt.missing {
+				tracker.blockers = nil
+			}
+			if tt.human {
+				tracker.blockers[0].Labels = []string{"human-owned"}
+			}
+			runner := newWorkerHostRunner()
+			orch := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion)}
+			state := newState(cfg)
+			orch.dispatchPlanner().trackBlockedCandidates(&state, candidates, time.Now())
+			orch.dispatchReadyIssues(t.Context(), &state, candidates, time.Now())
+			if len(state.Running) != tt.wantRunning {
+				t.Fatalf("running = %d, want %d", len(state.Running), tt.wantRunning)
+			}
+			if len(tracker.identifierCalls) != 1 {
+				t.Fatalf("blocker reads = %v, want one shared read", tracker.identifierCalls)
+			}
+		})
+	}
+}
