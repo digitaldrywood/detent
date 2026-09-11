@@ -25,7 +25,6 @@ const (
 	completionCleanlinessDiscarded         = "discarded"
 	completionCleanlinessIntentionallyLeft = "intentionally_left"
 	dirtyCompletionReason                  = "dirty_worktree_completion_rejected"
-	dirtyCompletionResolutionReason        = "dirty_worktree_resolution_required"
 	dirtyCompletionEscalationReason        = "dirty_worktree_completion_unresolved"
 	completionCleanlinessRejectionLimit    = 2
 )
@@ -138,20 +137,9 @@ func (o *Orchestrator) evaluateCompletionCleanliness(
 		return decision
 	}
 	if !completionCleanlinessDirty(evidence) {
-		if previousRejections > 0 && !completionCleanlinessResolutionValid(decision.Declaration) {
-			decision.Outcome = completionCleanlinessRejected
-			decision.Reason = dirtyCompletionResolutionReason
-			decision.ConsecutiveRejections = previousRejections + 1
-			decision.Block = decision.ConsecutiveRejections >= completionCleanlinessRejectionLimit
-			if decision.Block {
-				decision.Outcome = completionCleanlinessEscalated
-				decision.Reason = dirtyCompletionEscalationReason
-			}
-			return decision
-		}
 		decision.Outcome = completionCleanlinessAccepted
 		decision.Resolution = completionCleanlinessClean
-		if previousRejections > 0 {
+		if previousRejections > 0 && completionCleanlinessResolutionValid(decision.Declaration) {
 			decision.Resolution = decision.Declaration
 		}
 		return decision
@@ -309,7 +297,7 @@ func completionCleanlinessRejectionComment(decision completionCleanlinessDecisio
 	appendQuotedEvidence(&b, "untracked_paths", decision.Evidence.UntrackedPaths)
 	appendQuotedEvidence(&b, "unpushed_commit_refs", decision.Evidence.UnpushedCommitRefs)
 	appendQuotedEvidence(&b, "commits_not_in_pull_request", decision.Evidence.CommitsNotInPullRequest)
-	b.WriteString("\n\nInspect every path before the next completion attempt. Commit and publish work that belongs to the issue, discard stray artifacts or mistakes, or set the Workpad to `status: blocked` and state why files are intentionally left. For a clean retry, add `completion_cleanliness_resolution: committed` or `completion_cleanliness_resolution: discarded` under `fields:` in the current completion block. Detent will not accept `status: complete` while this evidence remains.")
+	b.WriteString("\n\nInspect every path before the next completion attempt. Commit and publish work that belongs to the issue, discard stray artifacts or mistakes, or set the Workpad to `status: blocked` and state why files are intentionally left. For a clean retry, you may record `completion_cleanliness_resolution: committed` or `completion_cleanliness_resolution: discarded` under `fields:` in the current completion block. Detent will not accept `status: complete` while this evidence remains.")
 	return b.String()
 }
 
