@@ -3,7 +3,24 @@
 Audit date: September 9, 2026. Starting commit:
 `e69f1b6e` (the initial issue worktree and origin/main matched).
 
-## Live server-side configuration
+## Current audit — September 11, 2026
+
+Recovery rebased onto `ed60bbc97d1c91bfbed650b4feea99b987886688`.
+Classic branch protection now returns HTTP 404. Active repository ruleset
+22812552 (`main merge queue`) targets the default branch, has no bypass actors,
+and reports `current_user_can_bypass=never`. It requires four Actions checks:
+Lint, Verify (ubuntu-latest), Test Coverage, and Browser Visual. Strict freshness
+is false; a SQUASH/ALLGREEN merge queue is enabled. Reviews remain zero with
+conversation resolution required. Neither invariant check is required yet.
+The worker remains `corylanou` with admin permission, including the ability to
+change these controls. No server configuration changed during this recovery.
+The behavioral and trusted-base policy workflows now handle merge_group events.
+#2416 and #2418 are merged; question restart/concurrency, reply eligibility, and
+independent rework tests are now registered. The release coordinator on main
+also checks complete exact-commit evidence; the older notes below describe the
+initial implementation and must not be treated as the current configuration.
+
+## Historical server-side configuration
 
 `gh api repos/digitaldrywood/detent/branches/main/protection` returned strict
 freshness and ten required GitHub Actions checks (app ID 15368): Lint, Verify
@@ -14,8 +31,7 @@ Installer Smoke (windows-latest), and GoReleaser Snapshot.
 Initially administrators were exempt (`enforce_admins=false`). Required approving reviews
 are zero; code owner review is disabled; conversation resolution is required.
 Force push and deletion are disabled. The repository ruleset list is empty.
-There is no configured merge-queue rule in the returned effective rulesets or
-branch protection. No merge_group trigger is therefore introduced.
+At the initial audit there was no merge-queue rule. See the current audit above.
 
 The worker authenticates as `corylanou` (user ID 585100), with repository admin
 permission. An agent can produce the same review identity as Cory. Enabling
@@ -71,9 +87,8 @@ complete while these boundaries remain:
    current mandatory checks, and validate an adversarial PR against server-side
    enforcement. Initial base commits have no checker; absence must fail, not be
    treated as an approved bootstrap/no-op. The bootstrap is not complete here.
-5. Register #2416's actual same-issue question and scoped-answer regression tests
-   after its independent integration. Current synthetic prerequisite behavior is
-   not counted as enforcing INV-002.
+5. #2416 integration is complete: its behavioral tests are registered. General
+   natural-language approval scope still requires review.
 
 GitHub documents [required workflow rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 and [required-check source and skip behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
@@ -81,7 +96,7 @@ These distinguish server-enforced workflow provenance from a shared check name.
 
 ## Deployment paths and remaining gaps
 
-Independently actionable Backlog follow-ups: [#2419](https://github.com/digitaldrywood/detent/issues/2419)
+Independently tracked follow-ups (state must be checked in GitHub): [#2419](https://github.com/digitaldrywood/detent/issues/2419)
 owns automatic update provenance and running-commit verification;
 [#2420](https://github.com/digitaldrywood/detent/issues/2420) owns durable release
 retry/reporting and complete evidence before tag creation. Neither is a question
@@ -94,9 +109,9 @@ placeholder or a dependency added to this issue.
   tamper and replacement rollback tests. Signed provenance binding checks to the
   commit is not yet consumed by every installer/updater.
 - `internal/release/release.go`: coordinates tag creation. This branch disallows
-  skipped/neutral success. Its generic backend still does not establish a complete
-  required-check set, and failure reporting creates separate issues. The publishing
-  workflow's manifest gate is an additional guard, not a fix for those gaps.
+  skipped/neutral success. Current main also requires complete exact-commit check
+  evidence, covered by registered `TestMandatoryEvidence`. The publishing workflow
+  adds its manifest gate; these guards do not establish trusted producer isolation.
 - `internal/update/update.go`, `preflight.go`, and `startup_recovery.go`: verify
   checksums/signatures and version, perform startup preflight, and recover or roll
   back. They do not yet require tested full-commit evidence or verify that the

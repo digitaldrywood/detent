@@ -23,11 +23,12 @@
     "Makefile",
     "scripts/",
     "internal/orchestrator/terminal_attempt_retry_test.go",
-    "internal/orchestrator/lane_preservation_test.go",
+    "internal/orchestrator/reconcile_test.go",
     "internal/orchestrator/policy_test.go",
     "internal/update/startup_recovery_test.go",
     "internal/update/update_test.go",
-    "internal/release/invariant_test.go"
+    "internal/release/release_test.go",
+    "internal/orchestrator/human_question_test.go"
   ],
   "tests": {
     "./tools/invariantcheck": [
@@ -38,15 +39,19 @@
       "TestRunningEvidence"
     ],
     "./internal/orchestrator": [
-      "TestLaneRevocationRetainsWorkspaceForEveryWriter",
-      "TestLaneRevocationRetriesFailedRetentionBeforeReleasingOwnership",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
       "TestAttemptMetadataRetainsApprovedPolicy",
       "TestConfiguredTerminalRetryAfterStoreRestart",
       "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
-      "TestServiceRestartsRecoverRetainedWorkAndDispatch"
+      "TestServiceRestartsRecoverRetainedWorkAndDispatch",
+      "TestHumanQuestionRestartAndConcurrentRequests",
+      "TestHumanQuestionReplyAuthorization",
+      "TestHumanQuestionIndependentRework",
+      "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane"
     ],
-    "./internal/release": ["TestReleaseRejectsIncompleteEvidence"],
+    "./internal/release": [
+      "TestMandatoryEvidence"
+    ],
     "./internal/update": [
       "TestStartupRecoveryPersistsCrashLoopAcrossProcesses",
       "TestStartupRecoveryAttemptsOneUpdatePerVersion",

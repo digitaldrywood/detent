@@ -46,11 +46,11 @@ or feature issue.
 **Forbidden:** Create a placeholder approval issue and require its closure to
 resume an existing PR.
 
-**Enforcement boundary:** #2416 owns the missing runtime guard and its same-issue,
-restart, and concurrency regression tests. At this branch's starting commit those
-guards are not implemented. Existing synthetic-prerequisite tests do not enforce
-this rule and are deliberately not registered. Add #2416's actual tests after its
-independent integration. Do not make #2416 wait for this issue.
+**Enforcement:** `TestHumanQuestionRestartAndConcurrentRequests` exercises durable
+same-issue questions, concurrent calls, and lost-response reconciliation.
+`TestHumanQuestionReplyAuthorization` checks reply eligibility. These tests from
+independently merged #2416 are registered in the invariant gate. Natural-language
+answer interpretation remains a judgment boundary.
 
 ## INV-003 — Continue independent work
 
@@ -63,11 +63,10 @@ work, retain accepted changes and PR/rework state, and resume without restarting
 
 **Forbidden:** Restart implementation or discard a retained workspace on recovery.
 
-**Enforcement:** `TestLaneRevocationRetainsWorkspaceForEveryWriter`,
-`TestLaneRevocationRetriesFailedRetentionBeforeReleasingOwnership`, and
+**Enforcement:** `TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane` and
 `TestServiceRestartsRecoverRetainedWorkAndDispatch` exercise retained work.
-Question-specific continuation and the judgment of independence remain #2416 and
-operator review boundaries; these tests alone do not prove them.
+`TestHumanQuestionIndependentRework` exercises continued PR rework without
+approving the pending decision. General judgments of independence require review.
 
 ## INV-004 — Own routine technical decisions
 
@@ -120,7 +119,7 @@ the running instance to that commit.
 running binary's identity from a tag alone.
 
 **Enforcement:** `TestReleaseEvidence`, `TestRunningEvidence`, and
-`TestReleaseRejectsIncompleteEvidence`. The release workflow checks every name in
+`TestMandatoryEvidence`. The release workflow checks every name in
 the mandatory manifest on its exact SHA and fails without success. GoReleaser
 embeds the full commit. Running mode compares `/api/v1/state` evidence with the
 expected version and full commit. Existing signature and rollback tests exercise
@@ -161,8 +160,8 @@ delivery.
 **Forbidden:** Claim exactly-once delivery for an API without that guarantee.
 
 **Enforcement:** Registered retained-work, retry-restart, one-update-per-version,
-and rollback tests cover their named operations. Same-issue comment concurrency
-and uncertain delivery tests belong to #2416. These guards do not prove universal
+and rollback tests cover their named operations. `TestHumanQuestionRestartAndConcurrentRequests` covers same-issue comment
+concurrency and uncertain delivery. These guards do not prove universal
 deduplication of arbitrary agent messages, payments, or other external tools.
 
 ## INV-009 — Respect approval scope and persistence
@@ -179,7 +178,9 @@ their own authority.
 
 **Enforcement:** `TestAttemptMetadataRetainsApprovedPolicy` and
 `TestPolicyMismatchStopsDispatchWithoutAttempt` cover configured policy scope.
-Question-answer approval scope is owned by #2416. Natural-language interpretation
+`TestHumanQuestionReplyAuthorization` covers reply eligibility, while
+`TestHumanQuestionIndependentRework` ensures rework does not approve a question.
+Natural-language interpretation
 and the shared GitHub identity remain explicit boundaries.
 
 ## INV-010 — Control scope

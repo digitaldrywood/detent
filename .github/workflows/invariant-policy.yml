@@ -4,6 +4,9 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
+  merge_group:
+    types: [checks_requested]
+
 permissions:
   contents: read
 
@@ -14,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v6
@@ -22,11 +25,17 @@ jobs:
           go-version: '1.26.6'
           cache: false
       - name: Fetch proposed objects without executing proposed code
+        if: github.event_name == 'pull_request_target'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+      - name: Fetch merge queue objects without executing proposed code
+        if: github.event_name == 'merge_group'
+        env:
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: git fetch --no-tags origin "$HEAD_SHA"
       - name: Apply trusted base policy
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: go run ./tools/invariantcheck -mode protect -base "$BASE_SHA" -head "$HEAD_SHA"
