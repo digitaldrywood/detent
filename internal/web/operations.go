@@ -33,9 +33,22 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 	issues := dailyDigestSnapshotIssues(snapshot)
 	mergeDepths := map[string]int{}
 	seen := map[string]bool{}
+	currentWork := map[string]string{}
+	for _, issue := range issues {
+		if issue.PullRequest != nil {
+			currentWork[issue.ProjectID+"\x00"+issue.Identifier] = issue.PullRequest.HumanQuestionWorkFingerprint
+		}
+	}
+	decisions := make([]operations.Decision, 0, len(report.Decisions))
 	for _, d := range report.Decisions {
+		// Match humanQuestionWaiting: only nonempty current evidence supersedes a question.
+		if fingerprint := currentWork[d.ProjectID+"\x00"+d.Issue]; fingerprint != "" && fingerprint != d.WorkFingerprint {
+			continue
+		}
+		decisions = append(decisions, d)
 		seen[d.ProjectID+"\x00"+d.Issue] = true
 	}
+	report.Decisions = decisions
 	for _, issue := range issues {
 		if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
 			depth := issue.PullRequest.MergeQueueEntry.Depth

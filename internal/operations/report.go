@@ -57,6 +57,9 @@ type Action struct {
 }
 
 type Decision struct {
+	// WorkFingerprint is internal evidence used to exclude superseded questions.
+	WorkFingerprint string `json:"-"`
+
 	ProjectID string `json:"project_id"`
 	Issue     string `json:"issue"`
 	Question  string `json:"question"`

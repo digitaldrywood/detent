@@ -1223,6 +1223,8 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
+	HumanQuestionWorkFingerprint string `json:"human_question_work_fingerprint,omitempty"`
+
 	Number                     int                         `json:"number,omitempty"`
 	URL                        string                      `json:"url,omitempty"`
 	BranchName                 string                      `json:"branch_name,omitempty"`
