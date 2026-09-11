@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1015,36 +1016,54 @@ func TestFileWatcherCancellationStopsRuntime(t *testing.T) {
 	}
 }
 
-func receiveUpdate(t *testing.T, updates <-chan Update) Update {
+// Coordination deadlines detect stuck tests, not watcher latency. Keep the old
+// one-second threshold as a diagnostic checkpoint under concurrent suite load.
+const watcherWaitTimeout = 10 * time.Second
+
+func receiveWatcherSignal[T any](t *testing.T, signal <-chan T, operation string) (T, bool) {
 	t.Helper()
 
-	select {
-	case update, ok := <-updates:
-		if !ok {
-			t.Fatal("updates channel closed")
+	started := time.Now()
+	slow := time.NewTimer(time.Second)
+	defer slow.Stop()
+	deadline := time.NewTimer(watcherWaitTimeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case value, ok := <-signal:
+			if elapsed := time.Since(started); elapsed >= time.Second {
+				t.Logf("%s completed after %s (closed=%t)", operation, elapsed, !ok)
+			}
+			return value, ok
+		case <-slow.C:
+			t.Logf("%s still pending after %s; goroutines:\n%s", operation, time.Since(started), watcherStacks())
+		case <-deadline.C:
+			t.Fatalf("timed out %s after %s; goroutines:\n%s", operation, time.Since(started), watcherStacks())
 		}
-		return update
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for watcher update")
 	}
+}
 
-	return Update{}
+func watcherStacks() string {
+	buffer := make([]byte, 1<<20)
+	return string(buffer[:runtime.Stack(buffer, true)])
+}
+
+func receiveUpdate(t *testing.T, updates <-chan Update) Update {
+	t.Helper()
+	update, ok := receiveWatcherSignal(t, updates, "waiting for workflow update")
+	if !ok {
+		t.Fatal("updates channel closed")
+	}
+	return update
 }
 
 func receiveFileUpdate[T any](t *testing.T, updates <-chan FileUpdate[T]) FileUpdate[T] {
 	t.Helper()
-
-	select {
-	case update, ok := <-updates:
-		if !ok {
-			t.Fatal("updates channel closed")
-		}
-		return update
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for watcher update")
+	update, ok := receiveWatcherSignal(t, updates, "waiting for file update")
+	if !ok {
+		t.Fatal("updates channel closed")
 	}
-
-	return FileUpdate[T]{}
+	return update
 }
 
 func assertNoUpdate(t *testing.T, updates <-chan Update) {
@@ -1154,19 +1173,14 @@ func (r *controlledFileRuntime) sendEvent(t *testing.T, path string) {
 
 	select {
 	case r.events <- fsnotify.Event{Name: path, Op: fsnotify.Write}:
-	case <-time.After(time.Second):
+	case <-time.After(watcherWaitTimeout):
 		t.Fatal("timed out sending file event")
 	}
 }
 
 func (r *controlledFileRuntime) waitForReset(t *testing.T) {
 	t.Helper()
-
-	select {
-	case <-r.timer.resets:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for debounce reset")
-	}
+	receiveWatcherSignal(t, r.timer.resets, "waiting for debounce reset")
 }
 
 func (r *controlledFileRuntime) fireTimer(t *testing.T) {
@@ -1174,7 +1188,7 @@ func (r *controlledFileRuntime) fireTimer(t *testing.T) {
 
 	select {
 	case r.timer.ticks <- time.Now():
-	case <-time.After(time.Second):
+	case <-time.After(watcherWaitTimeout):
 		t.Fatal("timed out firing debounce timer")
 	}
 }
@@ -1188,7 +1202,7 @@ func (r *controlledFileRuntime) fireTicker(t *testing.T, kind fileTickerKind) {
 	}
 	select {
 	case ticker.ticks <- time.Now():
-	case <-time.After(time.Second):
+	case <-time.After(watcherWaitTimeout):
 		t.Fatal("timed out firing file ticker")
 	}
 }
@@ -1196,7 +1210,7 @@ func (r *controlledFileRuntime) fireTicker(t *testing.T, kind fileTickerKind) {
 func (r *controlledFileRuntime) waitForAdd(t *testing.T, want string) {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	deadline := time.After(watcherWaitTimeout)
 	for {
 		select {
 		case got := <-r.added:
@@ -1214,7 +1228,7 @@ func (r *controlledFileRuntime) waitForClosed(t *testing.T) {
 
 	select {
 	case <-r.closed:
-	case <-time.After(time.Second):
+	case <-time.After(watcherWaitTimeout):
 		t.Fatal("timed out waiting for file watcher close")
 	}
 }
@@ -1248,7 +1262,7 @@ func (t *controlledFileTicker) waitForStopped(testingT *testing.T) {
 
 	select {
 	case <-t.stopped:
-	case <-time.After(time.Second):
+	case <-time.After(watcherWaitTimeout):
 		testingT.Fatal("timed out waiting for file ticker stop")
 	}
 }
@@ -1261,7 +1275,7 @@ func waitForFileUpdatesClosed[T any](t *testing.T, updates <-chan FileUpdate[T])
 		if ok {
 			t.Fatal("updates channel remained open")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(watcherWaitTimeout):
 		t.Fatal("timed out waiting for updates channel close")
 	}
 }
