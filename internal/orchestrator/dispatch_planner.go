@@ -148,6 +148,14 @@ func (p dispatchPlanner) plan(
 					continue
 				}
 			}
+			if hooks.hydrate != nil {
+				var hydrated bool
+				issue, hydrated = hooks.hydrate(issue)
+				if !hydrated {
+					logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, Attempt: retry.Attempt, WorkerHost: retry.WorkerHost, Retry: true, SkipReason: dispatchSkipHydrationFailed})
+					continue
+				}
+			}
 			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
 				logDecision(dispatchPlanDecision{

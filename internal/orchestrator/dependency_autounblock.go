@@ -969,6 +969,9 @@ func dependencyBlockerReady(blocker dependencyBlocker, cfg DependencyAutoUnblock
 		}
 		return false
 	}
+	if blocker.Ref.TrackerState == connector.BlockedRefTrackerStateClosed {
+		return true
+	}
 	if strings.TrimSpace(blocker.Ref.State) == "" {
 		return false
 	}

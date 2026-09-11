@@ -4209,3 +4209,72 @@ func TestSampledGateRefusalRemainsDurableAfterSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		closed      bool
+		missing     bool
+		human       bool
+		retry       bool
+		multiple    bool
+		wantRunning int
+	}{
+		{name: "closed Backlog blocker", closed: true, wantRunning: 2},
+		{name: "open Backlog blocker"},
+		{name: "closed blocker due retry", closed: true, retry: true, wantRunning: 2},
+		{name: "multiple closed blockers", closed: true, multiple: true, wantRunning: 2},
+		{name: "missing blocker", missing: true},
+		{name: "closed human blocker without evidence", closed: true, human: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			blocker := connector.Issue{ID: "blocker", Identifier: "owner/repo#10", State: "Backlog", Closed: tt.closed}
+			candidates := []connector.Issue{dispatchTestIssue("one", "Todo"), dispatchTestIssue("two", "Todo")}
+			for i := range candidates {
+				candidates[i].Fields = map[string]string{"Status": "Todo"}
+				candidates[i].BlockedBy = []connector.BlockedRef{{Identifier: blocker.Identifier, State: "Backlog"}}
+			}
+			tracker := &dependencyAutoUnblockConnector{hydratedIssues: candidates, blockers: []connector.Issue{blocker}}
+			if tt.missing {
+				tracker.blockers = nil
+			}
+			if tt.human {
+				tracker.blockers[0].Labels = []string{"human-owned"}
+			}
+			if tt.multiple {
+				second := blocker
+				second.ID, second.Identifier = "second", "owner/repo#11"
+				tracker.blockers = append(tracker.blockers, second)
+				for i := range candidates {
+					candidates[i].BlockedBy = append(candidates[i].BlockedBy, connector.BlockedRef{Identifier: second.Identifier, State: "Backlog"})
+				}
+			}
+			runner := newWorkerHostRunner()
+			orch := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion)}
+			state := newState(cfg)
+			if tt.retry {
+				for _, candidate := range candidates {
+					state.Retry[candidate.ID] = Retry{Issue: candidate, Attempt: 3, DueAt: time.Now().Add(-time.Minute)}
+				}
+			}
+			orch.dispatchPlanner().trackBlockedCandidates(&state, candidates, time.Now())
+			orch.dispatchReadyIssues(t.Context(), &state, candidates, time.Now())
+			if len(state.Running) != tt.wantRunning {
+				t.Fatalf("running = %d, want %d", len(state.Running), tt.wantRunning)
+			}
+			if tt.retry {
+				for _, running := range state.Running {
+					if running.Attempt != 3 {
+						t.Fatalf("retry attempt = %d, want 3", running.Attempt)
+					}
+				}
+			}
+			if tracker.identifierBatches != 1 {
+				t.Fatalf("blocker batches = %d, want one shared batch", tracker.identifierBatches)
+			}
+		})
+	}
+}
