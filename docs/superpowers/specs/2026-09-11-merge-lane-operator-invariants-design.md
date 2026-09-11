@@ -8,12 +8,12 @@ On the dogfood repository the last 40 merged pull requests took a median 2.7 hou
 
 ## Decisions
 
-1. Review happens inside the worker session before the pull request opens. The worker runs the configured review (Codex review through `gate.validator`), resolves findings, runs the gate, then opens a non-draft PR once. GitHub review bots may still comment; their threads do not gate merging.
-2. Pull-request CI runs once per PR by default, without labels. The worker opens the PR as a draft while iterating and marks it ready when done; the CI workflow skips draft PRs. Label-gated CI (`gate.ci_trigger_label`, already supported) remains an opt-in for projects that want zero PR runs (parable uses it today).
+1. Review happens inside the worker session before the pull request is marked ready. The worker opens the PR as a draft on its first push, iterates on the draft (no CI runs on drafts), runs a fresh-context review of its own diff, resolves findings, runs the gate, and then marks the PR ready exactly once. Detent's `gate.validator` review runs before auto-promotion as the backstop. GitHub review bots may still comment; bot threads do not gate merging in Detent (human threads and threads Detent classifies as actionable do).
+2. Pull-request CI runs once per PR by default, without labels: the CI workflow subscribes to `pull_request` activity types `opened, synchronize, reopened, ready_for_review` and its jobs skip draft PRs, so the `ready_for_review` event produces the one run. Label-gated CI (`gate.ci_trigger_label`, already supported) remains an opt-in for projects that want zero PR runs (parable uses it today).
 3. The single merge lane per project is the GitHub merge queue where the repository has one, with batching (merge groups of up to 5 with a short collection wait), and Detent's serialized merge worker elsewhere. Detent detects which applies; it never changes repository settings. Doctor recommends a queue or batching from measured merge rate and CI duration.
 4. Pull-request CI is the fast set; the merge group runs the full suite once per batch; portability, installer, and release-snapshot jobs run post-merge on main (already in place for detent).
 5. The Verify job is sharded and cached so a single run is well under the 22 minutes measured today.
-6. Operations move into Detent proper: an operations page and API (stats, actions taken with evidence, decisions only a human can make) and an operator routine that performs an allowlisted set of remediations when the project enables them. The Dropbox status page becomes an optional HTML export of that page; `monitor.py` and `repair.py` retire.
+6. Operations move into Detent proper: an operations page and API (stats, actions taken with evidence, decisions only a human can make) and one operator routine that consolidates the existing recovery loops (blocked-cause recovery, recorded-blocker recovery, dependency auto-unblock, stale-Merging reconciliation) and the external `repair.py` into a single allowlisted routine. It replaces those mechanisms; it does not add to them. The Dropbox status page becomes an optional HTML export of that page; `monitor.py` and `repair.py` retire.
 7. Invariants live in `docs/invariants.md`. Each has an ID, a doctor check that fails fleet health when the running system violates it, and a repository test that fails CI when code or configuration violates it.
 
 ## Per-project choice
@@ -30,7 +30,7 @@ Everything above is configuration or a workflow convention chosen by the project
 
 ### CI workflow (per repository)
 
-- `pull_request` jobs carry `if: github.event.pull_request.draft == false` (fast set only).
+- `pull_request` subscribes to `types: [opened, synchronize, reopened, ready_for_review]` and its jobs carry `if: github.event.pull_request.draft == false` (fast set only), so a draft runs nothing and marking ready runs once.
 - `merge_group` runs the same fast set plus the full suite.
 - `push` to main runs portability, installer, and snapshot jobs.
 - Verify is split into shards (race suite partitioned across four runners with the Go build cache keyed on `go.sum`); a single aggregate check name stays required so branch rules do not change per shard.
@@ -50,9 +50,9 @@ Everything above is configuration or a workflow convention chosen by the project
 
 ### Operator routine (Detent)
 
-- A scheduled routine (default every ten minutes when enabled) with an allowlist in project config: `operator.actions: [return_retired_parks, clear_closed_dependencies, restore_stuck_merging, merge_when_wedged, file_deduped_issue, apply_doctor_config_fix]`. Disabled by default; each action kind is independently enabled.
-- Every action is a lane-ledger write with reason `operator_routine:<kind>` and appears on the operations page. Actions never touch GitHub repository settings and never pause or unpause projects.
-- `merge_when_wedged` merges a PR only when: gate passed, current-head CI green, no unresolved review threads, the issue has been in Merging for longer than the configured wedge threshold, and neither the queue nor the merge worker has acted in that window. It uses the repository's allowed merge method.
+- One routine on the existing ten-minute schedule slot that absorbs the current separate loops: blocked-cause recovery, recorded-blocker recovery, dependency auto-unblock, and stale-Merging reconciliation move into it as action kinds, and their separate tick paths are deleted in the same change. Project config `operator.actions` allowlists: `return_retired_parks`, `clear_closed_dependencies`, `restore_stuck_merging`, `merge_when_wedged`, `file_deduped_issue`, `apply_doctor_config_fix`. The first three default on (they are today's loops, consolidated); the rest default off.
+- Every action is a lane-ledger write using the existing reason vocabulary (the reason the absorbed loop already used) with the ledger origin set to the routine, so no new reason codes are introduced. Actions appear on the operations page. Actions never touch GitHub repository settings and never pause or unpause projects.
+- `merge_when_wedged` merges a PR only when: gate passed, current-head CI green, no unresolved thread authored by a human or classified actionable by Detent (bot threads do not gate), the issue has been in Merging for longer than the configured wedge threshold, and neither the queue nor the merge worker has acted in that window. It uses the repository's allowed merge method.
 
 ### Invariants (docs/invariants.md)
 
@@ -60,7 +60,7 @@ Initial set, one line each with an ID; the full text is in the document:
 
 - INV-1 The orchestrator is the only writer of tracker lane state.
 - INV-2 Failures before an agent's first turn attach to the instance, never to the issue.
-- INV-3 No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop without an invariant change.
+- INV-3 No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop, unconditionally. A change to any of these must remove or consolidate an existing one; the remedy for a misbehaving mechanism is removal or consolidation, never a guard.
 - INV-4 Merges go through the repository's merge queue when one exists.
 - INV-5 Pull-request CI runs at most once per ready head by default.
 - INV-6 Workers run with an isolated Codex home; user-level instructions never reach a worker.
