@@ -1700,12 +1700,13 @@ type dependencyAutoUnblockAudit struct {
 }
 
 type dependencyAutoUnblockConnector struct {
-	stateIssues     []connector.Issue
-	hydratedIssues  []connector.Issue
-	blockers        []connector.Issue
-	updates         []dependencyAutoUnblockUpdate
-	comments        []dependencyAutoUnblockAudit
-	identifierCalls []string
+	stateIssues       []connector.Issue
+	hydratedIssues    []connector.Issue
+	blockers          []connector.Issue
+	updates           []dependencyAutoUnblockUpdate
+	comments          []dependencyAutoUnblockAudit
+	identifierCalls   []string
+	identifierBatches int
 }
 
 type dependencyAutoUnblockRejectOnceConnector struct {
@@ -1738,6 +1739,7 @@ func (c *dependencyAutoUnblockConnector) FetchIssueStatesByIDs(context.Context, 
 }
 
 func (c *dependencyAutoUnblockConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
+	c.identifierBatches++
 	wanted := make(map[string]struct{}, len(identifiers))
 	for _, identifier := range identifiers {
 		normalized := strings.ToLower(strings.TrimSpace(identifier))

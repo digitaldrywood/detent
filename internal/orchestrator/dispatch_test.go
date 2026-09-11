@@ -4217,10 +4217,14 @@ func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
 		closed      bool
 		missing     bool
 		human       bool
+		retry       bool
+		multiple    bool
 		wantRunning int
 	}{
 		{name: "closed Backlog blocker", closed: true, wantRunning: 2},
 		{name: "open Backlog blocker"},
+		{name: "closed blocker due retry", closed: true, retry: true, wantRunning: 2},
+		{name: "multiple closed blockers", closed: true, multiple: true, wantRunning: 2},
 		{name: "missing blocker", missing: true},
 		{name: "closed human blocker without evidence", closed: true, human: true},
 	} {
@@ -4240,16 +4244,36 @@ func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
 			if tt.human {
 				tracker.blockers[0].Labels = []string{"human-owned"}
 			}
+			if tt.multiple {
+				second := blocker
+				second.ID, second.Identifier = "second", "owner/repo#11"
+				tracker.blockers = append(tracker.blockers, second)
+				for i := range candidates {
+					candidates[i].BlockedBy = append(candidates[i].BlockedBy, connector.BlockedRef{Identifier: second.Identifier, State: "Backlog"})
+				}
+			}
 			runner := newWorkerHostRunner()
 			orch := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion)}
 			state := newState(cfg)
+			if tt.retry {
+				for _, candidate := range candidates {
+					state.Retry[candidate.ID] = Retry{Issue: candidate, Attempt: 3, DueAt: time.Now().Add(-time.Minute)}
+				}
+			}
 			orch.dispatchPlanner().trackBlockedCandidates(&state, candidates, time.Now())
 			orch.dispatchReadyIssues(t.Context(), &state, candidates, time.Now())
 			if len(state.Running) != tt.wantRunning {
 				t.Fatalf("running = %d, want %d", len(state.Running), tt.wantRunning)
 			}
-			if len(tracker.identifierCalls) != 1 {
-				t.Fatalf("blocker reads = %v, want one shared read", tracker.identifierCalls)
+			if tt.retry {
+				for _, running := range state.Running {
+					if running.Attempt != 3 {
+						t.Fatalf("retry attempt = %d, want 3", running.Attempt)
+					}
+				}
+			}
+			if tracker.identifierBatches != 1 {
+				t.Fatalf("blocker batches = %d, want one shared batch", tracker.identifierBatches)
 			}
 		})
 	}

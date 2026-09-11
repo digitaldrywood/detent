@@ -294,20 +294,25 @@ func (o *Orchestrator) hydrateDispatchDependencies(ctx context.Context, issue co
 		return issue
 	}
 	issue = cloneIssue(issue)
-	for i, ref := range issue.BlockedBy {
+	pending := connector.Issue{ID: issue.ID, Identifier: issue.Identifier}
+	for _, ref := range issue.BlockedBy {
 		if !todoBlockedByNonTerminal(connector.Issue{State: issue.State, BlockedBy: []connector.BlockedRef{ref}}, o.cfg.TerminalStates) {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
-		blocker, cached := cache[key]
-		if !cached {
-			blockers := o.resolveDependencyBlockers(ctx, connector.Issue{ID: issue.ID, Identifier: issue.Identifier, BlockedBy: []connector.BlockedRef{ref}})
-			if len(blockers) > 0 {
-				blocker = blockers[0]
-			}
-			cache[key] = blocker
+		if _, cached := cache[key]; !cached {
+			pending.BlockedBy = append(pending.BlockedBy, ref)
+			cache[key] = dependencyBlocker{Ref: ref}
 		}
-		if blocker.Resolved {
+	}
+	if len(pending.BlockedBy) > 0 {
+		for _, blocker := range o.resolveDependencyBlockers(ctx, pending) {
+			cache[dependencyAutoUnblockBlockerKey(blocker)] = blocker
+		}
+	}
+	for i, ref := range issue.BlockedBy {
+		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
+		if blocker := cache[key]; blocker.Resolved {
 			resolved := blocker.Ref
 			resolved.Source = ref.Source
 			issue.BlockedBy[i] = resolved
