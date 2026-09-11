@@ -526,3 +526,40 @@ func TestReapWorkerProcessesPreservesArtifactsOnFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
+	t.Parallel()
+	process := store.WorkerProcess{SessionID: 7, WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 4242, GroupID: 4242, StartedAt: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}}
+	for _, tt := range []struct {
+		name        string
+		reapErr     error
+		cleanupErr  error
+		wantCleanup bool
+	}{
+		{"cleanup timeout after termination", nil, context.DeadlineExceeded, true},
+		{"termination failure", errors.New("remained alive after SIGKILL"), nil, false},
+		{"termination failure beside cleanup failure", errors.New("operation not permitted"), context.DeadlineExceeded, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{process}}
+			reap := func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+				if tt.reapErr != nil {
+					return "", tt.reapErr
+				}
+				return procgroup.TerminationOutcomeAlreadyExited, nil
+			}
+			err := reapWorkerProcessesWithCleanup(t.Context(), processStore, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Millisecond, time.Now, reap, func(store.WorkerProcess) error { return tt.cleanupErr })
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			var cleanupOnly *workerArtifactCleanupError
+			if got := errors.As(err, &cleanupOnly); got != tt.wantCleanup {
+				t.Fatalf("cleanup-only = %t (%v), want %t", got, err, tt.wantCleanup)
+			}
+			if tt.reapErr == nil && tt.cleanupErr != nil && !errors.Is(err, tt.cleanupErr) {
+				t.Fatalf("error %v does not wrap %v", err, tt.cleanupErr)
+			}
+		})
+	}
+}
