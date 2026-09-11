@@ -26,25 +26,25 @@
 
 ## Issue effort selection
 
-Use Codex Astra (`gpt-6-astra`) at low effort by default for features, fixes,
-tests, reviews, and routine implementation, including cross-component work.
+The default is Codex Sol (`gpt-5.6-sol`) at `high` effort for all work: features,
+fixes, tests, reviews, and routine implementation, including cross-component work.
 
-Every issue must include an explicit override, with model unset:
+Every issue must include an explicit `detent-agent` block, with `model` unset:
 
 ```detent-agent
 schema: 1
-effort: low
+effort: high
 ```
 
-- `low` — the default for all work without a specific documented reason to escalate.
-- `medium` — an exception for a concrete reasoning difficulty or evidence that low was insufficient; explain the reason in the issue.
-- `high` — rare, significant research or architecture work with a written justification.
+- `high` — the default; use it unless the issue states a documented reason not to.
+- `low` — an exception that requires a written reason in the issue, and only for
+  trivial mechanical edits.
+- `medium` — an exception that requires a written reason in the issue.
 - `xhigh` and `max` — operator-designated only; never assign automatically.
 
-Concurrency, recovery, routing, multiple files, or a new endpoint alone do not
-justify higher effort. Preserve intentional operator exceptions. Configured
-complexity levels default to low; verify any approved exception against the
-runtime effort ceiling rather than raising broad defaults.
+Concurrency, recovery, routing, multiple files, or a new endpoint alone never
+justify changing the effort. Preserve intentional operator exceptions and leave
+`model` unset so the issue inherits the fleet-standard model.
 
 ## Mechanism moratorium
 
