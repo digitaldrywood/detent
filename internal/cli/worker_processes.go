@@ -68,6 +68,7 @@ func reapWorkerProcessesWithCleanup(
 		return err
 	}
 	var result error
+	terminationFailed := false
 	for _, process := range processes {
 		identity := procgroup.Identity{
 			PID:       process.PID,
@@ -90,6 +91,7 @@ func reapWorkerProcessesWithCleanup(
 			attrs = append(attrs, "error", reapErr)
 			logger.Info("worker process lifecycle decision", attrs...)
 			result = errors.Join(result, reapErr)
+			terminationFailed = true
 			continue
 		}
 		if outcome != procgroup.TerminationOutcomeStaleIdentity {
@@ -107,10 +109,25 @@ func reapWorkerProcessesWithCleanup(
 			Reason:   strings.TrimSpace(reason),
 		}); err != nil {
 			result = errors.Join(result, err)
+			terminationFailed = true
 		}
+	}
+	if result != nil && !terminationFailed {
+		return &workerArtifactCleanupError{err: result}
 	}
 	return result
 }
+
+// workerArtifactCleanupError reports that every prior worker was confirmed
+// terminated but at least one workspace artifact cleanup failed; the session
+// rows stay unreaped so cleanup is retried on the next start.
+type workerArtifactCleanupError struct {
+	err error
+}
+
+func (e *workerArtifactCleanupError) Error() string { return e.err.Error() }
+
+func (e *workerArtifactCleanupError) Unwrap() error { return e.err }
 
 func retryWorkerProcessArtifactCleanup(ctx context.Context, process store.WorkerProcess, logger *slog.Logger, cleanup func(store.WorkerProcess) error) error {
 	const maxAttempts = 5

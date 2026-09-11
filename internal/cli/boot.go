@@ -263,10 +263,14 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, nil, "component", "runtime_store")
 		}
 	}()
-	// Prior-instance cleanup is best effort: a workspace scan that times out
-	// on a large tree must not keep this instance from serving.
 	if err := reapWorkerProcesses(runCtx, runtimeStore, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
-		logger.Warn("reap worker processes from prior instance failed; continuing startup", "error", err)
+		// Prior workers are gone; a workspace artifact scan that cannot finish
+		// on a large tree must not keep this instance from serving.
+		var cleanupOnly *workerArtifactCleanupError
+		if !errors.As(err, &cleanupOnly) {
+			return fmt.Errorf("reap worker processes from prior instance: %w", err)
+		}
+		logger.Warn("prior-instance worker artifact cleanup failed; continuing startup", "error", err)
 	}
 	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
 		if err := demofixtures.SeedUsageEvents(runCtx, runtimeStore); err != nil {
