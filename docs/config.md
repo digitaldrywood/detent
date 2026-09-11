@@ -1160,6 +1160,9 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `observability.staleness.webhook.timeout_ms` | `integer` | `5000` | No | None |
 | `observability.staleness.webhook.url` | `string` | `none` | No | must be an absolute http or https URL |
 | `observability.stranded_active_threshold_seconds` | `integer` | `600` | No | must be greater than 0 |
+| `operator` | `object` | `see child fields` | No | None |
+| `operator.actions` | `list<string>` | `["return_retired_parks","clear_closed_dependencies","restore_stuck_merging"]` | No | must contain only return_retired_parks, clear_closed_dependencies, restore_stuck_merging, merge_when_wedged |
+| `operator.merge_wedge_seconds` | `integer` | `7200` | No | must be greater than 0 |
 | `plan` | `object` | `see child fields` | No | agents.backends.options.permission_mode must not be plan for unattended workers |
 | `plan.approval_label` | `string` | `"plan-approved"` | No | None |
 | `plan.enabled` | `boolean` | `false` | No | None |

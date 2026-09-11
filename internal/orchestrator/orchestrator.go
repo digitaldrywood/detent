@@ -116,6 +116,7 @@ type Config struct {
 	StatusLabelPrefix             string
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	BlockedRecovery               BlockedRecoveryConfig
+	Operator                      OperatorConfig
 	BlockerAutoPromote            BlockerAutoPromoteConfig
 	AdmissionTargetState          string
 	ActiveStates                  []string
@@ -273,6 +274,8 @@ type Orchestrator struct {
 	laneWriteMu             sync.Mutex
 	laneWrites              map[string]coordination.LaneWrite
 	laneWriteResults        map[string]string
+	laneWriteOrigin         string
+	laneWriteAction         string
 	laneObservations        map[string]store.LaneObservation
 	efficiency              efficiency.Recorder
 	lifecycleExporter       efficiency.LifecycleExporter

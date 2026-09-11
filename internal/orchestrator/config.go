@@ -103,6 +103,10 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			ReasonCodes:     append([]string(nil), cfg.Tracker.BlockedRecovery.ReasonCodes...),
 			BreakerCooldown: durationFromSeconds(cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds),
 		}),
+		Operator: OperatorConfig{
+			Actions:       append([]string(nil), cfg.Operator.Actions...),
+			MergeWedgeAge: durationFromSeconds(cfg.Operator.MergeWedgeSeconds),
+		},
 		BlockerAutoPromote: BlockerAutoPromoteConfig{
 			Enabled:       cfg.Tracker.BlockerAutoPromote.Enabled,
 			SourceStates:  append([]string(nil), cfg.Tracker.BlockerAutoPromote.SourceStates...),
