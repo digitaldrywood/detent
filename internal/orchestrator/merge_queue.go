@@ -70,7 +70,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		if repositoryKnown && now.Sub(repository.CheckedAt) >= nativeMergeQueueRepositoryExpiry {
 			repositoryKnown = false
 		}
-		_, previouslyQueued := state.nativeMergeQueueEntries[issueID]
+		previous, previouslyQueued := state.nativeMergeQueueEntries[issueID]
 		if repositoryKnown && !repository.Available && !previouslyQueued && candidate.PullRequest.MergeQueueEntry == nil {
 			continue
 		}
@@ -99,7 +99,13 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.logNativeMergeQueueDelegated(candidate, *status.Entry, "observed")
 			continue
 		}
-		if status.RemovalObserved && (strings.TrimSpace(status.RemovedHeadSHA) == "" || strings.TrimSpace(status.RemovedHeadSHA) == strings.TrimSpace(status.HeadSHA)) {
+		removalApplies := status.RemovalObserved && (strings.TrimSpace(status.RemovedHeadSHA) == "" || strings.TrimSpace(status.RemovedHeadSHA) == strings.TrimSpace(status.HeadSHA))
+		if previouslyQueued && previous.Entry.EnqueuedAt != nil {
+			// beforeCommit can identify a merge-group commit rather than the PR head.
+			// A known enqueue time identifies which queue attempt the removal ended.
+			removalApplies = status.RemovalObserved && status.RemovedAt != nil && status.RemovedAt.After(*previous.Entry.EnqueuedAt)
+		}
+		if removalApplies {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			reason := strings.TrimSpace(status.RemovalReason)
 			if reason == "" {
@@ -218,6 +224,9 @@ func pruneNativeMergeQueueEntries(state *State, issues []connector.Issue) {
 }
 
 func cacheNativeMergeQueueEntry(state *State, issueID string, entry connector.PullRequestMergeQueueEntry, now time.Time) {
+	if entry.EnqueuedAt == nil {
+		entry.EnqueuedAt = &now
+	}
 	state.nativeMergeQueueEntries[issueID] = nativeMergeQueueEntry{
 		Entry:     clonePullRequestMergeQueueEntry(entry),
 		CheckedAt: now,

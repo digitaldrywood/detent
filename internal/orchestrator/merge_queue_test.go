@@ -499,6 +499,7 @@ type nativeMergeQueueConnector struct {
 	admissionLimit *int
 	removedHeads   map[string]string
 	removalReason  string
+	removedAt      *time.Time
 	dequeueErr     error
 	statusErr      error
 	inspections    int
@@ -530,6 +531,7 @@ func (c *nativeMergeQueueConnector) InspectPullRequestMergeQueue(_ context.Conte
 	status := connector.PullRequestMergeQueueStatus{Available: available, AdmissionLimit: limit, Depth: len(c.enqueued)}
 	status.RemovedHeadSHA, status.RemovalObserved = c.removedHeads[issue.ID]
 	status.RemovalReason = c.removalReason
+	status.RemovedAt = c.removedAt
 	if issue.PullRequest != nil {
 		status.HeadSHA = issue.PullRequest.HeadSHA
 	}
@@ -963,6 +965,68 @@ func TestNativeMergeQueueUnadmittedFailureReconciles(t *testing.T) {
 			}
 			if len(tracker.enqueued) != 0 || len(tracker.merges) != 0 || len(tracker.dequeued) != 0 {
 				t.Fatal("unexpected queue or merge mutation")
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueRemovalOrdering(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 11, 3, 50, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name         string
+		offset       time.Duration
+		missingTime  bool
+		sameHead     bool
+		localEnqueue bool
+		wantRework   bool
+	}{
+		{name: "newer removal with non-head beforeCommit", offset: time.Minute, wantRework: true},
+		{name: "older removal with non-head beforeCommit", offset: -time.Minute},
+		{name: "older removal even with matching head", offset: -time.Minute, sameHead: true},
+		{name: "equal timestamp", sameHead: true},
+		{name: "missing removal timestamp", missingTime: true, sameHead: true},
+		{name: "local enqueue timestamp", offset: time.Minute, localEnqueue: true, wantRework: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := nativeMergeQueueTestIssue(2474, "success")
+			removedHead := "merge-group-before-commit"
+			if tt.sameHead {
+				removedHead = issue.PullRequest.HeadSHA
+			}
+			tracker := &nativeMergeQueueConnector{
+				removedHeads:                  map[string]string{issue.ID: removedHead},
+				removalReason:                 "failed_checks",
+				removedAt:                     timePointer(now.Add(tt.offset)),
+				autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}},
+			}
+			if tt.missingTime {
+				tracker.removedAt = nil
+			}
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}})
+			recorder := &workflowMetricsRecorderSpy{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: recorder}
+			state := newState(cfg)
+			entry := connector.PullRequestMergeQueueEntry{ID: "cached-entry", State: "QUEUED"}
+			if !tt.localEnqueue {
+				entry.EnqueuedAt = timePointer(now)
+			}
+			cacheNativeMergeQueueEntry(&state, issue.ID, entry, now)
+			got := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(3*time.Minute))
+			if len(tracker.enqueued) != 0 {
+				t.Fatalf("unexpected enqueue: %v", tracker.enqueued)
+			}
+			_, cached := state.nativeMergeQueueEntries[issue.ID]
+			if tt.wantRework {
+				if got[0].State != "Rework" || cached || got[0].PullRequest.MergeQueueEntry != nil {
+					t.Fatalf("removal not applied: issue=%+v cached=%v", got[0], cached)
+				}
+				if len(recorder.events) != 2 || recorder.events[1].Reason != "failed_checks" {
+					t.Fatalf("provider reason missing: %+v", recorder.events)
+				}
+			} else if got[0].State != "Merging" || !cached || got[0].PullRequest.MergeQueueEntry == nil || got[0].PullRequest.MergeQueueEntry.ID != entry.ID {
+				t.Fatalf("cached entry not retained: issue=%+v cached=%v", got[0], cached)
 			}
 		})
 	}

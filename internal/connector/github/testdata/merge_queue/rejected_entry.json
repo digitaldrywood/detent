@@ -14,14 +14,15 @@
           }
         },
         "mergeQueueEntry": null,
-        "headRefOid": "removed-head",
+        "headRefOid": "b339d71",
         "timelineItems": {
           "nodes": [
             {
               "beforeCommit": {
                 "oid": "removed-head"
               },
-              "reason": "Required check build failed"
+              "reason": "failed_checks",
+              "createdAt": "2026-09-11T03:50:00Z"
             }
           ]
         }
