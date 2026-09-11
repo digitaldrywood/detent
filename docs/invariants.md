@@ -91,7 +91,7 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — CI once per ready head
 
-**Statement:** Pull-request CI runs at most once per ready head by default.
+**Statement:** Real CI never runs on pull_request events. Pull requests carry only instant placeholder checks so the merge queue can accept them; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
 
 **Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
 Verify job; draft iteration avoids paying this cost before local review ends.

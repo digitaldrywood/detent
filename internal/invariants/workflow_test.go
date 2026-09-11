@@ -12,7 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const draftCondition = "github.event_name != 'pull_request' || github.event.pull_request.draft == false"
+const nonPRCondition = "github.event_name != 'pull_request'"
+const placeholderCondition = "github.event_name == 'pull_request'"
 const integrationCondition = "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
 
 func checkWorkflow(data []byte) error {
@@ -42,11 +43,11 @@ func checkWorkflow(data []byte) error {
 		}
 	}
 	for _, event := range events {
-		if !slices.Contains([]string{"opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"}, event) {
+		if !slices.Contains([]string{"opened", "synchronize", "reopened", "ready_for_review"}, event) {
 			return fmt.Errorf("INV-5 extra PR activity %s", event)
 		}
 	}
-	for _, required := range []string{"invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
+	for _, required := range []string{"pr-required-placeholders", "invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
 		if _, ok := workflow.Jobs[required]; !ok {
 			return fmt.Errorf("required CI job %s missing", required)
 		}
@@ -63,12 +64,16 @@ func checkWorkflow(data []byte) error {
 				return errors.New("INV-5 integration failure reporting must exclude PRs")
 			}
 		case "verify":
-			if condition != "always() && ("+draftCondition+")" {
-				return errors.New("INV-5 Verify must aggregate results while skipping drafts")
+			if condition != "always() && "+nonPRCondition {
+				return errors.New("INV-5 Verify must aggregate results and never run on pull_request events")
+			}
+		case "pr-required-placeholders":
+			if condition != placeholderCondition {
+				return errors.New("INV-5 placeholder checks must run only on pull_request events")
 			}
 		default:
-			if condition != draftCondition {
-				return fmt.Errorf("INV-5 %s must skip draft PRs", name)
+			if condition != nonPRCondition {
+				return fmt.Errorf("INV-5 %s must not run on pull_request events; real CI runs in the merge queue and on main", name)
 			}
 		}
 	}
@@ -91,11 +96,12 @@ func TestWorkflowViolations(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ name, old, replacement string }{
-		{"draft job", "if: " + draftCondition, "if: true"},
-		{"draft bypass", "if: " + draftCondition, "if: " + draftCondition + " || true"},
+		{"real job on PR", "if: " + nonPRCondition, "if: true"},
+		{"pr bypass", "if: " + nonPRCondition, "if: " + nonPRCondition + " || true"},
+		{"placeholder everywhere", "if: " + placeholderCondition, "if: true"},
 		{"missing merge group", "merge_group:", "unused_event:"},
 		{"label reruns", "types: [opened,", "types: [labeled, opened,"},
-		{"integration on PR", "if: " + integrationCondition, "if: " + draftCondition},
+		{"integration on PR", "if: " + integrationCondition, "if: " + nonPRCondition},
 		{"missing invariant job", "  invariants:", "  renamed:"},
 		{"malformed", "name: CI", "name: ["},
 	} {
