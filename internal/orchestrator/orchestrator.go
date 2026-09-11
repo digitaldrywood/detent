@@ -296,7 +296,8 @@ type Orchestrator struct {
 	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
 	validatorMu             sync.Mutex
 	validatorWG             sync.WaitGroup
-	validatorRuns           map[string]struct{}
+	validatorRuns           map[string]Running
+	validatorTokenTotals    TokenTotals
 	validatorResults        map[string]validatorStageResult
 	validatorFailures       map[string]validatorStageFailure
 	validatorMemo           store.ValidatorMemoStore
@@ -685,7 +686,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		readMemoryPressure:      readMemoryPressure,
 		readIOPressure:          readIOPressure,
 		readCPUPressure:         readCPUPressure,
-		validatorRuns:           map[string]struct{}{},
+		validatorRuns:           map[string]Running{},
 		validatorResults:        map[string]validatorStageResult{},
 		validatorFailures:       map[string]validatorStageFailure{},
 		validatorMemo:           validatorMemo,
@@ -978,7 +979,7 @@ func (o *Orchestrator) signalSnapshotAvailable() {
 }
 
 func (o *Orchestrator) startCompletion(state *State) {
-	cloned := o.observableState(state.clone())
+	cloned := o.observableDispatchState(state.clone())
 	for id, running := range cloned.Running {
 		running.progress = nil
 		cloned.Running[id] = running
@@ -1186,7 +1187,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 
 func (o *Orchestrator) publishedState() State {
 	if state := o.completionState.Load(); state != nil {
-		return state.clone()
+		return o.observableValidatorState(state.clone())
 	}
 	state := o.latestState.Load().clone()
 	if runtime := o.latestRuntimeState.Load(); runtime != nil {
@@ -1198,6 +1199,25 @@ func (o *Orchestrator) publishedState() State {
 }
 
 func (o *Orchestrator) observableState(state State) State {
+	return o.observableValidatorState(o.observableDispatchState(state))
+}
+
+func (o *Orchestrator) observableValidatorState(state State) State {
+	// Validator stages already own their lifecycle in validatorRuns. Include their
+	// progress in observations without adding them to the dispatch state machine.
+	o.validatorMu.Lock()
+	state.TokenTotals = addTokenTotals(state.TokenTotals, o.validatorTokenTotals)
+	for key, running := range cloneRunning(o.validatorRuns) {
+		if state.Running == nil {
+			state.Running = make(map[string]Running)
+		}
+		state.Running["validator:"+key] = running
+	}
+	o.validatorMu.Unlock()
+	return state
+}
+
+func (o *Orchestrator) observableDispatchState(state State) State {
 	pool := o.dispatchPoolSnapshot()
 	state.PoolName = pool.Name
 	state.PoolCapacity = pool.Capacity

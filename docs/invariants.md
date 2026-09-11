@@ -69,6 +69,12 @@ operator reasons, and existing decision helpers remain review boundaries.
 Review must verify removal or consolidation; renaming a mechanism or updating
 a snapshot is not evidence of compliance.
 
+Validator launch accounting uses the existing validator-run registry and shared
+worker progress publisher. Validators appear alongside implementation workers in
+runtime snapshots, including during startup and completion, and leave the registry
+on exit. This consolidates observability with existing lifecycle ownership; it adds
+no recovery path or orphan-suppression guard (#2505).
+
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.
