@@ -2353,6 +2353,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		completedAt := o.clockNow().UTC()
 		o.validatorMu.Lock()
 		if err != nil {
+			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
 			delete(o.validatorRuns, identity.Key)
 			if capacityErr, ok := backendcapacity.As(err); ok {
 				if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
@@ -2442,6 +2443,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
 
 		o.validatorMu.Lock()
+		o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
 		delete(o.validatorRuns, identity.Key)
 		delete(o.validatorFailures, identity.Key)
 		o.validatorResults[identity.Key] = validatorStageResult{Result: result}

@@ -961,8 +961,15 @@ func completedSnapshots(completed map[string]Completed, claims map[string]Claime
 }
 
 func applyIssueRuntimeIdentities(issues []telemetry.Issue, running map[string]Running, attempts []telemetry.WorkAttempt) {
+	// Dispatch workers own the issue identity; validators are a fallback. Sort
+	// within each group so concurrent sessions never depend on map iteration.
+	keys := sortedKeys(running)
+	sort.SliceStable(keys, func(i, j int) bool {
+		return !strings.HasPrefix(keys[i], "validator:") && strings.HasPrefix(keys[j], "validator:")
+	})
 	for index := range issues {
-		for _, entry := range running {
+		for _, key := range keys {
+			entry := running[key]
 			if snapshotIssueMatches(issues[index], entry.Issue.ID, entry.Issue.Identifier, entry.Issue.URL) && !entry.RuntimeIdentity.IsZero() {
 				issues[index].RuntimeIdentity = entry.RuntimeIdentity
 				break

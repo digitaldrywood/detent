@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestValidatorRuntimeObservable(t *testing.T) {
@@ -40,7 +42,7 @@ func TestValidatorRuntimeObservable(t *testing.T) {
 			if request.OnUsageUpdate == nil {
 				t.Fatal("validator launched without runtime usage registration")
 			}
-			if err := request.OnUsageUpdate(runpkg.UsageUpdate{DetentSessionID: 6059, SessionID: "validator-session", RSSBytes: 256, RSSObservedAt: now}); err != nil {
+			if err := request.OnUsageUpdate(runpkg.UsageUpdate{DetentSessionID: 6059, SessionID: "validator-session", RSSBytes: 256, RSSObservedAt: now, Tokens: TokenTotals{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}}); err != nil {
 				t.Fatal(err)
 			}
 			for _, completion := range []bool{false, true} {
@@ -60,6 +62,9 @@ func TestValidatorRuntimeObservable(t *testing.T) {
 					}
 				}
 				snapshot := observed.Snapshot(now)
+				if snapshot.Tokens.Total != 15 {
+					t.Fatalf("live tokens = %#v", snapshot.Tokens)
+				}
 				if len(snapshot.Running) != 2 {
 					t.Fatalf("Running = %#v, want implementation and validator", snapshot.Running)
 				}
@@ -81,6 +86,12 @@ func TestValidatorRuntimeObservable(t *testing.T) {
 			if got := orch.publishedState().Snapshot(now).Running; len(got) != 1 || got[0].DetentSessionID != 6058 {
 				t.Fatalf("after validator exit Running = %#v", got)
 			}
+			for range 2 {
+				observed := orch.publishedState().Snapshot(now)
+				if observed.Tokens.Total != 15 {
+					t.Fatalf("completed tokens = %#v", observed.Tokens)
+				}
+			}
 		})
 	}
 }
@@ -95,4 +106,25 @@ func (v *observableValidator) Validate(_ context.Context, req ValidatorRequest) 
 	v.started <- req
 	<-v.release
 	return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1}, v.failure
+}
+
+func TestIssueRuntimeIdentityConcurrentWorkers(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		running map[string]Running
+		want    string
+	}{
+		{name: "implementation preferred", running: map[string]Running{"z-implementation": {Issue: connector.Issue{ID: "issue"}, RuntimeIdentity: agentidentity.Identity{Role: "implement"}}, "validator:a": {Issue: connector.Issue{ID: "issue"}, RuntimeIdentity: agentidentity.Identity{Role: "validator"}}}, want: "implement"},
+		{name: "stable validator fallback", running: map[string]Running{"validator:b": {Issue: connector.Issue{ID: "issue"}, RuntimeIdentity: agentidentity.Identity{Role: "second"}}, "validator:a": {Issue: connector.Issue{ID: "issue"}, RuntimeIdentity: agentidentity.Identity{Role: "first"}}}, want: "first"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for range 100 {
+				issues := []telemetry.Issue{{ID: "issue"}}
+				applyIssueRuntimeIdentities(issues, tt.running, nil)
+				if got := issues[0].RuntimeIdentity.Role; got != tt.want {
+					t.Fatalf("role = %q, want %q", got, tt.want)
+				}
+			}
+		})
+	}
 }

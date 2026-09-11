@@ -298,6 +298,7 @@ type Orchestrator struct {
 	validatorMu             sync.Mutex
 	validatorWG             sync.WaitGroup
 	validatorRuns           map[string]Running
+	validatorTokenTotals    TokenTotals
 	validatorResults        map[string]validatorStageResult
 	validatorFailures       map[string]validatorStageFailure
 	validatorMemo           store.ValidatorMemoStore
@@ -1206,6 +1207,7 @@ func (o *Orchestrator) observableValidatorState(state State) State {
 	// Validator stages already own their lifecycle in validatorRuns. Include their
 	// progress in observations without adding them to the dispatch state machine.
 	o.validatorMu.Lock()
+	state.TokenTotals = addTokenTotals(state.TokenTotals, o.validatorTokenTotals)
 	for key, running := range cloneRunning(o.validatorRuns) {
 		if state.Running == nil {
 			state.Running = make(map[string]Running)
