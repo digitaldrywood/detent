@@ -122,7 +122,17 @@ func (o *Orchestrator) resolveLaneWrite(ctx context.Context, write coordination.
 	if o.laneLedger == nil {
 		return nil
 	}
-	return o.laneLedger.ResolveLaneWrite(context.WithoutCancel(ctx), write.FenceToken, result)
+	if err := o.laneLedger.ResolveLaneWrite(context.WithoutCancel(ctx), write.FenceToken, result); err != nil {
+		return err
+	}
+	if result != "applied" || o.laneWriteOrigin == "" {
+		return nil
+	}
+	recorder, ok := o.laneLedger.(laneWriteActionRecorder)
+	if !ok {
+		return nil
+	}
+	return recorder.RecordLaneWriteAction(context.WithoutCancel(ctx), write.FenceToken, o.laneWriteOrigin, o.laneWriteAction)
 }
 
 func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue connector.Issue, at time.Time) (store.LaneObservation, provenance.Attribution, error) {

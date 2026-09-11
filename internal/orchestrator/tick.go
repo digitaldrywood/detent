@@ -112,7 +112,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			for i, issue := range issues {
 				issues[i] = connector.Issue{ID: issue.ID, Identifier: issue.Identifier, State: issue.State}
 			}
-			earlyUnblocked = o.autoUnblockDependencyIssues(ctx, state, issues, now)
+			earlyUnblocked = o.operatorClearClosedDependencies(ctx, state, issues, now)
 			// Advance even if the first identity cannot fit inside the cap. The late
 			// scan never changes this cursor, so it cannot undo priority progress.
 			state.dependencyUnblockCursor = issues[0].ID
@@ -199,7 +199,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
-			o.recoverBlockedIssues(ctx, state, fetched.status, now),
+			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
 		)
 		fetched = filterReconciledTickIssues(
 			state,
@@ -215,7 +215,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched = filterReconciledTickIssues(
 				state,
 				fetched,
-				o.autoUnblockDependencyIssues(ctx, state, fetched.status, now),
+				o.operatorClearClosedDependencies(ctx, state, fetched.status, now),
 			)
 		}
 		fetched = filterReconciledTickIssues(
@@ -232,7 +232,12 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
-			o.reconcileStaleMergingPullRequestIssues(ctx, state, fetched.status, now),
+			o.operatorRestoreStuckMerging(ctx, state, fetched.status, now),
+		)
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.operatorMergeWedgedPullRequests(ctx, state, fetched.status, now),
 		)
 		fetched.candidates = mergeIssueSlices(
 			fetched.candidates,
