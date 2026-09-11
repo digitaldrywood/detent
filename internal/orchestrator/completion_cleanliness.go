@@ -320,7 +320,7 @@ func (o *Orchestrator) blockCompletionCleanliness(
 	)
 	humanAction := strings.TrimSpace(decision.Statement)
 	if humanAction == "" {
-		humanAction = "inspect the preserved workspace, commit and publish required work or discard stray changes, move the issue to Rework, then record completion_cleanliness_resolution as committed or discarded under `fields:` on completion"
+		humanAction = "inspect the preserved workspace, commit and publish required work or discard stray changes, move the issue to Rework; optionally record completion_cleanliness_resolution as committed or discarded under `fields:` on completion"
 	}
 	event.Err = errors.New(detail)
 	running.DiffStats = decision.Evidence

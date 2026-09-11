@@ -217,7 +217,7 @@ func appendWorkspaceRecoveryBlock(prompt string, state *workspace.RecoveryState)
 	appendWorkspaceRecoveryPaths(&b, "tracked paths", state.TrackedPaths)
 	appendWorkspaceRecoveryPaths(&b, "untracked paths", state.UntrackedPaths)
 	appendWorkspaceRecoveryPaths(&b, "unpushed commits", state.UnpushedCommitRefs)
-	b.WriteString("\n\nA prior completion cannot be accepted until you explicitly resolve this state. Inspect every path and choose the correct outcome: commit and publish work that belongs to the issue, discard stray artifacts or mistakes, or update the Workpad to `status: blocked` and state why the files are intentionally left. For a clean retry, add `completion_cleanliness_resolution: committed` or `completion_cleanliness_resolution: discarded` under `fields:` in the current completion block. Do not repeat `status: complete` while the worktree remains dirty. After resolving it, run the required validation gate and update the pull request.")
+	b.WriteString("\n\nA prior completion cannot be accepted until you explicitly resolve this state. Inspect every path and choose the correct outcome: commit and publish work that belongs to the issue, discard stray artifacts or mistakes, or update the Workpad to `status: blocked` and state why the files are intentionally left. For a clean retry, you may record `completion_cleanliness_resolution: committed` or `completion_cleanliness_resolution: discarded` under `fields:` in the current completion block. Do not repeat `status: complete` while the worktree remains dirty. After resolving it, run the required validation gate and update the pull request.")
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + b.String()
 }
 
