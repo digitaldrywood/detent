@@ -66,6 +66,9 @@ templ operationsSections(report operations.Report) {
 				<span>Unavailable</span>
 			} else {
 				<span>{ fmt.Sprint(*report.MergeGroupSize) }</span>
+				if report.MergeGroupWait != nil {
+					<span>{ fmt.Sprintf(" · Group wait: %ds", *report.MergeGroupWait) }</span>
+				}
 			}
 		</p>
 		for _, w := range report.Stats {

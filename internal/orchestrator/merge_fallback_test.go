@@ -1,8 +1,6 @@
 package orchestrator
 
 import (
-	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -33,16 +31,6 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 			},
 			wantReason:        mergeFallbackRequiresReworkReason,
 			wantTerminalState: store.WorkAttemptTerminalSuccess,
-		},
-		{
-			name: "fallback budget exceeded",
-			result: runpkg.RunResult{
-				FinalState: runpkg.FinalStateMergeFallbackExceeded,
-				Output:     "Conflict resolved; validation still running.",
-			},
-			runErr:            errors.Join(runpkg.ErrMergeFallbackBudgetExceeded, context.DeadlineExceeded),
-			wantReason:        mergeFallbackBudgetExceededReason,
-			wantTerminalState: store.WorkAttemptTerminalTimedOut,
 		},
 	}
 

@@ -205,7 +205,6 @@ func runtimeUpdateDrainTimeout(registry *project.Registry) time.Duration {
 	defaultTimeout := max(
 		time.Duration(workflowconfig.DefaultMaxSessionDurationMS)*time.Millisecond,
 		time.Duration(workflowconfig.DefaultMergeWorkerMaxDurationMS)*time.Millisecond,
-		time.Duration(workflowconfig.DefaultMergeFallbackMaxDurationMS)*time.Millisecond,
 	)
 	if registry == nil {
 		return defaultTimeout
@@ -219,7 +218,6 @@ func runtimeUpdateDrainTimeout(registry *project.Registry) time.Duration {
 		}{
 			{configured: agent.MaxSessionDurationMS, fallback: workflowconfig.DefaultMaxSessionDurationMS},
 			{configured: agent.MergeWorkerMaxDurationMS, fallback: workflowconfig.DefaultMergeWorkerMaxDurationMS},
-			{configured: agent.MergeFallbackMaxDurationMS, fallback: workflowconfig.DefaultMergeFallbackMaxDurationMS},
 		}
 		for _, ceiling := range ceilings {
 			configured := ceiling.configured

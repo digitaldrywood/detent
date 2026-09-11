@@ -32,8 +32,10 @@ Historical windows include their start and exclude their end.
 - Project dispatch counts use selected scheduler decisions; the five most
   frequent skip reasons are sorted by count, then reason.
 - Queue depth sums the reported native queue depth per project, falling back
-  to queued Merging work for the serialized path. `merge_group_size` is null
-  until batching telemetry is supplied by #2482; unavailable is not zero.
+  to queued Merging work for the serialized path. `merge_group_size` and
+  `merge_group_wait_seconds` mirror the repository queue's maximum entries to
+  merge and minimum wait when a native queue entry is observed; both are null
+  without a queue, and unavailable is not zero.
 
 ## Actions and decisions
 

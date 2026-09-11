@@ -33,7 +33,6 @@ const (
 	FinalStateLaneRevoked              = "lane_revoked"
 	FinalStateCIUnavailable            = "ci_unavailable"
 	FinalStateMergeDurationExceeded    = "merge_duration_exceeded"
-	FinalStateMergeFallbackExceeded    = "merge_fallback_budget_exceeded"
 	FinalStateNeedsHumanAttention      = "needs_human_attention"
 	TokenCeilingSourceAbsolute         = "max_session_tokens"
 	TokenCeilingSourceContextWindow    = "max_session_context_multiplier"
@@ -62,7 +61,6 @@ var (
 	ErrCIUnavailable                   = errors.New("CI unavailable")
 	ErrMergeWorkerStartupTimeout       = errors.New("merge worker startup timed out")
 	ErrMergeWorkerDurationExceeded     = errors.New("merge worker duration exceeded")
-	ErrMergeFallbackBudgetExceeded     = errors.New("merge fallback budget exceeded")
 	ErrModelPermitUnavailable          = errors.New("provider model permit unavailable")
 	ErrAgentTurnCleanup                = errors.New("agent turn cleanup failed")
 	ErrWorkerProcessReap               = errors.New("worker process reap failed")

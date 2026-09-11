@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +29,10 @@ type nativeMergeQueueRepository struct {
 	CheckedAt time.Time
 }
 
+// mergeAttemptBudget bounds queue entries per issue without a merge; the
+// programmatic path shares it through maxIdenticalMergeRevocations.
+const mergeAttemptBudget = 2
+
 func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	ctx context.Context,
 	state *State,
@@ -38,6 +44,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		return out
 	}
 	state.nativeMergeQueueDeferred = map[string]struct{}{}
+	pruneNativeMergeQueueRemovals(state, out)
 	queue, ok := o.connector.(connector.PullRequestMergeQueue)
 	if !ok {
 		return out
@@ -111,7 +118,12 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			if reason == "" {
 				reason = "GitHub removed the pull request from the merge queue without a reason"
 			}
-			if err := o.updateIssueState(ctx, state, candidate, autoPromoteReworkState, now, reason); err != nil {
+			removals := appendNativeMergeQueueRemoval(state, issueID, reason, status.RemovedAt)
+			targetState, laneReason := autoPromoteReworkState, reason
+			if len(removals) >= mergeAttemptBudget {
+				targetState, laneReason = autoPromoteSourceState, string(AutoPromoteReasonMergeRevocationLimit)
+			}
+			if err := o.updateIssueState(ctx, state, candidate, targetState, now, laneReason); err != nil {
 				o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", err)
 				continue
 			}
@@ -119,8 +131,12 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			clearNativeMergeQueueEntry(out, issueID)
 			for index := range out {
 				if out[index].ID == issueID {
-					out[index].State = autoPromoteReworkState
+					out[index].State = targetState
 				}
+			}
+			if targetState == autoPromoteSourceState {
+				o.parkNativeMergeQueueBudget(ctx, state, candidate, removals, now)
+				continue
 			}
 			o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", nil)
 			continue
@@ -270,6 +286,88 @@ func overlayNativeMergeQueueIssues(issues []connector.Issue, updated []connector
 		}
 	}
 	return out
+}
+
+// Removals are keyed by issue so a repaired head still spends the same budget.
+// The last removal time deduplicates repeated observations of one removal.
+func appendNativeMergeQueueRemoval(state *State, issueID, reason string, removedAt *time.Time) []string {
+	if state.nativeMergeQueueRemovals == nil {
+		state.nativeMergeQueueRemovals = map[string][]string{}
+	}
+	key := reason
+	if removedAt != nil {
+		key = removedAt.UTC().Format(time.RFC3339Nano) + " " + reason
+	}
+	removals := state.nativeMergeQueueRemovals[issueID]
+	if len(removals) > 0 && removals[len(removals)-1] == key {
+		return removals
+	}
+	removals = append(removals, key)
+	state.nativeMergeQueueRemovals[issueID] = removals
+	return removals
+}
+
+func pruneNativeMergeQueueRemovals(state *State, issues []connector.Issue) {
+	present := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		present[strings.TrimSpace(issue.ID)] = struct{}{}
+	}
+	for issueID := range state.nativeMergeQueueRemovals {
+		if _, ok := present[issueID]; !ok {
+			delete(state.nativeMergeQueueRemovals, issueID)
+		}
+	}
+}
+
+func cloneNativeMergeQueueRemovals(removals map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(removals))
+	for issueID, reasons := range removals {
+		out[issueID] = append([]string(nil), reasons...)
+	}
+	return out
+}
+
+func (o *Orchestrator) parkNativeMergeQueueBudget(ctx context.Context, state *State, issue connector.Issue, removals []string, now time.Time) {
+	delete(state.nativeMergeQueueRemovals, strings.TrimSpace(issue.ID))
+	if err := o.connector.CreateComment(ctx, issue.ID, mergeAttemptBudgetComment(issue, removals)); err != nil && o.logger != nil {
+		o.logger.Warn("merge attempt budget comment failed", "issue_id", strings.TrimSpace(issue.ID), "identifier", issue.Identifier, "error", err)
+	}
+	if o.logger != nil {
+		o.logger.Warn("merge_worker_revocation_limit", mergeWorkerLogAttrs(issue,
+			"queue_removals", len(removals),
+			"limit", mergeAttemptBudget,
+			"target_state", autoPromoteSourceState,
+		)...)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "merge_worker_revocation_limit",
+		Message: fmt.Sprintf("routed %s to %s after %d merge queue removals", issueLabel(issue), autoPromoteSourceState, len(removals)),
+	})
+}
+
+func mergeAttemptBudgetComment(issue connector.Issue, removals []string) string {
+	var body strings.Builder
+	body.WriteString("Detent routed this issue to ")
+	body.WriteString(autoPromoteSourceState)
+	body.WriteString(" after the merge queue removed its pull request ")
+	body.WriteString(strconv.Itoa(len(removals)))
+	body.WriteString(" times without merging.\n\n- reason: ")
+	body.WriteString(string(AutoPromoteReasonMergeRevocationLimit))
+	body.WriteString("\n- limit: ")
+	body.WriteString(strconv.Itoa(mergeAttemptBudget))
+	for _, removal := range removals {
+		body.WriteString("\n- queue_removal: ")
+		body.WriteString(removal)
+	}
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			body.WriteString("\n- pull_request: ")
+			body.WriteString(url)
+		}
+	}
+	body.WriteString("\n- human_action: fix the cause of the removals, then move the issue to Rework")
+	return body.String()
 }
 
 func cloneNativeMergeQueueEntries(entries map[string]nativeMergeQueueEntry) map[string]nativeMergeQueueEntry {

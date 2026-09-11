@@ -252,7 +252,6 @@ func cooperativeStopError(err error) bool {
 		errors.Is(err, ErrModelPermitUnavailable) ||
 		errors.Is(err, ErrMergeWorkerStartupTimeout) ||
 		errors.Is(err, ErrMergeWorkerDurationExceeded) ||
-		errors.Is(err, ErrMergeFallbackBudgetExceeded) ||
 		errors.Is(err, ErrSessionBudgetProjectionExceeded) ||
 		errors.Is(err, ErrSessionDurationExceeded) ||
 		errors.Is(err, ErrSessionMemoryCeilingExceeded) ||

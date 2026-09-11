@@ -51,7 +51,7 @@ func TestOperationsHandlers(t *testing.T) {
 				backend.err = errors.New("database unavailable")
 			}
 			deps.Store = backend
-			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "i", ProjectID: "p", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", RequiredGate: &telemetry.RequiredGate{HumanAction: "Choose target?"}, PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{Depth: 4}}}}}); err != nil {
+			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "i", ProjectID: "p", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", RequiredGate: &telemetry.RequiredGate{HumanAction: "Choose target?"}, PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{Depth: 4, MaxGroupSize: 5, MinGroupWaitSeconds: 300}}}}}); err != nil {
 				t.Fatal(err)
 			}
 			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
@@ -83,6 +83,9 @@ func TestOperationsHandlers(t *testing.T) {
 				}
 				if got.QueueDepth != 4 {
 					t.Fatalf("merge queue depth: %d", got.QueueDepth)
+				}
+				if got.MergeGroupSize == nil || *got.MergeGroupSize != 5 || got.MergeGroupWait == nil || *got.MergeGroupWait != 300 {
+					t.Fatalf("merge group telemetry: size=%v wait=%v", got.MergeGroupSize, got.MergeGroupWait)
 				}
 				if len(got.Decisions) != 1 || got.Actions[0].EvidenceURL != "https://github.com/owner/repo/issues/1" {
 					t.Fatalf("report: %#v", got)

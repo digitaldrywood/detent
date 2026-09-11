@@ -39,7 +39,6 @@ func NewCancellationCause(cause error, source string) *CancellationCause {
 		{ErrCIUnavailable, "ci_unavailable"},
 		{ErrMergeWorkerStartupTimeout, "merge_worker_startup_timeout"},
 		{ErrMergeWorkerDurationExceeded, "merge_worker_duration_exceeded"},
-		{ErrMergeFallbackBudgetExceeded, "merge_fallback_budget_exceeded"},
 		{ErrSessionDurationExceeded, "session_duration_exceeded"},
 		{ErrTurnDurationExceeded, "turn_duration_exceeded"},
 		{ErrSessionMemoryCeilingExceeded, "session_memory_ceiling_exceeded"},

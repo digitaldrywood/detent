@@ -22,7 +22,7 @@ const (
 	mergeRevocationMissingPullRequest    = "missing_pull_request"
 	mergeRevocationDraftPullRequest      = "draft_pull_request"
 	mergeRevocationPullRequestNotOpen    = "pull_request_not_open"
-	maxIdenticalMergeRevocations         = 3
+	maxIdenticalMergeRevocations         = mergeAttemptBudget
 )
 
 const (

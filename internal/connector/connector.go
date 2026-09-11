@@ -161,18 +161,27 @@ type PullRequestMergeQueueStatus struct {
 	Available         bool
 	PullRequestNodeID string
 	Entry             *PullRequestMergeQueueEntry
+	Batching          MergeQueueBatching
+}
+
+// MergeQueueBatching mirrors the repository queue's grouping configuration.
+type MergeQueueBatching struct {
+	MaxGroupSize    int   `json:"max_group_size,omitempty" yaml:"max_group_size,omitempty"`
+	MinGroupSize    int   `json:"min_group_size,omitempty" yaml:"min_group_size,omitempty"`
+	MinGroupWaitSec int64 `json:"min_group_wait_seconds,omitempty" yaml:"min_group_wait_seconds,omitempty"`
 }
 
 type PullRequestMergeQueueEntry struct {
-	HeadSHA                     string     `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
-	BaseSHA                     string     `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`
-	ID                          string     `json:"id,omitempty" yaml:"id,omitempty"`
-	State                       string     `json:"state,omitempty" yaml:"state,omitempty"`
-	Position                    int        `json:"position,omitempty" yaml:"position,omitempty"`
-	Depth                       int        `json:"depth,omitempty" yaml:"depth,omitempty"`
-	EstimatedTimeToMergeSeconds int64      `json:"estimated_time_to_merge_seconds,omitempty" yaml:"estimated_time_to_merge_seconds,omitempty"`
-	EnqueuedAt                  *time.Time `json:"enqueued_at,omitempty" yaml:"enqueued_at,omitempty"`
-	URL                         string     `json:"url,omitempty" yaml:"url,omitempty"`
+	HeadSHA                     string             `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
+	BaseSHA                     string             `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`
+	ID                          string             `json:"id,omitempty" yaml:"id,omitempty"`
+	State                       string             `json:"state,omitempty" yaml:"state,omitempty"`
+	Position                    int                `json:"position,omitempty" yaml:"position,omitempty"`
+	Depth                       int                `json:"depth,omitempty" yaml:"depth,omitempty"`
+	EstimatedTimeToMergeSeconds int64              `json:"estimated_time_to_merge_seconds,omitempty" yaml:"estimated_time_to_merge_seconds,omitempty"`
+	EnqueuedAt                  *time.Time         `json:"enqueued_at,omitempty" yaml:"enqueued_at,omitempty"`
+	URL                         string             `json:"url,omitempty" yaml:"url,omitempty"`
+	Batching                    MergeQueueBatching `json:"batching,omitzero" yaml:"batching,omitempty"`
 }
 
 type PullRequestHydrator interface {
