@@ -497,7 +497,7 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 func TestCIDraftAndVerifyDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review]") {
+	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]") {
 		t.Fatal("PR CI must run on readiness and later head updates")
 	}
 	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual"} {

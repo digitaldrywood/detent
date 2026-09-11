@@ -194,7 +194,8 @@ budget, confidence-check, and green no-op drift fails in local validation.
 
 CI skips draft pull-request jobs and starts work on `ready_for_review` and
 subsequent ready-head pushes. GitHub may display a skipped workflow run for a
-draft event; no runner executes its jobs. Merge groups run all PR checks plus
+draft event; no runner executes its jobs. Converting back to draft cancels the
+previous PR run through the existing concurrency group. Merge groups run all PR checks plus
 the repeated subprocess lifecycle tests. Main pushes retain integration jobs.
 
 `Verify (ubuntu-latest)` aggregates build/vet/tests and four race runners, failing
