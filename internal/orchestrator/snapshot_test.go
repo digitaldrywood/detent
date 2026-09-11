@@ -1872,3 +1872,24 @@ func TestTelemetryPullRequestMergeQueueIdentities(t *testing.T) {
 		})
 	}
 }
+
+func TestTelemetryPullRequestHumanQuestionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		pr           *connector.PullRequest
+		wantEvidence bool
+	}{
+		{"clean", &connector.PullRequest{Number: 1, MergeableState: "clean"}, false},
+		{"conflict", &connector.PullRequest{Number: 1, MergeableState: "dirty", HeadSHA: "head"}, true},
+		{"failed check", &connector.PullRequest{Number: 1, RequiredCheckFailures: []connector.PullRequestCheck{{Name: "Verify", Conclusion: "failure"}}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := connector.Issue{PullRequest: tc.pr}
+			got := telemetryPullRequest(issue, 0, 0)
+			if got.HumanQuestionWorkFingerprint != humanQuestionWorkFingerprint(issue) || (got.HumanQuestionWorkFingerprint != "") != tc.wantEvidence {
+				t.Fatalf("question evidence: %#v", got)
+			}
+		})
+	}
+}

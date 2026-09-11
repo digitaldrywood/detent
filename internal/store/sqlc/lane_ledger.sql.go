@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 const laneLedgerIdentity = `-- name: LaneLedgerIdentity :one
@@ -43,7 +44,7 @@ func (q *Queries) LaneObservation(ctx context.Context, arg LaneObservationParams
 }
 
 const latestLaneWrite = `-- name: LatestLaneWrite :one
-SELECT id, project_id, issue_id, from_state, to_state, reason, written_at, result FROM lane_ledger WHERE project_id = ? AND issue_id = ? ORDER BY id DESC LIMIT 1
+SELECT id, project_id, issue_id, from_state, to_state, reason, written_at, result, origin, action_kind, resolved_at FROM lane_ledger WHERE project_id = ? AND issue_id = ? ORDER BY id DESC LIMIT 1
 `
 
 type LatestLaneWriteParams struct {
@@ -63,13 +64,16 @@ func (q *Queries) LatestLaneWrite(ctx context.Context, arg LatestLaneWriteParams
 		&i.Reason,
 		&i.WrittenAt,
 		&i.Result,
+		&i.Origin,
+		&i.ActionKind,
+		&i.ResolvedAt,
 	)
 	return i, err
 }
 
 const prepareLaneWrite = `-- name: PrepareLaneWrite :one
 INSERT INTO lane_ledger (project_id, issue_id, from_state, to_state, reason, written_at)
-VALUES (?, ?, ?, ?, ?, ?) RETURNING id, project_id, issue_id, from_state, to_state, reason, written_at, result
+VALUES (?, ?, ?, ?, ?, ?) RETURNING id, project_id, issue_id, from_state, to_state, reason, written_at, result, origin, action_kind, resolved_at
 `
 
 type PrepareLaneWriteParams struct {
@@ -100,21 +104,43 @@ func (q *Queries) PrepareLaneWrite(ctx context.Context, arg PrepareLaneWritePara
 		&i.Reason,
 		&i.WrittenAt,
 		&i.Result,
+		&i.Origin,
+		&i.ActionKind,
+		&i.ResolvedAt,
 	)
 	return i, err
 }
 
+const recordLaneWriteAction = `-- name: RecordLaneWriteAction :execrows
+UPDATE lane_ledger SET origin = ?, action_kind = ? WHERE id = ?
+`
+
+type RecordLaneWriteActionParams struct {
+	Origin     string `json:"origin"`
+	ActionKind string `json:"action_kind"`
+	ID         int64  `json:"id"`
+}
+
+func (q *Queries) RecordLaneWriteAction(ctx context.Context, arg RecordLaneWriteActionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordLaneWriteAction, arg.Origin, arg.ActionKind, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const resolveLaneWrite = `-- name: ResolveLaneWrite :execrows
-UPDATE lane_ledger SET result = ? WHERE id = ?
+UPDATE lane_ledger SET result = ?, resolved_at = ? WHERE id = ?
 `
 
 type ResolveLaneWriteParams struct {
-	Result string `json:"result"`
-	ID     int64  `json:"id"`
+	Result     string         `json:"result"`
+	ResolvedAt sql.NullString `json:"resolved_at"`
+	ID         int64          `json:"id"`
 }
 
 func (q *Queries) ResolveLaneWrite(ctx context.Context, arg ResolveLaneWriteParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, resolveLaneWrite, arg.Result, arg.ID)
+	result, err := q.db.ExecContext(ctx, resolveLaneWrite, arg.Result, arg.ResolvedAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}

@@ -61,7 +61,7 @@ func (s *sqliteStore) ResolveLaneWrite(ctx context.Context, token uint64, result
 	if token == 0 || token > math.MaxInt64 || (result != "applied" && result != "failed" && result != "blocked" && result != "uncertain") {
 		return errors.New("lane write token and valid result are required")
 	}
-	rows, err := s.queries.ResolveLaneWrite(ctx, sqlc.ResolveLaneWriteParams{ID: int64(token), Result: result})
+	rows, err := s.queries.ResolveLaneWrite(ctx, sqlc.ResolveLaneWriteParams{ID: int64(token), Result: result, ResolvedAt: sql.NullString{String: time.Now().UTC().Format(time.RFC3339Nano), Valid: true}})
 	if err != nil {
 		return fmt.Errorf("resolve lane write: %w", err)
 	}
@@ -117,4 +117,17 @@ func (s *sqliteStore) SaveLaneObservation(ctx context.Context, issue IssueIdenti
 		return fmt.Errorf("save lane observation: %w", err)
 	}
 	return nil
+}
+
+// RecordLaneWriteAction stamps a prepared lane write with the acting origin and
+// action kind so the operations report can list it without a reason-code namespace.
+func (s *sqliteStore) RecordLaneWriteAction(ctx context.Context, token uint64, origin, kind string) error {
+	if token == 0 || token > math.MaxInt64 || strings.TrimSpace(origin) == "" {
+		return errors.New("lane write token and origin are required")
+	}
+	rows, err := s.queries.RecordLaneWriteAction(ctx, sqlc.RecordLaneWriteActionParams{ID: int64(token), Origin: strings.TrimSpace(origin), ActionKind: strings.TrimSpace(kind)})
+	if err != nil {
+		return fmt.Errorf("record lane write action: %w", err)
+	}
+	return requireAffected(rows, "lane write", int64(token))
 }
