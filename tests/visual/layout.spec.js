@@ -16,6 +16,7 @@ const groupedSidebarSequence = [
   "nav:health",
   "section:insights",
   "nav:reports",
+  "nav:operations",
   "nav:library",
   "section:system",
   "nav:analytics",
