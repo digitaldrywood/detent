@@ -48,7 +48,7 @@
     "internal/orchestrator/deliverable_recovery.go:blockDeliverableRecoveryFailure": "89e1e4edb638590695e01d674ee279ca49a3feb9ea079875e44224a43dbc8f87",
     "internal/orchestrator/deliverable_recovery.go:blockHumanOwnedWorkerFailure": "3befb701b009a454bca09078a7eb600949e4ca7119c027dfde3ef71b09bd1fbc",
     "internal/orchestrator/implement_progress.go:blockImplementProgress": "7d5ced0b0a6b3dcf7963fff04f59b96625d04d1a7662d9c4ca4d88b0b7451126",
-    "internal/orchestrator/merge_queue.go:delegateNativeMergeQueueIssues": "856f681396a4a2b33b082bdda95db1b4bfd99941fbe0387c1836e6d780609bdb",
+    "internal/orchestrator/merge_queue.go:delegateNativeMergeQueueIssues": "0cfaef71e99b0389f53d030bae355ef32037a67d6df7b284f915baf5a1eec15f",
     "internal/orchestrator/merge_required_checks.go:blockPersistentlyMissingRequiredChecks": "5d96ad96ed802fc7dee73588823030d87b1339417e40e142331b13acdb18e9d9",
     "internal/orchestrator/merge_revocation.go:routeMergeRevocation": "e1cb2f8c6a28a20bd65a1dac5129801b587dffd1e7f43aefd7e616a294474aed",
     "internal/orchestrator/merge_revocation.go:escalateMergeRevocationCommentLoss": "97e848da374c568c9bbc4d8ab741fbb502c5da74bf574490448703a860c87722",

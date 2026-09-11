@@ -500,6 +500,7 @@ type nativeMergeQueueConnector struct {
 	removedHeads   map[string]string
 	removalReason  string
 	removedAt      *time.Time
+	removalHistory []connector.MergeQueueRemoval
 	dequeueErr     error
 	statusErr      error
 	inspections    int
@@ -532,6 +533,7 @@ func (c *nativeMergeQueueConnector) InspectPullRequestMergeQueue(_ context.Conte
 	status.RemovedHeadSHA, status.RemovalObserved = c.removedHeads[issue.ID]
 	status.RemovalReason = c.removalReason
 	status.RemovedAt = c.removedAt
+	status.Removals = append([]connector.MergeQueueRemoval(nil), c.removalHistory...)
 	if issue.PullRequest != nil {
 		status.HeadSHA = issue.PullRequest.HeadSHA
 	}
@@ -1037,7 +1039,13 @@ func TestNativeMergeQueueAttemptBudget(t *testing.T) {
 	issue := nativeMergeQueueTestIssue(950, "success")
 	first := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
 	second := first.Add(time.Hour)
-	tracker := &nativeMergeQueueConnector{removedHeads: map[string]string{issue.ID: issue.PullRequest.HeadSHA}, removalReason: "Required check build failed", removedAt: &first, autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+	tracker := &nativeMergeQueueConnector{
+		removedHeads:                  map[string]string{issue.ID: issue.PullRequest.HeadSHA},
+		removalReason:                 "Required check build failed",
+		removedAt:                     &first,
+		removalHistory:                []connector.MergeQueueRemoval{{At: &first, Reason: "Required check build failed", HeadSHA: issue.PullRequest.HeadSHA}},
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}},
+	}
 	cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}, TerminalStates: []string{"Done"}})
 	orch := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
@@ -1046,15 +1054,13 @@ func TestNativeMergeQueueAttemptBudget(t *testing.T) {
 	if got[0].State != autoPromoteReworkState || len(tracker.comments) != 0 {
 		t.Fatalf("first removal: state=%q comments=%d", got[0].State, len(tracker.comments))
 	}
-	got = orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, first.Add(2*time.Minute))
-	if got[0].State != autoPromoteReworkState || len(state.nativeMergeQueueRemovals[issue.ID]) != 1 {
-		t.Fatalf("repeated observation of one removal: state=%q removals=%v", got[0].State, state.nativeMergeQueueRemovals[issue.ID])
-	}
 
 	tracker.removalReason, tracker.removedAt = "Merge conflict", &second
-	got = orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, second.Add(time.Minute))
+	tracker.removalHistory = append(tracker.removalHistory, connector.MergeQueueRemoval{At: &second, Reason: "Merge conflict", HeadSHA: issue.PullRequest.HeadSHA})
+	restarted := newState(cfg)
+	got = orch.delegateNativeMergeQueueIssues(t.Context(), &restarted, []connector.Issue{issue}, second.Add(time.Minute))
 	if got[0].State != autoPromoteSourceState {
-		t.Fatalf("second removal: state=%q, want %s", got[0].State, autoPromoteSourceState)
+		t.Fatalf("second removal after restart: state=%q, want %s", got[0].State, autoPromoteSourceState)
 	}
 	if len(tracker.comments) != 1 {
 		t.Fatalf("comments = %#v, want one budget comment", tracker.comments)
@@ -1064,27 +1070,25 @@ func TestNativeMergeQueueAttemptBudget(t *testing.T) {
 			t.Fatalf("comment %q missing %q", tracker.comments[0].body, want)
 		}
 	}
-	if _, ok := state.nativeMergeQueueRemovals[issue.ID]; ok {
-		t.Fatal("budget was not reset after routing")
-	}
 	if len(tracker.enqueued) != 0 {
 		t.Fatalf("enqueued = %v, want none", tracker.enqueued)
 	}
 }
 
-func TestNativeMergeQueueAttemptBudgetResetsWhenIssueLeaves(t *testing.T) {
+func TestNativeMergeQueueAttemptBudgetUsesProviderHistoryWithoutLocalState(t *testing.T) {
 	t.Parallel()
 	issue := nativeMergeQueueTestIssue(951, "success")
 	removed := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
 	tracker := &nativeMergeQueueConnector{removedHeads: map[string]string{issue.ID: issue.PullRequest.HeadSHA}, removalReason: "Required check build failed", removedAt: &removed, autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
 	cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}, TerminalStates: []string{"Done"}})
 	orch := &Orchestrator{cfg: cfg, connector: tracker}
-	state := newState(cfg)
-	if got := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, removed.Add(time.Minute)); got[0].State != autoPromoteReworkState {
-		t.Fatalf("state = %q, want Rework", got[0].State)
+	for range 3 {
+		state := newState(cfg)
+		if got := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, removed.Add(time.Minute)); got[0].State != autoPromoteReworkState {
+			t.Fatalf("state = %q, want Rework while the provider reports one removal", got[0].State)
+		}
 	}
-	orch.delegateNativeMergeQueueIssues(t.Context(), &state, nil, removed.Add(2*time.Minute))
-	if len(state.nativeMergeQueueRemovals) != 0 {
-		t.Fatalf("removals = %v, want pruned once the issue merged", state.nativeMergeQueueRemovals)
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none below the budget", tracker.comments)
 	}
 }

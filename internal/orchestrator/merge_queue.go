@@ -29,8 +29,10 @@ type nativeMergeQueueRepository struct {
 	CheckedAt time.Time
 }
 
-// mergeAttemptBudget bounds queue entries per issue without a merge; the
-// programmatic path shares it through maxIdenticalMergeRevocations.
+// mergeAttemptBudget bounds queue removals per pull request; the programmatic
+// path shares it through maxIdenticalMergeRevocations. The count comes from
+// the provider's removal history, so it survives restarts and resets only
+// with a new pull request.
 const mergeAttemptBudget = 2
 
 func (o *Orchestrator) delegateNativeMergeQueueIssues(
@@ -44,7 +46,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		return out
 	}
 	state.nativeMergeQueueDeferred = map[string]struct{}{}
-	pruneNativeMergeQueueRemovals(state, out)
 	queue, ok := o.connector.(connector.PullRequestMergeQueue)
 	if !ok {
 		return out
@@ -118,7 +119,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			if reason == "" {
 				reason = "GitHub removed the pull request from the merge queue without a reason"
 			}
-			removals := appendNativeMergeQueueRemoval(state, issueID, reason, status.RemovedAt)
+			removals := nativeMergeQueueRemovalReasons(status)
 			targetState, laneReason := autoPromoteReworkState, reason
 			if len(removals) >= mergeAttemptBudget {
 				targetState, laneReason = autoPromoteSourceState, string(AutoPromoteReasonMergeRevocationLimit)
@@ -288,47 +289,29 @@ func overlayNativeMergeQueueIssues(issues []connector.Issue, updated []connector
 	return out
 }
 
-// Removals are keyed by issue so a repaired head still spends the same budget.
-// The last removal time deduplicates repeated observations of one removal.
-func appendNativeMergeQueueRemoval(state *State, issueID, reason string, removedAt *time.Time) []string {
-	if state.nativeMergeQueueRemovals == nil {
-		state.nativeMergeQueueRemovals = map[string][]string{}
+func nativeMergeQueueRemovalReasons(status connector.PullRequestMergeQueueStatus) []string {
+	removals := make([]string, 0, len(status.Removals))
+	for _, removal := range status.Removals {
+		reason := strings.TrimSpace(removal.Reason)
+		if reason == "" {
+			reason = "GitHub removed the pull request from the merge queue without a reason"
+		}
+		if removal.At != nil {
+			reason = removal.At.UTC().Format(time.RFC3339) + " " + reason
+		}
+		removals = append(removals, reason)
 	}
-	key := reason
-	if removedAt != nil {
-		key = removedAt.UTC().Format(time.RFC3339Nano) + " " + reason
+	if len(removals) == 0 && status.RemovalObserved {
+		reason := strings.TrimSpace(status.RemovalReason)
+		if reason == "" {
+			reason = "GitHub removed the pull request from the merge queue without a reason"
+		}
+		removals = append(removals, reason)
 	}
-	removals := state.nativeMergeQueueRemovals[issueID]
-	if len(removals) > 0 && removals[len(removals)-1] == key {
-		return removals
-	}
-	removals = append(removals, key)
-	state.nativeMergeQueueRemovals[issueID] = removals
 	return removals
 }
 
-func pruneNativeMergeQueueRemovals(state *State, issues []connector.Issue) {
-	present := make(map[string]struct{}, len(issues))
-	for _, issue := range issues {
-		present[strings.TrimSpace(issue.ID)] = struct{}{}
-	}
-	for issueID := range state.nativeMergeQueueRemovals {
-		if _, ok := present[issueID]; !ok {
-			delete(state.nativeMergeQueueRemovals, issueID)
-		}
-	}
-}
-
-func cloneNativeMergeQueueRemovals(removals map[string][]string) map[string][]string {
-	out := make(map[string][]string, len(removals))
-	for issueID, reasons := range removals {
-		out[issueID] = append([]string(nil), reasons...)
-	}
-	return out
-}
-
 func (o *Orchestrator) parkNativeMergeQueueBudget(ctx context.Context, state *State, issue connector.Issue, removals []string, now time.Time) {
-	delete(state.nativeMergeQueueRemovals, strings.TrimSpace(issue.ID))
 	if err := o.connector.CreateComment(ctx, issue.ID, mergeAttemptBudgetComment(issue, removals)); err != nil && o.logger != nil {
 		o.logger.Warn("merge attempt budget comment failed", "issue_id", strings.TrimSpace(issue.ID), "identifier", issue.Identifier, "error", err)
 	}

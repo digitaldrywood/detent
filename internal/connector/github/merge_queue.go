@@ -17,7 +17,7 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
       id
       headRefOid
       baseRefName
-      timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+      timelineItems(last: 10, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
         nodes { ... on RemovedFromMergeQueueEvent { beforeCommit { oid } reason createdAt } }
       }
       mergeQueue { url entries { totalCount } configuration { maximumEntriesToBuild maximumEntriesToMerge minimumEntriesToMerge minimumEntriesToMergeWaitTime } }
@@ -163,11 +163,18 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 		status.AdmissionLimit = pullRequest.MergeQueue.Configuration.MaximumEntriesToBuild
 		status.Batching = pullRequest.MergeQueue.Configuration.batching()
 	}
-	if len(pullRequest.TimelineItems.Nodes) > 0 {
+	for _, node := range pullRequest.TimelineItems.Nodes {
+		status.Removals = append(status.Removals, connector.MergeQueueRemoval{
+			At:      cloneGitHubTime(node.CreatedAt),
+			Reason:  strings.TrimSpace(node.Reason),
+			HeadSHA: strings.TrimSpace(node.BeforeCommit.OID),
+		})
+	}
+	if latest := len(status.Removals); latest > 0 {
 		status.RemovalObserved = true
-		status.RemovedAt = cloneGitHubTime(pullRequest.TimelineItems.Nodes[0].CreatedAt)
-		status.RemovalReason = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].Reason)
-		status.RemovedHeadSHA = strings.TrimSpace(pullRequest.TimelineItems.Nodes[0].BeforeCommit.OID)
+		status.RemovedAt = status.Removals[latest-1].At
+		status.RemovalReason = status.Removals[latest-1].Reason
+		status.RemovedHeadSHA = status.Removals[latest-1].HeadSHA
 	}
 	status.Entry = connectorMergeQueueEntry(pullRequest.MergeQueueEntry)
 	if status.Entry != nil && status.Entry.Batching == (connector.MergeQueueBatching{}) {

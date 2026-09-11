@@ -162,6 +162,15 @@ type PullRequestMergeQueueStatus struct {
 	PullRequestNodeID string
 	Entry             *PullRequestMergeQueueEntry
 	Batching          MergeQueueBatching
+	// Removals is the provider's removal history for this pull request,
+	// oldest first; it is the durable source for the merge-attempt budget.
+	Removals []MergeQueueRemoval
+}
+
+type MergeQueueRemoval struct {
+	At      *time.Time
+	Reason  string
+	HeadSHA string
 }
 
 // MergeQueueBatching mirrors the repository queue's grouping configuration.

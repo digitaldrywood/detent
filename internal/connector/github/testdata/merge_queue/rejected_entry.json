@@ -19,6 +19,13 @@
           "nodes": [
             {
               "beforeCommit": {
+                "oid": "older-head"
+              },
+              "reason": "merge_conflict",
+              "createdAt": "2026-09-10T20:00:00Z"
+            },
+            {
+              "beforeCommit": {
                 "oid": "removed-head"
               },
               "reason": "failed_checks",

@@ -25,6 +25,7 @@ func TestSourceViolations(t *testing.T) {
 		{"saved reason method", "internal/orchestrator/new.go", `func f(o Owner) { write := o.updateIssueState; write(0,0,0,0,0,"new_brake") }`, "INV-3"},
 		{"dynamic reason", "internal/orchestrator/new.go", `func f(o Owner, reason string) { o.updateIssueState(0,0,0,0,0,reason) }`, "INV-3"},
 		{"revocation", "internal/runner/new.go", `const reason = "worker_lane_revocation"`, "INV-9"},
+		{"fallback budget", "internal/runner/new.go", `const reason = "merge_fallback_budget_exceeded"`, "INV-9"},
 		{"split revocation", "internal/runner/new.go", `const reason = "worker_lane_"+"revocation"`, "INV-9"},
 		{"lane stop", "internal/runner/new.go", `func stopIndeterminateLane() {}`, "INV-9"},
 		{"mutation", "internal/connector/github/new.go", "const document = `mutation { updateIssue { id } rateLimit { cost } }`", "INV-9"},

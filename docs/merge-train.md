@@ -133,10 +133,11 @@ aging instead of enqueueing the entire backlog ahead of a new urgent fix.
 Missing or invalid limit metadata defers new admission until a valid window
 is observed. Existing provider entries can still be recovered.
 
-Each issue has a merge-attempt budget of two queue entries. The first removal
-routes to `Rework` with GitHub's reason; a second removal without a merge
-routes the issue to `Human Review` under `merge_revocation_limit` with both
-removal reasons in the issue comment. The programmatic path shares the budget:
+Each pull request has a merge-attempt budget of two queue removals, counted
+from GitHub's removal history for that pull request so it survives restarts.
+The first removal routes to `Rework` with GitHub's reason; a second removal
+without a merge routes the issue to `Human Review` under
+`merge_revocation_limit` with both removal reasons in the issue comment. The programmatic path shares the budget:
 two identical merge eligibility revocations park the issue. There is no
 separate merge fallback duration budget; a conflict-resolution session is
 bounded by `agent.max_session_duration_ms` like any other session.

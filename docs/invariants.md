@@ -73,9 +73,23 @@ a snapshot is not evidence of compliance.
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.
 
+**Consolidations recorded:**
+
+- 2026-09-11, merge-attempt budget (#2482): the merge fallback duration budget
+  (`agent.merge_fallback_max_duration_ms`, `merge_fallback_budget_exceeded`,
+  its runner error and orchestrator handler) is removed. One budget of two
+  attempts now covers both merge paths: the queue path counts the provider's
+  removal history for the pull request and routes to Human Review under the
+  existing `merge_revocation_limit` reason; the programmatic path's identical
+  revocation limit is the same constant. No reason code was added. The
+  `delegateNativeMergeQueueIssues` digest was refreshed for this reviewed
+  change because the removal branch now selects Rework or Human Review.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.
+A pull request has a budget of two queue removals; the second routes the issue
+to Human Review with both provider reasons instead of re-enqueueing.
 
 **Why:** Competing speculative merge work and repeated head invalidations
 contributed to the measured rebase and CI loop.
@@ -159,7 +173,7 @@ live verification plan; code changes never imply permission to edit settings.
 
 ## INV-9 — Retired mechanisms
 
-**Statement:** Retired lane revocation, indeterminate-lane stops, per-issue infrastructure parking, and root-level `rateLimit` in mutation documents stay retired.
+**Statement:** Retired lane revocation, indeterminate-lane stops, per-issue infrastructure parking, the merge fallback duration budget, and root-level `rateLimit` in mutation documents stay retired.
 
 **Why:** The audit removed these paths because they stopped healthy progress or
 caused tracker protocol failures that the operator then had to repair.

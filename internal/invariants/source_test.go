@@ -188,7 +188,7 @@ func laneReasonArgument(name string) (int, bool) {
 
 func retiredSymbol(text string) bool {
 	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(text))
-	for _, forbidden := range []string{"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate"} {
+	for _, forbidden := range []string{"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate", "mergefallbackbudget"} {
 		if strings.Contains(normalized, forbidden) {
 			return true
 		}

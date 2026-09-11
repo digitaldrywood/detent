@@ -85,6 +85,9 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			if !reflect.DeepEqual(status.Entry, tt.wantEntry) {
 				t.Fatalf("entry = %#v, want %#v", status.Entry, tt.wantEntry)
 			}
+			if tt.name == "rejected queue entry" && (len(status.Removals) != 2 || status.Removals[0].Reason != "merge_conflict" || status.Removals[1].Reason != "failed_checks") {
+				t.Fatalf("removals = %#v, want oldest-first provider history", status.Removals)
+			}
 			if tt.name == "detects merge queue policy" && (status.Depth != 2 || status.AdmissionLimit != 3) {
 				t.Fatalf("queue limits = %#v, want depth 2 and admission 3", status)
 			}
