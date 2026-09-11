@@ -49,6 +49,9 @@ time, and evidence link.
 
 Decisions include published unanswered durable questions and current explicit
 human-action gates. Answered questions and unpublished reservations are
-excluded. Issue links, including durable GitHub question-comment links when
+excluded. A question is also excluded when the current PR refusal fingerprint
+is nonempty and differs from the stored question fingerprint, matching the
+orchestrator’s question-wait rule. This filtering precedes gate deduplication
+so a superseded question cannot hide a current human-action gate. Issue links, including durable GitHub question-comment links when
 available, provide the context needed to answer. Decisions are independent of
 the action cursor.

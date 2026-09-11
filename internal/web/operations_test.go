@@ -91,3 +91,56 @@ func TestOperationsHandlers(t *testing.T) {
 		})
 	}
 }
+
+func TestOperationsCurrentDecisionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, stored, current, gate, want string }{
+		{"current question", "current", "current", "New gate?", "Original question?"},
+		{"superseded question", "old", "current", "", ""},
+		{"superseded question allows current gate", "old", "current", "New gate?", "New gate?"},
+		{"unfingerprinted question superseded", "", "current", "New gate?", "New gate?"},
+		{"no new refusal evidence", "old", "", "", "Original question?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			deps := testDeps(t)
+			backend := openWebTestStore(t)
+			q := store.HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "choice", Body: "Original question?", WorkFingerprint: tc.stored, QuestionCommentID: "123"}
+			questions := backend.(store.HumanQuestionStore)
+			if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			deps.Store = backend
+			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "i", ProjectID: "p", Identifier: q.Identifier, RequiredGate: &telemetry.RequiredGate{HumanAction: tc.gate}, PullRequest: &telemetry.PullRequest{HumanQuestionWorkFingerprint: tc.current}}}}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			var report operations.Report
+			if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if len(report.Decisions) != 0 {
+					t.Fatalf("superseded decisions: %#v", report.Decisions)
+				}
+				return
+			}
+			if len(report.Decisions) != 1 || report.Decisions[0].Question != tc.want {
+				t.Fatalf("decisions: %#v, want %q", report.Decisions, tc.want)
+			}
+		})
+	}
+}
