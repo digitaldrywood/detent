@@ -1261,6 +1261,9 @@ type PullRequestMergeQueueEntry struct {
 	EstimatedTimeToMergeSeconds int64      `json:"estimated_time_to_merge_seconds,omitempty"`
 	EnqueuedAt                  *time.Time `json:"enqueued_at,omitempty"`
 	URL                         string     `json:"url,omitempty"`
+	MaxGroupSize                int        `json:"max_group_size,omitempty"`
+	MinGroupSize                int        `json:"min_group_size,omitempty"`
+	MinGroupWaitSeconds         int64      `json:"min_group_wait_seconds,omitempty"`
 }
 
 type PullRequestCheck struct {

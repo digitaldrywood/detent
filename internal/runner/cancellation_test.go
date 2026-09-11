@@ -29,7 +29,6 @@ func TestCancellationFirstCause(t *testing.T) {
 		{"CI", ErrCIUnavailable, "ci_unavailable"},
 		{"startup", ErrMergeWorkerStartupTimeout, "merge_worker_startup_timeout"},
 		{"merge duration", ErrMergeWorkerDurationExceeded, "merge_worker_duration_exceeded"},
-		{"fallback", ErrMergeFallbackBudgetExceeded, "merge_fallback_budget_exceeded"},
 		{"session duration", ErrSessionDurationExceeded, "session_duration_exceeded"},
 		{"turn duration", ErrTurnDurationExceeded, "turn_duration_exceeded"},
 		{"memory", ErrSessionMemoryCeilingExceeded, "session_memory_ceiling_exceeded"},

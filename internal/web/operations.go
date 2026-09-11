@@ -51,9 +51,13 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 	report.Decisions = decisions
 	for _, issue := range issues {
 		if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
-			depth := issue.PullRequest.MergeQueueEntry.Depth
-			if depth > mergeDepths[issue.ProjectID] {
-				mergeDepths[issue.ProjectID] = depth
+			entry := issue.PullRequest.MergeQueueEntry
+			if entry.Depth > mergeDepths[issue.ProjectID] {
+				mergeDepths[issue.ProjectID] = entry.Depth
+			}
+			if entry.MaxGroupSize > 0 && (report.MergeGroupSize == nil || entry.MaxGroupSize > *report.MergeGroupSize) {
+				size, wait := entry.MaxGroupSize, entry.MinGroupWaitSeconds
+				report.MergeGroupSize, report.MergeGroupWait = &size, &wait
 			}
 		}
 

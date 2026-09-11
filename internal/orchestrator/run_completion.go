@@ -244,9 +244,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleMergeWorkerDurationExceeded(ctx, state, event, running) {
 		return
 	}
-	if o.handleMergeFallbackBudgetExceeded(ctx, state, event, running) {
-		return
-	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
 		if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 			o.handleTransientOverload(ctx, state, event, running, capacityErr)

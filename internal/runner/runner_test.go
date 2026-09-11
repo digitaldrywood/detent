@@ -3990,7 +3990,7 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
-			Config: config.Config{Agent: config.Agent{MergeFallbackMaxDurationMS: 20 * 60 * 1000}},
+			Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 20 * 60 * 1000}},
 			Prompt: "Full implement workflow playbook for {{ issue.identifier }}",
 		},
 		Workspace:    workspaceBackend,
@@ -4108,7 +4108,7 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 			}
 			agentBackend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: tt.agentOutput}}}
 			runner, err := NewRunner(Dependencies{
-				Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MergeFallbackMaxDurationMS: 20 * 60 * 1000}}},
+				Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 20 * 60 * 1000}}},
 				Workspace:    workspaceBackend,
 				AgentBackend: agentBackend,
 			})

@@ -9,6 +9,7 @@ type Report struct {
 	Stats          []Window   `json:"stats"`
 	QueueDepth     int        `json:"queue_depth"`
 	MergeGroupSize *int       `json:"merge_group_size"`
+	MergeGroupWait *int64     `json:"merge_group_wait_seconds"`
 	Actions        []Action   `json:"actions"`
 	Decisions      []Decision `json:"decisions"`
 }

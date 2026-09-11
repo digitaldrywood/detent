@@ -1073,7 +1073,6 @@ func withAgentDurationLimit(ctx context.Context, duration time.Duration, limit e
 func durationLimitError(err error) bool {
 	return errors.Is(err, ErrTurnDurationExceeded) ||
 		errors.Is(err, ErrSessionDurationExceeded) ||
-		errors.Is(err, ErrMergeFallbackBudgetExceeded) ||
 		errors.Is(err, ErrSessionTurnLimitExceeded) ||
 		errors.Is(err, ErrSessionNoProgress)
 }
@@ -1714,18 +1713,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
-	sessionLimitError := ErrSessionDurationExceeded
-	if mergeFallback {
-		sessionDuration = durationFromMillis(workflow.Config.Agent.MergeFallbackMaxDurationMS)
-		if sessionDuration <= 0 {
-			sessionDuration = durationFromMillis(config.DefaultMergeFallbackMaxDurationMS)
-		}
-		sessionLimitError = ErrMergeFallbackBudgetExceeded
-	}
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
 		sessionDuration,
-		sessionLimitError,
+		ErrSessionDurationExceeded,
 	)
 	defer cancelSession()
 	sessionCtx, cancelSessionBrake := context.WithCancelCause(sessionCtx)
@@ -2935,9 +2926,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
-		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
+		sessionDuration,
 		ErrSessionDurationExceeded,
 	)
 	defer cancelSession()
@@ -3623,7 +3615,7 @@ func workerProcessReapReason(ctx context.Context, turnErr error) string {
 		combined = cancellation
 	}
 	switch {
-	case errors.Is(combined, ErrSessionDurationExceeded), errors.Is(combined, ErrMergeFallbackBudgetExceeded):
+	case errors.Is(combined, ErrSessionDurationExceeded):
 		return "maximum_session_lifetime_exceeded"
 	case errors.Is(combined, ErrSessionNoProgress):
 		return SessionBrakeReasonNoProgress
@@ -4026,9 +4018,6 @@ func finalStateForTurnError(err error) string {
 	}
 	if errors.Is(err, ErrMergeWorkerDurationExceeded) {
 		return FinalStateMergeDurationExceeded
-	}
-	if errors.Is(err, ErrMergeFallbackBudgetExceeded) {
-		return FinalStateMergeFallbackExceeded
 	}
 	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
 		return FinalStateTokenCeilingExceeded

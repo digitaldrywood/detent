@@ -65,7 +65,6 @@ const (
 	mergeWorkerRetryExhaustedReason            = "merge_worker_retry_exhausted"
 	mergeWorkerCurrentHeadCIWaitExceededReason = scheduler.DecisionReasonMergeWorkerCurrentHeadCIExceeded
 	mergeWorkerDurationExceededReason          = "merge_worker_duration_exceeded"
-	mergeFallbackBudgetExceededReason          = "merge_fallback_budget_exceeded"
 	mergeFallbackRequiresReworkReason          = "merge_fallback_requires_rework"
 )
 

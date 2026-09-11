@@ -21,16 +21,21 @@ func TestDoctorMergeQueueRecordedHistory(t *testing.T) {
 		strict, queue      bool
 		unavailable        bool
 		minutes            int
+		heads              int
 		branch             string
 		wantRecommendation bool
+		wantDetail         []string
 	}{
 		{name: "plan unavailable", strict: true, unavailable: true, minutes: 22, branch: "main"},
-		{name: "strict busy branch", strict: true, minutes: 22, branch: "main", wantRecommendation: true},
+		{name: "strict busy branch", strict: true, minutes: 22, branch: "main", wantRecommendation: true, wantDetail: []string{"queue:", "31 distinct recorded merges", "30.0/day", "22.0 minutes", "0.46 merges per CI duration"}},
 		{name: "non strict busy branch", minutes: 22, branch: "main"},
 		{name: "existing queue", strict: true, queue: true, minutes: 22, branch: "main"},
+		{name: "queue slower than merges", queue: true, minutes: 90, branch: "main", wantRecommendation: true, wantDetail: []string{"batching:", "1.25 per hour", "90.0 minutes", "1.88 merges per CI duration > 1"}},
 		{name: "fast CI", strict: true, minutes: 2, branch: "main"},
 		{name: "missing CI history", strict: true, branch: "main"},
 		{name: "different branch", strict: true, minutes: 22, branch: "release"},
+		{name: "repeated pushes per pull request", queue: true, minutes: 2, heads: 3, branch: "main", wantRecommendation: true, wantDetail: []string{"draft convention:", "93 distinct heads across 31 PRs", "3.00 CI runs per PR > 1.5"}},
+		{name: "single push per pull request", queue: true, minutes: 2, heads: 1, branch: "main"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -52,6 +57,13 @@ func TestDoctorMergeQueueRecordedHistory(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				for head := range tt.heads {
+					metadata := fmt.Sprintf(`{"pull_request":{"repository":"example/repo","number":%d,"head_sha":"head-%d-%d"}}`, index+1, index+1, head)
+					_, err = db.ExecContext(t.Context(), `INSERT INTO workflow_phase_events(project_id,phase_type,status,reason,started_at,metadata_json) VALUES ('alpha','lane','entered','state_transition',?,?)`, at, metadata)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			cfg := workflowconfig.Config{}
 			cfg.Tracker.Repository = "example/repo"
@@ -68,11 +80,9 @@ func TestDoctorMergeQueueRecordedHistory(t *testing.T) {
 			if tt.unavailable && !strings.Contains(got.Detail, "not available on this plan") {
 				t.Fatalf("check = %+v", got)
 			}
-			if tt.wantRecommendation {
-				for _, want := range []string{"31 distinct recorded merges", "30.0/day", "22.0 minutes", "0.46 merges per CI duration"} {
-					if !strings.Contains(got.Detail, want) {
-						t.Fatalf("detail %q missing %q", got.Detail, want)
-					}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("detail %q missing %q", got.Detail, want)
 				}
 			}
 		})
