@@ -58,6 +58,55 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
+func TestParseBinaryIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		output      string
+		wantVersion string
+		wantCommit  string
+		wantErr     string
+	}{
+		{
+			name:        "pretty output",
+			output:      "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n",
+			wantVersion: "v1.2.4",
+			wantCommit:  testUpdatedCommit,
+		},
+		{
+			name:        "non-TTY JSON output",
+			output:      `{"version":"v1.2.4","commit":"` + testUpdatedCommit + `","build_date":"2026-09-11T23:00:00Z"}`,
+			wantVersion: "v1.2.4",
+			wantCommit:  testUpdatedCommit,
+		},
+		{
+			name:    "missing commit",
+			output:  `{"version":"v1.2.4"}`,
+			wantErr: "did not report a full commit",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			version, commit, err := parseBinaryIdentity(tt.output)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseBinaryIdentity() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBinaryIdentity() error = %v", err)
+			}
+			if version != tt.wantVersion || commit != tt.wantCommit {
+				t.Fatalf("parseBinaryIdentity() = %q, %q, want %q, %q", version, commit, tt.wantVersion, tt.wantCommit)
+			}
+		})
+	}
+}
+
 func TestSelectLatestReleasePrereleaseHandling(t *testing.T) {
 	t.Parallel()
 

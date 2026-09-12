@@ -44,8 +44,7 @@ func TestVerifyGitHubEvidence(t *testing.T) {
 			e.Checks = append(e.Checks,
 				ObservedCheck{Name: "CI", Status: "completed", Conclusion: "failure", Commit: testCommit, CheckRunID: 43, IntegrationID: 15368},
 			)
-			e.Checks[0].CheckRunID = 41
-		}, wantErr: "no authenticated"},
+		}, wantErr: "newer authenticated check run"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

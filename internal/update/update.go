@@ -1268,16 +1268,29 @@ func candidateIdentityPreflight(verifier BinaryVerifier, next BinaryPreflight) B
 func parseBinaryIdentity(output string) (string, string, error) {
 	var version string
 	var commit string
-	for line := range strings.SplitSeq(output, "\n") {
-		key, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
+	trimmed := strings.TrimSpace(output)
+	if strings.HasPrefix(trimmed, "{") {
+		var identity struct {
+			Version string `json:"version"`
+			Commit  string `json:"commit"`
 		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "version":
-			version = strings.TrimSpace(value)
-		case "commit":
-			commit = strings.TrimSpace(value)
+		if err := json.Unmarshal([]byte(trimmed), &identity); err != nil {
+			return "", "", fmt.Errorf("decode candidate binary identity: %w", err)
+		}
+		version = strings.TrimSpace(identity.Version)
+		commit = strings.TrimSpace(identity.Commit)
+	} else {
+		for line := range strings.SplitSeq(output, "\n") {
+			key, value, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "version":
+				version = strings.TrimSpace(value)
+			case "commit":
+				commit = strings.TrimSpace(value)
+			}
 		}
 	}
 	if version == "" {

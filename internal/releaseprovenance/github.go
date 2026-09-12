@@ -55,6 +55,7 @@ func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 			return fmt.Errorf("mandatory check %q is missing an immutable check-run ID", declaredCheck.Name)
 		}
 		found := false
+		matchedIntegrationID := int64(0)
 		for _, observed := range evidence.Checks {
 			if observed.Name != declaredCheck.Name || !strings.EqualFold(strings.TrimSpace(observed.Commit), strings.TrimSpace(manifest.Commit)) {
 				continue
@@ -72,10 +73,23 @@ func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 				continue
 			}
 			found = true
+			matchedIntegrationID = observed.IntegrationID
 			break
 		}
 		if !found {
 			return fmt.Errorf("mandatory check %q has no authenticated completed/success evidence for commit %s", declaredCheck.Name, manifest.Commit)
+		}
+		if declaredCheck.CheckRunID <= 0 {
+			continue
+		}
+		for _, observed := range evidence.Checks {
+			if observed.Name != declaredCheck.Name || observed.IntegrationID != matchedIntegrationID || observed.CheckRunID <= declaredCheck.CheckRunID {
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(observed.Commit), strings.TrimSpace(manifest.Commit)) {
+				continue
+			}
+			return fmt.Errorf("mandatory check %q has newer authenticated check run %d than declared successful run %d", declaredCheck.Name, observed.CheckRunID, declaredCheck.CheckRunID)
 		}
 	}
 	return nil

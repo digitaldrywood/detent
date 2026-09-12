@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const startupRecoveryStateSchema = 1
+const (
+	startupRecoveryLegacyStateSchema = 1
+	startupRecoveryStateSchema       = 2
+)
 
 const startupRecoveryStateName = "detent-startup-recovery.json"
 
@@ -84,7 +87,7 @@ func loadStartupRecoveryState(path string) (startupRecoveryState, bool, error) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return startupRecoveryState{}, false, fmt.Errorf("decode startup recovery state: %w", err)
 	}
-	if state.Schema != startupRecoveryStateSchema {
+	if state.Schema != startupRecoveryLegacyStateSchema && state.Schema != startupRecoveryStateSchema {
 		return startupRecoveryState{}, false, fmt.Errorf("decode startup recovery state: unsupported schema %d", state.Schema)
 	}
 	return state, true, nil

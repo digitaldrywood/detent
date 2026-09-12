@@ -2,12 +2,14 @@ package update
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -319,10 +321,13 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 	tests := []struct {
 		name          string
 		currentCommit string
-		wantErr       bool
+		stateSchema   int
+		wantErr       string
 	}{
 		{name: "matching full commit", currentCommit: testUpdatedCommit},
-		{name: "same version from wrong commit", currentCommit: testPreviousCommit, wantErr: true},
+		{name: "legacy pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema},
+		{name: "current pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, wantErr: "does not include the tested target commit"},
+		{name: "same version from wrong commit", currentCommit: testPreviousCommit, wantErr: "does not match pending update commit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -344,7 +349,9 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 				PreviousBinaryPath: previousPath,
 				AppliedAt:          time.Date(2026, 8, 29, 1, 0, 0, 0, time.UTC),
 			}
-			if err := recordPendingUpdate(statePath, pending); err != nil {
+			if tt.stateSchema != 0 {
+				writePendingUpdateStateWithoutCommit(t, statePath, pending, tt.stateSchema)
+			} else if err := recordPendingUpdate(statePath, pending); err != nil {
 				t.Fatalf("recordPendingUpdate() error = %v", err)
 			}
 
@@ -356,9 +363,9 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 				Now:            func() time.Time { return healthyAt },
 			})
 			err := recovery.MarkHealthy(context.Background())
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("MarkHealthy() error = nil, want commit mismatch")
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("MarkHealthy() error = %v, want containing %q", err, tt.wantErr)
 				}
 				if _, statErr := os.Stat(previousPath); statErr != nil {
 					t.Fatalf("Stat(previous) error = %v, want rollback material preserved", statErr)
@@ -379,10 +386,55 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 			if state.PendingUpdate != nil || state.ActiveFailure != nil {
 				t.Fatalf("state = %#v, want healthy state without pending update or active failure", state)
 			}
+			if state.Schema != startupRecoveryStateSchema {
+				t.Fatalf("Schema = %d, want migrated schema %d", state.Schema, startupRecoveryStateSchema)
+			}
 			if state.LastHealthyAt == nil || !state.LastHealthyAt.Equal(healthyAt) {
 				t.Fatalf("LastHealthyAt = %v, want %v", state.LastHealthyAt, healthyAt)
 			}
 		})
+	}
+}
+
+func writePendingUpdateStateWithoutCommit(t *testing.T, path string, pending PendingUpdate, schema int) {
+	t.Helper()
+
+	type pendingUpdateWithoutCommit struct {
+		FromVersion              string        `json:"from_version"`
+		ToVersion                string        `json:"to_version"`
+		InstallSource            InstallSource `json:"install_source"`
+		ExecutablePath           string        `json:"executable_path"`
+		PreviousBinaryPath       string        `json:"previous_binary_path"`
+		InstallLockPath          string        `json:"install_lock_path,omitempty"`
+		PreviousInstallLock      string        `json:"previous_install_lock,omitempty"`
+		PreviousInstallLockFound bool          `json:"previous_install_lock_found,omitempty"`
+		AppliedAt                time.Time     `json:"applied_at"`
+		RollbackRequestedAt      *time.Time    `json:"rollback_requested_at,omitempty"`
+	}
+	state := struct {
+		Schema        int                        `json:"schema"`
+		PendingUpdate pendingUpdateWithoutCommit `json:"pending_update"`
+	}{
+		Schema: schema,
+		PendingUpdate: pendingUpdateWithoutCommit{
+			FromVersion:              pending.FromVersion,
+			ToVersion:                pending.ToVersion,
+			InstallSource:            pending.InstallSource,
+			ExecutablePath:           pending.ExecutablePath,
+			PreviousBinaryPath:       pending.PreviousBinaryPath,
+			InstallLockPath:          pending.InstallLockPath,
+			PreviousInstallLock:      pending.PreviousInstallLock,
+			PreviousInstallLockFound: pending.PreviousInstallLockFound,
+			AppliedAt:                pending.AppliedAt,
+			RollbackRequestedAt:      pending.RollbackRequestedAt,
+		},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("Marshal(startup recovery state without commit) error = %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile(startup recovery state without commit) error = %v", err)
 	}
 }
 

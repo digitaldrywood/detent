@@ -37,6 +37,12 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Annotation(omitted ID) error = %v", err)
 	}
+	olderSuccess := manifest
+	olderSuccess.Checks = []provenance.Check{{Name: "CI", Status: "completed", Conclusion: "success", CheckRunID: 100}}
+	olderSuccessAnnotation, err := provenance.Annotation(olderSuccess)
+	if err != nil {
+		t.Fatalf("Annotation(older success) error = %v", err)
+	}
 
 	tests := []struct {
 		name    string
@@ -52,10 +58,10 @@ func TestRun(t *testing.T) {
 		{name: "missing immutable check run", message: omittedIDAnnotation, commit: commit, wantErr: "missing an immutable check-run ID"},
 		{
 			name:    "older success does not hide newer failed check run",
-			message: annotation,
+			message: olderSuccessAnnotation,
 			commit:  commit,
 			checks:  `{"total_count":2,"check_runs":[{"id":100,"name":"CI","head_sha":"` + commit + `","status":"completed","conclusion":"success","app":{"id":15368}},{"id":101,"name":"CI","head_sha":"` + commit + `","status":"completed","conclusion":"failure","app":{"id":15368}}]}`,
-			wantErr: "no authenticated completed/success evidence",
+			wantErr: "newer authenticated check run",
 		},
 	}
 	for _, tt := range tests {
