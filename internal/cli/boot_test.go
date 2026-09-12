@@ -22,6 +22,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -45,6 +46,44 @@ func TestMain(m *testing.M) {
 		panic("clear DETENT_API_TOKEN: " + err.Error())
 	}
 	os.Exit(m.Run())
+}
+
+func TestAwaitStartupServerRequiresExpectedBuild(t *testing.T) {
+	t.Parallel()
+
+	expected := buildinfo.Info{
+		Version: "v1.2.3",
+		Commit:  "0123456789abcdef0123456789abcdef01234567",
+	}
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "matching restarted listener", body: `{"status":"not_ready","version":"v1.2.3","commit":"0123456789abcdef0123456789abcdef01234567"}`},
+		{name: "wrong commit listener", body: `{"status":"ok","version":"v1.2.3","commit":"89abcdef0123456789abcdef0123456789abcdef"}`, wantErr: "does not match restarted build"},
+		{name: "unrelated listener", body: `not found`, wantErr: "decode startup listener identity"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(server.Close)
+
+			err := awaitStartupServer(t.Context(), server.URL, expected)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("awaitStartupServer() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("awaitStartupServer() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestShouldLaunchTerminalDashboard(t *testing.T) {

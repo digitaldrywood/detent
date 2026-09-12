@@ -33,7 +33,7 @@ func TestConnectorInspectReleaseRepository(t *testing.T) {
 		case "/repos/example/repo/commits/head/pulls":
 			writeReleaseJSON(t, w, []map[string]any{{"number": 9, "body": "Fixes #1204"}})
 		case "/repos/example/repo/commits/head/check-runs":
-			writeReleaseJSON(t, w, map[string]any{"check_runs": []map[string]any{{"head_sha": "head", "name": "CI", "status": "completed", "conclusion": "success", "details_url": "https://github.com/example/repo/actions/runs/42/job/1"}}})
+			writeReleaseJSON(t, w, map[string]any{"check_runs": []map[string]any{{"id": 101, "head_sha": "head", "name": "CI", "status": "completed", "conclusion": "success", "details_url": "https://github.com/example/repo/actions/runs/42/job/1"}}})
 		case "/repos/example/repo/commits/head/status":
 			writeReleaseJSON(t, w, map[string]any{"statuses": []any{}})
 		default:
@@ -61,7 +61,7 @@ func TestConnectorInspectReleaseRepository(t *testing.T) {
 	if len(got.RequiredCheckNames) != 1 || got.RequiredCheckNames[0] != "CI" {
 		t.Fatalf("required checks = %v", got.RequiredCheckNames)
 	}
-	if len(got.Checks) != 1 || got.Checks[0].RunID != 42 || got.Checks[0].Conclusion != "success" {
+	if len(got.Checks) != 1 || got.Checks[0].RunID != 42 || got.Checks[0].CheckRunID != 101 || got.Checks[0].Conclusion != "success" {
 		t.Fatalf("Inspect() checks = %#v", got.Checks)
 	}
 	wantTaggedAt := time.Date(2026, time.July, 9, 20, 0, 0, 0, time.UTC)

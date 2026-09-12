@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 )
 
 type Config struct {
@@ -35,6 +37,7 @@ type Check struct {
 	Status     string
 	Conclusion string
 	RunID      int64
+	CheckRunID int64
 }
 
 type Repository struct {
@@ -192,11 +195,15 @@ func (s *Service) Evaluate(ctx context.Context, now time.Time) (Status, Decision
 	if err != nil {
 		return s.failedStatus(err.Error()), s.decision("version_failed", err.Error(), false)
 	}
+	provenanceAnnotation, err := candidateProvenanceAnnotation(repo, next, required)
+	if err != nil {
+		return s.failedStatus(err.Error()), s.decision("provenance_failed", err.Error(), false)
+	}
 	origins, err := json.Marshal(releaseReport(repo, "", "").IssueRefs)
 	if err != nil {
 		return s.failedStatus(err.Error()), s.decision("release_origins_failed", err.Error(), false)
 	}
-	tag := Tag{Name: next, SHA: repo.HeadSHA, Message: Changelog(next, repo.Commits) + "\n\n<!-- detent-release-origins:" + string(origins) + " -->"}
+	tag := Tag{Name: next, SHA: repo.HeadSHA, Message: Changelog(next, repo.Commits) + "\n\n" + provenanceAnnotation + "\n<!-- detent-release-origins:" + string(origins) + " -->"}
 	if _, err := s.backend.EnsureReleaseReport(ctx, releaseReport(repo, "tag_intent", "Creating "+tag.Name+" after all mandatory candidate checks succeeded.")); err != nil {
 		return s.failedStatus(err.Error()), s.decision("release_report_failed", err.Error(), false)
 	}
@@ -207,6 +214,34 @@ func (s *Service) Evaluate(ctx context.Context, now time.Time) (Status, Decision
 	status.PendingTag = tag.Name
 	s.status = status
 	return status, s.decision("tag_created", "created "+tag.Name+" at "+repo.HeadSHA, true)
+}
+
+func candidateProvenanceAnnotation(repo Repository, tag string, required []string) (string, error) {
+	checksByName := make(map[string]Check, len(repo.Checks))
+	for _, check := range repo.Checks {
+		checksByName[check.Name] = check
+	}
+	checkNames := uniqueStrings(required)
+	checks := make([]provenance.Check, 0, len(checkNames))
+	for _, name := range checkNames {
+		check, ok := checksByName[name]
+		if !ok {
+			return "", fmt.Errorf("build release provenance: missing mandatory check %q", name)
+		}
+		checks = append(checks, provenance.Check{
+			Name:       check.Name,
+			Status:     check.Status,
+			Conclusion: check.Conclusion,
+			CheckRunID: check.CheckRunID,
+		})
+	}
+	return provenance.Annotation(provenance.Manifest{
+		Schema:     provenance.Schema,
+		Repository: repo.Name,
+		Tag:        tag,
+		Commit:     repo.HeadSHA,
+		Checks:     checks,
+	})
 }
 
 func (s *Service) observeRelease(ctx context.Context, repo Repository, status Status) (Status, Decision) {

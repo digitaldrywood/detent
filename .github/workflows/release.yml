@@ -6,7 +6,9 @@ on:
       - 'v*'
 
 permissions:
+  checks: read
   contents: write
+  statuses: read
 
 jobs:
   release:
@@ -30,6 +32,38 @@ jobs:
             echo "Release tags must point at origin/main ($main_sha); got $GITHUB_SHA."
             exit 1
           fi
+
+      - name: Bind exact-commit check provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_message="$RUNNER_TEMP/detent-release-tag-message"
+          check_runs="$RUNNER_TEMP/detent-release-check-runs.json"
+          statuses="$RUNNER_TEMP/detent-release-statuses.json"
+          rulesets="$RUNNER_TEMP/detent-release-rulesets.json"
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          default_branch_ref="refs/heads/$default_branch"
+          git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" > "$tag_message"
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" > "$check_runs"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status?per_page=100" > "$statuses"
+          : > "$rulesets"
+          while IFS= read -r ruleset_id; do
+            gh api "repos/$GITHUB_REPOSITORY/rulesets/$ruleset_id" >> "$rulesets"
+          done < <(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/rulesets?includes_parents=true&per_page=100" \
+            --jq '.[] | select(.enforcement == "active" and .target == "branch") | .id')
+          go run ./tools/releaseprovenance \
+            -repository "$GITHUB_REPOSITORY" \
+            -tag "$GITHUB_REF_NAME" \
+            -commit "$GITHUB_SHA" \
+            -default-branch-ref "$default_branch_ref" \
+            -tag-message "$tag_message" \
+            -github-check-runs "$check_runs" \
+            -github-statuses "$statuses" \
+            -github-rulesets "$rulesets" \
+            -output tmp/detent_release_provenance.json
 
       - name: Install minisign
         run: |

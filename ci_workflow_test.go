@@ -94,6 +94,28 @@ var integrationStatusChecks = []requiredStatusCheck{
 	},
 }
 
+func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/release.yml")
+	for _, marker := range []string{
+		"checks: read",
+		"statuses: read",
+		"commits/$GITHUB_SHA/check-runs?filter=all&per_page=100",
+		"commits/$GITHUB_SHA/status?per_page=100",
+		"rulesets?includes_parents=true&per_page=100",
+		"repos/$GITHUB_REPOSITORY\" --jq '.default_branch'",
+		"-default-branch-ref \"$default_branch_ref\"",
+		"-github-check-runs \"$check_runs\"",
+		"-github-statuses \"$statuses\"",
+		"-github-rulesets \"$rulesets\"",
+	} {
+		if !strings.Contains(workflow, marker) {
+			t.Fatalf("release workflow missing authenticated provenance marker %q", marker)
+		}
+	}
+}
+
 func TestCIConcurrencyKeepsMainPushRuns(t *testing.T) {
 	t.Parallel()
 

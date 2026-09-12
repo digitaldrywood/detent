@@ -7,7 +7,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 )
+
+const releaseTestHead = "0123456789abcdef0123456789abcdef01234567"
 
 func TestNextVersion(t *testing.T) {
 	t.Parallel()
@@ -61,7 +65,7 @@ func TestServiceCountTriggerCreatesOneTagAndObservesRelease(t *testing.T) {
 	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
 	backend := &fakeBackend{repo: Repository{
 		Name:      "example/repo",
-		HeadSHA:   "head",
+		HeadSHA:   releaseTestHead,
 		LatestTag: "v1.2.3",
 		LatestSHA: "previous",
 		TaggedAt:  now.Add(-time.Hour),
@@ -69,7 +73,7 @@ func TestServiceCountTriggerCreatesOneTagAndObservesRelease(t *testing.T) {
 			{SHA: "one", Message: "feat: add release", MergedAt: now.Add(-30 * time.Minute), IssueRefs: []string{"example/repo#1"}},
 			{SHA: "two", Message: "fix: harden release", MergedAt: now.Add(-20 * time.Minute), IssueRefs: []string{"example/repo#2"}},
 		},
-		Checks: []Check{{SHA: "head", Name: "CI", Status: "completed", Conclusion: "success"}},
+		Checks: []Check{{SHA: releaseTestHead, Name: "CI", Status: "completed", Conclusion: "success", CheckRunID: 101}},
 	}, workflow: WorkflowRun{ID: 7, Status: "completed", Conclusion: "success"}, workflowFound: true}
 	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 2, MaxAge: 24 * time.Hour, RequireGreenCI: true, VersionBump: "auto"}, backend)
 
@@ -92,6 +96,15 @@ func TestServiceCountTriggerCreatesOneTagAndObservesRelease(t *testing.T) {
 		backend.mu.Unlock()
 		t.Fatalf("tag name = %q, want v1.3.0", backend.tags[0].Name)
 	}
+	manifest, err := provenance.FromTagMessage(backend.tags[0].Message, "example/repo", "v1.3.0", releaseTestHead)
+	if err != nil {
+		backend.mu.Unlock()
+		t.Fatalf("tag provenance error = %v", err)
+	}
+	if len(manifest.Checks) != 1 || manifest.Checks[0].Name != "CI" || manifest.Checks[0].CheckRunID != 101 {
+		backend.mu.Unlock()
+		t.Fatalf("tag provenance = %#v", manifest)
+	}
 	backend.mu.Unlock()
 
 	status, _ := service.Evaluate(context.Background(), now.Add(time.Minute))
@@ -106,7 +119,7 @@ func TestServiceRedCIFilesOneIssueAndNoTag(t *testing.T) {
 	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
 	backend := &fakeBackend{repo: Repository{
 		Name:      "example/repo",
-		HeadSHA:   "head",
+		HeadSHA:   releaseTestHead,
 		LatestTag: "v1.2.3",
 		LatestSHA: "previous",
 		Commits:   []Commit{{Message: "fix: broken", MergedAt: now.Add(-time.Hour), IssueRefs: []string{"example/repo#1"}}},
@@ -133,11 +146,11 @@ func TestServiceAgeTrigger(t *testing.T) {
 	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
 	backend := &fakeBackend{repo: Repository{
 		Name:      "example/repo",
-		HeadSHA:   "head",
+		HeadSHA:   releaseTestHead,
 		LatestTag: "v1.2.3",
 		LatestSHA: "previous",
 		Commits:   []Commit{{Message: "fix: aged change", MergedAt: now.Add(-25 * time.Hour), IssueRefs: []string{"example/repo#1"}}},
-		Checks:    []Check{{SHA: "head", Name: "CI", Status: "completed", Conclusion: "success"}},
+		Checks:    []Check{{SHA: releaseTestHead, Name: "CI", Status: "completed", Conclusion: "success"}},
 	}}
 	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 5, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
 	status, _ := service.Evaluate(context.Background(), now)
@@ -184,11 +197,11 @@ func TestServiceTagConflictIsAFailure(t *testing.T) {
 		tagErr: errors.New("existing tag targets another candidate"),
 		repo: Repository{
 			Name:      "example/repo",
-			HeadSHA:   "head",
+			HeadSHA:   releaseTestHead,
 			LatestTag: "v1.2.3",
 			LatestSHA: "previous",
 			Commits:   []Commit{{Message: "fix: retry status", MergedAt: now.Add(-time.Hour), IssueRefs: []string{"example/repo#1"}}},
-			Checks:    []Check{{SHA: "head", Name: "CI", Status: "completed", Conclusion: "success"}},
+			Checks:    []Check{{SHA: releaseTestHead, Name: "CI", Status: "completed", Conclusion: "success"}},
 		},
 	}
 	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 1, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
@@ -306,19 +319,19 @@ func TestMandatoryEvidence(t *testing.T) {
 		required                      []string
 		wantTag                       bool
 	}{
-		{"success", "head", "completed", "success", []string{"CI"}, true},
-		{"missing manifest", "head", "completed", "success", nil, false},
-		{"missing check", "head", "completed", "success", []string{"CI", "Security"}, false},
+		{"success", releaseTestHead, "completed", "success", []string{"CI"}, true},
+		{"missing manifest", releaseTestHead, "completed", "success", nil, false},
+		{"missing check", releaseTestHead, "completed", "success", []string{"CI", "Security"}, false},
 		{"stale", "old", "completed", "success", []string{"CI"}, false},
 		{"unknown sha", "", "completed", "success", []string{"CI"}, false},
-		{"cancelled", "head", "completed", "cancelled", []string{"CI"}, false},
-		{"skipped", "head", "completed", "skipped", []string{"CI"}, false},
-		{"neutral", "head", "completed", "neutral", []string{"CI"}, false},
-		{"pending", "head", "queued", "success", []string{"CI"}, false},
+		{"cancelled", releaseTestHead, "completed", "cancelled", []string{"CI"}, false},
+		{"skipped", releaseTestHead, "completed", "skipped", []string{"CI"}, false},
+		{"neutral", releaseTestHead, "completed", "neutral", []string{"CI"}, false},
+		{"pending", releaseTestHead, "queued", "success", []string{"CI"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			backend := &fakeBackend{repo: Repository{Name: "example/repo", HeadSHA: "head", Commits: []Commit{{IssueRefs: []string{"example/repo#1"}}}, Checks: []Check{{Name: "CI", SHA: tc.sha, Status: tc.status, Conclusion: tc.conclusion}}}}
+			backend := &fakeBackend{repo: Repository{Name: "example/repo", HeadSHA: releaseTestHead, Commits: []Commit{{IssueRefs: []string{"example/repo#1"}}}, Checks: []Check{{Name: "CI", SHA: tc.sha, Status: tc.status, Conclusion: tc.conclusion}}}}
 			New(Config{Enabled: true, MinMergedIssues: 1, RequiredCheckNames: tc.required}, backend).Evaluate(t.Context(), time.Now())
 			if (len(backend.tags) == 1) != tc.wantTag {
 				t.Fatalf("tags = %v", backend.tags)

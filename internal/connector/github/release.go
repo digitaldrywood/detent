@@ -53,6 +53,7 @@ type releaseRESTPullRequest struct {
 }
 
 type releaseRESTCheckRun struct {
+	ID         int64  `json:"id"`
 	HeadSHA    string `json:"head_sha"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
@@ -246,6 +247,7 @@ func (c *Connector) releaseChecks(ctx context.Context, base string, sha string) 
 			Status:     run.Status,
 			Conclusion: run.Conclusion,
 			RunID:      workflowRunID(run.DetailsURL),
+			CheckRunID: run.ID,
 		})
 	}
 	var combined releaseRESTStatus

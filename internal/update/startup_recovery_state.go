@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const startupRecoveryStateSchema = 1
+const (
+	startupRecoveryLegacyStateSchema = 1
+	startupRecoveryStateSchema       = 2
+)
 
 const startupRecoveryStateName = "detent-startup-recovery.json"
 
@@ -31,7 +34,9 @@ type StartupFailure struct {
 
 type PendingUpdate struct {
 	FromVersion              string        `json:"from_version"`
+	FromCommit               string        `json:"from_commit,omitempty"`
 	ToVersion                string        `json:"to_version"`
+	ToCommit                 string        `json:"to_commit"`
 	InstallSource            InstallSource `json:"install_source"`
 	ExecutablePath           string        `json:"executable_path"`
 	PreviousBinaryPath       string        `json:"previous_binary_path"`
@@ -82,7 +87,7 @@ func loadStartupRecoveryState(path string) (startupRecoveryState, bool, error) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return startupRecoveryState{}, false, fmt.Errorf("decode startup recovery state: %w", err)
 	}
-	if state.Schema != startupRecoveryStateSchema {
+	if state.Schema != startupRecoveryLegacyStateSchema && state.Schema != startupRecoveryStateSchema {
 		return startupRecoveryState{}, false, fmt.Errorf("decode startup recovery state: unsupported schema %d", state.Schema)
 	}
 	return state, true, nil
@@ -147,12 +152,14 @@ func recordPendingUpdate(path string, pending PendingUpdate) error {
 		return err
 	}
 	pending.FromVersion = strings.TrimSpace(pending.FromVersion)
+	pending.FromCommit = strings.TrimSpace(pending.FromCommit)
 	pending.ToVersion = strings.TrimSpace(pending.ToVersion)
+	pending.ToCommit = strings.TrimSpace(pending.ToCommit)
 	pending.ExecutablePath = strings.TrimSpace(pending.ExecutablePath)
 	pending.PreviousBinaryPath = strings.TrimSpace(pending.PreviousBinaryPath)
 	pending.InstallLockPath = strings.TrimSpace(pending.InstallLockPath)
-	if pending.FromVersion == "" || pending.ToVersion == "" || pending.ExecutablePath == "" || pending.PreviousBinaryPath == "" || pending.AppliedAt.IsZero() {
-		return errors.New("record pending update: versions, binary paths, and applied timestamp are required")
+	if pending.FromVersion == "" || pending.ToVersion == "" || pending.ToCommit == "" || pending.ExecutablePath == "" || pending.PreviousBinaryPath == "" || pending.AppliedAt.IsZero() {
+		return errors.New("record pending update: versions, target commit, binary paths, and applied timestamp are required")
 	}
 	state.PendingUpdate = &pending
 	return saveStartupRecoveryState(path, state)
