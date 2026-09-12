@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+const (
+	testPreviousCommit = "0123456789abcdef0123456789abcdef01234567"
+	testUpdatedCommit  = "89abcdef0123456789abcdef0123456789abcdef"
+)
+
 func TestStartupFailureBackoff(t *testing.T) {
 	t.Parallel()
 
@@ -162,7 +167,9 @@ func TestStartupRecoveryRollsBackRepeatedlyFailingUpdate(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), startupRecoveryStateName)
 	pending := PendingUpdate{
 		FromVersion:        "0.93.0",
+		FromCommit:         testPreviousCommit,
 		ToVersion:          "0.94.0",
+		ToCommit:           testUpdatedCommit,
 		InstallSource:      InstallSourceRelease,
 		ExecutablePath:     "/opt/detent/bin/detent",
 		PreviousBinaryPath: "/opt/detent/bin/detent.previous",
@@ -176,6 +183,7 @@ func TestStartupRecoveryRollsBackRepeatedlyFailingUpdate(t *testing.T) {
 		recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
 			StatePath:      statePath,
 			CurrentVersion: pending.ToVersion,
+			CurrentCommit:  pending.ToCommit,
 			GOOS:           "linux",
 			Rollback: func(_ context.Context, got PendingUpdate) error {
 				rollbackCalls++
@@ -234,14 +242,16 @@ func TestStartupRecoveryRestoresInstallLockAfterRollback(t *testing.T) {
 			if err := os.WriteFile(previous, []byte("previous"), 0o755); err != nil {
 				t.Fatalf("WriteFile(previous) error = %v", err)
 			}
-			if err := writeInstallLock(lockPath, executable, "0.94.0", time.Now()); err != nil {
+			if err := writeInstallLock(lockPath, executable, "0.94.0", testUpdatedCommit, time.Now()); err != nil {
 				t.Fatalf("writeInstallLock() error = %v", err)
 			}
 
 			statePath := filepath.Join(dir, startupRecoveryStateName)
 			pending := PendingUpdate{
 				FromVersion:              "0.93.0",
+				FromCommit:               testPreviousCommit,
 				ToVersion:                "0.94.0",
+				ToCommit:                 testUpdatedCommit,
 				InstallSource:            InstallSourceGoInstall,
 				ExecutablePath:           executable,
 				PreviousBinaryPath:       previous,
@@ -257,6 +267,7 @@ func TestStartupRecoveryRestoresInstallLockAfterRollback(t *testing.T) {
 				recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
 					StatePath:      statePath,
 					CurrentVersion: pending.ToVersion,
+					CurrentCommit:  pending.ToCommit,
 					ExecutablePath: executable,
 					GOOS:           "linux",
 					HomeDir:        dir,
@@ -302,46 +313,76 @@ func TestStartupRecoveryRestoresInstallLockAfterRollback(t *testing.T) {
 	}
 }
 
-func TestStartupRecoveryMarkHealthyCommitsPendingUpdate(t *testing.T) {
+func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, startupRecoveryStateName)
-	previousPath := filepath.Join(dir, "detent.previous")
-	if err := os.WriteFile(previousPath, []byte("previous"), 0o700); err != nil {
-		t.Fatalf("WriteFile(previous) error = %v", err)
+	tests := []struct {
+		name          string
+		currentCommit string
+		wantErr       bool
+	}{
+		{name: "matching full commit", currentCommit: testUpdatedCommit},
+		{name: "same version from wrong commit", currentCommit: testPreviousCommit, wantErr: true},
 	}
-	pending := PendingUpdate{
-		FromVersion:        "0.93.0",
-		ToVersion:          "0.94.0",
-		InstallSource:      InstallSourceRelease,
-		ExecutablePath:     filepath.Join(dir, "detent"),
-		PreviousBinaryPath: previousPath,
-		AppliedAt:          time.Date(2026, 8, 29, 1, 0, 0, 0, time.UTC),
-	}
-	if err := recordPendingUpdate(statePath, pending); err != nil {
-		t.Fatalf("recordPendingUpdate() error = %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	healthyAt := pending.AppliedAt.Add(time.Minute)
-	recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
-		StatePath:      statePath,
-		CurrentVersion: pending.ToVersion,
-		Now:            func() time.Time { return healthyAt },
-	})
-	if err := recovery.MarkHealthy(context.Background()); err != nil {
-		t.Fatalf("MarkHealthy() error = %v", err)
-	}
+			dir := t.TempDir()
+			statePath := filepath.Join(dir, startupRecoveryStateName)
+			previousPath := filepath.Join(dir, "detent.previous")
+			if err := os.WriteFile(previousPath, []byte("previous"), 0o700); err != nil {
+				t.Fatalf("WriteFile(previous) error = %v", err)
+			}
+			pending := PendingUpdate{
+				FromVersion:        "0.93.0",
+				FromCommit:         testPreviousCommit,
+				ToVersion:          "0.94.0",
+				ToCommit:           testUpdatedCommit,
+				InstallSource:      InstallSourceRelease,
+				ExecutablePath:     filepath.Join(dir, "detent"),
+				PreviousBinaryPath: previousPath,
+				AppliedAt:          time.Date(2026, 8, 29, 1, 0, 0, 0, time.UTC),
+			}
+			if err := recordPendingUpdate(statePath, pending); err != nil {
+				t.Fatalf("recordPendingUpdate() error = %v", err)
+			}
 
-	if _, err := os.Stat(previousPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("Stat(previous) error = %v, want not exist", err)
-	}
-	state := readTestStartupRecoveryState(t, statePath)
-	if state.PendingUpdate != nil || state.ActiveFailure != nil {
-		t.Fatalf("state = %#v, want healthy state without pending update or active failure", state)
-	}
-	if state.LastHealthyAt == nil || !state.LastHealthyAt.Equal(healthyAt) {
-		t.Fatalf("LastHealthyAt = %v, want %v", state.LastHealthyAt, healthyAt)
+			healthyAt := pending.AppliedAt.Add(time.Minute)
+			recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
+				StatePath:      statePath,
+				CurrentVersion: pending.ToVersion,
+				CurrentCommit:  tt.currentCommit,
+				Now:            func() time.Time { return healthyAt },
+			})
+			err := recovery.MarkHealthy(context.Background())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("MarkHealthy() error = nil, want commit mismatch")
+				}
+				if _, statErr := os.Stat(previousPath); statErr != nil {
+					t.Fatalf("Stat(previous) error = %v, want rollback material preserved", statErr)
+				}
+				state := readTestStartupRecoveryState(t, statePath)
+				if state.PendingUpdate == nil || state.LastHealthyAt != nil {
+					t.Fatalf("state = %#v, want pending update preserved and not healthy", state)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("MarkHealthy() error = %v", err)
+			}
+			if _, err := os.Stat(previousPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("Stat(previous) error = %v, want not exist", err)
+			}
+			state := readTestStartupRecoveryState(t, statePath)
+			if state.PendingUpdate != nil || state.ActiveFailure != nil {
+				t.Fatalf("state = %#v, want healthy state without pending update or active failure", state)
+			}
+			if state.LastHealthyAt == nil || !state.LastHealthyAt.Equal(healthyAt) {
+				t.Fatalf("LastHealthyAt = %v, want %v", state.LastHealthyAt, healthyAt)
+			}
+		})
 	}
 }
 

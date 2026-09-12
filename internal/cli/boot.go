@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -588,7 +589,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	readiness := startupReadiness{}
 	if cfg.StartupRecovery != nil {
 		readiness.AwaitServe = func(ctx context.Context) error {
-			return awaitStartupServer(ctx, startupServerURL(listener.Addr()))
+			return awaitStartupServer(ctx, startupServerURL(listener.Addr()), cfg.Build)
 		}
 		readiness.MarkHealthy = cfg.StartupRecovery.MarkHealthy
 	}
@@ -917,12 +918,14 @@ func runStartupAndServe(
 			select {
 			case result = <-results:
 			default:
-				completeStartupLifecycle(lifecycle, nil)
 				if readiness.MarkHealthy != nil {
 					if err := readiness.MarkHealthy(runCtx); err != nil {
-						slog.Default().Warn("record healthy startup failed", "error", err)
+						completeStartupLifecycle(lifecycle, err)
+						cancel()
+						return fmt.Errorf("verify healthy restarted build: %w", err)
 					}
 				}
+				completeStartupLifecycle(lifecycle, nil)
 				healthyMarked = true
 				result = <-results
 			}
@@ -946,9 +949,15 @@ func runStartupAndServe(
 			}
 			startupDone = true
 		case "readiness":
-			if result.err == nil {
-				serveReady = true
+			if result.err != nil {
+				if errors.Is(result.err, context.Canceled) && runCtx.Err() != nil {
+					continue
+				}
+				completeStartupLifecycle(lifecycle, result.err)
+				cancel()
+				return fmt.Errorf("verify restarted listener: %w", result.err)
 			}
+			serveReady = true
 		case "serve":
 			cancel()
 			if !startupDone {
@@ -981,8 +990,8 @@ func awaitStartupServeResult(results <-chan startupServeResult, name string) sta
 	return startupServeResult{name: name, err: context.Canceled}
 }
 
-func awaitStartupServer(ctx context.Context, baseURL string) error {
-	endpoint := strings.TrimRight(baseURL, "/") + "/.detent-startup-readiness"
+func awaitStartupServer(ctx context.Context, baseURL string, expected buildinfo.Info) error {
+	endpoint := strings.TrimRight(baseURL, "/") + "/health"
 	client := http.Client{Timeout: time.Second}
 	for {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -991,7 +1000,22 @@ func awaitStartupServer(ctx context.Context, baseURL string) error {
 		}
 		response, err := client.Do(request)
 		if err == nil {
-			_ = response.Body.Close()
+			var identity struct {
+				Version string `json:"version"`
+				Commit  string `json:"commit"`
+			}
+			decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&identity)
+			closeErr := response.Body.Close()
+			if decodeErr != nil {
+				return fmt.Errorf("decode startup listener identity: %w", decodeErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close startup listener response: %w", closeErr)
+			}
+			if strings.TrimSpace(identity.Version) != strings.TrimSpace(expected.Version) ||
+				!strings.EqualFold(strings.TrimSpace(identity.Commit), strings.TrimSpace(expected.Commit)) {
+				return fmt.Errorf("startup listener build %s/%s does not match restarted build %s/%s", identity.Version, identity.Commit, expected.Version, expected.Commit)
+			}
 			return nil
 		}
 		timer := time.NewTimer(25 * time.Millisecond)

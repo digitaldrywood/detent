@@ -132,6 +132,7 @@ func newDefaultUpdateRunner(context.Context) (updateRunner, error) {
 func defaultUpdateConfig(executable string, info versionInfo, goos string, goarch string) detentupdate.Config {
 	return detentupdate.Config{
 		CurrentVersion: info.Version,
+		CurrentCommit:  info.Commit,
 		ExecutablePath: executable,
 		GOOS:           goos,
 		GOARCH:         goarch,

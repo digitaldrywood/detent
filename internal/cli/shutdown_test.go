@@ -1252,6 +1252,52 @@ func TestRunStartupAndServeMarksHealthyAfterServingReadiness(t *testing.T) {
 	}
 }
 
+func TestRunStartupAndServeFailsClosedBeforeHealthy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		awaitErr   error
+		healthyErr error
+	}{
+		{name: "wrong restarted listener", awaitErr: errors.New("listener commit mismatch")},
+		{name: "pending commit mismatch", healthyErr: errors.New("pending commit mismatch")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			lifecycle := web.NewStartupLifecycle()
+			serveStopped := make(chan struct{})
+			err := runStartupAndServe(t.Context(), lifecycle, func(context.Context) error {
+				return nil
+			}, startupReadiness{
+				AwaitServe:  func(context.Context) error { return tt.awaitErr },
+				MarkHealthy: func(context.Context) error { return tt.healthyErr },
+			}, func(ctx context.Context) error {
+				<-ctx.Done()
+				close(serveStopped)
+				return ctx.Err()
+			})
+			wantErr := tt.awaitErr
+			if wantErr == nil {
+				wantErr = tt.healthyErr
+			}
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("runStartupAndServe() error = %v, want %v", err, wantErr)
+			}
+			if lifecycle.State() != web.StartupLifecycleFailed {
+				t.Fatalf("lifecycle = %q, want failed", lifecycle.State())
+			}
+			select {
+			case <-serveStopped:
+			case <-time.After(time.Second):
+				t.Fatal("serve did not stop after identity failure")
+			}
+		})
+	}
+}
+
 func TestRunningShutdownConfigComputesDrainTimeoutFromCurrentRegistry(t *testing.T) {
 	t.Parallel()
 

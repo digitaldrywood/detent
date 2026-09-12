@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
+
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -190,6 +192,7 @@ func TestSelectReleaseAssetsAndVerifyChecksum(t *testing.T) {
 			{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
 			{Name: "detent_1.2.4_checksums.txt", BrowserDownloadURL: "https://example.invalid/checksums"},
 			{Name: signatureName, BrowserDownloadURL: "https://example.invalid/checksums.minisig"},
+			{Name: provenanceAssetName, BrowserDownloadURL: "https://example.invalid/provenance"},
 		},
 	}, "linux", "amd64")
 	if err != nil {
@@ -284,31 +287,9 @@ func TestVerifyChecksumSignatureFailsClosedWithoutPinnedKey(t *testing.T) {
 	}
 }
 
-func TestNewServiceRequiresChecksumSignatureWithPinnedKey(t *testing.T) {
-	service := NewService(Config{})
-	if !service.cfg.RequireChecksumSignature {
-		t.Fatal("RequireChecksumSignature = false, want true with a pinned key")
-	}
+func TestDefaultChecksumSignatureKeyParses(t *testing.T) {
 	if _, _, err := parseMinisignPublicKey(defaultChecksumMinisignPublicKey); err != nil {
 		t.Fatalf("parseMinisignPublicKey(defaultChecksumMinisignPublicKey) error = %v", err)
-	}
-}
-
-func TestNewServiceGatesChecksumSignatureUntilConfigured(t *testing.T) {
-	previous := defaultChecksumMinisignPublicKey
-	defaultChecksumMinisignPublicKey = ""
-	t.Cleanup(func() {
-		defaultChecksumMinisignPublicKey = previous
-	})
-
-	defaultService := NewService(Config{})
-	if defaultService.cfg.RequireChecksumSignature {
-		t.Fatal("RequireChecksumSignature = true, want false without a pinned key")
-	}
-
-	injectedVerifier := NewService(Config{ChecksumSignatureVerifier: acceptChecksumSignature})
-	if !injectedVerifier.cfg.RequireChecksumSignature {
-		t.Fatal("RequireChecksumSignature = false, want true with injected verifier")
 	}
 }
 
@@ -505,8 +486,10 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 	checksumName := "detent_1.2.4_checksums.txt"
 	signatureName := checksumName + ".minisig"
 	archive := detentUpdateArchive(t, "updated")
-	sum := sha256.Sum256(archive)
-	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
+	provenanceBytes := testReleaseProvenance(t, "v1.2.4", testUpdatedCommit)
+	archiveSum := sha256.Sum256(archive)
+	provenanceSum := sha256.Sum256(provenanceBytes)
+	checksums := fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
@@ -525,13 +508,15 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 		switch r.URL.Path {
 		case "/releases":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `[{"tag_name":"v1.2.4","draft":false,"prerelease":false,"assets":[{"name":"%s","browser_download_url":"%s/archive"},{"name":"%s","browser_download_url":"%s/checksums"},{"name":"%s","browser_download_url":"%s/checksums.minisig"}]}]`, archiveName, server.URL, checksumName, server.URL, signatureName, server.URL)
+			fmt.Fprintf(w, `[{"tag_name":"v1.2.4","draft":false,"prerelease":false,"assets":[{"name":"%s","browser_download_url":"%s/archive"},{"name":"%s","browser_download_url":"%s/checksums"},{"name":"%s","browser_download_url":"%s/checksums.minisig"},{"name":"%s","browser_download_url":"%s/provenance"}]}]`, archiveName, server.URL, checksumName, server.URL, signatureName, server.URL, provenanceAssetName, server.URL)
 		case "/archive":
 			_, _ = w.Write(archive)
 		case "/checksums":
 			fmt.Fprint(w, checksums)
 		case "/checksums.minisig":
 			_, _ = w.Write(signature)
+		case "/provenance":
+			_, _ = w.Write(provenanceBytes)
 		default:
 			http.NotFound(w, r)
 		}
@@ -540,6 +525,7 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 
 	service := NewService(Config{
 		CurrentVersion: "1.2.3",
+		CurrentCommit:  testPreviousCommit,
 		ExecutablePath: binary,
 		GOOS:           "linux",
 		GOARCH:         "amd64",
@@ -549,7 +535,7 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 		}),
 		Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
 		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.2.4\n", nil
+			return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
 		},
 	})
 
@@ -600,7 +586,7 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 	if recoveryState.PendingUpdate == nil {
 		t.Fatal("PendingUpdate = nil, want rollback metadata")
 	}
-	if got := recoveryState.PendingUpdate; got.FromVersion != "1.2.3" || got.ToVersion != "1.2.4" || got.PreviousBinaryPath != previousPath {
+	if got := recoveryState.PendingUpdate; got.FromVersion != "1.2.3" || got.FromCommit != testPreviousCommit || got.ToVersion != "1.2.4" || got.ToCommit != testUpdatedCommit || got.PreviousBinaryPath != previousPath {
 		t.Fatalf("PendingUpdate = %#v, want 1.2.3 to 1.2.4 with previous binary", got)
 	}
 	if got := recoveryState.PendingUpdate; got.InstallLockPath != lockPath || !got.PreviousInstallLockFound || got.PreviousInstallLock != "binary="+binary+"\n" {
@@ -613,9 +599,13 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 	}); got != "1.2.4" {
 		t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
 	}
+	metadata, ok := readInstallLock(lockPath)
+	if !ok || metadata.commit != testUpdatedCommit {
+		t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
+	}
 }
 
-func TestServiceAppliesReleaseUpdateWithoutChecksumSignatureWhenKeyMissing(t *testing.T) {
+func TestServiceRejectsReleaseUpdateWithoutChecksumSignature(t *testing.T) {
 	previous := defaultChecksumMinisignPublicKey
 	defaultChecksumMinisignPublicKey = ""
 	t.Cleanup(func() {
@@ -668,18 +658,18 @@ func TestServiceAppliesReleaseUpdateWithoutChecksumSignatureWhenKeyMissing(t *te
 	})
 
 	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "does not include a minisign signature") {
+		t.Fatalf("Apply() error = %v, want missing signature", err)
 	}
-	if status.Action != ActionUpdated {
-		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
+	if status.Action != ActionRefused {
+		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
 	}
 	raw, err := os.ReadFile(binary)
 	if err != nil {
 		t.Fatalf("ReadFile(binary) error = %v", err)
 	}
-	if strings.TrimSpace(string(raw)) != "updated" {
-		t.Fatalf("updated binary = %q, want updated", raw)
+	if string(raw) != "old" {
+		t.Fatalf("binary = %q, want original", raw)
 	}
 }
 
@@ -721,6 +711,7 @@ func TestServiceRejectsBadChecksumSignatureBeforeReplacement(t *testing.T) {
 					{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
 					{Name: checksumName, BrowserDownloadURL: "https://example.invalid/checksums"},
 					{Name: signatureName, BrowserDownloadURL: "https://example.invalid/checksums.minisig"},
+					{Name: provenanceAssetName, BrowserDownloadURL: "https://example.invalid/provenance"},
 				},
 			}},
 			downloads: map[string][]byte{
@@ -754,6 +745,122 @@ func TestServiceRejectsBadChecksumSignatureBeforeReplacement(t *testing.T) {
 	}
 	if string(raw) != "old" {
 		t.Fatalf("binary = %q, want original binary", raw)
+	}
+}
+
+func TestServiceRejectsUntrustedReleaseIdentityBeforeReplacement(t *testing.T) {
+	t.Parallel()
+
+	validProvenance := testReleaseProvenance(t, "v1.2.4", testUpdatedCommit)
+	skippedProvenance, err := provenance.Marshal(provenance.Manifest{
+		Schema:     provenance.Schema,
+		Repository: releaseRepository,
+		Tag:        "v1.2.4",
+		Commit:     testUpdatedCommit,
+		Checks: []provenance.Check{{
+			Name:       "CI",
+			Status:     "completed",
+			Conclusion: "skipped",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal(skipped provenance) error = %v", err)
+	}
+
+	tests := []struct {
+		name            string
+		provenance      []byte
+		checksummed     []byte
+		candidateCommit string
+		wantErr         string
+	}{
+		{
+			name:            "tampered provenance",
+			provenance:      append(append([]byte(nil), validProvenance...), ' '),
+			checksummed:     validProvenance,
+			candidateCommit: testUpdatedCommit,
+			wantErr:         "checksum mismatch",
+		},
+		{
+			name:            "skipped mandatory check",
+			provenance:      skippedProvenance,
+			checksummed:     skippedProvenance,
+			candidateCommit: testUpdatedCommit,
+			wantErr:         "skipped",
+		},
+		{
+			name:            "same version from wrong commit",
+			provenance:      validProvenance,
+			checksummed:     validProvenance,
+			candidateCommit: testPreviousCommit,
+			wantErr:         "does not match tested release commit",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			binary := filepath.Join(dir, "detent")
+			lockPath := filepath.Join(dir, "install.lock")
+			if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+				t.Fatalf("WriteFile(binary) error = %v", err)
+			}
+			if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
+				t.Fatalf("WriteFile(lock) error = %v", err)
+			}
+			archiveName := "detent_1.2.4_linux_amd64.tar.gz"
+			checksumName := "detent_1.2.4_checksums.txt"
+			signatureName := checksumName + ".minisig"
+			archive := detentUpdateArchive(t, "candidate")
+			archiveSum := sha256.Sum256(archive)
+			provenanceSum := sha256.Sum256(tt.checksummed)
+			checksums := fmt.Appendf(nil, "%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
+			service := NewService(Config{
+				CurrentVersion: "1.2.3",
+				CurrentCommit:  testPreviousCommit,
+				ExecutablePath: binary,
+				GOOS:           "linux",
+				GOARCH:         "amd64",
+				Client: staticReleaseClient{
+					releases: []Release{{
+						TagName: "v1.2.4",
+						Assets: []Asset{
+							{Name: archiveName, BrowserDownloadURL: "archive"},
+							{Name: checksumName, BrowserDownloadURL: "checksums"},
+							{Name: signatureName, BrowserDownloadURL: "signature"},
+							{Name: provenanceAssetName, BrowserDownloadURL: "provenance"},
+						},
+					}},
+					downloads: map[string][]byte{
+						"archive":    archive,
+						"checksums":  checksums,
+						"signature":  []byte("valid signature"),
+						"provenance": tt.provenance,
+					},
+				},
+				Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+				BinaryVerifier: func(context.Context, string) (string, error) {
+					return "version: v1.2.4\ncommit: " + tt.candidateCommit + "\n", nil
+				},
+				ChecksumSignatureVerifier: acceptChecksumSignature,
+			})
+
+			status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+			if err == nil || !strings.Contains(status.Message, tt.wantErr) {
+				t.Fatalf("Apply() error = %v, message = %q, want containing %q", err, status.Message, tt.wantErr)
+			}
+			if status.Action != ActionRefused {
+				t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
+			}
+			raw, readErr := os.ReadFile(binary)
+			if readErr != nil {
+				t.Fatalf("ReadFile(binary) error = %v", readErr)
+			}
+			if string(raw) != "old" {
+				t.Fatalf("binary = %q, want original", raw)
+			}
+		})
 	}
 }
 
@@ -1014,17 +1121,21 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 	checksumName := "detent_1.2.4_checksums.txt"
 	signatureName := checksumName + ".minisig"
 	archive := detentUpdateArchive(t, "updated")
-	sum := sha256.Sum256(archive)
-	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
+	provenanceBytes := testReleaseProvenance(t, "v1.2.4", testUpdatedCommit)
+	archiveSum := sha256.Sum256(archive)
+	provenanceSum := sha256.Sum256(provenanceBytes)
+	checksums := fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
 	downloads := map[string][]byte{
 		"https://example.invalid/archive":           archive,
 		"https://example.invalid/checksums":         []byte(checksums),
 		"https://example.invalid/checksums.minisig": []byte("valid signature"),
+		"https://example.invalid/provenance":        provenanceBytes,
 	}
 	var stderr bytes.Buffer
 	var verifiedPath string
 	service := NewService(Config{
 		CurrentVersion: "1.2.3",
+		CurrentCommit:  testPreviousCommit,
 		ExecutablePath: binary,
 		GOOS:           "linux",
 		GOARCH:         "amd64",
@@ -1035,6 +1146,7 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 					{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
 					{Name: checksumName, BrowserDownloadURL: "https://example.invalid/checksums"},
 					{Name: signatureName, BrowserDownloadURL: "https://example.invalid/checksums.minisig"},
+					{Name: provenanceAssetName, BrowserDownloadURL: "https://example.invalid/provenance"},
 				},
 			}},
 			downloads: downloads,
@@ -1043,7 +1155,7 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 		HomeDir: tmp,
 		BinaryVerifier: func(_ context.Context, path string) (string, error) {
 			verifiedPath = path
-			return "version: v1.2.4\n", nil
+			return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
 		},
 		ChecksumSignatureVerifier: acceptChecksumSignature,
 	})
@@ -1422,6 +1534,25 @@ func testMinisignPublicKey(publicKey ed25519.PublicKey, keyID []byte) string {
 	packet := append([]byte("Ed"), keyID...)
 	packet = append(packet, publicKey...)
 	return base64.StdEncoding.EncodeToString(packet)
+}
+
+func testReleaseProvenance(t *testing.T, tag string, commit string) []byte {
+	t.Helper()
+	raw, err := provenance.Marshal(provenance.Manifest{
+		Schema:     provenance.Schema,
+		Repository: releaseRepository,
+		Tag:        tag,
+		Commit:     commit,
+		Checks: []provenance.Check{{
+			Name:       "CI",
+			Status:     "completed",
+			Conclusion: "success",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal(release provenance) error = %v", err)
+	}
+	return raw
 }
 
 func testMinisignSignature(t *testing.T, privateKey ed25519.PrivateKey, keyID []byte, message []byte, trustedComment string) []byte {
