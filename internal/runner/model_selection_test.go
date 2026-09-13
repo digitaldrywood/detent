@@ -280,6 +280,26 @@ func TestConfiguredEffortCeiling(t *testing.T) {
 	}
 }
 
+func TestResumeCatalogFailureKeepsPublicRejectionGeneric(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
+	identity := agentidentity.Configured("codex", "codex", "default", RoleCode, "gpt-6-astra", "", "xhigh", "", time.Now())
+	req := RunRequest{
+		Issue:       connector.Issue{Description: "```detent-agent\nschema: 1\neffort: medium\n```"},
+		RetryMode:   RetryModeResume,
+		ResumeState: store.AgentResumeState{ProviderThreadID: "thread-1", RuntimeIdentity: identity},
+	}
+	diagnostic := errors.New("stderr: failed to initialize sqlite state runtime")
+	got := resolveRequestAgentSelection(t.Context(), req, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{err: diagnostic})
+	if got.Err == nil || !strings.Contains(got.Err.Error(), diagnostic.Error()) {
+		t.Fatalf("attempt error = %v, want diagnostic %q", got.Err, diagnostic)
+	}
+	if len(got.Rejections) != 1 || strings.Contains(got.Rejections[0].Reason, diagnostic.Error()) {
+		t.Fatalf("public rejections = %#v, want one sanitized reason", got.Rejections)
+	}
+}
+
 func TestRunnerResumeUsesBoundedEffort(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
