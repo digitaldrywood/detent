@@ -892,11 +892,10 @@ func terminateInstallerProcessGroup(group int, snapshot installerProcessSnapshot
 	return err
 }
 
+const installerProcessEvidenceGuard = 10 * time.Second
+
 func installerProcessEvidence(group int) installerProcessSnapshot {
-	// This deadline is an OS deadlock guard, not part of installer timeout behavior.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return installerProcessEvidenceWithRunner(ctx, group, func(ctx context.Context) ([]byte, error) {
+	return installerProcessEvidenceWithRunner(group, context.WithTimeout, func(ctx context.Context) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,pgid=,stat=,comm=")
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
 		cmd.WaitDelay = time.Second
@@ -904,7 +903,14 @@ func installerProcessEvidence(group int) installerProcessSnapshot {
 	})
 }
 
-func installerProcessEvidenceWithRunner(ctx context.Context, group int, run func(context.Context) ([]byte, error)) installerProcessSnapshot {
+func installerProcessEvidenceWithRunner(
+	group int,
+	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc),
+	run func(context.Context) ([]byte, error),
+) installerProcessSnapshot {
+	// This deadline is an OS deadlock guard, not part of installer timeout behavior.
+	ctx, cancel := withTimeout(context.Background(), installerProcessEvidenceGuard)
+	defer cancel()
 	output, err := run(ctx)
 	if err != nil {
 		return installerProcessSnapshot{description: fmt.Sprintf("snapshot unavailable: %v", errors.Join(err, context.Cause(ctx)))}
@@ -917,17 +923,33 @@ func TestInstallerProcessEvidenceWaitsForDelayedSnapshot(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	requestedGuard := make(chan time.Duration, 1)
 	done := make(chan installerProcessSnapshot, 1)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
 	go func() {
-		done <- installerProcessEvidenceWithRunner(ctx, 100, func(context.Context) ([]byte, error) {
+		done <- installerProcessEvidenceWithRunner(100, func(parent context.Context, guard time.Duration) (context.Context, context.CancelFunc) {
+			requestedGuard <- guard
+			return context.WithCancel(parent)
+		}, func(context.Context) ([]byte, error) {
 			close(started)
 			<-release
 			return []byte("100 1 100 S /bin/sh\n"), nil
 		})
 	}()
-	<-started
+	select {
+	case guard := <-requestedGuard:
+		if guard != 10*time.Second {
+			t.Fatalf("installer process evidence guard = %s, want 10s", guard)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("installerProcessEvidenceWithRunner() did not request a timeout")
+	}
+	select {
+	case <-started:
+	case snapshot := <-done:
+		t.Fatalf("installerProcessEvidenceWithRunner() returned before starting the snapshot: %+v", snapshot)
+	case <-time.After(10 * time.Second):
+		t.Fatal("installerProcessEvidenceWithRunner() did not start the snapshot")
+	}
 	select {
 	case snapshot := <-done:
 		t.Fatalf("installerProcessEvidenceWithRunner() returned before delayed snapshot was released: %+v", snapshot)
