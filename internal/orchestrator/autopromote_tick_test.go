@@ -7067,3 +7067,72 @@ func (c *autoPromoteTickConnector) SetField(_ context.Context, issueID string, f
 	}
 	return nil
 }
+
+func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	memo := openValidatorMemoStore(t)
+	now := time.Date(2026, 9, 13, 15, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := autoPromoteValidatorTestConfig()
+	issue := autoPromoteTickIssue("issue-validator-after-workpad", []string{"bug"}, &connector.PullRequest{
+		Number:                 2530,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/2530",
+		BranchName:             "detent/digitaldrywood_detent_2530",
+		HeadSHA:                "head-validator-after-workpad",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#2529"}}
+	// The snapshot already carries the workpad, so the first evaluation is a
+	// workpad blocker and the validator stage is only reached after hydration.
+	issue.Comments = []connector.IssueComment{{
+		Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #2529\n\n### Validation\n- make check-fast passed.",
+	}}
+	if err := memo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+		ProjectID:  "detent",
+		IssueID:    issue.ID,
+		HeadSHA:    issue.PullRequest.HeadSHA,
+		Submitted:  true,
+		Verdict:    gate.ValidatorVerdictPass,
+		Score:      0.96,
+		Summary:    "acceptance satisfied",
+		Commented:  true,
+		RecordedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("RecordValidatorVerdict() error = %v", err)
+	}
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		resolvedIssues: []connector.Issue{{
+			ID:         "issue-2529",
+			Identifier: "digitaldrywood/detent#2529",
+			State:      "Done",
+		}},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:           cfg,
+		connector:     tracker,
+		validatorMemo: memo,
+		logger:        slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		now:           func() time.Time { return now },
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(ctx, &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v\nlogs:\n%s", got, want, logs.String())
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
+	}
+	if strings.Contains(logs.String(), "reason=validator_missing") {
+		t.Fatalf("stored verdict was not consulted after workpad hydration:\n%s", logs.String())
+	}
+}
