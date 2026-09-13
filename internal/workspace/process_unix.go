@@ -221,7 +221,7 @@ func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 	// outlives every scan deadline; -d cwd alone is one row per process.
 	// -O disables lsof's per-operation fork timeout machinery: on macOS its
 	// global filesystem lookup overhead can exhaust the deadline before output.
-	cmd := exec.CommandContext(ctx, "lsof", "-O", "-w", "-a", "-d", "cwd", "-F", "pn") // #nosec G204 -- fixed arguments, no shell.
+	cmd := exec.CommandContext(ctx, "lsof", "-O", "-w", "-d", "cwd", "-F", "pn") // #nosec G204 -- fixed arguments, no shell.
 	output, err := workspaceScanOutput(ctx, cmd)
 	if err != nil && len(output) == 0 {
 		var exitErr *exec.ExitError
