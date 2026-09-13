@@ -1992,6 +1992,7 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 		wantAction        string
 		wantReason        string
 		wantMerging       bool
+		wantDone          bool
 		wantRework        bool
 	}{
 		{
@@ -2001,6 +2002,18 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			wantLookupCalls:   1,
 			wantHydrateCalls:  1,
 			wantMerging:       true,
+		},
+		{
+			name:  "retired deliverable park with merged exact-head pull request completes",
+			cause: deliverableRecoveryNeedsHumanReason + ": pushed branch has no recoverable pull request",
+			lookupPullRequest: connector.PullRequest{
+				Number: 1775, BranchName: branch, State: "MERGED", HeadSHA: readyPullRequest.HeadSHA,
+				CIStatus: "success", CheckRunCount: 1,
+			},
+			lookupFound:      true,
+			wantLookupCalls:  1,
+			wantHydrateCalls: 1,
+			wantDone:         true,
 		},
 		{
 			name:              "invalid workpad repeated failure with unlinked exact-head pull request reconciles",
@@ -2166,6 +2179,18 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			if tt.wantMerging {
 				if len(tracker.updates) != 1 || tracker.updates[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: autoPromoteMergingState}) {
 					t.Fatalf("updates = %#v, want one Merging transition", tracker.updates)
+				}
+				return
+			}
+			if tt.wantDone {
+				if len(tracker.updates) != 1 || tracker.updates[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: "Done"}) {
+					t.Fatalf("updates = %#v, want one Done transition", tracker.updates)
+				}
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					t.Fatalf("Blocked[%q] still present after merged PR reconciliation", issue.ID)
+				}
+				if tracker.createCalls != 0 {
+					t.Fatalf("create calls = %d, want no redelivery after merge", tracker.createCalls)
 				}
 				return
 			}

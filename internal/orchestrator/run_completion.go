@@ -195,16 +195,19 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		deliverableLookup = o.lookupDeliverableRecovery(ctx, running, deliverableRecoveryErr)
 		deliverableLookup = o.createDeliverableRecoveryPullRequest(ctx, running, deliverableLookup)
 		if infrastructureErr, ok := o.deliverableRecoveryInfrastructureError(running, deliverableLookup.CreateError); ok {
-			event.Err = infrastructureErr
-			if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+			infrastructureEvent := event
+			infrastructureEvent.Err = infrastructureErr
+			if o.handleForgeUnavailableCompletion(ctx, state, infrastructureEvent, running) {
 				return
 			}
-			if o.handleTrackerUnavailableCompletion(ctx, state, event, running) {
+			if o.handleTrackerUnavailableCompletion(ctx, state, infrastructureEvent, running) {
 				return
 			}
-			if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
+			if o.handleGitHubRESTCapacityCompletion(ctx, state, infrastructureEvent, running) {
 				return
 			}
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, infrastructureErr)
+			return
 		}
 		if deliverableLookup.reconciles() {
 			running.Issue = deliverableRecoveryIssue(running, deliverableLookup)

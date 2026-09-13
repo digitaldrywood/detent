@@ -695,6 +695,17 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 			issue = lookedUp
 			signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "evaluate", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
+			if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
+				summary := staleMergedPullRequestSummaryFromIssue(issue)
+				decision := staleMergedPullRequestDecision(issue, summary)
+				targetState := staleMergedPullRequestTargetState(decision, o.cfg.AutoPromote, o.cfg.TerminalStates)
+				if targetState == "" || !o.applyStaleMergedPullRequestDecision(ctx, state, issue, summary, decision, targetState, now) {
+					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
+					return true, false
+				}
+				o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+				return true, true
+			}
 		case blockedReadyPullRequestLookupNoneReason:
 			if deliverableRecoveryPark(park) {
 				lookup := deliverableRecoveryLookupResult{
@@ -852,7 +863,7 @@ func (o *Orchestrator) lookupBlockedReadyPullRequest(
 	for attempt := 1; attempt <= blockedReadyPullRequestLookupAttempts; attempt++ {
 		pullRequest, found, err := lookup.LookupPullRequestByHead(ctx, repository, branch, headSHA)
 		if err == nil {
-			if !found || normalizePullRequestState(pullRequest.State) != "open" {
+			if !found {
 				return issue, blockedReadyPullRequestLookupNoneReason, nil
 			}
 			if strings.TrimSpace(pullRequest.BranchName) != branch || strings.TrimSpace(pullRequest.HeadSHA) != headSHA {
@@ -861,6 +872,10 @@ func (o *Orchestrator) lookupBlockedReadyPullRequest(
 					strings.TrimSpace(pullRequest.BranchName),
 					strings.TrimSpace(pullRequest.HeadSHA),
 				)
+			}
+			state := normalizePullRequestState(pullRequest.State)
+			if state != "open" && state != "merged" {
+				return issue, blockedReadyPullRequestLookupNoneReason, nil
 			}
 			candidate := cloneIssue(issue)
 			candidate.PRRepository = repository

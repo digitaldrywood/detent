@@ -160,7 +160,7 @@ func (o *Orchestrator) createDeliverableRecoveryPullRequest(
 	}
 	creator, ok := o.connector.(connector.PullRequestDraftCreator)
 	if !ok {
-		result.LookupResult += "; draft pull request creation unavailable: connector does not support it"
+		result.LookupResult = "draft pull request creation unavailable: connector does not support it"
 		return result
 	}
 	pullRequest, err := creator.CreateDraftPullRequest(
@@ -214,13 +214,16 @@ func (o *Orchestrator) deliverableRecoveryInfrastructureError(running Running, e
 		Status:         "failed",
 		Message:        err.Error(),
 	}
-	if !unavailable && !connector.IsRetryable(err) && !runpkg.IsDeliverableConfigurationError(configurationErr) {
-		return err, false
+	if unavailable {
+		return forgeavailability.NewError(forgeavailability.Scope{
+			Host:      forgeHostForIssue(running.Issue, o.cfg.ForgeHost),
+			Operation: operation,
+		}, class, err), true
 	}
-	return forgeavailability.NewError(forgeavailability.Scope{
-		Host:      forgeHostForIssue(running.Issue, o.cfg.ForgeHost),
-		Operation: operation,
-	}, class, err), true
+	if connector.IsRetryable(err) || runpkg.IsDeliverableConfigurationError(configurationErr) {
+		return err, true
+	}
+	return err, false
 }
 
 func deliverableRecoveryPullRequestBody(issue connector.Issue, branch string, headSHA string) string {

@@ -480,6 +480,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		wantMergedReason bool
 		wantReasonCode   string
 		wantForgeWait    bool
+		wantDeferred     bool
+		withoutCreator   bool
 		commitsAhead     int
 		remoteBranch     bool
 	}{
@@ -520,7 +522,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			createErr:       connector.NewRetryableError("github rate limited"),
 			wantLookupCalls: 3,
 			wantCreateCalls: 1,
-			wantForgeWait:   true,
+			wantDeferred:    true,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -529,7 +531,16 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			createErr:       errors.New("github authentication failed"),
 			wantLookupCalls: 3,
 			wantCreateCalls: 1,
-			wantForgeWait:   true,
+			wantDeferred:    true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "unsupported draft creation does not retry",
+			withoutCreator:  true,
+			wantBlocked:     true,
+			wantReason:      "draft pull request creation unavailable",
+			wantLookupCalls: 3,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -628,8 +639,15 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			}
 			attempts := &terminalRetryWorkAttemptStore{}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			var recoveryConnector connector.Connector = tracker
+			if tt.withoutCreator {
+				recoveryConnector = struct {
+					connector.Connector
+					connector.PullRequestHeadLookup
+				}{Connector: tracker, PullRequestHeadLookup: tracker}
+			}
 			o := &Orchestrator{
-				cfg: cfg, connector: tracker, workAttempts: attempts,
+				cfg: cfg, connector: recoveryConnector, workAttempts: attempts,
 				deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
 			}
 			state := newState(cfg)
@@ -731,6 +749,18 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				}
 				return
 			}
+			if tt.wantDeferred {
+				if _, deferred := state.deferredCompletions[issue.ID]; !deferred {
+					t.Fatalf("deferredCompletions[%q] missing after infrastructure failure", issue.ID)
+				}
+				if retry := state.Retry[issue.ID]; !retry.CompletionDeferred || retry.Attempt != 1 {
+					t.Fatalf("Retry[%q] = %#v, want same-attempt durable completion deferral", issue.ID, retry)
+				}
+				if len(attempts.completions) != 0 {
+					t.Fatalf("work attempt completions = %#v, want active deferred attempt", attempts.completions)
+				}
+				return
+			}
 			if tt.wantRetry {
 				if _, retrying := state.Retry[issue.ID]; !retrying {
 					t.Fatalf("Retry[%q] missing after machine-recoverable delivery failure", issue.ID)
@@ -765,6 +795,87 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
+	t.Parallel()
+
+	const (
+		branch  = "detent/acme_widgets_19"
+		headSHA = "deferred-head"
+	)
+	now := time.Date(2026, 9, 13, 16, 0, 0, 0, time.UTC)
+	issue := terminalRetryTestIssue("deferred-recovery")
+	issue.BranchName = branch
+	issue.PRRepository = "acme/widgets"
+	tracker := &terminalRetryConnector{
+		issues:    map[string]connector.Issue{issue.ID: cloneIssue(issue)},
+		createErr: connector.NewRetryableError("github rate limited"),
+	}
+	cfg := completionDeferralConfig()
+	path := filepath.Join(t.TempDir(), "attempts.db")
+	runtimeStore := openCompletionDeferralStoreWithoutCleanup(t, path)
+	attemptID := startCompletionDeferralAttempt(t, runtimeStore, issue, now)
+	orch := &Orchestrator{
+		cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return now },
+		deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
+	}
+	state := newState(cfg)
+	running := completionDeferralRunning(issue, attemptID, now)
+	running.WorkProductPushed = true
+	running.DiffStats = DiffStats{Status: "clean", HeadSHA: headSHA, DeliveryStateChecked: true, CommitsAhead: 1, RemoteBranchExists: true}
+	state.Running[issue.ID] = running
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+	event := completionDeferralEvent(issue, attemptID, now)
+	event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+	event.Result.PullRequestHeadPushed = true
+	event.Result.DiffStats = running.DiffStats
+	event.Err = &runpkg.DeliverableRecoveryError{Branch: branch, Err: errors.New("gh pr create failed")}
+
+	orch.handleRunResult(t.Context(), &state, event)
+	if _, deferred := state.deferredCompletions[issue.ID]; !deferred {
+		t.Fatal("draft creation rate limit did not defer completion")
+	}
+	if err := runtimeStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeStore = openCompletionDeferralStoreWithoutCleanup(t, path)
+	t.Cleanup(func() {
+		if err := runtimeStore.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	tracker.createErr = nil
+	tracker.created = &connector.PullRequest{Number: 19, BranchName: branch, State: "OPEN", HeadSHA: headSHA, Draft: true}
+	restartedAt := now.Add(time.Second)
+	restarted := &Orchestrator{
+		cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return restartedAt },
+		deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
+	}
+	recovered := newState(cfg)
+	restarted.recoverDurableWorkAttempts(t.Context(), &recovered, restartedAt)
+	record, deferred := recovered.deferredCompletions[issue.ID]
+	if !deferred {
+		t.Fatal("deliverable recovery completion deferral was not restored")
+	}
+	var restoredRecovery *runpkg.DeliverableRecoveryError
+	if !errors.As(record.completion().Err, &restoredRecovery) || restoredRecovery == nil || restoredRecovery.Branch != branch {
+		t.Fatalf("restored completion error = %#v, want deliverable recovery for %q", record.completion().Err, branch)
+	}
+	if !restarted.retryDeferredCompletions(t.Context(), &recovered, now.Add(cfg.PollInterval)) {
+		t.Fatal("restored deliverable recovery remained deferred after forge recovery")
+	}
+	if tracker.createCalls != 2 {
+		t.Fatalf("draft creation calls = %d, want failed call before restart and successful retry", tracker.createCalls)
+	}
+	attempt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalSuccess {
+		t.Fatalf("restored work attempt = %#v, want successful terminal reconciliation", attempt)
 	}
 }
 
