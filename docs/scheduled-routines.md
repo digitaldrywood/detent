@@ -17,9 +17,9 @@ schedule_ownership:
   key: example/production
   repository: example/detent-coordination
   branch: detent-schedule-coordination
-  lease_seconds: 300
-  heartbeat_seconds: 60
-  retry_seconds: 15
+  lease_seconds: 900
+  heartbeat_seconds: 300
+  retry_seconds: 120
   max_clock_skew_seconds: 15
 ```
 
@@ -37,6 +37,16 @@ local safety deadline. A contender waits through the lease TTL plus the
 configured maximum clock skew before takeover, so failover is bounded without
 allowing clock drift to create two active holders. Changing ownership backend
 settings requires a Detent restart.
+
+Each healthy ownership-enabled project creates one coordination commit per
+heartbeat, so the default cadence consumes `3600 / 300 = 12` GitHub
+content-creating requests per hour per project. The fleet-wide steady-state
+ownership budget is therefore `12 × active projects` mutations per hour (five
+projects use 60 per hour). Leave headroom below GitHub's 500 content-creating
+requests-per-hour secondary limit for lease handoffs, scheduled-operation
+markers, and other repository mutations. Contenders perform read-only
+acquisition checks every 120 seconds and wait through any GitHub rate-limit
+cooldown before checking again.
 
 Scheduled operation markers use durable records on the configured branch. A creator reserves
 the fingerprint before posting and records the resulting issue. If a create

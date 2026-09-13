@@ -233,7 +233,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
-		c.recordGraphQLRateLimitFailure(err, headerRateLimit)
+		c.recordGraphQLRateLimitFailure(err, headerRateLimit, receivedAt)
 		return c.trackerReadStatusError(trackerRead, token, c.endpoint, queryType, resp.StatusCode, err)
 	}
 
@@ -252,7 +252,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
-		c.recordGraphQLRateLimitFailure(err, headerRateLimit)
+		c.recordGraphQLRateLimitFailure(err, headerRateLimit, receivedAt)
 		return err
 	}
 	if queryType != graphQLQueryRateLimitProbe {
@@ -703,14 +703,29 @@ func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now ti
 	if !lookup || queryType == graphQLQueryRateLimitProbe {
 		return nil
 	}
-	c.mu.RLock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	status := c.graphQLRateLimitStatus
 	rateLimit := c.rateLimit
 	hasRateLimit := c.hasRateLimit
 	reserve := c.graphQLMinReserve
-	c.mu.RUnlock()
 
-	if status == connector.GraphQLRateLimitStatusBackoff || status == connector.GraphQLRateLimitStatusExhausted {
+	if status == connector.GraphQLRateLimitStatusBackoff {
+		backoffUntil := rateLimit.UpdatedAt.Add(rateLimit.RetryAfter)
+		if !backoffUntil.After(now) {
+			c.graphQLRateLimitStatus = ""
+			c.rateLimit.RetryAfter = 0
+			return nil
+		}
+		return &StatusError{
+			StatusCode:    http.StatusTooManyRequests,
+			Body:          "GitHub GraphQL rate-limit response is in backoff",
+			Err:           ErrRateLimited,
+			RateLimitKind: restRateLimitKindSecondaryThrottled,
+			RetryAfter:    backoffUntil.Sub(now),
+		}
+	}
+	if status == connector.GraphQLRateLimitStatusExhausted {
 		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
 	}
 	if reserve > 0 && hasRateLimit && rateLimit.Limit > 0 && rateLimit.Remaining <= reserve && !graphQLRateLimitSnapshotExpired(rateLimit, now) {
@@ -1427,9 +1442,32 @@ func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot gr
 	c.addGraphQLQueryCost(queryType, cost)
 }
 
-func (c *Client) recordGraphQLRateLimitFailure(err error, snapshot graphQLHeaderRateLimit) {
+func (c *Client) recordGraphQLRateLimitFailure(err error, snapshot graphQLHeaderRateLimit, now time.Time) {
 	status := graphQLRateLimitFailureStatus(err, snapshot)
 	if status == "" {
+		return
+	}
+	if status == connector.GraphQLRateLimitStatusBackoff {
+		delay := time.Minute
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) && statusErr.RetryAfter > 0 {
+			delay = statusErr.RetryAfter
+		} else if snapshot.Current.RetryAfter > 0 {
+			delay = snapshot.Current.RetryAfter
+		}
+		if statusErr != nil && statusErr.RetryAfter <= 0 {
+			statusErr.RetryAfter = delay
+		}
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.rateLimit.RetryAfter = delay
+		c.rateLimit.UpdatedAt = now
+		c.hasRateLimit = true
+		c.hasRateLimitUsage = true
+		if c.graphQLRateLimitStatus != connector.GraphQLRateLimitStatusExhausted {
+			c.graphQLRateLimitStatus = status
+		}
 		return
 	}
 

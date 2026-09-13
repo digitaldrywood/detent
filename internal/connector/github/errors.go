@@ -125,3 +125,10 @@ func (e *StatusError) Error() string {
 func (e *StatusError) Unwrap() error {
 	return e.Err
 }
+
+func (e *StatusError) RetryAfterDuration() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.RetryAfter
+}
