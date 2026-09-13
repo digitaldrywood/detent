@@ -57,6 +57,14 @@ func TestReapProcesses(t *testing.T) {
 			wantReaped: 0,
 		},
 		{
+			name:        "initial scan signals known owners before failing",
+			initial:     []int{processID},
+			scanErr:     scanErr,
+			wantSignals: []syscall.Signal{syscall.SIGTERM},
+			wantErr:     scanErr,
+			wantReaped:  1,
+		},
+		{
 			name:        "wait fails",
 			initial:     []int{processID},
 			waitErr:     waitErr,

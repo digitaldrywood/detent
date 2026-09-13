@@ -78,7 +78,13 @@ func reapProcessesWithWait(
 ) (int, error) {
 	pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, scan)
 	if err != nil {
-		return 0, fmt.Errorf("scan workspace processes: %w", err)
+		scanErr := fmt.Errorf("scan workspace processes: %w", err)
+		if len(pids) == 0 {
+			return 0, scanErr
+		}
+		reaped := make(map[int]struct{}, len(pids))
+		signalErr := signalWorkspaceProcesses(pids, syscall.SIGTERM, signal, reaped)
+		return len(reaped), errors.Join(scanErr, signalErr)
 	}
 	if len(pids) == 0 {
 		return 0, nil
@@ -168,17 +174,14 @@ func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 		return nil, errors.New("workspace path must not resolve to a filesystem root")
 	}
 	path = canonical
-	owned, err := scratchEnvironmentProcessIDs(ctx, path)
-	if err != nil {
-		return nil, err
-	}
+	owned, scratchErr := scratchEnvironmentProcessIDs(ctx, path)
 	var cwd []int
 	if runtime.GOOS == "linux" {
 		cwd, err = linuxWorkspaceProcessIDs(path)
 	} else {
 		cwd, err = lsofWorkspaceProcessIDs(ctx, path)
 	}
-	return append(owned, cwd...), err
+	return append(owned, cwd...), errors.Join(scratchErr, err)
 }
 
 func linuxWorkspaceProcessIDs(path string) ([]int, error) {
