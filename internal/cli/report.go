@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/workitem"
 )
 
 func newReportCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
@@ -109,6 +110,9 @@ func absolutizeReportLinks(report *operations.Report, base *url.URL) {
 	}
 	for i := range report.Decisions {
 		report.Decisions[i].URL = absolutizeReportLink(report.Decisions[i].URL, base)
+		if report.Decisions[i].Prerequisite != nil {
+			report.Decisions[i].Prerequisite.URL = absolutizeReportLink(report.Decisions[i].Prerequisite.URL, base)
+		}
 	}
 }
 
@@ -123,7 +127,7 @@ func absolutizeReportLink(link string, base *url.URL) string {
 	if projectID, ok := strings.CutPrefix(parsed.Path, "/api/v1/projects/"); ok && strings.HasSuffix(projectID, "/issues/explanation") {
 		projectID = strings.TrimSuffix(projectID, "/issues/explanation")
 		if reference := strings.TrimSpace(parsed.Query().Get("reference")); projectID != "" && reference != "" {
-			parsed = &url.URL{Path: "/projects/" + projectID + "/issues/" + reference}
+			return workitem.WorkItemURL(base.String(), projectID, reference)
 		}
 	}
 	return base.ResolveReference(parsed).String()
