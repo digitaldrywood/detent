@@ -46,12 +46,13 @@ func TestReadDarwinScratchEnvironment(t *testing.T) {
 		firstDelay time.Duration
 		retryFor   time.Duration
 		want       error
+		wantAlso   error
 		wantReads  int
 	}{
 		{name: "exec transition", first: unix.EIO, alive: true, wantReads: 2},
 		{name: "stack transition", first: unix.EINVAL, alive: true, wantReads: 2},
 		{name: "loaded stack transition", first: unix.EINVAL, alive: true, firstDelay: 150 * time.Millisecond, wantReads: 2},
-		{name: "stalled transition", first: unix.EINVAL, alive: true, always: true, retryFor: 10 * time.Millisecond, want: context.DeadlineExceeded},
+		{name: "stalled transition", first: unix.EINVAL, alive: true, always: true, retryFor: 10 * time.Millisecond, want: context.DeadlineExceeded, wantAlso: unix.EINVAL},
 		{name: "exited", first: unix.EINVAL, wantReads: 1},
 		{name: "missing", first: unix.ESRCH, wantReads: 1},
 		{name: "permission denied", first: unix.EPERM, alive: true, want: unix.EPERM, wantReads: 1},
@@ -89,6 +90,9 @@ func TestReadDarwinScratchEnvironment(t *testing.T) {
 			}, func() (bool, error) { return tt.alive, tt.inspectErr })
 			if !errors.Is(err, tt.want) || tt.wantReads > 0 && reads != tt.wantReads {
 				t.Fatalf("error = %v, reads = %d; want error %v, reads %d", err, reads, tt.want, tt.wantReads)
+			}
+			if tt.wantAlso != nil && !errors.Is(err, tt.wantAlso) {
+				t.Fatalf("error = %v, want additional error %v", err, tt.wantAlso)
 			}
 			if tt.wantReads == 2 && string(data) != "environment" {
 				t.Fatalf("environment = %q", data)

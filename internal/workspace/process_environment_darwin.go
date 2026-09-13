@@ -69,9 +69,10 @@ func readDarwinScratchEnvironment(ctx context.Context, retryTimeout time.Duratio
 	// cannot consume the reap operation's entire deadline before the scan advances.
 	ctx, cancel := context.WithTimeout(ctx, retryTimeout)
 	defer cancel()
+	var transientErr error
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, errors.Join(transientErr, err)
 		}
 		data, err := read()
 		if err == nil || errors.Is(err, unix.ESRCH) {
@@ -80,6 +81,7 @@ func readDarwinScratchEnvironment(ctx context.Context, retryTimeout time.Duratio
 		if !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EIO) {
 			return nil, err
 		}
+		transientErr = err
 		running, inspectErr := alive()
 		if errors.Is(inspectErr, unix.ESRCH) || inspectErr == nil && !running {
 			return nil, nil
