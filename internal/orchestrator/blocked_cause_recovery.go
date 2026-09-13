@@ -708,6 +708,10 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 			}
 		case blockedReadyPullRequestLookupNoneReason:
 			if deliverableRecoveryPark(park) {
+				if _, ok := o.connector.(connector.PullRequestDraftCreator); !ok {
+					o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
+					return true, false
+				}
 				lookup := deliverableRecoveryLookupResult{
 					Branch:               issue.BranchName,
 					Repository:           pullRequestRepository(issue),

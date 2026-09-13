@@ -648,6 +648,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			}
 			o := &Orchestrator{
 				cfg: cfg, connector: recoveryConnector, workAttempts: attempts,
+				recoveryInspector:       staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{HeadSHA: headSHA, WorkspacePresent: true, WorkspaceStatus: "present", Health: "ready"}},
 				deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
 			}
 			state := newState(cfg)
@@ -730,6 +731,20 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				if tt.lookup != nil && normalizePullRequestState(tt.lookup.State) == "closed" &&
 					(blocked.Issue.PullRequest == nil || normalizePullRequestState(blocked.Issue.PullRequest.State) != "closed") {
 					t.Fatalf("Blocked[%q].Issue.PullRequest = %#v, want fresh closed PR", issue.ID, blocked.Issue.PullRequest)
+				}
+				if tt.withoutCreator {
+					parkedIssue := tracker.issues[issue.ID]
+					o.recoverBlockedIssues(t.Context(), &state, []connector.Issue{parkedIssue}, now.Add(time.Minute))
+					blocked = state.Blocked[issue.ID]
+					if blocked.RecoveryAction != "hold" || blocked.RecoveryReason != blockedReadyPullRequestLookupUnavailableReason {
+						t.Fatalf("blocked recovery after sweep = %q/%q, want hold/%s", blocked.RecoveryAction, blocked.RecoveryReason, blockedReadyPullRequestLookupUnavailableReason)
+					}
+					if got := tracker.transitionStates(); !slices.Equal(got, []string{blockedStatusState}) {
+						t.Fatalf("state transitions after sweep = %v, want [%s]", got, blockedStatusState)
+					}
+					if _, retrying := state.Retry[issue.ID]; retrying {
+						t.Fatalf("Retry[%q] present after unsupported recovery sweep", issue.ID)
+					}
 				}
 				return
 			}
