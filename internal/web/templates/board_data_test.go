@@ -3209,6 +3209,25 @@ func TestBoardAlertsNameForgeWriteConditionDistinctly(t *testing.T) {
 	}
 }
 
+func TestBoardAlertsNameWorkerGitHubCredentialProjectPause(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC)
+	alerts := boardAlerts(telemetry.Snapshot{GeneratedAt: now, ForgeUnavailable: []telemetry.ForgeCondition{{
+		ProjectID: "detent", Host: "github.com", Operation: "gh pr create",
+		ErrorClass: "worker_github_credential_unavailable", NextProbeAt: now.Add(time.Minute),
+	}}})
+	if len(alerts) != 1 {
+		t.Fatalf("boardAlerts() = %#v, want one project pause", alerts)
+	}
+	combined := alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Detail
+	for _, want := range []string{"Project dispatch is paused", "successful write canary", "worker_github_credential_unavailable"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("credential alert = %q, want containing %q", combined, want)
+		}
+	}
+}
+
 func TestBoardAlertsSurfaceDispatchStallAsNeedsAttention(t *testing.T) {
 	t.Parallel()
 

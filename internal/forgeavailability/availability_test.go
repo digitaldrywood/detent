@@ -17,11 +17,14 @@ func TestClassify(t *testing.T) {
 		{name: "git DNS", operation: "git push", detail: "ssh: Could not resolve hostname github.com: no such host\nfatal: Could not read from remote repository.", wantClass: ClassTransport, want: true},
 		{name: "git fetch server error", operation: "git fetch", detail: "remote: HTTP 503 Service Unavailable", wantClass: ClassServer, want: true},
 		{name: "pull request server error", operation: "codex_apps/github.create_pull_request", detail: `{"status":502,"message":"unavailable"}`, wantClass: ClassServer, want: true},
+		{name: "GitHub CLI credential unavailable", operation: "gh pr create", detail: "run gh auth login or populate GH_TOKEN", wantClass: ClassWorkerGitHubCredentialUnavailable, want: true},
+		{name: "connector approval denied", operation: "codex_apps/github.create_pull_request", detail: "MCP tool call requires approval, but approval policy is never", wantClass: ClassWorkerGitHubCredentialUnavailable, want: true},
 		{name: "non fast forward", operation: "git push", detail: "[rejected] main -> main (non-fast-forward)"},
 		{name: "protected branch", operation: "git push", detail: "remote: protected branch hook declined"},
 		{name: "forbidden", operation: "git push", detail: "HTTP 403: forbidden"},
 		{name: "credential capacity", operation: "gh pr create", detail: "HTTP 429: too many requests"},
 		{name: "lookup is not a write", operation: "codex_apps/github.search_issues", detail: "HTTP 503"},
+		{name: "credential lookup is not a write", operation: "codex_apps/github.search_issues", detail: "MCP tool call requires approval, but approval policy is never"},
 	}
 
 	for _, tt := range tests {

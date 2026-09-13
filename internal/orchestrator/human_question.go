@@ -58,6 +58,9 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 			return fail(errors.New("expected one question request"))
 		}
+		if runner.IsWorkerGitHubCredentialQuestion(input.Question) {
+			return fail(errors.New("worker GitHub credential and connector write-policy failures are instance conditions; report the exact failure instead of asking the operator or creating a dependency"))
+		}
 		q := store.HumanQuestion{ProjectID: o.cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, Key: strings.TrimSpace(input.Key), Body: strings.TrimSpace(input.Question), WorkFingerprint: humanQuestionWorkFingerprint(issue)}
 		if strings.HasPrefix(q.Key, "migration:") {
 			q.WorkFingerprint = ""

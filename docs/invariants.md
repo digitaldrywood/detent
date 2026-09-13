@@ -82,6 +82,11 @@ still run in the prepared workspace, where startup failures have attempt context
 mechanisms as the main source of incidents; adding another conditional guard
 perpetuates that failure mode.
 
+Worker GitHub credential unavailability and connector write-policy denials reuse
+the forge-availability pause and write canary (#2548). They do not park an issue or
+create a human prerequisite, and the named project condition clears after a
+successful write proves recovery.
+
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
 Unknown constants, including concatenations, fail. Existing dynamic forwarding

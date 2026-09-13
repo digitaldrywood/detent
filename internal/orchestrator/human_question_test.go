@@ -156,6 +156,27 @@ func TestHumanQuestionRejectedPostCanRetry(t *testing.T) {
 	}
 }
 
+func TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite(t *testing.T) {
+	t.Parallel()
+
+	db := openWorkAttemptRecoveryStore(t, t.Context())
+	tracker := &questionTracker{Connector: memory.New(memory.Config{})}
+	o := &Orchestrator{connector: tracker, workAttempts: db}
+	request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#2548"}}
+	o.attachHumanQuestionTool(&request)
+	result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{
+		Name:      "ask_human_question",
+		Arguments: json.RawMessage(`{"key":"delivery","question":"Could you enable GitHub connector write access or open the PR manually?"}`),
+	})
+	if err != nil || result.Success || tracker.posts != 0 {
+		t.Fatalf("credential question = %+v, err %v, posts %d; want rejected without issue comment", result, err, tracker.posts)
+	}
+	records, err := db.(store.HumanQuestionStore).HumanQuestions(t.Context(), "", "issue")
+	if err != nil || len(records) != 0 {
+		t.Fatalf("credential question records = %+v, err %v; want none", records, err)
+	}
+}
+
 func TestHumanQuestionRestartAndConcurrentRequests(t *testing.T) {
 	t.Parallel()
 	for _, lostResponse := range []bool{false, true} {

@@ -11,6 +11,7 @@ import (
 	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -425,6 +426,12 @@ func boardForgeUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 		DetailRows:    rows,
 		Overflow:      overflow,
 		DeepLink:      "/health/ui",
+	}
+	for _, condition := range snapshot.ForgeUnavailable {
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			alert.DetailSummary = "Project dispatch is paused until a successful write canary proves the worker GitHub credential is available."
+			break
+		}
 	}
 	if len(snapshot.ForgeUnavailable) == 1 {
 		condition := snapshot.ForgeUnavailable[0]

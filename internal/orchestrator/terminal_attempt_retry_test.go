@@ -532,7 +532,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			createErr:       errors.New("github authentication failed"),
 			wantLookupCalls: 3,
 			wantCreateCalls: 1,
-			wantDeferred:    true,
+			wantForgeWait:   true,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},

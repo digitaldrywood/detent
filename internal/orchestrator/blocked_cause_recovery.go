@@ -13,6 +13,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -319,6 +320,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	park, currentParkFound := o.currentBlockedRecoveryPark(ctx, state, issue)
 	if currentParkFound {
 		park = o.normalizeCurrentBreakerRecoveryPark(ctx, state, issue, park)
+		if handled, transitioned := o.reconcileLegacyDeliverableCredentialPark(ctx, state, issue, park, now); handled {
+			return transitioned
+		}
 	}
 	derivedLaneReason := ""
 	derivationFailure := ""
@@ -543,6 +547,59 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	delete(state.Blocked, issue.ID)
 	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
 	return true
+}
+
+func (o *Orchestrator) reconcileLegacyDeliverableCredentialPark(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	park workflowLaneBlockedRecoveryMetadata,
+	now time.Time,
+) (bool, bool) {
+	if strings.TrimSpace(park.Cause) != deliverableConfigurationFailureCause {
+		return false, false
+	}
+	targetState := strings.TrimSpace(park.TargetState)
+	if targetState == "" || normalizeState(targetState) == normalizeState(blockedStatusState) {
+		targetState = autoPromoteReworkState
+	}
+	operation := "create_pull_request"
+	if strings.Contains(strings.ToLower(park.AttemptError), "git push") {
+		operation = "git push"
+	}
+	detail := strings.TrimSpace(park.AttemptError)
+	if detail == "" {
+		detail = "legacy worker GitHub credential park"
+	}
+	signature := blockedCauseRecoverySignature(deliverableConfigurationFailureCause, strings.TrimSpace(park.CauseFingerprint))
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "cause_blocked_recovery", metadata); err != nil {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, park.CauseFingerprint)
+		return true, false
+	}
+	issue.State = targetState
+	availabilityErr := forgeavailability.NewError(
+		forgeavailability.Scope{Host: forgeHostForIssue(issue, o.cfg.ForgeHost), Operation: operation},
+		forgeavailability.ClassWorkerGitHubCredentialUnavailable,
+		errors.New(detail),
+	)
+	condition := o.registerForgeUnavailable(state, availabilityErr, Running{Issue: issue, Attempt: park.AttemptNumber, WorkAttemptID: park.WorkAttemptID}, now)
+	state.Retry[issue.ID] = Retry{
+		Issue:            cloneIssue(issue),
+		Attempt:          park.AttemptNumber,
+		DueAt:            condition.NextProbeAt,
+		Error:            detail,
+		ForgeUnavailable: true,
+		ForgeHost:        condition.Host,
+		ForgeRetry: &runpkg.ForgeRetry{
+			Host:      condition.Host,
+			Operation: operation,
+			Branch:    strings.TrimSpace(issue.BranchName),
+		},
+	}
+	delete(state.Blocked, issue.ID)
+	o.logBlockedRecoveryDecision(issue, "transition", forgeavailability.ClassWorkerGitHubCredentialUnavailable, &park, park.CauseFingerprint)
+	return true, true
 }
 
 func (o *Orchestrator) reconcileObsoleteArtifactSpendProgressPark(

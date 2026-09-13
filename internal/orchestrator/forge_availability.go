@@ -133,6 +133,9 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 	if retry.ForgeUnavailable && condition.ProbeIssueID == "" && !now.Before(condition.NextProbeAt) {
 		return false
 	}
+	if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+		return true
+	}
 	return retry.ForgeUnavailable || mergeWorkerIssue(issue)
 }
 
@@ -312,11 +315,38 @@ func forgeWaitMetadataFromAttempt(attempt store.WorkAttempt) (forgeWaitMetadata,
 
 func validForgeAvailabilityClass(class string) bool {
 	switch strings.TrimSpace(class) {
-	case forgeavailability.ClassServer, forgeavailability.ClassTimeout, forgeavailability.ClassTransport:
+	case forgeavailability.ClassServer, forgeavailability.ClassTimeout, forgeavailability.ClassTransport,
+		forgeavailability.ClassWorkerGitHubCredentialUnavailable:
 		return true
 	default:
 		return false
 	}
+}
+
+func (o *Orchestrator) classifyWorkerGitHubCredentialUnavailable(err error, running Running) error {
+	if err == nil {
+		return nil
+	}
+	if availabilityErr, ok := forgeavailability.As(err); ok && availabilityErr != nil {
+		return err
+	}
+	if !runpkg.IsDeliverableConfigurationError(err) {
+		return err
+	}
+	operation := "create_pull_request"
+	var deliverableErr *runpkg.DeliverableCommandError
+	if errors.As(err, &deliverableErr) && deliverableErr != nil {
+		if candidate := strings.TrimSpace(deliverableErr.Operation); forgeavailability.WriteOperation(candidate) {
+			operation = candidate
+		} else if deliverableErr.OperationClass == "push" {
+			operation = "git push"
+		}
+	}
+	host := forgeavailability.HostFromText(errorString(err))
+	if host == "" {
+		host = forgeHostForIssue(running.Issue, o.cfg.ForgeHost)
+	}
+	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, forgeavailability.ClassWorkerGitHubCredentialUnavailable, err)
 }
 
 func (o *Orchestrator) validateForgeWaitIssues(ctx context.Context, issueIDs []string) (map[string]connector.Issue, bool) {

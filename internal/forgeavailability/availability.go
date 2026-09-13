@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	Condition      = "forge_unavailable"
-	ClassServer    = "server"
-	ClassTimeout   = "timeout"
-	ClassTransport = "transport"
+	Condition                              = "forge_unavailable"
+	ClassServer                            = "server"
+	ClassTimeout                           = "timeout"
+	ClassTransport                         = "transport"
+	ClassWorkerGitHubCredentialUnavailable = "worker_github_credential_unavailable"
 )
 
 var (
@@ -94,6 +95,9 @@ func Classify(operation string, detail string) (string, bool) {
 	if !WriteOperation(operation) || detail == "" {
 		return "", false
 	}
+	if WorkerGitHubCredentialUnavailable(detail) {
+		return ClassWorkerGitHubCredentialUnavailable, true
+	}
 	for _, excluded := range []string{
 		"http 401", "http 403", "http 429", "status 401", "status 403", "status 429",
 		"non-fast-forward", "protected branch", "pre-receive hook declined", "hook declined",
@@ -132,6 +136,38 @@ func Classify(operation string, detail string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func WorkerGitHubCredentialUnavailable(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	for _, phrase := range []string{
+		"gh auth login",
+		"populate gh_token",
+		"not logged into any github hosts",
+		"no credentials provided",
+		"bad credentials",
+		"authentication failed",
+		"authentication required",
+		"http 401",
+		"status 401",
+		"could not read username",
+		"permission denied (publickey)",
+		"github token is not configured",
+		"gh_token environment variable is empty",
+		"missing github authentication",
+		"missing github credentials",
+		"github authentication is unavailable",
+		"github credentials are unavailable",
+		"github credential injection is disabled",
+		"github credential policy is disabled",
+		"github_credential_policy: isolated_disabled",
+		"mcp tool call requires approval, but approval policy is never",
+	} {
+		if strings.Contains(detail, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func ProvesReachability(operation string, detail string) bool {

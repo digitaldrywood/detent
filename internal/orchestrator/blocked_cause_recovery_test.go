@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -118,6 +119,49 @@ func TestRecoverBlockedIssuesLogsDecisionForEveryBlockedIssue(t *testing.T) {
 				t.Fatalf("updates = %#v, want none", tracker.updates)
 			}
 		})
+	}
+}
+
+func TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	issue := dependencyAutoUnblockIssue("issue-legacy-credential", blockedStatusState)
+	issue.Identifier = "digitaldrywood/detent#2548"
+	issue.URL = "https://github.com/digitaldrywood/detent/issues/2548"
+	issue.BranchName = "detent/2548"
+	issue.WorkpadSignal = &workpad.Signal{Status: workpad.StatusBlocked, HumanAction: "configure GitHub CLI authentication"}
+	park := &workflowLaneBlockedRecoveryMetadata{
+		Owner:            blockedRecoveryOwnerHuman,
+		Cause:            deliverableConfigurationFailureCause,
+		Predicate:        blockedRecoveryPredicateManaged,
+		CauseFingerprint: "legacy-credential-park",
+		TargetState:      autoPromoteReworkState,
+		AttemptNumber:    3,
+		AttemptError:     "deliverable command failed (gh pr create): run gh auth login",
+	}
+	tracker := &dependencyAutoUnblockConnector{}
+	orch := blockedCauseTestOrchestrator(tracker)
+	orch.cfg.Project.ID = "detent"
+	orch.cfg.ForgeHost = "github.com"
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: deliverableConfigurationFailureCause, BlockedAt: now.Add(-time.Hour), Recovery: park}
+
+	transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := transitioned[issue.ID]; !ok || len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteReworkState {
+		t.Fatalf("transitioned = %#v updates = %#v, want legacy park returned to Rework", transitioned, tracker.updates)
+	}
+	condition, ok := state.ForgeUnavailable["github.com"]
+	if !ok || condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+		t.Fatalf("ForgeUnavailable = %#v, want worker credential pause", state.ForgeUnavailable)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok || !retry.ForgeUnavailable || retry.Issue.State != autoPromoteReworkState || retry.ForgeRetry == nil {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt write canary in Rework", issue.ID, retry)
+	}
+	if len(state.Blocked) != 0 || len(tracker.comments) != 0 {
+		t.Fatalf("blocked = %#v comments = %#v, want no legacy issue park or new park comment", state.Blocked, tracker.comments)
 	}
 }
 

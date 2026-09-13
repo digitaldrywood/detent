@@ -241,6 +241,7 @@ func TestWorkerCredentialBlockerError(t *testing.T) {
 		{name: "credential detail after generic blocker heading", message: "Blocked.\n\nGitHub authentication is unavailable, so `gh issue view` fails.", want: true},
 		{name: "reported disabled credential policy", message: "Work is blocked: GitHub credential injection is disabled for this worker.", want: true},
 		{name: "reported git credential failure", message: "Blocked because git push failed: could not read username for HTTPS remote.", want: true},
+		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?", want: true},
 		{name: "successful fix mentioning incident", message: "Fixed the path that previously reported Blocked by missing GitHub authentication."},
 		{name: "unrelated blocker", message: "Blocked by an ambiguous product decision."},
 		{name: "unrelated authentication blocker", message: "Blocked because authentication is required for the private package registry."},

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -727,6 +728,9 @@ func healthNaturalList(values []string) string {
 
 func forgeUnavailableHealthDetail(conditions []telemetry.ForgeCondition) string {
 	if len(conditions) == 1 {
+		if conditions[0].ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			return "Worker GitHub credential is unavailable; project dispatch is paused until a successful write canary proves recovery."
+		}
 		host := strings.TrimSpace(conditions[0].Host)
 		if host == "" {
 			host = "The configured forge"
