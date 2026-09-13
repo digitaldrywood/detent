@@ -244,6 +244,10 @@ func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.T
 		return Result{}, fmt.Errorf("%w: %s", ErrRoutineNotFound, strings.TrimSpace(name))
 	}
 	if scheduled {
+		if ctx.Err() != nil {
+			m.advanceBaseline(definition.Name, scheduledFor)
+			return Result{}, nil
+		}
 		next, err := m.nextForDefinition(ctx, settings, definition, baseline)
 		if err != nil {
 			return Result{}, err
@@ -258,18 +262,25 @@ func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.T
 	if completedAt := m.now(); completedAt.After(baselineAt) {
 		baselineAt = completedAt
 	}
-	m.mu.Lock()
-	if baseline, exists := m.baselines[definition.Name]; exists && baselineAt.After(baseline) {
-		m.baselines[definition.Name] = baselineAt
-	}
-	m.mu.Unlock()
+	m.advanceBaseline(definition.Name, baselineAt)
 	if !scheduled {
 		m.signalUpdate()
 	}
 	return result, err
 }
 
+func (m *Manager) advanceBaseline(name string, at time.Time) {
+	m.mu.Lock()
+	if baseline, exists := m.baselines[name]; exists && at.After(baseline) {
+		m.baselines[name] = at
+	}
+	m.mu.Unlock()
+}
+
 func (m *Manager) runOnce(ctx context.Context, settings Settings, definition config.Routine, scheduledFor time.Time, scheduled bool) (result Result, runErr error) {
+	if scheduled && ctx.Err() != nil {
+		return Result{}, nil
+	}
 	startedAt := m.now().UTC()
 	record := RunRecord{
 		ProjectID:    settings.ProjectID,
@@ -552,8 +563,14 @@ func (m *Manager) nextForDefinition(ctx context.Context, settings Settings, defi
 	}
 	location := m.now().Location()
 	after := baseline.In(location)
-	if found && last.StartedAt.After(after) {
-		after = last.StartedAt.In(location)
+	if found {
+		lastBoundary := last.ScheduledFor
+		if last.StartedAt.After(lastBoundary) {
+			lastBoundary = last.StartedAt
+		}
+		if lastBoundary.After(after) {
+			after = lastBoundary.In(location)
+		}
 	}
 	return schedule.Next(after), nil
 }
