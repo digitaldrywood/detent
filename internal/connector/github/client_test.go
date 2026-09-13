@@ -240,6 +240,80 @@ func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.
 	}
 }
 
+func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		retryAfter string
+		wantDelay  time.Duration
+	}{
+		{name: "retry after", retryAfter: "120", wantDelay: 2 * time.Minute},
+		{name: "documented fallback", wantDelay: time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-RateLimit-Limit", "5000")
+				w.Header().Set("X-RateLimit-Used", "1000")
+				w.Header().Set("X-RateLimit-Remaining", "4000")
+				if calls.Add(1) == 1 {
+					if tt.retryAfter != "" {
+						w.Header().Set("Retry-After", tt.retryAfter)
+					}
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"}}}`))
+			}))
+			t.Cleanup(server.Close)
+
+			client, err := NewClient(ClientConfig{
+				Endpoint:    server.URL,
+				TokenSource: StaticTokenSource("test-token"),
+				HTTPClient:  server.Client(),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			err = client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil)
+			var statusErr *StatusError
+			if !errors.As(err, &statusErr) || statusErr.RateLimitKind != restRateLimitKindSecondaryThrottled || statusErr.RetryAfter != tt.wantDelay {
+				t.Fatalf("first GraphQL() error = %#v, want secondary backoff %s", statusErr, tt.wantDelay)
+			}
+
+			err = client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil)
+			if !errors.As(err, &statusErr) || statusErr.RetryAfter <= 0 || statusErr.RetryAfter > tt.wantDelay {
+				t.Fatalf("GraphQL() during backoff error = %#v, want remaining delay through %s", statusErr, tt.wantDelay)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("HTTP calls during backoff = %d, want 1", got)
+			}
+
+			client.mu.Lock()
+			client.rateLimit.UpdatedAt = time.Now().Add(-tt.wantDelay - time.Second)
+			client.mu.Unlock()
+
+			if err := client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil); err != nil {
+				t.Fatalf("GraphQL() after backoff expiry error = %v", err)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("HTTP calls after backoff expiry = %d, want 2", got)
+			}
+			if got := client.GraphQLRateLimitStatus(); got != "" {
+				t.Fatalf("GraphQLRateLimitStatus() = %q, want cleared", got)
+			}
+		})
+	}
+}
+
 func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
 	t.Parallel()
 

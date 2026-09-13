@@ -110,6 +110,50 @@ func TestRunStopsWorkBeforeReleasingLease(t *testing.T) {
 	}
 }
 
+func TestRunWaitsForAcquisitionBackoffExpiry(t *testing.T) {
+	t.Parallel()
+	clock := newTestClock(time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC))
+	baseStore := newMemoryCoordinationStore(clock.Now)
+	store := &rateLimitedCoordinationStore{
+		Store: baseStore,
+		err:   retryAfterTestError{delay: 2 * time.Minute},
+	}
+	config := testConfig()
+	var waits []time.Duration
+	var states []error
+	ctx, cancel := context.WithCancel(t.Context())
+	manager, err := New(config, "alpha", store, Dependencies{
+		Now:   clock.Now,
+		Token: func() (string, error) { return "alpha-token", nil },
+		State: func(err error) { states = append(states, err) },
+		Wait: func(_ context.Context, delay time.Duration) error {
+			waits = append(waits, delay)
+			clock.Advance(delay)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	err = manager.Run(ctx, func(context.Context) error {
+		cancel()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(waits) != 1 || waits[0] != 2*time.Minute {
+		t.Fatalf("acquisition waits = %v, want [2m0s]", waits)
+	}
+	if got := store.GetCalls(); got < 2 {
+		t.Fatalf("Get() calls = %d, want acquisition retried after backoff", got)
+	}
+	if len(states) != 2 || states[0] == nil || states[1] != nil {
+		t.Fatalf("ownership states = %v, want degraded then recovered", states)
+	}
+}
+
 type acquireResult struct {
 	lease    Lease
 	acquired bool
@@ -142,6 +186,43 @@ type memoryCoordinationStore struct {
 	now     func() time.Time
 	version int
 	records map[string]coordination.Record
+}
+
+type rateLimitedCoordinationStore struct {
+	coordination.Store
+	mu       sync.Mutex
+	err      error
+	getCalls int
+}
+
+type retryAfterTestError struct {
+	delay time.Duration
+}
+
+func (e retryAfterTestError) Error() string {
+	return "rate limited"
+}
+
+func (e retryAfterTestError) RetryAfterDuration() time.Duration {
+	return e.delay
+}
+
+func (s *rateLimitedCoordinationStore) Get(ctx context.Context, key string) (coordination.Record, bool, error) {
+	s.mu.Lock()
+	s.getCalls++
+	err := s.err
+	s.err = nil
+	s.mu.Unlock()
+	if err != nil {
+		return coordination.Record{}, false, err
+	}
+	return s.Store.Get(ctx, key)
+}
+
+func (s *rateLimitedCoordinationStore) GetCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getCalls
 }
 
 func newMemoryCoordinationStore(now func() time.Time) *memoryCoordinationStore {
