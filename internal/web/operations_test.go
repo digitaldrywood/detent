@@ -290,6 +290,15 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			wantQuestion: "credentials are unavailable — restore the credentials",
 		},
 		{
+			name: "human blocker without explicit recovery action",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{{ID: "unassigned", ProjectID: "detent", Identifier: "digitaldrywood/detent#2396", Title: "Assign the parked issue", State: "Blocked", URL: "https://github.com/digitaldrywood/detent/issues/2396"}},
+				Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "unassigned", ProjectID: "detent", Identifier: "digitaldrywood/detent#2396", Title: "Assign the parked issue", State: "Blocked", URL: "https://github.com/digitaldrywood/detent/issues/2396"}, Source: telemetry.BlockedSourceOwnership, Error: "issue needs an assignee under ownership_mode: assignee", RecoveryReason: "human_blocker"}},
+			},
+			wantKind:     "blocked_park",
+			wantQuestion: "issue needs an assignee under ownership_mode: assignee",
+		},
+		{
 			name:             "pull request review gate",
 			configureProject: true,
 			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
