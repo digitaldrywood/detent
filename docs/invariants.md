@@ -97,6 +97,12 @@ when the CLI acknowledgement leaves the issue in Blocked; automatic unparks and
 unrelated issue history remain untouched. This consolidates operator retry intent
 instead of adding another breaker or recovery loop.
 
+Scheduled routine occurrences advance from their durable `scheduled_for` identity
+regardless of success or failure. A selected occurrence whose existing ownership
+context is already canceled is consumed without starting an agent. This removes the
+implicit same-slot retry and relies on the existing schedule-ownership context rather
+than adding a retry, backoff, or lease mechanism (#2526).
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.
