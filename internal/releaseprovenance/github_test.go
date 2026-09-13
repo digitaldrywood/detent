@@ -35,7 +35,7 @@ func TestVerifyGitHubEvidence(t *testing.T) {
 		}, mutateEvidence: func(e *GitHubEvidence) {
 			e.Checks = append(e.Checks, ObservedCheck{Name: "Security", Status: "completed", Conclusion: "success", Commit: testCommit, CheckRunID: 77, IntegrationID: 15368})
 		}},
-		{name: "missing immutable check run", mutateManifest: func(m *Manifest) { m.Checks[0].CheckRunID = 0 }, wantErr: "missing an immutable check-run ID"},
+		{name: "missing immutable evidence ID", mutateManifest: func(m *Manifest) { m.Checks[0].CheckRunID = 0 }, wantErr: "missing an immutable evidence ID"},
 		{name: "wrong commit", mutateEvidence: func(e *GitHubEvidence) { e.Checks[0].Commit = testOtherCommit }, wantErr: "no authenticated"},
 		{name: "stale check run", mutateEvidence: func(e *GitHubEvidence) { e.Checks[0].CheckRunID = 41 }, wantErr: "no authenticated"},
 		{name: "wrong integration", mutateEvidence: func(e *GitHubEvidence) { e.Checks[0].IntegrationID = 99 }, wantErr: "no authenticated"},
@@ -45,6 +45,16 @@ func TestVerifyGitHubEvidence(t *testing.T) {
 				ObservedCheck{Name: "CI", Status: "completed", Conclusion: "failure", Commit: testCommit, CheckRunID: 43, IntegrationID: 15368},
 			)
 		}, wantErr: "newer authenticated check run"},
+		{name: "older success does not mask newer failed commit status", mutateManifest: func(m *Manifest) {
+			m.Checks[0].CheckRunID = 0
+			m.Checks[0].StatusID = 42
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = []RepositoryRequirement{{Name: "CI"}}
+			e.Checks = []ObservedCheck{
+				{Name: "CI", Status: "completed", Conclusion: "success", Commit: testCommit, StatusID: 42},
+				{Name: "CI", Status: "completed", Conclusion: "failure", Commit: testCommit, StatusID: 43},
+			}
+		}, wantErr: "newer authenticated commit status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

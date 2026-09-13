@@ -35,6 +35,8 @@ func TestValidate(t *testing.T) {
 		{name: "cancelled check", commit: testCommit, mutate: func(m *Manifest) { m.Checks[0].Conclusion = "cancelled" }, wantErr: "want completed/success"},
 		{name: "skipped check", commit: testCommit, mutate: func(m *Manifest) { m.Checks[0].Conclusion = "skipped" }, wantErr: "want completed/success"},
 		{name: "stale check", commit: testCommit, mutate: func(m *Manifest) { m.Checks[0].Conclusion = "stale" }, wantErr: "want completed/success"},
+		{name: "missing immutable evidence ID", commit: testCommit, mutate: func(m *Manifest) { m.Checks[0].CheckRunID = 0 }, wantErr: "missing an immutable evidence ID"},
+		{name: "ambiguous immutable evidence IDs", commit: testCommit, mutate: func(m *Manifest) { m.Checks[0].StatusID = 41 }, wantErr: "ambiguous immutable evidence IDs"},
 	}
 
 	for _, tt := range tests {
@@ -67,7 +69,7 @@ func TestTagAnnotationRoundTrip(t *testing.T) {
 		Repository: "digitaldrywood/detent",
 		Tag:        "v1.2.3",
 		Commit:     testCommit,
-		Checks:     []Check{{Name: "CI", Status: "completed", Conclusion: "success"}},
+		Checks:     []Check{{Name: "CI", Status: "completed", Conclusion: "success", StatusID: 42}},
 	}
 	annotation, err := Annotation(manifest)
 	if err != nil {
@@ -77,7 +79,7 @@ func TestTagAnnotationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromTagMessage() error = %v", err)
 	}
-	if got.Commit != manifest.Commit || len(got.Checks) != 1 || got.Checks[0].Name != "CI" {
+	if got.Commit != manifest.Commit || len(got.Checks) != 1 || got.Checks[0].Name != "CI" || got.Checks[0].StatusID != 42 {
 		t.Fatalf("FromTagMessage() = %#v, want %#v", got, manifest)
 	}
 }
@@ -118,7 +120,7 @@ func TestFromTagMessageRejectsMultipleAnnotations(t *testing.T) {
 		Repository: "digitaldrywood/detent",
 		Tag:        "v1.2.3",
 		Commit:     testCommit,
-		Checks:     []Check{{Name: "CI", Status: "completed", Conclusion: "success"}},
+		Checks:     []Check{{Name: "CI", Status: "completed", Conclusion: "success", CheckRunID: 42}},
 	}
 	annotation, err := Annotation(manifest)
 	if err != nil {

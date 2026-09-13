@@ -33,6 +33,7 @@ func run(args []string, stderr io.Writer) error {
 	checkRunsPath := flags.String("github-check-runs", "", "authenticated GitHub check-runs response")
 	statusesPath := flags.String("github-statuses", "", "authenticated GitHub combined-status response")
 	rulesetsPath := flags.String("github-rulesets", "", "authenticated active branch rulesets as JSON values")
+	requiredCheckNamesJSON := flags.String("required-check-names-json", "", "authoritative JSON array of release-only required check names")
 	outputPath := flags.String("output", "", "path for canonical release provenance JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -49,6 +50,9 @@ func run(args []string, stderr io.Writer) error {
 	if strings.TrimSpace(*checkRunsPath) == "" || strings.TrimSpace(*statusesPath) == "" || strings.TrimSpace(*rulesetsPath) == "" {
 		return errors.New("-github-check-runs, -github-statuses, and -github-rulesets are required")
 	}
+	if strings.TrimSpace(*requiredCheckNamesJSON) == "" {
+		return errors.New("-required-check-names-json is required, using [] when there are no release-only checks")
+	}
 	raw, err := os.ReadFile(*tagMessagePath)
 	if err != nil {
 		return fmt.Errorf("read release tag message: %w", err)
@@ -63,6 +67,13 @@ func run(args []string, stderr io.Writer) error {
 	evidence, err := loadGitHubEvidence(*checkRunsPath, *statusesPath, *rulesetsPath, *defaultBranchRef)
 	if err != nil {
 		return err
+	}
+	requiredCheckNames, err := parseRequiredCheckNames(*requiredCheckNamesJSON)
+	if err != nil {
+		return err
+	}
+	for _, name := range requiredCheckNames {
+		evidence.RequiredChecks = append(evidence.RequiredChecks, provenance.RepositoryRequirement{Name: name})
 	}
 	if err := provenance.VerifyGitHubEvidence(manifest, evidence); err != nil {
 		return fmt.Errorf("verify authenticated GitHub release evidence: %w", err)
@@ -97,6 +108,7 @@ type checkRunsResponse struct {
 type statusesResponse struct {
 	SHA      string `json:"sha"`
 	Statuses []struct {
+		ID      int64  `json:"id"`
 		Context string `json:"context"`
 		State   string `json:"state"`
 	} `json:"statuses"`
@@ -151,7 +163,7 @@ func loadGitHubEvidence(checkRunsPath string, statusesPath string, rulesetsPath 
 		})
 	}
 	for _, status := range statuses.Statuses {
-		observed := provenance.ObservedCheck{Name: status.Context, Commit: statuses.SHA}
+		observed := provenance.ObservedCheck{Name: status.Context, Commit: statuses.SHA, StatusID: status.ID}
 		if strings.EqualFold(strings.TrimSpace(status.State), "pending") {
 			observed.Status = "in_progress"
 		} else {
@@ -189,6 +201,37 @@ func loadGitHubEvidence(checkRunsPath string, statusesPath string, rulesetsPath 
 		}
 	}
 	return evidence, nil
+}
+
+func parseRequiredCheckNames(raw string) ([]string, error) {
+	var names []string
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(&names); err != nil {
+		return nil, fmt.Errorf("decode authoritative release-only required check names: %w", err)
+	}
+	if names == nil {
+		return nil, errors.New("decode authoritative release-only required check names: value must be a JSON array")
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("decode authoritative release-only required check names: multiple JSON values")
+		}
+		return nil, fmt.Errorf("decode authoritative release-only required check names: %w", err)
+	}
+	seen := make(map[string]struct{}, len(names))
+	for index, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, fmt.Errorf("authoritative release-only required check name %d is blank", index)
+		}
+		if _, ok := seen[name]; ok {
+			return nil, fmt.Errorf("authoritative release-only required check name %q is duplicated", name)
+		}
+		seen[name] = struct{}{}
+		names[index] = name
+	}
+	return names, nil
 }
 
 func readJSONFile(path string, target any) error {

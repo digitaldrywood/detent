@@ -38,6 +38,7 @@ type Check struct {
 	Conclusion string
 	RunID      int64
 	CheckRunID int64
+	StatusID   int64
 }
 
 type Repository struct {
@@ -233,6 +234,7 @@ func candidateProvenanceAnnotation(repo Repository, tag string, required []strin
 			Status:     check.Status,
 			Conclusion: check.Conclusion,
 			CheckRunID: check.CheckRunID,
+			StatusID:   check.StatusID,
 		})
 	}
 	return provenance.Annotation(provenance.Manifest{

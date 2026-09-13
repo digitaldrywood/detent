@@ -810,6 +810,7 @@ func TestServiceRejectsUntrustedReleaseIdentityBeforeReplacement(t *testing.T) {
 			Name:       "CI",
 			Status:     "completed",
 			Conclusion: "skipped",
+			CheckRunID: 1,
 		}},
 	})
 	if err != nil {
@@ -1596,6 +1597,7 @@ func testReleaseProvenance(t *testing.T, tag string, commit string) []byte {
 			Name:       "CI",
 			Status:     "completed",
 			Conclusion: "success",
+			CheckRunID: 1,
 		}},
 	})
 	if err != nil {

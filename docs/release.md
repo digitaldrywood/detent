@@ -50,6 +50,15 @@ and status evidence from GitHub. The annotation must include every repository
 requirement, and every declared ruleset or release-only check must identify
 successful evidence for the tagged commit; policy drift, fabricated names, stale
 runs, or incomplete API results fail the release.
+
+Configure the GitHub Actions repository variable
+`DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON` as a JSON array containing the same
+release-only names as `release.required_check_names`; configure it explicitly as
+`[]` when there are none. The release workflow treats a missing or malformed
+variable as a signing failure. This independently authenticated policy input keeps
+a manually constructed tag from omitting checks that are required only by the
+release coordinator's host configuration.
+
 The updater fails closed if the signature, provenance checksum,
 repository, tag, full commit, or successful mandatory-check evidence is absent
 or inconsistent. Before replacement it executes the staged binary and requires

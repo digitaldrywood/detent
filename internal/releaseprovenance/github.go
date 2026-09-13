@@ -13,6 +13,7 @@ type ObservedCheck struct {
 	Conclusion    string
 	Commit        string
 	CheckRunID    int64
+	StatusID      int64
 	IntegrationID int64
 }
 
@@ -27,6 +28,9 @@ type GitHubEvidence struct {
 }
 
 func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
+	if err := Validate(manifest, manifest.Repository, manifest.Tag, manifest.Commit); err != nil {
+		return err
+	}
 	required, err := normalizedRequirements(evidence.RequiredChecks)
 	if err != nil {
 		return err
@@ -52,7 +56,7 @@ func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 	for _, declaredCheck := range manifest.Checks {
 		requirement := requiredByName[declaredCheck.Name]
 		if requirement.IntegrationID != 0 && declaredCheck.CheckRunID <= 0 {
-			return fmt.Errorf("mandatory check %q is missing an immutable check-run ID", declaredCheck.Name)
+			return fmt.Errorf("mandatory check %q requires check-run evidence from integration %d", declaredCheck.Name, requirement.IntegrationID)
 		}
 		found := false
 		matchedIntegrationID := int64(0)
@@ -66,7 +70,13 @@ func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 			if declaredCheck.CheckRunID > 0 && observed.CheckRunID != declaredCheck.CheckRunID {
 				continue
 			}
-			if declaredCheck.CheckRunID == 0 && (observed.CheckRunID != 0 || observed.IntegrationID != 0) {
+			if declaredCheck.StatusID > 0 && observed.StatusID != declaredCheck.StatusID {
+				continue
+			}
+			if declaredCheck.CheckRunID > 0 && observed.StatusID != 0 {
+				continue
+			}
+			if declaredCheck.StatusID > 0 && (observed.CheckRunID != 0 || observed.IntegrationID != 0) {
 				continue
 			}
 			if !strings.EqualFold(strings.TrimSpace(observed.Status), "completed") || !strings.EqualFold(strings.TrimSpace(observed.Conclusion), "success") {
@@ -79,17 +89,19 @@ func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 		if !found {
 			return fmt.Errorf("mandatory check %q has no authenticated completed/success evidence for commit %s", declaredCheck.Name, manifest.Commit)
 		}
-		if declaredCheck.CheckRunID <= 0 {
-			continue
-		}
 		for _, observed := range evidence.Checks {
-			if observed.Name != declaredCheck.Name || observed.IntegrationID != matchedIntegrationID || observed.CheckRunID <= declaredCheck.CheckRunID {
+			if observed.Name != declaredCheck.Name || observed.IntegrationID != matchedIntegrationID {
 				continue
 			}
 			if !strings.EqualFold(strings.TrimSpace(observed.Commit), strings.TrimSpace(manifest.Commit)) {
 				continue
 			}
-			return fmt.Errorf("mandatory check %q has newer authenticated check run %d than declared successful run %d", declaredCheck.Name, observed.CheckRunID, declaredCheck.CheckRunID)
+			switch {
+			case declaredCheck.CheckRunID > 0 && observed.CheckRunID > declaredCheck.CheckRunID:
+				return fmt.Errorf("mandatory check %q has newer authenticated check run %d than declared successful run %d", declaredCheck.Name, observed.CheckRunID, declaredCheck.CheckRunID)
+			case declaredCheck.StatusID > 0 && observed.StatusID > declaredCheck.StatusID:
+				return fmt.Errorf("mandatory check %q has newer authenticated commit status %d than declared successful status %d", declaredCheck.Name, observed.StatusID, declaredCheck.StatusID)
+			}
 		}
 	}
 	return nil
@@ -102,8 +114,13 @@ func normalizedRequirements(values []RepositoryRequirement) ([]RepositoryRequire
 		if value.Name == "" {
 			continue
 		}
-		if existing, ok := byName[value.Name]; ok && existing.IntegrationID != value.IntegrationID {
-			return nil, fmt.Errorf("authenticated repository requirements disagree on integration for %q", value.Name)
+		if existing, ok := byName[value.Name]; ok {
+			if existing.IntegrationID != 0 && value.IntegrationID != 0 && existing.IntegrationID != value.IntegrationID {
+				return nil, fmt.Errorf("authenticated repository requirements disagree on integration for %q", value.Name)
+			}
+			if existing.IntegrationID != 0 {
+				continue
+			}
 		}
 		byName[value.Name] = value
 	}

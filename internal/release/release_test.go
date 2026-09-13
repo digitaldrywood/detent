@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,6 +114,46 @@ func TestServiceCountTriggerCreatesOneTagAndObservesRelease(t *testing.T) {
 	}
 }
 
+func TestCandidateProvenanceAnnotationBindsImmutableEvidence(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name    string
+		check   Check
+		wantErr string
+	}{
+		{name: "check run", check: Check{Name: "CI", SHA: releaseTestHead, Status: "completed", Conclusion: "success", CheckRunID: 101}},
+		{name: "commit status", check: Check{Name: "CI", SHA: releaseTestHead, Status: "completed", Conclusion: "success", StatusID: 202}},
+		{name: "missing evidence ID", check: Check{Name: "CI", SHA: releaseTestHead, Status: "completed", Conclusion: "success"}, wantErr: "missing an immutable evidence ID"},
+		{name: "ambiguous evidence IDs", check: Check{Name: "CI", SHA: releaseTestHead, Status: "completed", Conclusion: "success", CheckRunID: 101, StatusID: 202}, wantErr: "ambiguous immutable evidence IDs"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			annotation, err := candidateProvenanceAnnotation(Repository{
+				Name:    "example/repo",
+				HeadSHA: releaseTestHead,
+				Checks:  []Check{tt.check},
+			}, "v1.2.4", []string{"CI"})
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("candidateProvenanceAnnotation() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("candidateProvenanceAnnotation() error = %v", err)
+			}
+			manifest, err := provenance.FromTagMessage(annotation, "example/repo", "v1.2.4", releaseTestHead)
+			if err != nil {
+				t.Fatalf("FromTagMessage() error = %v", err)
+			}
+			if manifest.Checks[0].CheckRunID != tt.check.CheckRunID || manifest.Checks[0].StatusID != tt.check.StatusID {
+				t.Fatalf("immutable evidence = %#v, want %#v", manifest.Checks[0], tt.check)
+			}
+		})
+	}
+}
+
 func TestServiceRedCIFilesOneIssueAndNoTag(t *testing.T) {
 	t.Parallel()
 
@@ -150,7 +191,7 @@ func TestServiceAgeTrigger(t *testing.T) {
 		LatestTag: "v1.2.3",
 		LatestSHA: "previous",
 		Commits:   []Commit{{Message: "fix: aged change", MergedAt: now.Add(-25 * time.Hour), IssueRefs: []string{"example/repo#1"}}},
-		Checks:    []Check{{SHA: releaseTestHead, Name: "CI", Status: "completed", Conclusion: "success"}},
+		Checks:    []Check{{SHA: releaseTestHead, Name: "CI", Status: "completed", Conclusion: "success", CheckRunID: 101}},
 	}}
 	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 5, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
 	status, _ := service.Evaluate(context.Background(), now)
@@ -201,7 +242,7 @@ func TestServiceTagConflictIsAFailure(t *testing.T) {
 			LatestTag: "v1.2.3",
 			LatestSHA: "previous",
 			Commits:   []Commit{{Message: "fix: retry status", MergedAt: now.Add(-time.Hour), IssueRefs: []string{"example/repo#1"}}},
-			Checks:    []Check{{SHA: releaseTestHead, Name: "CI", Status: "completed", Conclusion: "success"}},
+			Checks:    []Check{{SHA: releaseTestHead, Name: "CI", Status: "completed", Conclusion: "success", CheckRunID: 101}},
 		},
 	}
 	service := New(Config{RequiredCheckNames: []string{"CI"}, Enabled: true, MinMergedIssues: 1, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
@@ -331,7 +372,7 @@ func TestMandatoryEvidence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			backend := &fakeBackend{repo: Repository{Name: "example/repo", HeadSHA: releaseTestHead, Commits: []Commit{{IssueRefs: []string{"example/repo#1"}}}, Checks: []Check{{Name: "CI", SHA: tc.sha, Status: tc.status, Conclusion: tc.conclusion}}}}
+			backend := &fakeBackend{repo: Repository{Name: "example/repo", HeadSHA: releaseTestHead, Commits: []Commit{{IssueRefs: []string{"example/repo#1"}}}, Checks: []Check{{Name: "CI", SHA: tc.sha, Status: tc.status, Conclusion: tc.conclusion, CheckRunID: 101}}}}
 			New(Config{Enabled: true, MinMergedIssues: 1, RequiredCheckNames: tc.required}, backend).Evaluate(t.Context(), time.Now())
 			if (len(backend.tags) == 1) != tc.wantTag {
 				t.Fatalf("tags = %v", backend.tags)

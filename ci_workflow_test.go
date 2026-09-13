@@ -109,6 +109,9 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		"-github-check-runs \"$check_runs\"",
 		"-github-statuses \"$statuses\"",
 		"-github-rulesets \"$rulesets\"",
+		"DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}",
+		"must be configured as a JSON array; use [] when there are no release-only checks",
+		"-required-check-names-json \"$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON\"",
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("release workflow missing authenticated provenance marker %q", marker)

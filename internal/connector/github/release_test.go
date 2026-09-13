@@ -236,7 +236,7 @@ func TestReleaseCheckEvidenceCompleteness(t *testing.T) {
 				case "/repos/example/repo/commits/head/check-runs":
 					writeReleaseJSON(t, w, map[string]any{"total_count": tc.checkCount, "check_runs": []map[string]any{{"head_sha": "head", "name": "CI", "status": "completed", "conclusion": "success"}}})
 				case "/repos/example/repo/commits/head/status":
-					writeReleaseJSON(t, w, map[string]any{"sha": "head", "total_count": tc.statusCount, "statuses": []map[string]any{{"context": "Security", "state": "success"}}})
+					writeReleaseJSON(t, w, map[string]any{"sha": "head", "total_count": tc.statusCount, "statuses": []map[string]any{{"id": 202, "context": "Security", "state": "success"}}})
 				default:
 					t.Errorf("unexpected path %s", r.URL.Path)
 				}
@@ -250,7 +250,7 @@ func TestReleaseCheckEvidenceCompleteness(t *testing.T) {
 			if (err != nil) != tc.wantError {
 				t.Fatalf("releaseChecks = %v", err)
 			}
-			if !tc.wantError && (len(checks) != 2 || checks[0].SHA != "head" || checks[1].SHA != "head" || checks[1].Name != "Security") {
+			if !tc.wantError && (len(checks) != 2 || checks[0].SHA != "head" || checks[1].SHA != "head" || checks[1].Name != "Security" || checks[1].StatusID != 202) {
 				t.Fatalf("checks = %#v", checks)
 			}
 		})

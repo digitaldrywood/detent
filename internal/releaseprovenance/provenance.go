@@ -21,6 +21,7 @@ type Check struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	CheckRunID int64  `json:"check_run_id,omitempty"`
+	StatusID   int64  `json:"status_id,omitempty"`
 }
 
 type Manifest struct {
@@ -69,6 +70,12 @@ func Validate(manifest Manifest, repository string, tag string, commit string) e
 		seen[name] = struct{}{}
 		if !strings.EqualFold(strings.TrimSpace(check.Status), "completed") || !strings.EqualFold(strings.TrimSpace(check.Conclusion), "success") {
 			return fmt.Errorf("release provenance mandatory check %q is %s/%s, want completed/success", name, strings.TrimSpace(check.Status), strings.TrimSpace(check.Conclusion))
+		}
+		if check.CheckRunID <= 0 && check.StatusID <= 0 {
+			return fmt.Errorf("release provenance mandatory check %q is missing an immutable evidence ID", name)
+		}
+		if check.CheckRunID > 0 && check.StatusID > 0 {
+			return fmt.Errorf("release provenance mandatory check %q has ambiguous immutable evidence IDs", name)
 		}
 	}
 	return nil
