@@ -13,10 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution SecurityAuditExecution, err error) {
@@ -104,7 +104,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		ReasoningEffort:         effort,
 		TurnTimeout:             durationFromMillis(auditConfig.TurnTimeoutMS),
 		MaxDuration:             durationFromMillis(auditConfig.TurnTimeoutMS),
-		Environment: procgroup.Environment{Variables: map[string]string{
+		Environment: workerEnvironment(map[string]string{
 			"OPENAI_API_KEY":                       "",
 			"AZURE_OPENAI_API_KEY":                 "",
 			"GH_TOKEN":                             "",
@@ -112,7 +112,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 			serviceapi.AddressEnvironment:          "",
 			serviceapi.TokenEnvironment:            "",
 			serviceapi.DispositionTokenEnvironment: "",
-		}},
+		}, workspace.Info{Path: auditWorkspace}, workspaceIssue(r.projectID, req.Issue)),
 		MaxRSSBytes:     r.maxAgentRSSBytes,
 		RSSPollInterval: r.rssPollInterval,
 		projectID:       r.projectID,

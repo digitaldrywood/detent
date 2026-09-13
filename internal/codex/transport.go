@@ -80,6 +80,7 @@ type tailBuffer struct {
 
 type workerTempDirContextKey struct{}
 type workerEnvironmentContextKey struct{}
+type workerWorkspaceContextKey struct{}
 
 func NewLocalTransportFactory(newCommand CommandFactory) (*LocalTransportFactory, error) {
 	if newCommand == nil {
@@ -98,6 +99,9 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	}
 	procgroup.SetEnvironment(cmd, workerEnvironment(ctx))
 	procgroup.SetTempDir(cmd, workerTempDir(ctx))
+	if workspace := workerWorkspace(ctx); workspace != "" {
+		cmd.Dir = workspace
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -224,6 +228,26 @@ func workerEnvironment(ctx context.Context) procgroup.Environment {
 		return procgroup.Environment{}
 	}
 	return environment
+}
+
+func withWorkerWorkspace(ctx context.Context, path string) context.Context {
+	ctx = contextOrBackground(ctx)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workerWorkspaceContextKey{}, path)
+}
+
+func workerWorkspace(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	path, ok := ctx.Value(workerWorkspaceContextKey{}).(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(path)
 }
 
 func (t *localTransport) Send(ctx context.Context, msg Message) error {

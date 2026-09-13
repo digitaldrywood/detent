@@ -98,6 +98,9 @@ func TestRunnerHandsServiceConnectionToWorker(t *testing.T) {
 		serviceapi.AddressEnvironment:          "100.111.222.33:4100",
 		serviceapi.TokenEnvironment:            "",
 		serviceapi.DispositionTokenEnvironment: "worker-token",
+		"DETENT_WORKSPACE":                     backend.request.Workspace,
+		"DETENT_ISSUE_ID":                      "issue-1",
+		"DETENT_ISSUE_IDENTIFIER":              "acme/widgets#1",
 	}
 	for name, value := range want {
 		if got := backend.request.Environment.Variables[name]; got != value {
@@ -124,7 +127,7 @@ func TestWorkerServiceEnvironmentIsLimitedToImplementationTurns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			environment := workerServiceEnvironment(tt.mode, connection)
+			environment := workerServiceEnvironment(tt.mode, connection, workspace.Info{}, workspace.Issue{})
 			wantAddress := ""
 			wantDispositionToken := ""
 			if tt.want {
@@ -163,7 +166,7 @@ func TestWorkerServiceEnvironmentOverridesAmbientServiceCredentials(t *testing.T
 	for _, tt := range tests {
 		t.Run(tt.mode, func(t *testing.T) {
 			cmd := exec.CommandContext(t.Context(), "detent-environment-probe")
-			procgroup.SetEnvironment(cmd, workerServiceEnvironment(tt.mode, connection))
+			procgroup.SetEnvironment(cmd, workerServiceEnvironment(tt.mode, connection, workspace.Info{}, workspace.Issue{}))
 			values := map[string]string{}
 			for _, entry := range cmd.Environ() {
 				name, value, ok := strings.Cut(entry, "=")

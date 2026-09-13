@@ -420,6 +420,61 @@ func TestLocalTransportFactoryAppliesWorkerTempDir(t *testing.T) {
 	}
 }
 
+func TestLocalTransportFactoryAppliesWorkerWorkspace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+	}{
+		{name: "tmux host checkout", host: "tmux"},
+		{name: "systemd working directory", host: "systemd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			hostDir := t.TempDir()
+			workspace := t.TempDir()
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				cmd := helperCommand(ctx, "silent")
+				cmd.Dir = hostDir
+				return cmd
+			})
+			if err != nil {
+				t.Fatalf("NewLocalTransportFactory() error = %v", err)
+			}
+
+			ctx := withWorkerWorkspace(context.Background(), workspace)
+			ctx = withWorkerEnvironment(ctx, procgroup.Environment{Variables: map[string]string{
+				"DETENT_WORKSPACE": workspace,
+			}})
+			transport, err := factory.NewTransport(ctx)
+			if err != nil {
+				t.Fatalf("NewTransport() error = %v", err)
+			}
+			t.Cleanup(func() {
+				closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := transport.Close(closeCtx); err != nil {
+					t.Fatalf("Close() error = %v", err)
+				}
+			})
+
+			local, ok := transport.(*localTransport)
+			if !ok {
+				t.Fatalf("transport = %T, want *localTransport", transport)
+			}
+			if local.cmd.Dir != workspace {
+				t.Fatalf("cmd.Dir = %q, want workspace %q instead of %s host directory %q", local.cmd.Dir, workspace, tt.host, hostDir)
+			}
+			if got := environmentValue(local.cmd.Env, "DETENT_WORKSPACE"); got != workspace {
+				t.Fatalf("DETENT_WORKSPACE = %q, want %q", got, workspace)
+			}
+		})
+	}
+}
+
 func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
 	t.Parallel()
 

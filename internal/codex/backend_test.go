@@ -60,6 +60,9 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	if factory.tempDir != "/tmp/detent-workspace/.detent/tmp" {
 		t.Fatalf("worker temp directory = %q, want request temp directory", factory.tempDir)
 	}
+	if factory.workspace != "/tmp/detent-workspace" {
+		t.Fatalf("worker workspace = %q, want request workspace", factory.workspace)
+	}
 
 	sent := transport.sentMessages()
 	if len(sent) != 4 {
@@ -417,9 +420,11 @@ func TestAgentBackendSupplementalToolsPreserveWorkerPolicy(t *testing.T) {
 type workerTempCapturingTransportFactory struct {
 	transport Transport
 	tempDir   string
+	workspace string
 }
 
 func (f *workerTempCapturingTransportFactory) NewTransport(ctx context.Context) (Transport, error) {
 	f.tempDir = workerTempDir(ctx)
+	f.workspace = workerWorkspace(ctx)
 	return f.transport, nil
 }
