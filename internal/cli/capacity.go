@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 )
 
 type capacityClearResult struct {
@@ -31,7 +33,10 @@ type dashboardAddress struct {
 	PortSource string
 }
 
-const dashboardAddressSourceServiceFlag = "service flag"
+const (
+	dashboardAddressSourceServiceFlag       = "service flag"
+	dashboardAddressSourceWorkerEnvironment = "worker environment"
+)
 
 func (a dashboardAddress) String() string {
 	if a.Value == "" {
@@ -118,7 +123,7 @@ func runCapacityClear(
 		return capacityClearResult{}, fmt.Errorf("create capacity clear request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	apiToken := strings.TrimSpace(opts.lookupEnv("DETENT_API_TOKEN"))
+	apiToken := strings.TrimSpace(opts.lookupEnv(serviceapi.TokenEnvironment))
 	if apiToken == "" {
 		apiToken = strings.TrimSpace(boot.Global.APIToken)
 	}
@@ -173,6 +178,18 @@ func resolveDashboardBoot(
 	if err != nil {
 		return BootConfig{}, dashboardAddress{}, err
 	}
+	return resolveDashboardBootConfig(ctx, resolution, cfg, host, port, portSet, opts)
+}
+
+func resolveDashboardBootConfig(
+	ctx context.Context,
+	resolution globalconfig.PathResolution,
+	cfg globalconfig.Config,
+	host string,
+	port int,
+	portSet bool,
+	opts options,
+) (BootConfig, dashboardAddress, error) {
 	portSetting, err := resolveRuntimePort(ctx, runtimeInput{
 		Config:     &cfg,
 		ConfigPath: resolution,
@@ -185,14 +202,28 @@ func resolveDashboardBoot(
 		return BootConfig{}, dashboardAddress{}, err
 	}
 	hostSetting := resolveDashboardHost(ctx, host, firstGlobalProject(cfg))
-	if hostSetting.Source != runtimeSourceFlag || portSetting.Source != runtimeSourceFlag {
+	if dashboardAddressMayUseWorkerEnvironment(hostSetting.Source) || dashboardAddressMayUseWorkerEnvironment(portSetting.Source) {
+		workerHost, workerPort, workerAddressSet, workerAddressErr := workerServiceAddress(opts.lookupEnv)
+		if workerAddressErr != nil {
+			return BootConfig{}, dashboardAddress{}, workerAddressErr
+		}
+		if workerAddressSet {
+			if dashboardAddressMayUseWorkerEnvironment(hostSetting.Source) {
+				hostSetting = RuntimeValue{Value: workerHost, Source: dashboardAddressSourceWorkerEnvironment}
+			}
+			if dashboardAddressMayUseWorkerEnvironment(portSetting.Source) {
+				portSetting = RuntimeIntValue{Value: workerPort, Source: dashboardAddressSourceWorkerEnvironment}
+			}
+		}
+	}
+	if dashboardAddressMayUseServiceFlag(hostSetting.Source) || dashboardAddressMayUseServiceFlag(portSetting.Source) {
 		serviceArguments := runningServiceArguments(ctx, resolution.Path, opts)
-		if hostSetting.Source != runtimeSourceFlag {
+		if dashboardAddressMayUseServiceFlag(hostSetting.Source) {
 			if serviceHost, ok := serviceStringFlag(serviceArguments, "--host"); ok {
 				hostSetting = RuntimeValue{Value: serviceHost, Source: dashboardAddressSourceServiceFlag}
 			}
 		}
-		if portSetting.Source != runtimeSourceFlag {
+		if dashboardAddressMayUseServiceFlag(portSetting.Source) {
 			if servicePort, ok := serviceIntFlag(serviceArguments, "--port"); ok {
 				portSetting = RuntimeIntValue{Value: servicePort, Source: dashboardAddressSourceServiceFlag}
 			}
@@ -211,6 +242,33 @@ func resolveDashboardBoot(
 		HostSource: dashboardAddressSource(hostSetting.Source),
 		PortSource: dashboardAddressSource(portSetting.Source),
 	}, nil
+}
+
+func dashboardAddressMayUseWorkerEnvironment(source string) bool {
+	return source != runtimeSourceFlag
+}
+
+func dashboardAddressMayUseServiceFlag(source string) bool {
+	return source != runtimeSourceFlag && source != dashboardAddressSourceWorkerEnvironment
+}
+
+func workerServiceAddress(lookupEnv func(string) string) (string, int, bool, error) {
+	if lookupEnv == nil {
+		return "", 0, false, nil
+	}
+	raw := strings.TrimSpace(lookupEnv(serviceapi.AddressEnvironment))
+	if raw == "" {
+		return "", 0, false, nil
+	}
+	host, portText, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("invalid %s %q: %w", serviceapi.AddressEnvironment, raw, err)
+	}
+	port, ok := validServicePort(portText)
+	if strings.TrimSpace(host) == "" || !ok || port == 0 || port > 65535 {
+		return "", 0, false, fmt.Errorf("invalid %s %q: want host:port with a nonzero TCP port", serviceapi.AddressEnvironment, raw)
+	}
+	return host, port, true, nil
 }
 
 func resolveDashboardHost(ctx context.Context, host string, project globalconfig.Project) RuntimeValue {

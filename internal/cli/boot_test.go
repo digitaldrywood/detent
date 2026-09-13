@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -41,8 +42,10 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	if err := os.Unsetenv("DETENT_API_TOKEN"); err != nil {
-		panic("clear DETENT_API_TOKEN: " + err.Error())
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment} {
+		if err := os.Unsetenv(name); err != nil {
+			panic("clear " + name + ": " + err.Error())
+		}
 	}
 	os.Exit(m.Run())
 }
@@ -83,6 +86,33 @@ func TestShouldLaunchTerminalDashboard(t *testing.T) {
 
 			if got := shouldLaunchTerminalDashboard(tt.cfg); got != tt.want {
 				t.Fatalf("shouldLaunchTerminalDashboard(%#v) = %v, want %v", tt.cfg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDashboardServiceAddressUsesBoundListener(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		addr    net.Addr
+		want    string
+		wantErr bool
+	}{
+		{name: "non-loopback IPv4", addr: &net.TCPAddr{IP: net.ParseIP("100.111.222.33"), Port: 4101}, want: "100.111.222.33:4101"},
+		{name: "wildcard becomes connectable loopback", addr: &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 4102}, want: "127.0.0.1:4102"},
+		{name: "nil listener", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := dashboardServiceAddress(tt.addr)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("dashboardServiceAddress() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("dashboardServiceAddress() = %q, want %q", got, tt.want)
 			}
 		})
 	}

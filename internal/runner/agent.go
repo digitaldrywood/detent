@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -122,6 +123,7 @@ type Dependencies struct {
 	Now                    func() time.Time
 	Logger                 *slog.Logger
 	SecurityAuditRoot      string
+	ServiceConnection      serviceapi.Connection
 	AfterRunTimeout        time.Duration
 	MaxAgentRSSBytes       uint64
 	RSSPollInterval        time.Duration
@@ -152,6 +154,7 @@ type Runner struct {
 	now                       func() time.Time
 	logger                    *slog.Logger
 	securityAuditRoot         string
+	serviceConnection         serviceapi.Connection
 	afterRunTimeout           time.Duration
 	maxAgentRSSBytes          uint64
 	rssPollInterval           time.Duration
@@ -254,6 +257,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		now:                       deps.Now,
 		logger:                    deps.Logger,
 		securityAuditRoot:         filepath.Clean(deps.SecurityAuditRoot),
+		serviceConnection:         deps.ServiceConnection,
 		afterRunTimeout:           deps.AfterRunTimeout,
 		maxAgentRSSBytes:          deps.MaxAgentRSSBytes,
 		rssPollInterval:           deps.RSSPollInterval,
@@ -1779,6 +1783,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		DeliverableKind:       deliverableKind,
 		DeliverableRepository: deliverableRepository,
 		IssueRepository:       agentTurnIssueRepository(workflow.Config, req.Issue),
+		Environment:           procgroup.Environment{Variables: r.serviceConnection.Environment()},
 		MaxRSSBytes:           r.maxAgentRSSBytes,
 		RSSPollInterval:       r.rssPollInterval,
 		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
@@ -2998,6 +3003,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
+		Environment:        procgroup.Environment{Variables: r.serviceConnection.Environment()},
 		MaxRSSBytes:        r.maxAgentRSSBytes,
 		RSSPollInterval:    r.rssPollInterval,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -140,6 +141,93 @@ func TestRunAuditDispositionUsesAuthenticatedExactHeadServicePath(t *testing.T) 
 	if result.ID != 9 || result.AuditRunID != 7 || result.ServiceIdentity != "detent:detent" {
 		t.Fatalf("result = %#v", result)
 	}
+}
+
+func TestRunAuditDispositionUsesWorkerServiceConnection(t *testing.T) {
+	t.Parallel()
+
+	listener := nonLoopbackListener(t)
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer worker-service-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(writer).Encode(securityaudit.Disposition{
+			ID:              10,
+			AuditRunID:      8,
+			FindingID:       "auth-1",
+			Status:          securityaudit.DispositionFalsePositive,
+			Evidence:        "The route requires administrator authorization.",
+			ServiceIdentity: "detent:detent",
+			RecordedAt:      now,
+		})
+	}))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+
+	tests := []struct {
+		name           string
+		serviceAddress string
+	}{
+		{name: "non-loopback bind supplied by worker environment", serviceAddress: listener.Addr().String()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := dashboardAddressOptions(globalconfig.Config{})
+			opts.lookupEnv = func(name string) string {
+				switch name {
+				case "DETENT_SERVICE_ADDRESS":
+					return tt.serviceAddress
+				case "DETENT_API_TOKEN":
+					return "worker-service-token"
+				default:
+					return ""
+				}
+			}
+			opts.httpDo = server.Client().Do
+
+			result, err := runAuditDisposition(t.Context(), "/config/global.yaml", "", -1, false, "detent", "digitaldrywood/detent", 2006, "base-8", "head-8", "auth-1", "The route requires administrator authorization.", opts)
+			if err != nil {
+				t.Fatalf("runAuditDisposition() error = %v", err)
+			}
+			if result.ID != 10 || result.AuditRunID != 8 {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func nonLoopbackListener(t *testing.T) net.Listener {
+	t.Helper()
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatalf("net.Interfaces() error = %v", err)
+	}
+	for _, networkInterface := range interfaces {
+		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := networkInterface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err != nil || ip.IsLoopback() || ip.IsUnspecified() || ip.To4() == nil {
+				continue
+			}
+			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", net.JoinHostPort(ip.String(), "0"))
+			if err == nil {
+				return listener
+			}
+		}
+	}
+	t.Skip("host has no bindable non-loopback IPv4 address")
+	return nil
 }
 
 func TestAuditDispositionRequiresConfirmation(t *testing.T) {

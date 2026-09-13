@@ -810,6 +810,39 @@ func checkDoctorServerPort(ctx context.Context, cfg BootConfig, deps doctorDeps)
 	}
 }
 
+func checkDoctorDashboardAddress(configured BootConfig, running dashboardAddress) doctorCheck {
+	configuredAddress := dashboardServerAddr(configured)
+	if !dashboardAddressFromRunningProcess(running) {
+		return doctorCheck{
+			Name:   "Dashboard address",
+			Status: doctorOK,
+			Detail: configuredAddress + " has no distinct running-process address override",
+		}
+	}
+	if configuredAddress == running.Value {
+		return doctorCheck{
+			Name:   "Dashboard address",
+			Status: doctorOK,
+			Detail: configuredAddress + " matches the running Detent service",
+		}
+	}
+	return doctorCheck{
+		Name:   "Dashboard address",
+		Status: doctorFail,
+		Detail: fmt.Sprintf("config resolves the dashboard to %s, but the running Detent service uses %s", configuredAddress, running),
+		Hint:   "Set the global or workflow server host and port to the running service address, then restart Detent.",
+	}
+}
+
+func dashboardAddressFromRunningProcess(address dashboardAddress) bool {
+	for _, source := range []string{address.HostSource, address.PortSource} {
+		if source == dashboardAddressSourceWorkerEnvironment || source == dashboardAddressSourceServiceFlag {
+			return true
+		}
+	}
+	return false
+}
+
 type doctorHealthProbe struct {
 	URL    string
 	Health doctorHealthResponse

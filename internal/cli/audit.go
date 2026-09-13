@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -138,7 +139,7 @@ func runAuditDisposition(
 		return securityaudit.Disposition{}, fmt.Errorf("create security audit disposition request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	apiToken := strings.TrimSpace(opts.lookupEnv("DETENT_API_TOKEN"))
+	apiToken := strings.TrimSpace(opts.lookupEnv(serviceapi.TokenEnvironment))
 	if apiToken == "" {
 		apiToken = strings.TrimSpace(boot.Global.APIToken)
 	}

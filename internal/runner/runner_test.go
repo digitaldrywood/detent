@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -74,6 +75,33 @@ func TestAgentTurnIssueRepository(t *testing.T) {
 				t.Fatalf("agentTurnIssueRepository() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunnerHandsServiceConnectionToWorker(t *testing.T) {
+	t.Parallel()
+
+	backend := &fakeCodexClient{result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"}}
+	run, err := NewRunner(Dependencies{
+		Workflow:          config.Workflow{Prompt: "Work"},
+		Workspace:         &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+		AgentBackend:      backend,
+		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", Token: "service-token"},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if _, err := run.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1", Identifier: "acme/widgets#1"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := map[string]string{
+		serviceapi.AddressEnvironment: "100.111.222.33:4100",
+		serviceapi.TokenEnvironment:   "service-token",
+	}
+	for name, value := range want {
+		if got := backend.request.Environment.Variables[name]; got != value {
+			t.Fatalf("worker environment %s = %q, want %q", name, got, value)
+		}
 	}
 }
 
