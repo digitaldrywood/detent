@@ -14,6 +14,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 )
 
 func TestAuditEvidenceResultOmitsCredentialsAndRawFailure(t *testing.T) {
@@ -181,7 +182,7 @@ func TestRunAuditDispositionUsesWorkerServiceConnection(t *testing.T) {
 				switch name {
 				case "DETENT_SERVICE_ADDRESS":
 					return tt.serviceAddress
-				case "DETENT_API_TOKEN":
+				case serviceapi.DispositionTokenEnvironment:
 					return "worker-service-token"
 				default:
 					return ""

@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment} {
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
 		if err := os.Unsetenv(name); err != nil {
 			panic("clear " + name + ": " + err.Error())
 		}

@@ -56,6 +56,12 @@ func TestRunCapacityClear(t *testing.T) {
 	opts.read = func(string) (globalconfig.Config, error) {
 		return globalconfig.Config{APIToken: "operator-token"}, nil
 	}
+	opts.lookupEnv = func(name string) string {
+		if name == serviceapi.DispositionTokenEnvironment {
+			return "worker-disposition-token"
+		}
+		return ""
+	}
 	opts.httpDo = server.Client().Do
 
 	result, err := runCapacityClear(t.Context(), "/tmp/global.yaml", serverURL.Hostname(), port, true, "detent", "codex", opts)

@@ -317,9 +317,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return fmt.Errorf("resolve bound dashboard address: %w", err)
 	}
+	workerCredentials, err := serviceapi.NewWorkerCredentials()
+	if err != nil {
+		return fmt.Errorf("create worker service credentials: %w", err)
+	}
 	serviceConnection := serviceapi.Connection{
 		Address: serviceAddress,
-		Token:   dashboardAPICredential(cfg.Global.APIToken, os.Getenv),
 	}
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events:             events,
@@ -344,7 +347,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ScheduleOwner:      cfg.Global.InstanceName,
 		ConnectorFactory:   cfg.ConnectorFactory,
 		Runner:             cfg.Runner,
-	}, runtimeStore, nil, serviceConnection, runtimeGitHubToken.get)
+	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runtimeGitHubToken.get)
 	managerDependencies := deps.managerDependencies
 	managerDependencies.ProjectFactory = projectFactory
 	managerDependencies.Events = events
@@ -521,6 +524,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		IssueExplainer:      newIssueExplainer(snapshotHub, runtimeStore),
 		HealthNotifications: healthNotifications,
 		WorkerProcesses:     runtimeStore,
+		WorkerCredentials:   workerCredentials,
 		StalenessWarnings:   stalenessAcknowledgements,
 	})
 	if err != nil {

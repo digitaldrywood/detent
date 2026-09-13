@@ -1783,7 +1783,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		DeliverableKind:       deliverableKind,
 		DeliverableRepository: deliverableRepository,
 		IssueRepository:       agentTurnIssueRepository(workflow.Config, req.Issue),
-		Environment:           procgroup.Environment{Variables: r.serviceConnection.Environment()},
+		Environment:           workerServiceEnvironment(mode, r.serviceConnection),
 		MaxRSSBytes:           r.maxAgentRSSBytes,
 		RSSPollInterval:       r.rssPollInterval,
 		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
@@ -3003,7 +3003,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
-		Environment:        procgroup.Environment{Variables: r.serviceConnection.Environment()},
+		Environment:        procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()},
 		MaxRSSBytes:        r.maxAgentRSSBytes,
 		RSSPollInterval:    r.rssPollInterval,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
@@ -3130,6 +3130,13 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
+}
+
+func workerServiceEnvironment(mode string, connection serviceapi.Connection) procgroup.Environment {
+	if normalizeRunMode(mode) != RunModeImplement {
+		return procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()}
+	}
+	return procgroup.Environment{Variables: connection.Environment()}
 }
 
 func (r *Runner) validatorPromptOptions(ctx context.Context, info workspace.Info, issue workspace.Issue, maxInlineDiffBytes int) ValidatorPromptOptions {

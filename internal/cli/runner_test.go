@@ -184,7 +184,7 @@ func TestBuildRunnerDependenciesCarriesServiceConnection(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
-	connection := serviceapi.Connection{Address: "100.111.222.33:4100", Token: "service-token"}
+	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"}
 
 	deps, err := buildRunnerDependencies(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, connection)
 	if err != nil {
@@ -192,6 +192,21 @@ func TestBuildRunnerDependenciesCarriesServiceConnection(t *testing.T) {
 	}
 	if deps.ServiceConnection != connection {
 		t.Fatalf("ServiceConnection = %#v, want %#v", deps.ServiceConnection, connection)
+	}
+}
+
+func TestServiceConnectionForProjectUsesScopedToken(t *testing.T) {
+	t.Parallel()
+
+	base := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "old-worker-token"}
+	got := serviceConnectionForProject(base, "alpha", func(projectID string) string {
+		return "worker-token-for-" + projectID
+	})
+	if got.Address != base.Address || got.DispositionToken != "worker-token-for-alpha" {
+		t.Fatalf("serviceConnectionForProject() = %#v, want address %q and project token", got, base.Address)
+	}
+	if base.DispositionToken != "old-worker-token" {
+		t.Fatalf("base connection mutated = %#v", base)
 	}
 }
 
@@ -575,7 +590,7 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	factory := withRunnerFactory(base, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
 		captured = d
 		return nil, errProjectFactoryStub
-	}, serviceapi.Connection{})
+	}, serviceapi.Connection{}, nil)
 
 	workflowPath := writeWorkflowFile(t)
 	_, err := factory(globalconfig.Project{
@@ -603,7 +618,7 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 	factory := withRunnerFactory(projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
 		captured = d
 		return nil, errProjectFactoryStub
-	}, serviceapi.Connection{}, func() string {
+	}, serviceapi.Connection{}, nil, func() string {
 		return token
 	})
 

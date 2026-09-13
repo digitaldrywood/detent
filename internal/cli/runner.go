@@ -75,6 +75,7 @@ func withRunnerFactory(
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
 	serviceConnection serviceapi.Connection,
+	serviceTokenSource func(string) string,
 	githubTokenSource ...func() string,
 ) project.Factory {
 	return func(cfg globalconfig.Project) (*project.Project, error) {
@@ -95,8 +96,9 @@ func withRunnerFactory(
 
 		run := deps.Runner
 		if run == nil {
+			projectServiceConnection := serviceConnectionForProject(serviceConnection, cfg.ID, serviceTokenSource)
 			var err error
-			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), sessionStore, deps.Logger, serviceConnection)
+			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), sessionStore, deps.Logger, projectServiceConnection)
 			if err != nil {
 				return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 			}
@@ -113,6 +115,13 @@ func withRunnerFactory(
 		}
 		return project.Load(cfg, projectDeps)
 	}
+}
+
+func serviceConnectionForProject(connection serviceapi.Connection, projectID string, tokenSource func(string) string) serviceapi.Connection {
+	if tokenSource != nil {
+		connection.DispositionToken = tokenSource(projectID)
+	}
+	return connection
 }
 
 // buildRunner constructs the agent Runner for a single project's workflow,

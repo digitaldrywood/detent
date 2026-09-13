@@ -20,6 +20,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -234,6 +235,15 @@ func (s *Server) authorizeLoopbackPeerRead(c echo.Context, opts apiAuthOptions) 
 }
 
 func (s *Server) authenticateCandidate(ctx context.Context, candidate string, staticToken string) (apikey.Credential, error) {
+	if worker, ok := s.workerCredentials.Authenticate(candidate); ok {
+		return apikey.Credential{
+			ID:         "worker-security-audit:" + worker.ProjectID,
+			Name:       "Worker security-audit disposition",
+			Scopes:     []string{serviceapi.WorkerDispositionScope},
+			ProjectIDs: []string{worker.ProjectID},
+			Static:     true,
+		}, nil
+	}
 	if s.apiKeys == nil {
 		if strings.TrimSpace(staticToken) == "" {
 			return apikey.Credential{}, &apikey.AuthError{Code: "unauthorized", Message: "Valid API token is required"}
@@ -244,6 +254,37 @@ func (s *Server) authenticateCandidate(ctx context.Context, candidate string, st
 		return apikey.Credential{}, &apikey.AuthError{Code: "unauthorized", Message: "Valid API token is required"}
 	}
 	return s.apiKeys.Authenticate(ctx, candidate, staticToken)
+}
+
+func (s *Server) requireAuditDispositionScope(projectParam string) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			credential, ok := apiCredentialFromContext(c.Request().Context())
+			if !ok {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "API key context missing"))
+			}
+			if apikey.HasScope(credential.Scopes, apikey.ScopeAdmin) {
+				return next(c)
+			}
+			if !hasCredentialScope(credential.Scopes, serviceapi.WorkerDispositionScope) {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "insufficient scope: security-audit disposition"))
+			}
+			projectID := requestProjectID(c, projectParam)
+			if !apikey.AllowsProject(credential.ProjectIDs, projectID) {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "worker credential is not allowed for project "+projectID))
+			}
+			return next(c)
+		}
+	}
+}
+
+func hasCredentialScope(scopes []string, required string) bool {
+	for _, scope := range scopes {
+		if strings.EqualFold(strings.TrimSpace(scope), required) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) setAPICredential(c echo.Context, credential apikey.Credential) {
