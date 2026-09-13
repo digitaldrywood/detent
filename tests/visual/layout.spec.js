@@ -496,7 +496,8 @@ test("board elevated blockers render one compact opt-in alert", async ({
 
   const exceptions = page.locator("#board-exceptions [id^='exception-']");
   await expect(exceptions).toHaveCount(1);
-  await expect(exceptions.first()).toContainText("Needs review");
+  await expect(exceptions.first()).toContainText("Needs you");
+  await expect(exceptions.first()).not.toContainText("Needs review");
   await expect(exceptions.first()).toContainText("after_create hook exited 2");
   await expect(page.locator("#board-exceptions")).not.toContainText(
     "Dependency waiting",
