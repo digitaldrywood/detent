@@ -1239,7 +1239,7 @@ func successfulReworkGateWaitAttempt(
 		Reason:             "unchanged_signature_clean_diff",
 		CurrentSignature:   signature,
 		WorkspaceDiffStats: DiffStats{Status: "clean"},
-		TrackerState:       "Rework",
+		TrackerState:       issue.State,
 	})
 	if includeMarker {
 		metadata = mergeWorkAttemptMetadata(metadata, completionGateWaitMetadata(completedReworkGateWaitReason, issue))

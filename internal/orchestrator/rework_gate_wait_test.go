@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,382 @@ func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
 				if tt.severity == "p2" && state.RequiredGates[issue.ID].State != "failed" {
 					t.Fatalf("audit gate = %#v", state.RequiredGates[issue.ID])
 				}
+			}
+		})
+	}
+}
+
+func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name         string
+		reworkState  string
+		snapshotHead string
+	}{
+		{name: "stale default rework snapshot", reworkState: "Rework", snapshotHead: "stale-head"},
+		{name: "empty configured rework snapshot", reworkState: "Repair"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			now := time.Date(2026, 9, 13, 15, 30, 0, 0, time.UTC)
+			issue := reworkGateWaitTestIssue(workpad.StatusComplete)
+			issue.State = tt.reworkState
+			issue.PullRequest.HeadSHA = "current-head"
+			snapshot := cloneIssue(issue)
+			snapshot.PullRequest.HeadSHA = tt.snapshotHead
+
+			memo := openValidatorMemoStore(t)
+			attempt := successfulReworkGateWaitAttempt(now.Add(-time.Minute), issue, autoPromoteReworkSignature{
+				PRNumber: int64(issue.PullRequest.Number),
+				HeadSHA:  issue.PullRequest.HeadSHA,
+			}, true)
+			if !gateWaitAttemptMatchesPullRequest(attempt, issue, tt.reworkState) {
+				t.Fatal("gate-wait attempt fixture does not match the current pull request")
+			}
+			wantValidator := gate.ValidatorResult{
+				Submitted: true,
+				Verdict:   gate.ValidatorVerdictRework,
+				Score:     0.42,
+				Summary:   "Repair the restored finding.",
+				Findings: []gate.Finding{{
+					Severity: "p1",
+					Body:     "Use the current PR head.",
+					Path:     "internal/orchestrator/autopromote_tick.go",
+					Line:     1,
+				}},
+			}
+			if err := memo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+				ProjectID:  "detent",
+				IssueID:    issue.ID,
+				HeadSHA:    issue.PullRequest.HeadSHA,
+				Identifier: issue.Identifier,
+				PRNumber:   attempt.PRNumber,
+				Submitted:  wantValidator.Submitted,
+				Verdict:    wantValidator.Verdict,
+				Score:      wantValidator.Score,
+				Summary:    wantValidator.Summary,
+				Findings: []store.ValidatorFinding{{
+					Severity: wantValidator.Findings[0].Severity,
+					Body:     wantValidator.Findings[0].Body,
+					Path:     wantValidator.Findings[0].Path,
+					Line:     wantValidator.Findings[0].Line,
+				}},
+				Commented:  true,
+				RecordedAt: now.Add(-30 * time.Second),
+				UpdatedAt:  now.Add(-30 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{tt.reworkState},
+				TerminalStates:      []string{"Done"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:       true,
+					ReworkState:   tt.reworkState,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate: gate.Config{Kind: gate.KindCommand, Validator: gate.ValidatorConfig{
+						Enabled: true,
+					}},
+				},
+			})
+			cfg.Project.ID = "detent"
+			worker := newWorkerHostRunner()
+			var logs strings.Builder
+			tracker := &implementProgressConnector{hydrated: issue, refreshed: issue}
+			orch := &Orchestrator{
+				cfg:           cfg,
+				connector:     tracker,
+				workAttempts:  &recordingWorkAttemptStore{history: []store.WorkAttempt{attempt}},
+				validatorMemo: memo,
+				supervisor:    newTestSupervisor(t, worker, cfg),
+				runResults:    make(chan runpkg.Completion),
+				logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			state := newState(cfg)
+
+			restored := orch.restoreDurableGateWaitCompletionState(ctx, &state, []connector.Issue{snapshot})
+			transition := orch.transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(
+				ctx,
+				&state,
+				restored.issues,
+				now,
+				restored.validatorHeadHydration,
+			)
+
+			if _, waiting := state.Completed[issue.ID]; waiting {
+				t.Fatalf("Completed[%q] retained after current-head rework verdict", issue.ID)
+			}
+			handoff, ok := state.PriorAttempts[issue.ID]
+			if !ok || handoff.Source != "auto_promote" || handoff.Validator.Verdict != gate.ValidatorVerdictRework {
+				t.Fatalf("PriorAttempts[%q] = %#v, want validator rework handoff", issue.ID, handoff)
+			}
+			if len(transition.dispatchCandidates) != 1 ||
+				transition.dispatchCandidates[0].PullRequest == nil ||
+				transition.dispatchCandidates[0].PullRequest.HeadSHA != issue.PullRequest.HeadSHA {
+				t.Fatalf("dispatch candidates = %#v, want current head %q", transition.dispatchCandidates, issue.PullRequest.HeadSHA)
+			}
+			if strings.Contains(logs.String(), "reason=validator_missing") {
+				t.Fatalf("stored current-head verdict logged validator_missing:\n%s", logs.String())
+			}
+			if tracker.hydrations != 1 {
+				t.Fatalf("pull request hydrations = %d, want one current-head refresh", tracker.hydrations)
+			}
+
+			orch.dispatchReadyIssues(ctx, &state, transition.dispatchCandidates, now)
+			request := receiveWorkerHostRunRequest(t, worker.started)
+			if request.PriorAttempt.Validator.Verdict != wantValidator.Verdict ||
+				request.PriorAttempt.Validator.Summary != wantValidator.Summary ||
+				len(request.PriorAttempt.Validator.Findings) != 1 ||
+				request.PriorAttempt.Validator.Findings[0].Body != wantValidator.Findings[0].Body {
+				t.Fatalf("dispatched validator handoff = %#v, want %#v", request.PriorAttempt.Validator, wantValidator)
+			}
+		})
+	}
+}
+
+func TestReworkGateWaitRestoreRequiresCurrentHeadHydration(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name       string
+		hydrated   connector.Issue
+		hydrateErr error
+	}{
+		{name: "hydration error", hydrateErr: errors.New("pull request unavailable")},
+		{name: "mismatched issue", hydrated: connector.Issue{ID: "different-issue"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			now := time.Date(2026, 9, 13, 15, 45, 0, 0, time.UTC)
+			issue := reworkGateWaitTestIssue(workpad.StatusComplete)
+			issue.PullRequest.HeadSHA = "stale-head"
+			attempt := successfulReworkGateWaitAttempt(now.Add(-time.Minute), issue, autoPromoteReworkSignature{
+				PRNumber: int64(issue.PullRequest.Number),
+				HeadSHA:  issue.PullRequest.HeadSHA,
+			}, true)
+			memo := openValidatorMemoStore(t)
+			if err := memo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+				ProjectID:  "detent",
+				IssueID:    issue.ID,
+				HeadSHA:    issue.PullRequest.HeadSHA,
+				Submitted:  true,
+				Verdict:    gate.ValidatorVerdictRework,
+				Summary:    "Stale findings must not dispatch.",
+				Commented:  true,
+				RecordedAt: now.Add(-30 * time.Second),
+				UpdatedAt:  now.Add(-30 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := normalizeConfig(Config{
+				ActiveStates: []string{"Rework"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:       true,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate: gate.Config{Kind: gate.KindCommand, Validator: gate.ValidatorConfig{
+						Enabled: true,
+					}},
+				},
+			})
+			cfg.Project.ID = "detent"
+			tracker := &implementProgressConnector{
+				hydrated:   tt.hydrated,
+				refreshed:  issue,
+				hydrateErr: tt.hydrateErr,
+			}
+			orch := &Orchestrator{
+				cfg:           cfg,
+				connector:     tracker,
+				workAttempts:  memo,
+				validatorMemo: memo,
+				logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			state.Completed[issue.ID] = completedFromGateWaitAttempt(issue, attempt)
+
+			restored := orch.restoreDurableGateWaitCompletionState(ctx, &state, []connector.Issue{issue})
+			transition := orch.transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(
+				ctx,
+				&state,
+				restored.issues,
+				now,
+				restored.validatorHeadHydration,
+			)
+
+			if handoff, ok := state.PriorAttempts[issue.ID]; ok {
+				t.Fatalf("stale validator handoff restored after failed hydration: %#v", handoff)
+			}
+			if _, waiting := state.Completed[issue.ID]; !waiting {
+				t.Fatalf("Completed[%q] removed after failed hydration", issue.ID)
+			}
+			if len(transition.dispatchCandidates) != 0 {
+				t.Fatalf("dispatch candidates = %#v, want none after failed hydration", transition.dispatchCandidates)
+			}
+			if tracker.hydrations != 1 {
+				t.Fatalf("pull request hydrations = %d, want one failed current-head refresh", tracker.hydrations)
+			}
+		})
+	}
+}
+
+func TestReworkGateWaitRestoreSkipsHydrationWithoutDurableWait(t *testing.T) {
+	t.Parallel()
+
+	issue := reworkGateWaitTestIssue(workpad.StatusComplete)
+	valid := successfulReworkGateWaitAttempt(time.Now(), issue, autoPromoteReworkSignature{
+		PRNumber: int64(issue.PullRequest.Number),
+		HeadSHA:  issue.PullRequest.HeadSHA,
+	}, true)
+	failed := valid
+	failed.TerminalState = store.WorkAttemptTerminalNoProgress
+	cfg := normalizeConfig(Config{
+		ActiveStates: []string{"Rework"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate: gate.Config{Kind: gate.KindCommand, Validator: gate.ValidatorConfig{
+				Enabled: true,
+			}},
+		},
+	})
+	for _, tt := range []struct {
+		name    string
+		history []store.WorkAttempt
+	}{
+		{name: "no durable wait"},
+		{name: "newer failure supersedes durable wait", history: []store.WorkAttempt{failed, valid}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tracker := &implementProgressConnector{hydrated: issue, refreshed: issue}
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: &recordingWorkAttemptStore{history: tt.history},
+			}
+			state := newState(cfg)
+
+			orch.restoreDurableGateWaitCompletionState(t.Context(), &state, []connector.Issue{issue})
+
+			if tracker.hydrations != 0 {
+				t.Fatalf("pull request hydrations = %d, want none without a current durable Rework wait", tracker.hydrations)
+			}
+			if _, restored := state.Completed[issue.ID]; restored {
+				t.Fatal("superseded or absent durable Rework wait was restored")
+			}
+		})
+	}
+}
+
+func TestAutoPromoteValidatorEnabledAllowsOperationalCompletion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 16, 0, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-operational-validator", nil, nil)
+	issue.Description = operationalCompletionAuthorizationBody()
+	issue.Comments = []connector.IssueComment{{
+		Body: operationalCompletionWorkpadBody("The authorized maintenance completed successfully."),
+	}}
+	cfg := normalizeConfig(Config{
+		TerminalStates: []string{"Done"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: issue.State,
+			Gate: gate.Config{Kind: gate.KindCommand, Validator: gate.ValidatorConfig{
+				Enabled: true,
+			}},
+		},
+	})
+	tracker := &autoPromoteTickConnector{}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{CompletionKind: workpad.CompletionOperational}
+
+	result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %q", result.transitioned, issue.ID)
+	}
+}
+
+func TestReworkGateWaitRefreshesWorkpadBeforeInvalidatingCompletion(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	now := time.Date(2026, 9, 13, 16, 0, 0, 0, time.UTC)
+	current := reworkGateWaitTestIssue(workpad.StatusComplete)
+	snapshot := cloneIssue(current)
+	snapshot.Comments = reworkGateWaitTestIssue(workpad.StatusBlocked).Comments
+	attempt := successfulReworkGateWaitAttempt(now.Add(-time.Minute), current, autoPromoteReworkSignature{
+		PRNumber: int64(current.PullRequest.Number),
+		HeadSHA:  current.PullRequest.HeadSHA,
+	}, true)
+	cfg := normalizeConfig(Config{
+		ActiveStates: []string{"Rework"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate: gate.Config{Kind: gate.KindCommand, Validator: gate.ValidatorConfig{
+				Enabled: true,
+			}},
+		},
+	})
+	tracker := &implementProgressConnector{hydrated: current, refreshed: current}
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: &recordingWorkAttemptStore{},
+	}
+	state := newState(cfg)
+	state.Completed[current.ID] = completedFromGateWaitAttempt(current, attempt)
+
+	orch.restoreDurableGateWaitCompletions(ctx, &state, []connector.Issue{snapshot})
+
+	if _, waiting := state.Completed[current.ID]; !waiting {
+		t.Fatal("current completed Workpad evidence was invalidated from a stale snapshot")
+	}
+}
+
+func TestValidatorStageIdentityRequiresHeadSHA(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		pullRequest *connector.PullRequest
+		branchName  string
+		wantHead    string
+	}{
+		{name: "pull request head", pullRequest: &connector.PullRequest{HeadSHA: "head-sha", BranchName: "pr-branch"}, branchName: "issue-branch", wantHead: "head-sha"},
+		{name: "pull request branch is not a head", pullRequest: &connector.PullRequest{BranchName: "pr-branch"}, branchName: "issue-branch"},
+		{name: "issue branch is not a head", branchName: "issue-branch"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			identity := validatorStageIdentityForIssue(connector.Issue{
+				ID:          "issue-2554",
+				PullRequest: tt.pullRequest,
+				BranchName:  tt.branchName,
+			})
+			if identity.HeadSHA != tt.wantHead {
+				t.Fatalf("HeadSHA = %q, want %q", identity.HeadSHA, tt.wantHead)
+			}
+			if (identity.Key != "") != (tt.wantHead != "") {
+				t.Fatalf("Key = %q for head %q", identity.Key, tt.wantHead)
 			}
 		})
 	}
