@@ -7190,6 +7190,7 @@ type fakeCodexClient struct {
 	err            error
 	calls          int
 	models         []AgentModel
+	catalogErr     error
 	catalogCalls   int
 	verifyErr      error
 	verifiedResume AgentResume
@@ -7308,7 +7309,7 @@ func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpd
 
 func (c *fakeCodexClient) ListModels(context.Context) ([]AgentModel, error) {
 	c.catalogCalls++
-	return c.models, nil
+	return c.models, c.catalogErr
 }
 
 func (*fakeCodexClient) DefaultModel(context.Context, string) (string, error) {

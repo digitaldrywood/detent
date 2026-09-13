@@ -166,7 +166,10 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 	}
 	models, err := provider.ListModels(ctx)
 	if err != nil {
-		result.Err = errors.New("automatic model selection: model catalog unavailable; retry catalog discovery before dispatch")
+		catalogErr := fmt.Errorf("automatic model selection: model catalog unavailable: %w", err)
+		result.Model = policy.Model("normal")
+		result.Selection.ModelSource = selectionSource(policy, "normal_model", "")
+		result.Selection.FallbackReason = catalogErr.Error()
 		return result
 	}
 	model, available := availableSelectionModel(models, result.Model)
