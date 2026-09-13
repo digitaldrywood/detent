@@ -831,11 +831,7 @@ func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapsho
 	var processEvidence installerProcessSnapshot
 	cmd.Cancel = func() error {
 		processEvidence = snapshot(cmd.Process.Pid)
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
+		return terminateInstallerProcessGroup(cmd.Process.Pid, processEvidence, syscall.Kill)
 	}
 
 	started := time.Now()
@@ -855,7 +851,7 @@ func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapsho
 	if processEvidence.description == "" {
 		processEvidence = snapshot(cmd.Process.Pid)
 	}
-	if killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+	if killErr := terminateInstallerProcessGroup(cmd.Process.Pid, processEvidence, syscall.Kill); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 		err = errors.Join(err, fmt.Errorf("clean up command process group: %w", killErr))
 	}
 	stage := "wait"
@@ -868,7 +864,19 @@ func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapsho
 
 type installerProcessSnapshot struct {
 	description string
+	available   bool
 	live        bool
+}
+
+func terminateInstallerProcessGroup(group int, snapshot installerProcessSnapshot, kill func(int, syscall.Signal) error) error {
+	if snapshot.available && !snapshot.live {
+		return os.ErrProcessDone
+	}
+	err := kill(-group, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }
 
 func installerProcessEvidence(group int) installerProcessSnapshot {
@@ -887,7 +895,7 @@ func installerProcessEvidence(group int) installerProcessSnapshot {
 
 func installerProcessGroup(output string, group int) installerProcessSnapshot {
 	var processes []string
-	var snapshot installerProcessSnapshot
+	snapshot := installerProcessSnapshot{available: true}
 	for line := range strings.SplitSeq(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 || fields[2] != strconv.Itoa(group) {
@@ -899,7 +907,8 @@ func installerProcessGroup(output string, group int) installerProcessSnapshot {
 		}
 	}
 	if len(processes) == 0 {
-		return installerProcessSnapshot{description: "no process group members observed"}
+		snapshot.description = "no process group members observed"
+		return snapshot
 	}
 	snapshot.description = strings.Join(processes, "; ")
 	return snapshot
@@ -927,8 +936,43 @@ func TestInstallerProcessGroup(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := installerProcessGroup(tt.output, 100)
-			if got.description != tt.want || got.live != tt.wantLive {
-				t.Fatalf("installerProcessGroup() = %+v, want description %q and live=%t", got, tt.want, tt.wantLive)
+			if got.description != tt.want || !got.available || got.live != tt.wantLive {
+				t.Fatalf("installerProcessGroup() = %+v, want description %q, available=true, and live=%t", got, tt.want, tt.wantLive)
+			}
+		})
+	}
+}
+
+func TestTerminateInstallerProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		snapshot   installerProcessSnapshot
+		killErr    error
+		wantErr    error
+		wantCalled bool
+	}{
+		{name: "unavailable snapshot kills", snapshot: installerProcessSnapshot{description: "snapshot unavailable"}, wantCalled: true},
+		{name: "live group kills", snapshot: installerProcessSnapshot{available: true, live: true}, wantCalled: true},
+		{name: "empty group is already done", snapshot: installerProcessSnapshot{available: true}, wantErr: os.ErrProcessDone},
+		{name: "zombie-only group is already done", snapshot: installerProcessSnapshot{available: true, description: "pid=100 state=Z"}, wantErr: os.ErrProcessDone},
+		{name: "missing group is already done", killErr: syscall.ESRCH, wantErr: os.ErrProcessDone, wantCalled: true},
+		{name: "kill failure is preserved", killErr: syscall.EPERM, wantErr: syscall.EPERM, wantCalled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			called := false
+			got := terminateInstallerProcessGroup(100, tt.snapshot, func(pid int, signal syscall.Signal) error {
+				called = true
+				if pid != -100 || signal != syscall.SIGKILL {
+					t.Fatalf("kill() = (%d, %d), want (-100, %d)", pid, signal, syscall.SIGKILL)
+				}
+				return tt.killErr
+			})
+			if !errors.Is(got, tt.wantErr) || called != tt.wantCalled {
+				t.Fatalf("terminateInstallerProcessGroup() = %v, called=%t; want error %v, called=%t", got, called, tt.wantErr, tt.wantCalled)
 			}
 		})
 	}

@@ -13,12 +13,12 @@ Current validation:
 - Controlled cancellation/deadline assertions failed on current main (exit 1):
   both errors lacked the expected process IDs and executable evidence.
 - `env -u DETENT_API_TOKEN go test . -run
-  '^(TestRunInstallerCommand|TestInstallerProcessGroup|TestInstallScript)' -count=1`
-  passed in 1.387s after restoration.
+  '^(TestRunInstallerCommand|TestInstallerProcessGroup|TestTerminateInstallerProcessGroup|TestInstallScript)'
+  -count=1` passed in 1.408s after the Darwin regression fix.
 - `env -u DETENT_API_TOKEN make check-fast` passed, including repository-wide
-  tests and the invariant gate. Independent validator: approve, score 9/10,
-  no P1/P2 findings. Race, coverage, and nilaway
-  are reserved for the merge queue by the worker protocol.
+  tests and the invariant gate. Independent validator: approve, score 0.97,
+  no P1/P2 findings after the Darwin zombie-only regression fix. Race, coverage,
+  and nilaway are reserved for the merge queue by the worker protocol.
 
 ## Finding
 
@@ -99,7 +99,11 @@ either before or after taking a snapshot and wait for it to be reaped before
 returning the snapshot. The first regression catches false success after a live
 snapshot; the second catches false cancellation after an empty snapshot.
 Automated review of the initial PR identified the latter edge case, which the
-new regression reproduced before the correction.
+new regression reproduced before the correction. A subsequent review found that
+Darwin returns `EPERM` when signaling a zombie-only process group. The helper now
+treats a successful empty or zombie-only snapshot as already done, while an
+unavailable snapshot still falls back to signaling the group. Table-driven tests
+cover each signal decision and preserve non-`ESRCH` failures.
 
 Table-driven tests cover group filtering, malformed/empty rows, spaced executable
 names, orphaned children, zombie-only groups, and live nested-command capture. This improves the next
