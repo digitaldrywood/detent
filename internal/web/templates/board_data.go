@@ -1697,6 +1697,9 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	}
 	waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
 	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
+	if card.HumanActionRequired {
+		add("Needs you", primitives.KindInfo)
+	}
 	switch {
 	case view.DispatchStatus != "" && (card.AttentionLabel != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))):
 		add("Needs you", primitives.KindErr)
@@ -1740,8 +1743,7 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		add(view.MergeLaneStatus, view.MergeLaneKind)
 	}
 	switch {
-	case strings.EqualFold(view.State, "Human Review") && card.HumanActionRequired:
-		add("Needs you", primitives.KindInfo)
+	case card.HumanActionRequired:
 	case card.GatePending:
 		add("Awaiting checks", primitives.KindInfo)
 	case card.WaitDetail != "":

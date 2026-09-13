@@ -168,6 +168,10 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 		optoutLabel      string
 		allowedLabels    []string
 		gateKind         string
+		sourceState      string
+		passState        string
+		approvalLabel    string
+		terminalStates   []string
 		check            func(*testing.T, operations.Decision)
 	}{
 		{
@@ -186,6 +190,58 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 				if decision.Prerequisite == nil || decision.Prerequisite.Issue != "getparable/parable#3417" || decision.Prerequisite.Title != "Approve the production rollout" || decision.Prerequisite.Evidence != "Completion evidence is required." {
 					t.Fatalf("prerequisite decision = %#v", decision)
 				}
+			},
+		},
+		{
+			name: "human-owned prerequisite in Rework continuation",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{
+					{ID: "rework-dependent", ProjectID: "parable", Identifier: "getparable/parable#3414", Title: "Repair dependent change", State: "Rework", BlockedBy: []telemetry.BlockedRef{{ID: "rework-blocker", Identifier: "getparable/parable#3418", HumanOwned: true}}},
+					{ID: "rework-blocker", ProjectID: "parable", Identifier: "getparable/parable#3418", Title: "Approve the repair"},
+				},
+				SchedulerDecisions: []telemetry.SchedulerDecision{{ProjectID: "parable", IssueID: "rework-dependent", Lane: "Rework", Result: "skipped", Reason: "blocked_by_dependency", DecisionAt: now}},
+			},
+			wantKind:     "human_prerequisite",
+			wantQuestion: "Complete and close the human-owned prerequisite.",
+		},
+		{
+			name: "legacy snapshot project scopes prerequisite URL",
+			snapshot: telemetry.Snapshot{
+				Project: telemetry.Project{ID: "parable"},
+				BoardIssues: []telemetry.Issue{
+					{ID: "legacy-dependent", Identifier: "getparable/parable#3421", State: "Todo", BlockedBy: []telemetry.BlockedRef{{Identifier: "getparable/parable#3422", HumanOwned: true}}},
+					{ID: "legacy-blocker", Identifier: "getparable/parable#3422", Title: "Approve the legacy rollout"},
+				},
+				SchedulerDecisions: []telemetry.SchedulerDecision{{IssueID: "legacy-dependent", Lane: "Todo", Result: "skipped", Reason: "blocked_by_dependency", DecisionAt: now}},
+			},
+			wantKind:     "human_prerequisite",
+			wantQuestion: "Complete and close the human-owned prerequisite.",
+			check: func(t *testing.T, decision operations.Decision) {
+				t.Helper()
+				if decision.Prerequisite == nil || decision.Prerequisite.URL != "/api/v1/projects/parable/issues/explanation?reference=getparable%2Fparable%233422" {
+					t.Fatalf("legacy prerequisite decision = %#v", decision)
+				}
+			},
+		},
+		{
+			name: "human-owned prerequisite in Merging continuation",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{
+					{ID: "merging-dependent", ProjectID: "parable", Identifier: "getparable/parable#3415", Title: "Merge dependent change", State: "Merging", BlockedBy: []telemetry.BlockedRef{{ID: "merging-blocker", Identifier: "getparable/parable#3419", HumanOwned: true}}},
+					{ID: "merging-blocker", ProjectID: "parable", Identifier: "getparable/parable#3419", Title: "Approve the merge"},
+				},
+				SchedulerDecisions: []telemetry.SchedulerDecision{{ProjectID: "parable", IssueID: "merging-dependent", Lane: "Merging", Result: "skipped", Reason: "blocked_by_dependency", DecisionAt: now}},
+			},
+			wantKind:     "human_prerequisite",
+			wantQuestion: "Complete and close the human-owned prerequisite.",
+		},
+		{
+			name: "stale scheduler lane does not create prerequisite decision",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{
+					{ID: "stale-dependent", ProjectID: "parable", Identifier: "getparable/parable#3416", State: "Rework", BlockedBy: []telemetry.BlockedRef{{Identifier: "getparable/parable#3420", HumanOwned: true}}},
+				},
+				SchedulerDecisions: []telemetry.SchedulerDecision{{ProjectID: "parable", IssueID: "stale-dependent", Lane: "Todo", Result: "skipped", Reason: "blocked_by_dependency", DecisionAt: now}},
 			},
 		},
 		{
@@ -208,6 +264,23 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			},
 		},
 		{
+			name: "missing enterprise prerequisite URL uses project explanation",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{
+					{ID: "enterprise-dependent", ProjectID: "enterprise", Identifier: "owner/repo#41", State: "Todo", BlockedBy: []telemetry.BlockedRef{{Identifier: "owner/repo#42", HumanOwned: true}}},
+				},
+				SchedulerDecisions: []telemetry.SchedulerDecision{{ProjectID: "enterprise", IssueID: "enterprise-dependent", Lane: "Todo", Result: "skipped", Reason: "blocked_by_dependency", DecisionAt: now}},
+			},
+			wantKind:     "human_prerequisite",
+			wantQuestion: "Complete and close the human-owned prerequisite.",
+			check: func(t *testing.T, decision operations.Decision) {
+				t.Helper()
+				if decision.Prerequisite == nil || decision.Prerequisite.URL != "/api/v1/projects/enterprise/issues/explanation?reference=owner%2Frepo%2342" {
+					t.Fatalf("enterprise prerequisite decision = %#v", decision)
+				}
+			},
+		},
+		{
 			name: "blocked park with no automatic exit",
 			snapshot: telemetry.Snapshot{
 				BoardIssues: []telemetry.Issue{{ID: "parked", ProjectID: "detent", Identifier: "digitaldrywood/detent#2395", Title: "Repair the parked delivery", State: "Blocked", URL: "https://github.com/digitaldrywood/detent/issues/2395"}},
@@ -217,19 +290,42 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			wantQuestion: "credentials are unavailable — restore the credentials",
 		},
 		{
-			name: "pull request review gate",
+			name:             "pull request review gate",
+			configureProject: true,
 			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
-				{ID: "review", ProjectID: "parable", Identifier: "getparable/parable#3500", Title: "Review the release", State: "Human Review", URL: "https://github.com/getparable/parable/issues/3500", RequiredGate: &telemetry.RequiredGate{HumanAction: "Review pull request #3501."}, PullRequest: &telemetry.PullRequest{Number: 3501, State: "OPEN", URL: "https://github.com/getparable/parable/pull/3501"}},
-				{ID: "review-copy", ProjectID: "release", Identifier: "getparable/parable#3500", Title: "Review the release", State: "Human Review", URL: "https://github.com/getparable/parable/issues/3500", RequiredGate: &telemetry.RequiredGate{HumanAction: "Review pull request #3501."}, PullRequest: &telemetry.PullRequest{Number: 3501, State: "OPEN", URL: "https://github.com/getparable/parable/pull/3501"}},
+				{ID: "review", ProjectID: "parable", Identifier: "getparable/parable#3500", Title: "Review the release", State: "Human Review", URL: "https://github.com/getparable/parable/issues/3500", PullRequest: &telemetry.PullRequest{Number: 3501, State: "OPEN", URL: "https://github.com/getparable/parable/pull/3501"}},
+				{ID: "review-copy", ProjectID: "release", Identifier: "getparable/parable#3500", Title: "Review the release", State: "Human Review", URL: "https://github.com/getparable/parable/issues/3500", PullRequest: &telemetry.PullRequest{Number: 3501, State: "OPEN", URL: "https://github.com/getparable/parable/pull/3501"}},
 			}},
 			wantKind:     "pull_request_review",
-			wantQuestion: "Review pull request #3501.",
+			wantQuestion: "Review pull request #3501, then move the issue to Merging.",
 			check: func(t *testing.T, decision operations.Decision) {
 				t.Helper()
-				if decision.URL != "https://github.com/getparable/parable/pull/3501" {
-					t.Fatalf("review decision URL = %q", decision.URL)
+				if decision.URL != "https://github.com/getparable/parable/issues/3500" {
+					t.Fatalf("review decision URL = %q, want issue action destination", decision.URL)
 				}
 			},
+		},
+		{
+			name: "explicit Human Review action remains an issue gate",
+			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+				{ID: "credentials", ProjectID: "parable", Identifier: "getparable/parable#3510", Title: "Restore delivery access", State: "Human Review", URL: "https://github.com/getparable/parable/issues/3510", RequiredGate: &telemetry.RequiredGate{HumanAction: "Restore deployment credentials."}, PullRequest: &telemetry.PullRequest{Number: 3511, State: "OPEN", URL: "https://github.com/getparable/parable/pull/3511"}},
+			}},
+			wantKind:     "required_gate",
+			wantQuestion: "Restore deployment credentials.",
+			check: func(t *testing.T, decision operations.Decision) {
+				t.Helper()
+				if decision.URL != "https://github.com/getparable/parable/issues/3510" {
+					t.Fatalf("explicit gate URL = %q, want issue evidence", decision.URL)
+				}
+			},
+		},
+		{
+			name:             "configured terminal issue suppresses explicit action",
+			configureProject: true,
+			terminalStates:   []string{"Released"},
+			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+				{ID: "released", ProjectID: "parable", Identifier: "getparable/parable#3514", State: "Released", RequiredGate: &telemetry.RequiredGate{HumanAction: "Approve the old release."}, PullRequest: &telemetry.PullRequest{Number: 3515, State: "OPEN"}},
+			}},
 		},
 		{
 			name:         "closed pull request supersedes published question",
@@ -241,9 +337,13 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 		{
 			name: "duplicate durable questions",
 			recorded: []operations.Decision{
-				{ProjectID: "alpha", Issue: "owner/repo#99", Question: "Choose a recovery?"},
-				{ProjectID: "beta", Issue: "owner/repo#99", Question: "Choose a recovery?"},
+				{ProjectID: "alpha", Issue: "owner/repo#99", Question: "Choose a recovery?", URL: "https://github.com/owner/repo/issues/99"},
+				{ProjectID: "beta", Issue: "owner/repo#99", Question: "Choose a recovery?", URL: "https://github.com/owner/repo/issues/99"},
 			},
+			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+				{ID: "alpha-question", ProjectID: "alpha", Identifier: "owner/repo#99", URL: "https://github.com/owner/repo/issues/99"},
+				{ID: "beta-question", ProjectID: "beta", Identifier: "owner/repo#99", URL: "https://github.com/owner/repo/issues/99"},
+			}},
 			wantKind:     "question",
 			wantQuestion: "Choose a recovery?",
 		},
@@ -270,7 +370,18 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 				{ID: "manual-review", ProjectID: "parable", Identifier: "getparable/parable#3502", Title: "Review the release", State: "Human Review", PullRequest: &telemetry.PullRequest{Number: 3503, State: "OPEN", URL: "https://github.com/getparable/parable/pull/3503"}},
 			}},
 			wantKind:     "pull_request_review",
-			wantQuestion: "Review pull request #3503.",
+			wantQuestion: "Review pull request #3503, then move the issue to Merging.",
+		},
+		{
+			name:             "configured custom review source state",
+			configureProject: true,
+			sourceState:      "Review",
+			passState:        "Release",
+			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+				{ID: "custom-review", ProjectID: "parable", Identifier: "getparable/parable#3512", State: "Review", PullRequest: &telemetry.PullRequest{Number: 3513, State: "OPEN"}},
+			}},
+			wantKind:     "pull_request_review",
+			wantQuestion: "Review pull request #3513, then move the issue to Release.",
 		},
 		{
 			name:             "issue opt-out requires review",
@@ -281,7 +392,7 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 				{ID: "optout-review", ProjectID: "parable", Identifier: "getparable/parable#3504", State: "Human Review", Labels: []string{" Requires-Human-Review "}, PullRequest: &telemetry.PullRequest{Number: 3505, State: "OPEN"}},
 			}},
 			wantKind:     "pull_request_review",
-			wantQuestion: "Review pull request #3505.",
+			wantQuestion: "Review pull request #3505, then move the issue to Merging.",
 		},
 		{
 			name:             "allowed-label miss requires review",
@@ -292,18 +403,19 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 				{ID: "allowlist-review", ProjectID: "parable", Identifier: "getparable/parable#3506", State: "Human Review", Labels: []string{"docs"}, PullRequest: &telemetry.PullRequest{Number: 3507, State: "OPEN"}},
 			}},
 			wantKind:     "pull_request_review",
-			wantQuestion: "Review pull request #3507.",
+			wantQuestion: "Review pull request #3507, then move the issue to Merging.",
 		},
 		{
 			name:             "human gate requires review",
 			configureProject: true,
 			autoPromote:      true,
 			gateKind:         "human_review",
+			approvalLabel:    "release-approved",
 			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
 				{ID: "human-gate-review", ProjectID: "parable", Identifier: "getparable/parable#3508", State: "Human Review", PullRequest: &telemetry.PullRequest{Number: 3509, State: "OPEN"}},
 			}},
 			wantKind:     "pull_request_review",
-			wantQuestion: "Review pull request #3509.",
+			wantQuestion: "Review pull request #3509, then apply label `release-approved` to the issue.",
 		},
 		{
 			name:             "automated Human Review wait",
@@ -311,12 +423,22 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			autoPromote:      true,
 			snapshot:         telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "auto", ProjectID: "parable", Identifier: "getparable/parable#3502", State: "Human Review", PullRequest: &telemetry.PullRequest{Number: 3503, State: "OPEN"}}}},
 		},
+		{
+			name:             "existing human approval satisfies review gate",
+			configureProject: true,
+			autoPromote:      true,
+			gateKind:         "human_review",
+			approvalLabel:    "release-approved",
+			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+				{ID: "approved-review", ProjectID: "parable", Identifier: "getparable/parable#3516", State: "Human Review", Labels: []string{" Release-Approved "}, PullRequest: &telemetry.PullRequest{Number: 3517, State: "OPEN"}},
+			}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			deps := testDeps(t)
 			if tc.configureProject {
-				setOperationsTestProject(t, deps.Registry, "parable", tc.autoPromote, tc.optoutLabel, tc.allowedLabels, tc.gateKind)
+				setOperationsTestProject(t, deps.Registry, "parable", tc.autoPromote, tc.optoutLabel, tc.allowedLabels, tc.gateKind, tc.sourceState, tc.passState, tc.approvalLabel, tc.terminalStates)
 			}
 			deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{Decisions: tc.recorded}}
 			if err := deps.Hub.Publish(tc.snapshot); err != nil {
@@ -353,7 +475,7 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 	}
 }
 
-func setOperationsTestProject(t *testing.T, registry *project.Registry, id string, autoPromote bool, optoutLabel string, allowedLabels []string, gateKind string) {
+func setOperationsTestProject(t *testing.T, registry *project.Registry, id string, autoPromote bool, optoutLabel string, allowedLabels []string, gateKind string, sourceState string, passState string, approvalLabel string, terminalStates []string) {
 	t.Helper()
 	workflowCfg := workflowconfig.Default()
 	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
@@ -362,8 +484,20 @@ func setOperationsTestProject(t *testing.T, registry *project.Registry, id strin
 		workflowCfg.Agent.AutoPromote.OptoutLabel = optoutLabel
 	}
 	workflowCfg.Agent.AutoPromote.AllowedIssueLabels = append([]string(nil), allowedLabels...)
+	if sourceState != "" {
+		workflowCfg.Agent.AutoPromote.SourceState = sourceState
+	}
+	if passState != "" {
+		workflowCfg.Agent.AutoPromote.PassState = passState
+	}
+	if terminalStates != nil {
+		workflowCfg.Tracker.TerminalStates = append([]string(nil), terminalStates...)
+	}
 	if gateKind != "" {
 		workflowCfg.Gate.Kind = gateKind
+	}
+	if approvalLabel != "" {
+		workflowCfg.Gate.ApprovalLabel = approvalLabel
 	}
 	trackedProject, err := project.New(project.Config{
 		Project:  global.Project{ID: id},
@@ -404,5 +538,47 @@ func TestOperationsDecisionDedupeKeepsProjectLocalIdentifiers(t *testing.T) {
 	}
 	if len(report.Decisions) != 2 {
 		t.Fatalf("decisions = %#v, want both project-local issues", report.Decisions)
+	}
+}
+
+func TestOperationsDecisionDedupeKeepsGitHubHostsSeparate(t *testing.T) {
+	t.Parallel()
+	deps := testDeps(t)
+	deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{Decisions: []operations.Decision{
+		{ProjectID: "alpha", Issue: "owner/repo#99", Question: "Restore alpha credentials.", URL: "https://github.com/owner/repo/issues/99#issuecomment-101"},
+		{ProjectID: "beta", Issue: "owner/repo#99", Question: "Restore beta credentials.", URL: "https://github.com/owner/repo/issues/99#issuecomment-202"},
+	}}}
+	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+		{ID: "alpha", ProjectID: "alpha", Identifier: "owner/repo#99", State: "Rework", URL: "https://github.alpha.example/owner/repo/issues/99"},
+		{ID: "beta", ProjectID: "beta", Identifier: "owner/repo#99", State: "Rework", URL: "https://github.beta.example/owner/repo/issues/99"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var report operations.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Decisions) != 2 {
+		t.Fatalf("decisions = %#v, want both GitHub hosts", report.Decisions)
+	}
+	wantURLs := map[string]string{
+		"Restore alpha credentials.": "https://github.alpha.example/owner/repo/issues/99#issuecomment-101",
+		"Restore beta credentials.":  "https://github.beta.example/owner/repo/issues/99#issuecomment-202",
+	}
+	for _, decision := range report.Decisions {
+		if want := wantURLs[decision.Question]; decision.URL != want {
+			t.Errorf("decision %q URL = %q, want %q", decision.Question, decision.URL, want)
+		}
 	}
 }

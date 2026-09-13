@@ -416,9 +416,11 @@ type ProjectSmallMultiple struct {
 	PauseExitResolver         string
 	ReviewPolicyConfigured    bool
 	AutoPromoteEnabled        bool
+	AutoPromoteSourceState    string
 	AutoPromoteOptoutLabel    string
 	AutoPromoteAllowedLabels  []string
 	AutoPromoteGateKind       string
+	AutoPromoteApprovalLabel  string
 	ActiveHours               telemetry.ActiveHours
 	Dispatch                  telemetry.DispatchStatus
 	Refresh                   telemetry.Refresh
@@ -3267,9 +3269,6 @@ func projectKanbanHumanActionRequired(data DashboardData, issue telemetry.Issue,
 	if issue.RequiredGate != nil && strings.TrimSpace(issue.RequiredGate.HumanAction) != "" {
 		return true
 	}
-	if !strings.EqualFold(strings.TrimSpace(state), "Human Review") {
-		return false
-	}
 	projectID := strings.TrimSpace(issue.ProjectID)
 	if projectID == "" {
 		projectID = strings.TrimSpace(data.ProjectID)
@@ -3279,6 +3278,13 @@ func projectKanbanHumanActionRequired(data DashboardData, issue telemetry.Issue,
 	}
 	for _, project := range data.Projects {
 		if strings.EqualFold(strings.TrimSpace(project.ID), projectID) {
+			sourceState := strings.TrimSpace(project.AutoPromoteSourceState)
+			if sourceState == "" {
+				sourceState = "Human Review"
+			}
+			if !strings.EqualFold(strings.TrimSpace(state), sourceState) {
+				return false
+			}
 			if !project.ReviewPolicyConfigured || !project.AutoPromoteEnabled {
 				return project.ReviewPolicyConfigured
 			}
@@ -3288,7 +3294,11 @@ func projectKanbanHumanActionRequired(data DashboardData, issue telemetry.Issue,
 			if len(project.AutoPromoteAllowedLabels) > 0 && !projectKanbanLabelsIntersect(issue.Labels, project.AutoPromoteAllowedLabels) {
 				return true
 			}
-			return strings.EqualFold(strings.TrimSpace(project.AutoPromoteGateKind), "human_review")
+			if !strings.EqualFold(strings.TrimSpace(project.AutoPromoteGateKind), "human_review") {
+				return false
+			}
+			approvalLabel := strings.TrimSpace(project.AutoPromoteApprovalLabel)
+			return approvalLabel == "" || !projectKanbanLabelsIntersect(issue.Labels, []string{approvalLabel})
 		}
 	}
 	return false
