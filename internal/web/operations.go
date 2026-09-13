@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operations"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -48,11 +49,18 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 	}
 	decisions := make([]operations.Decision, 0, len(report.Decisions))
 	for _, d := range report.Decisions {
-		key := operationsDecisionKey(d.ProjectID, d.Issue, "")
-		if key != "" && seen[key] {
+		issue, current := currentIssues[operationsProjectIssueKey(operationsProjectScope(d.ProjectID, snapshot.Project.ID), d.Issue)]
+		issueURL := ""
+		if current {
+			issueURL = issue.URL
+		}
+		projectID := operationsProjectScope(d.ProjectID, snapshot.Project.ID)
+		d.ProjectID = projectID
+		decisionHost := s.operationsDecisionHost(projectID, issueURL)
+		keys := operationsDecisionKeys(projectID, d.Issue, "", decisionHost)
+		if operationsDecisionSeen(seen, keys) {
 			continue
 		}
-		issue, current := currentIssues[operationsProjectIssueKey(operationsProjectScope(d.ProjectID, snapshot.Project.ID), d.Issue)]
 		if current && operationsPullRequestSupersedesQuestion(issue.PullRequest) {
 			continue
 		}
@@ -64,10 +72,9 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 		if current {
 			d.Title = issue.Title
 		}
+		d.URL = operationsQuestionURL(d.URL, issueURL, decisionHost)
 		decisions = append(decisions, d)
-		if key != "" {
-			seen[key] = true
-		}
+		operationsMarkDecisionSeen(seen, keys)
 	}
 	report.Decisions = decisions
 	blockedByIssue := map[string]telemetry.Blocked{}
@@ -80,7 +87,9 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 		}
 	}
 	for _, issue := range issues {
-		key := operationsDecisionKey(issue.ProjectID, issue.Identifier, issue.ID)
+		projectID := operationsProjectScope(issue.ProjectID, snapshot.Project.ID)
+		keys := operationsDecisionKeys(projectID, issue.Identifier, issue.ID, s.operationsDecisionHost(projectID, issue.URL))
+		decisionSeen := operationsDecisionSeen(seen, keys)
 		if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
 			entry := issue.PullRequest.MergeQueueEntry
 			if entry.Depth > mergeDepths[issue.ProjectID] {
@@ -92,27 +101,29 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 			}
 		}
 
-		if !seen[key] {
+		if !decisionSeen {
 			if d, ok := operationsHumanDependencyDecision(snapshot, issue, currentIssues); ok {
 				report.Decisions = append(report.Decisions, d)
-				seen[key] = true
+				operationsMarkDecisionSeen(seen, keys)
+				decisionSeen = true
 			}
 		}
-		if !seen[key] {
+		if !decisionSeen {
 			ref := strings.TrimSpace(issue.Identifier)
 			if ref == "" {
 				ref = strings.TrimSpace(issue.ID)
 			}
 			row, ok := blockedByIssue[operationsProjectIssueKey(operationsProjectScope(issue.ProjectID, snapshot.Project.ID), ref)]
 			if ok && (row.NeedsHumanAttention || strings.EqualFold(strings.TrimSpace(row.RecoveryAction), "hold")) {
-				report.Decisions = append(report.Decisions, operationsBlockedDecision(row))
-				seen[key] = true
+				report.Decisions = append(report.Decisions, operationsBlockedDecision(row, snapshot.Project.ID))
+				operationsMarkDecisionSeen(seen, keys)
+				decisionSeen = true
 			}
 		}
-		if !seen[key] {
-			if d, ok := operationsRequiredGateDecision(issue, s.operationsProjectHumanReviewRequired(issue, snapshot.Project.ID)); ok {
+		if !decisionSeen {
+			if d, ok := operationsRequiredGateDecision(issue, projectID, s.operationsProjectHumanReviewPolicy(issue, snapshot.Project.ID)); ok {
 				report.Decisions = append(report.Decisions, d)
-				seen[key] = true
+				operationsMarkDecisionSeen(seen, keys)
 			}
 		}
 		for i := range report.Actions {
@@ -153,20 +164,84 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 	return report, nil
 }
 
-func operationsDecisionKey(projectID string, identifier string, issueID string) string {
+func operationsDecisionKeys(projectID string, identifier string, issueID string, host string) []string {
 	projectID = strings.ToLower(strings.TrimSpace(projectID))
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
-	if operationsGlobalIssueIdentifier(identifier) {
-		return "identifier\x00" + identifier
-	}
 	if identifier != "" {
-		return "project\x00" + projectID + "\x00identifier\x00" + identifier
+		keys := []string{"project\x00" + projectID + "\x00identifier\x00" + identifier}
+		if operationsGlobalIssueIdentifier(identifier) {
+			if host = strings.ToLower(strings.TrimSpace(host)); host != "" {
+				keys = append(keys, "host\x00"+host+"\x00identifier\x00"+identifier)
+			}
+		}
+		return keys
 	}
 	issueID = strings.ToLower(strings.TrimSpace(issueID))
 	if issueID == "" {
+		return nil
+	}
+	return []string{"project\x00" + projectID + "\x00issue\x00" + issueID}
+}
+
+func (s *Server) operationsDecisionHost(projectID string, issueURL string) string {
+	if host := operationsURLHost(issueURL); host != "" {
+		return host
+	}
+	if s.registry == nil {
 		return ""
 	}
-	return "project\x00" + projectID + "\x00issue\x00" + issueID
+	trackedProject, ok := s.registry.Get(projectpkg.ID(strings.TrimSpace(projectID)))
+	if !ok || trackedProject == nil {
+		return ""
+	}
+	tracker := trackedProject.Workflow().Config.Tracker
+	if tracker.Kind != workflowconfig.TrackerGitHub && tracker.Kind != workflowconfig.TrackerGitHubLocal {
+		return ""
+	}
+	host := operationsURLHost(tracker.Endpoint)
+	if host == "api.github.com" {
+		return "github.com"
+	}
+	return host
+}
+
+func operationsDecisionSeen(seen map[string]bool, keys []string) bool {
+	for _, key := range keys {
+		if seen[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func operationsMarkDecisionSeen(seen map[string]bool, keys []string) {
+	for _, key := range keys {
+		seen[key] = true
+	}
+}
+
+func operationsURLHost(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || !parsed.IsAbs() {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(parsed.Host))
+}
+
+func operationsQuestionURL(storedURL string, currentIssueURL string, host string) string {
+	stored, storedErr := url.Parse(strings.TrimSpace(storedURL))
+	current, currentErr := url.Parse(strings.TrimSpace(currentIssueURL))
+	if currentErr == nil && current.IsAbs() {
+		if current.Fragment == "" && storedErr == nil {
+			current.Fragment = stored.Fragment
+		}
+		return current.String()
+	}
+	if storedErr == nil && stored.IsAbs() && strings.TrimSpace(host) != "" {
+		stored.Host = strings.TrimSpace(host)
+		return stored.String()
+	}
+	return storedURL
 }
 
 func operationsProjectScope(projectID string, fallback string) string {
@@ -207,7 +282,7 @@ func operationsPullRequestSupersedesQuestion(pr *telemetry.PullRequest) bool {
 
 func operationsHumanDependencyDecision(snapshot telemetry.Snapshot, issue telemetry.Issue, issuesByKey map[string]telemetry.Issue) (operations.Decision, bool) {
 	latest, found := operationsLatestSchedulerDecision(snapshot, issue)
-	if !strings.EqualFold(strings.TrimSpace(issue.State), "Todo") || !found || !strings.EqualFold(strings.TrimSpace(latest.Lane), "Todo") || latest.Result != "skipped" || latest.Reason != "blocked_by_dependency" {
+	if !found || !strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(latest.Lane)) || latest.Result != "skipped" || latest.Reason != "blocked_by_dependency" {
 		return operations.Decision{}, false
 	}
 	for _, ref := range issue.BlockedBy {
@@ -221,7 +296,7 @@ func operationsHumanDependencyDecision(snapshot telemetry.Snapshot, issue teleme
 		prerequisite := issuesByKey[operationsProjectIssueKey(operationsProjectScope(issue.ProjectID, snapshot.Project.ID), identifier)]
 		return operations.Decision{
 			Kind:      "human_prerequisite",
-			ProjectID: issue.ProjectID,
+			ProjectID: operationsProjectScope(issue.ProjectID, snapshot.Project.ID),
 			Issue:     issue.Identifier,
 			Title:     issue.Title,
 			Question:  "Complete and close the human-owned prerequisite.",
@@ -229,7 +304,7 @@ func operationsHumanDependencyDecision(snapshot telemetry.Snapshot, issue teleme
 			Prerequisite: &operations.Prerequisite{
 				Issue:    identifier,
 				Title:    prerequisite.Title,
-				URL:      operationsIssueURL(prerequisite.URL, identifier, prerequisite.ProjectID, issue.ProjectID),
+				URL:      operationsIssueURL(prerequisite.URL, identifier, prerequisite.ProjectID, issue.ProjectID, snapshot.Project.ID),
 				Evidence: "Completion evidence is required.",
 			},
 		}, true
@@ -270,7 +345,7 @@ func operationsSchedulerDecisionMatches(snapshot telemetry.Snapshot, issue telem
 	return strings.EqualFold(strings.TrimSpace(issue.Identifier), strings.TrimSpace(decision.Identifier))
 }
 
-func operationsBlockedDecision(row telemetry.Blocked) operations.Decision {
+func operationsBlockedDecision(row telemetry.Blocked, fallbackProjectID string) operations.Decision {
 	reason := strings.TrimSpace(row.Error)
 	if reason == "" {
 		reason = strings.ReplaceAll(strings.TrimSpace(row.RecoveryReason), "_", " ")
@@ -281,55 +356,99 @@ func operationsBlockedDecision(row telemetry.Blocked) operations.Decision {
 	if remedy := strings.TrimSpace(row.RecoveryRemedy); remedy != "" && !strings.Contains(reason, remedy) {
 		reason += " — " + remedy
 	}
-	return operations.Decision{Kind: "blocked_park", ProjectID: row.ProjectID, Issue: row.Identifier, Title: row.Title, Question: reason, URL: row.URL}
+	return operations.Decision{Kind: "blocked_park", ProjectID: operationsProjectScope(row.ProjectID, fallbackProjectID), Issue: row.Identifier, Title: row.Title, Question: reason, URL: row.URL}
 }
 
-func operationsRequiredGateDecision(issue telemetry.Issue, projectHumanReviewRequired bool) (operations.Decision, bool) {
+type operationsHumanReviewPolicy struct {
+	required       bool
+	sourceState    string
+	terminalStates []string
+	passState      string
+	approvalLabel  string
+}
+
+func operationsRequiredGateDecision(issue telemetry.Issue, projectID string, reviewPolicy operationsHumanReviewPolicy) (operations.Decision, bool) {
+	if operationsStateIn(issue.State, reviewPolicy.terminalStates) {
+		return operations.Decision{}, false
+	}
 	humanAction := ""
 	if issue.RequiredGate != nil {
 		humanAction = strings.TrimSpace(issue.RequiredGate.HumanAction)
 	}
 	pullRequestClosed := operationsPullRequestSupersedesQuestion(issue.PullRequest)
-	isPullRequestReview := strings.EqualFold(strings.TrimSpace(issue.State), "Human Review") && issue.PullRequest != nil && !pullRequestClosed
-	if humanAction == "" && projectHumanReviewRequired && isPullRequestReview {
-		humanAction = "Review the pull request."
+	canSynthesizePullRequestReview := strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(reviewPolicy.sourceState)) && issue.PullRequest != nil && !pullRequestClosed
+	isPullRequestReview := false
+	if humanAction == "" && reviewPolicy.required && canSynthesizePullRequestReview {
+		isPullRequestReview = true
+		humanAction = "Review the pull request"
 		if issue.PullRequest.Number > 0 {
-			humanAction = "Review pull request #" + strconv.Itoa(issue.PullRequest.Number) + "."
+			humanAction = "Review pull request #" + strconv.Itoa(issue.PullRequest.Number)
+		}
+		switch {
+		case reviewPolicy.approvalLabel != "":
+			humanAction += ", then apply label `" + reviewPolicy.approvalLabel + "` to the issue."
+		case reviewPolicy.passState != "":
+			humanAction += ", then move the issue to " + reviewPolicy.passState + "."
+		default:
+			humanAction += "."
 		}
 	}
 	if humanAction == "" {
 		return operations.Decision{}, false
 	}
-	decision := operations.Decision{Kind: "required_gate", ProjectID: issue.ProjectID, Issue: issue.Identifier, Title: issue.Title, Question: humanAction, URL: issue.URL}
+	decision := operations.Decision{Kind: "required_gate", ProjectID: projectID, Issue: issue.Identifier, Title: issue.Title, Question: humanAction, URL: issue.URL}
 	if !isPullRequestReview {
 		return decision, true
 	}
 	decision.Kind = "pull_request_review"
-	if pullRequestURL := strings.TrimSpace(issue.PullRequest.URL); pullRequestURL != "" {
-		decision.URL = pullRequestURL
-	}
 	return decision, true
 }
 
-func (s *Server) operationsProjectHumanReviewRequired(issue telemetry.Issue, fallbackProjectID string) bool {
+func (s *Server) operationsProjectHumanReviewPolicy(issue telemetry.Issue, fallbackProjectID string) operationsHumanReviewPolicy {
 	if s.registry == nil {
-		return false
+		return operationsHumanReviewPolicy{}
 	}
 	trackedProject, ok := s.registry.Get(projectpkg.ID(operationsProjectScope(issue.ProjectID, fallbackProjectID)))
 	if !ok || trackedProject == nil {
-		return false
+		return operationsHumanReviewPolicy{}
 	}
 	workflow := trackedProject.Workflow().Config
+	policy := operationsHumanReviewPolicy{
+		sourceState:    workflow.Agent.AutoPromote.SourceState,
+		terminalStates: append([]string(nil), workflow.Tracker.TerminalStates...),
+	}
 	if !workflow.Agent.AutoPromote.Enabled {
-		return true
+		policy.required = true
+		policy.passState = workflow.Agent.AutoPromote.PassState
+		return policy
 	}
 	if operationsLabelsIntersect(issue.Labels, []string{workflow.Agent.AutoPromote.OptoutLabel}) {
-		return true
+		policy.required = true
+		policy.passState = workflow.Agent.AutoPromote.PassState
+		return policy
 	}
 	if allowed := workflow.Agent.AutoPromote.AllowedIssueLabels; len(allowed) > 0 && !operationsLabelsIntersect(issue.Labels, allowed) {
-		return true
+		policy.required = true
+		policy.passState = workflow.Agent.AutoPromote.PassState
+		return policy
 	}
-	return gate.NormalizeKind(workflow.Gate.Kind) == gate.KindHumanReview
+	effectiveGate := gate.Effective(workflow.Gate)
+	policy.required = effectiveGate.Kind == gate.KindHumanReview
+	if policy.required && !operationsLabelsIntersect(issue.Labels, []string{effectiveGate.ApprovalLabel}) {
+		policy.approvalLabel = effectiveGate.ApprovalLabel
+	} else if policy.required {
+		policy.required = false
+	}
+	return policy
+}
+
+func operationsStateIn(state string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(state), strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
 }
 
 func operationsLabelsIntersect(labels []string, candidates []string) bool {
@@ -346,10 +465,6 @@ func operationsLabelsIntersect(labels []string, candidates []string) bool {
 func operationsIssueURL(current string, identifier string, projectIDs ...string) string {
 	if current = strings.TrimSpace(current); current != "" {
 		return current
-	}
-	repo, number, ok := strings.Cut(strings.TrimSpace(identifier), "#")
-	if ok && strings.Count(repo, "/") == 1 && number != "" {
-		return "https://github.com/" + repo + "/issues/" + number
 	}
 	for _, projectID := range projectIDs {
 		if projectID = strings.TrimSpace(projectID); projectID != "" {
