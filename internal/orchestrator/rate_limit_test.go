@@ -2206,14 +2206,21 @@ func TestGitHubRESTLookupReserveUsesEndpointFamilyWindows(t *testing.T) {
 		{
 			name: "low workflow window does not hold issue lookups",
 			budgets: []connector.RESTRateLimitBudget{
-				{CredentialIdentity: "github-rest:test", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
 				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+			},
+		},
+		{
+			name: "low hydration window does not hold candidate lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
 			},
 		},
 		{
 			name: "low issue lookup window holds issue lookups",
 			budgets: []connector.RESTRateLimitBudget{
-				{CredentialIdentity: "github-rest:test", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
 				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
 			},
 			wantHeld: true,

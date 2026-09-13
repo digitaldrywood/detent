@@ -331,7 +331,7 @@ func restLookupReserveExceededForUsage(usage connector.RESTRateLimitUsage, floor
 		return usage.RateLimit, restLookupReserveExceeded(usage.RateLimit, usage.HasRateLimit, floor, now)
 	}
 	for _, budget := range usage.Budgets {
-		if !githubRESTLookupEndpointFamily(budget.EndpointFamily) {
+		if !githubRESTCandidateLookupEndpointFamily(budget.EndpointFamily) {
 			continue
 		}
 		if restLookupReserveExceeded(budget.RateLimit, true, floor, now) {
@@ -349,7 +349,7 @@ func restLookupBudgetBelowReserve(budgets []telemetry.RESTBudget, floor int64, n
 			continue
 		}
 		hasOrchestratorBudgets = true
-		if !githubRESTLookupEndpointFamily(budget.EndpointFamily) {
+		if !githubRESTCandidateLookupEndpointFamily(budget.EndpointFamily) {
 			continue
 		}
 		reserve := github.RESTResourceReserve(budget.Resource, floor)
@@ -360,9 +360,9 @@ func restLookupBudgetBelowReserve(budgets []telemetry.RESTBudget, floor int64, n
 	return telemetry.RESTBudget{}, false, hasOrchestratorBudgets
 }
 
-func githubRESTLookupEndpointFamily(family string) bool {
+func githubRESTCandidateLookupEndpointFamily(family string) bool {
 	switch strings.TrimSpace(family) {
-	case "label issues", "repository issues", "issue reads", "issue comments", "issue dependencies", "issue field values", "search":
+	case "label issues", "repository issues", "search":
 		return true
 	default:
 		return false
