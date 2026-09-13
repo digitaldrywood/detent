@@ -267,8 +267,16 @@ Prompt {{ issue.identifier }}
 	if len(reapedPaths) == 0 {
 		t.Fatal("workspace reaper was not called")
 	}
+	workspaceRoot, err := filepath.EvalSymlinks(workflow.Config.Workspace.Root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q) error = %v", workflow.Config.Workspace.Root, err)
+	}
 	for _, path := range reapedPaths {
-		if !filepath.IsAbs(path) || !strings.HasPrefix(path, workflow.Config.Workspace.Root+string(os.PathSeparator)) {
+		resolvedPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q) error = %v", path, err)
+		}
+		if !filepath.IsAbs(resolvedPath) || !strings.HasPrefix(resolvedPath, workspaceRoot+string(os.PathSeparator)) {
 			t.Errorf("reaped path = %q, want a workspace beneath %q", path, workflow.Config.Workspace.Root)
 		}
 	}
