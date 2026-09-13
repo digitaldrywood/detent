@@ -299,6 +299,15 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			wantQuestion: "issue needs an assignee under ownership_mode: assignee",
 		},
 		{
+			name: "explicit human attention overrides automatic source",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{{ID: "credentials", ProjectID: "detent", Identifier: "digitaldrywood/detent#2397", Title: "Restore delivery credentials", State: "Blocked", URL: "https://github.com/digitaldrywood/detent/issues/2397"}},
+				Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "credentials", ProjectID: "detent", Identifier: "digitaldrywood/detent#2397", Title: "Restore delivery credentials", State: "Blocked", URL: "https://github.com/digitaldrywood/detent/issues/2397"}, Source: telemetry.BlockedSourceProjectStatus, Error: "credentials require operator repair", NeedsHumanAttention: true}},
+			},
+			wantKind:     "blocked_park",
+			wantQuestion: "credentials require operator repair",
+		},
+		{
 			name:             "pull request review gate",
 			configureProject: true,
 			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{

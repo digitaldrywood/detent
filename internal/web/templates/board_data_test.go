@@ -2319,49 +2319,73 @@ func TestBoardBlockedCardCauseUsesStoredRecoveryState(t *testing.T) {
 }
 
 func TestBoardHumanBlockedCardsUseErrorTreatment(t *testing.T) {
-	data := boardTestData()
-	blockedAt := data.Snapshot.GeneratedAt.Add(-15 * time.Minute)
-	data.Snapshot.Blocked = []telemetry.Blocked{
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		blocked telemetry.Blocked
+	}{
 		{
-			Issue: telemetry.Issue{
+			name: "human recovery reason",
+			blocked: telemetry.Blocked{
+				Error:          "needs operator approval",
+				Source:         telemetry.BlockedSourceProjectStatus,
+				RecoveryReason: "human_blocker",
+			},
+		},
+		{
+			name: "explicit human attention overrides automatic source",
+			blocked: telemetry.Blocked{
+				Error:               "credentials require operator repair",
+				Source:              telemetry.BlockedSourceProjectStatus,
+				NeedsHumanAttention: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := boardTestData()
+			blockedAt := data.Snapshot.GeneratedAt.Add(-15 * time.Minute)
+			tt.blocked.Issue = telemetry.Issue{
 				ID:         "issue-178",
 				Identifier: "digitaldrywood/detent#178",
 				ProjectID:  "detent",
 				Title:      "Needs operator input",
 				State:      "Blocked",
-			},
-			Error:          "needs operator approval",
-			Source:         telemetry.BlockedSourceProjectStatus,
-			RecoveryReason: "human_blocker",
-			BlockedAt:      &blockedAt,
-		},
-	}
-
-	view := boardViewFromDashboard(data)
-	var card boardCardView
-	for _, lane := range view.Lanes {
-		if lane.Title != "Blocked" {
-			continue
-		}
-		for _, candidate := range lane.Cards {
-			if candidate.Number == "#178" {
-				card = candidate
 			}
-		}
-	}
+			tt.blocked.BlockedAt = &blockedAt
+			data.Snapshot.Blocked = []telemetry.Blocked{tt.blocked}
 
-	if card.Number != "#178" {
-		t.Fatalf("missing human blocked card in view: %+v", view.Lanes)
-	}
-	if card.ExtraKind != primitives.KindErr || !card.ExtraChip {
-		t.Fatalf("card extra = %q chip %t, want err chip; card = %+v", card.ExtraKind, card.ExtraChip, card)
-	}
-	if !strings.Contains(card.ExtraText, "Needs you · needs operator approval") {
-		t.Fatalf("card extra text = %q", card.ExtraText)
-	}
-	cardClass := boardCardClass(card)
-	if !strings.Contains(cardClass, "border-err/45") {
-		t.Fatalf("card class = %q, want error border", cardClass)
+			view := boardViewFromDashboard(data)
+			var card boardCardView
+			for _, lane := range view.Lanes {
+				if lane.Title != "Blocked" {
+					continue
+				}
+				for _, candidate := range lane.Cards {
+					if candidate.Number == "#178" {
+						card = candidate
+					}
+				}
+			}
+
+			if card.Number != "#178" {
+				t.Fatalf("missing human blocked card in view: %+v", view.Lanes)
+			}
+			if card.ExtraKind != primitives.KindErr || !card.ExtraChip {
+				t.Fatalf("card extra = %q chip %t, want err chip; card = %+v", card.ExtraKind, card.ExtraChip, card)
+			}
+			if !strings.Contains(card.ExtraText, "Needs you · "+tt.blocked.Error) {
+				t.Fatalf("card extra text = %q", card.ExtraText)
+			}
+			cardClass := boardCardClass(card)
+			if !strings.Contains(cardClass, "border-err/45") {
+				t.Fatalf("card class = %q, want error border", cardClass)
+			}
+		})
 	}
 }
 

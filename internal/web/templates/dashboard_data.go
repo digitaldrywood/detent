@@ -53,6 +53,7 @@ const (
 	projectKanbanBlockedRecoveryActionMetadataKey        = "detent.blocked_recovery_action"
 	projectKanbanBlockedRecoveryReasonMetadataKey        = "detent.blocked_recovery_reason"
 	projectKanbanBlockedRecoveryRemedyMetadataKey        = "detent.blocked_recovery_remedy"
+	projectKanbanBlockedNeedsHumanAttentionMetadataKey   = "detent.blocked_needs_human_attention"
 	projectKanbanAutoPromoteActionMetadataKey            = "detent.auto_promote_action"
 	projectKanbanAutoPromoteReasonMetadataKey            = "detent.auto_promote_reason"
 	projectKanbanAutomatedReviewModeMetadataKey          = "detent.automated_review_mode"
@@ -659,6 +660,7 @@ type projectKanbanCard struct {
 	BlockedRecoveryAction string
 	BlockedRecoveryReason string
 	BlockedRecoveryRemedy string
+	BlockedHumanAttention bool
 	AttentionLabel        string
 	AttentionDetail       string
 	MergeLaneStatus       string
@@ -2625,6 +2627,7 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey] = row.RecoveryAction
 		issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey] = row.RecoveryReason
 		issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey] = row.RecoveryRemedy
+		issue.Metadata[projectKanbanBlockedNeedsHumanAttentionMetadataKey] = strconv.FormatBool(row.NeedsHumanAttention)
 		fallback := "Todo"
 		if !telemetry.BlockedRowDependencyWaiting(row) {
 			issue.State = "Blocked"
@@ -3208,6 +3211,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		BlockedRecoveryAction: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey]),
 		BlockedRecoveryReason: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey]),
 		BlockedRecoveryRemedy: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey]),
+		BlockedHumanAttention: strings.EqualFold(strings.TrimSpace(issue.Metadata[projectKanbanBlockedNeedsHumanAttentionMetadataKey]), "true"),
 		AttentionLabel:        projectKanbanAttentionLabel(issue),
 		AttentionDetail:       projectKanbanAttentionDetail(issue),
 		Stage:                 chartText(state, "n/a"),
