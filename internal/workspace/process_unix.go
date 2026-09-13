@@ -50,9 +50,42 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	if grace <= 0 {
 		grace = defaultProcessTerminationGrace
 	}
-	ctx, cancel := context.WithTimeout(ctx, max(2*grace, 5*time.Second))
-	defer cancel()
+	// The process inventory has independent scratch-environment and cwd stages,
+	// and reaping may inventory again after each signal. Bound a stalled stage,
+	// but renew the budget after each completed stage so healthy progress is not
+	// constrained by one aggregate wall-clock deadline.
+	ctx = withWorkspaceProcessScanBudget(ctx, max(2*grace, 5*time.Second), context.WithTimeout)
 	return reapProcesses(ctx, path, grace, workspaceProcessIDs, syscall.Kill)
+}
+
+type workspaceProcessScanContextFactory func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+
+type workspaceProcessScanBudget struct {
+	timeout     time.Duration
+	withTimeout workspaceProcessScanContextFactory
+}
+
+type workspaceProcessScanBudgetKey struct{}
+
+func withWorkspaceProcessScanBudget(
+	ctx context.Context,
+	timeout time.Duration,
+	withTimeout workspaceProcessScanContextFactory,
+) context.Context {
+	return context.WithValue(ctx, workspaceProcessScanBudgetKey{}, workspaceProcessScanBudget{
+		timeout:     timeout,
+		withTimeout: withTimeout,
+	})
+}
+
+func runWorkspaceProcessScan(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
+	budget, ok := ctx.Value(workspaceProcessScanBudgetKey{}).(workspaceProcessScanBudget)
+	if !ok || budget.timeout <= 0 || budget.withTimeout == nil {
+		return scan(ctx, path)
+	}
+	scanCtx, cancel := budget.withTimeout(ctx, budget.timeout)
+	defer cancel()
+	return scan(scanCtx, path)
 }
 
 type workspaceProcessSignaler func(int, syscall.Signal) error
@@ -174,14 +207,24 @@ func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 		return nil, errors.New("workspace path must not resolve to a filesystem root")
 	}
 	path = canonical
-	owned, scratchErr := scratchEnvironmentProcessIDs(ctx, path)
-	var cwd []int
-	if runtime.GOOS == "linux" {
-		cwd, err = linuxWorkspaceProcessIDs(path)
-	} else {
-		cwd, err = lsofWorkspaceProcessIDs(ctx, path)
+	cwdScan := func(ctx context.Context, path string) ([]int, error) {
+		if runtime.GOOS == "linux" {
+			return linuxWorkspaceProcessIDs(path)
+		}
+		return lsofWorkspaceProcessIDs(ctx, path)
 	}
-	return append(owned, cwd...), errors.Join(scratchErr, err)
+	return workspaceProcessIDsWithScanners(ctx, path, scratchEnvironmentProcessIDs, cwdScan)
+}
+
+func workspaceProcessIDsWithScanners(
+	ctx context.Context,
+	path string,
+	scratchScan workspaceProcessScanner,
+	cwdScan workspaceProcessScanner,
+) ([]int, error) {
+	owned, scratchErr := runWorkspaceProcessScan(ctx, path, scratchScan)
+	cwd, cwdErr := runWorkspaceProcessScan(ctx, path, cwdScan)
+	return append(owned, cwd...), errors.Join(scratchErr, cwdErr)
 }
 
 func linuxWorkspaceProcessIDs(path string) ([]int, error) {

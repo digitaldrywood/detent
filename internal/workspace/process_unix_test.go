@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -333,39 +334,154 @@ func TestLsofWorkspaceProcessIDs(t *testing.T) {
 		{name: "nested directory with spaces", cwd: filepath.Join(root, "nested directory"), want: true},
 		{name: "sibling prefix", cwd: root + "-outside"},
 	}
+	type processExpectation struct {
+		pid  int
+		want bool
+	}
+	expectations := make(map[string]processExpectation, len(tests))
+	for _, tt := range tests {
+		if err := os.MkdirAll(tt.cwd, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if !tt.want {
+			t.Cleanup(func() { _ = os.Remove(tt.cwd) })
+		}
+		cmd := exec.CommandContext(t.Context(), "sleep", "60")
+		cmd.Dir = tt.cwd
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+		expectations[tt.name] = processExpectation{pid: cmd.Process.Pid, want: tt.want}
+	}
+	canonical, err := canonicalExistingPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This protects the package from a genuinely stuck external command; scan
+	// duration is not behavior under test and must tolerate aggregate host load.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	pids, err := lsofWorkspaceProcessIDs(ctx, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := os.MkdirAll(tt.cwd, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if !tt.want {
-				t.Cleanup(func() { _ = os.Remove(tt.cwd) })
-			}
-			cmd := exec.CommandContext(t.Context(), "sleep", "60")
-			cmd.Dir = tt.cwd
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
-			})
-			canonical, err := canonicalExistingPath(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			pids, err := lsofWorkspaceProcessIDs(ctx, canonical)
-			if err != nil {
-				t.Fatal(err)
-			}
+			expectation := expectations[tt.name]
 			found := false
 			for _, pid := range pids {
-				found = found || pid == cmd.Process.Pid
+				found = found || pid == expectation.pid
 			}
-			if found != tt.want {
-				t.Fatalf("scanner includes process %d = %t, want %t (pids=%v)", cmd.Process.Pid, found, tt.want, pids)
+			if found != expectation.want {
+				t.Fatalf("scanner includes process %d = %t, want %t (pids=%v)", expectation.pid, found, expectation.want, pids)
+			}
+		})
+	}
+}
+
+func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
+	t.Parallel()
+	const (
+		scratchPID = 2081001
+		cwdPID     = 2081002
+	)
+	tests := []struct {
+		name             string
+		aggregateBudget  bool
+		cancelParent     bool
+		returnScratchErr bool
+		wantErr          error
+		wantPIDs         []int
+	}{
+		{
+			name:            "aggregate deadline reproduces lost later scan",
+			aggregateBudget: true,
+			wantErr:         context.DeadlineExceeded,
+			wantPIDs:        []int{scratchPID},
+		},
+		{name: "completed stage renews expired budget", wantPIDs: []int{scratchPID, cwdPID}},
+		{
+			name:             "stalled stage remains fail closed",
+			returnScratchErr: true,
+			wantErr:          context.DeadlineExceeded,
+			wantPIDs:         []int{scratchPID, cwdPID},
+		},
+		{
+			name:             "caller cancellation is not renewed",
+			cancelParent:     true,
+			returnScratchErr: true,
+			wantErr:          context.Canceled,
+			wantPIDs:         []int{scratchPID, cwdPID},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent, cancelParent := context.WithCancel(t.Context())
+			defer cancelParent()
+			if tt.aggregateBudget {
+				var cancelDeadline context.CancelFunc
+				parent, cancelDeadline = context.WithDeadline(parent, time.Time{})
+				defer cancelDeadline()
+			} else if tt.cancelParent {
+				cancelParent()
+			}
+			factoryCalls := 0
+			ctx := parent
+			if !tt.aggregateBudget {
+				ctx = withWorkspaceProcessScanBudget(parent, time.Second,
+					func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+						factoryCalls++
+						if factoryCalls == 1 && !tt.cancelParent {
+							return context.WithDeadline(parent, time.Time{})
+						}
+						return context.WithCancel(parent)
+					})
+			}
+			scratchScan := func(ctx context.Context, _ string) ([]int, error) {
+				wantContextErr := context.DeadlineExceeded
+				if tt.cancelParent {
+					wantContextErr = context.Canceled
+				}
+				if !errors.Is(ctx.Err(), wantContextErr) {
+					t.Fatalf("scratch scan context error = %v, want %v", ctx.Err(), wantContextErr)
+				}
+				if tt.returnScratchErr {
+					return []int{scratchPID}, ctx.Err()
+				}
+				// Model a completed scan winning the same boundary at which its
+				// budget expires. Its result is concrete progress.
+				return []int{scratchPID}, nil
+			}
+			cwdScan := func(ctx context.Context, _ string) ([]int, error) {
+				if tt.aggregateBudget {
+					return nil, ctx.Err()
+				}
+				if tt.cancelParent {
+					return []int{cwdPID}, ctx.Err()
+				}
+				if err := ctx.Err(); err != nil {
+					t.Fatalf("cwd scan inherited prior stage deadline: %v", err)
+				}
+				return []int{cwdPID}, nil
+			}
+
+			pids, err := workspaceProcessIDsWithScanners(ctx, "/workspace", scratchScan, cwdScan)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(pids, tt.wantPIDs) {
+				t.Fatalf("partial process IDs = %v, want %v", pids, tt.wantPIDs)
+			}
+			wantFactoryCalls := 2
+			if tt.aggregateBudget {
+				wantFactoryCalls = 0
+			}
+			if factoryCalls != wantFactoryCalls {
+				t.Fatalf("scan context factory calls = %d, want %d", factoryCalls, wantFactoryCalls)
 			}
 		})
 	}
