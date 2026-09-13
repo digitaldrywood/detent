@@ -41,7 +41,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			if !hydrated {
 				result.transitioned[issueID] = struct{}{}
 				if completed.successfulAttemptPersisted {
-					o.releaseCompletedAttemptClaim(ctx, state, issue)
+					if _, claimed := state.Claimed[issueID]; claimed {
+						o.releaseCompletedAttemptClaim(ctx, state, issue)
+					}
 				}
 				continue
 			}

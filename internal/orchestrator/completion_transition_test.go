@@ -782,6 +782,58 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 	}
 }
 
+func TestHydrationUnavailableDoesNotReleaseReplacementTrackerClaim(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("Rework", "OPEN")
+	issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRESTBudgetReserved
+	issue.Fields["Detent Lease"] = now.Add(-time.Minute).Format(time.RFC3339Nano)
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindHumanReview},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+		Claiming: ClaimingConfig{
+			Enabled:    true,
+			LeaseField: "Detent Lease",
+		},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:                      issue,
+		CompletedAt:                now,
+		FinalState:                 FinalStateCompleted,
+		successfulAttemptPersisted: true,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+
+	orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after completed attempt release", issue.ID)
+	}
+	if got := tracker.stateIssues[0].Fields["Detent Lease"]; got != "" {
+		t.Fatalf("Detent Lease after completed attempt release = %q, want empty", got)
+	}
+
+	replacementLease := now.Add(time.Minute).Format(time.RFC3339Nano)
+	tracker.stateIssues[0].Fields["Detent Lease"] = replacementLease
+	replacement := cloneIssue(tracker.stateIssues[0])
+	orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{replacement}, now.Add(time.Minute))
+
+	if got := tracker.stateIssues[0].Fields["Detent Lease"]; got != replacementLease {
+		t.Fatalf("replacement Detent Lease = %q, want %q", got, replacementLease)
+	}
+	if got := len(tracker.setFields); got != 1 {
+		t.Fatalf("claim field writes = %d, want one completed-attempt release", got)
+	}
+}
+
 func TestHydrationUnavailablePreservesPersistedUnsuccessfulAttemptRetry(t *testing.T) {
 	t.Parallel()
 
