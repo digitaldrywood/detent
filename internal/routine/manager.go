@@ -250,6 +250,10 @@ func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.T
 		}
 		next, err := m.nextForDefinition(ctx, settings, definition, baseline)
 		if err != nil {
+			if ctx.Err() != nil {
+				m.advanceBaseline(definition.Name, scheduledFor)
+				return Result{}, nil
+			}
 			return Result{}, err
 		}
 		if !next.Equal(scheduledFor) {
@@ -278,15 +282,24 @@ func (m *Manager) advanceBaseline(name string, at time.Time) {
 }
 
 func (m *Manager) runOnce(ctx context.Context, settings Settings, definition config.Routine, scheduledFor time.Time, scheduled bool) (result Result, runErr error) {
-	if scheduled && ctx.Err() != nil {
-		return Result{}, nil
-	}
 	startedAt := m.now().UTC()
 	record := RunRecord{
 		ProjectID:    settings.ProjectID,
 		RoutineName:  definition.Name,
 		ScheduledFor: scheduledFor.UTC(),
 		StartedAt:    startedAt,
+	}
+	collector := &proposalCollector{}
+	request := runner.RunRequest{
+		Issue:            routineIssue(settings.ProjectID, definition),
+		Mode:             runner.RunModeRoutine,
+		StartedAt:        startedAt,
+		Routine:          &runner.RoutineRequest{Name: definition.Name, Schedule: definition.Schedule, Prompt: definition.Prompt},
+		AgentTools:       []runner.AgentTool{proposalTool()},
+		AgentToolHandler: collector.handle,
+	}
+	if scheduled && ctx.Err() != nil {
+		return Result{}, nil
 	}
 	defer func() {
 		record.CompletedAt = m.now().UTC()
@@ -314,15 +327,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, definition con
 		}
 	}()
 
-	collector := &proposalCollector{}
-	runResult, err := settings.Runner.Run(ctx, runner.RunRequest{
-		Issue:            routineIssue(settings.ProjectID, definition),
-		Mode:             runner.RunModeRoutine,
-		StartedAt:        startedAt,
-		Routine:          &runner.RoutineRequest{Name: definition.Name, Schedule: definition.Schedule, Prompt: definition.Prompt},
-		AgentTools:       []runner.AgentTool{proposalTool()},
-		AgentToolHandler: collector.handle,
-	})
+	runResult, err := settings.Runner.Run(ctx, request)
 	if err != nil {
 		return result, fmt.Errorf("run routine agent: %w", err)
 	}

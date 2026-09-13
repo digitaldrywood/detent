@@ -258,12 +258,14 @@ func TestManagerScheduledRunSkipsLostOwnershipSlot(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		cancelBeforeLookup bool
-		cancelDuringLookup bool
+		name                    string
+		cancelBeforeLookup      bool
+		cancelDuringLookup      bool
+		cancelBeforeRunnerStart bool
 	}{
 		{name: "lost before eligibility lookup", cancelBeforeLookup: true},
 		{name: "lost during eligibility lookup", cancelDuringLookup: true},
+		{name: "lost before runner start", cancelBeforeRunnerStart: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -271,18 +273,25 @@ func TestManagerScheduledRunSkipsLostOwnershipSlot(t *testing.T) {
 			current := time.Date(2026, time.September, 13, 6, 0, 0, 0, time.UTC)
 			runs := 0
 			store := &fakeStore{honorContext: true}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			clockReads := 0
 			manager, err := New(Settings{
 				ProjectID: "detent",
 				Definitions: []config.Routine{{
 					Name: "admission", Schedule: "*/15 * * * *", Prompt: "Inspect backlog admission.",
 				}},
 				Runner: fakeRunner{onRun: func(runner.RunRequest) { runs++ }}, Issues: &fakeIssueStore{},
-			}, store, nil, func() time.Time { return current })
+			}, store, nil, func() time.Time {
+				clockReads++
+				if tt.cancelBeforeRunnerStart && clockReads == 3 {
+					cancel()
+				}
+				return current
+			})
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
-			ctx, cancel := context.WithCancel(t.Context())
-			t.Cleanup(cancel)
 			if tt.cancelBeforeLookup {
 				cancel()
 			}
@@ -704,6 +713,9 @@ func (s *fakeStore) LatestRoutineRun(ctx context.Context, projectID string, rout
 	}
 	if s.onLatest != nil {
 		s.onLatest()
+	}
+	if s.honorContext && ctx.Err() != nil {
+		return RunRecord{}, false, ctx.Err()
 	}
 	for index := len(s.records) - 1; index >= 0; index-- {
 		if s.records[index].ProjectID == projectID && s.records[index].RoutineName == routineName {
