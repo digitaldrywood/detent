@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1979,17 +1980,6 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			method: http.MethodGet,
-			path:   "/rate_limit",
-			headers: map[string]string{
-				"X-RateLimit-Limit":     "5000",
-				"X-RateLimit-Remaining": "900",
-				"X-RateLimit-Used":      "4100",
-				"X-RateLimit-Resource":  "core",
-			},
-			body: `{}`,
-		},
-		{
 			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
 		},
 	})
@@ -1999,9 +1989,17 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 		ActiveStates:            []string{"Todo"},
 		RESTMinRemainingReserve: 1000,
 	})
-	if err := c.client.REST(context.Background(), http.MethodGet, "/rate_limit", nil, nil); err != nil {
-		t.Fatalf("REST() seed rate limit error = %v", err)
-	}
+	now := time.Now()
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Limit", "5000")
+	headers.Set("X-RateLimit-Remaining", "900")
+	headers.Set("X-RateLimit-Used", "4100")
+	headers.Set("X-RateLimit-Resource", "core")
+	headers.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+	c.client.recordRESTRateLimitFromHeaders(
+		context.Background(), "", c.client.restCredentialIdentity("token"), http.MethodGet,
+		"/repos/digitaldrywood/detent/pulls?state=all", http.StatusOK, headers, nil, now, false,
+	)
 
 	got, err := c.FetchCandidateIssues(context.Background())
 	if err != nil {
@@ -2021,8 +2019,8 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 	}
 
 	requests := server.requests()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want rate limit seed plus project query", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want only project query", len(requests))
 	}
 	for _, request := range requests {
 		path, _ := request["path"].(string)
@@ -2034,8 +2032,8 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 	if usage.RateLimited || !usage.ReserveHeld || usage.FanoutDeferred {
 		t.Fatalf("RESTRateLimitUsage = %#v, want reserve-floor hold only", usage)
 	}
-	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 1 {
-		t.Fatalf("pull requests usage count = %d, want synthetic throttle; usage = %#v", got, usage.Requests)
+	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 2 {
+		t.Fatalf("pull requests usage count = %d, want seed observation plus synthetic throttle; usage = %#v", got, usage.Requests)
 	}
 }
 

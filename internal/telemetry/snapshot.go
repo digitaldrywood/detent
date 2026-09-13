@@ -1662,6 +1662,7 @@ type RESTUsageContributor struct {
 	Remaining          int64      `json:"remaining,omitempty"`
 	Limit              int64      `json:"limit,omitempty"`
 	Resource           string     `json:"resource,omitempty"`
+	ResourceHeader     string     `json:"resource_header"`
 	ResetAt            *time.Time `json:"reset_at,omitempty"`
 	RetryAfterMS       int64      `json:"retry_after_ms,omitempty"`
 	RateLimited        bool       `json:"rate_limited,omitempty"`
@@ -1673,6 +1674,7 @@ type RESTBudget struct {
 	CredentialIdentity  string     `json:"credential_identity"`
 	EndpointFamily      string     `json:"endpoint_family"`
 	Resource            string     `json:"resource,omitempty"`
+	ResourceHeader      string     `json:"resource_header"`
 	Remaining           int64      `json:"remaining,omitempty"`
 	Used                int64      `json:"used,omitempty"`
 	Limit               int64      `json:"limit,omitempty"`

@@ -201,6 +201,7 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 			Remaining:          request.Remaining,
 			Limit:              request.Limit,
 			Resource:           request.Resource,
+			ResourceHeader:     request.ResourceHeader,
 			RateLimited:        request.RateLimited,
 			LastStatus:         request.LastStatus,
 		}
@@ -252,6 +253,7 @@ func restBudgetSummaries(budgets []connector.RESTRateLimitBudget) []telemetry.RE
 			CredentialIdentity: budget.CredentialIdentity,
 			EndpointFamily:     budget.EndpointFamily,
 			Resource:           budget.RateLimit.Resource,
+			ResourceHeader:     budget.RateLimit.ResourceHeader,
 			Remaining:          budget.RateLimit.Remaining,
 			Used:               budget.RateLimit.Used,
 			Limit:              budget.RateLimit.Limit,

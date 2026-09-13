@@ -275,15 +275,15 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 				resetAt: usage.BackoffUntil,
 			}, true
 		}
-		if restLookupReserveExceeded(usage.RateLimit, usage.HasRateLimit, o.cfg.GitHubRESTMinReserve, now) {
+		if rateLimit, exceeded := restLookupReserveExceededForUsage(usage, o.cfg.GitHubRESTMinReserve, now); exceeded {
 			return githubLookupSignal{
 				trigger: githubLookupTriggerREST,
 				reason: fmt.Sprintf(
 					"GitHub REST remaining %d is at or below lookup floor %d",
-					usage.RateLimit.Remaining,
-					github.RESTResourceReserve(usage.RateLimit.Resource, o.cfg.GitHubRESTMinReserve),
+					rateLimit.Remaining,
+					github.RESTResourceReserve(rateLimit.Resource, o.cfg.GitHubRESTMinReserve),
 				),
-				resetAt: usage.RateLimit.ResetAt,
+				resetAt: rateLimit.ResetAt,
 			}, true
 		}
 	}
@@ -307,16 +307,66 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 				resetAt: rateLimitBucketResetAt(bucket),
 			}, true
 		}
+		budget, exceeded, hasFamilyBudgets := restLookupBudgetBelowReserve(state.RateLimits.GitHubRESTBudgets, o.cfg.GitHubRESTMinReserve, now)
 		rest := state.RateLimits.GitHubREST
-		if budgetBelowReserve(rest, o.cfg.GitHubRESTMinReserve, now) || state.RateLimits.RESTUsage != nil && state.RateLimits.RESTUsage.RateLimited {
+		if exceeded ||
+			(!hasFamilyBudgets && budgetBelowReserve(rest, o.cfg.GitHubRESTMinReserve, now)) ||
+			(state.RateLimits.RESTUsage != nil && state.RateLimits.RESTUsage.RateLimited) {
+			resetAt := rateLimitBucketResetAt(rest)
+			if exceeded && budget.ResetAt != nil {
+				resetAt = *budget.ResetAt
+			}
 			return githubLookupSignal{
 				trigger: githubLookupTriggerREST,
 				reason:  "GitHub REST returned a rate-limit response or crossed its reserve floor",
-				resetAt: rateLimitBucketResetAt(rest),
+				resetAt: resetAt,
 			}, true
 		}
 	}
 	return githubLookupSignal{}, false
+}
+
+func restLookupReserveExceededForUsage(usage connector.RESTRateLimitUsage, floor int64, now time.Time) (connector.RESTRateLimit, bool) {
+	if len(usage.Budgets) == 0 {
+		return usage.RateLimit, restLookupReserveExceeded(usage.RateLimit, usage.HasRateLimit, floor, now)
+	}
+	for _, budget := range usage.Budgets {
+		if !githubRESTLookupEndpointFamily(budget.EndpointFamily) {
+			continue
+		}
+		if restLookupReserveExceeded(budget.RateLimit, true, floor, now) {
+			return budget.RateLimit, true
+		}
+	}
+	return connector.RESTRateLimit{}, false
+}
+
+func restLookupBudgetBelowReserve(budgets []telemetry.RESTBudget, floor int64, now time.Time) (telemetry.RESTBudget, bool, bool) {
+	hasOrchestratorBudgets := false
+	for _, budget := range budgets {
+		consumer := strings.TrimSpace(budget.Consumer)
+		if consumer != "" && consumer != telemetry.RESTConsumerOrchestrator {
+			continue
+		}
+		hasOrchestratorBudgets = true
+		if !githubRESTLookupEndpointFamily(budget.EndpointFamily) {
+			continue
+		}
+		reserve := github.RESTResourceReserve(budget.Resource, floor)
+		if budget.Limit > 0 && budget.Remaining <= reserve && (budget.ResetAt == nil || !now.After(budget.ResetAt.Add(githubRateLimitResetSkew))) {
+			return budget, true, true
+		}
+	}
+	return telemetry.RESTBudget{}, false, hasOrchestratorBudgets
+}
+
+func githubRESTLookupEndpointFamily(family string) bool {
+	switch strings.TrimSpace(family) {
+	case "label issues", "repository issues", "issue reads", "issue comments", "issue dependencies", "issue field values", "search":
+		return true
+	default:
+		return false
+	}
 }
 
 func graphQLLookupReserveExceeded(rateLimit connector.GraphQLRateLimit, floor int64, now time.Time) bool {

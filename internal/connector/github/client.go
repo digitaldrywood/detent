@@ -843,6 +843,7 @@ func (c *Client) RESTRateLimitStatus() connector.RESTRateLimitUsage {
 	usage := connector.RESTRateLimitUsage{
 		RateLimit:      rateLimit,
 		HasRateLimit:   c.hasRestRateLimit,
+		Budgets:        sortedRESTRateLimitBudgets(c.restBudgets),
 		BackoffUntil:   backoffUntil,
 		RateLimited:    c.restRateLimitStatus || backoffUntil.After(now),
 		ReserveHeld:    c.restReserveHeld,
@@ -891,7 +892,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 	defer c.mu.Unlock()
 
 	resource := restEndpointRateLimitResource(family)
-	rateLimit, hasRateLimit := c.restRateLimitForResourceLocked(resource)
+	rateLimit, hasRateLimit := c.restRateLimitForFamilyLocked(credentialIdentity, family)
 	reserve := RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve)
 	requestCost := restFanoutCostUnitsPerRequest
 	if conditional {
@@ -964,17 +965,12 @@ func restRateLimitSnapshotExpired(rateLimit connector.RESTRateLimit, now time.Ti
 	return !rateLimit.ResetAt.IsZero() && now.After(rateLimit.ResetAt.Add(restRateLimitResetSkew))
 }
 
-func (c *Client) restRateLimitForResourceLocked(resource string) (connector.RESTRateLimit, bool) {
-	resource = strings.TrimSpace(resource)
-	if resource != "" && c.restRateLimits != nil {
-		if rateLimit, ok := c.restRateLimits[resource]; ok {
-			return rateLimit, true
-		}
+func (c *Client) restRateLimitForFamilyLocked(credentialIdentity string, family string) (connector.RESTRateLimit, bool) {
+	if c.restBudgets == nil {
+		return connector.RESTRateLimit{}, false
 	}
-	if c.hasRestRateLimit && (resource == "" || c.restRateLimit.Resource == "" || c.restRateLimit.Resource == resource) {
-		return c.restRateLimit, true
-	}
-	return connector.RESTRateLimit{}, false
+	budget, ok := c.restBudgets[restCredentialFamilyKey(credentialIdentity, family)]
+	return budget.RateLimit, ok
 }
 
 func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, method string, path string, family string, budgetScope string, branch string, fanoutUnits int64, rateLimit connector.RESTRateLimit, hasRateLimit bool, now time.Time) {
@@ -1002,6 +998,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 		request.Used = rateLimit.Used
 		request.Remaining = rateLimit.Remaining
 		request.Resource = rateLimit.Resource
+		request.ResourceHeader = rateLimit.ResourceHeader
 		request.ResetAt = rateLimit.ResetAt
 		request.RetryAfter = rateLimit.RetryAfter
 	}
@@ -1021,6 +1018,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 		"budget_scope", budgetScope,
 		"credential_identity", credentialIdentity,
 		"resource", rateLimit.Resource,
+		"resource_header", rateLimit.ResourceHeader,
 		"remaining", rateLimit.Remaining,
 		"reserve", RESTResourceReserve(rateLimit.Resource, c.restPolicy.MinRemainingReserve),
 		"gate_branch", branch,
@@ -1060,6 +1058,7 @@ func (c *Client) rememberRESTBackoffKey(backoffKey string) {
 		c.restRateLimitStatus = false
 		c.restRateLimit = connector.RESTRateLimit{}
 		c.restRateLimits = nil
+		c.restBudgets = nil
 		c.hasRestRateLimit = false
 		c.restReserveHeld = false
 	}
@@ -1078,8 +1077,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	planUnavailable := branchRulesRepository(method, path) != "" && branchRulesUnavailableOnPlan(status, body)
 	rateLimited := !planUnavailable && restStatusRateLimited(status, headers, body)
 	family := restEndpointFamily(method, path)
-	resourceHeader := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
-	resource := restRateLimitResourceName(resourceHeader, family)
+	resourceHeader := headers.Get("X-RateLimit-Resource")
+	resource := restRateLimitResourceName(strings.TrimSpace(resourceHeader), family)
+	budgetKey := restCredentialFamilyKey(credentialIdentity, family)
 	sharedBackoff := rateLimited && (restShouldApplySharedBackoff(family, remaining, hasRemaining) || !headerRateLimited)
 	fanoutBudget, _ := connector.RESTFanoutBudgetFromContext(ctx)
 	budgetScope := "refresh"
@@ -1099,9 +1099,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	if currentCredential {
 		c.restRateLimitStatus = c.restRateLimitStatus || rateLimited
 	}
-	snapshot := c.restRateLimit
-	if resource != "" && c.restRateLimits != nil {
-		snapshot = c.restRateLimits[resource]
+	snapshot := connector.RESTRateLimit{}
+	if c.restBudgets != nil {
+		snapshot = c.restBudgets[budgetKey].RateLimit
 	}
 	hasSnapshot := false
 	if hasLimit {
@@ -1128,6 +1128,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	}
 	if resource != "" && (hasSnapshot || resourceHeader != "") {
 		snapshot.Resource = resource
+		snapshot.ResourceHeader = resourceHeader
 		hasSnapshot = true
 	}
 	if hasSnapshot {
@@ -1161,14 +1162,15 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 			}
 			c.hasRestRateLimit = true
 		}
-		if c.restBudgets == nil {
-			c.restBudgets = make(map[string]connector.RESTRateLimitBudget)
-		}
-		budgetKey := restCredentialFamilyKey(credentialIdentity, family)
-		c.restBudgets[budgetKey] = connector.RESTRateLimitBudget{
-			CredentialIdentity: credentialIdentity,
-			EndpointFamily:     family,
-			RateLimit:          snapshot,
+		if currentCredential {
+			if c.restBudgets == nil {
+				c.restBudgets = make(map[string]connector.RESTRateLimitBudget)
+			}
+			c.restBudgets[budgetKey] = connector.RESTRateLimitBudget{
+				CredentialIdentity: credentialIdentity,
+				EndpointFamily:     family,
+				RateLimit:          snapshot,
+			}
 		}
 	}
 
@@ -1213,6 +1215,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	}
 	if resource != "" && (hasLimit || hasUsed || hasRemaining || hasReset || hasRetryAfter || resourceHeader != "") {
 		request.Resource = resource
+		request.ResourceHeader = resourceHeader
 	}
 	if hasRetryAfter {
 		request.RetryAfter = retryAfter

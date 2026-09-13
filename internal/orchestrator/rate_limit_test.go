@@ -629,7 +629,7 @@ func TestTickSkipsConnectorPollingDuringGitHubRESTBackoff(t *testing.T) {
 	}
 }
 
-func TestGitHubRESTCapacityOutagePausesDispatchAndResumesAtReset(t *testing.T) {
+func TestGitHubRESTAggregateDoesNotPauseDispatch(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
@@ -669,32 +669,18 @@ func TestGitHubRESTCapacityOutagePausesDispatchAndResumesAtReset(t *testing.T) {
 	}}
 	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, now, hooks)
 
-	if dispatches != 0 {
-		t.Fatalf("dispatches = %d, want 0 during GitHub REST capacity outage", dispatches)
+	if dispatches != 1 {
+		t.Fatalf("dispatches = %d, want aggregate endpoint telemetry not to pause dispatch", dispatches)
 	}
-	outage, ok := activeGitHubRESTCapacityOutage(&state, now)
-	if !ok {
-		t.Fatalf("BackendOutages = %#v, want active GitHub REST outage", state.BackendOutages)
-	}
-	if outage.Kind != githubRESTCapacityKind || !outage.ResetAt.Equal(resetAt) || !outage.ResumeAt.Equal(resetAt) {
-		t.Fatalf("outage = %#v, want reset-aware GitHub REST capacity outage", outage)
+	if _, ok := activeGitHubRESTCapacityOutage(&state, now); ok {
+		t.Fatalf("BackendOutages = %#v, want no blanket GitHub REST outage", state.BackendOutages)
 	}
 	if state.RepeatedFailures[issue.ID].Count != 2 || state.InstantFailures[issue.ID].Count != 2 {
-		t.Fatalf("breakers changed during capacity window: repeated=%#v instant=%#v", state.RepeatedFailures, state.InstantFailures)
+		t.Fatalf("breakers changed: repeated=%#v instant=%#v", state.RepeatedFailures, state.InstantFailures)
 	}
 	snapshot := state.Snapshot(now)
-	if len(snapshot.BackendOutages) != 1 || snapshot.BackendOutages[0].Kind != githubRESTCapacityKind {
-		t.Fatalf("snapshot BackendOutages = %#v, want GitHub REST banner telemetry", snapshot.BackendOutages)
-	}
-
-	orch.syncGitHubRESTCapacityOutage(&state, resetAt)
-	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, resetAt, hooks)
-
-	if dispatches != 1 {
-		t.Fatalf("dispatches = %d, want 1 at reset", dispatches)
-	}
-	if _, ok := activeGitHubRESTCapacityOutage(&state, resetAt); ok {
-		t.Fatalf("BackendOutages = %#v, want automatic recovery at reset", state.BackendOutages)
+	if len(snapshot.BackendOutages) != 0 {
+		t.Fatalf("snapshot BackendOutages = %#v, want no GitHub REST banner", snapshot.BackendOutages)
 	}
 }
 
@@ -965,8 +951,11 @@ func TestTickDetectsGitHubRESTExhaustionBeforeDispatch(t *testing.T) {
 	if len(state.Running) != 0 {
 		t.Fatalf("Running = %#v, want no paid dispatch after same-cycle exhaustion", state.Running)
 	}
-	if _, ok := activeGitHubRESTCapacityOutage(&state, now); !ok {
-		t.Fatalf("BackendOutages = %#v, want active GitHub REST outage", state.BackendOutages)
+	if _, ok := activeGitHubRESTCapacityOutage(&state, now); ok {
+		t.Fatalf("BackendOutages = %#v, want no blanket GitHub REST capacity outage", state.BackendOutages)
+	}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerREST {
+		t.Fatalf("BackendOutages = %#v, want endpoint lookup backoff", state.BackendOutages)
 	}
 	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second || !state.NextRefreshAt.Equal(now.Add(state.PollInterval)) {
 		t.Fatalf("refresh = interval %s next %v, want jittered initial lookup backoff", state.PollInterval, state.NextRefreshAt)
@@ -995,9 +984,11 @@ func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *tes
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	state := newState(cfg)
-	state.RateLimits = &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
-		Limit: 5000, Used: 5000, Remaining: 0, ResetAt: &resetAt, ObservedAt: timePointer(now),
-	}}
+	state.RateLimits = &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{
+		Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:worker",
+		EndpointFamily: "shared credential pool", Resource: "core", Limit: 5000, Used: 5000,
+		Remaining: 0, MinRemainingReserve: 1000, ResetAt: &resetAt, ObservedAt: timePointer(now),
+	}}}
 	orch.syncGitHubRESTCapacityOutage(&state, now)
 	state.Running[issue.ID] = Running{
 		Issue:         issue,
@@ -2196,6 +2187,56 @@ func TestGitHubRESTResourceReserveLookupAdmission(t *testing.T) {
 				t.Fatalf("live lookup held = %v, want %v", held, tt.wantHeld)
 			}
 			orch.captureConnectorRESTRateLimits(&state, now)
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("captured lookup held = %v, want %v", held, tt.wantHeld)
+			}
+		})
+	}
+}
+
+func TestGitHubRESTLookupReserveUsesEndpointFamilyWindows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
+	tests := []struct {
+		name     string
+		budgets  []connector.RESTRateLimitBudget
+		wantHeld bool
+	}{
+		{
+			name: "low workflow window does not hold issue lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+			},
+		},
+		{
+			name: "low issue lookup window holds issue lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+			},
+			wantHeld: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			usage := connector.RESTRateLimitUsage{
+				HasRateLimit: true,
+				RateLimit:    tt.budgets[len(tt.budgets)-1].RateLimit,
+				Budgets:      tt.budgets,
+			}
+			cfg := normalizeConfig(Config{GitHubRESTMinReserve: 1000})
+			tracker := &rateLimitConnector{restStatus: usage, restUsage: usage}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("live lookup held = %v, want %v", held, tt.wantHeld)
+			}
+			orch.captureConnectorRESTRateLimits(&state, now)
+			tracker.restStatus = connector.RESTRateLimitUsage{}
 			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
 				t.Fatalf("captured lookup held = %v, want %v", held, tt.wantHeld)
 			}
