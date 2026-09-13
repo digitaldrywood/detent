@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -679,17 +680,120 @@ func TestTransitionCompletedActiveIssuesWaitsWhenReviewThreadsUnavailable(t *tes
 	}
 }
 
-func TestHandleRunResultParksCompletedRunWhenReviewThreadsUnavailable(t *testing.T) {
+func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 9, 3, 15, 3, 0, 0, time.UTC)
-	issue := completionTransitionIssue("In Progress", "OPEN")
+	for _, tt := range []struct {
+		name          string
+		reason        string
+		completionErr error
+		wantClaimed   bool
+		wantReleases  int
+	}{
+		{name: "REST budget reserved", reason: connector.PullRequestHydrationReasonRESTBudgetReserved, wantReleases: 1},
+		{name: "rate limited", reason: connector.PullRequestHydrationReasonRateLimited, wantReleases: 1},
+		{name: "persistence failed", reason: connector.PullRequestHydrationReasonRESTBudgetReserved, completionErr: errors.New("attempt store unavailable"), wantClaimed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 9, 13, 17, 51, 0, 0, time.UTC)
+			issue := completionTransitionIssue("Rework", "OPEN")
+			issue.PullRequest.Number = 2104
+			issue.PullRequest.HeadSHA = "head-sha"
+			issue.PullRequest.CIStatus = "pass"
+			issue.PullRequest.HydrationUnavailableReason = tt.reason
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			attempts := &recordingWorkAttemptStore{completionErrors: []error{tt.completionErr}}
+			scheduling := &hubSchedulingSource{}
+			cfg := normalizeConfig(Config{
+				Project: scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled: true,
+					Gate:    gate.Config{Kind: gate.KindHumanReview},
+				},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, scheduling: scheduling, workAttempts: attempts}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{
+				Issue:               issue,
+				Attempt:             1,
+				WorkAttemptID:       42,
+				Mode:                runpkg.RunModeImplement,
+				DispatchSourceState: "Rework",
+				StartedAt:           now.Add(-time.Minute),
+				DiffStats:           DiffStats{Status: "clean"},
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				CompletedAt: now,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result: runpkg.RunResult{
+					FinalState:              FinalStateCompleted,
+					PullRequestHeadPushed:   true,
+					PullRequestUpdated:      true,
+					CITriggerLabelReapplied: true,
+					DiffStats:               DiffStats{Status: "clean"},
+				},
+			})
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+				t.Fatalf("completions = %#v, want one successful persisted attempt", attempts.completions)
+			}
+			if _, ok := state.Running[issue.ID]; ok {
+				t.Fatalf("Running[%q] present after completion", issue.ID)
+			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatalf("Retry[%q] present while review-thread hydration is pending", issue.ID)
+			}
+			if _, ok := state.Completed[issue.ID]; !ok {
+				t.Fatalf("Completed[%q] missing while review-thread hydration is pending", issue.ID)
+			}
+			_, claimed := state.Claimed[issue.ID]
+			if claimed != tt.wantClaimed {
+				t.Fatalf("Claimed[%q] present = %t, want %t", issue.ID, claimed, tt.wantClaimed)
+			}
+			if scheduling.releases != tt.wantReleases {
+				t.Fatalf("scheduling claim releases = %d, want %d", scheduling.releases, tt.wantReleases)
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want no backend transition", tracker.updates)
+			}
+			if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
+				t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+			}
+			laterIssue := cloneIssue(issue)
+			laterIssue.PullRequest.HydrationUnavailableReason = ""
+			delete(state.Completed, issue.ID)
+			decision := orch.dispatchPlanner().dispatchableIssueDecision(laterIssue, &state, false, now.Add(time.Minute), "")
+			if tt.wantClaimed {
+				if decision.reason != dispatchSkipAlreadyClaimed {
+					t.Fatalf("dispatch decision = %#v, want retained claim after persistence failure", decision)
+				}
+			} else if !decision.dispatchable {
+				t.Fatalf("dispatch decision = %#v, want eligibility after existing gates clear", decision)
+			}
+		})
+	}
+}
+
+func TestHydrationUnavailablePreservesPersistedUnsuccessfulAttemptRetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 17, 52, 0, 0, time.UTC)
+	issue := completionTransitionIssue("Rework", "OPEN")
 	issue.PullRequest.Number = 2104
 	issue.PullRequest.HeadSHA = "head-sha"
-	issue.PullRequest.CIStatus = "pass"
-	issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRateLimited
+	issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRESTBudgetReserved
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	scheduling := &hubSchedulingSource{}
 	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
 			Enabled: true,
 			Gate:    gate.Config{Kind: gate.KindHumanReview},
@@ -698,38 +802,29 @@ func TestHandleRunResultParksCompletedRunWhenReviewThreadsUnavailable(t *testing
 		TerminalStates:         []string{"Done", "Cancelled"},
 		ContinuationRetryDelay: time.Minute,
 	})
-	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	orch := &Orchestrator{cfg: cfg, connector: tracker, scheduling: scheduling}
 	state := newState(cfg)
-	state.Running[issue.ID] = Running{
-		Issue:     issue,
-		Attempt:   1,
-		StartedAt: now.Add(-time.Minute),
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now,
+		FinalState:  runpkg.FinalStateFailed,
 	}
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now.Add(time.Minute)}
 
-	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
-		IssueID:     issue.ID,
-		CompletedAt: now,
-		Result: runpkg.RunResult{
-			FinalState:         FinalStateCompleted,
-			PullRequestUpdated: true,
-		},
-	})
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Second))
 
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present while review-thread hydration is pending", issue.ID)
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing for hydration deferral", issue.ID)
 	}
-	if _, ok := state.Completed[issue.ID]; !ok {
-		t.Fatalf("Completed[%q] missing while review-thread hydration is pending", issue.ID)
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] removed by hydration deferral", issue.ID)
 	}
 	if _, ok := state.Claimed[issue.ID]; !ok {
-		t.Fatalf("Claimed[%q] missing while review-thread hydration is pending", issue.ID)
+		t.Fatalf("Claimed[%q] removed by hydration deferral", issue.ID)
 	}
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want no backend transition", tracker.updates)
-	}
-	if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
-		t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+	if scheduling.releases != 0 {
+		t.Fatalf("scheduling claim releases = %d, want 0", scheduling.releases)
 	}
 }
 

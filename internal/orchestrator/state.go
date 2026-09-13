@@ -243,17 +243,18 @@ type Blocked struct {
 }
 
 type Completed struct {
-	Issue            connector.Issue
-	SessionID        string
-	StartedAt        time.Time
-	CompletedAt      time.Time
-	FinalState       string
-	CompletionKind   string
-	GateWaitReason   string
-	gateWaitEvidence connector.Issue
-	Tokens           TokenTotals
-	MergeTiming      MergeTiming
-	RuntimeIdentity  agentidentity.Identity
+	Issue                      connector.Issue
+	SessionID                  string
+	StartedAt                  time.Time
+	CompletedAt                time.Time
+	FinalState                 string
+	CompletionKind             string
+	GateWaitReason             string
+	successfulAttemptPersisted bool
+	gateWaitEvidence           connector.Issue
+	Tokens                     TokenTotals
+	MergeTiming                MergeTiming
+	RuntimeIdentity            agentidentity.Identity
 }
 
 type MergeTiming struct {

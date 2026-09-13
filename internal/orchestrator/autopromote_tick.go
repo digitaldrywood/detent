@@ -491,13 +491,14 @@ func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttem
 	}
 	gateWaitReason := completionGateWaitReasonFromAttempt(attempt)
 	return Completed{
-		Issue:            cloneIssue(issue),
-		StartedAt:        attempt.StartedAt,
-		CompletedAt:      attempt.CompletedAt,
-		FinalState:       FinalStateCompleted,
-		CompletionKind:   completionKind,
-		GateWaitReason:   gateWaitReason,
-		gateWaitEvidence: completionGateWaitEvidence(gateWaitReason, issue),
+		Issue:                      cloneIssue(issue),
+		StartedAt:                  attempt.StartedAt,
+		CompletedAt:                attempt.CompletedAt,
+		FinalState:                 FinalStateCompleted,
+		CompletionKind:             completionKind,
+		GateWaitReason:             gateWaitReason,
+		successfulAttemptPersisted: true,
+		gateWaitEvidence:           completionGateWaitEvidence(gateWaitReason, issue),
 	}
 }
 
