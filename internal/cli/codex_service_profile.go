@@ -95,10 +95,16 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 		return "", nil, fmt.Errorf("read worker Codex profile: %w", err)
 	}
 	for _, entry := range profileEntries {
+		path := filepath.Join(profileHome, entry.Name())
+		if codexSQLiteFilename(entry.Name()) {
+			if err := removeSharedSQLiteProfileEntry(filepath.Join(sourceHome, entry.Name()), path); err != nil {
+				return "", nil, err
+			}
+			continue
+		}
 		if !codexInstructionFilename(entry.Name()) {
 			continue
 		}
-		path := filepath.Join(profileHome, entry.Name())
 		local, err := removeManagedProfileLink(path)
 		if err != nil {
 			return "", nil, err
@@ -117,16 +123,12 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 			(isLaunchd && entry.Name() == "skills") {
 			continue
 		}
-		destination := filepath.Join(profileHome, entry.Name())
 		if codexSQLiteFilename(entry.Name()) {
-			if err := removeSharedSQLiteProfileEntry(filepath.Join(sourceHome, entry.Name()), destination); err != nil {
-				return "", nil, err
-			}
 			continue
 		}
 		if err := ensureProfileLink(
 			filepath.Join(sourceHome, entry.Name()),
-			destination,
+			filepath.Join(profileHome, entry.Name()),
 		); err != nil {
 			return "", nil, err
 		}
@@ -254,6 +256,9 @@ func removeSharedSQLiteProfileEntry(source string, destination string) error {
 	shared := destinationInfo.Mode()&os.ModeSymlink != 0
 	if !shared {
 		sourceInfo, sourceErr := os.Stat(source)
+		if errors.Is(sourceErr, os.ErrNotExist) {
+			return nil
+		}
 		if sourceErr != nil {
 			return fmt.Errorf("inspect host Codex SQLite state %s: %w", source, sourceErr)
 		}

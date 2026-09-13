@@ -178,12 +178,23 @@ func TestPrepareCodexCommandForServiceIsolatesInstructions(t *testing.T) {
 			if err := os.WriteFile(localSQLite, []byte("worker state"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			staleSQLite := filepath.Join(profile, "stale.sqlite-wal")
+			if runtime.GOOS != "windows" {
+				if err := os.Symlink(filepath.Join(source, "removed.sqlite-wal"), staleSQLite); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, _, err := prepareWorkerCodexHome(source, home, tt.manager == "launchd"); err != nil {
 				t.Fatal(err)
 			}
 			for _, name := range []string{"goals_1.sqlite", "logs_2.sqlite-shm", "logs_2.sqlite-wal"} {
 				if _, err := os.Lstat(filepath.Join(profile, name)); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("worker shares %s: %v", name, err)
+				}
+			}
+			if runtime.GOOS != "windows" {
+				if _, err := os.Lstat(staleSQLite); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("stale worker SQLite link remains: %v", err)
 				}
 			}
 			content, err := os.ReadFile(localSQLite)
