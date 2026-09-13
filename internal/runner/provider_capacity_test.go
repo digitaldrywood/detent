@@ -14,6 +14,7 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 	for _, test := range []struct {
 		name, state, mode, body, modelOverride, routeModel, wantModel, wantRole string
 		catalogErr                                                              error
+		wantError                                                               bool
 	}{
 		{name: "configured model", routeModel: "sol", wantModel: "sol", wantRole: RoleCode},
 		{name: "issue field", modelOverride: "astra", wantModel: "astra", wantRole: RoleCode},
@@ -21,7 +22,7 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 		{name: "explicit body model", routeModel: "sol", body: "```detent-agent\nschema: 1\nmodel: astra\neffort: high\n```", wantModel: "astra", wantRole: RoleCode},
 		{name: "effort does not upgrade", routeModel: "sol", body: "```detent-agent\nschema: 1\neffort: xhigh\n```", wantModel: "sol", wantRole: RoleCode},
 		{name: "retired override retains configured fallback", routeModel: "sol", body: "```detent-agent\nschema: 1\nmodel: retired\n```", wantModel: "sol", wantRole: RoleCode},
-		{name: "catalog failure retains configured fallback", routeModel: "sol", body: "```detent-agent\nschema: 1\nmodel: astra\n```", catalogErr: errors.New("offline"), wantModel: "sol", wantRole: RoleCode},
+		{name: "catalog failure returns error", routeModel: "sol", body: "```detent-agent\nschema: 1\nmodel: astra\n```", catalogErr: errors.New("offline"), wantError: true},
 		{name: "provider default remains explicit", wantModel: "provider_default", wantRole: RoleCode},
 		{name: "plan role", mode: RunModePlan, routeModel: "sol", wantModel: "plan-model", wantRole: RolePlan},
 		{name: "merge role fallback", state: "Merging", routeModel: "sol", wantModel: "sol", wantRole: RoleMerge},
@@ -37,6 +38,12 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 			r := &Runner{agentRuntime: agentRuntime{router: router, backends: map[string]AgentBackend{"code": backend, "plan": backend}, backendConfigs: map[string]config.AgentBackend{"code": {ID: "code"}, "plan": {ID: "plan"}}}}
 			issue := connector.Issue{State: test.state, Description: test.body, ModelOverride: test.modelOverride}
 			result, err := r.DispatchCapacity(t.Context(), RunRequest{Issue: issue, Mode: test.mode, SelectorContext: selector.Context{}})
+			if test.wantError {
+				if err == nil || !errors.Is(err, test.catalogErr) {
+					t.Fatalf("DispatchCapacity() error = %v, want wrapping %v", err, test.catalogErr)
+				}
+				return
+			}
 			if err != nil || result.Role != test.wantRole || result.Model != test.wantModel {
 				t.Fatalf("requirement = %+v, %v", result, err)
 			}
