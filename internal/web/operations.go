@@ -114,7 +114,7 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 				ref = strings.TrimSpace(issue.ID)
 			}
 			row, ok := blockedByIssue[operationsProjectIssueKey(operationsProjectScope(issue.ProjectID, snapshot.Project.ID), ref)]
-			if ok && (row.NeedsHumanAttention || strings.EqualFold(strings.TrimSpace(row.RecoveryAction), "hold")) {
+			if ok && (row.NeedsHumanAttention || !templates.BlockedRecoveryWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error)) {
 				report.Decisions = append(report.Decisions, operationsBlockedDecision(row, snapshot.Project.ID))
 				operationsMarkDecisionSeen(seen, keys)
 				decisionSeen = true
