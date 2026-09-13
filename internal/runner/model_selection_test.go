@@ -182,11 +182,15 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 		catalogErr                  error
 		fallbackReason              string
 		fallback, failure, rejected bool
+		clearFallbackOrder          bool
 	}{
 		{name: "Astra unavailable", catalog: selectionCatalog()[:1], fallback: true},
 		{name: "Astra retired", catalog: []AgentModel{selectionCatalog()[0], {ID: "gpt-6-astra", Upgrade: "replacement"}}, fallback: true},
 		{name: "neither available", failure: true},
 		{name: "catalog unavailable", catalogErr: errors.New("catalog transport details"), fallback: true, fallbackReason: "automatic model selection: model catalog unavailable: catalog transport details"},
+		{name: "catalog unavailable with fail configured", catalogErr: errors.New("catalog transport details"), unavailable: "fail", failure: true},
+		{name: "catalog unavailable with empty fallback order", catalogErr: errors.New("catalog transport details"), clearFallbackOrder: true, failure: true},
+		{name: "catalog unavailable with explicit model", catalogErr: errors.New("catalog transport details"), body: "model: gpt-6-astra", failure: true},
 		{name: "fail configured", catalog: selectionCatalog()[:1], unavailable: "fail", failure: true},
 		{name: "invalid explicit model", catalog: selectionCatalog(), body: "model: absent", failure: true, rejected: true},
 		{name: "invalid explicit effort", catalog: selectionCatalog(), body: "effort: absent", failure: true, rejected: true},
@@ -198,6 +202,9 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
 			if tt.unavailable != "" {
 				cfg.Agents.ModelSelection.Unavailable = &tt.unavailable
+			}
+			if tt.clearFallbackOrder {
+				cfg.Agents.ModelSelection.FallbackOrder = &[]string{}
 			}
 			issue := connector.Issue{Labels: []string{"complexity:complex"}}
 			if tt.body != "" {
@@ -218,6 +225,25 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 				t.Fatalf("fallback identity = %+v", got)
 			}
 		})
+	}
+}
+
+type catalogResponseError struct {
+	message string
+	body    string
+}
+
+func (e *catalogResponseError) Error() string { return e.message + ": " + e.body }
+
+func (e *catalogResponseError) BackendErrorMessage() string { return e.message }
+
+func TestCatalogErrorDiagnosticOmitsResponseBodyAndBoundsMessage(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("é", 300)
+	got := catalogErrorDiagnostic(&catalogResponseError{message: "models/list rejected " + secret, body: `{"token":"private"}`})
+	if strings.Contains(got, "private") || len(got) > 515 || !strings.HasSuffix(got, "...") || strings.ToValidUTF8(got, "") != got {
+		t.Fatalf("catalogErrorDiagnostic() = %q", got)
 	}
 }
 

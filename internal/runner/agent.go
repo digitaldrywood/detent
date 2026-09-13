@@ -1583,6 +1583,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
 	resolvedOverride := resolveRequestAgentSelection(ctx, req, info.Path, baseModel, role, workflow.Config, backendConfig, backend)
+	if resolvedOverride.CatalogError != "" && resolvedOverride.Err == nil {
+		r.logger.Warn("agent model catalog discovery failed", "issue_id", req.Issue.ID, "identifier", req.Issue.Identifier, "error", resolvedOverride.CatalogError)
+	}
 	selectedModel := resolvedOverride.Model
 	effort := configuredEffort
 	if resolvedOverride.Effort != "" {
