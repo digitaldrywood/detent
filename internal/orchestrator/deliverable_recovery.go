@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -31,6 +32,7 @@ type deliverableRecoveryLookupResult struct {
 	Attempts             int
 	PullRequest          *connector.PullRequest
 	CreatedPullRequest   bool
+	CreateError          error
 	CommitsAhead         int
 	RemoteBranchExists   bool
 	DeliveryStateChecked bool
@@ -169,6 +171,7 @@ func (o *Orchestrator) createDeliverableRecoveryPullRequest(
 		deliverableRecoveryPullRequestBody(running.Issue, result.Branch, result.HeadSHA),
 	)
 	if err != nil {
+		result.CreateError = err
 		result.LookupResult += "; draft pull request creation failed: " + o.operatorText(err.Error())
 		return result
 	}
@@ -188,6 +191,36 @@ func (o *Orchestrator) createDeliverableRecoveryPullRequest(
 	result.CreatedPullRequest = true
 	result.LookupResult = fmt.Sprintf("draft pull request #%d opened for exact current head", pullRequest.Number)
 	return result
+}
+
+func (o *Orchestrator) deliverableRecoveryInfrastructureError(running Running, err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	if availabilityErr, ok := forgeavailability.As(err); ok && availabilityErr != nil {
+		return err, true
+	}
+	if availabilityErr, ok := connector.AsTrackerAvailability(err); ok && availabilityErr != nil {
+		return err, true
+	}
+	if isGitHubRESTBudgetHeadroomError(err) {
+		return err, true
+	}
+	const operation = "create_pull_request"
+	class, unavailable := forgeavailability.Classify(operation, err.Error())
+	configurationErr := &runpkg.DeliverableCommandError{
+		OperationClass: "pull_request",
+		Operation:      operation,
+		Status:         "failed",
+		Message:        err.Error(),
+	}
+	if !unavailable && !connector.IsRetryable(err) && !runpkg.IsDeliverableConfigurationError(configurationErr) {
+		return err, false
+	}
+	return forgeavailability.NewError(forgeavailability.Scope{
+		Host:      forgeHostForIssue(running.Issue, o.cfg.ForgeHost),
+		Operation: operation,
+	}, class, err), true
 }
 
 func deliverableRecoveryPullRequestBody(issue connector.Issue, branch string, headSHA string) string {

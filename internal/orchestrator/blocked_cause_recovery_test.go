@@ -2039,6 +2039,15 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			wantRework:      true,
 		},
 		{
+			name:            "retired deliverable park defers a draft creation outage",
+			cause:           deliverableRecoveryNeedsHumanReason + ": pushed branch has no recoverable pull request",
+			createErr:       connector.NewRetryableError("github rate limited"),
+			wantLookupCalls: 1,
+			wantCreateCalls: 1,
+			wantAction:      "defer",
+			wantReason:      blockedReadyPullRequestLookupUnavailableReason,
+		},
+		{
 			name:            "lookup unavailable defers after bounded retries",
 			cause:           repeatedFailureCircuitBreakerCause,
 			lookupErr:       connector.ErrResourceExhausted,

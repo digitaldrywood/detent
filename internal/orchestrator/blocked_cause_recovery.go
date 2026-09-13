@@ -709,6 +709,13 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 					DeliveryStateChecked: true,
 				}
 				lookup = o.createDeliverableRecoveryPullRequest(ctx, Running{Issue: issue}, lookup)
+				if infrastructureErr, infrastructureFailure := o.deliverableRecoveryInfrastructureError(Running{Issue: issue}, lookup.CreateError); infrastructureFailure {
+					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
+					if o.logger != nil {
+						o.logger.Warn("blocked deliverable draft creation unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", infrastructureErr)
+					}
+					return true, false
+				}
 				if lookup.PullRequest != nil {
 					issue = deliverableRecoveryIssue(Running{Issue: issue}, lookup)
 				}

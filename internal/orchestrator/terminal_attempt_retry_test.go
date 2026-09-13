@@ -466,6 +466,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		cached           *connector.PullRequest
 		lookup           *connector.PullRequest
 		created          *connector.PullRequest
+		createErr        error
 		lookupErrors     []error
 		lookupFoundAfter int
 		wantBlocked      bool
@@ -478,6 +479,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		wantActive       bool
 		wantMergedReason bool
 		wantReasonCode   string
+		wantForgeWait    bool
 		commitsAhead     int
 		remoteBranch     bool
 	}{
@@ -501,6 +503,33 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantPRNumber:    19,
 			wantTransitions: []string{},
 			wantActive:      true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "draft creation outage waits on forge",
+			createErr:       errors.New("HTTP 503: unavailable"),
+			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantForgeWait:   true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "draft creation rate limit waits on forge",
+			createErr:       connector.NewRetryableError("github rate limited"),
+			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantForgeWait:   true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "draft creation credentials wait on forge",
+			createErr:       errors.New("github authentication failed"),
+			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantForgeWait:   true,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -593,6 +622,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				issues:           map[string]connector.Issue{issue.ID: cloneIssue(issue)},
 				lookup:           tt.lookup,
 				created:          tt.created,
+				createErr:        tt.createErr,
 				lookupErrors:     append([]error(nil), tt.lookupErrors...),
 				lookupFoundAfter: tt.lookupFoundAfter,
 			}
@@ -687,6 +717,19 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			}
 			if tt.wantTransitions != nil && !slices.Equal(tracker.transitionStates(), tt.wantTransitions) {
 				t.Fatalf("state transitions = %v, want %v", tracker.transitionStates(), tt.wantTransitions)
+			}
+			if tt.wantForgeWait {
+				retry, retrying := state.Retry[issue.ID]
+				if !retrying || !retry.ForgeUnavailable || retry.Attempt != 1 || retry.ForgeRetry == nil {
+					t.Fatalf("Retry[%q] = %#v, want same-attempt forge wait", issue.ID, retry)
+				}
+				if retry.ForgeRetry.Branch != branch || !retry.ForgeRetry.WorkProductPushed {
+					t.Fatalf("ForgeRetry = %#v, want pushed branch %q preserved", retry.ForgeRetry, branch)
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity || attempts.completions[0].ErrorClass != forgeUnavailableErrorClass {
+					t.Fatalf("work attempt completions = %#v, want forge capacity wait", attempts.completions)
+				}
+				return
 			}
 			if tt.wantRetry {
 				if _, retrying := state.Retry[issue.ID]; !retrying {
@@ -1176,6 +1219,7 @@ type terminalRetryConnector struct {
 	lookupBranch     string
 	lookupHeadSHA    string
 	created          *connector.PullRequest
+	createErr        error
 	createCalls      int
 	createRepository string
 	createBranch     string
@@ -1231,6 +1275,9 @@ func (c *terminalRetryConnector) CreateDraftPullRequest(_ context.Context, repos
 	c.createBranch = branch
 	c.createTitle = title
 	c.createBody = body
+	if c.createErr != nil {
+		return connector.PullRequest{}, c.createErr
+	}
 	if c.created == nil {
 		return connector.PullRequest{}, errors.New("draft pull request unavailable")
 	}
