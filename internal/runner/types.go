@@ -114,6 +114,7 @@ type DeliverableCommandError struct {
 	ExitCode       *int
 	Message        string
 	Body           string
+	ApprovalDenied bool
 	TargetRef      *DeliverableTargetRefEvidence
 }
 
@@ -143,6 +144,7 @@ type DeliverableCommandEvidence struct {
 	Status         string                        `json:"status,omitempty"`
 	ExitCode       *int                          `json:"exit_code,omitempty"`
 	Outcome        string                        `json:"outcome"`
+	ApprovalDenied bool                          `json:"approval_denied,omitempty"`
 	TargetRef      *DeliverableTargetRefEvidence `json:"target_ref,omitempty"`
 }
 

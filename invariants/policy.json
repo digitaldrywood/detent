@@ -15,8 +15,16 @@
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
       "TestPreTurnFailuresDrainInstance",
       "TestObservedLanePreTurnFailureRemainsInstanceOwned",
+      "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
+      "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool"
+    ],
+    "./internal/runner": [
+      "TestAgentRunProgressClassifiesPullRequestApprovalDecline"
+    ],
+    "./internal/store": [
+      "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
     ],
     "./internal/release": [
       "TestMandatoryEvidence"

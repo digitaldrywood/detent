@@ -2216,7 +2216,13 @@ func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, er
 const issueSpendSince = `-- name: IssueSpendSince :one
 SELECT
   CAST(COALESCE(SUM(usage_events.cost_usd), 0) AS REAL) AS cost_usd,
-  CAST(COALESCE(SUM(usage_events.total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(SUM(
+    CASE
+      WHEN usage_events.input_tokens = 0 AND usage_events.output_tokens = 0
+        THEN MAX(usage_events.total_tokens - COALESCE(usage_events.cached_input_tokens, 0), 0)
+      ELSE MAX(usage_events.input_tokens - COALESCE(usage_events.cached_input_tokens, 0), 0) + usage_events.output_tokens
+    END
+  ), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions,
   CAST(COALESCE(MIN(usage_events.finished_at), '') AS TEXT) AS first_session_at,
   CAST(COALESCE(MAX(usage_events.finished_at), '') AS TEXT) AS last_session_at
@@ -2227,6 +2233,13 @@ WHERE usage_events.project_id = ?1
   AND usage_events.started_at > ?2
   AND lower(trim(COALESCE(attempt.terminal_state, ''))) != 'capacity'
   AND COALESCE(attempt.phase, '') != 'completion_deferred'
+  AND lower(trim(COALESCE(attempt.error_class, ''))) NOT IN (
+    'workspace_preparation',
+    'deliverable_configuration_failure',
+    'tracker_unavailable',
+    'forge_unavailable'
+  )
+  AND lower(trim(COALESCE(attempt.error_class, ''))) NOT LIKE 'backend_startup_%'
   AND COALESCE(json_extract(CASE WHEN json_valid(attempt.worker_metadata_json) THEN attempt.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
   AND (
     (?3 != '' AND COALESCE(usage_events.issue_id, '') = ?3)
