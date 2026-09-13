@@ -426,3 +426,27 @@ func TestWorkspaceScanOutputCancellationWithInheritedPipes(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLsofCwdProcessIDs(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(string(filepath.Separator), "ws", "detent-issue-1")
+	output := strings.Join([]string{
+		"p101", "n" + root,
+		"p102", "n" + filepath.Join(root, "nested directory"),
+		"p103", "n" + root + "-other",
+		"p104", "n" + filepath.Join(root, "sub") + " (deleted)",
+		"p105", "n/tmp/elsewhere",
+		"p101", "n" + root,
+		"p0", "n" + root,
+	}, "\n")
+	got := parseLsofCwdProcessIDs(output, root)
+	want := []int{101, 102, 104}
+	if len(got) != len(want) {
+		t.Fatalf("pids = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("pids = %v, want %v", got, want)
+		}
+	}
+}
