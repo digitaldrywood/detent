@@ -38,6 +38,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -312,6 +313,17 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return err
 		}
 	}
+	serviceAddress, err := dashboardServiceAddress(listener.Addr())
+	if err != nil {
+		return fmt.Errorf("resolve bound dashboard address: %w", err)
+	}
+	workerCredentials, err := serviceapi.NewWorkerCredentials()
+	if err != nil {
+		return fmt.Errorf("create worker service credentials: %w", err)
+	}
+	serviceConnection := serviceapi.Connection{
+		Address: serviceAddress,
+	}
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events:             events,
 		Scheduling:         hubScheduling,
@@ -335,7 +347,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ScheduleOwner:      cfg.Global.InstanceName,
 		ConnectorFactory:   cfg.ConnectorFactory,
 		Runner:             cfg.Runner,
-	}, runtimeStore, nil, runtimeGitHubToken.get)
+	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runtimeGitHubToken.get)
 	managerDependencies := deps.managerDependencies
 	managerDependencies.ProjectFactory = projectFactory
 	managerDependencies.Events = events
@@ -512,6 +524,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		IssueExplainer:      newIssueExplainer(snapshotHub, runtimeStore),
 		HealthNotifications: healthNotifications,
 		WorkerProcesses:     runtimeStore,
+		WorkerCredentials:   workerCredentials,
 		StalenessWarnings:   stalenessAcknowledgements,
 	})
 	if err != nil {
@@ -2087,6 +2100,21 @@ func listenForBoot(ctx context.Context, cfg BootConfig) (net.Listener, string, e
 func dashboardURL(addr net.Addr) string {
 	port := dashboardPort(addr)
 	return "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(port))
+}
+
+func dashboardServiceAddress(addr net.Addr) (string, error) {
+	if addr == nil {
+		return "", errors.New("listener address is nil")
+	}
+	host, portText, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "", fmt.Errorf("parse listener address %q: %w", addr.String(), err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", fmt.Errorf("invalid listener port %q", portText)
+	}
+	return dashboardServerAddr(BootConfig{Host: host, Port: &port}), nil
 }
 
 func dashboardPort(addr net.Addr) int {

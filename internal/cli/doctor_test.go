@@ -5163,6 +5163,51 @@ func TestCheckDoctorServerPort(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorDashboardAddress(t *testing.T) {
+	t.Parallel()
+
+	configuredPort := 4000
+	tests := []struct {
+		name       string
+		running    dashboardAddress
+		wantStatus doctorStatus
+		wantDetail string
+	}{
+		{
+			name:       "matching config and running service",
+			running:    dashboardAddress{Value: "127.0.0.1:4000", HostSource: dashboardAddressSourceServiceFlag, PortSource: dashboardAddressSourceServiceFlag},
+			wantStatus: doctorOK,
+			wantDetail: "matches the running Detent service",
+		},
+		{
+			name:       "ephemeral doctor flag is not a running process mismatch",
+			running:    dashboardAddress{Value: "127.0.0.1:0", HostSource: runtimeSourceDefault, PortSource: runtimeSourceFlag},
+			wantStatus: doctorOK,
+			wantDetail: "has no distinct running-process address override",
+		},
+		{
+			name: "flag-only non-loopback bind mismatches config",
+			running: dashboardAddress{
+				Value:      "100.111.222.33:4000",
+				HostSource: dashboardAddressSourceWorkerEnvironment,
+				PortSource: dashboardAddressSourceWorkerEnvironment,
+			},
+			wantStatus: doctorFail,
+			wantDetail: "config resolves the dashboard to 127.0.0.1:4000, but the running Detent service uses 100.111.222.33:4000 (from worker environment)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := checkDoctorDashboardAddress(BootConfig{Port: &configuredPort}, tt.running)
+			if got.Status != tt.wantStatus || !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("checkDoctorDashboardAddress() = %#v, want status %s detail containing %q", got, tt.wantStatus, tt.wantDetail)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorWorkflowDriftReportsStaleLiveConfig(t *testing.T) {
 	t.Parallel()
 

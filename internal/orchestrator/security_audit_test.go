@@ -122,6 +122,40 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDisposedFalsePositiveDoesNotProduceSecurityAuditRework(t *testing.T) {
+	t.Parallel()
+
+	issue := securityAuditTestIssue()
+	issue.PullRequest.State = "open"
+	run := securityAuditPassingRun(issue)
+	run.Verdict = securityaudit.VerdictFail
+	run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Body: "authorization bypass"}}
+	memo := newSecurityAuditMemoryStore()
+	memo.runs = append(memo.runs, run)
+	memo.dispositions[run.ID] = []securityaudit.Disposition{{
+		FindingID:       "authz",
+		Status:          securityaudit.DispositionFalsePositive,
+		Evidence:        "The endpoint requires the repository owner role before this branch.",
+		ServiceIdentity: "detent:detent",
+	}}
+	evaluation := securityAuditTestOrchestrator(memo).securityAuditEvaluation(t.Context(), issue)
+	summary := AutoPromoteSummaryFromIssue(issue)
+	summary.PullRequestPresent = true
+	summary.CIStatus = "green"
+	summary.SecurityAudit = evaluation
+	decision := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{
+		Enabled: true,
+		Gate: gate.Config{
+			Kind:            gate.KindCommand,
+			AutomatedReview: gate.AutomatedReviewOff,
+			SecurityAudit:   gate.SecurityAuditConfig{Enabled: true},
+		},
+	}, time.Now())
+	if decision.Action == AutoPromoteActionRework || decision.Reason == AutoPromoteReasonSecurityAuditFindings {
+		t.Fatalf("EvaluateAutoPromote() = %#v, want disposed finding to avoid security audit rework", decision)
+	}
+}
+
 func TestStartSecurityAuditStagePersistsTrustedExecution(t *testing.T) {
 	t.Parallel()
 

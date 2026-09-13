@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -137,7 +138,7 @@ func newDashboardReadClient(
 func dashboardAPICredential(configured string, lookupEnv func(string) string) string {
 	credential := ""
 	if lookupEnv != nil {
-		credential = strings.TrimSpace(lookupEnv("DETENT_API_TOKEN"))
+		credential = strings.TrimSpace(lookupEnv(serviceapi.TokenEnvironment))
 	}
 	if credential == "" {
 		credential = strings.TrimSpace(configured)

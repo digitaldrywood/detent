@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -104,10 +105,13 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		TurnTimeout:             durationFromMillis(auditConfig.TurnTimeoutMS),
 		MaxDuration:             durationFromMillis(auditConfig.TurnTimeoutMS),
 		Environment: procgroup.Environment{Variables: map[string]string{
-			"OPENAI_API_KEY":       "",
-			"AZURE_OPENAI_API_KEY": "",
-			"GH_TOKEN":             "",
-			"GITHUB_TOKEN":         "",
+			"OPENAI_API_KEY":                       "",
+			"AZURE_OPENAI_API_KEY":                 "",
+			"GH_TOKEN":                             "",
+			"GITHUB_TOKEN":                         "",
+			serviceapi.AddressEnvironment:          "",
+			serviceapi.TokenEnvironment:            "",
+			serviceapi.DispositionTokenEnvironment: "",
 		}},
 		MaxRSSBytes:     r.maxAgentRSSBytes,
 		RSSPollInterval: r.rssPollInterval,

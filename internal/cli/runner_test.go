@@ -25,6 +25,7 @@ import (
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
@@ -165,7 +166,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil)
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
@@ -174,6 +175,38 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	}
 	if _, ok := run.(*runnerpkg.Runner); !ok {
 		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	}
+}
+
+func TestBuildRunnerDependenciesCarriesServiceConnection(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Workspace.Root = t.TempDir()
+	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"}
+
+	deps, err := buildRunnerDependencies(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, connection)
+	if err != nil {
+		t.Fatalf("buildRunnerDependencies() error = %v", err)
+	}
+	if deps.ServiceConnection != connection {
+		t.Fatalf("ServiceConnection = %#v, want %#v", deps.ServiceConnection, connection)
+	}
+}
+
+func TestServiceConnectionForProjectUsesScopedToken(t *testing.T) {
+	t.Parallel()
+
+	base := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "old-worker-token"}
+	got := serviceConnectionForProject(base, "alpha", func(projectID string) string {
+		return "worker-token-for-" + projectID
+	})
+	if got.Address != base.Address || got.DispositionToken != "worker-token-for-alpha" {
+		t.Fatalf("serviceConnectionForProject() = %#v, want address %q and project token", got, base.Address)
+	}
+	if base.DispositionToken != "old-worker-token" {
+		t.Fatalf("base connection mutated = %#v", base)
 	}
 }
 
@@ -233,7 +266,7 @@ Prompt {{ issue.identifier }}
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	deps, err := buildRunnerDependencies(workflow, "detent", source, globalconfig.Memory{}, sessionStore, nil)
+	deps, err := buildRunnerDependencies(workflow, "detent", source, globalconfig.Memory{}, sessionStore, nil, serviceapi.Connection{})
 	if err != nil {
 		t.Fatalf("buildRunnerDependencies() error = %v", err)
 	}
@@ -355,7 +388,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
-	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil)
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
 	if err == nil {
 		t.Fatal("buildRunner() error = nil, want pricing load error")
 	}
@@ -557,7 +590,7 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	factory := withRunnerFactory(base, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
 		captured = d
 		return nil, errProjectFactoryStub
-	})
+	}, serviceapi.Connection{}, nil)
 
 	workflowPath := writeWorkflowFile(t)
 	_, err := factory(globalconfig.Project{
@@ -585,7 +618,7 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 	factory := withRunnerFactory(projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
 		captured = d
 		return nil, errProjectFactoryStub
-	}, func() string {
+	}, serviceapi.Connection{}, nil, func() string {
 		return token
 	})
 

@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -72,6 +73,112 @@ func TestAgentTurnIssueRepository(t *testing.T) {
 			cfg := config.Config{Tracker: config.Tracker{Repository: tt.configured}}
 			if got := agentTurnIssueRepository(cfg, tt.issue); got != tt.want {
 				t.Fatalf("agentTurnIssueRepository() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerHandsServiceConnectionToWorker(t *testing.T) {
+	t.Parallel()
+
+	backend := &fakeCodexClient{result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"}}
+	run, err := NewRunner(Dependencies{
+		Workflow:          config.Workflow{Prompt: "Work"},
+		Workspace:         &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+		AgentBackend:      backend,
+		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if _, err := run.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1", Identifier: "acme/widgets#1"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := map[string]string{
+		serviceapi.AddressEnvironment:          "100.111.222.33:4100",
+		serviceapi.TokenEnvironment:            "",
+		serviceapi.DispositionTokenEnvironment: "worker-token",
+	}
+	for name, value := range want {
+		if got := backend.request.Environment.Variables[name]; got != value {
+			t.Fatalf("worker environment %s = %q, want %q", name, got, value)
+		}
+	}
+}
+
+func TestWorkerServiceEnvironmentIsLimitedToImplementationTurns(t *testing.T) {
+	t.Parallel()
+
+	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"}
+	tests := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "default implementation", want: true},
+		{name: "explicit implementation", mode: RunModeImplement, want: true},
+		{name: "plan", mode: RunModePlan},
+		{name: "merge", mode: RunModeMerge},
+		{name: "routine", mode: RunModeRoutine},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			environment := workerServiceEnvironment(tt.mode, connection)
+			wantAddress := ""
+			wantDispositionToken := ""
+			if tt.want {
+				wantAddress = connection.Address
+				wantDispositionToken = connection.DispositionToken
+			}
+			if got := environment.Variables[serviceapi.AddressEnvironment]; got != wantAddress {
+				t.Fatalf("workerServiceEnvironment(%q) address = %q, want %q", tt.mode, got, wantAddress)
+			}
+			if got := environment.Variables[serviceapi.TokenEnvironment]; got != "" {
+				t.Fatalf("workerServiceEnvironment(%q) inherited API token = %q, want cleared", tt.mode, got)
+			}
+			if got := environment.Variables[serviceapi.DispositionTokenEnvironment]; got != wantDispositionToken {
+				t.Fatalf("workerServiceEnvironment(%q) disposition token = %q, want %q", tt.mode, got, wantDispositionToken)
+			}
+		})
+	}
+}
+
+func TestWorkerServiceEnvironmentOverridesAmbientServiceCredentials(t *testing.T) {
+	t.Setenv(serviceapi.TokenEnvironment, "ambient-admin-token")
+	t.Setenv(serviceapi.AddressEnvironment, "ambient.example:4000")
+	t.Setenv(serviceapi.DispositionTokenEnvironment, "ambient-worker-token")
+
+	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "scoped-worker-token"}
+	tests := []struct {
+		mode            string
+		wantAddress     string
+		wantDisposition string
+	}{
+		{mode: RunModeImplement, wantAddress: connection.Address, wantDisposition: connection.DispositionToken},
+		{mode: RunModePlan},
+		{mode: RunModeMerge},
+		{mode: RunModeRoutine},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), "detent-environment-probe")
+			procgroup.SetEnvironment(cmd, workerServiceEnvironment(tt.mode, connection))
+			values := map[string]string{}
+			for _, entry := range cmd.Environ() {
+				name, value, ok := strings.Cut(entry, "=")
+				if ok {
+					values[name] = value
+				}
+			}
+			if value := values[serviceapi.TokenEnvironment]; value != "" {
+				t.Fatalf("effective %s = %q, want cleared", serviceapi.TokenEnvironment, value)
+			}
+			if value := values[serviceapi.AddressEnvironment]; value != tt.wantAddress {
+				t.Fatalf("effective %s = %q, want %q", serviceapi.AddressEnvironment, value, tt.wantAddress)
+			}
+			if value := values[serviceapi.DispositionTokenEnvironment]; value != tt.wantDisposition {
+				t.Fatalf("effective %s = %q, want %q", serviceapi.DispositionTokenEnvironment, value, tt.wantDisposition)
 			}
 		})
 	}
@@ -5617,6 +5724,7 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	workspaceReaped := ""
 
 	runner, err := NewRunner(Dependencies{
+		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Gate: gate.Config{
@@ -5704,6 +5812,11 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	if codeBackend.request.Prompt != "" {
 		t.Fatalf("code backend prompt = %q, want unused code backend", codeBackend.request.Prompt)
 	}
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
+		if value := validatorBackend.request.Environment.Variables[name]; value != "" {
+			t.Fatalf("validator environment %s = %q, want cleared", name, value)
+		}
+	}
 }
 
 func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
@@ -5728,6 +5841,7 @@ func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 	runner, err := NewRunner(Dependencies{
 		ProjectID:         "detent",
 		SecurityAuditRoot: auditRoot,
+		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{Config: config.Config{
 			Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{
 				Enabled:       true,
@@ -5783,6 +5897,11 @@ func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 	for _, key := range []string{"OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"} {
 		if value := auditBackend.request.Environment.Variables[key]; value != "" {
 			t.Fatalf("audit environment %s = %q, want cleared", key, value)
+		}
+	}
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
+		if value := auditBackend.request.Environment.Variables[name]; value != "" {
+			t.Fatalf("security audit environment %s = %q, want cleared", name, value)
 		}
 	}
 	if !strings.Contains(auditBackend.request.ToolInstructions, "Use no tools") || !strings.Contains(auditBackend.request.Prompt, ".detent/skills/audit.md") {

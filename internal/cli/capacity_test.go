@@ -16,6 +16,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 )
 
 func TestRunCapacityClear(t *testing.T) {
@@ -54,6 +55,12 @@ func TestRunCapacityClear(t *testing.T) {
 	}
 	opts.read = func(string) (globalconfig.Config, error) {
 		return globalconfig.Config{APIToken: "operator-token"}, nil
+	}
+	opts.lookupEnv = func(name string) string {
+		if name == serviceapi.DispositionTokenEnvironment {
+			return "worker-disposition-token"
+		}
+		return ""
 	}
 	opts.httpDo = server.Client().Do
 
@@ -114,6 +121,7 @@ func TestResolveDashboardBootAddressPrecedence(t *testing.T) {
 		port      int
 		portSet   bool
 		service   bool
+		worker    string
 		wantValue string
 		wantText  string
 	}{
@@ -134,6 +142,15 @@ func TestResolveDashboardBootAddressPrecedence(t *testing.T) {
 			wantText:  "127.0.0.8:4202 (from flag)",
 		},
 		{
+			name:      "worker service address overrides config",
+			config:    configured,
+			port:      -1,
+			worker:    "100.112.223.34:4404",
+			service:   true,
+			wantValue: "100.112.223.34:4404",
+			wantText:  "100.112.223.34:4404 (from worker environment)",
+		},
+		{
 			name:      "running service flags override config",
 			config:    configured,
 			port:      -1,
@@ -152,6 +169,14 @@ func TestResolveDashboardBootAddressPrecedence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opts := dashboardAddressOptions(tt.config)
+			if tt.worker != "" {
+				opts.lookupEnv = func(name string) string {
+					if name == serviceapi.AddressEnvironment {
+						return tt.worker
+					}
+					return ""
+				}
+			}
 			if tt.service {
 				opts.service = serviceFactoryFor(&serviceRunnerStub{status: servicepkg.Status{
 					ServiceManager: servicepkg.ManagerSystemd,
