@@ -83,7 +83,9 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace
 		}
 		models, err := provider.ListModels(ctx)
 		if err != nil {
-			return result.reject("effort", result.Effort, "model catalog unavailable while validating changed resume effort")
+			result = result.reject("effort", result.Effort, "model catalog unavailable while validating changed resume effort")
+			result.Err = fmt.Errorf("%w: %w", result.Err, err)
+			return result
 		}
 		selected, ok := findAgentModel(models, model)
 		if !ok {
