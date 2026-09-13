@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -1981,13 +1982,17 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 		lookupPullRequest connector.PullRequest
 		lookupFound       bool
 		lookupErr         error
+		created           *connector.PullRequest
+		createErr         error
 		invalidWorkpad    bool
 		wantLookupCalls   int
+		wantCreateCalls   int
 		wantHydrateCalls  int
 		wantWaitCalls     int
 		wantAction        string
 		wantReason        string
 		wantMerging       bool
+		wantRework        bool
 	}{
 		{
 			name:              "unlinked exact-head open pull request reconciles",
@@ -2014,6 +2019,24 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			wantLookupCalls: 1,
 			wantAction:      "hold",
 			wantReason:      blockedReadyPullRequestLookupNoneReason,
+		},
+		{
+			name:  "retired deliverable park opens a draft and returns to Rework",
+			cause: deliverableRecoveryNeedsHumanReason + ": pushed branch has no recoverable pull request",
+			created: &connector.PullRequest{
+				Number: 1777, BranchName: branch, State: "OPEN", HeadSHA: readyPullRequest.HeadSHA, Draft: true,
+			},
+			wantLookupCalls: 1,
+			wantCreateCalls: 1,
+			wantRework:      true,
+		},
+		{
+			name:            "retired deliverable park with a missing branch returns to Rework",
+			cause:           deliverableRecoveryNeedsHumanReason + ": pushed branch has no recoverable pull request",
+			createErr:       errors.New("head branch is missing"),
+			wantLookupCalls: 1,
+			wantCreateCalls: 1,
+			wantRework:      true,
 		},
 		{
 			name:            "lookup unavailable defers after bounded retries",
@@ -2062,6 +2085,8 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 				pullRequest:                    tt.lookupPullRequest,
 				found:                          tt.lookupFound,
 				err:                            tt.lookupErr,
+				created:                        tt.created,
+				createErr:                      tt.createErr,
 			}
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents:  1,
@@ -2108,6 +2133,9 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			if tracker.lookupCalls != tt.wantLookupCalls {
 				t.Fatalf("lookup calls = %d, want %d", tracker.lookupCalls, tt.wantLookupCalls)
 			}
+			if tracker.createCalls != tt.wantCreateCalls {
+				t.Fatalf("create calls = %d, want %d", tracker.createCalls, tt.wantCreateCalls)
+			}
 			if tracker.hydrateCalls != tt.wantHydrateCalls {
 				t.Fatalf("hydrate calls = %d, want %d", tracker.hydrateCalls, tt.wantHydrateCalls)
 			}
@@ -2117,7 +2145,7 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			if tracker.lookupCalls > 0 && (tracker.repository != repository || tracker.branch != branch || tracker.headSHA != readyPullRequest.HeadSHA) {
 				t.Fatalf("lookup = (%q, %q, %q), want (%q, %q, %q)", tracker.repository, tracker.branch, tracker.headSHA, repository, branch, readyPullRequest.HeadSHA)
 			}
-			if tracker.lookupCalls > 0 {
+			if tracker.lookupCalls > 0 && (tt.wantReason != "" || tt.lookupFound) {
 				wantOutcome := tt.wantReason
 				if tt.lookupFound {
 					wantOutcome = blockedReadyPullRequestLookupFoundReason
@@ -2129,6 +2157,15 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			if tt.wantMerging {
 				if len(tracker.updates) != 1 || tracker.updates[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: autoPromoteMergingState}) {
 					t.Fatalf("updates = %#v, want one Merging transition", tracker.updates)
+				}
+				return
+			}
+			if tt.wantRework {
+				if len(tracker.updates) != 1 || tracker.updates[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: autoPromoteReworkState}) {
+					t.Fatalf("updates = %#v, want one Rework transition", tracker.updates)
+				}
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					t.Fatalf("Blocked[%q] still present after deliverable recovery", issue.ID)
 				}
 				return
 			}
@@ -2173,6 +2210,9 @@ type blockedReadyPullRequestLookupConnector struct {
 	headSHA      string
 	lookupCalls  int
 	hydrateCalls int
+	created      *connector.PullRequest
+	createErr    error
+	createCalls  int
 }
 
 func (c *blockedReadyPullRequestLookupConnector) LookupPullRequestByHead(_ context.Context, repository string, branch string, headSHA string) (connector.PullRequest, bool, error) {
@@ -2181,6 +2221,17 @@ func (c *blockedReadyPullRequestLookupConnector) LookupPullRequestByHead(_ conte
 	c.branch = branch
 	c.headSHA = headSHA
 	return c.pullRequest, c.found, c.err
+}
+
+func (c *blockedReadyPullRequestLookupConnector) CreateDraftPullRequest(context.Context, string, string, string, string) (connector.PullRequest, error) {
+	c.createCalls++
+	if c.createErr != nil {
+		return connector.PullRequest{}, c.createErr
+	}
+	if c.created == nil {
+		return connector.PullRequest{}, errors.New("draft pull request unavailable")
+	}
+	return *c.created, nil
 }
 
 func (c *blockedReadyPullRequestLookupConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {

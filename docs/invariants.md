@@ -103,6 +103,11 @@ context is already canceled is consumed without starting an agent. This removes 
 implicit same-slot retry and relies on the existing schedule-ownership context rather
 than adding a retry, backoff, or lease mechanism (#2526).
 
+Deliverable recovery opens a draft pull request when a worker already pushed an
+exact-head branch but failed before creating the PR, and returns a missing remote
+branch to Rework (#2528). This retires the human-owned no-PR park by consolidating
+the repair into the existing deliverable-recovery and operator-routine paths.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

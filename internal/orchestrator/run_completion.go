@@ -193,10 +193,15 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			running.DiffStats = event.Result.DiffStats
 		}
 		deliverableLookup = o.lookupDeliverableRecovery(ctx, running, deliverableRecoveryErr)
+		deliverableLookup = o.createDeliverableRecoveryPullRequest(ctx, running, deliverableLookup)
 		if deliverableLookup.reconciles() {
 			running.Issue = deliverableRecoveryIssue(running, deliverableLookup)
 			event.Err = nil
-			event.Result.FinalState = FinalStateCompleted
+			if deliverableLookup.CreatedPullRequest {
+				event.Result.FinalState = running.Issue.State
+			} else {
+				event.Result.FinalState = FinalStateCompleted
+			}
 			event.Result.PullRequestUpdated = true
 			recordStateEvent(state, telemetry.ActivityEvent{
 				At:      event.CompletedAt,
@@ -346,7 +351,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		credentialFailure := runpkg.IsDeliverableConfigurationError(event.Err)
 		var projectionErr *runpkg.SessionBudgetProjectionError
 		projectionFailure := errors.As(event.Err, &projectionErr) && projectionErr != nil
-		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
+		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil && !deliverableRecoveryMachineOwned(deliverableLookup) {
 			errorClass = deliverableRecoveryReasonCode(deliverableLookup)
 			phase = "blocked"
 			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
@@ -382,7 +387,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
 		}
-		if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
+		if deliverableRecoveryMachineOwned(deliverableLookup) {
+			running.Issue = o.returnMissingDeliverableBranchToRework(ctx, state, running.Issue, deliverableLookup, event.CompletedAt)
+		} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
 			return
 		}
 		if credentialFailure && o.blockHumanOwnedWorkerFailure(

@@ -204,6 +204,10 @@ type PullRequestHeadLookup interface {
 	LookupPullRequestByHead(context.Context, string, string, string) (PullRequest, bool, error)
 }
 
+type PullRequestDraftCreator interface {
+	CreateDraftPullRequest(context.Context, string, string, string, string) (PullRequest, error)
+}
+
 type PullRequestDiffFingerprintReader interface {
 	PullRequestDiffFingerprint(context.Context, Issue) (string, error)
 }

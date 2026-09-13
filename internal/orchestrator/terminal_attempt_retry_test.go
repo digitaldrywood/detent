@@ -465,11 +465,17 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		name             string
 		cached           *connector.PullRequest
 		lookup           *connector.PullRequest
+		created          *connector.PullRequest
 		lookupErrors     []error
 		lookupFoundAfter int
 		wantBlocked      bool
 		wantReason       string
 		wantLookupCalls  int
+		wantCreateCalls  int
+		wantPRNumber     int
+		wantTransitions  []string
+		wantRetry        bool
+		wantActive       bool
 		wantMergedReason bool
 		wantReasonCode   string
 		commitsAhead     int
@@ -481,14 +487,20 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
 			},
 			wantLookupCalls: 1,
+			wantPRNumber:    18,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
 		{
-			name:            "no pull request parks",
-			wantBlocked:     true,
-			wantReason:      "no exact-head pull request",
+			name: "no pull request opens draft",
+			created: &connector.PullRequest{
+				Number: 19, BranchName: branch, State: "OPEN", HeadSHA: headSHA, Draft: true,
+			},
 			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantPRNumber:    19,
+			wantTransitions: []string{},
+			wantActive:      true,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -500,10 +512,10 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantLookupCalls: 0,
 		},
 		{
-			name:            "deleted remote branch parks accurately",
-			wantBlocked:     true,
-			wantReason:      "remote branch is missing",
+			name:            "deleted remote branch returns to Rework",
 			wantLookupCalls: 0,
+			wantTransitions: []string{autoPromoteReworkState},
+			wantRetry:       true,
 			commitsAhead:    1,
 		},
 		{
@@ -513,6 +525,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			},
 			lookupFoundAfter: 3,
 			wantLookupCalls:  3,
+			wantPRNumber:     18,
 			commitsAhead:     1,
 			remoteBranch:     true,
 		},
@@ -523,6 +536,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				CIStatus: "success", CheckRunCount: 1,
 			},
 			wantLookupCalls:  1,
+			wantPRNumber:     18,
 			wantMergedReason: true,
 			commitsAhead:     1,
 			remoteBranch:     true,
@@ -556,9 +570,9 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			cached: &connector.PullRequest{
 				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
 			},
-			wantBlocked:     true,
-			wantReason:      "lookup result: no exact-head pull request",
 			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantRetry:       true,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -578,6 +592,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			tracker := &terminalRetryConnector{
 				issues:           map[string]connector.Issue{issue.ID: cloneIssue(issue)},
 				lookup:           tt.lookup,
+				created:          tt.created,
 				lookupErrors:     append([]error(nil), tt.lookupErrors...),
 				lookupFoundAfter: tt.lookupFoundAfter,
 			}
@@ -628,6 +643,17 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 					headSHA,
 				)
 			}
+			if tracker.createCalls != tt.wantCreateCalls {
+				t.Fatalf("create calls = %d, want %d", tracker.createCalls, tt.wantCreateCalls)
+			}
+			if tt.wantCreateCalls > 0 {
+				if tracker.createRepository != "acme/widgets" || tracker.createBranch != branch || tracker.createTitle != issue.Title {
+					t.Fatalf("create target = (%q, %q, %q), want (%q, %q, %q)", tracker.createRepository, tracker.createBranch, tracker.createTitle, "acme/widgets", branch, issue.Title)
+				}
+				if !strings.Contains(tracker.createBody, "Fixes digitaldrywood/detent#1432-") || !strings.Contains(tracker.createBody, "```detent-origin") {
+					t.Fatalf("create body = %q, want issue reference and provenance stamp", tracker.createBody)
+				}
+			}
 			blocked, ok := state.Blocked[issue.ID]
 			if ok != tt.wantBlocked {
 				t.Fatalf("Blocked[%q] present = %v, want %v: %#v", issue.ID, ok, tt.wantBlocked, blocked)
@@ -659,12 +685,35 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				}
 				return
 			}
+			if tt.wantTransitions != nil && !slices.Equal(tracker.transitionStates(), tt.wantTransitions) {
+				t.Fatalf("state transitions = %v, want %v", tracker.transitionStates(), tt.wantTransitions)
+			}
+			if tt.wantRetry {
+				if _, retrying := state.Retry[issue.ID]; !retrying {
+					t.Fatalf("Retry[%q] missing after machine-recoverable delivery failure", issue.ID)
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass == deliverableRecoveryNeedsHumanReason {
+					t.Fatalf("work attempt completions = %#v, want non-human recovery failure", attempts.completions)
+				}
+				if _, completed := state.Completed[issue.ID]; completed {
+					t.Fatalf("Completed[%q] present during delivery recovery retry", issue.ID)
+				}
+				return
+			}
+			if tt.wantActive {
+				if _, retrying := state.Retry[issue.ID]; !retrying {
+					t.Fatalf("Retry[%q] missing after draft recovery continuation", issue.ID)
+				}
+			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("work attempt completions = %#v, want successful reconciliation", attempts.completions)
 			}
 			completed := state.Completed[issue.ID]
-			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != 18 {
-				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR 18", issue.ID, completed.Issue.PullRequest)
+			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != tt.wantPRNumber {
+				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR %d", issue.ID, completed.Issue.PullRequest, tt.wantPRNumber)
+			}
+			if tt.wantActive && completed.FinalState != issue.State {
+				t.Fatalf("Completed[%q].FinalState = %q, want active state %q", issue.ID, completed.FinalState, issue.State)
 			}
 			if tt.wantMergedReason {
 				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
@@ -1126,6 +1175,12 @@ type terminalRetryConnector struct {
 	lookupRepository string
 	lookupBranch     string
 	lookupHeadSHA    string
+	created          *connector.PullRequest
+	createCalls      int
+	createRepository string
+	createBranch     string
+	createTitle      string
+	createBody       string
 }
 
 func (c *terminalRetryConnector) Name() string { return "terminal-retry" }
@@ -1168,6 +1223,18 @@ func (c *terminalRetryConnector) LookupPullRequestByHead(_ context.Context, repo
 	}
 	pullRequest := *c.lookup
 	return pullRequest, true, nil
+}
+
+func (c *terminalRetryConnector) CreateDraftPullRequest(_ context.Context, repository string, branch string, title string, body string) (connector.PullRequest, error) {
+	c.createCalls++
+	c.createRepository = repository
+	c.createBranch = branch
+	c.createTitle = title
+	c.createBody = body
+	if c.created == nil {
+		return connector.PullRequest{}, errors.New("draft pull request unavailable")
+	}
+	return *c.created, nil
 }
 
 func (c *terminalRetryConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
