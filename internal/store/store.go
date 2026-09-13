@@ -56,6 +56,7 @@ type Store interface {
 	WorkflowMetricsStore
 	ProvenanceStore
 	WorkAttemptStore
+	TerminalWorkAttemptStore
 	LaneLedgerStore
 	ProjectDispatchStatusStore
 	HealthNotificationStateStore
@@ -171,6 +172,10 @@ type WorkAttemptStore interface {
 	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
+type TerminalWorkAttemptStore interface {
+	UpdateTerminalWorkAttemptWait(context.Context, WorkAttemptTerminalWaitUpdate) error
 }
 
 type ConcurrencyStore interface {
@@ -750,6 +755,17 @@ type WorkAttemptCompletion struct {
 	DetentSessionID        int64
 	ProviderSessionID      string
 	RuntimeIdentity        agentidentity.Identity
+}
+
+type WorkAttemptTerminalWaitUpdate struct {
+	AttemptID          int64
+	ExpectedErrorClass string
+	TerminalState      WorkAttemptTerminalState
+	ErrorClass         string
+	ErrorMessage       string
+	Phase              string
+	StatusMessage      string
+	WorkerMetadataJSON string
 }
 
 type WorkAttemptQuery struct {

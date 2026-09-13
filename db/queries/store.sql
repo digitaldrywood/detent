@@ -857,6 +857,19 @@ SET status = ?,
 WHERE id = sqlc.arg(work_attempt_id)
   AND completed_at IS NULL;
 
+-- name: UpdateTerminalWorkAttemptWait :execrows
+UPDATE work_attempts
+SET terminal_state = sqlc.arg(terminal_state),
+    error_class = sqlc.arg(error_class),
+    error_message = sqlc.arg(error_message),
+    phase = sqlc.arg(phase),
+    status_message = sqlc.arg(status_message),
+    worker_metadata_json = sqlc.arg(worker_metadata_json)
+WHERE id = sqlc.arg(work_attempt_id)
+  AND status = 'terminal'
+  AND completed_at IS NOT NULL
+  AND error_class = sqlc.arg(expected_error_class);
+
 -- name: ListActiveWorkAttempts :many
 SELECT *
 FROM work_attempts

@@ -96,7 +96,7 @@ func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 	if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &persisted); err != nil {
 		t.Fatalf("decode forge wait metadata: %v", err)
 	}
-	if persisted.ForgeWait.Host != "github.com" || persisted.ForgeWait.Branch != "detent/1871" || !persisted.ForgeWait.WorkProductPushed || persisted.ForgeWait.ErrorClass != forgeavailability.ClassTransport {
+	if persisted.ForgeWait.Host != "github.com" || persisted.ForgeWait.Branch != "detent/1871" || !persisted.ForgeWait.WorkProductPushed || persisted.ForgeWait.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
 		t.Fatalf("persisted forge wait = %#v, want scoped pushed branch", persisted.ForgeWait)
 	}
 
@@ -116,8 +116,8 @@ func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 	restartedState := newState(cfg)
 	restartedOrch.recoverDurableWorkAttempts(context.Background(), &restartedState, now.Add(time.Second))
 	condition, ok := restartedState.ForgeUnavailable["github.com"]
-	if !ok || condition.ErrorClass != forgeavailability.ClassTransport {
-		t.Fatalf("restarted forge condition = %#v, want durable transport wait", restartedState.ForgeUnavailable)
+	if !ok || condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+		t.Fatalf("restarted forge condition = %#v, want durable credential wait", restartedState.ForgeUnavailable)
 	}
 	restartedRetry, ok := restartedState.Retry[issue.ID]
 	if !ok || !restartedRetry.ForgeUnavailable || restartedRetry.ForgeRetry == nil || restartedRetry.ForgeRetry.Branch != "detent/1871" || !restartedRetry.ForgeRetry.WorkProductPushed {
@@ -302,6 +302,47 @@ func TestForgeAvailabilityDispatchIsScopedToNextWriteAndHost(t *testing.T) {
 	}
 }
 
+func TestWorkerGitHubCredentialAvailabilityBlocksProjectAcrossHosts(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		conditionHost string
+		issueURL      string
+	}{
+		{name: "GitHub credential blocks Linear issue", conditionHost: "github.com", issueURL: "https://linear.app/detent/issue/DET-2548"},
+		{name: "API host credential blocks GitHub issue", conditionHost: "api.github.com", issueURL: "https://github.com/digitaldrywood/detent/issues/2548"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ForgeHost: "github.com"})
+			state := newState(cfg)
+			state.ForgeUnavailable[tt.conditionHost] = ForgeCondition{
+				Host:        tt.conditionHost,
+				ErrorClass:  forgeavailability.ClassWorkerGitHubCredentialUnavailable,
+				NextProbeAt: now.Add(time.Minute),
+			}
+			issue := dispatchTestIssue("cross-host", "In Progress")
+			issue.URL = tt.issueURL
+
+			if !forgeAvailabilityBlocks(&state, issue, Retry{}, cfg.ForgeHost, now) {
+				t.Fatal("forgeAvailabilityBlocks() = false, want project credential pause")
+			}
+
+			retry := Retry{Issue: issue, ForgeUnavailable: true, ForgeHost: tt.conditionHost}
+			condition := state.ForgeUnavailable[tt.conditionHost]
+			condition.NextProbeAt = now
+			state.ForgeUnavailable[tt.conditionHost] = condition
+			if forgeAvailabilityBlocks(&state, issue, retry, cfg.ForgeHost, now) {
+				t.Fatal("forgeAvailabilityBlocks() = true for due credential canary, want retry allowed")
+			}
+		})
+	}
+}
+
 func TestForgeAvailabilityProbeClearsOnlyForgeCondition(t *testing.T) {
 	t.Parallel()
 
@@ -389,6 +430,106 @@ func TestForgeWriteRejectionClearsProbeButStillReturnsFailure(t *testing.T) {
 	}
 	if _, unavailable := forgeavailability.As(err); unavailable || errors.Is(err, forgeavailability.ErrUnavailable) {
 		t.Fatalf("error = %v, want ordinary failure", err)
+	}
+}
+
+func TestCredentialForgeProbeRequiresSuccessfulWrite(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ForgeHost: "github.com", MaxConcurrentAgents: 1})
+	orch := Orchestrator{cfg: cfg, now: func() time.Time { return now }}
+	issue := dispatchTestIssue("credential-probe", "In Progress")
+	state := newState(cfg)
+	state.ForgeUnavailable["github.com"] = ForgeCondition{
+		Host:         "github.com",
+		ErrorClass:   forgeavailability.ClassWorkerGitHubCredentialUnavailable,
+		ProbeIssueID: issue.ID,
+		DetectedAt:   now.Add(-time.Minute),
+	}
+	state.Retry[issue.ID] = Retry{Issue: issue, ForgeUnavailable: true, ForgeHost: "github.com"}
+
+	orch.finishForgeAvailabilityProbe(&state, runpkg.Completion{
+		IssueID: issue.ID,
+		Err: &runpkg.DeliverableCommandError{
+			OperationClass: "push",
+			Operation:      "git push",
+			Message:        "HTTP 403: forbidden",
+		},
+		CompletedAt: now,
+	}, Running{Issue: issue, ForgeProbeHost: "github.com"})
+
+	condition, ok := state.ForgeUnavailable["github.com"]
+	if !ok {
+		t.Fatal("credential forge condition cleared after rejected write")
+	}
+	if condition.ProbeIssueID != "" || condition.NextProbeAt.IsZero() || condition.LastProbeResult != "inconclusive" {
+		t.Fatalf("credential condition = %#v, want released probe scheduled for retry", condition)
+	}
+	if !state.Retry[issue.ID].ForgeUnavailable {
+		t.Fatalf("Retry[%q] = %#v, want credential wait retained", issue.ID, state.Retry[issue.ID])
+	}
+}
+
+func TestClassifyWorkerGitHubCredentialUnavailable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		err       error
+		wantClass string
+	}{
+		{
+			name: "credential signature",
+			err: &runpkg.DeliverableCommandError{
+				OperationClass: "pull_request", Operation: "gh pr create", Message: "run gh auth login",
+			},
+			wantClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable,
+		},
+		{
+			name: "typed connector approval denial",
+			err: forgeavailability.NewError(
+				forgeavailability.Scope{Host: "github.com", Operation: "codex_apps/github.create_pull_request"},
+				forgeavailability.ClassTransport,
+				&runpkg.DeliverableCommandError{
+					OperationClass: "pull_request", Operation: "codex_apps/github.create_pull_request",
+					Message: "tool approval declined", ApprovalDenied: true,
+				},
+			),
+			wantClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable,
+		},
+		{
+			name: "final message connector write question",
+			err: &runpkg.DeliverableCommandError{
+				OperationClass: "pull_request", Operation: "create_pull_request",
+				Message: "Could you enable GitHub connector write access or open the PR manually?", ApprovalDenied: true,
+			},
+			wantClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable,
+		},
+		{
+			name: "unrelated executable failure",
+			err: &runpkg.DeliverableCommandError{
+				OperationClass: "pull_request", Operation: "gh pr create", Message: "exec: gh: executable file not found",
+			},
+		},
+	}
+
+	o := Orchestrator{cfg: normalizeConfig(Config{ForgeHost: "github.com"})}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := o.classifyWorkerGitHubCredentialUnavailable(tt.err, Running{})
+			availabilityErr, classified := forgeavailability.As(got)
+			if tt.wantClass == "" {
+				if classified {
+					t.Fatalf("classified error = %v, want ordinary deliverable failure", got)
+				}
+				return
+			}
+			if !classified || availabilityErr.Class != tt.wantClass {
+				t.Fatalf("classified error = %#v, want class %q", availabilityErr, tt.wantClass)
+			}
+		})
 	}
 }
 

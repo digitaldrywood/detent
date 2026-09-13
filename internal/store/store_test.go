@@ -1062,6 +1062,64 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}
 }
 
+func TestUpdateTerminalWorkAttemptWait(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		complete   bool
+		errorClass string
+		wantErr    bool
+	}{
+		{name: "matching terminal attempt", complete: true, errorClass: "deliverable_configuration_failure"},
+		{name: "different terminal error class", complete: true, errorClass: "other", wantErr: true},
+		{name: "active attempt", errorClass: "deliverable_configuration_failure", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			backend := openTestStore(t, ctx)
+			now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+			attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+				ProjectID: "detent", IssueID: "issue-2548", WorkerType: "agent", StartedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("StartWorkAttempt() error = %v", err)
+			}
+			if tt.complete {
+				if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
+					AttemptID: attemptID, CompletedAt: now.Add(time.Minute), TerminalState: WorkAttemptTerminalFailure,
+					ErrorClass: tt.errorClass, ErrorMessage: "run gh auth login",
+				}); err != nil {
+					t.Fatalf("CompleteWorkAttempt() error = %v", err)
+				}
+			}
+
+			err = backend.UpdateTerminalWorkAttemptWait(ctx, WorkAttemptTerminalWaitUpdate{
+				AttemptID: attemptID, ExpectedErrorClass: "deliverable_configuration_failure",
+				TerminalState: WorkAttemptTerminalCapacity, ErrorClass: "forge_unavailable",
+				ErrorMessage: "credential unavailable", Phase: "waiting", StatusMessage: "waiting",
+				WorkerMetadataJSON: `{"forge_wait":{"host":"github.com"}}`,
+			})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("UpdateTerminalWorkAttemptWait() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			attempt, err := backend.WorkAttempt(ctx, attemptID)
+			if err != nil {
+				t.Fatalf("WorkAttempt() error = %v", err)
+			}
+			if attempt.TerminalState != WorkAttemptTerminalCapacity || attempt.ErrorClass != "forge_unavailable" || attempt.Phase != "waiting" || !strings.Contains(attempt.WorkerMetadataJSON, "forge_wait") {
+				t.Fatalf("updated attempt = %#v, want terminal forge wait", attempt)
+			}
+		})
+	}
+}
+
 func TestWorkAttemptCapacityReleaseStore(t *testing.T) {
 	t.Parallel()
 

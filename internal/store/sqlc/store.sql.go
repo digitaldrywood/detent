@@ -4749,6 +4749,48 @@ func (q *Queries) UpdateOperatorStop(ctx context.Context, arg UpdateOperatorStop
 	return result.RowsAffected()
 }
 
+const updateTerminalWorkAttemptWait = `-- name: UpdateTerminalWorkAttemptWait :execrows
+UPDATE work_attempts
+SET terminal_state = ?1,
+    error_class = ?2,
+    error_message = ?3,
+    phase = ?4,
+    status_message = ?5,
+    worker_metadata_json = ?6
+WHERE id = ?7
+  AND status = 'terminal'
+  AND completed_at IS NOT NULL
+  AND error_class = ?8
+`
+
+type UpdateTerminalWorkAttemptWaitParams struct {
+	TerminalState      sql.NullString `json:"terminal_state"`
+	ErrorClass         sql.NullString `json:"error_class"`
+	ErrorMessage       sql.NullString `json:"error_message"`
+	Phase              sql.NullString `json:"phase"`
+	StatusMessage      sql.NullString `json:"status_message"`
+	WorkerMetadataJson string         `json:"worker_metadata_json"`
+	WorkAttemptID      int64          `json:"work_attempt_id"`
+	ExpectedErrorClass sql.NullString `json:"expected_error_class"`
+}
+
+func (q *Queries) UpdateTerminalWorkAttemptWait(ctx context.Context, arg UpdateTerminalWorkAttemptWaitParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateTerminalWorkAttemptWait,
+		arg.TerminalState,
+		arg.ErrorClass,
+		arg.ErrorMessage,
+		arg.Phase,
+		arg.StatusMessage,
+		arg.WorkerMetadataJson,
+		arg.WorkAttemptID,
+		arg.ExpectedErrorClass,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateWorkAttemptHeartbeat = `-- name: UpdateWorkAttemptHeartbeat :execrows
 UPDATE work_attempts
 SET heartbeat_at = ?,

@@ -50,7 +50,10 @@ classes from issue progress spend. `TestAgentRunProgressClassifiesPullRequestApp
 and `TestApprovalDeniedDeliverableUsesInstanceForgeWait` preserve the connector
 approval-denial classification through the existing instance-owned forge wait, while
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
-reconciliation. These execute through the invariant manifest. Runtime evidence is needed
+reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
+reports as write-path failures, and `TestCredentialForgeProbeRequiresSuccessfulWrite`
+keeps the named project pause active until its write canary succeeds. These execute
+through the invariant manifest. Runtime evidence is needed
 to classify a new failure correctly; do not infer issue fault merely from a failed attempt.
 
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when

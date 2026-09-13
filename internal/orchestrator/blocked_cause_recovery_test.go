@@ -126,42 +126,166 @@ func TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause(t *testin
 	t.Parallel()
 
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	runtimeStore := openWorkAttemptRecoveryStore(t, t.Context())
 	issue := dependencyAutoUnblockIssue("issue-legacy-credential", blockedStatusState)
 	issue.Identifier = "digitaldrywood/detent#2548"
 	issue.URL = "https://github.com/digitaldrywood/detent/issues/2548"
 	issue.BranchName = "detent/2548"
 	issue.WorkpadSignal = &workpad.Signal{Status: workpad.StatusBlocked, HumanAction: "configure GitHub CLI authentication"}
+	attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+		ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL,
+		WorkerType: "agent", Lane: "In Progress", AttemptNumber: 3, StartedAt: now.Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+	credentialError := "deliverable command failed (gh pr create): run gh auth login"
+	if err := runtimeStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{
+		AttemptID: attemptID, CompletedAt: now.Add(-time.Hour), TerminalState: store.WorkAttemptTerminalFailure,
+		ErrorClass: deliverableConfigurationFailureCause, ErrorMessage: credentialError,
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"deliverable_evidence": map[string]any{"command": "gh pr create"},
+		}),
+	}); err != nil {
+		t.Fatalf("CompleteWorkAttempt() error = %v", err)
+	}
 	park := &workflowLaneBlockedRecoveryMetadata{
 		Owner:            blockedRecoveryOwnerHuman,
 		Cause:            deliverableConfigurationFailureCause,
 		Predicate:        blockedRecoveryPredicateManaged,
 		CauseFingerprint: "legacy-credential-park",
 		TargetState:      autoPromoteReworkState,
+		WorkAttemptID:    attemptID,
 		AttemptNumber:    3,
-		AttemptError:     "deliverable command failed (gh pr create): run gh auth login",
+		AttemptError:     "GitHub credentials are unavailable for the deliverable command",
 	}
 	tracker := &dependencyAutoUnblockConnector{}
+	rejectOnce := &dependencyAutoUnblockRejectOnceConnector{dependencyAutoUnblockConnector: tracker, reject: true}
 	orch := blockedCauseTestOrchestrator(tracker)
+	orch.connector = rejectOnce
 	orch.cfg.Project.ID = "detent"
 	orch.cfg.ForgeHost = "github.com"
+	orch.cfg.ActiveStates = append(orch.cfg.ActiveStates, normalizeState(autoPromoteReworkState))
+	orch.workAttempts = runtimeStore
 	state := newState(orch.cfg)
 	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: deliverableConfigurationFailureCause, BlockedAt: now.Add(-time.Hour), Recovery: park}
 
 	transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
 
-	if _, ok := transitioned[issue.ID]; !ok || len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteReworkState {
-		t.Fatalf("transitioned = %#v updates = %#v, want legacy park returned to Rework", transitioned, tracker.updates)
+	if len(transitioned) != 0 || len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteReworkState {
+		t.Fatalf("transitioned = %#v updates = %#v, want rejected first Rework transition", transitioned, tracker.updates)
 	}
 	condition, ok := state.ForgeUnavailable["github.com"]
 	if !ok || condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
 		t.Fatalf("ForgeUnavailable = %#v, want worker credential pause", state.ForgeUnavailable)
 	}
 	retry, ok := state.Retry[issue.ID]
-	if !ok || !retry.ForgeUnavailable || retry.Issue.State != autoPromoteReworkState || retry.ForgeRetry == nil {
-		t.Fatalf("Retry[%q] = %#v, want same-attempt write canary in Rework", issue.ID, retry)
+	if !ok || !retry.ForgeUnavailable || retry.Issue.State != blockedStatusState || retry.ForgeRetry == nil {
+		t.Fatalf("Retry[%q] = %#v, want durable same-attempt write canary after rejected transition", issue.ID, retry)
 	}
-	if len(state.Blocked) != 0 || len(tracker.comments) != 0 {
-		t.Fatalf("blocked = %#v comments = %#v, want no legacy issue park or new park comment", state.Blocked, tracker.comments)
+	if _, ok := state.Blocked[issue.ID]; !ok || len(tracker.comments) != 0 {
+		t.Fatalf("blocked = %#v comments = %#v, want legacy issue retained without a new park comment", state.Blocked, tracker.comments)
+	}
+	persisted, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+	if err != nil {
+		t.Fatalf("WorkAttempt() error = %v", err)
+	}
+	if metadata, ok := forgeWaitMetadataFromAttempt(persisted); !ok {
+		t.Fatalf("persisted work attempt = %#v, metadata = %#v, want valid forge wait", persisted, metadata)
+	}
+	if !strings.Contains(persisted.WorkerMetadataJSON, `"deliverable_evidence"`) {
+		t.Fatalf("persisted worker metadata = %s, want original deliverable evidence preserved", persisted.WorkerMetadataJSON)
+	}
+
+	tracker.updates = nil
+	restartedMigration := blockedCauseTestOrchestrator(tracker)
+	restartedMigration.cfg = orch.cfg
+	restartedMigration.workAttempts = runtimeStore
+	restartedMigrationState := newState(orch.cfg)
+	restartedMigrationState.Blocked[issue.ID] = Blocked{Issue: issue, Reason: deliverableConfigurationFailureCause, BlockedAt: now.Add(-time.Hour), Recovery: park}
+	transitioned = restartedMigration.recoverBlockedIssues(t.Context(), &restartedMigrationState, []connector.Issue{issue}, now.Add(time.Second))
+	if _, ok := transitioned[issue.ID]; !ok || len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteReworkState {
+		t.Fatalf("transitioned = %#v updates = %#v, want persisted migration retried into Rework", transitioned, tracker.updates)
+	}
+	if retry := restartedMigrationState.Retry[issue.ID]; !retry.ForgeUnavailable || retry.Issue.State != autoPromoteReworkState {
+		t.Fatalf("Retry[%q] = %#v, want Rework write canary after migration retry", issue.ID, retry)
+	}
+	if len(restartedMigrationState.Blocked) != 0 {
+		t.Fatalf("Blocked = %#v, want legacy park removed after retry", restartedMigrationState.Blocked)
+	}
+	restartedTracker := &forgeWaitRecoveryConnector{issues: []connector.Issue{{
+		ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL, State: autoPromoteReworkState,
+	}}}
+	restarted := Orchestrator{cfg: orch.cfg, connector: restartedTracker}
+	restartedState := newState(orch.cfg)
+	restarted.recoverForgeAvailabilityWaits(t.Context(), &restartedState, []store.WorkAttempt{persisted}, now.Add(time.Second))
+	if _, ok := restartedState.ForgeUnavailable["github.com"]; !ok {
+		t.Fatalf("ForgeUnavailable after restart = %#v, want durable credential pause", restartedState.ForgeUnavailable)
+	}
+	if retry, ok := restartedState.Retry[issue.ID]; !ok || !retry.ForgeUnavailable {
+		t.Fatalf("Retry[%q] after restart = %#v, want durable write canary", issue.ID, retry)
+	}
+}
+
+func TestRecoverBlockedIssuesKeepsLegacyCredentialParkWhenForgeWaitPersistenceFails(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	issue := dependencyAutoUnblockIssue("issue-legacy-credential", blockedStatusState)
+	issue.URL = "https://github.com/digitaldrywood/detent/issues/2548"
+	park := &workflowLaneBlockedRecoveryMetadata{
+		Cause:         deliverableConfigurationFailureCause,
+		WorkAttemptID: 42,
+		AttemptNumber: 3,
+		AttemptError:  "deliverable command failed (gh pr create): run gh auth login",
+	}
+	tracker := &dependencyAutoUnblockConnector{}
+	attempts := &recordingWorkAttemptStore{
+		workAttempt:        &store.WorkAttempt{ID: 42, ErrorClass: deliverableConfigurationFailureCause, ErrorMessage: "run gh auth login"},
+		terminalWaitErrors: []error{errors.New("write unavailable")},
+	}
+	orch := blockedCauseTestOrchestrator(tracker)
+	orch.cfg.Project.ID = "detent"
+	orch.cfg.ForgeHost = "github.com"
+	orch.workAttempts = attempts
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: deliverableConfigurationFailureCause, Recovery: park}
+
+	transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if len(transitioned) != 0 || len(tracker.updates) != 0 {
+		t.Fatalf("transitioned = %#v updates = %#v, want unchanged Blocked lane", transitioned, tracker.updates)
+	}
+	if _, ok := state.Blocked[issue.ID]; !ok {
+		t.Fatalf("Blocked = %#v, want legacy park retained", state.Blocked)
+	}
+	if _, ok := state.ForgeUnavailable["github.com"]; !ok {
+		t.Fatalf("ForgeUnavailable = %#v, want in-memory project pause", state.ForgeUnavailable)
+	}
+}
+
+func TestRecoverBlockedIssuesKeepsNonCredentialDeliverableConfigurationPark(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	issue := dependencyAutoUnblockIssue("issue-deliverable-config", blockedStatusState)
+	park := &workflowLaneBlockedRecoveryMetadata{Cause: deliverableConfigurationFailureCause, WorkAttemptID: 42}
+	tracker := &dependencyAutoUnblockConnector{}
+	attempts := &recordingWorkAttemptStore{workAttempt: &store.WorkAttempt{
+		ID: 42, ErrorClass: deliverableConfigurationFailureCause, ErrorMessage: "exec: gh: executable file not found",
+	}}
+	orch := blockedCauseTestOrchestrator(tracker)
+	orch.workAttempts = attempts
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: deliverableConfigurationFailureCause, Recovery: park}
+
+	transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if len(transitioned) != 0 || len(tracker.updates) != 0 || len(attempts.terminalWaitUpdates) != 0 {
+		t.Fatalf("transitioned = %#v updates = %#v terminal updates = %#v, want unrelated park unchanged", transitioned, tracker.updates, attempts.terminalWaitUpdates)
+	}
+	if len(state.ForgeUnavailable) != 0 {
+		t.Fatalf("ForgeUnavailable = %#v, want no credential condition", state.ForgeUnavailable)
 	}
 }
 

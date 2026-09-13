@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -233,15 +234,16 @@ func TestWorkerCredentialBlockerError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		message string
-		want    bool
+		name         string
+		message      string
+		want         bool
+		wantApproval bool
 	}{
 		{name: "reported missing authentication", message: "Blocked by missing GitHub authentication.\n\n`gh issue view` and `gh pr view` fail.", want: true},
 		{name: "credential detail after generic blocker heading", message: "Blocked.\n\nGitHub authentication is unavailable, so `gh issue view` fails.", want: true},
 		{name: "reported disabled credential policy", message: "Work is blocked: GitHub credential injection is disabled for this worker.", want: true},
 		{name: "reported git credential failure", message: "Blocked because git push failed: could not read username for HTTPS remote.", want: true},
-		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?", want: true},
+		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?", want: true, wantApproval: true},
 		{name: "successful fix mentioning incident", message: "Fixed the path that previously reported Blocked by missing GitHub authentication."},
 		{name: "unrelated blocker", message: "Blocked by an ambiguous product decision."},
 		{name: "unrelated authentication blocker", message: "Blocked because authentication is required for the private package registry."},
@@ -257,6 +259,15 @@ func TestWorkerCredentialBlockerError(t *testing.T) {
 			}
 			if err != nil && !IsDeliverableConfigurationError(err) {
 				t.Fatalf("IsDeliverableConfigurationError(%v) = false, want true", err)
+			}
+			if err != nil {
+				var deliverableErr *DeliverableCommandError
+				if !errors.As(err, &deliverableErr) || !forgeavailability.WriteOperation(deliverableErr.Operation) {
+					t.Fatalf("workerCredentialBlockerError() = %#v, want classified write operation", err)
+				}
+				if deliverableErr.ApprovalDenied != tt.wantApproval {
+					t.Fatalf("ApprovalDenied = %v, want %v", deliverableErr.ApprovalDenied, tt.wantApproval)
+				}
 			}
 		})
 	}

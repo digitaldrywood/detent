@@ -17,11 +17,13 @@
       "TestObservedLanePreTurnFailureRemainsInstanceOwned",
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
       "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
+      "TestCredentialForgeProbeRequiresSuccessfulWrite",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool"
     ],
     "./internal/runner": [
-      "TestAgentRunProgressClassifiesPullRequestApprovalDecline"
+      "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
+      "TestWorkerCredentialBlockerError"
     ],
     "./internal/store": [
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"

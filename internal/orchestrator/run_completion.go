@@ -183,10 +183,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
-	if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+	credentialForgeWait := workerGitHubCredentialUnavailableError(event.Err)
+	if !credentialForgeWait && o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 		return
 	}
-	o.finishForgeAvailabilityProbe(state, event, running)
 	deliverableLookup := deliverableRecoveryLookupResult{}
 	var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
 	if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
@@ -233,6 +233,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			)
 		}
 	}
+	if credentialForgeWait && event.Err != nil && o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	o.finishForgeAvailabilityProbe(state, event, running)
 	if event.Err != nil {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}

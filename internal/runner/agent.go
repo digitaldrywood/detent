@@ -2268,10 +2268,11 @@ func workerCredentialBlockerError(message string) error {
 	}
 	return &DeliverableCommandError{
 		OperationClass: "pull_request",
-		Operation:      "read GitHub issue and pull request",
+		Operation:      "create_pull_request",
 		Status:         "blocked",
 		Message:        truncateDeliverableDetail(firstLine),
 		Body:           truncateDeliverableDetail(message),
+		ApprovalDenied: credentialQuestion,
 	}
 }
 
