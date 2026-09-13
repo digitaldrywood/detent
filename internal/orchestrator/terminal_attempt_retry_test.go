@@ -482,6 +482,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		wantForgeWait    bool
 		wantDeferred     bool
 		withoutCreator   bool
+		errorMessage     string
 		commitsAhead     int
 		remoteBranch     bool
 	}{
@@ -541,6 +542,17 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantBlocked:     true,
 			wantReason:      "draft pull request creation unavailable",
 			wantLookupCalls: 3,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name: "credential failure still reconciles existing pull request",
+			lookup: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
+			},
+			errorMessage:    "GitHub credentials are unavailable",
+			wantLookupCalls: 1,
+			wantPRNumber:    18,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -661,9 +673,13 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				},
 			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+			errorMessage := tt.errorMessage
+			if errorMessage == "" {
+				errorMessage = "HTTP 503: unavailable"
+			}
 			commandErr := &runpkg.DeliverableCommandError{
 				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + branch + `"}`,
-				Status: "failed", Message: "HTTP 503: unavailable",
+				Status: "failed", Message: errorMessage,
 			}
 
 			o.handleRunResult(t.Context(), &state, runpkg.Completion{

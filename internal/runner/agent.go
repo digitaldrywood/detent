@@ -2192,6 +2192,13 @@ func classifyForgeDeliverableError(err error, fallbackHost string, workProductPu
 		if deliverableErr.OperationClass == "push" && !strings.Contains(strings.ToLower(operation), "git push") {
 			operation = "git push"
 		}
+		if deliverableErr.ApprovalDenied && forgeavailability.WriteOperation(operation) {
+			host := forgeavailability.HostFromText(deliverableErr.Arguments + " " + deliverableErr.Error())
+			if host == "" {
+				host = fallbackHost
+			}
+			return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, forgeavailability.ClassTransport, err)
+		}
 		class, unavailable := forgeavailability.Classify(operation, deliverableErr.Error())
 		if !unavailable {
 			continue
@@ -2210,6 +2217,9 @@ func IsDeliverableConfigurationError(err error) bool {
 	for _, deliverableErr := range errorsFound {
 		if deliverableErr == nil {
 			continue
+		}
+		if deliverableErr.ApprovalDenied {
+			return true
 		}
 		if deliverableCredentialFailureDetail(deliverableErr.Message + "\n" + deliverableErr.Body) {
 			return true
@@ -2379,6 +2389,7 @@ func deliverableCommandEvidenceFromError(err error) []DeliverableCommandEvidence
 			Status:         strings.TrimSpace(deliverableErr.Status),
 			ExitCode:       cloneIntPointer(deliverableErr.ExitCode),
 			Outcome:        "failed",
+			ApprovalDenied: deliverableErr.ApprovalDenied,
 			TargetRef:      cloneDeliverableTargetRefEvidence(deliverableErr.TargetRef),
 		})
 	}
@@ -4322,6 +4333,7 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		p.recordDeliverableToolCompletion(update)
 		delete(p.toolOutputTails, deliverableToolKey(update))
 	case AgentUpdateMCPElicitation:
+		p.recordDeliverableApprovalDecline(update)
 		eventMessage = update.Delta
 	}
 
@@ -4353,8 +4365,36 @@ type deliverableToolInvocation struct {
 	command               string
 	tool                  string
 	output                string
+	approvalDenied        bool
 	ciTriggerLabelMatches bool
 	ciTriggerAfterPush    bool
+}
+
+func (p *agentRunProgress) recordDeliverableApprovalDecline(update AgentUpdate) {
+	if !strings.EqualFold(strings.TrimSpace(update.Status), "decline") {
+		return
+	}
+	key := deliverableToolKey(update)
+	invocation, ok := p.toolInvocations[key]
+	if !ok {
+		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
+	}
+	if invocation.class != "pull_request" {
+		return
+	}
+	invocation.approvalDenied = true
+	invocation.output = appendDeliverableDetail(invocation.output, update.Delta)
+	p.toolInvocations[key] = invocation
+	p.deliverableFailures[invocation.class] = &DeliverableCommandError{
+		OperationClass: invocation.class,
+		Operation:      deliverableInvocationOperation(invocation),
+		Arguments:      deliverableInvocationArguments(invocation),
+		ItemID:         strings.TrimSpace(update.ItemID),
+		Command:        strings.TrimSpace(invocation.command),
+		Status:         strings.TrimSpace(update.Status),
+		Message:        truncateDeliverableDetail(meaningfulDeliverableDetail(update.Delta)),
+		ApprovalDenied: true,
+	}
 }
 
 func (p *agentRunProgress) recordDeliverableToolOutput(update AgentUpdate) {
@@ -4466,6 +4506,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		ExitCode:       cloneIntPointer(update.ExitCode),
 		Message:        truncateDeliverableDetail(message),
 		Body:           truncateDeliverableDetail(body),
+		ApprovalDenied: invocation.approvalDenied,
 	}
 }
 

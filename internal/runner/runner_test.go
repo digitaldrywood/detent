@@ -762,6 +762,42 @@ func TestAgentRunProgressUsesStreamedCommandErrorInsteadOfCommandPayload(t *test
 	}
 }
 
+func TestAgentRunProgressClassifiesPullRequestApprovalDecline(t *testing.T) {
+	t.Parallel()
+
+	progress := newAgentRunProgress(runtimeoutput.Policy{}, "", "", 0, "", 0)
+	eventAt := time.Now()
+	progress.apply(AgentUpdate{
+		Type:   AgentUpdateToolStarted,
+		ItemID: "create-pr",
+		Tool:   "codex_apps/github.create_pull_request",
+		Delta:  `{"repository_full_name":"digitaldrywood/detent"}`,
+	}, eventAt)
+	progress.apply(AgentUpdate{
+		Type:   AgentUpdateMCPElicitation,
+		ItemID: "create-pr",
+		Tool:   "codex_apps/github.create_pull_request",
+		Status: "decline",
+		Delta:  "server=codex_apps tool=github.create_pull_request repository=digitaldrywood/detent reason=tool_not_allowlisted",
+	}, eventAt.Add(time.Second))
+	progress.apply(AgentUpdate{
+		Type:                AgentUpdateToolCompleted,
+		ItemID:              "create-pr",
+		Tool:                "codex_apps/github.create_pull_request",
+		Status:              "failed",
+		BackendErrorMessage: "tool call denied",
+	}, eventAt.Add(2*time.Second))
+
+	err := progress.deliverableError()
+	if !IsDeliverableConfigurationError(err) {
+		t.Fatalf("IsDeliverableConfigurationError(%v) = false, want approval denial attributed to infrastructure", err)
+	}
+	var deliverableErr *DeliverableCommandError
+	if !errors.As(err, &deliverableErr) || deliverableErr == nil || !deliverableErr.ApprovalDenied {
+		t.Fatalf("deliverable error = %#v, want structured approval denial", err)
+	}
+}
+
 func TestAgentRunProgressExcludesAuxiliaryTurnsFromRootAccounting(t *testing.T) {
 	t.Parallel()
 

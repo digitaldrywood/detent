@@ -11,16 +11,19 @@ func TestClassifyForgeDeliverableError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		operation string
-		message   string
-		wantClass string
-		wantTyped bool
+		name           string
+		operationClass string
+		operation      string
+		message        string
+		approvalDenied bool
+		wantClass      string
+		wantTyped      bool
 	}{
 		{name: "git 503", operation: "git push", message: "HTTP 503: unavailable", wantClass: forgeavailability.ClassServer, wantTyped: true},
 		{name: "git timeout", operation: "git push", message: "operation timed out", wantClass: forgeavailability.ClassTimeout, wantTyped: true},
 		{name: "git DNS", operation: "git push", message: "Could not resolve host: github.com", wantClass: forgeavailability.ClassTransport, wantTyped: true},
 		{name: "pull request 502", operation: "codex_apps/github.create_pull_request", message: "HTTP 502: bad gateway", wantClass: forgeavailability.ClassServer, wantTyped: true},
+		{name: "pull request approval denied", operationClass: "pull_request", operation: "codex_apps/github.create_pull_request", message: "tool approval declined", approvalDenied: true, wantClass: forgeavailability.ClassTransport, wantTyped: true},
 		{name: "non fast forward", operation: "git push", message: "[rejected] feature -> feature (non-fast-forward)"},
 		{name: "forbidden", operation: "git push", message: "HTTP 403: forbidden"},
 	}
@@ -28,11 +31,16 @@ func TestClassifyForgeDeliverableError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			operationClass := tt.operationClass
+			if operationClass == "" {
+				operationClass = "push"
+			}
 			deliverableErr := &DeliverableCommandError{
-				OperationClass: "push",
+				OperationClass: operationClass,
 				Operation:      tt.operation,
 				Status:         "failed",
 				Message:        tt.message,
+				ApprovalDenied: tt.approvalDenied,
 			}
 			got := classifyForgeDeliverableError(deliverableErr, "github.com", false)
 			availabilityErr, typed := forgeavailability.As(got)

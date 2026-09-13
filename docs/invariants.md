@@ -34,21 +34,27 @@ must reject those bypasses too.
 **Change:** Edit INV-1 in this PR before changing the ownership boundary or its
 adapter exceptions; do not expand an exception to admit another lane owner.
 
-## INV-2 — Instance-owned startup failures
+## INV-2 — Instance-owned infrastructure failures
 
-**Statement:** Failures before an agent's first turn attach to the instance, never to the issue.
+**Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
 **Why:** Backend startup, protocol, and workspace-hook failures previously parked
 innocent issues and left the operator to return them to work.
 
 **Enforcement:** `TestPreTurnFailuresDrainInstance` and
 `TestObservedLanePreTurnFailureRemainsInstanceOwned` exercise instance attribution
-and preserve issue ownership even after an observed lane change. These execute
-through the invariant manifest. Runtime evidence is needed to classify a new
-failure correctly; do not infer issue fault merely from a failed attempt.
+and preserve issue ownership even after an observed lane change.
+`TestIssueSpendSinceExcludesInstanceInfrastructureAttempts` excludes established
+workspace, backend-startup, deliverable-authorization, forge, and tracker failure
+classes from issue progress spend. `TestAgentRunProgressClassifiesPullRequestApprovalDecline`
+and `TestApprovalDeniedDeliverableUsesInstanceForgeWait` preserve the connector
+approval-denial classification through the existing instance-owned forge wait, while
+`TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
+reconciliation. These execute through the invariant manifest. Runtime evidence is needed
+to classify a new failure correctly; do not infer issue fault merely from a failed attempt.
 
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when
-changing the first-turn boundary or attribution.
+changing the first-turn boundary, in-turn infrastructure classification, or attribution.
 
 ## INV-3 — Mechanism moratorium
 

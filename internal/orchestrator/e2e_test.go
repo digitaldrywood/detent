@@ -181,8 +181,8 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	if err != nil {
 		t.Fatalf("IssueSpendSince() error = %v", err)
 	}
-	if issueSpend.TotalTokens != 366 || issueSpend.Sessions != 1 || math.Abs(issueSpend.CostUSD-0.501) > 0.000001 {
-		t.Fatalf("IssueSpendSince() = %#v, want cumulative tokens and cost", issueSpend)
+	if issueSpend.TotalTokens != 66 || issueSpend.Sessions != 1 || math.Abs(issueSpend.CostUSD-0.501) > 0.000001 {
+		t.Fatalf("IssueSpendSince() = %#v, want uncached input plus output tokens and cost", issueSpend)
 	}
 	orch.cfg.Project.ID = "detent"
 	orch.cfg.BillingMode = config.BillingModeSubscription
@@ -190,8 +190,13 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	orch.progressSpend = storeBackend
 	orch.workAttempts = nil
 	decision := orch.evaluateSpendProgress(ctx, Running{Issue: issue}, time.Now().UTC(), false, "")
-	if !decision.Block || decision.BlockedBy != "tokens" || decision.Spend.TotalTokens != 366 {
-		t.Fatalf("spend progress decision = %#v, want cumulative token block", decision)
+	if decision.Block || decision.Spend.TotalTokens != 66 {
+		t.Fatalf("spend progress decision = %#v, want cached-heavy session below token limit", decision)
+	}
+	orch.cfg.NoProgressTokenLimit = 66
+	decision = orch.evaluateSpendProgress(ctx, Running{Issue: issue}, time.Now().UTC(), false, "")
+	if !decision.Block || decision.BlockedBy != "tokens" || decision.Spend.TotalTokens != 66 {
+		t.Fatalf("spend progress decision = %#v, want genuine uncached spend at limit to block", decision)
 	}
 }
 
