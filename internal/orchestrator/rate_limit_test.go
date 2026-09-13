@@ -2199,9 +2199,10 @@ func TestGitHubRESTLookupReserveUsesEndpointFamilyWindows(t *testing.T) {
 
 	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
 	tests := []struct {
-		name     string
-		budgets  []connector.RESTRateLimitBudget
-		wantHeld bool
+		name              string
+		budgets           []connector.RESTRateLimitBudget
+		rateLimitedFamily string
+		wantHeld          bool
 	}{
 		{
 			name: "low workflow window does not hold issue lookups",
@@ -2225,6 +2226,23 @@ func TestGitHubRESTLookupReserveUsesEndpointFamilyWindows(t *testing.T) {
 			},
 			wantHeld: true,
 		},
+		{
+			name: "check runs throttle does not hold candidate lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "check runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4721, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+			},
+			rateLimitedFamily: "check runs",
+		},
+		{
+			name: "repository issues throttle holds candidate lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "check runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4721, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+			},
+			rateLimitedFamily: "repository issues",
+			wantHeld:          true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2233,6 +2251,17 @@ func TestGitHubRESTLookupReserveUsesEndpointFamilyWindows(t *testing.T) {
 				HasRateLimit: true,
 				RateLimit:    tt.budgets[len(tt.budgets)-1].RateLimit,
 				Budgets:      tt.budgets,
+			}
+			if tt.rateLimitedFamily != "" {
+				usage.RateLimited = true
+				usage.Requests = []connector.RESTEndpointUsage{{
+					CredentialIdentity: "github-rest:test",
+					EndpointFamily:     tt.rateLimitedFamily,
+					Count:              1,
+					RateLimited:        true,
+					ResetAt:            now.Add(time.Minute),
+				}}
+				usage.TotalRequests = 1
 			}
 			cfg := normalizeConfig(Config{GitHubRESTMinReserve: 1000})
 			tracker := &rateLimitConnector{restStatus: usage, restUsage: usage}

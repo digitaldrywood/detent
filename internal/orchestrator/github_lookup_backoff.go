@@ -268,11 +268,23 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 	}
 	if reporter, ok := o.connector.(connector.RESTRateLimitStatusReporter); ok {
 		usage := reporter.RESTRateLimitStatus()
-		if usage.RateLimited || usage.BackoffUntil.After(now) {
+		if usage.BackoffUntil.After(now) {
 			return githubLookupSignal{
 				trigger: githubLookupTriggerREST,
 				reason:  "GitHub REST returned a rate-limit response",
 				resetAt: usage.BackoffUntil,
+			}, true
+		}
+		if resetAt, rateLimited, hasFamilyRequests := restLookupRateLimitedForUsage(usage.Requests, now); rateLimited {
+			return githubLookupSignal{
+				trigger: githubLookupTriggerREST,
+				reason:  "GitHub REST returned a rate-limit response for candidate lookup",
+				resetAt: resetAt,
+			}, true
+		} else if usage.RateLimited && !hasFamilyRequests {
+			return githubLookupSignal{
+				trigger: githubLookupTriggerREST,
+				reason:  "GitHub REST returned a rate-limit response",
 			}, true
 		}
 		if rateLimit, exceeded := restLookupReserveExceededForUsage(usage, o.cfg.GitHubRESTMinReserve, now); exceeded {
@@ -307,11 +319,31 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 				resetAt: rateLimitBucketResetAt(bucket),
 			}, true
 		}
+		usage := state.RateLimits.RESTUsage
+		if usage != nil && usage.BackoffUntil != nil && usage.BackoffUntil.After(now) {
+			return githubLookupSignal{
+				trigger: githubLookupTriggerREST,
+				reason:  "GitHub REST returned a rate-limit response",
+				resetAt: *usage.BackoffUntil,
+			}, true
+		}
+		if resetAt, rateLimited, hasFamilyRequests := restLookupRateLimitedForContributors(usage, now); rateLimited {
+			return githubLookupSignal{
+				trigger: githubLookupTriggerREST,
+				reason:  "GitHub REST returned a rate-limit response for candidate lookup",
+				resetAt: resetAt,
+			}, true
+		} else if usage != nil && usage.RateLimited && !hasFamilyRequests {
+			return githubLookupSignal{
+				trigger: githubLookupTriggerREST,
+				reason:  "GitHub REST returned a rate-limit response",
+				resetAt: rateLimitBucketResetAt(state.RateLimits.GitHubREST),
+			}, true
+		}
 		budget, exceeded, hasFamilyBudgets := restLookupBudgetBelowReserve(state.RateLimits.GitHubRESTBudgets, o.cfg.GitHubRESTMinReserve, now)
 		rest := state.RateLimits.GitHubREST
 		if exceeded ||
-			(!hasFamilyBudgets && budgetBelowReserve(rest, o.cfg.GitHubRESTMinReserve, now)) ||
-			(state.RateLimits.RESTUsage != nil && state.RateLimits.RESTUsage.RateLimited) {
+			(!hasFamilyBudgets && budgetBelowReserve(rest, o.cfg.GitHubRESTMinReserve, now)) {
 			resetAt := rateLimitBucketResetAt(rest)
 			if exceeded && budget.ResetAt != nil {
 				resetAt = *budget.ResetAt
@@ -324,6 +356,53 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 		}
 	}
 	return githubLookupSignal{}, false
+}
+
+func restLookupRateLimitedForUsage(requests []connector.RESTEndpointUsage, now time.Time) (time.Time, bool, bool) {
+	if len(requests) == 0 {
+		return time.Time{}, false, false
+	}
+	for _, request := range requests {
+		if !request.RateLimited || !githubRESTCandidateLookupEndpointFamily(request.EndpointFamily) {
+			continue
+		}
+		resetAt := request.ResetAt
+		if request.RetryAfter > 0 {
+			retryAt := now.Add(request.RetryAfter)
+			if retryAt.After(resetAt) {
+				resetAt = retryAt
+			}
+		}
+		return resetAt, true, true
+	}
+	return time.Time{}, false, true
+}
+
+func restLookupRateLimitedForContributors(usage *telemetry.RESTUsage, now time.Time) (time.Time, bool, bool) {
+	if usage == nil || len(usage.Contributors) == 0 {
+		return time.Time{}, false, false
+	}
+	for _, contributor := range usage.Contributors {
+		consumer := strings.TrimSpace(contributor.Consumer)
+		if consumer != "" && consumer != telemetry.RESTConsumerOrchestrator {
+			continue
+		}
+		if !contributor.RateLimited || !githubRESTCandidateLookupEndpointFamily(contributor.EndpointFamily) {
+			continue
+		}
+		var resetAt time.Time
+		if contributor.ResetAt != nil {
+			resetAt = *contributor.ResetAt
+		}
+		if contributor.RetryAfterMS > 0 {
+			retryAt := now.Add(time.Duration(contributor.RetryAfterMS) * time.Millisecond)
+			if retryAt.After(resetAt) {
+				resetAt = retryAt
+			}
+		}
+		return resetAt, true, true
+	}
+	return time.Time{}, false, true
 }
 
 func restLookupReserveExceededForUsage(usage connector.RESTRateLimitUsage, floor int64, now time.Time) (connector.RESTRateLimit, bool) {

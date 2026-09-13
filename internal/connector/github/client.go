@@ -843,6 +843,7 @@ func (c *Client) RESTRateLimitStatus() connector.RESTRateLimitUsage {
 	usage := connector.RESTRateLimitUsage{
 		RateLimit:      rateLimit,
 		HasRateLimit:   c.hasRestRateLimit,
+		Requests:       sortedRESTEndpointUsages(c.restRequests),
 		Budgets:        sortedRESTRateLimitBudgets(c.restBudgets),
 		BackoffUntil:   backoffUntil,
 		RateLimited:    c.restRateLimitStatus || backoffUntil.After(now),
@@ -1200,7 +1201,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 		}
 	}
 	request.LastStatus = status
-	request.RateLimited = request.RateLimited || rateLimited
+	if currentCredential {
+		request.RateLimited = request.RateLimited || rateLimited
+	}
 	if hasLimit {
 		request.Limit = limit
 	}

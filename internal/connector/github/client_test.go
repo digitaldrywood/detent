@@ -2891,13 +2891,18 @@ func TestClientRESTEndpointFamilyBudgetsIgnorePriorCredentialResponses(t *testin
 		"/repos/o/r/commits/abc/check-runs", http.StatusOK, headers, nil, now, false,
 	)
 	client.rememberRESTBackoffKey("new-key")
+	headers.Set("Retry-After", "60")
 	client.recordRESTRateLimitFromHeaders(
 		context.Background(), "old-key", "github-rest:old", http.MethodGet,
-		"/repos/o/r/commits/def/check-runs", http.StatusOK, headers, nil, now, false,
+		"/repos/o/r/commits/def/check-runs", http.StatusTooManyRequests, headers,
+		[]byte(`{"message":"You have exceeded a secondary rate limit."}`), now, false,
 	)
 
 	if budgets := client.RESTRateLimitStatus().Budgets; len(budgets) != 0 {
 		t.Fatalf("budgets after credential rotation = %#v, want no stale credential budgets", budgets)
+	}
+	if usage := client.FlushRESTRateLimitUsage(); usage.RateLimited {
+		t.Fatalf("usage after stale credential response = %#v, want no current throttle", usage)
 	}
 	if err := client.restBudgetPolicyError(
 		context.Background(), "github-rest:new", http.MethodGet,
