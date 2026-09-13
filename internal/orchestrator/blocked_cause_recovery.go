@@ -695,7 +695,47 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 			issue = lookedUp
 			signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "evaluate", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
+			if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
+				summary := staleMergedPullRequestSummaryFromIssue(issue)
+				decision := staleMergedPullRequestDecision(issue, summary)
+				targetState := staleMergedPullRequestTargetState(decision, o.cfg.AutoPromote, o.cfg.TerminalStates)
+				if targetState == "" || !o.applyStaleMergedPullRequestDecision(ctx, state, issue, summary, decision, targetState, now) {
+					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
+					return true, false
+				}
+				o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+				return true, true
+			}
 		case blockedReadyPullRequestLookupNoneReason:
+			if deliverableRecoveryPark(park) {
+				if _, ok := o.connector.(connector.PullRequestDraftCreator); !ok {
+					o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
+					return true, false
+				}
+				lookup := deliverableRecoveryLookupResult{
+					Branch:               issue.BranchName,
+					Repository:           pullRequestRepository(issue),
+					HeadSHA:              signals.WorkspaceHeadSHA,
+					HydrationState:       deliverableRecoveryHydrationState(issue.PullRequest),
+					LookupResult:         "no exact-head pull request",
+					Attempts:             blockedReadyPullRequestLookupAttempts,
+					CommitsAhead:         1,
+					RemoteBranchExists:   true,
+					DeliveryStateChecked: true,
+				}
+				lookup = o.createDeliverableRecoveryPullRequest(ctx, Running{Issue: issue}, lookup)
+				if infrastructureErr, infrastructureFailure := o.deliverableRecoveryInfrastructureError(Running{Issue: issue}, lookup.CreateError); infrastructureFailure {
+					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
+					if o.logger != nil {
+						o.logger.Warn("blocked deliverable draft creation unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", infrastructureErr)
+					}
+					return true, false
+				}
+				if lookup.PullRequest != nil {
+					issue = deliverableRecoveryIssue(Running{Issue: issue}, lookup)
+				}
+				return o.returnBlockedDeliverableRecoveryToRework(ctx, state, issue, park, lookup.LookupResult, now)
+			}
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
 			return true, false
 		default:
@@ -705,6 +745,9 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 			}
 			return true, false
 		}
+	}
+	if deliverableRecoveryPark(park) && issue.PullRequest != nil && issue.PullRequest.Draft {
+		return o.returnBlockedDeliverableRecoveryToRework(ctx, state, issue, park, "existing draft pull request", now)
 	}
 	if reason := o.blockedReadyPullRequestDeferredReason(ctx, state, issue, signals, now); reason != "" {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(park.Cause, signals))
@@ -749,6 +792,45 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 	return true, true
 }
 
+func deliverableRecoveryPark(park workflowLaneBlockedRecoveryMetadata) bool {
+	cause := strings.TrimSpace(park.Cause)
+	return cause == deliverableRecoveryNeedsHumanReason || strings.HasPrefix(cause, deliverableRecoveryNeedsHumanReason+":")
+}
+
+func (o *Orchestrator) returnBlockedDeliverableRecoveryToRework(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	park workflowLaneBlockedRecoveryMetadata,
+	detail string,
+	now time.Time,
+) (bool, bool) {
+	target := normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
+	if strings.TrimSpace(target) == "" {
+		target = autoPromoteReworkState
+	}
+	signature := blockedCauseRecoverySignature(park.Cause, strings.Join([]string{strings.TrimSpace(issue.BranchName), strings.TrimSpace(detail)}, ":"))
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, target, now, "cause_blocked_recovery", metadata); err != nil {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "transition_failed", &park, signature)
+		return true, false
+	}
+	if o.connector != nil {
+		comment := "Detent returned this retired deliverable-recovery park to " + target + ".\n\n- branch: `" + strings.TrimSpace(issue.BranchName) + "`\n- recovery: " + strings.TrimSpace(detail)
+		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
+			o.logger.Warn("deliverable recovery rework comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	delete(state.Blocked, issue.ID)
+	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   workflowActionCauseBlockedRecovery,
+		Message: "returned " + issueLabel(issue) + " from its retired deliverable-recovery park to " + target,
+	})
+	return true, true
+}
+
 func blockedReadyPullRequestBranch(state *State, issue connector.Issue) string {
 	if branch := strings.TrimSpace(issue.BranchName); branch != "" {
 		return branch
@@ -785,7 +867,7 @@ func (o *Orchestrator) lookupBlockedReadyPullRequest(
 	for attempt := 1; attempt <= blockedReadyPullRequestLookupAttempts; attempt++ {
 		pullRequest, found, err := lookup.LookupPullRequestByHead(ctx, repository, branch, headSHA)
 		if err == nil {
-			if !found || normalizePullRequestState(pullRequest.State) != "open" {
+			if !found {
 				return issue, blockedReadyPullRequestLookupNoneReason, nil
 			}
 			if strings.TrimSpace(pullRequest.BranchName) != branch || strings.TrimSpace(pullRequest.HeadSHA) != headSHA {
@@ -794,6 +876,10 @@ func (o *Orchestrator) lookupBlockedReadyPullRequest(
 					strings.TrimSpace(pullRequest.BranchName),
 					strings.TrimSpace(pullRequest.HeadSHA),
 				)
+			}
+			state := normalizePullRequestState(pullRequest.State)
+			if state != "open" && state != "merged" {
+				return issue, blockedReadyPullRequestLookupNoneReason, nil
 			}
 			candidate := cloneIssue(issue)
 			candidate.PRRepository = repository

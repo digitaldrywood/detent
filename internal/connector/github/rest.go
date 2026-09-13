@@ -65,6 +65,10 @@ func restPullRequestsPath(repo pullRequestRepo, page int) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls?" + values.Encode()
 }
 
+func restPullRequestsCreatePath(repo pullRequestRepo) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls"
+}
+
 func restPullRequestsByHeadPath(repo pullRequestRepo, branch string) string {
 	values := url.Values{}
 	values.Set("state", "all")

@@ -26,19 +26,25 @@ const (
 )
 
 type deferredCompletion struct {
-	Schema       int                            `json:"schema"`
-	Running      Running                        `json:"running"`
-	Request      deferredCompletionRequest      `json:"request"`
-	Result       runpkg.RunResult               `json:"result"`
-	Error        string                         `json:"error,omitempty"`
-	CompletedAt  time.Time                      `json:"completed_at"`
-	Retryable    bool                           `json:"retryable,omitempty"`
-	RetryAttempt int                            `json:"retry_attempt,omitempty"`
-	RetryDelay   time.Duration                  `json:"retry_delay,omitempty"`
-	FenceRetryAt time.Time                      `json:"fence_retry_at,omitzero"`
-	DeferredAt   time.Time                      `json:"deferred_at"`
-	Availability deferredCompletionAvailability `json:"availability"`
-	Persisted    bool                           `json:"-"`
+	Schema              int                            `json:"schema"`
+	Running             Running                        `json:"running"`
+	Request             deferredCompletionRequest      `json:"request"`
+	Result              runpkg.RunResult               `json:"result"`
+	Error               string                         `json:"error,omitempty"`
+	CompletedAt         time.Time                      `json:"completed_at"`
+	Retryable           bool                           `json:"retryable,omitempty"`
+	RetryAttempt        int                            `json:"retry_attempt,omitempty"`
+	RetryDelay          time.Duration                  `json:"retry_delay,omitempty"`
+	FenceRetryAt        time.Time                      `json:"fence_retry_at,omitzero"`
+	DeferredAt          time.Time                      `json:"deferred_at"`
+	Availability        deferredCompletionAvailability `json:"availability"`
+	DeliverableRecovery *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
+	Persisted           bool                           `json:"-"`
+}
+
+type deferredDeliverableRecovery struct {
+	Branch string `json:"branch,omitempty"`
+	Cause  string `json:"cause,omitempty"`
 }
 
 type deferredCompletionRequest struct {
@@ -80,6 +86,13 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 	}
 	if fenceErr != nil {
 		record.Availability = deferredCompletionAvailability{Class: "completion_fence_unavailable", Message: fenceErr.Error()}
+	}
+	var recoveryErr *runpkg.DeliverableRecoveryError
+	if errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
+		record.DeliverableRecovery = &deferredDeliverableRecovery{
+			Branch: strings.TrimSpace(recoveryErr.Branch),
+			Cause:  errorString(recoveryErr.Err),
+		}
 	}
 	if availabilityErr, ok := connector.AsTrackerAvailability(fenceErr); ok {
 		record.Availability = deferredCompletionAvailability{
@@ -135,7 +148,13 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		RetryAttempt: r.RetryAttempt,
 		RetryDelay:   r.RetryDelay,
 	}
-	if strings.TrimSpace(r.Error) != "" {
+	if r.DeliverableRecovery != nil {
+		var cause error
+		if strings.TrimSpace(r.DeliverableRecovery.Cause) != "" {
+			cause = errors.New(r.DeliverableRecovery.Cause)
+		}
+		event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: cause}
+	} else if strings.TrimSpace(r.Error) != "" {
 		event.Err = errors.New(r.Error)
 	}
 	return event

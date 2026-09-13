@@ -5097,6 +5097,41 @@ func TestConnectorCreatePullRequestCommentUsesIssueCommentsEndpoint(t *testing.T
 	}
 }
 
+func TestConnectorCreateDraftPullRequestUsesRepositoryDefaultBranch(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo",
+			body:   `{"id":1,"full_name":"example/repo","default_branch":"trunk"}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/pulls",
+			body:   `{"node_id":"PR_kw1","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","draft":true,"head":{"ref":"detent/example_7","sha":"head-sha"},"base":{"ref":"trunk","sha":"base-sha"}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	pullRequest, err := c.CreateDraftPullRequest(t.Context(), "example/repo", "detent/example_7", " Recover work ", " provenance ")
+	if err != nil {
+		t.Fatalf("CreateDraftPullRequest() error = %v", err)
+	}
+	if pullRequest.Number != 42 || !pullRequest.Draft || pullRequest.State != "OPEN" || pullRequest.BranchName != "detent/example_7" || pullRequest.HeadSHA != "head-sha" {
+		t.Fatalf("CreateDraftPullRequest() = %#v", pullRequest)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	body := requests[1]["body"].(map[string]any)
+	if body["title"] != "Recover work" || body["head"] != "detent/example_7" || body["base"] != "trunk" || body["body"] != "provenance" || body["draft"] != true {
+		t.Fatalf("request body = %#v", body)
+	}
+}
+
 func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
