@@ -172,7 +172,8 @@ operator interventions unrelated to the assigned repository task.
 
 **Enforcement:** `TestPrepareCodexCommandForServiceIsolatesInstructions` and
 `TestPrepareWorkerCodexHomeExistingInstructions` exercise service profile
-isolation and rejection of inherited instructions. The manifest runs both.
+isolation, per-worker SQLite state, and rejection of inherited instructions. The
+manifest runs both.
 Repository instructions and the Detent-provided worktree remain authoritative.
 
 **Change:** Edit INV-6 and isolation tests together in the same PR before changing

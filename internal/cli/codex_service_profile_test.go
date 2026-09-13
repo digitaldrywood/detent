@@ -164,6 +164,32 @@ func TestPrepareCodexCommandForServiceIsolatesInstructions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			for _, name := range []string{"goals_1.sqlite", "logs_2.sqlite-shm", "logs_2.sqlite-wal"} {
+				hostPath := filepath.Join(source, name)
+				if err := os.WriteFile(hostPath, []byte("host state"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				profilePath := filepath.Join(profile, name)
+				if err := ensureProfileLink(hostPath, profilePath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			localSQLite := filepath.Join(profile, "local.sqlite")
+			if err := os.WriteFile(localSQLite, []byte("worker state"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := prepareWorkerCodexHome(source, home, tt.manager == "launchd"); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"goals_1.sqlite", "logs_2.sqlite-shm", "logs_2.sqlite-wal"} {
+				if _, err := os.Lstat(filepath.Join(profile, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("worker shares %s: %v", name, err)
+				}
+			}
+			content, err := os.ReadFile(localSQLite)
+			if err != nil || string(content) != "worker state" {
+				t.Fatalf("local SQLite state = %q, %v", content, err)
+			}
 			for _, name := range []string{"auth.json", "config.toml"} {
 				target, err := os.Stat(filepath.Join(profile, name))
 				if err != nil {
