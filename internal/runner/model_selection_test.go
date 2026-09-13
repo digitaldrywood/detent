@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -178,12 +180,17 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 		name, body, unavailable     string
 		catalog                     []AgentModel
 		catalogErr                  error
+		fallbackReason              string
 		fallback, failure, rejected bool
+		clearFallbackOrder          bool
 	}{
 		{name: "Astra unavailable", catalog: selectionCatalog()[:1], fallback: true},
 		{name: "Astra retired", catalog: []AgentModel{selectionCatalog()[0], {ID: "gpt-6-astra", Upgrade: "replacement"}}, fallback: true},
 		{name: "neither available", failure: true},
-		{name: "catalog unavailable", catalogErr: errors.New("secret catalog transport details"), failure: true},
+		{name: "catalog unavailable", catalogErr: errors.New("catalog transport details"), fallback: true, fallbackReason: "automatic model selection: model catalog unavailable: catalog transport details"},
+		{name: "catalog unavailable with fail configured", catalogErr: errors.New("catalog transport details"), unavailable: "fail", failure: true},
+		{name: "catalog unavailable with empty fallback order", catalogErr: errors.New("catalog transport details"), clearFallbackOrder: true, failure: true},
+		{name: "catalog unavailable with explicit model", catalogErr: errors.New("catalog transport details"), body: "model: gpt-6-astra", failure: true},
 		{name: "fail configured", catalog: selectionCatalog()[:1], unavailable: "fail", failure: true},
 		{name: "invalid explicit model", catalog: selectionCatalog(), body: "model: absent", failure: true, rejected: true},
 		{name: "invalid explicit effort", catalog: selectionCatalog(), body: "effort: absent", failure: true, rejected: true},
@@ -195,6 +202,9 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
 			if tt.unavailable != "" {
 				cfg.Agents.ModelSelection.Unavailable = &tt.unavailable
+			}
+			if tt.clearFallbackOrder {
+				cfg.Agents.ModelSelection.FallbackOrder = &[]string{}
 			}
 			issue := connector.Issue{Labels: []string{"complexity:complex"}}
 			if tt.body != "" {
@@ -208,13 +218,32 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 			if (got.Selection.FallbackReason != "") != tt.fallback {
 				t.Fatalf("fallback = %+v", got.Selection)
 			}
+			if tt.fallbackReason != "" && got.Selection.FallbackReason != tt.fallbackReason {
+				t.Fatalf("fallback reason = %q, want %q", got.Selection.FallbackReason, tt.fallbackReason)
+			}
 			if tt.fallback && (got.Model != "gpt-5.6-sol" || got.Selection.RequestedModel != "gpt-6-astra") {
 				t.Fatalf("fallback identity = %+v", got)
 			}
-			if got.Err != nil && strings.Contains(got.Err.Error(), "secret") {
-				t.Fatal("catalog details leaked")
-			}
 		})
+	}
+}
+
+type catalogResponseError struct {
+	message string
+	body    string
+}
+
+func (e *catalogResponseError) Error() string { return e.message + ": " + e.body }
+
+func (e *catalogResponseError) BackendErrorMessage() string { return e.message }
+
+func TestCatalogErrorDiagnosticOmitsResponseBodyAndBoundsMessage(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("é", 300)
+	got := catalogErrorDiagnostic(&catalogResponseError{message: "models/list rejected " + secret, body: `{"token":"private"}`})
+	if strings.Contains(got, "private") || len(got) > 515 || !strings.HasSuffix(got, "...") || strings.ToValidUTF8(got, "") != got {
+		t.Fatalf("catalogErrorDiagnostic() = %q", got)
 	}
 }
 
@@ -280,6 +309,50 @@ func TestRunnerResumeUsesBoundedEffort(t *testing.T) {
 	}
 	if sessionStore.started.RuntimeIdentity.ReasoningEffort.Value != "medium" {
 		t.Fatalf("persisted start effort=%+v", sessionStore.started.RuntimeIdentity.ReasoningEffort)
+	}
+}
+
+func TestRunnerCatalogFailureUsesConfiguredNormalModel(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-5.6-sol")}
+	backend := &fakeCodexClient{
+		catalogErr: errors.New("app-server models/list failed"),
+		result:     AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
+	}
+	sessions := &fakeSessionStore{sessionID: 1}
+	var logs bytes.Buffer
+	runner, err := NewRunner(Dependencies{
+		ProjectID:    "detent",
+		Workflow:     config.Workflow{Config: cfg, Prompt: "Work"},
+		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+		AgentBackend: backend,
+		Store:        sessions,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{ID: "issue-1", Identifier: "repo#1", Labels: []string{"complexity:complex"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	wantReason := "automatic model selection: model catalog unavailable: app-server models/list failed"
+	if backend.request.Model != "gpt-5.6-sol" {
+		t.Fatalf("request model = %q, want configured normal model", backend.request.Model)
+	}
+	selection := sessions.started.RuntimeIdentity.Selection
+	if selection.RequestedModel != "gpt-6-astra" || selection.FallbackReason != wantReason {
+		t.Fatalf("persisted selection = %+v", selection)
+	}
+	if !strings.Contains(logs.String(), `model_selection_fallback_reason="`+wantReason+`"`) {
+		t.Fatalf("worker log did not record catalog fallback: %s", logs.String())
 	}
 }
 
@@ -381,7 +454,7 @@ func TestIssueConfigurationErrorClassification(t *testing.T) {
 	}{
 		{name: "invalid issue effort", effort: "normal", wantConfiguration: true, wantError: true},
 		{name: "corrected effort", effort: "low"},
-		{name: "catalog unavailable", effort: "low", catalogError: errors.New("catalog unavailable"), wantError: true},
+		{name: "catalog unavailable falls back", effort: "low", catalogError: errors.New("catalog unavailable")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()

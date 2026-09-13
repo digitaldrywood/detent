@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/agentoverride"
@@ -16,8 +17,9 @@ import (
 
 type agentSelection struct {
 	resolvedAgentOverride
-	Selection agentidentity.Selection
-	Err       error
+	Selection    agentidentity.Selection
+	CatalogError string
+	Err          error
 }
 
 type IssueConfigurationError struct {
@@ -166,7 +168,15 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 	}
 	models, err := provider.ListModels(ctx)
 	if err != nil {
-		result.Err = errors.New("automatic model selection: model catalog unavailable; retry catalog discovery before dispatch")
+		catalogErr := fmt.Errorf("automatic model selection: model catalog unavailable: %w", err)
+		result.CatalogError = catalogErrorDiagnostic(err)
+		if !automaticModel || policy.Unavailable == nil || *policy.Unavailable != "fallback" || !normalModelFallbackConfigured(policy) {
+			result.Err = catalogErr
+			return result
+		}
+		result.Model = policy.Model("normal")
+		result.Selection.ModelSource = selectionSource(policy, "normal_model", "")
+		result.Selection.FallbackReason = "automatic model selection: model catalog unavailable: " + result.CatalogError
 		return result
 	}
 	model, available := availableSelectionModel(models, result.Model)
@@ -196,6 +206,40 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 		result.Err = fmt.Errorf("automatic model selection: effort default %q is unsupported by model %q; configure a supported effort", result.Effort, result.Model)
 	}
 	return result
+}
+
+func normalModelFallbackConfigured(policy config.ModelSelection) bool {
+	if policy.FallbackOrder == nil {
+		return false
+	}
+	normal := policy.Model("normal")
+	return slices.ContainsFunc(*policy.FallbackOrder, func(candidate string) bool {
+		return policy.Model(candidate) == normal
+	})
+}
+
+func catalogErrorDiagnostic(err error) string {
+	type backendErrorMessage interface {
+		BackendErrorMessage() string
+	}
+	var backendErr backendErrorMessage
+	message := ""
+	if errors.As(err, &backendErr) {
+		message = backendErr.BackendErrorMessage()
+	}
+	if strings.TrimSpace(message) == "" {
+		message = err.Error()
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	const maxDiagnosticBytes = 512
+	if len(message) > maxDiagnosticBytes {
+		end := maxDiagnosticBytes
+		for end > 0 && !utf8.RuneStart(message[end]) {
+			end--
+		}
+		message = message[:end] + "..."
+	}
+	return message
 }
 
 func (s agentSelection) reject(field, value, reason string) agentSelection {
