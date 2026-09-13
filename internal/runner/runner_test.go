@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -765,36 +766,58 @@ func TestAgentRunProgressUsesStreamedCommandErrorInsteadOfCommandPayload(t *test
 func TestAgentRunProgressClassifiesPullRequestApprovalDecline(t *testing.T) {
 	t.Parallel()
 
-	progress := newAgentRunProgress(runtimeoutput.Policy{}, "", "", 0, "", 0)
-	eventAt := time.Now()
-	progress.apply(AgentUpdate{
-		Type:   AgentUpdateToolStarted,
-		ItemID: "create-pr",
-		Tool:   "codex_apps/github.create_pull_request",
-		Delta:  `{"repository_full_name":"digitaldrywood/detent"}`,
-	}, eventAt)
-	progress.apply(AgentUpdate{
-		Type:   AgentUpdateMCPElicitation,
-		ItemID: "create-pr",
-		Tool:   "codex_apps/github.create_pull_request",
-		Status: "decline",
-		Delta:  "server=codex_apps tool=github.create_pull_request repository=digitaldrywood/detent reason=tool_not_allowlisted",
-	}, eventAt.Add(time.Second))
-	progress.apply(AgentUpdate{
-		Type:                AgentUpdateToolCompleted,
-		ItemID:              "create-pr",
-		Tool:                "codex_apps/github.create_pull_request",
-		Status:              "failed",
-		BackendErrorMessage: "tool call denied",
-	}, eventAt.Add(2*time.Second))
-
-	err := progress.deliverableError()
-	if !IsDeliverableConfigurationError(err) {
-		t.Fatalf("IsDeliverableConfigurationError(%v) = false, want approval denial attributed to infrastructure", err)
+	tests := []struct {
+		name               string
+		reason             string
+		wantInfrastructure bool
+	}{
+		{name: "tool policy configuration", reason: "tool_not_allowlisted", wantInfrastructure: true},
+		{name: "invalid worker arguments", reason: "invalid_tool_arguments"},
+		{name: "worker repository mismatch", reason: "repository_mismatch"},
 	}
-	var deliverableErr *DeliverableCommandError
-	if !errors.As(err, &deliverableErr) || deliverableErr == nil || !deliverableErr.ApprovalDenied {
-		t.Fatalf("deliverable error = %#v, want structured approval denial", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			progress := newAgentRunProgress(runtimeoutput.Policy{}, "", "", 0, "", 0)
+			eventAt := time.Now()
+			progress.apply(AgentUpdate{
+				Type:   AgentUpdateToolStarted,
+				ItemID: "create-pr",
+				Tool:   "codex_apps/github.create_pull_request",
+				Delta:  `{"repository_full_name":"digitaldrywood/detent"}`,
+			}, eventAt)
+			progress.apply(AgentUpdate{
+				Type:   AgentUpdateMCPElicitation,
+				ItemID: "create-pr",
+				Tool:   "codex_apps/github.create_pull_request",
+				Status: "decline",
+				Delta:  "server=codex_apps tool=github.create_pull_request repository=digitaldrywood/detent reason=" + tt.reason,
+			}, eventAt.Add(time.Second))
+			progress.apply(AgentUpdate{
+				Type:                AgentUpdateToolCompleted,
+				ItemID:              "create-pr",
+				Tool:                "codex_apps/github.create_pull_request",
+				Status:              "failed",
+				BackendErrorMessage: "tool call denied",
+			}, eventAt.Add(2*time.Second))
+
+			err := progress.deliverableError()
+			if got := IsDeliverableConfigurationError(err); got != tt.wantInfrastructure {
+				t.Fatalf("IsDeliverableConfigurationError(%v) = %v, want %v", err, got, tt.wantInfrastructure)
+			}
+			var deliverableErr *DeliverableCommandError
+			if !errors.As(err, &deliverableErr) || deliverableErr == nil {
+				t.Fatalf("deliverable error = %#v, want structured pull-request failure", err)
+			}
+			if deliverableErr.ApprovalDenied != tt.wantInfrastructure {
+				t.Fatalf("ApprovalDenied = %v, want %v", deliverableErr.ApprovalDenied, tt.wantInfrastructure)
+			}
+			classified := classifyForgeDeliverableError(err, "github.com", false)
+			_, typed := forgeavailability.As(classified)
+			if typed != tt.wantInfrastructure {
+				t.Fatalf("classifyForgeDeliverableError() typed = %v, want %v; error = %v", typed, tt.wantInfrastructure, classified)
+			}
+		})
 	}
 }
 

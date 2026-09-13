@@ -4382,7 +4382,7 @@ func (p *agentRunProgress) recordDeliverableApprovalDecline(update AgentUpdate) 
 	if invocation.class != "pull_request" {
 		return
 	}
-	invocation.approvalDenied = true
+	invocation.approvalDenied = infrastructureApprovalDecline(update.Delta)
 	invocation.output = appendDeliverableDetail(invocation.output, update.Delta)
 	p.toolInvocations[key] = invocation
 	p.deliverableFailures[invocation.class] = &DeliverableCommandError{
@@ -4393,7 +4393,31 @@ func (p *agentRunProgress) recordDeliverableApprovalDecline(update AgentUpdate) 
 		Command:        strings.TrimSpace(invocation.command),
 		Status:         strings.TrimSpace(update.Status),
 		Message:        truncateDeliverableDetail(meaningfulDeliverableDetail(update.Delta)),
-		ApprovalDenied: true,
+		ApprovalDenied: invocation.approvalDenied,
+	}
+}
+
+func infrastructureApprovalDecline(detail string) bool {
+	var reason string
+	for field := range strings.FieldsSeq(detail) {
+		if value, ok := strings.CutPrefix(field, "reason="); ok {
+			reason = strings.TrimSpace(value)
+			break
+		}
+	}
+	switch reason {
+	case "invalid_request",
+		"unsupported_server",
+		"unsupported_mode",
+		"invalid_metadata",
+		"unsupported_approval_kind",
+		"unsupported_schema",
+		"missing_correlation",
+		"ambiguous_correlation",
+		"tool_not_allowlisted":
+		return true
+	default:
+		return false
 	}
 }
 

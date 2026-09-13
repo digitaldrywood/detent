@@ -646,7 +646,13 @@ ORDER BY finished_at, id;
 -- name: IssueSpendSince :one
 SELECT
   CAST(COALESCE(SUM(usage_events.cost_usd), 0) AS REAL) AS cost_usd,
-  CAST(COALESCE(SUM(MAX(usage_events.input_tokens - COALESCE(usage_events.cached_input_tokens, 0), 0) + usage_events.output_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(SUM(
+    CASE
+      WHEN usage_events.input_tokens = 0 AND usage_events.output_tokens = 0
+        THEN MAX(usage_events.total_tokens - COALESCE(usage_events.cached_input_tokens, 0), 0)
+      ELSE MAX(usage_events.input_tokens - COALESCE(usage_events.cached_input_tokens, 0), 0) + usage_events.output_tokens
+    END
+  ), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions,
   CAST(COALESCE(MIN(usage_events.finished_at), '') AS TEXT) AS first_session_at,
   CAST(COALESCE(MAX(usage_events.finished_at), '') AS TEXT) AS last_session_at

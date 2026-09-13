@@ -2125,39 +2125,53 @@ func TestIssueSpendSinceUsesAcceptedProgressBoundaryAndIssueIdentity(t *testing.
 	}
 }
 
-func TestIssueSpendSinceTreatsLegacyNullCachedTokensAsZero(t *testing.T) {
+func TestIssueSpendSinceTokenAccountingFallback(t *testing.T) {
 	t.Parallel()
 
-	ctx := t.Context()
-	backend := openTestStore(t, ctx)
-	startedAt := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
-	eventID, err := backend.RecordUsageEvent(ctx, UsageEvent{
-		ProjectID:    "detent",
-		IssueID:      "issue-2538",
-		InputTokens:  100,
-		OutputTokens: 7,
-		TotalTokens:  107,
-		StartedAt:    startedAt,
-		FinishedAt:   startedAt.Add(time.Minute),
-		Outcome:      "completed",
-	})
-	if err != nil {
-		t.Fatalf("RecordUsageEvent() error = %v", err)
+	tests := []struct {
+		name       string
+		usage      UsageEvent
+		nullCached bool
+		wantTokens int64
+	}{
+		{name: "legacy null cache", usage: UsageEvent{InputTokens: 100, OutputTokens: 7, TotalTokens: 107}, nullCached: true, wantTokens: 107},
+		{name: "total only", usage: UsageEvent{TotalTokens: 900}, wantTokens: 900},
+		{name: "total only subtracts known cache", usage: UsageEvent{CachedInputTokens: 600, TotalTokens: 900}, wantTokens: 300},
 	}
-	sqliteBackend, ok := backend.(*sqliteStore)
-	if !ok {
-		t.Fatalf("store type = %T, want *sqliteStore", backend)
-	}
-	if _, err := sqliteBackend.db.ExecContext(ctx, "UPDATE usage_events SET cached_input_tokens = NULL WHERE id = ?", eventID); err != nil {
-		t.Fatalf("set legacy cached token value: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			backend := openTestStore(t, ctx)
+			startedAt := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+			usage := tt.usage
+			usage.ProjectID = "detent"
+			usage.IssueID = "issue-2538"
+			usage.StartedAt = startedAt
+			usage.FinishedAt = startedAt.Add(time.Minute)
+			usage.Outcome = "completed"
+			eventID, err := backend.RecordUsageEvent(ctx, usage)
+			if err != nil {
+				t.Fatalf("RecordUsageEvent() error = %v", err)
+			}
+			if tt.nullCached {
+				sqliteBackend, ok := backend.(*sqliteStore)
+				if !ok {
+					t.Fatalf("store type = %T, want *sqliteStore", backend)
+				}
+				if _, err := sqliteBackend.db.ExecContext(ctx, "UPDATE usage_events SET cached_input_tokens = NULL WHERE id = ?", eventID); err != nil {
+					t.Fatalf("set legacy cached token value: %v", err)
+				}
+			}
 
-	spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue-2538", Since: startedAt.Add(-time.Second)})
-	if err != nil {
-		t.Fatalf("IssueSpendSince() error = %v", err)
-	}
-	if spend.TotalTokens != 107 || spend.Sessions != 1 {
-		t.Fatalf("IssueSpendSince() = %#v, want legacy NULL cache counted as zero", spend)
+			spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue-2538", Since: startedAt.Add(-time.Second)})
+			if err != nil {
+				t.Fatalf("IssueSpendSince() error = %v", err)
+			}
+			if spend.TotalTokens != tt.wantTokens || spend.Sessions != 1 {
+				t.Fatalf("IssueSpendSince() = %#v, want %d tokens in one session", spend, tt.wantTokens)
+			}
+		})
 	}
 }
 
