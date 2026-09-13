@@ -247,7 +247,11 @@ func parseLsofCwdProcessIDs(output string, root string) []int {
 		}
 		switch line[0] {
 		case 'p':
-			pid, _ = strconv.Atoi(strings.TrimSpace(line[1:]))
+			parsed, err := strconv.Atoi(strings.TrimSpace(line[1:]))
+			if err != nil {
+				parsed = 0
+			}
+			pid = parsed
 		case 'n':
 			if pid <= 0 {
 				continue
