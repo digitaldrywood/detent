@@ -2912,6 +2912,39 @@ func TestClientRESTEndpointFamilyBudgetsIgnorePriorCredentialResponses(t *testin
 	}
 }
 
+func TestClientRESTEndpointFamilyThrottleClearedOnCredentialRotation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
+	client, err := NewClient(ClientConfig{TokenSource: StaticTokenSource("test")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Limit", "5000")
+	headers.Set("X-RateLimit-Remaining", "314")
+	headers.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+	headers.Set("X-RateLimit-Resource", "core")
+
+	client.rememberRESTBackoffKey("old-key")
+	client.recordRESTRateLimitFromHeaders(
+		context.Background(), "old-key", "github-rest:old", http.MethodGet,
+		"/repos/o/r/issues?state=open", http.StatusTooManyRequests, headers,
+		[]byte(`{"message":"API rate limit exceeded."}`), now, false,
+	)
+	if status := client.RESTRateLimitStatus(); !status.RateLimited || len(status.Requests) != 1 || !status.Requests[0].RateLimited {
+		t.Fatalf("status before credential rotation = %#v, want repository issues throttle", status)
+	}
+
+	client.rememberRESTBackoffKey("new-key")
+	if status := client.RESTRateLimitStatus(); status.RateLimited || len(status.Requests) != 0 {
+		t.Fatalf("status after credential rotation = %#v, want no old credential throttle evidence", status)
+	}
+	if usage := client.FlushRESTRateLimitUsage(); usage.RateLimited {
+		t.Fatalf("usage after credential rotation = %#v, want no old credential throttle", usage)
+	}
+}
+
 func TestClientRESTResourceReserveAdmissionUsesEndpointFamilyWindow(t *testing.T) {
 	t.Parallel()
 

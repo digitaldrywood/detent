@@ -1060,6 +1060,7 @@ func (c *Client) rememberRESTBackoffKey(backoffKey string) {
 		c.restRateLimit = connector.RESTRateLimit{}
 		c.restRateLimits = nil
 		c.restBudgets = nil
+		c.restRequests = nil
 		c.hasRestRateLimit = false
 		c.restReserveHeld = false
 	}
