@@ -139,20 +139,12 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			o.logAutoPromoteDecision(issue, decision, "")
 			continue
 		}
-		if decision.Reason == AutoPromoteReasonValidatorMissing {
-			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
-			if !ok {
-				o.startValidatorStage(ctx, state, issue, now)
-				recordAutoPromoteSnapshotDecision(state, issueID, decision)
-				o.logAutoPromoteDecision(issue, decision, "")
-				continue
-			}
-			summary.Validator = validation
-			if shouldComment {
-				o.commentValidatorResult(ctx, issue, validation)
-				o.markValidatorResultCommented(ctx, issue)
-			}
-			decision = EvaluateAutoPromote(issue, summary, cfg, now)
+		var validatorReady bool
+		decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if !validatorReady {
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			continue
 		}
 		if decision.Reason == AutoPromoteReasonCINotGreen &&
 			o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
@@ -163,6 +155,14 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+			// Hydration re-evaluates the gate; a workpad that only now clears can
+			// surface the validator stage for the first time.
+			decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+			if !validatorReady {
+				recordAutoPromoteSnapshotDecision(state, issueID, decision)
+				o.logAutoPromoteDecision(issue, decision, "")
+				continue
+			}
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
@@ -745,6 +745,34 @@ func autoPromoteReviewStateDeadlineTrackingEnabled(cfg AutoPromoteConfig) bool {
 
 func issueHasOpenPullRequest(issue connector.Issue) bool {
 	return issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open"
+}
+
+// applyValidatorStage resolves a validator_missing decision against the stored
+// verdict for the current head and re-evaluates with it. It reports false when
+// no verdict exists yet, after starting the validator stage.
+func (o *Orchestrator) applyValidatorStage(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	summary *AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) (AutoPromoteDecision, bool) {
+	if decision.Reason != AutoPromoteReasonValidatorMissing {
+		return decision, true
+	}
+	validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
+	if !ok {
+		o.startValidatorStage(ctx, state, issue, now)
+		return decision, false
+	}
+	summary.Validator = validation
+	if shouldComment {
+		o.commentValidatorResult(ctx, issue, validation)
+		o.markValidatorResultCommented(ctx, issue)
+	}
+	return EvaluateAutoPromote(issue, *summary, cfg, now), true
 }
 
 func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
