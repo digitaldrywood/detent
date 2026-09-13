@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -277,6 +279,143 @@ func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
 				if tt.severity == "p2" && state.RequiredGates[issue.ID].State != "failed" {
 					t.Fatalf("audit gate = %#v", state.RequiredGates[issue.ID])
 				}
+			}
+		})
+	}
+}
+
+func TestReworkGateWaitRestoreHandsOffCurrentHeadValidatorRework(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		snapshotHead string
+	}{
+		{name: "stale snapshot head", snapshotHead: "stale-head"},
+		{name: "empty snapshot head"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			now := time.Date(2026, 9, 13, 15, 30, 0, 0, time.UTC)
+			current := reworkGateWaitTestIssue(workpad.StatusComplete)
+			current.PullRequest.HeadSHA = "current-head"
+			current.PullRequest.BranchName = "detent/issue-2531"
+			current.BranchName = "detent/issue-2531"
+			snapshot := cloneIssue(current)
+			snapshot.PullRequest.HeadSHA = tt.snapshotHead
+
+			memo := openValidatorMemoStore(t)
+			attempt := successfulReworkGateWaitAttempt(now.Add(-time.Minute), current, autoPromoteReworkSignature{
+				PRNumber: int64(current.PullRequest.Number),
+				HeadSHA:  "recorded-head",
+			}, true)
+			attemptID, err := memo.StartWorkAttempt(ctx, store.WorkAttemptStart{
+				ProjectID:  "detent",
+				IssueID:    current.ID,
+				Identifier: current.Identifier,
+				IssueURL:   current.URL,
+				PRNumber:   attempt.PRNumber,
+				WorkerType: "agent",
+				Lane:       "Rework",
+				StartedAt:  attempt.StartedAt,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := memo.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{
+				AttemptID:          attemptID,
+				CompletedAt:        attempt.CompletedAt,
+				TerminalState:      attempt.TerminalState,
+				WorkerMetadataJSON: attempt.WorkerMetadataJSON,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			wantValidator := gate.ValidatorResult{
+				Submitted: true,
+				Verdict:   gate.ValidatorVerdictRework,
+				Score:     0.42,
+				Summary:   "Repair the restored finding.",
+				Findings:  []gate.Finding{{Body: "Use the current PR head.", Path: "internal/orchestrator/autopromote_tick.go", Line: 1}},
+			}
+			if err := memo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+				ProjectID:  "detent",
+				IssueID:    current.ID,
+				HeadSHA:    current.PullRequest.HeadSHA,
+				Identifier: current.Identifier,
+				PRNumber:   attempt.PRNumber,
+				Submitted:  wantValidator.Submitted,
+				Verdict:    wantValidator.Verdict,
+				Score:      wantValidator.Score,
+				Summary:    wantValidator.Summary,
+				Findings:   []store.ValidatorFinding{{Body: wantValidator.Findings[0].Body, Path: wantValidator.Findings[0].Path, Line: wantValidator.Findings[0].Line}},
+				Commented:  true,
+				RecordedAt: now.Add(-30 * time.Second),
+				UpdatedAt:  now.Add(-30 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			tracker := &implementProgressConnector{hydrated: current, refreshed: current}
+			cfg := normalizeConfig(Config{
+				Project:      scheduler.ProjectCandidate{ID: "detent"},
+				ActiveStates: []string{"Todo", "In Progress", "Rework"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:       true,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate: gate.Config{Kind: gate.KindCommand, Validator: gate.ValidatorConfig{
+						Enabled: true,
+					}},
+				},
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: memo, validatorMemo: memo}
+			state := newState(cfg)
+
+			restored := orch.restoreDurableGateWaitCompletions(ctx, &state, []connector.Issue{snapshot})
+
+			if tracker.hydrations != 1 {
+				t.Fatalf("pull request hydrations = %d, want 1", tracker.hydrations)
+			}
+			if len(restored) != 1 || restored[0].PullRequest == nil || restored[0].PullRequest.HeadSHA != current.PullRequest.HeadSHA {
+				t.Fatalf("restored issues = %#v, want current head %q", restored, current.PullRequest.HeadSHA)
+			}
+			if _, waiting := state.Completed[current.ID]; waiting {
+				t.Fatalf("Completed[%q] retained after current-head rework verdict", current.ID)
+			}
+			handoff, ok := state.PriorAttempts[current.ID]
+			if !ok || handoff.Source != "auto_promote" || handoff.Reason != string(AutoPromoteReasonValidatorRework) {
+				t.Fatalf("PriorAttempts[%q] = %#v, want validator rework handoff", current.ID, handoff)
+			}
+			if !reflect.DeepEqual(handoff.Validator, wantValidator) {
+				t.Fatalf("handoff validator = %#v, want %#v", handoff.Validator, wantValidator)
+			}
+			decision := orch.dispatchPlanner().dispatchableIssueDecision(restored[0], &state, false, now, "")
+			if !decision.dispatchable {
+				t.Fatalf("dispatch decision = %#v, want dispatchable rework", decision)
+			}
+		})
+	}
+}
+
+func TestValidatorStageIdentityRequiresHeadSHA(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		pullRequest *connector.PullRequest
+		branchName  string
+		wantHead    string
+	}{
+		{name: "pull request head", pullRequest: &connector.PullRequest{HeadSHA: "head-sha", BranchName: "pr-branch"}, branchName: "issue-branch", wantHead: "head-sha"},
+		{name: "pull request branch is not a head", pullRequest: &connector.PullRequest{BranchName: "pr-branch"}, branchName: "issue-branch"},
+		{name: "issue branch is not a head", branchName: "issue-branch"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			identity := validatorStageIdentityForIssue(connector.Issue{ID: "issue-2531", PullRequest: tt.pullRequest, BranchName: tt.branchName})
+			if identity.HeadSHA != tt.wantHead {
+				t.Fatalf("HeadSHA = %q, want %q", identity.HeadSHA, tt.wantHead)
+			}
+			if (identity.Key != "") != (tt.wantHead != "") {
+				t.Fatalf("Key = %q for head %q", identity.Key, tt.wantHead)
 			}
 		})
 	}

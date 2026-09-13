@@ -184,7 +184,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.observePullRequestHydrationSkips(mergeIssueSlices(fetched.candidates, fetched.status))
 	o.restoreDurableMergeReservations(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	o.reconcileMergeReservations(state, mergeIssueSlices(fetched.candidates, fetched.status), now)
-	o.restoreDurableGateWaitCompletions(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
+	gateWaitIssues := o.restoreDurableGateWaitCompletions(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
+	fetched.candidates = replaceMatchingIssueSnapshots(fetched.candidates, gateWaitIssues)
+	fetched.status = replaceMatchingIssueSnapshots(fetched.status, gateWaitIssues)
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileOperatorStopHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileMergeDurationHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
 
@@ -307,6 +309,22 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.reapDueWorkspacesAfterRefresh(ctx, state, now)
 	}
 	completed = true
+}
+
+func replaceMatchingIssueSnapshots(issues []connector.Issue, replacements []connector.Issue) []connector.Issue {
+	byID := make(map[string]connector.Issue, len(replacements))
+	for _, issue := range replacements {
+		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			byID[issueID] = issue
+		}
+	}
+	out := cloneIssues(issues)
+	for index := range out {
+		if replacement, ok := byID[strings.TrimSpace(out[index].ID)]; ok {
+			out[index] = cloneIssue(replacement)
+		}
+	}
+	return out
 }
 
 func startManualRefresh(state *State, request manualRefreshRequest, now time.Time) {
