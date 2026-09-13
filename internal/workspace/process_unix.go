@@ -216,10 +216,12 @@ func linuxWorkspaceProcessIDs(path string) ([]int, error) {
 }
 
 func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
-	// Detent owns the scan deadline through CommandContext. Disable lsof's
-	// per-operation fork timeout machinery: on macOS its global filesystem
-	// lookup overhead can exhaust that deadline before any output.
-	cmd := exec.CommandContext(ctx, "lsof", "-O", "-a", "-d", "cwd", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
+	// List every process's working directory and match by prefix in Go.
+	// lsof +D walks the whole tree, which on a multi-gigabyte worktree
+	// outlives every scan deadline; -d cwd alone is one row per process.
+	// -O disables lsof's per-operation fork timeout machinery: on macOS its
+	// global filesystem lookup overhead can exhaust the deadline before output.
+	cmd := exec.CommandContext(ctx, "lsof", "-O", "-w", "-a", "-d", "cwd", "-F", "pn") // #nosec G204 -- fixed arguments, no shell.
 	output, err := workspaceScanOutput(ctx, cmd)
 	if err != nil && len(output) == 0 {
 		var exitErr *exec.ExitError
@@ -228,25 +230,40 @@ func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 		}
 		return nil, err
 	}
+	return parseLsofCwdProcessIDs(string(output), path), nil
+}
 
+// parseLsofCwdProcessIDs reads lsof -F pn records (a p<pid> line followed by
+// the process's n<cwd> line) and keeps the processes whose cwd is inside root.
+func parseLsofCwdProcessIDs(output string, root string) []int {
+	root = filepath.Clean(root)
 	seen := map[int]struct{}{}
 	pids := []int{}
-	for line := range strings.SplitSeq(string(output), "\n") {
-		line = strings.TrimSpace(line)
+	pid := 0
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			continue
 		}
-		pid, err := strconv.Atoi(line)
-		if err != nil {
-			continue
+		switch line[0] {
+		case 'p':
+			pid, _ = strconv.Atoi(strings.TrimSpace(line[1:]))
+		case 'n':
+			if pid <= 0 {
+				continue
+			}
+			cwd := strings.TrimSuffix(strings.TrimSpace(line[1:]), " (deleted)")
+			if !pathInside(root, cwd) {
+				continue
+			}
+			if _, ok := seen[pid]; ok {
+				continue
+			}
+			seen[pid] = struct{}{}
+			pids = append(pids, pid)
 		}
-		if _, ok := seen[pid]; ok {
-			continue
-		}
-		seen[pid] = struct{}{}
-		pids = append(pids, pid)
 	}
-	return pids, nil
+	return pids
 }
 
 type workspaceScanStderr struct {
