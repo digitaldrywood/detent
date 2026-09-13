@@ -686,7 +686,7 @@ func TestBoardCardExtraShowsTokenCeilingFailure(t *testing.T) {
 	}
 
 	kind, text, chip := boardCardExtra(card, boardCardView{})
-	if kind != primitives.KindErr || text != "needs review - "+reason || !chip {
+	if kind != primitives.KindErr || text != "Needs you · "+reason || !chip {
 		t.Fatalf("boardCardExtra() = %q, %q, %t, want error token ceiling chip", kind, text, chip)
 	}
 }
@@ -1832,8 +1832,8 @@ func TestBoardExceptionsRequireOptIn(t *testing.T) {
 	if !strings.Contains(exception.Rest, "waiting 12m") {
 		t.Fatalf("exception detail should carry waiting duration, got %q", exception.Rest)
 	}
-	if exception.ActionLabel != "Review" {
-		t.Fatalf("exception should carry the Review action, got %+v", exception)
+	if exception.ActionLabel != "Open" {
+		t.Fatalf("exception should carry the Open action, got %+v", exception)
 	}
 	if got := exception.ActionAttrs["hx-get"]; got != "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%2392&project=detent" {
 		t.Fatalf("board exception review target = %v", got)
@@ -1987,7 +1987,7 @@ func TestBoardExceptionsCompactHumanBlocks(t *testing.T) {
 	if exception.Kind != primitives.KindErr {
 		t.Fatalf("summary kind = %q, want err", exception.Kind)
 	}
-	if exception.Title != "2 blocked items need review" {
+	if exception.Title != "2 blocked items need you" {
 		t.Fatalf("summary title = %q", exception.Title)
 	}
 	if !strings.Contains(exception.Rest, "needs operator approval") || !strings.Contains(exception.Rest, "plus 1 more") {
@@ -2173,7 +2173,7 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 				BlockedReason: "blocked, cause unrecorded",
 			},
 			wantKind: primitives.KindErr,
-			wantText: "needs review - blocked, cause unrecorded",
+			wantText: "Needs you · blocked, cause unrecorded",
 		},
 		{
 			name: "external block without tracker cause needs review",
@@ -2182,7 +2182,7 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 				BlockedReason: staleness.ReasonBlockedOutsideDetent,
 			},
 			wantKind: primitives.KindErr,
-			wantText: "needs review - " + staleness.ReasonBlockedOutsideDetent,
+			wantText: "Needs you · " + staleness.ReasonBlockedOutsideDetent,
 		},
 		{
 			name: "human delivery failure needs review",
@@ -2194,7 +2194,7 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 				BlockedRecoveryRemedy: "return the issue to Todo when implementation work is ready to resume",
 			},
 			wantKind: primitives.KindErr,
-			wantText: "needs review - no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead — return the issue to Todo when implementation work is ready to resume",
+			wantText: "Needs you · no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead — return the issue to Todo when implementation work is ready to resume",
 		},
 	}
 
@@ -2356,7 +2356,7 @@ func TestBoardHumanBlockedCardsUseErrorTreatment(t *testing.T) {
 	if card.ExtraKind != primitives.KindErr || !card.ExtraChip {
 		t.Fatalf("card extra = %q chip %t, want err chip; card = %+v", card.ExtraKind, card.ExtraChip, card)
 	}
-	if !strings.Contains(card.ExtraText, "needs review - needs operator approval") {
+	if !strings.Contains(card.ExtraText, "Needs you · needs operator approval") {
 		t.Fatalf("card extra text = %q", card.ExtraText)
 	}
 	cardClass := boardCardClass(card)
@@ -2419,7 +2419,7 @@ func TestBoardCardSurfacesWorkpadBlockerResolution(t *testing.T) {
 			}}
 
 			html := renderBoardComponent(t, BoardSnapshot(data))
-			for _, want := range append(tt.wantRefs, "needs review - the workflow emits Test (Go 1.26.5) — approve the remaining deployment") {
+			for _, want := range append(tt.wantRefs, "Needs you · the workflow emits Test (Go 1.26.5) — approve the remaining deployment") {
 				if !strings.Contains(html, want) {
 					t.Fatalf("board card missing %q:\n%s", want, html)
 				}
@@ -4045,7 +4045,7 @@ func TestBoardSnapshotRendersOptInBlockedAlert(t *testing.T) {
 
 	for _, want := range []string{
 		`id="board-exceptions"`,
-		"Needs review",
+		"Needs you",
 		"needs operator approval",
 	} {
 		if !strings.Contains(html, want) {
@@ -4564,8 +4564,9 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		want string
 	}{
 		{name: "blocked beats running and runtime", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, card: projectKanbanCard{Blockers: []string{"repo#1", "repo#2"}}, want: "Blocked · 2|Running"},
-		{name: "operator hold beats dependency count", view: boardCardView{Running: true}, card: projectKanbanCard{BlockedRecoveryAction: "hold", Blockers: []string{"repo#1"}}, want: "Needs review|Running"},
-		{name: "human recovery beats dependency count", card: projectKanbanCard{BlockedRecoveryReason: "human_blocker", BlockedReason: "operator must repair credentials", Blockers: []string{"repo#1"}}, want: "Needs review"},
+		{name: "operator hold beats dependency count", view: boardCardView{Running: true}, card: projectKanbanCard{BlockedRecoveryAction: "hold", Blockers: []string{"repo#1"}}, want: "Needs you|Running"},
+		{name: "human recovery beats dependency count", card: projectKanbanCard{BlockedRecoveryReason: "human_blocker", BlockedReason: "operator must repair credentials", Blockers: []string{"repo#1"}}, want: "Needs you"},
+		{name: "human prerequisite", card: projectKanbanCard{HumanDependencyWait: "Needs you · human prerequisite owner/repo#1 · closure and completion evidence required", Blockers: []string{"human prerequisite owner/repo#1"}}, want: "Needs you"},
 		{name: "deferred dependencies retain count", card: projectKanbanCard{BlockedRecoveryAction: "defer", Blockers: []string{"repo#1"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies do not count", card: projectKanbanCard{Blockers: []string{"repo#1"}, ClearedBlockers: []string{"repo#2 (Done)"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies alone are quiet", card: projectKanbanCard{ClearedBlockers: []string{"repo#2 (Done)"}}, want: ""},
@@ -4574,11 +4575,15 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		{name: "stranded", view: boardCardView{ExtraText: "Stranded 18m · no worker", Waiting: true}, want: "Stranded · no worker|No live attempt"},
 		{name: "stale", view: boardCardView{MoveDisabledLabel: "Stale", State: "Todo"}, want: "Stale"},
 		{name: "blocked lane", view: boardCardView{State: "Blocked"}, want: "Blocked"},
-		{name: "review", view: boardCardView{State: "Human Review"}, want: "Needs review"},
+		{name: "review", view: boardCardView{State: "Human Review"}, card: projectKanbanCard{HumanActionRequired: true, WaitDetail: "waiting for operator approval", CIStatus: "pass"}, want: "Needs you|CI pass"},
+		{name: "automated review wait", view: boardCardView{State: "Human Review"}, card: projectKanbanCard{WaitDetail: "waiting for auto-promote", CIStatus: "pass"}, want: "Waiting|CI pass"},
+		{name: "explicit human action in rework", view: boardCardView{State: "Rework"}, card: projectKanbanCard{HumanActionRequired: true}, want: "Needs you"},
+		{name: "explicit human action in merging", view: boardCardView{State: "Merging"}, card: projectKanbanCard{HumanActionRequired: true}, want: "Needs you"},
+		{name: "explicit human action reserves signal slot", view: boardCardView{State: "Merging", MergeLaneStatus: "CI running"}, card: projectKanbanCard{HumanActionRequired: true, CIStatus: "fail"}, want: "Needs you|CI failed"},
 		{name: "merging", view: boardCardView{State: "Merging"}, want: "Merging"},
 		{name: "running", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, want: "Running|model · high"},
 		{name: "wait diagnostics stay in details", card: projectKanbanCard{WaitDetail: "auto-promote await_review: artifact_status_wait very long internal explanation"}, want: "Waiting"},
-		{name: "operator attention", card: projectKanbanCard{BlockedReason: "credentials require operator repair"}, want: "Needs review"},
+		{name: "operator attention", card: projectKanbanCard{BlockedReason: "credentials require operator repair"}, want: "Needs you"},
 		{name: "gate", card: projectKanbanCard{GatePending: true}, want: "Awaiting checks"},
 		{name: "retry", view: boardCardView{Retrying: true}, want: "Awaiting retry"},
 		{name: "failed checks beat running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "CI failed|Running"},
@@ -4721,9 +4726,9 @@ func TestTodoDispatchEvidencePreservesAttention(t *testing.T) {
 		card           projectKanbanCard
 		signal, detail string
 	}{
-		{name: "attention", card: projectKanbanCard{AttentionLabel: "Upstream closed"}, signal: "Needs review", detail: "Upstream closed"},
+		{name: "attention", card: projectKanbanCard{AttentionLabel: "Upstream closed"}, signal: "Needs you", detail: "Upstream closed"},
 		{name: "conflict", card: projectKanbanCard{ConflictReason: "Resolve the merge conflict"}, signal: "Merge conflict", detail: "Resolve the merge conflict"},
-		{name: "operator hold", card: projectKanbanCard{BlockedReason: "Repair credentials"}, signal: "Needs review", detail: "Repair credentials"},
+		{name: "operator hold", card: projectKanbanCard{BlockedReason: "Repair credentials"}, signal: "Needs you", detail: "Repair credentials"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			data := boardTestData()

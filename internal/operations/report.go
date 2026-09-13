@@ -61,8 +61,18 @@ type Decision struct {
 	// WorkFingerprint is internal evidence used to exclude superseded questions.
 	WorkFingerprint string `json:"-"`
 
-	ProjectID string `json:"project_id"`
-	Issue     string `json:"issue"`
-	Question  string `json:"question"`
-	URL       string `json:"url"`
+	Kind         string        `json:"kind,omitempty"`
+	ProjectID    string        `json:"project_id"`
+	Issue        string        `json:"issue"`
+	Title        string        `json:"title,omitempty"`
+	Question     string        `json:"question"`
+	URL          string        `json:"url"`
+	Prerequisite *Prerequisite `json:"prerequisite,omitempty"`
+}
+
+type Prerequisite struct {
+	Issue    string `json:"issue"`
+	Title    string `json:"title,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Evidence string `json:"evidence"`
 }

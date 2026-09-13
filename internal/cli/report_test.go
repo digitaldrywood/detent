@@ -29,7 +29,10 @@ func TestRunReportHTMLWritesSelfContainedPage(t *testing.T) {
 		}},
 		QueueDepth: 2,
 		Actions:    []operations.Action{{ID: 7, ProjectID: "detent", Issue: "#2483", Kind: "route", Reason: "operator_routine:stale_merging", EvidenceURL: "/api/v1/projects/detent/issues/explanation?reference=%232483"}},
-		Decisions:  []operations.Decision{{ProjectID: "detent", Issue: "#2482", Question: "Merge or close?", URL: "https://github.com/digitaldrywood/detent/issues/2482"}},
+		Decisions: []operations.Decision{{
+			ProjectID: "detent", Issue: "#2482", Question: "Merge or close?", URL: "https://github.com/digitaldrywood/detent/issues/2482",
+			Prerequisite: &operations.Prerequisite{Issue: "digitaldrywood/detent#2477", URL: "/api/v1/projects/detent/issues/explanation?reference=digitaldrywood%2Fdetent%232477", Evidence: "Completion evidence is required."},
+		}},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/operations" {
@@ -81,6 +84,7 @@ func TestRunReportHTMLWritesSelfContainedPage(t *testing.T) {
 		"mac-studio", "2026-09-11T18:00:00Z", "<style>", "operator_routine:stale_merging", "Merge or close?",
 		`href="` + server.URL + `/projects/detent/issues/%232483"`,
 		`href="https://github.com/digitaldrywood/detent/issues/2482"`,
+		`href="` + server.URL + `/projects/detent/issues/digitaldrywood%2Fdetent%232477"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page missing %q", want)

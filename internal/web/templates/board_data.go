@@ -1283,7 +1283,7 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 	retryRows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
 	reviewRows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
 	for _, row := range data.Snapshot.Blocked {
-		if boardBlockedWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
+		if BlockedRecoveryWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
 			continue
 		}
 		if StopRunRetryDialogPath(row, data.ProjectID) != "" {
@@ -1360,19 +1360,19 @@ func boardBlockedExceptionSummary(data DashboardData, rows []telemetry.Blocked, 
 	exception := primitives.Exception{
 		ID:     "exception-" + boardCardScopedSlug(projectID, identity),
 		Kind:   primitives.KindErr,
-		Title:  "Needs review",
+		Title:  "Needs you",
 		Repo:   projectID,
 		Ref:    projectKanbanIssueNumber(row.Issue),
 		RefURL: strings.TrimSpace(row.URL),
 		Rest:   boardExceptionDetail(row, pipelineNow(data.Snapshot)),
 	}
 	if len(rows) == 1 {
-		exception.ActionLabel = "Review"
+		exception.ActionLabel = "Open"
 		exception.ActionAttrs = sheetOpenAttrs(projectID, identity, projectKanbanBoardScope(data), boardActions)
 		return exception
 	}
 	exception.ID = "exception-blocked-review"
-	exception.Title = formatCount(len(rows)) + " blocked items need review"
+	exception.Title = formatCount(len(rows)) + " blocked items need you"
 	exception.Rest = strings.TrimSpace(exception.Rest + " · " + boardMoreBlockedLabel(len(rows)-1))
 	return exception
 }
@@ -1389,7 +1389,7 @@ func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
 	if evidence := boardBlockerEvidenceDetail(row, now); evidence != "" {
 		detail = strings.TrimSpace(detail + " · " + evidence)
 	}
-	if detail == "" && boardBlockedWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
+	if detail == "" && BlockedRecoveryWaiting(row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
 		if boardBlockedDependencyWaiting(row.Source, row.RecoveryReason, row.Error, row.BlockedBy) {
 			detail = "dependency not ready"
 		} else {
@@ -1501,12 +1501,12 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		evidence := telemetry.TodoDispatchEvidence(data.Snapshot, issue)
 		view.DispatchStatus = evidence.Status
 		view.Waiting = !evidence.Ready
-		waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
+		waiting := BlockedRecoveryWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
 		blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
 		attention := card.AttentionLabel != "" || card.ConflictReason != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))
 		if attention {
 			if view.ExtraText == "" {
-				view.ExtraText = "Needs review"
+				view.ExtraText = "Needs you"
 				view.ExtraKind = primitives.KindErr
 				view.ExtraChip = true
 			}
@@ -1516,7 +1516,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 			if !evidence.Ready {
 				view.ExtraKind = primitives.KindWarn
 			}
-			if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) || len(card.Blockers) > 0 {
+			if BlockedRecoveryWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) || len(card.Blockers) > 0 {
 				view.Waiting = true
 				view.DispatchStatus = "Waiting"
 				view.ExtraText += " · " + evidence.Detail
@@ -1695,13 +1695,18 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 			signals = append(signals, boardCardSignal{Text: text, Kind: kind})
 		}
 	}
-	waiting := boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
+	waiting := BlockedRecoveryWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
 	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
+	if card.HumanActionRequired {
+		add("Needs you", primitives.KindInfo)
+	}
 	switch {
 	case view.DispatchStatus != "" && (card.AttentionLabel != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))):
-		add("Needs review", primitives.KindErr)
+		add("Needs you", primitives.KindErr)
 	case view.DispatchStatus != "" && card.ConflictReason != "":
 		add("Merge conflict", primitives.KindWarn)
+	case view.DispatchStatus == "Waiting" && card.HumanDependencyWait != "":
+		add("Needs you", primitives.KindWarn)
 	case view.DispatchStatus == "Waiting" && len(card.Blockers) > 0:
 		add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
 	case view.DispatchStatus != "":
@@ -1709,17 +1714,17 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	case strings.HasPrefix(view.ExtraText, "Stranded "):
 		add("Stranded · no worker", primitives.KindWarn)
 	case !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold")):
-		add("Needs review", primitives.KindErr)
+		add("Needs you", primitives.KindErr)
 	case len(card.Blockers) > 0:
 		if card.HumanDependencyWait != "" {
-			add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
+			add("Needs you", primitives.KindWarn)
 		} else {
 			add("Blocked · "+strconv.Itoa(len(card.Blockers)), primitives.KindErr)
 		}
 	case waiting:
 		add("Waiting", primitives.KindWarn)
 	case card.AttentionLabel != "":
-		add("Needs review", primitives.KindErr)
+		add("Needs you", primitives.KindErr)
 	case card.ConflictReason != "":
 		add("Merge conflict", primitives.KindWarn)
 	case strings.EqualFold(view.State, "Blocked"):
@@ -1738,6 +1743,7 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		add(view.MergeLaneStatus, view.MergeLaneKind)
 	}
 	switch {
+	case card.HumanActionRequired:
 	case card.GatePending:
 		add("Awaiting checks", primitives.KindInfo)
 	case card.WaitDetail != "":
@@ -1752,8 +1758,6 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		add("Running", primitives.KindOK)
 	case view.Waiting && view.DispatchStatus == "":
 		add("No live attempt", primitives.KindNeutral)
-	case strings.EqualFold(view.State, "Human Review"):
-		add("Needs review", primitives.KindInfo)
 	case strings.EqualFold(view.State, "Rework"):
 		add("Rework needed", primitives.KindWarn)
 	case strings.EqualFold(view.State, "Merging"):
@@ -1886,11 +1890,11 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	if view.Done || view.Terminal {
 		return primitives.KindNeutral, "", false
 	}
-	if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) {
+	if BlockedRecoveryWaiting(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) {
 		return primitives.KindWarn, boardCardBlockedWaitingText(card), true
 	}
 	if reason := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason); reason != "" {
-		return primitives.KindErr, "needs review - " + reason, true
+		return primitives.KindErr, "Needs you · " + reason, true
 	}
 	if label := strings.TrimSpace(card.AttentionLabel); label != "" {
 		return primitives.KindErr, "blocked — " + label, true
@@ -1966,7 +1970,8 @@ func boardCardBlockedWaitingText(card projectKanbanCard) string {
 	return "waiting - project status"
 }
 
-func boardBlockedWaiting(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, reason string) bool {
+// BlockedRecoveryWaiting reports whether a Blocked park has an automatic exit.
+func BlockedRecoveryWaiting(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, reason string) bool {
 	if strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedCauseUnrecorded) ||
 		strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedOutsideDetent) {
 		return false

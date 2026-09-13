@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -166,19 +167,26 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			activeHours = telemetry.ActiveHoursFromStatus(status)
 		}
 		configured[id] = templates.ProjectSmallMultiple{
-			ID:             id,
-			Name:           id,
-			URL:            trackerProjectURL(trackedProject),
-			Color:          configuredProjectColor(projectConfig.Color),
-			Pool:           strings.TrimSpace(projectConfig.Pool),
-			Paused:         trackedProject.Paused(),
-			PauseReason:    projectConfig.PausedReason,
-			PauseIssue:     projectConfig.PausedUntilIssue,
-			PauseUntil:     projectConfig.PausedUntil,
-			ActiveHours:    activeHours,
-			BudgetEnabled:  trackedProject.Workflow().Config.Budget.Enabled,
-			PerDayMaxUSD:   trackedProject.Workflow().Config.Budget.PerDayMaxUSD,
-			PerIssueMaxUSD: trackedProject.Workflow().Config.Budget.PerIssueMaxUSD,
+			ID:                       id,
+			Name:                     id,
+			URL:                      trackerProjectURL(trackedProject),
+			Color:                    configuredProjectColor(projectConfig.Color),
+			Pool:                     strings.TrimSpace(projectConfig.Pool),
+			Paused:                   trackedProject.Paused(),
+			PauseReason:              projectConfig.PausedReason,
+			PauseIssue:               projectConfig.PausedUntilIssue,
+			PauseUntil:               projectConfig.PausedUntil,
+			ActiveHours:              activeHours,
+			ReviewPolicyConfigured:   true,
+			AutoPromoteEnabled:       trackedProject.Workflow().Config.Agent.AutoPromote.Enabled,
+			AutoPromoteSourceState:   trackedProject.Workflow().Config.Agent.AutoPromote.SourceState,
+			AutoPromoteOptoutLabel:   trackedProject.Workflow().Config.Agent.AutoPromote.OptoutLabel,
+			AutoPromoteAllowedLabels: append([]string(nil), trackedProject.Workflow().Config.Agent.AutoPromote.AllowedIssueLabels...),
+			AutoPromoteGateKind:      gate.NormalizeKind(trackedProject.Workflow().Config.Gate.Kind),
+			AutoPromoteApprovalLabel: gate.Effective(trackedProject.Workflow().Config.Gate).ApprovalLabel,
+			BudgetEnabled:            trackedProject.Workflow().Config.Budget.Enabled,
+			PerDayMaxUSD:             trackedProject.Workflow().Config.Budget.PerDayMaxUSD,
+			PerIssueMaxUSD:           trackedProject.Workflow().Config.Budget.PerIssueMaxUSD,
 		}
 		if status, ok := s.registry.PauseExitStatus(id); ok {
 			configuredProject := configured[id]
@@ -209,6 +217,13 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			projects[i].PauseExitError = configuredProject.PauseExitError
 			projects[i].PauseExitResolver = configuredProject.PauseExitResolver
 			projects[i].ActiveHours = configuredProject.ActiveHours
+			projects[i].ReviewPolicyConfigured = configuredProject.ReviewPolicyConfigured
+			projects[i].AutoPromoteEnabled = configuredProject.AutoPromoteEnabled
+			projects[i].AutoPromoteSourceState = configuredProject.AutoPromoteSourceState
+			projects[i].AutoPromoteOptoutLabel = configuredProject.AutoPromoteOptoutLabel
+			projects[i].AutoPromoteAllowedLabels = append([]string(nil), configuredProject.AutoPromoteAllowedLabels...)
+			projects[i].AutoPromoteGateKind = configuredProject.AutoPromoteGateKind
+			projects[i].AutoPromoteApprovalLabel = configuredProject.AutoPromoteApprovalLabel
 			projects[i].BudgetEnabled = configuredProject.BudgetEnabled
 			projects[i].PerDayMaxUSD = configuredProject.PerDayMaxUSD
 			projects[i].PerIssueMaxUSD = configuredProject.PerIssueMaxUSD
