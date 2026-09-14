@@ -146,6 +146,72 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 	}
 }
 
+func TestManagerCandidateWindowReconsidersRestoredSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		change func([]connector.Issue) []connector.Issue
+	}{
+		{name: "leaves source state", change: func(issues []connector.Issue) []connector.Issue {
+			issues[0].State = "In Progress"
+			return issues
+		}},
+		{name: "closed", change: func(issues []connector.Issue) []connector.Issue {
+			issues[0].Closed = true
+			return issues
+		}},
+		{name: "missing", change: func([]connector.Issue) []connector.Issue { return nil }},
+		{name: "content reverted", change: func(issues []connector.Issue) []connector.Issue {
+			issues[0].Title += " revised"
+			return issues
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := &restoredWindowIssueStore{
+				Connector: memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}),
+				change:    test.change,
+			}
+			backend := openManagerTestStore(t)
+			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+			settings := admissionTestSettings(tracker, agent)
+			for run := range 3 {
+				if run == 2 {
+					tracker.change = nil // Return to the exact original eligible snapshot.
+				}
+				manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+				result, err := manager.RunOnce(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run < 2 {
+					if result.Skipped["stale_or_ineligible"] != 1 || len(agent.candidateIDs) != 1 {
+						t.Fatalf("run %d: result = %#v, evaluations = %v", run, result, agent.candidateIDs)
+					}
+				} else if len(result.Proposals) != 1 || len(agent.candidateIDs) != 2 {
+					t.Fatalf("restored candidate never reconsidered: result = %#v, evaluations = %v", result, agent.candidateIDs)
+				}
+				now = now.Add(15 * time.Minute)
+			}
+		})
+	}
+}
+
+type restoredWindowIssueStore struct {
+	*memory.Connector
+	change func([]connector.Issue) []connector.Issue
+}
+
+func (s *restoredWindowIssueStore) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	issues, err := s.Connector.FetchIssueStatesByIDs(ctx, ids)
+	if err == nil && len(issues) > 0 && s.change != nil {
+		issues = s.change(issues)
+	}
+	return issues, err
+}
+
 // The candidate reader retains an old snapshot while the point lookup returns
 // newer issue content, reproducing a repeated stale revalidation verdict.
 type staleWindowIssueStore struct{ *memory.Connector }

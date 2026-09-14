@@ -115,6 +115,9 @@ existing epic and malformed-result exclusions before the window is capped;
 remaining candidates rotate by last evaluation time. This replaces the fixed
 evaluation window with selection from run/skip bookkeeping, without a
 new routine, reason code, or suppression table (#2568).
+Saved stale verdicts and new evaluations share the same point-lookup revalidation;
+a candidate returning to its original eligible snapshot can re-enter the window.
+This removes unconditional historical suppression across eligibility cycles.
 
 Deliverable recovery opens a draft pull request when a worker already pushed an
 exact-head branch but failed before creating the PR, and returns a missing remote

@@ -1427,15 +1427,11 @@ func (m *Manager) executeEvaluations(
 	for _, original := range candidates {
 		issueID := strings.TrimSpace(original.ID)
 		evaluation := evaluationByID[issueID]
-		fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{issueID})
+		current, dependencies, valid, err := revalidateAdmissionCandidate(ctx, settings, original, m.now().UTC())
 		if err != nil {
-			return result, fmt.Errorf("revalidate backlog admission candidate %s: %w", original.Identifier, err)
+			return result, err
 		}
-		current, currentFound := issueMap(fresh)[issueID]
-		originalFingerprint := issueFingerprint(original, settings.dependencies[issueID])
-		dependencies := resolveAdmissionDependencies(ctx, settings, current, m.now().UTC())
-		if !currentFound || originalFingerprint != issueFingerprint(current, dependencies) ||
-			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
+		if !valid {
 			result.Skipped["stale_or_ineligible"]++
 			for i := range result.Issues {
 				if result.Issues[i].ID == issueID {

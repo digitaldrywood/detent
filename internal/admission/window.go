@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 // orderCandidateWindow reuses persisted run evidence so unchanged stale
@@ -24,7 +26,17 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 		}
 		previous := history[candidate.ID]
 		if previous.Fingerprint == admissionEvaluationFingerprints(settings, candidate).proposal {
-			if previous.SkipReason == "stale_or_ineligible" || previous.SkipReason == "tracking_epic" {
+			stale := false
+			if previous.SkipReason == "stale_or_ineligible" {
+				// A saved verdict describes a past lookup. The candidate may have
+				// returned to this eligible snapshot without changing its fingerprint.
+				_, _, valid, err := revalidateAdmissionCandidate(ctx, settings, candidate, at)
+				if err != nil {
+					return nil, err
+				}
+				stale = !valid
+			}
+			if stale || previous.SkipReason == "tracking_epic" {
 				skipped[previous.SkipReason]++
 				continue
 			}
@@ -39,4 +51,20 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 		return lastEvaluated[out[i].ID].Before(lastEvaluated[out[j].ID])
 	})
 	return out, nil
+}
+
+// revalidateAdmissionCandidate shares the snapshot check between saved stale
+// verdicts and newly evaluated candidates. A transient eligibility change must
+// not turn a historical skip into permanent exclusion.
+func revalidateAdmissionCandidate(ctx context.Context, settings Settings, original connector.Issue, at time.Time) (connector.Issue, *runner.AdmissionDependencies, bool, error) {
+	issueID := strings.TrimSpace(original.ID)
+	fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		return connector.Issue{}, nil, false, fmt.Errorf("revalidate backlog admission candidate %s: %w", original.Identifier, err)
+	}
+	current, found := issueMap(fresh)[issueID]
+	dependencies := resolveAdmissionDependencies(ctx, settings, current, at)
+	valid := found && issueFingerprint(original, settings.dependencies[issueID]) == issueFingerprint(current, dependencies) &&
+		eligibleCandidate(current, settings.Config, settings.TerminalStates)
+	return current, dependencies, valid, nil
 }
