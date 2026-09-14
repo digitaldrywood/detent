@@ -240,6 +240,80 @@ func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.
 	}
 }
 
+func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		retryAfter string
+		wantDelay  time.Duration
+	}{
+		{name: "retry after", retryAfter: "120", wantDelay: 2 * time.Minute},
+		{name: "documented fallback", wantDelay: time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-RateLimit-Limit", "5000")
+				w.Header().Set("X-RateLimit-Used", "1000")
+				w.Header().Set("X-RateLimit-Remaining", "4000")
+				if calls.Add(1) == 1 {
+					if tt.retryAfter != "" {
+						w.Header().Set("Retry-After", tt.retryAfter)
+					}
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"}}}`))
+			}))
+			t.Cleanup(server.Close)
+
+			client, err := NewClient(ClientConfig{
+				Endpoint:    server.URL,
+				TokenSource: StaticTokenSource("test-token"),
+				HTTPClient:  server.Client(),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			err = client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil)
+			var statusErr *StatusError
+			if !errors.As(err, &statusErr) || statusErr.RateLimitKind != restRateLimitKindSecondaryThrottled || statusErr.RetryAfter != tt.wantDelay {
+				t.Fatalf("first GraphQL() error = %#v, want secondary backoff %s", statusErr, tt.wantDelay)
+			}
+
+			err = client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil)
+			if !errors.As(err, &statusErr) || statusErr.RetryAfter <= 0 || statusErr.RetryAfter > tt.wantDelay {
+				t.Fatalf("GraphQL() during backoff error = %#v, want remaining delay through %s", statusErr, tt.wantDelay)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("HTTP calls during backoff = %d, want 1", got)
+			}
+
+			client.mu.Lock()
+			client.rateLimit.UpdatedAt = time.Now().Add(-tt.wantDelay - time.Second)
+			client.mu.Unlock()
+
+			if err := client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil); err != nil {
+				t.Fatalf("GraphQL() after backoff expiry error = %v", err)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("HTTP calls after backoff expiry = %d, want 2", got)
+			}
+			if got := client.GraphQLRateLimitStatus(); got != "" {
+				t.Fatalf("GraphQLRateLimitStatus() = %q, want cleared", got)
+			}
+		})
+	}
+}
+
 func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
 	t.Parallel()
 
@@ -1358,7 +1432,7 @@ func TestRESTFanoutEndpointFamilyIncludesBulkHydrationReads(t *testing.T) {
 	}
 }
 
-func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
+func TestClientRESTStopsEndpointFamilyFanoutBelowReserve(t *testing.T) {
 	t.Parallel()
 
 	resetAt := time.Now().UTC().Add(time.Hour)
@@ -1390,11 +1464,10 @@ func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	var pulls []restPullRequest
-	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/pulls?state=all", nil, &pulls); err != nil {
-		t.Fatalf("REST() pull requests error = %v", err)
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil); err != nil {
+		t.Fatalf("REST() first commit statuses error = %v", err)
 	}
-	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil)
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/def/statuses", nil, nil)
 	if !errors.Is(err, ErrRESTBudgetReserved) {
 		t.Fatalf("REST() reserve fanout error = %v, want ErrRESTBudgetReserved", err)
 	}
@@ -1406,8 +1479,8 @@ func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 	if usage.RateLimit.Remaining != 900 {
 		t.Fatalf("RateLimit.Remaining = %d, want 900", usage.RateLimit.Remaining)
 	}
-	if got := restEndpointUsageCount(usage.Requests, "commit statuses"); got != 1 {
-		t.Fatalf("commit statuses usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	if got := restEndpointUsageCount(usage.Requests, "commit statuses"); got != 2 {
+		t.Fatalf("commit statuses usage count = %d, want response plus throttled synthetic request; usage = %#v", got, usage.Requests)
 	}
 	for _, want := range []string{"gate_branch=reserve", "fanout_count=1", "snapshot_age="} {
 		if !strings.Contains(logs.String(), want) {
@@ -2721,17 +2794,245 @@ func TestClientRESTResourceReserveAdmission(t *testing.T) {
 			if tt.expired {
 				reset = now.Add(-time.Hour)
 			}
+			family := restEndpointFamily(http.MethodGet, tt.path)
+			resource := restEndpointRateLimitResource(family)
+			remaining := tt.coreRemaining
+			limit := int64(5000)
+			if resource == "search" {
+				remaining = tt.searchRemaining
+				limit = 30
+			}
 			client := &Client{
 				logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 				restPolicy: RESTBudgetPolicy{MinRemainingReserve: 1000},
-				restRateLimits: map[string]connector.RESTRateLimit{
-					"core":   {Resource: "core", Limit: 5000, Remaining: tt.coreRemaining, ResetAt: reset},
-					"search": {Resource: "search", Limit: 30, Remaining: tt.searchRemaining, ResetAt: reset},
+				restBudgets: map[string]connector.RESTRateLimitBudget{
+					restCredentialFamilyKey("test", family): {
+						CredentialIdentity: "test",
+						EndpointFamily:     family,
+						RateLimit: connector.RESTRateLimit{
+							Resource: resource, Limit: limit, Remaining: remaining, ResetAt: reset,
+						},
+					},
 				},
 			}
 			err := client.restBudgetPolicyError(context.Background(), "test", http.MethodGet, tt.path, tt.conditional, now)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("admission error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestClientRESTBudgetRecordsResourceHeaderPresence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
+	tests := []struct {
+		name               string
+		resourceHeader     string
+		wantResourceHeader string
+	}{
+		{name: "reported resource", resourceHeader: "core", wantResourceHeader: "core"},
+		{name: "inferred resource"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client, err := NewClient(ClientConfig{TokenSource: StaticTokenSource("test")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			headers := http.Header{}
+			headers.Set("X-RateLimit-Limit", "5000")
+			headers.Set("X-RateLimit-Remaining", "4721")
+			headers.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+			if tt.resourceHeader != "" {
+				headers.Set("X-RateLimit-Resource", tt.resourceHeader)
+			}
+			client.recordRESTRateLimitFromHeaders(
+				context.Background(), "", "github-rest:test", http.MethodGet,
+				"/repos/o/r/commits/abc/check-runs", http.StatusOK, headers, nil, now, false,
+			)
+
+			budgets := client.RESTRateLimitStatus().Budgets
+			if len(budgets) != 1 {
+				t.Fatalf("budgets = %#v, want one endpoint-family budget", budgets)
+			}
+			if got := budgets[0].RateLimit.ResourceHeader; got != tt.wantResourceHeader {
+				t.Fatalf("ResourceHeader = %q, want %q", got, tt.wantResourceHeader)
+			}
+			if got := budgets[0].RateLimit.Resource; got != "core" {
+				t.Fatalf("Resource = %q, want inferred core", got)
+			}
+		})
+	}
+}
+
+func TestClientRESTEndpointFamilyBudgetsIgnorePriorCredentialResponses(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
+	client, err := NewClient(ClientConfig{
+		TokenSource: StaticTokenSource("test"),
+		RESTPolicy:  RESTBudgetPolicy{MinRemainingReserve: 1000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Limit", "5000")
+	headers.Set("X-RateLimit-Remaining", "314")
+	headers.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+	headers.Set("X-RateLimit-Resource", "core")
+
+	client.rememberRESTBackoffKey("old-key")
+	client.recordRESTRateLimitFromHeaders(
+		context.Background(), "old-key", "github-rest:old", http.MethodGet,
+		"/repos/o/r/commits/abc/check-runs", http.StatusOK, headers, nil, now, false,
+	)
+	client.rememberRESTBackoffKey("new-key")
+	headers.Set("Retry-After", "60")
+	client.recordRESTRateLimitFromHeaders(
+		context.Background(), "old-key", "github-rest:old", http.MethodGet,
+		"/repos/o/r/commits/def/check-runs", http.StatusTooManyRequests, headers,
+		[]byte(`{"message":"You have exceeded a secondary rate limit."}`), now, false,
+	)
+
+	if budgets := client.RESTRateLimitStatus().Budgets; len(budgets) != 0 {
+		t.Fatalf("budgets after credential rotation = %#v, want no stale credential budgets", budgets)
+	}
+	if usage := client.FlushRESTRateLimitUsage(); usage.RateLimited {
+		t.Fatalf("usage after stale credential response = %#v, want no current throttle", usage)
+	}
+	if err := client.restBudgetPolicyError(
+		context.Background(), "github-rest:new", http.MethodGet,
+		"/repos/o/r/commits/ghi/check-runs", false, now,
+	); err != nil {
+		t.Fatalf("new credential check-runs admission error = %v, want nil", err)
+	}
+}
+
+func TestClientRESTEndpointFamilyThrottleClearedOnCredentialRotation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
+	client, err := NewClient(ClientConfig{TokenSource: StaticTokenSource("test")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Limit", "5000")
+	headers.Set("X-RateLimit-Remaining", "314")
+	headers.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+	headers.Set("X-RateLimit-Resource", "core")
+
+	client.rememberRESTBackoffKey("old-key")
+	client.recordRESTRateLimitFromHeaders(
+		context.Background(), "old-key", "github-rest:old", http.MethodGet,
+		"/repos/o/r/issues?state=open", http.StatusTooManyRequests, headers,
+		[]byte(`{"message":"API rate limit exceeded."}`), now, false,
+	)
+	if status := client.RESTRateLimitStatus(); !status.RateLimited || len(status.Requests) != 1 || !status.Requests[0].RateLimited {
+		t.Fatalf("status before credential rotation = %#v, want repository issues throttle", status)
+	}
+
+	client.rememberRESTBackoffKey("new-key")
+	if status := client.RESTRateLimitStatus(); status.RateLimited || len(status.Requests) != 0 {
+		t.Fatalf("status after credential rotation = %#v, want no old credential throttle evidence", status)
+	}
+	if usage := client.FlushRESTRateLimitUsage(); usage.RateLimited {
+		t.Fatalf("usage after credential rotation = %#v, want no old credential throttle", usage)
+	}
+}
+
+func TestClientRESTResourceReserveAdmissionUsesEndpointFamilyWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
+	tests := []struct {
+		name      string
+		responses []struct {
+			path      string
+			remaining int64
+			resetAt   time.Time
+		}
+		want error
+	}{
+		{
+			name: "workflow window does not hold check runs",
+			responses: []struct {
+				path      string
+				remaining int64
+				resetAt   time.Time
+			}{
+				{path: "/repos/o/r/commits/abc/check-runs", remaining: 4721, resetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)},
+				{path: "/repos/o/r/actions/runs/123", remaining: 314, resetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)},
+			},
+		},
+		{
+			name: "earlier workflow window does not hold later check runs",
+			responses: []struct {
+				path      string
+				remaining int64
+				resetAt   time.Time
+			}{
+				{path: "/repos/o/r/actions/runs/123", remaining: 314, resetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)},
+				{path: "/repos/o/r/commits/abc/check-runs", remaining: 4721, resetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)},
+			},
+		},
+		{
+			name: "check runs window remains held after healthy workflow response",
+			responses: []struct {
+				path      string
+				remaining int64
+				resetAt   time.Time
+			}{
+				{path: "/repos/o/r/commits/abc/check-runs", remaining: 314, resetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)},
+				{path: "/repos/o/r/actions/runs/123", remaining: 4721, resetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)},
+			},
+			want: ErrRESTBudgetReserved,
+		},
+		{
+			name: "later check runs window is held after healthy workflow response",
+			responses: []struct {
+				path      string
+				remaining int64
+				resetAt   time.Time
+			}{
+				{path: "/repos/o/r/actions/runs/123", remaining: 4721, resetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)},
+				{path: "/repos/o/r/commits/abc/check-runs", remaining: 314, resetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)},
+			},
+			want: ErrRESTBudgetReserved,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client, err := NewClient(ClientConfig{
+				TokenSource: StaticTokenSource("test"),
+				RESTPolicy:  RESTBudgetPolicy{MinRemainingReserve: 1000},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, response := range tt.responses {
+				headers := http.Header{}
+				headers.Set("X-RateLimit-Limit", "5000")
+				headers.Set("X-RateLimit-Remaining", strconv.FormatInt(response.remaining, 10))
+				headers.Set("X-RateLimit-Reset", strconv.FormatInt(response.resetAt.Unix(), 10))
+				headers.Set("X-RateLimit-Resource", "core")
+				client.recordRESTRateLimitFromHeaders(
+					context.Background(), "", "github-rest:test", http.MethodGet, response.path,
+					http.StatusOK, headers, nil, now, false,
+				)
+			}
+
+			err = client.restBudgetPolicyError(
+				context.Background(), "github-rest:test", http.MethodGet,
+				"/repos/o/r/commits/def/check-runs", false, now,
+			)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("check-runs admission error = %v, want %v", err, tt.want)
 			}
 		})
 	}

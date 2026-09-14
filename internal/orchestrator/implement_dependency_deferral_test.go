@@ -171,11 +171,13 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 		lane          string
 		withPR        bool
 		blockerClosed bool
+		nativeRemoved bool
 	}{
 		{name: "saved commit", lane: "In Progress"},
 		{name: "saved PR", lane: "Rework", withPR: true},
 		{name: "merge return lane", lane: "Merging", withPR: true},
 		{name: "dependency completed", lane: "Rework", blockerClosed: true},
+		{name: "native relation removed while blocker stays open", lane: "Rework", nativeRemoved: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -257,16 +259,21 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 				}
 				current[0].BlockedBy[0].State = "Done"
 			}
+			if tt.nativeRemoved {
+				current[0].DependencySource = connector.BlockedRefSourceNative
+				current[0].BlockedBy = nil
+				tracker = memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{current[0], blocker, unrelated}})
+			}
 			runner := newWorkerHostRunner()
 			o = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: backend.(store.WorkAttemptStore), globalDispatchGate: globalGate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 1)}
 			state = newState(cfg)
 			candidates := []connector.Issue{current[0], unrelated, blocker}
-			if tt.blockerClosed {
+			if tt.blockerClosed || tt.nativeRemoved {
 				candidates = candidates[:2]
 			}
 			o.dispatchReadyIssues(ctx, &state, candidates, now.Add(time.Minute))
 			wantIssue := blocker.ID
-			if tt.blockerClosed {
+			if tt.blockerClosed || tt.nativeRemoved {
 				wantIssue = issue.ID
 			}
 			if len(state.Running) != 1 || state.Running[wantIssue].Issue.ID != wantIssue {

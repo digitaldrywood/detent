@@ -391,6 +391,50 @@ func (c *Connector) LookupPullRequestByHead(
 	return connector.PullRequest{}, false, nil
 }
 
+func (c *Connector) CreateDraftPullRequest(
+	ctx context.Context,
+	repository string,
+	branch string,
+	title string,
+	body string,
+) (connector.PullRequest, error) {
+	repo, ok := pullRequestRepoFromName(repository)
+	if !ok || strings.TrimSpace(branch) == "" || strings.TrimSpace(title) == "" {
+		return connector.PullRequest{}, errors.New("create draft github pull request: invalid repository, branch, or title")
+	}
+	info, err := c.FetchRepositoryInfo(ctx, repository)
+	if err != nil {
+		return connector.PullRequest{}, fmt.Errorf("create draft github pull request: %w", err)
+	}
+	base := strings.TrimSpace(info.DefaultBranch)
+	if base == "" {
+		return connector.PullRequest{}, errors.New("create draft github pull request: repository default branch is unavailable")
+	}
+	payload := struct {
+		Title string `json:"title"`
+		Head  string `json:"head"`
+		Base  string `json:"base"`
+		Body  string `json:"body"`
+		Draft bool   `json:"draft"`
+	}{
+		Title: strings.TrimSpace(title),
+		Head:  strings.TrimSpace(branch),
+		Base:  base,
+		Body:  strings.TrimSpace(body),
+		Draft: true,
+	}
+	var response restPullRequest
+	if err := c.client.REST(ctx, http.MethodPost, restPullRequestsCreatePath(repo), payload, &response); err != nil {
+		return connector.PullRequest{}, fmt.Errorf("create draft github pull request: %w", err)
+	}
+	issue := connector.NewIssue()
+	attachPullRequestToIssue(&issue, repo, pullRequestNodeFromREST(response))
+	if issue.PullRequest == nil || issue.PullRequest.Number <= 0 {
+		return connector.PullRequest{}, fmt.Errorf("create draft github pull request: %w", ErrInvalidResponse)
+	}
+	return *issue.PullRequest, nil
+}
+
 func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connector.Issue) (string, error) {
 	repo, number, ok := hydratedPullRequestRef(issue)
 	if !ok || issue.PullRequest == nil {

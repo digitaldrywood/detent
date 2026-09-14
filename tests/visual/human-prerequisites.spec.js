@@ -5,7 +5,7 @@ const { test, expect } = require("@playwright/test");
 const { startDetentRuntime } = require("./detent-runtime");
 
 for (const closed of [false, true]) {
-  test(`human prerequisite waiting remains visible when closed=${closed}`, async ({ page }) => {
+  test(`human prerequisite need remains visible when closed=${closed}`, async ({ page }) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "detent-human-prerequisite-"));
     const fixture = path.join(home, "issues.json");
     fs.writeFileSync(fixture, JSON.stringify({ issues: [
@@ -38,7 +38,8 @@ for (const closed of [false, true]) {
       await page.goto(runtime.url, { waitUntil: "domcontentloaded" });
       const card = page.locator("[data-kanban-card]", { hasText: "Verify authenticated integration" });
       await expect(card).toBeVisible();
-      await expect(card).toContainText("Waiting · 1");
+      await expect(card).toContainText("Needs you");
+      await expect(card).not.toContainText("Waiting · 1");
       await expect(card).not.toContainText("Blocked · 1");
       await page.locator('[data-density-choice="comfy"]').click();
       await expect(card).toContainText("human prerequisite owner/repo#10");

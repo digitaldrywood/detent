@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -73,6 +74,8 @@ func withRunnerFactory(
 	deps project.Dependencies,
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
+	serviceConnection serviceapi.Connection,
+	serviceTokenSource func(string) string,
 	githubTokenSource ...func() string,
 ) project.Factory {
 	return func(cfg globalconfig.Project) (*project.Project, error) {
@@ -93,8 +96,9 @@ func withRunnerFactory(
 
 		run := deps.Runner
 		if run == nil {
+			projectServiceConnection := serviceConnectionForProject(serviceConnection, cfg.ID, serviceTokenSource)
 			var err error
-			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), sessionStore, deps.Logger)
+			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), sessionStore, deps.Logger, projectServiceConnection)
 			if err != nil {
 				return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 			}
@@ -113,6 +117,13 @@ func withRunnerFactory(
 	}
 }
 
+func serviceConnectionForProject(connection serviceapi.Connection, projectID string, tokenSource func(string) string) serviceapi.Connection {
+	if tokenSource != nil {
+		connection.DispositionToken = tokenSource(projectID)
+	}
+	return connection
+}
+
 // buildRunner constructs the agent Runner for a single project's workflow,
 // wiring its workspace backend, codex app-server client, and session store.
 func buildRunner(
@@ -122,8 +133,9 @@ func buildRunner(
 	memory globalconfig.Memory,
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
+	serviceConnection serviceapi.Connection,
 ) (orchestrator.Runner, error) {
-	deps, err := buildRunnerDependencies(workflow, projectID, projectWorkdir, memory, sessionStore, logger)
+	deps, err := buildRunnerDependencies(workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +155,7 @@ func buildRunnerDependencies(
 	memory globalconfig.Memory,
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
+	serviceConnection serviceapi.Connection,
 ) (runnerpkg.Dependencies, error) {
 	cfg := workflow.Config
 
@@ -172,6 +185,7 @@ func buildRunnerDependencies(
 		MaxAgentRSSBytes:    uint64(memory.MaxAgentRSSBytes),
 		RSSPollInterval:     time.Duration(memory.PollIntervalMS) * time.Millisecond,
 		Logger:              logger,
+		ServiceConnection:   serviceConnection,
 	}, nil
 }
 

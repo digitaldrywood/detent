@@ -28,6 +28,7 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
@@ -536,7 +537,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 	)
 
-	install := runInstallWithTimeout(t, root, env, 2*time.Minute)
+	install := runInstallWithInactivityTimeout(t, root, env, 2*time.Minute)
 	if install.err != nil {
 		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", install.err, install.stdout, install.stderr)
 	}
@@ -633,14 +634,14 @@ type installRun struct {
 func runInstall(t *testing.T, root string, env []string) installRun {
 	t.Helper()
 
-	return runInstallWithTimeout(t, root, env, 10*time.Second)
+	return runInstallWithInactivityTimeout(t, root, env, testenv.SubprocessWaitTimeout)
 }
 
-func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time.Duration) installRun {
+func runInstallWithInactivityTimeout(t *testing.T, root string, env []string, inactivityTimeout time.Duration) installRun {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), timeout)
-	defer cancel()
+	ctx, activity, stop := installerActivityContext(t.Context(), inactivityTimeout, newInstallerActivityTimer)
+	defer stop()
 
 	cmd := exec.CommandContext(ctx, "sh", "install.sh")
 	cmd.Dir = root
@@ -648,8 +649,8 @@ func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
+	cmd.Stderr = installerActivityWriter{output: &stderr, activity: activity}
 
 	err := runInstallerCommand(ctx, cmd)
 	return installRun{
@@ -659,27 +660,248 @@ func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time
 	}
 }
 
+type installerActivityTimer interface {
+	C() <-chan time.Time
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
+type systemInstallerActivityTimer struct {
+	*time.Timer
+}
+
+func (t systemInstallerActivityTimer) C() <-chan time.Time {
+	return t.Timer.C
+}
+
+func newInstallerActivityTimer(timeout time.Duration) installerActivityTimer {
+	return systemInstallerActivityTimer{Timer: time.NewTimer(timeout)}
+}
+
+func installerActivityContext(
+	parent context.Context,
+	inactivityTimeout time.Duration,
+	newTimer func(time.Duration) installerActivityTimer,
+) (context.Context, func(), func()) {
+	ctx, cancel := context.WithCancelCause(parent)
+	timer := newTimer(inactivityTimeout)
+	activity := make(chan chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case acknowledged := <-activity:
+				if !timer.Stop() {
+					select {
+					case <-timer.C():
+					default:
+					}
+				}
+				timer.Reset(inactivityTimeout)
+				close(acknowledged)
+			case <-timer.C():
+				cancel(context.DeadlineExceeded)
+				return
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		}
+	}()
+	recordActivity := func() {
+		acknowledged := make(chan struct{})
+		select {
+		case activity <- acknowledged:
+			select {
+			case <-acknowledged:
+			case <-ctx.Done():
+			}
+		case <-ctx.Done():
+		}
+	}
+	stop := func() {
+		cancel(nil)
+		<-finished
+	}
+	return ctx, recordActivity, stop
+}
+
+type installerActivityWriter struct {
+	output   io.Writer
+	activity func()
+}
+
+func (w installerActivityWriter) Write(data []byte) (int, error) {
+	written, err := w.output.Write(data)
+	if written > 0 {
+		w.activity()
+	}
+	return written, err
+}
+
+type controlledInstallerActivityTimer struct {
+	expired chan time.Time
+	resets  chan time.Duration
+}
+
+func newControlledInstallerActivityTimer() *controlledInstallerActivityTimer {
+	return &controlledInstallerActivityTimer{
+		expired: make(chan time.Time, 1),
+		resets:  make(chan time.Duration, 1),
+	}
+}
+
+func (t *controlledInstallerActivityTimer) C() <-chan time.Time {
+	return t.expired
+}
+
+func (t *controlledInstallerActivityTimer) Reset(timeout time.Duration) bool {
+	t.resets <- timeout
+	return true
+}
+
+func (*controlledInstallerActivityTimer) Stop() bool {
+	return true
+}
+
+func TestInstallerActivityContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	wantParentCause := errors.New("parent canceled")
+	tests := []struct {
+		name            string
+		cancelParent    bool
+		wantCancelCause error
+	}{
+		{name: "inactivity expires", wantCancelCause: context.DeadlineExceeded},
+		{name: "parent cancellation wins", cancelParent: true, wantCancelCause: wantParentCause},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			parent, cancelParent := context.WithCancelCause(t.Context())
+			defer cancelParent(nil)
+			timer := newControlledInstallerActivityTimer()
+			ctx, activity, stop := installerActivityContext(parent, 10*time.Second, func(timeout time.Duration) installerActivityTimer {
+				if timeout != 10*time.Second {
+					t.Fatalf("inactivity timeout = %s, want 10s", timeout)
+				}
+				return timer
+			})
+			defer stop()
+
+			if tt.cancelParent {
+				cancelParent(wantParentCause)
+			} else {
+				activity()
+				select {
+				case timeout := <-timer.resets:
+					if timeout != 10*time.Second {
+						t.Fatalf("renewed inactivity timeout = %s, want 10s", timeout)
+					}
+				case <-time.After(testenv.SubprocessWaitTimeout):
+					t.Fatal("activity context did not acknowledge renewal")
+				}
+				timer.expired <- time.Time{}
+			}
+			select {
+			case <-ctx.Done():
+				if !errors.Is(context.Cause(ctx), tt.wantCancelCause) {
+					t.Fatalf("cancellation cause = %v, want %v", context.Cause(ctx), tt.wantCancelCause)
+				}
+			case <-time.After(testenv.SubprocessWaitTimeout):
+				t.Fatal("activity context did not stop")
+			}
+		})
+	}
+}
+
+func TestInstallerCommandActivityRenewsDuringDelayedCompletion(t *testing.T) {
+	t.Parallel()
+
+	timer := newControlledInstallerActivityTimer()
+	ctx, activity, stop := installerActivityContext(t.Context(), 10*time.Second, func(timeout time.Duration) installerActivityTimer {
+		if timeout != 10*time.Second {
+			t.Fatalf("inactivity timeout = %s, want 10s", timeout)
+		}
+		return timer
+	})
+	defer stop()
+
+	input, release, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	defer release.Close()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "printf ready; read -r release <&3")
+	cmd.ExtraFiles = []*os.File{input}
+	var stdout strings.Builder
+	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
+	done := make(chan error, 1)
+	go func() { done <- runInstallerCommand(ctx, cmd) }()
+
+	select {
+	case timeout := <-timer.resets:
+		if timeout != 10*time.Second {
+			t.Fatalf("renewed inactivity timeout = %s, want 10s", timeout)
+		}
+	case err := <-done:
+		t.Fatalf("installer command returned before delayed completion was released: %v", err)
+	case <-time.After(testenv.SubprocessWaitTimeout):
+		t.Fatal("installer command did not publish activity")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("installer command returned before delayed completion was released: %v", err)
+	default:
+	}
+	if _, err := release.WriteString("release\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("installer command error = %v", err)
+		}
+	case <-time.After(testenv.SubprocessWaitTimeout):
+		t.Fatal("installer command did not finish after release")
+	}
+	if stdout.String() != "ready" {
+		t.Fatalf("installer stdout = %q, want ready", stdout.String())
+	}
+}
+
 func TestRunInstallerCommand(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		script     string
-		missing    bool
-		cancelWith error
-		expired    bool
-		wantStage  string
-		wantError  error
-		wantExit   int
-		wantStdout string
-		wantStderr string
+		name               string
+		script             string
+		missing            bool
+		cancelWith         error
+		expired            bool
+		wantStage          string
+		wantError          error
+		wantExit           int
+		wantStdout         string
+		wantStderr         string
+		wantChild          bool
+		exitDuringSnapshot bool
+		snapshotAfterExit  bool
+		delaySnapshot      bool
 	}{
 		{name: "success", script: "printf stdout; printf stderr >&2", wantStdout: "stdout", wantStderr: "stderr"},
 		{name: "expired before start", expired: true, wantStage: "start", wantError: context.DeadlineExceeded},
 		{name: "start failure", missing: true, wantStage: "start", wantError: os.ErrNotExist},
 		{name: "exit failure", script: "printf stdout; printf stderr >&2; exit 23", wantStage: "wait", wantExit: 23, wantStdout: "stdout", wantStderr: "stderr"},
-		{name: "canceled running command", script: "printf ready; read line <&3", cancelWith: context.Canceled, wantStage: "wait", wantError: context.Canceled, wantStdout: "ready"},
-		{name: "deadline during wait", script: "printf ready; read line <&3", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready"},
+		{name: "canceled running command", script: "printf ready; read line <&3", cancelWith: context.Canceled, wantStage: "wait", wantError: context.Canceled, wantStdout: "ready", delaySnapshot: true},
+		{name: "deadline during wait", script: "printf ready; read line <&3", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", delaySnapshot: true},
+		{name: "deadline in nested command", script: "sh -c 'printf ready; read line <&3' & wait", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", wantChild: true, delaySnapshot: true},
+		{name: "exit during deadline snapshot", script: "printf ready; read line <&3; exit 0", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", exitDuringSnapshot: true, delaySnapshot: true},
+		{name: "completed before snapshot", script: "printf ready; read line <&3; exit 0", cancelWith: context.DeadlineExceeded, wantStdout: "ready", exitDuringSnapshot: true, snapshotAfterExit: true},
 		{name: "descendant holds stdout", script: "(read line <&3) 2>/dev/null & printf stdout; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStdout: "stdout"},
 		{name: "descendant holds stderr", script: "(read line <&3) >/dev/null & printf stderr >&2; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStderr: "stderr"},
 	}
@@ -719,8 +941,47 @@ func TestRunInstallerCommand(t *testing.T) {
 				cmd.Stdout = installerReadyWriter{output: &stdout, cancel: func() { cancel(tt.cancelWith) }}
 			}
 
+			snapshotStarted := make(chan struct{}, 1)
+			snapshotRelease := make(chan struct{})
+			exitObserved := make(chan error, 1)
+			snapshot := func(group int) installerProcessSnapshot {
+				if tt.delaySnapshot {
+					snapshotStarted <- struct{}{}
+					<-snapshotRelease
+				}
+				var evidence installerProcessSnapshot
+				if !tt.snapshotAfterExit {
+					evidence = installerProcessEvidence(group)
+				}
+				if !tt.exitDuringSnapshot {
+					return evidence
+				}
+				_ = inherited.Close()
+				_ = release.Close()
+				// Exit ordering is descriptor-driven; this deadline only guards against a stuck subprocess.
+				if deadlineErr := exited.SetReadDeadline(time.Now().Add(10 * time.Second)); deadlineErr != nil {
+					exitObserved <- deadlineErr
+					return evidence
+				}
+				_, readErr := exited.Read(make([]byte, 1))
+				exitObserved <- readErr
+				if tt.snapshotAfterExit {
+					return installerProcessEvidence(group)
+				}
+				return evidence
+			}
 			done := make(chan error, 1)
-			go func() { done <- runInstallerCommand(ctx, cmd) }()
+			go func() { done <- runInstallerCommandWithEvidence(ctx, cmd, snapshot) }()
+			if tt.delaySnapshot {
+				select {
+				case <-snapshotStarted:
+					close(snapshotRelease)
+				case err = <-done:
+					t.Fatalf("installer command finished before process snapshot started: %v", err)
+				case <-time.After(10 * time.Second):
+					t.Fatal("installer command did not start process snapshot")
+				}
+			}
 			select {
 			case err = <-done:
 			case <-time.After(30 * time.Second):
@@ -734,6 +995,11 @@ func TestRunInstallerCommand(t *testing.T) {
 				t.Fatal("installer command did not finish; output pipe remained open")
 			}
 			_ = inherited.Close()
+			if tt.exitDuringSnapshot {
+				if readErr := <-exitObserved; !errors.Is(readErr, io.EOF) {
+					t.Fatalf("command did not exit while collecting process evidence: %v", readErr)
+				}
+			}
 			if deadlineErr := exited.SetReadDeadline(time.Now().Add(10 * time.Second)); deadlineErr != nil {
 				t.Fatal(deadlineErr)
 			}
@@ -749,6 +1015,15 @@ func TestRunInstallerCommand(t *testing.T) {
 			}
 			if tt.wantError != nil && !errors.Is(err, tt.wantError) {
 				t.Fatalf("runInstallerCommand() error = %v, want %v", err, tt.wantError)
+			}
+			if tt.cancelWith != nil && tt.wantError != nil {
+				want := fmt.Sprintf("pid=%d ppid=", cmd.Process.Pid)
+				if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "executable=") {
+					t.Fatalf("runInstallerCommand() error = %v, want process evidence containing %q and executable", err, want)
+				}
+			}
+			if tt.wantChild && !strings.Contains(err.Error(), fmt.Sprintf("ppid=%d pgid=%d", cmd.Process.Pid, cmd.Process.Pid)) {
+				t.Fatalf("runInstallerCommand() error = %v, want nested command captured before cleanup", err)
 			}
 			if tt.wantExit != 0 {
 				var exitErr *exec.ExitError
@@ -775,14 +1050,16 @@ func (w installerReadyWriter) Write(p []byte) (int, error) {
 }
 
 func runInstallerCommand(ctx context.Context, cmd *exec.Cmd) error {
+	return runInstallerCommandWithEvidence(ctx, cmd, installerProcessEvidence)
+}
+
+func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapshot func(int) installerProcessSnapshot) error {
 	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var processEvidence installerProcessSnapshot
 	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
+		processEvidence = snapshot(cmd.Process.Pid)
+		return terminateInstallerProcessGroup(cmd.Process.Pid, processEvidence, syscall.Kill)
 	}
 
 	started := time.Now()
@@ -792,19 +1069,202 @@ func runInstallerCommand(ctx context.Context, cmd *exec.Cmd) error {
 	startDuration := time.Since(started)
 	waiting := time.Now()
 	err := cmd.Wait()
+	if err == nil && processEvidence.live {
+		err = context.Cause(ctx)
+	}
 	if err == nil {
 		return nil
 	}
 	waitDuration := time.Since(waiting)
-	if killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+	if processEvidence.description == "" {
+		processEvidence = snapshot(cmd.Process.Pid)
+	}
+	if killErr := terminateInstallerProcessGroup(cmd.Process.Pid, processEvidence, syscall.Kill); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 		err = errors.Join(err, fmt.Errorf("clean up command process group: %w", killErr))
 	}
 	stage := "wait"
 	if errors.Is(err, exec.ErrWaitDelay) {
 		stage = "output drain"
 	}
-	return fmt.Errorf("command %q args=%q pid=%d stage=%s start=%s wait=%s: %w", cmd.Path, cmd.Args[1:], cmd.Process.Pid, stage,
-		startDuration.Round(time.Millisecond), waitDuration.Round(time.Millisecond), errors.Join(err, context.Cause(ctx)))
+	return fmt.Errorf("command %q args=%q pid=%d stage=%s start=%s wait=%s processes=%q: %w", cmd.Path, cmd.Args[1:], cmd.Process.Pid, stage,
+		startDuration.Round(time.Millisecond), waitDuration.Round(time.Millisecond), processEvidence.description, errors.Join(err, context.Cause(ctx)))
+}
+
+type installerProcessSnapshot struct {
+	description string
+	available   bool
+	live        bool
+}
+
+func terminateInstallerProcessGroup(group int, snapshot installerProcessSnapshot, kill func(int, syscall.Signal) error) error {
+	if snapshot.available && !snapshot.live {
+		return os.ErrProcessDone
+	}
+	err := kill(-group, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
+}
+
+const installerProcessEvidenceGuard = 10 * time.Second
+
+func installerProcessEvidence(group int) installerProcessSnapshot {
+	return installerProcessEvidenceWithRunner(group, context.WithTimeout, func(ctx context.Context) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,pgid=,stat=,comm=")
+		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		cmd.WaitDelay = time.Second
+		return cmd.Output()
+	})
+}
+
+func installerProcessEvidenceWithRunner(
+	group int,
+	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc),
+	run func(context.Context) ([]byte, error),
+) installerProcessSnapshot {
+	// This deadline is an OS deadlock guard, not part of installer timeout behavior.
+	ctx, cancel := withTimeout(context.Background(), installerProcessEvidenceGuard)
+	defer cancel()
+	output, err := run(ctx)
+	if err != nil {
+		return installerProcessSnapshot{description: fmt.Sprintf("snapshot unavailable: %v", errors.Join(err, context.Cause(ctx)))}
+	}
+	return installerProcessGroup(string(output), group)
+}
+
+func TestInstallerProcessEvidenceWaitsForDelayedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	requestedGuard := make(chan time.Duration, 1)
+	done := make(chan installerProcessSnapshot, 1)
+	go func() {
+		done <- installerProcessEvidenceWithRunner(100, func(parent context.Context, guard time.Duration) (context.Context, context.CancelFunc) {
+			requestedGuard <- guard
+			return context.WithCancel(parent)
+		}, func(context.Context) ([]byte, error) {
+			close(started)
+			<-release
+			return []byte("100 1 100 S /bin/sh\n"), nil
+		})
+	}()
+	select {
+	case guard := <-requestedGuard:
+		if guard != 10*time.Second {
+			t.Fatalf("installer process evidence guard = %s, want 10s", guard)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("installerProcessEvidenceWithRunner() did not request a timeout")
+	}
+	select {
+	case <-started:
+	case snapshot := <-done:
+		t.Fatalf("installerProcessEvidenceWithRunner() returned before starting the snapshot: %+v", snapshot)
+	case <-time.After(10 * time.Second):
+		t.Fatal("installerProcessEvidenceWithRunner() did not start the snapshot")
+	}
+	select {
+	case snapshot := <-done:
+		t.Fatalf("installerProcessEvidenceWithRunner() returned before delayed snapshot was released: %+v", snapshot)
+	default:
+	}
+	close(release)
+	// Snapshot release is channel-driven; this timeout only guards against a leaked goroutine.
+	select {
+	case snapshot := <-done:
+		if snapshot.description != "pid=100 ppid=1 pgid=100 state=S executable=/bin/sh" || !snapshot.available || !snapshot.live {
+			t.Fatalf("installerProcessEvidenceWithRunner() = %+v, want delayed process evidence", snapshot)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("installerProcessEvidenceWithRunner() did not return after delayed snapshot was released")
+	}
+}
+
+func installerProcessGroup(output string, group int) installerProcessSnapshot {
+	var processes []string
+	snapshot := installerProcessSnapshot{available: true}
+	for line := range strings.SplitSeq(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[2] != strconv.Itoa(group) {
+			continue
+		}
+		processes = append(processes, fmt.Sprintf("pid=%s ppid=%s pgid=%s state=%s executable=%s", fields[0], fields[1], fields[2], fields[3], strings.Join(fields[4:], " ")))
+		if !strings.HasPrefix(fields[3], "Z") {
+			snapshot.live = true
+		}
+	}
+	if len(processes) == 0 {
+		snapshot.description = "no process group members observed"
+		return snapshot
+	}
+	snapshot.description = strings.Join(processes, "; ")
+	return snapshot
+}
+
+func TestInstallerProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		output   string
+		want     string
+		wantLive bool
+	}{
+		{name: "empty", want: "no process group members observed"},
+		{name: "unrelated groups", output: "123 1 123 S unrelated\n456 1 456 R other", want: "no process group members observed"},
+		{name: "malformed rows", output: "\n100 1 100\n100 1 invalid S sh", want: "no process group members observed"},
+		{name: "shell and child", output: " 100 1 100 S /bin/sh\n101 100 100 R /bin/rm\n102 1 102 S unrelated", want: "pid=100 ppid=1 pgid=100 state=S executable=/bin/sh; pid=101 ppid=100 pgid=100 state=R executable=/bin/rm", wantLive: true},
+		{name: "executable contains spaces", output: "101 100 100 S /path with spaces/tool", want: "pid=101 ppid=100 pgid=100 state=S executable=/path with spaces/tool", wantLive: true},
+		{name: "child after shell exit", output: "101 1 100 S rm", want: "pid=101 ppid=1 pgid=100 state=S executable=rm", wantLive: true},
+		{name: "zombie only", output: "100 1 100 Z sh", want: "pid=100 ppid=1 pgid=100 state=Z executable=sh"},
+		{name: "zombie parent with live child", output: "100 1 100 Z sh\n101 100 100 S rm", want: "pid=100 ppid=1 pgid=100 state=Z executable=sh; pid=101 ppid=100 pgid=100 state=S executable=rm", wantLive: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := installerProcessGroup(tt.output, 100)
+			if got.description != tt.want || !got.available || got.live != tt.wantLive {
+				t.Fatalf("installerProcessGroup() = %+v, want description %q, available=true, and live=%t", got, tt.want, tt.wantLive)
+			}
+		})
+	}
+}
+
+func TestTerminateInstallerProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		snapshot   installerProcessSnapshot
+		killErr    error
+		wantErr    error
+		wantCalled bool
+	}{
+		{name: "unavailable snapshot kills", snapshot: installerProcessSnapshot{description: "snapshot unavailable"}, wantCalled: true},
+		{name: "live group kills", snapshot: installerProcessSnapshot{available: true, live: true}, wantCalled: true},
+		{name: "empty group is already done", snapshot: installerProcessSnapshot{available: true}, wantErr: os.ErrProcessDone},
+		{name: "zombie-only group is already done", snapshot: installerProcessSnapshot{available: true, description: "pid=100 state=Z"}, wantErr: os.ErrProcessDone},
+		{name: "missing group is already done", killErr: syscall.ESRCH, wantErr: os.ErrProcessDone, wantCalled: true},
+		{name: "kill failure is preserved", killErr: syscall.EPERM, wantErr: syscall.EPERM, wantCalled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			called := false
+			got := terminateInstallerProcessGroup(100, tt.snapshot, func(pid int, signal syscall.Signal) error {
+				called = true
+				if pid != -100 || signal != syscall.SIGKILL {
+					t.Fatalf("kill() = (%d, %d), want (-100, %d)", pid, signal, syscall.SIGKILL)
+				}
+				return tt.killErr
+			})
+			if !errors.Is(got, tt.wantErr) || called != tt.wantCalled {
+				t.Fatalf("terminateInstallerProcessGroup() = %v, called=%t; want error %v, called=%t", got, called, tt.wantErr, tt.wantCalled)
+			}
+		})
+	}
 }
 
 func reservePort(t *testing.T) int {
@@ -1017,8 +1477,8 @@ func runDetentCommand(t *testing.T, binary string, workdir string, env []string,
 func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []string, args ...string) (string, string, error) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx, activity, stop := installerActivityContext(t.Context(), testenv.SubprocessWaitTimeout, newInstallerActivityTimer)
+	defer stop()
 
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = workdir
@@ -1026,8 +1486,8 @@ func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []s
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
+	cmd.Stderr = installerActivityWriter{output: &stderr, activity: activity}
 
 	err := runInstallerCommand(ctx, cmd)
 	return stdout.String(), stderr.String(), err

@@ -270,6 +270,7 @@ type doctorDeps struct {
 	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	proposalLaneWriter   func(context.Context, string, workflowconfig.Config, connector.Connector, connector.Issue, string) error
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
+	modelCatalogProbe    func(context.Context, workflowconfig.AgentBackend) (int, error)
 	executable           func() (string, error)
 	shipSkillProbe       func(string) (doctorShipSkill, error)
 	now                  func() time.Time
@@ -468,6 +469,39 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 
 	liveBoot := doctorLiveBoot(boot, global)
+	if global != nil {
+		configuredPort := resolveConfiguredRuntimePort(ctx, runtimeInput{
+			Config:     global,
+			ConfigPath: resolution,
+			Workflow:   workflowPath,
+		}, runtimeDeps{
+			lookupEnv:    deps.lookupEnv,
+			ghAuthToken:  deps.ghAuthToken,
+			loadWorkflow: deps.loadWorkflow,
+		})
+		configuredBoot := BootConfig{
+			Global: *global,
+			Host:   bootHost(ctx, "", firstGlobalProject(*global)),
+			Port:   &configuredPort.Value,
+		}
+		writeDoctorProgressStart(progressOut, "Dashboard address")
+		addressCtx, cancelAddress := context.WithTimeout(ctx, timeout)
+		_, runningAddress, addressErr := resolveDashboardBootConfig(addressCtx, resolution, *global, cfg.Host, cfg.Flags.Port.Value, cfg.Flags.Port.Set, opts)
+		cancelAddress()
+		var check doctorCheck
+		if addressErr != nil {
+			check = doctorCheck{
+				Name:   "Dashboard address",
+				Status: doctorFail,
+				Detail: addressErr.Error(),
+				Hint:   "Fix the worker service address, runtime flags, or global configuration, then rerun detent doctor.",
+			}
+		} else {
+			check = checkDoctorDashboardAddress(configuredBoot, runningAddress)
+		}
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
+	}
 	binaryEnvironment := resolveDoctorBinaryEnvironment(ctx, resolution, liveBoot, deps)
 	jobs := []doctorCheckJob{}
 	if global != nil {
@@ -1217,6 +1251,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.modelProbe == nil {
 		d.modelProbe = defaults.modelProbe
 	}
+	if d.modelCatalogProbe == nil {
+		d.modelCatalogProbe = defaults.modelCatalogProbe
+	}
 	if d.executable == nil {
 		d.executable = defaults.executable
 	}
@@ -1261,6 +1298,7 @@ func defaultDoctorDeps() doctorDeps {
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
+		modelCatalogProbe:    defaultDoctorBackendModelCatalogProbe,
 		executable:           os.Executable,
 		shipSkillProbe:       probeDoctorShipSkill,
 		now:                  time.Now,

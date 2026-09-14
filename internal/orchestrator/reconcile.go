@@ -397,8 +397,10 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	if refreshed.Assignees != nil {
 		merged.Assignees = refreshed.Assignees
 	}
-	if refreshed.BlockedBy != nil {
+	if refreshed.BlockedBy != nil || refreshed.DependencySource != "" {
 		merged.BlockedBy = refreshed.BlockedBy
+		merged.DependencySource = refreshed.DependencySource
+		merged.DependencyNotes = refreshed.DependencyNotes
 	}
 	if refreshed.BlockerReason != "" {
 		merged.BlockerReason = refreshed.BlockerReason

@@ -778,6 +778,10 @@ func (b *recordingGitHubBackend) CreatePullRequestComment(context.Context, strin
 	panic("unexpected github CreatePullRequestComment")
 }
 
+func (b *recordingGitHubBackend) CreateDraftPullRequest(context.Context, string, string, string, string) (connector.PullRequest, error) {
+	panic("unexpected github CreateDraftPullRequest")
+}
+
 func (b *recordingGitHubBackend) FetchPullRequestComments(context.Context, string, int) ([]connector.IssueComment, error) {
 	panic("unexpected github FetchPullRequestComments")
 }

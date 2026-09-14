@@ -6,25 +6,24 @@
 
 ## Issue effort selection
 
-The default is Codex Sol (`gpt-5.6-sol`) at `high` effort for all work: features,
-fixes, tests, reviews, and routine implementation, including cross-component work.
+Model and reasoning effort are orchestration settings, not authoring decisions.
+The fleet default is Codex Astra (`gpt-6-astra`) at `low` effort — equivalent in
+capability to Sol at `high` — and it is configured once in the operator's
+instance config, not in this repo. `detent.yaml` deliberately carries an empty
+`agents.model_selection` block so it inherits that default.
 
-Every issue must include an explicit `detent-agent` block, with `model` unset:
+Do not put a `model` in a `detent-agent` block. If you include one for `effort`,
+use `low`; the configured policy ceiling clamps anything higher, so a raised
+effort in an issue body has no effect.
 
 ```detent-agent
 schema: 1
-effort: high
+effort: low
 ```
 
-- `high` — the default; use it unless the issue states a documented reason not to.
-- `low` — an exception that requires a written reason in the issue, and only for
-  trivial mechanical edits.
-- `medium` — an exception that requires a written reason in the issue.
-- `xhigh` and `max` — operator-designated only; never assign automatically.
-
-Concurrency, recovery, routing, multiple files, or a new endpoint alone never
-justify changing the effort. Preserve intentional operator exceptions and leave
-`model` unset so the issue inherits the fleet-standard model.
+Escalation above the default is an operator action: applying the
+`complexity:very-complex` label routes the issue to the high-effort level.
+Agents never apply complexity labels and never assign `xhigh` or `max`.
 
 ## Mechanism moratorium
 

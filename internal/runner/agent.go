@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -122,6 +123,7 @@ type Dependencies struct {
 	Now                    func() time.Time
 	Logger                 *slog.Logger
 	SecurityAuditRoot      string
+	ServiceConnection      serviceapi.Connection
 	AfterRunTimeout        time.Duration
 	MaxAgentRSSBytes       uint64
 	RSSPollInterval        time.Duration
@@ -152,6 +154,7 @@ type Runner struct {
 	now                       func() time.Time
 	logger                    *slog.Logger
 	securityAuditRoot         string
+	serviceConnection         serviceapi.Connection
 	afterRunTimeout           time.Duration
 	maxAgentRSSBytes          uint64
 	rssPollInterval           time.Duration
@@ -254,6 +257,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		now:                       deps.Now,
 		logger:                    deps.Logger,
 		securityAuditRoot:         filepath.Clean(deps.SecurityAuditRoot),
+		serviceConnection:         deps.ServiceConnection,
 		afterRunTimeout:           deps.AfterRunTimeout,
 		maxAgentRSSBytes:          deps.MaxAgentRSSBytes,
 		rssPollInterval:           deps.RSSPollInterval,
@@ -1387,15 +1391,15 @@ func agentResumeEmpty(resume AgentResume) bool {
 	return strings.TrimSpace(resume.ThreadID) == "" && strings.TrimSpace(resume.SessionID) == ""
 }
 
-func verifyAgentResume(ctx context.Context, backend AgentBackend, resume AgentResume) error {
+func verifyAgentResume(ctx context.Context, backend AgentBackend, process AgentProcessRequest, resume AgentResume) error {
 	verifier, ok := backend.(AgentResumeVerifier)
 	if !ok {
 		return ErrAgentResumeUnsupported
 	}
-	return verifier.VerifyResume(ctx, resume)
+	return verifier.VerifyResume(ctx, process, resume)
 }
 
-func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
+func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult, returnErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1582,7 +1586,23 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	runStartedAt := r.now()
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
-	resolvedOverride := resolveRequestAgentSelection(ctx, req, info.Path, baseModel, role, workflow.Config, backendConfig, backend)
+	baseEnvironment := workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue)
+	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
+		Workspace:   info.Path,
+		Environment: baseEnvironment,
+	}, workerGitHub)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer func() {
+		if cleanupPreflight != nil {
+			returnErr = r.agentPreflightError(returnErr, cleanupPreflight())
+		}
+	}()
+	resolvedOverride := resolveRequestAgentSelection(ctx, req, processRequest, baseModel, role, workflow.Config, backendConfig, backend)
+	if resolvedOverride.CatalogError != "" && resolvedOverride.Err == nil {
+		r.logger.Warn("agent model catalog discovery failed", "issue_id", req.Issue.ID, "identifier", req.Issue.Identifier, "error", resolvedOverride.CatalogError)
+	}
 	selectedModel := resolvedOverride.Model
 	effort := configuredEffort
 	if resolvedOverride.Effort != "" {
@@ -1643,7 +1663,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 			return RunResult{}, err
 		}
 	}
-	resumeState, err = r.nativeResume(ctx, req, backend, recoveryState, resumeState, executionIdentity)
+	resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -1671,7 +1691,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if !agentResumeStateMatches(resumeState, sessionModel, selection.BackendID, backendConfig.Kind, role) {
 			verifyErr = errors.New("orphaned session runtime identity no longer matches selected backend, model, and role")
 		} else {
-			verifyErr = verifyAgentResume(ctx, backend, agentResumeFromState(resumeState))
+			verifyErr = verifyAgentResume(ctx, backend, processRequest, agentResumeFromState(resumeState))
 		}
 		if verifyErr != nil {
 			orphanRecoveryFallbackReason = errorString(verifyErr)
@@ -1688,6 +1708,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 			resumeState = store.AgentResumeState{}
 			orphanRecoveryOutcome = store.OrphanRecoveryFresh
 		}
+	}
+	preflightCleanupErr := cleanupPreflight()
+	cleanupPreflight = nil
+	if preflightCleanupErr != nil {
+		return RunResult{}, preflightCleanupErr
 	}
 	if req.AcquireModelPermit != nil {
 		if err := req.AcquireModelPermit(ctx); err != nil {
@@ -1779,6 +1804,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		DeliverableKind:       deliverableKind,
 		DeliverableRepository: deliverableRepository,
 		IssueRepository:       agentTurnIssueRepository(workflow.Config, req.Issue),
+		Environment:           baseEnvironment,
 		MaxRSSBytes:           r.maxAgentRSSBytes,
 		RSSPollInterval:       r.rssPollInterval,
 		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
@@ -2192,6 +2218,13 @@ func classifyForgeDeliverableError(err error, fallbackHost string, workProductPu
 		if deliverableErr.OperationClass == "push" && !strings.Contains(strings.ToLower(operation), "git push") {
 			operation = "git push"
 		}
+		if deliverableErr.ApprovalDenied && forgeavailability.WriteOperation(operation) {
+			host := forgeavailability.HostFromText(deliverableErr.Arguments + " " + deliverableErr.Error())
+			if host == "" {
+				host = fallbackHost
+			}
+			return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, forgeavailability.ClassTransport, err)
+		}
 		class, unavailable := forgeavailability.Classify(operation, deliverableErr.Error())
 		if !unavailable {
 			continue
@@ -2210,6 +2243,9 @@ func IsDeliverableConfigurationError(err error) bool {
 	for _, deliverableErr := range errorsFound {
 		if deliverableErr == nil {
 			continue
+		}
+		if deliverableErr.ApprovalDenied {
+			return true
 		}
 		if deliverableCredentialFailureDetail(deliverableErr.Message + "\n" + deliverableErr.Body) {
 			return true
@@ -2379,6 +2415,7 @@ func deliverableCommandEvidenceFromError(err error) []DeliverableCommandEvidence
 			Status:         strings.TrimSpace(deliverableErr.Status),
 			ExitCode:       cloneIntPointer(deliverableErr.ExitCode),
 			Outcome:        "failed",
+			ApprovalDenied: deliverableErr.ApprovalDenied,
 			TargetRef:      cloneDeliverableTargetRefEvidence(deliverableErr.TargetRef),
 		})
 	}
@@ -2896,9 +2933,17 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		selectedModel = override
 	}
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
-	resolvedSelection := resolveAgentSelection(ctx, req.Issue, info.Path, baseModel, RoleValidator, workflow.Config, backendConfig, backend)
-	if resolvedSelection.Err != nil {
-		return gate.ValidatorResult{}, resolvedSelection.Err
+	baseEnvironment := workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue)
+	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
+		Workspace:   info.Path,
+		Environment: baseEnvironment,
+	}, workerGitHub)
+	if err != nil {
+		return gate.ValidatorResult{}, err
+	}
+	resolvedSelection := resolveAgentSelection(ctx, req.Issue, processRequest, baseModel, RoleValidator, workflow.Config, backendConfig, backend)
+	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
+		return gate.ValidatorResult{}, err
 	}
 	selectedModel = resolvedSelection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
@@ -2987,6 +3032,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
+		Environment:        baseEnvironment,
 		MaxRSSBytes:        r.maxAgentRSSBytes,
 		RSSPollInterval:    r.rssPollInterval,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
@@ -3113,6 +3159,21 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
+}
+
+func workerServiceEnvironment(mode string, connection serviceapi.Connection, info workspace.Info, issue workspace.Issue) procgroup.Environment {
+	if normalizeRunMode(mode) != RunModeImplement {
+		return workerEnvironment(serviceapi.RestrictedEnvironment(), info, issue)
+	}
+	return workerEnvironment(connection.Environment(), info, issue)
+}
+
+func workerEnvironment(variables map[string]string, info workspace.Info, issue workspace.Issue) procgroup.Environment {
+	merged := workspace.EnvironmentVariables(info, issue)
+	for key, value := range variables {
+		merged[key] = value
+	}
+	return procgroup.Environment{Variables: merged}
 }
 
 func (r *Runner) validatorPromptOptions(ctx context.Context, info workspace.Info, issue workspace.Issue, maxInlineDiffBytes int) ValidatorPromptOptions {
@@ -4322,6 +4383,7 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		p.recordDeliverableToolCompletion(update)
 		delete(p.toolOutputTails, deliverableToolKey(update))
 	case AgentUpdateMCPElicitation:
+		p.recordDeliverableApprovalDecline(update)
 		eventMessage = update.Delta
 	}
 
@@ -4353,8 +4415,60 @@ type deliverableToolInvocation struct {
 	command               string
 	tool                  string
 	output                string
+	approvalDenied        bool
 	ciTriggerLabelMatches bool
 	ciTriggerAfterPush    bool
+}
+
+func (p *agentRunProgress) recordDeliverableApprovalDecline(update AgentUpdate) {
+	if !strings.EqualFold(strings.TrimSpace(update.Status), "decline") {
+		return
+	}
+	key := deliverableToolKey(update)
+	invocation, ok := p.toolInvocations[key]
+	if !ok {
+		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber, p.deliverableRecoveryBranch)
+	}
+	if invocation.class != "pull_request" {
+		return
+	}
+	invocation.approvalDenied = infrastructureApprovalDecline(update.Delta)
+	invocation.output = appendDeliverableDetail(invocation.output, update.Delta)
+	p.toolInvocations[key] = invocation
+	p.deliverableFailures[invocation.class] = &DeliverableCommandError{
+		OperationClass: invocation.class,
+		Operation:      deliverableInvocationOperation(invocation),
+		Arguments:      deliverableInvocationArguments(invocation),
+		ItemID:         strings.TrimSpace(update.ItemID),
+		Command:        strings.TrimSpace(invocation.command),
+		Status:         strings.TrimSpace(update.Status),
+		Message:        truncateDeliverableDetail(meaningfulDeliverableDetail(update.Delta)),
+		ApprovalDenied: invocation.approvalDenied,
+	}
+}
+
+func infrastructureApprovalDecline(detail string) bool {
+	var reason string
+	for field := range strings.FieldsSeq(detail) {
+		if value, ok := strings.CutPrefix(field, "reason="); ok {
+			reason = strings.TrimSpace(value)
+			break
+		}
+	}
+	switch reason {
+	case "invalid_request",
+		"unsupported_server",
+		"unsupported_mode",
+		"invalid_metadata",
+		"unsupported_approval_kind",
+		"unsupported_schema",
+		"missing_correlation",
+		"ambiguous_correlation",
+		"tool_not_allowlisted":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *agentRunProgress) recordDeliverableToolOutput(update AgentUpdate) {
@@ -4466,6 +4580,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		ExitCode:       cloneIntPointer(update.ExitCode),
 		Message:        truncateDeliverableDetail(message),
 		Body:           truncateDeliverableDetail(body),
+		ApprovalDenied: invocation.approvalDenied,
 	}
 }
 

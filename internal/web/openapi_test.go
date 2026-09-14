@@ -97,6 +97,18 @@ func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
 		t.Fatal("OpenAPI IssueExplanation schema version property is missing")
 	}
 	assertOpenAPISchemaVersion(t, responseSchema.Value.Enum)
+	for _, name := range []string{"dependencies", "dependency_notes"} {
+		property := explanation.Value.Properties[name]
+		if property == nil || property.Value == nil || property.Value.Items == nil {
+			t.Fatalf("missing array schema for %s", name)
+		}
+	}
+	dependency := document.Components.Schemas["IssueDependency"]
+	for _, name := range []string{"identifier", "id", "state", "tracker_state", "source", "human_owned", "human_completion_ready"} {
+		if dependency == nil || dependency.Value == nil || dependency.Value.Properties[name] == nil {
+			t.Fatalf("missing dependency property %s", name)
+		}
+	}
 }
 
 func TestServerOpenAPIIssueProgressCredit(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -330,6 +331,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		Closed:           true,
 		ClosedReason:     "COMPLETED",
 		BlockedBy:        []connector.BlockedRef{},
+		DependencySource: connector.BlockedRefSourceProse,
 		Labels:           []string{"bug", "enhancement"},
 		Assignees:        []string{},
 		Fields:           map[string]string{},
@@ -1361,14 +1363,10 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name:    "prose only when native list is empty",
+			name:    "empty native list ignores prose",
 			initial: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			status:  http.StatusOK,
 			body:    `[]`,
-			want: []connector.BlockedRef{{
-				Identifier: "digitaldrywood/detent#101",
-				Source:     connector.BlockedRefSourceProse,
-			}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -1376,7 +1374,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name: "merged deduplicates with native winning",
+			name: "native excludes unmatched prose",
 			initial: []connector.BlockedRef{
 				{Identifier: "digitaldrywood/detent#100", Source: connector.BlockedRefSourceProse},
 				{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse},
@@ -1388,9 +1386,6 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 				Identifier: "digitaldrywood/detent#100",
 				State:      "Done",
 				Source:     connector.BlockedRefSourceNative,
-			}, {
-				Identifier: "digitaldrywood/detent#101",
-				Source:     connector.BlockedRefSourceProse,
 			}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
@@ -1449,8 +1444,13 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			issue.ID = "I_1073"
 			issue.Identifier = "digitaldrywood/detent#1073"
 			issue.BlockedBy = append([]connector.BlockedRef(nil), tt.initial...)
+			for _, ref := range tt.initial {
+				issue.Description += "Depends on: " + ref.Identifier + "\n"
+			}
 
-			c.hydrateIssueBlockedByRefs(context.Background(), &issue)
+			if err := c.hydrateIssueBlockedByRefs(context.Background(), &issue); err != nil {
+				t.Fatal(err)
+			}
 
 			if !reflect.DeepEqual(issue.BlockedBy, tt.want) {
 				t.Fatalf("BlockedBy = %#v, want %#v", issue.BlockedBy, tt.want)
@@ -1484,7 +1484,9 @@ func TestConnectorHydrateIssueBlockedByRefsPaginatesNativeDependencies(t *testin
 	issue.ID = "I_1073"
 	issue.Identifier = "digitaldrywood/detent#1073"
 
-	c.hydrateIssueBlockedByRefs(context.Background(), &issue)
+	if err := c.hydrateIssueBlockedByRefs(context.Background(), &issue); err != nil {
+		t.Fatal(err)
+	}
 
 	want := []connector.BlockedRef{
 		{
@@ -1526,12 +1528,17 @@ func TestConnectorHydrateIssueBlockedByRefsDoesNotCacheRateLimitAsUnavailable(t 
 	issue.ID = "I_1073"
 	issue.Identifier = "digitaldrywood/detent#1073"
 	issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101"}}
+	issue.Description = "Depends on: #101"
 
-	c.hydrateIssueBlockedByRefs(context.Background(), &issue)
+	if err := c.hydrateIssueBlockedByRefs(context.Background(), &issue); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("hydrate error = %v, want rate limit", err)
+	}
+	if issue.DependencySource != "" {
+		t.Fatalf("rate limit certified fallback source %q", issue.DependencySource)
+	}
 
 	want := []connector.BlockedRef{{
 		Identifier: "digitaldrywood/detent#101",
-		Source:     connector.BlockedRefSourceProse,
 	}}
 	if !reflect.DeepEqual(issue.BlockedBy, want) {
 		t.Fatalf("BlockedBy = %#v, want prose fallback %#v", issue.BlockedBy, want)
@@ -1979,17 +1986,6 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			method: http.MethodGet,
-			path:   "/rate_limit",
-			headers: map[string]string{
-				"X-RateLimit-Limit":     "5000",
-				"X-RateLimit-Remaining": "900",
-				"X-RateLimit-Used":      "4100",
-				"X-RateLimit-Resource":  "core",
-			},
-			body: `{}`,
-		},
-		{
 			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
 		},
 	})
@@ -1999,9 +1995,20 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 		ActiveStates:            []string{"Todo"},
 		RESTMinRemainingReserve: 1000,
 	})
-	if err := c.client.REST(context.Background(), http.MethodGet, "/rate_limit", nil, nil); err != nil {
-		t.Fatalf("REST() seed rate limit error = %v", err)
-	}
+	// This fixture exercises PR hydration with native dependencies already known
+	// to be unsupported, so the reserved budget reaches the PR read boundary.
+	c.recordNativeDependencyCapability("digitaldrywood/detent", nativeDependencyStatusUnavailable, "fixture")
+	now := time.Now()
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Limit", "5000")
+	headers.Set("X-RateLimit-Remaining", "900")
+	headers.Set("X-RateLimit-Used", "4100")
+	headers.Set("X-RateLimit-Resource", "core")
+	headers.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+	c.client.recordRESTRateLimitFromHeaders(
+		context.Background(), "", c.client.restCredentialIdentity("token"), http.MethodGet,
+		"/repos/digitaldrywood/detent/pulls?state=all", http.StatusOK, headers, nil, now, false,
+	)
 
 	got, err := c.FetchCandidateIssues(context.Background())
 	if err != nil {
@@ -2021,8 +2028,8 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 	}
 
 	requests := server.requests()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want rate limit seed plus project query", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want only project query", len(requests))
 	}
 	for _, request := range requests {
 		path, _ := request["path"].(string)
@@ -2034,8 +2041,8 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 	if usage.RateLimited || !usage.ReserveHeld || usage.FanoutDeferred {
 		t.Fatalf("RESTRateLimitUsage = %#v, want reserve-floor hold only", usage)
 	}
-	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 1 {
-		t.Fatalf("pull requests usage count = %d, want synthetic throttle; usage = %#v", got, usage.Requests)
+	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 2 {
+		t.Fatalf("pull requests usage count = %d, want seed observation plus synthetic throttle; usage = %#v", got, usage.Requests)
 	}
 }
 
@@ -3926,8 +3933,8 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 	if len(requests) != 4 {
 		t.Fatalf("request count = %d, want 4", len(requests))
 	}
-	if strings.Contains(requests[0]["query"].(string), "comments") {
-		t.Fatalf("project query = %q, want no comments", requests[0]["query"])
+	if !strings.Contains(requests[0]["query"].(string), "comments { totalCount }") || strings.Contains(requests[0]["query"].(string), "comments(first:") {
+		t.Fatalf("project query = %q, want comment count without comment bodies", requests[0]["query"])
 	}
 	if requests[1]["method"] != http.MethodGet || requests[1]["path"] != "/repos/digitaldrywood/detent/issues/98/comments?per_page=100" {
 		t.Fatalf("comments request = %#v, want REST issue comments", requests[1])
@@ -4012,7 +4019,7 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 	}
 }
 
-func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) {
+func TestConnectorFetchIssuesByStatesIgnoresWorkpadBlockedByRefs(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -4030,14 +4037,6 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 			path:   "/repos/digitaldrywood/detent/issues/416/dependencies/blocked_by?per_page=100",
 			body:   `{"message":"not found"}`,
 		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/415",
-			body:   `{"node_id":"I_kw415","number":415,"title":"Closed dependency","body":"","state":"CLOSED","html_url":"https://github.com/digitaldrywood/detent/issues/415","labels":[]}`,
-		},
-		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
-		},
 	})
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
@@ -4050,11 +4049,8 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
 	}
 
-	want := []connector.BlockedRef{
-		{ID: "I_kw415", Identifier: "digitaldrywood/detent#415", State: "Done", Source: connector.BlockedRefSourceProse},
-	}
-	if !reflect.DeepEqual(got[0].BlockedBy, want) {
-		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+	if len(got[0].BlockedBy) != 0 {
+		t.Fatalf("BlockedBy = %#v, want no comment-derived blockers", got[0].BlockedBy)
 	}
 }
 
@@ -5094,6 +5090,41 @@ func TestConnectorCreatePullRequestCommentUsesIssueCommentsEndpoint(t *testing.T
 	body := requests[0]["body"].(map[string]any)
 	if body["body"] != "ship it" {
 		t.Fatalf("body = %v, want ship it", body["body"])
+	}
+}
+
+func TestConnectorCreateDraftPullRequestUsesRepositoryDefaultBranch(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo",
+			body:   `{"id":1,"full_name":"example/repo","default_branch":"trunk"}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/pulls",
+			body:   `{"node_id":"PR_kw1","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","draft":true,"head":{"ref":"detent/example_7","sha":"head-sha"},"base":{"ref":"trunk","sha":"base-sha"}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	pullRequest, err := c.CreateDraftPullRequest(t.Context(), "example/repo", "detent/example_7", " Recover work ", " provenance ")
+	if err != nil {
+		t.Fatalf("CreateDraftPullRequest() error = %v", err)
+	}
+	if pullRequest.Number != 42 || !pullRequest.Draft || pullRequest.State != "OPEN" || pullRequest.BranchName != "detent/example_7" || pullRequest.HeadSHA != "head-sha" {
+		t.Fatalf("CreateDraftPullRequest() = %#v", pullRequest)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	body := requests[1]["body"].(map[string]any)
+	if body["title"] != "Recover work" || body["head"] != "detent/example_7" || body["base"] != "trunk" || body["body"] != "provenance" || body["draft"] != true {
+		t.Fatalf("request body = %#v", body)
 	}
 }
 
@@ -6907,11 +6938,12 @@ func TestConnectorSetFieldWritesTextProjectValue(t *testing.T) {
 
 type graphqlTestServer struct {
 	*httptest.Server
-	t           *testing.T
-	mu          sync.Mutex
-	responses   []graphqlTestResponse
-	seen        []map[string]any
-	requestSeen chan struct{}
+	t                 *testing.T
+	mu                sync.Mutex
+	unsupportedNative bool
+	responses         []graphqlTestResponse
+	seen              []map[string]any
+	requestSeen       chan struct{}
 }
 
 type graphqlTestResponse struct {
@@ -6931,6 +6963,14 @@ func newGraphQLTestServer(t *testing.T, responses []graphqlTestResponse) *graphq
 		t:           t,
 		responses:   responses,
 		requestSeen: make(chan struct{}, len(responses)+1),
+	}
+	// Legacy fixtures model repositories without native dependency support.
+	// Native tests supply explicit endpoint responses and remain strictly scripted.
+	server.unsupportedNative = true
+	for _, response := range responses {
+		if strings.Contains(response.path, "/dependencies/blocked_by") {
+			server.unsupportedNative = false
+		}
 	}
 	server.Server = httptest.NewServer(http.HandlerFunc(server.serveHTTP))
 	t.Cleanup(server.Close)
@@ -6966,6 +7006,13 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
+	if s.unsupportedNative && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/dependencies/blocked_by") {
+		payload["implicit_native_probe"] = true
+		s.seen = append(s.seen, payload)
+		s.mu.Unlock()
+		http.Error(w, `{"message":"native dependencies unsupported by fixture"}`, http.StatusNotFound)
+		return
+	}
 	s.seen = append(s.seen, payload)
 	select {
 	case s.requestSeen <- struct{}{}:
@@ -7008,8 +7055,14 @@ func (s *graphqlTestServer) requests() []map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out := make([]map[string]any, len(s.seen))
-	copy(out, s.seen)
+	// Existing script assertions count scripted requests. The complete seen log
+	// retains optional native probes for tests that assert total REST fanout.
+	out := make([]map[string]any, 0, len(s.seen))
+	for _, request := range s.seen {
+		if request["implicit_native_probe"] != true {
+			out = append(out, request)
+		}
+	}
 	return out
 }
 

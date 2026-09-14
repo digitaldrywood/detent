@@ -1,7 +1,10 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -122,6 +125,40 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDisposedFalsePositiveDoesNotProduceSecurityAuditRework(t *testing.T) {
+	t.Parallel()
+
+	issue := securityAuditTestIssue()
+	issue.PullRequest.State = "open"
+	run := securityAuditPassingRun(issue)
+	run.Verdict = securityaudit.VerdictFail
+	run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Body: "authorization bypass"}}
+	memo := newSecurityAuditMemoryStore()
+	memo.runs = append(memo.runs, run)
+	memo.dispositions[run.ID] = []securityaudit.Disposition{{
+		FindingID:       "authz",
+		Status:          securityaudit.DispositionFalsePositive,
+		Evidence:        "The endpoint requires the repository owner role before this branch.",
+		ServiceIdentity: "detent:detent",
+	}}
+	evaluation := securityAuditTestOrchestrator(memo).securityAuditEvaluation(t.Context(), issue)
+	summary := AutoPromoteSummaryFromIssue(issue)
+	summary.PullRequestPresent = true
+	summary.CIStatus = "green"
+	summary.SecurityAudit = evaluation
+	decision := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{
+		Enabled: true,
+		Gate: gate.Config{
+			Kind:            gate.KindCommand,
+			AutomatedReview: gate.AutomatedReviewOff,
+			SecurityAudit:   gate.SecurityAuditConfig{Enabled: true},
+		},
+	}, time.Now())
+	if decision.Action == AutoPromoteActionRework || decision.Reason == AutoPromoteReasonSecurityAuditFindings {
+		t.Fatalf("EvaluateAutoPromote() = %#v, want disposed finding to avoid security audit rework", decision)
+	}
+}
+
 func TestStartSecurityAuditStagePersistsTrustedExecution(t *testing.T) {
 	t.Parallel()
 
@@ -149,6 +186,31 @@ func TestStartSecurityAuditStagePersistsTrustedExecution(t *testing.T) {
 	}
 	if len(memo.runs) != 1 || memo.runs[0].ServiceIdentity != "detent:detent" || memo.runs[0].AuthenticationMode != securityaudit.AuthenticationSubscription {
 		t.Fatalf("persisted runs = %#v, want trusted subscription execution", memo.runs)
+	}
+}
+
+func TestStartSecurityAuditStageLogsFailedExecution(t *testing.T) {
+	t.Parallel()
+
+	issue := securityAuditTestIssue()
+	snapshot := securityAuditSnapshotFromIssue("detent", issue)
+	auditErr := errors.New("agent override validation: model catalog unavailable: initialize codex app-server: unexpected EOF")
+	memo := newSecurityAuditMemoryStore()
+	connector := &securityAuditTestConnector{snapshot: snapshot}
+	var logs bytes.Buffer
+	orch := securityAuditTestOrchestrator(memo)
+	orch.connector = connector
+	orch.securityAuditor = &securityAuditTestAuditor{err: auditErr}
+	orch.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	orch.startSecurityAuditStage(t.Context(), issue, time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC))
+	orch.securityAuditWG.Wait()
+
+	if len(memo.runs) != 1 || memo.runs[0].Failure != auditErr.Error() {
+		t.Fatalf("persisted runs = %#v, want failure %q", memo.runs, auditErr)
+	}
+	if got := logs.String(); !strings.Contains(got, auditErr.Error()) {
+		t.Fatalf("structured log missing security audit catalog failure %q:\n%s", auditErr, got)
 	}
 }
 
@@ -230,6 +292,7 @@ func (s *securityAuditMemoryStore) ListSecurityAuditDispositions(_ context.Conte
 
 type securityAuditTestAuditor struct {
 	request SecurityAuditRequest
+	err     error
 }
 
 func (a *securityAuditTestAuditor) Audit(_ context.Context, request SecurityAuditRequest) (SecurityAuditExecution, error) {
@@ -250,7 +313,7 @@ func (a *securityAuditTestAuditor) Audit(_ context.Context, request SecurityAudi
 		},
 		StartedAt:   startedAt,
 		CompletedAt: startedAt.Add(time.Second),
-	}, nil
+	}, a.err
 }
 
 type securityAuditTestConnector struct {

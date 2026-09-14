@@ -2049,8 +2049,8 @@ func TestIssueSpendSinceUsesAcceptedProgressBoundaryAndIssueIdentity(t *testing.
 	events := []UsageEvent{
 		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 9, TotalTokens: 900, StartedAt: base.Add(-time.Minute), FinishedAt: base, Outcome: "completed"},
 		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 40, TotalTokens: 4_000, StartedAt: base.Add(-time.Minute), FinishedAt: base.Add(5 * time.Minute), Outcome: "completed"},
-		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 1.25, TotalTokens: 125, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
-		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 2.5, TotalTokens: 250, StartedAt: base.Add(3 * time.Minute), FinishedAt: base.Add(4 * time.Minute), Outcome: "completed"},
+		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 1.25, InputTokens: 30_000_000, CachedInputTokens: 29_850_368, OutputTokens: 7_481, TotalTokens: 30_007_481, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
+		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 2.5, InputTokens: 100, CachedInputTokens: 200, OutputTokens: 25, TotalTokens: 125, StartedAt: base.Add(3 * time.Minute), FinishedAt: base.Add(4 * time.Minute), Outcome: "completed"},
 		{ProjectID: "detent", IssueID: "other", Identifier: "gopherguides/gopher-ai#999", CostUSD: 20, TotalTokens: 2_000, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
 		{ProjectID: "other-project", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 30, TotalTokens: 3_000, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
 	}
@@ -2117,28 +2117,86 @@ func TestIssueSpendSinceUsesAcceptedProgressBoundaryAndIssueIdentity(t *testing.
 	if err != nil {
 		t.Fatalf("IssueSpendSince() error = %v", err)
 	}
-	if math.Abs(spend.CostUSD-3.75) > 0.000001 || spend.TotalTokens != 375 || spend.Sessions != 2 {
-		t.Fatalf("IssueSpendSince() = %#v, want $3.75 and 375 tokens across two sessions", spend)
+	if math.Abs(spend.CostUSD-3.75) > 0.000001 || spend.TotalTokens != 157_138 || spend.Sessions != 2 {
+		t.Fatalf("IssueSpendSince() = %#v, want $3.75 and 157138 uncached tokens across two sessions", spend)
 	}
 	if !spend.FirstSessionAt.Equal(base.Add(2*time.Minute)) || !spend.LastSessionAt.Equal(base.Add(4*time.Minute)) {
 		t.Fatalf("session range = %s..%s", spend.FirstSessionAt, spend.LastSessionAt)
 	}
 }
 
-func TestIssueSpendSinceExcludesOnlyCapacityAttempts(t *testing.T) {
+func TestIssueSpendSinceTokenAccountingFallback(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		terminal WorkAttemptTerminalState
-		wantCost float64
+		name       string
+		usage      UsageEvent
+		nullCached bool
+		wantTokens int64
 	}{
-		{terminal: WorkAttemptTerminalCapacity},
-		{terminal: WorkAttemptTerminalFailure, wantCost: 50},
-		{terminal: WorkAttemptTerminalSuccess, wantCost: 50},
-		{terminal: WorkAttemptTerminalTimedOut, wantCost: 50},
+		{name: "legacy null cache", usage: UsageEvent{InputTokens: 100, OutputTokens: 7, TotalTokens: 107}, nullCached: true, wantTokens: 107},
+		{name: "total only", usage: UsageEvent{TotalTokens: 900}, wantTokens: 900},
+		{name: "total only subtracts known cache", usage: UsageEvent{CachedInputTokens: 600, TotalTokens: 900}, wantTokens: 300},
 	}
 	for _, tt := range tests {
-		t.Run(string(tt.terminal), func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			backend := openTestStore(t, ctx)
+			startedAt := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+			usage := tt.usage
+			usage.ProjectID = "detent"
+			usage.IssueID = "issue-2538"
+			usage.StartedAt = startedAt
+			usage.FinishedAt = startedAt.Add(time.Minute)
+			usage.Outcome = "completed"
+			eventID, err := backend.RecordUsageEvent(ctx, usage)
+			if err != nil {
+				t.Fatalf("RecordUsageEvent() error = %v", err)
+			}
+			if tt.nullCached {
+				sqliteBackend, ok := backend.(*sqliteStore)
+				if !ok {
+					t.Fatalf("store type = %T, want *sqliteStore", backend)
+				}
+				if _, err := sqliteBackend.db.ExecContext(ctx, "UPDATE usage_events SET cached_input_tokens = NULL WHERE id = ?", eventID); err != nil {
+					t.Fatalf("set legacy cached token value: %v", err)
+				}
+			}
+
+			spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue-2538", Since: startedAt.Add(-time.Second)})
+			if err != nil {
+				t.Fatalf("IssueSpendSince() error = %v", err)
+			}
+			if spend.TotalTokens != tt.wantTokens || spend.Sessions != 1 {
+				t.Fatalf("IssueSpendSince() = %#v, want %d tokens in one session", spend, tt.wantTokens)
+			}
+		})
+	}
+}
+
+func TestIssueSpendSinceExcludesInstanceInfrastructureAttempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		terminal   WorkAttemptTerminalState
+		errorClass string
+		wantCost   float64
+		wantTokens int64
+	}{
+		{name: "capacity", terminal: WorkAttemptTerminalCapacity},
+		{name: "workspace preparation", terminal: WorkAttemptTerminalFailure, errorClass: "workspace_preparation"},
+		{name: "backend startup failure", terminal: WorkAttemptTerminalFailure, errorClass: "backend_startup_failure"},
+		{name: "backend startup timeout", terminal: WorkAttemptTerminalTimedOut, errorClass: "backend_startup_timeout"},
+		{name: "deliverable configuration", terminal: WorkAttemptTerminalFailure, errorClass: "deliverable_configuration_failure"},
+		{name: "tracker unavailable", terminal: WorkAttemptTerminalFailure, errorClass: "tracker_unavailable"},
+		{name: "forge unavailable", terminal: WorkAttemptTerminalFailure, errorClass: "forge_unavailable"},
+		{name: "ordinary failure", terminal: WorkAttemptTerminalFailure, errorClass: "runner_error", wantCost: 50, wantTokens: 600},
+		{name: "genuine success", terminal: WorkAttemptTerminalSuccess, wantCost: 50, wantTokens: 600},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			ctx := t.Context()
@@ -2152,18 +2210,22 @@ func TestIssueSpendSinceExcludesOnlyCapacityAttempts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: sessionID, CostUSD: 50, TotalTokens: 5000, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Minute), Outcome: "failed"}); err != nil {
+			if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: sessionID, CostUSD: 50, InputTokens: 5_000, CachedInputTokens: 4_500, OutputTokens: 100, TotalTokens: 5_100, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Minute), Outcome: "failed"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: startedAt.Add(time.Minute), Status: WorkAttemptStatusTerminal, TerminalState: tt.terminal}); err != nil {
+			if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: startedAt.Add(time.Minute), Status: WorkAttemptStatusTerminal, TerminalState: tt.terminal, ErrorClass: tt.errorClass}); err != nil {
 				t.Fatal(err)
 			}
 			spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue", Since: startedAt.Add(-time.Second)})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if spend.CostUSD != tt.wantCost || spend.TotalTokens != int64(tt.wantCost*100) {
-				t.Fatalf("no-progress spend = %#v, want cost %.2f", spend, tt.wantCost)
+			wantSessions := int64(0)
+			if tt.wantCost > 0 {
+				wantSessions = 1
+			}
+			if spend.CostUSD != tt.wantCost || spend.TotalTokens != tt.wantTokens || spend.Sessions != wantSessions {
+				t.Fatalf("no-progress spend = %#v, want cost %.2f, %d tokens, and %d sessions", spend, tt.wantCost, tt.wantTokens, wantSessions)
 			}
 			costs, err := backend.BudgetCostEvents(ctx, BudgetCostQuery{ProjectIDs: []string{"detent"}, From: startedAt.Add(-time.Second), To: startedAt.Add(time.Hour)})
 			if err != nil {
@@ -3670,7 +3732,7 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	startedAt := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
 	for i := range cases {
-		if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: int64(i + 1), CostUSD: 50, TotalTokens: 5000, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Hour), Outcome: "completed"}); err != nil {
+		if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: int64(i + 1), CostUSD: 50, InputTokens: 5000, TotalTokens: 5000, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Hour), Outcome: "completed"}); err != nil {
 			t.Fatal(err)
 		}
 	}

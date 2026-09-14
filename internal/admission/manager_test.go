@@ -4459,7 +4459,7 @@ func (b *effortRecordingAgentBackend) RunTurn(
 	return runner.AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"}, nil
 }
 
-func (*effortRecordingAgentBackend) ListModels(context.Context) ([]runner.AgentModel, error) {
+func (*effortRecordingAgentBackend) ListModels(context.Context, runner.AgentProcessRequest) ([]runner.AgentModel, error) {
 	return []runner.AgentModel{{
 		ID:                        "gpt-default",
 		Model:                     "gpt-default",
@@ -4468,7 +4468,7 @@ func (*effortRecordingAgentBackend) ListModels(context.Context) ([]runner.AgentM
 	}}, nil
 }
 
-func (*effortRecordingAgentBackend) DefaultModel(context.Context, string) (string, error) {
+func (*effortRecordingAgentBackend) DefaultModel(context.Context, runner.AgentProcessRequest) (string, error) {
 	return "gpt-default", nil
 }
 

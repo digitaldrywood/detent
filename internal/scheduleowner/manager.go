@@ -238,7 +238,7 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context) error) err
 		if err != nil {
 			m.reportState(fmt.Errorf("schedule ownership acquisition failed: %w", err))
 			m.logger.WarnContext(ctx, "schedule ownership acquisition failed", "owner", m.owner, "key", m.config.Key, "error", err)
-			if waitErr := m.wait(ctx, m.config.RetryInterval()); waitErr != nil {
+			if waitErr := m.wait(ctx, retryDelay(err, m.config.RetryInterval())); waitErr != nil {
 				return nil
 			}
 			continue
@@ -334,7 +334,7 @@ func (m *Manager) hold(ctx context.Context, lease Lease, work func(context.Conte
 				return finish(ErrLeaseLost, false)
 			}
 			m.logger.WarnContext(ctx, "schedule ownership renewal failed", "owner", lease.Owner, "key", m.config.Key, "generation", lease.Generation, "error", err)
-			timer.Reset(nextRenewalDelay(m.now(), validUntil, m.config.RetryInterval()))
+			timer.Reset(nextRenewalDelay(m.now(), validUntil, retryDelay(err, m.config.RetryInterval())))
 		}
 	}
 }
@@ -415,6 +415,18 @@ func nextRenewalDelay(now time.Time, validUntil time.Time, interval time.Duratio
 		return remaining
 	}
 	return interval
+}
+
+type retryAfterError interface {
+	RetryAfterDuration() time.Duration
+}
+
+func retryDelay(err error, fallback time.Duration) time.Duration {
+	var retryErr retryAfterError
+	if errors.As(err, &retryErr) {
+		return max(fallback, retryErr.RetryAfterDuration())
+	}
+	return fallback
 }
 
 func waitContext(ctx context.Context, delay time.Duration) error {

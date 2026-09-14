@@ -95,10 +95,16 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 		return "", nil, fmt.Errorf("read worker Codex profile: %w", err)
 	}
 	for _, entry := range profileEntries {
+		path := filepath.Join(profileHome, entry.Name())
+		if codexSQLiteFilename(entry.Name()) {
+			if err := removeSharedSQLiteProfileEntry(filepath.Join(sourceHome, entry.Name()), path); err != nil {
+				return "", nil, err
+			}
+			continue
+		}
 		if !codexInstructionFilename(entry.Name()) {
 			continue
 		}
-		path := filepath.Join(profileHome, entry.Name())
 		local, err := removeManagedProfileLink(path)
 		if err != nil {
 			return "", nil, err
@@ -115,6 +121,9 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 		if codexInstructionFilename(entry.Name()) ||
 			entry.Name() == workerCodexProfileDir || entry.Name() == launchdCodexProfileDir ||
 			(isLaunchd && entry.Name() == "skills") {
+			continue
+		}
+		if codexSQLiteFilename(entry.Name()) {
 			continue
 		}
 		if err := ensureProfileLink(
@@ -230,6 +239,38 @@ func rejectProtectedAgentSkills(userHome string) error {
 
 func codexInstructionFilename(name string) bool {
 	return strings.EqualFold(name, "AGENTS.md") || strings.EqualFold(name, "AGENTS.override.md")
+}
+
+func codexSQLiteFilename(name string) bool {
+	return strings.Contains(strings.ToLower(name), ".sqlite")
+}
+
+func removeSharedSQLiteProfileEntry(source string, destination string) error {
+	destinationInfo, err := os.Lstat(destination)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect worker Codex SQLite state %s: %w", destination, err)
+	}
+	shared := destinationInfo.Mode()&os.ModeSymlink != 0
+	if !shared {
+		sourceInfo, sourceErr := os.Stat(source)
+		if errors.Is(sourceErr, os.ErrNotExist) {
+			return nil
+		}
+		if sourceErr != nil {
+			return fmt.Errorf("inspect host Codex SQLite state %s: %w", source, sourceErr)
+		}
+		shared = os.SameFile(sourceInfo, destinationInfo)
+	}
+	if !shared {
+		return nil
+	}
+	if err := os.Remove(destination); err != nil {
+		return fmt.Errorf("remove shared worker Codex SQLite state %s: %w", destination, err)
+	}
+	return nil
 }
 
 func ensureProfileLink(source string, destination string) error {

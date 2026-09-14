@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
@@ -194,6 +195,126 @@ func TestManagerScheduledRunSkipsStaleTimerAfterScheduleUpdate(t *testing.T) {
 	want := time.Date(2026, time.July, 17, 9, 30, 0, 0, time.UTC)
 	if !next.Equal(want) {
 		t.Fatalf("nextScheduled() after update = %s, want %s", next, want)
+	}
+}
+
+func TestManagerScheduledFailureConsumesCronSlot(t *testing.T) {
+	t.Parallel()
+
+	capacityErr := backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "model_at_capacity"},
+		errors.New(`codex turn failed: status failed: {"message":"Selected model is at capacity"}`),
+	)
+	tests := []struct {
+		name   string
+		runErr error
+		want   string
+	}{
+		{name: "provider capacity", runErr: capacityErr, want: "Selected model is at capacity"},
+		{name: "invalid output", runErr: fmt.Errorf("%w: expected an issues JSON object", ErrInvalidProposalOutput), want: "expected an issues JSON object"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			current := time.Date(2026, time.September, 13, 6, 0, 0, 0, time.UTC)
+			store := &fakeStore{}
+			settings := Settings{
+				ProjectID: "detent",
+				Definitions: []config.Routine{{
+					Name: "admission", Schedule: "*/15 * * * *", Prompt: "Inspect backlog admission.",
+				}},
+				Runner: fakeRunner{err: tt.runErr}, Issues: &fakeIssueStore{},
+			}
+			manager, err := New(settings, store, nil, func() time.Time { return current })
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			scheduledFor := current.Add(15 * time.Minute)
+			if _, err := manager.runNamed(t.Context(), "admission", scheduledFor, true); !errors.Is(err, tt.runErr) {
+				t.Fatalf("runNamed() error = %v, want %v", err, tt.runErr)
+			}
+			if len(store.records) != 1 || !strings.Contains(store.records[0].Error, tt.want) {
+				t.Fatalf("records = %#v, want persisted error %q", store.records, tt.want)
+			}
+
+			restarted, err := New(settings, store, nil, func() time.Time { return current })
+			if err != nil {
+				t.Fatalf("restart New() error = %v", err)
+			}
+			next, name, scheduled, err := restarted.nextScheduled(t.Context())
+			if err != nil {
+				t.Fatalf("nextScheduled() error = %v", err)
+			}
+			want := scheduledFor.Add(15 * time.Minute)
+			if !scheduled || name != "admission" || !next.Equal(want) {
+				t.Fatalf("nextScheduled() = %s, %q, %t; want %s, admission, true", next, name, scheduled, want)
+			}
+		})
+	}
+}
+
+func TestManagerScheduledRunSkipsLostOwnershipSlot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		cancelBeforeLookup      bool
+		cancelDuringLookup      bool
+		cancelBeforeRunnerStart bool
+	}{
+		{name: "lost before eligibility lookup", cancelBeforeLookup: true},
+		{name: "lost during eligibility lookup", cancelDuringLookup: true},
+		{name: "lost before runner start", cancelBeforeRunnerStart: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			current := time.Date(2026, time.September, 13, 6, 0, 0, 0, time.UTC)
+			runs := 0
+			store := &fakeStore{honorContext: true}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			clockReads := 0
+			manager, err := New(Settings{
+				ProjectID: "detent",
+				Definitions: []config.Routine{{
+					Name: "admission", Schedule: "*/15 * * * *", Prompt: "Inspect backlog admission.",
+				}},
+				Runner: fakeRunner{onRun: func(runner.RunRequest) { runs++ }}, Issues: &fakeIssueStore{},
+			}, store, nil, func() time.Time {
+				clockReads++
+				if tt.cancelBeforeRunnerStart && clockReads == 3 {
+					cancel()
+				}
+				return current
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if tt.cancelBeforeLookup {
+				cancel()
+			}
+			if tt.cancelDuringLookup {
+				store.onLatest = cancel
+			}
+			scheduledFor := current.Add(15 * time.Minute)
+			if _, err := manager.runNamed(ctx, "admission", scheduledFor, true); err != nil {
+				t.Fatalf("runNamed() error = %v", err)
+			}
+			store.onLatest = nil
+			if runs != 0 || len(store.records) != 0 {
+				t.Fatalf("runs = %d, records = %d; want lost ownership slot skipped", runs, len(store.records))
+			}
+			next, _, _, err := manager.nextScheduled(t.Context())
+			if err != nil {
+				t.Fatalf("nextScheduled() error = %v", err)
+			}
+			want := scheduledFor.Add(15 * time.Minute)
+			if !next.Equal(want) {
+				t.Fatalf("nextScheduled() = %s, want %s after skipped ownership slot", next, want)
+			}
+		})
 	}
 }
 
@@ -573,6 +694,8 @@ type fakeStore struct {
 	trackedIssues []IssueRecord
 	closedIssues  map[string]bool
 	recordErr     error
+	honorContext  bool
+	onLatest      func()
 }
 
 type routineScheduleRecorder struct {
@@ -584,7 +707,16 @@ func (r *routineScheduleRecorder) RecordScheduledRun(_ context.Context, run sche
 	return nil
 }
 
-func (s *fakeStore) LatestRoutineRun(_ context.Context, projectID string, routineName string) (RunRecord, bool, error) {
+func (s *fakeStore) LatestRoutineRun(ctx context.Context, projectID string, routineName string) (RunRecord, bool, error) {
+	if s.honorContext && ctx.Err() != nil {
+		return RunRecord{}, false, ctx.Err()
+	}
+	if s.onLatest != nil {
+		s.onLatest()
+	}
+	if s.honorContext && ctx.Err() != nil {
+		return RunRecord{}, false, ctx.Err()
+	}
 	for index := len(s.records) - 1; index >= 0; index-- {
 		if s.records[index].ProjectID == projectID && s.records[index].RoutineName == routineName {
 			return s.records[index], true, nil

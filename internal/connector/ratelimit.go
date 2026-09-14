@@ -54,13 +54,14 @@ type GraphQLRateLimitProber interface {
 }
 
 type RESTRateLimit struct {
-	Limit      int64
-	Used       int64
-	Remaining  int64
-	Resource   string
-	ResetAt    time.Time
-	RetryAfter time.Duration
-	UpdatedAt  time.Time
+	Limit          int64
+	Used           int64
+	Remaining      int64
+	Resource       string
+	ResourceHeader string
+	ResetAt        time.Time
+	RetryAfter     time.Duration
+	UpdatedAt      time.Time
 }
 
 type RESTEndpointUsage struct {
@@ -76,6 +77,7 @@ type RESTEndpointUsage struct {
 	Used               int64
 	Remaining          int64
 	Resource           string
+	ResourceHeader     string
 	ResetAt            time.Time
 	RetryAfter         time.Duration
 	RateLimited        bool

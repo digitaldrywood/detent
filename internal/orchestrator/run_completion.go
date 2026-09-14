@@ -193,10 +193,30 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			running.DiffStats = event.Result.DiffStats
 		}
 		deliverableLookup = o.lookupDeliverableRecovery(ctx, running, deliverableRecoveryErr)
+		deliverableLookup = o.createDeliverableRecoveryPullRequest(ctx, running, deliverableLookup)
+		if infrastructureErr, ok := o.deliverableRecoveryInfrastructureError(running, deliverableLookup.CreateError); ok {
+			infrastructureEvent := event
+			infrastructureEvent.Err = infrastructureErr
+			if o.handleForgeUnavailableCompletion(ctx, state, infrastructureEvent, running) {
+				return
+			}
+			if o.handleTrackerUnavailableCompletion(ctx, state, infrastructureEvent, running) {
+				return
+			}
+			if o.handleGitHubRESTCapacityCompletion(ctx, state, infrastructureEvent, running) {
+				return
+			}
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, infrastructureErr)
+			return
+		}
 		if deliverableLookup.reconciles() {
 			running.Issue = deliverableRecoveryIssue(running, deliverableLookup)
 			event.Err = nil
-			event.Result.FinalState = FinalStateCompleted
+			if deliverableLookup.CreatedPullRequest {
+				event.Result.FinalState = running.Issue.State
+			} else {
+				event.Result.FinalState = FinalStateCompleted
+			}
 			event.Result.PullRequestUpdated = true
 			recordStateEvent(state, telemetry.ActivityEvent{
 				At:      event.CompletedAt,
@@ -346,7 +366,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		credentialFailure := runpkg.IsDeliverableConfigurationError(event.Err)
 		var projectionErr *runpkg.SessionBudgetProjectionError
 		projectionFailure := errors.As(event.Err, &projectionErr) && projectionErr != nil
-		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
+		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil && !deliverableRecoveryMachineOwned(deliverableLookup) {
 			errorClass = deliverableRecoveryReasonCode(deliverableLookup)
 			phase = "blocked"
 			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
@@ -382,7 +402,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
 		}
-		if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
+		if deliverableRecoveryMachineOwned(deliverableLookup) {
+			running.Issue = o.returnMissingDeliverableBranchToRework(ctx, state, running.Issue, deliverableLookup, event.CompletedAt)
+		} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
 			return
 		}
 		if credentialFailure && o.blockHumanOwnedWorkerFailure(
@@ -645,16 +667,17 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	))
 
 	state.Completed[event.IssueID] = Completed{
-		Issue:            cloneIssue(running.Issue),
-		SessionID:        running.SessionID,
-		StartedAt:        running.StartedAt,
-		CompletedAt:      event.CompletedAt,
-		FinalState:       finalState,
-		CompletionKind:   strings.TrimSpace(progress.CompletionKind),
-		GateWaitReason:   gateWaitReason,
-		gateWaitEvidence: completionGateWaitEvidence(gateWaitReason, progress.Issue),
-		Tokens:           event.Result.Tokens,
-		RuntimeIdentity:  running.RuntimeIdentity,
+		Issue:                      cloneIssue(running.Issue),
+		SessionID:                  running.SessionID,
+		StartedAt:                  running.StartedAt,
+		CompletedAt:                event.CompletedAt,
+		FinalState:                 finalState,
+		CompletionKind:             strings.TrimSpace(progress.CompletionKind),
+		GateWaitReason:             gateWaitReason,
+		successfulAttemptPersisted: attemptCompleted && terminalState == store.WorkAttemptTerminalSuccess,
+		gateWaitEvidence:           completionGateWaitEvidence(gateWaitReason, progress.Issue),
+		Tokens:                     event.Result.Tokens,
+		RuntimeIdentity:            running.RuntimeIdentity,
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
@@ -714,7 +737,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			})
 			return
 		}
-		o.finishCompletedGateWaitRun(ctx, state, running.Issue)
+		o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
 		return
 	}
 	if spendProgress.Block && o.blockSpendProgress(ctx, state, running, spendProgress, event.CompletedAt) {
@@ -817,7 +840,7 @@ func (o *Orchestrator) completeRedundantGateWaitRun(
 	if diffStatsPresent(event.Result.DiffStats) {
 		state.DiffStats[event.IssueID] = event.Result.DiffStats
 	}
-	o.finishCompletedGateWaitRun(ctx, state, running.Issue)
+	o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "gate_wait_dispatch_superseded",
@@ -826,10 +849,10 @@ func (o *Orchestrator) completeRedundantGateWaitRun(
 	return true
 }
 
-func (o *Orchestrator) finishCompletedGateWaitRun(ctx context.Context, state *State, issue connector.Issue) {
+func (o *Orchestrator) releaseCompletedAttemptClaim(ctx context.Context, state *State, issue connector.Issue) {
 	issueID := strings.TrimSpace(issue.ID)
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-		o.logger.Warn("release completed gate-wait claim failed", "issue_id", issueID, "error", err)
+		o.logger.Warn("release completed attempt claim failed", "issue_id", issueID, "error", err)
 	}
 	o.releaseClaim(state, issueID)
 }

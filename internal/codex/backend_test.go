@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -60,6 +61,9 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	if factory.tempDir != "/tmp/detent-workspace/.detent/tmp" {
 		t.Fatalf("worker temp directory = %q, want request temp directory", factory.tempDir)
 	}
+	if factory.workspace != "/tmp/detent-workspace" {
+		t.Fatalf("worker workspace = %q, want request workspace", factory.workspace)
+	}
 
 	sent := transport.sentMessages()
 	if len(sent) != 4 {
@@ -83,6 +87,91 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 
 	if len(updates) < 2 || updates[0].Type != runner.AgentUpdateRuntimeIdentity || updates[1].Type != runner.AgentUpdateTurnStarted || updates[1].Model != "gpt-5-codex-resolved" {
 		t.Fatalf("updates = %#v, want resolved model on turn started", updates)
+	}
+}
+
+func TestAgentBackendAppliesProcessContextToPreflightTransports(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		messages  func(*testing.T) []Message
+		operation func(context.Context, *AgentBackend, runner.AgentProcessRequest) error
+	}{
+		{
+			name: "model catalog",
+			messages: func(t *testing.T) []Message {
+				return []Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+					responseMessage(t, 6, `{"data":[]}`),
+				}
+			},
+			operation: func(ctx context.Context, backend *AgentBackend, process runner.AgentProcessRequest) error {
+				_, err := backend.ListModels(ctx, process)
+				return err
+			},
+		},
+		{
+			name: "default model",
+			messages: func(t *testing.T) []Message {
+				return []Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+					responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+				}
+			},
+			operation: func(ctx context.Context, backend *AgentBackend, process runner.AgentProcessRequest) error {
+				_, err := backend.DefaultModel(ctx, process)
+				return err
+			},
+		},
+		{
+			name: "resume verification",
+			messages: func(t *testing.T) []Message {
+				return []Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+					responseMessage(t, 7, `{"thread":{"id":"thread-existing"}}`),
+				}
+			},
+			operation: func(ctx context.Context, backend *AgentBackend, process runner.AgentProcessRequest) error {
+				return backend.VerifyResume(ctx, process, runner.AgentResume{ThreadID: "thread-existing"})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory := &workerTempCapturingTransportFactory{transport: newFakeAppServerTransport(tt.messages(t))}
+			server, err := NewAppServer(factory, WithReadTimeout(time.Second))
+			if err != nil {
+				t.Fatalf("NewAppServer() error = %v", err)
+			}
+			backend, err := NewAgentBackend(server, Options{})
+			if err != nil {
+				t.Fatalf("NewAgentBackend() error = %v", err)
+			}
+			process := runner.AgentProcessRequest{
+				Workspace: "/tmp/detent-workspace",
+				TempDir:   "/tmp/detent-preflight",
+				Environment: procgroup.Environment{Variables: map[string]string{
+					"DETENT_WORKSPACE":        "/tmp/detent-workspace",
+					"DETENT_ISSUE_ID":         "issue-2561",
+					"DETENT_ISSUE_IDENTIFIER": "digitaldrywood/detent#2561",
+				}},
+			}
+			if err := tt.operation(t.Context(), backend, process); err != nil {
+				t.Fatalf("operation error = %v", err)
+			}
+			if factory.workspace != process.Workspace {
+				t.Fatalf("worker workspace = %q, want %q", factory.workspace, process.Workspace)
+			}
+			if factory.tempDir != process.TempDir {
+				t.Fatalf("worker temp dir = %q, want %q", factory.tempDir, process.TempDir)
+			}
+			if !reflect.DeepEqual(factory.variables, process.Environment.Variables) {
+				t.Fatalf("worker variables = %#v, want %#v", factory.variables, process.Environment.Variables)
+			}
+		})
 	}
 }
 
@@ -417,9 +506,13 @@ func TestAgentBackendSupplementalToolsPreserveWorkerPolicy(t *testing.T) {
 type workerTempCapturingTransportFactory struct {
 	transport Transport
 	tempDir   string
+	workspace string
+	variables map[string]string
 }
 
 func (f *workerTempCapturingTransportFactory) NewTransport(ctx context.Context) (Transport, error) {
 	f.tempDir = workerTempDir(ctx)
+	f.workspace = workerWorkspace(ctx)
+	f.variables = workerEnvironment(ctx).Variables
 	return f.transport, nil
 }

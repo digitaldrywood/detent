@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-func TestForgeUnavailableCompletionBypassesAllFailureBreakers(t *testing.T) {
+func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 17, 18, 0, 0, 0, time.UTC)
@@ -46,12 +46,13 @@ func TestForgeUnavailableCompletionBypassesAllFailureBreakers(t *testing.T) {
 		Operation:      "codex_apps/github.create_pull_request",
 		Arguments:      `{"head":"detent/1871"}`,
 		Status:         "failed",
-		Message:        "HTTP 503: unavailable",
+		Message:        "tool approval declined",
+		ApprovalDenied: true,
 	}
 	err := forgeavailability.NewError(
 		forgeavailability.Scope{Host: "github.com", Operation: deliverableErr.Operation},
-		forgeavailability.ClassServer,
-		deliverableErr,
+		forgeavailability.ClassTransport,
+		&runpkg.DeliverableRecoveryError{Branch: "detent/1871", Err: deliverableErr},
 	)
 
 	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
@@ -95,8 +96,32 @@ func TestForgeUnavailableCompletionBypassesAllFailureBreakers(t *testing.T) {
 	if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &persisted); err != nil {
 		t.Fatalf("decode forge wait metadata: %v", err)
 	}
-	if persisted.ForgeWait.Host != "github.com" || persisted.ForgeWait.Branch != "detent/1871" || !persisted.ForgeWait.WorkProductPushed {
+	if persisted.ForgeWait.Host != "github.com" || persisted.ForgeWait.Branch != "detent/1871" || !persisted.ForgeWait.WorkProductPushed || persisted.ForgeWait.ErrorClass != forgeavailability.ClassTransport {
 		t.Fatalf("persisted forge wait = %#v, want scoped pushed branch", persisted.ForgeWait)
+	}
+
+	completion := attempts.completions[0]
+	restartedAttempts := &recordingWorkAttemptStore{recent: []store.WorkAttempt{{
+		ID: 42, ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL,
+		WorkerHost: "worker-a", Lane: issue.State, AttemptNumber: 4, Status: store.WorkAttemptStatusTerminal,
+		CompletedAt: completion.CompletedAt, TerminalState: completion.TerminalState, ErrorClass: completion.ErrorClass,
+		ErrorMessage: completion.ErrorMessage, WorkerMetadataJSON: completion.WorkerMetadataJSON,
+	}}}
+	restartedOrch := Orchestrator{
+		cfg:          cfg,
+		connector:    &forgeWaitRecoveryConnector{issues: []connector.Issue{issue}},
+		workAttempts: restartedAttempts,
+		now:          func() time.Time { return now.Add(time.Second) },
+	}
+	restartedState := newState(cfg)
+	restartedOrch.recoverDurableWorkAttempts(context.Background(), &restartedState, now.Add(time.Second))
+	condition, ok := restartedState.ForgeUnavailable["github.com"]
+	if !ok || condition.ErrorClass != forgeavailability.ClassTransport {
+		t.Fatalf("restarted forge condition = %#v, want durable transport wait", restartedState.ForgeUnavailable)
+	}
+	restartedRetry, ok := restartedState.Retry[issue.ID]
+	if !ok || !restartedRetry.ForgeUnavailable || restartedRetry.ForgeRetry == nil || restartedRetry.ForgeRetry.Branch != "detent/1871" || !restartedRetry.ForgeRetry.WorkProductPushed {
+		t.Fatalf("restarted Retry[%q] = %#v, want restored same-attempt pushed branch", issue.ID, restartedRetry)
 	}
 }
 

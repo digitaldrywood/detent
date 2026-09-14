@@ -33,17 +33,17 @@ func (c *Connector) ReconcileIssue(ctx context.Context, target connector.Reconci
 	if err != nil || !found {
 		return connector.ReconcileResult{Issue: issue, Found: found}, err
 	}
-	if normalizeStateName(issue.State) == normalizeStateName("Blocked") {
-		issues := []connector.Issue{issue}
-		if err := c.populateBlockerReasons(ctx, issues); err != nil {
-			return connector.ReconcileResult{}, err
-		}
-		c.hydrateBlockedByRefs(ctx, issues)
-		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-			return connector.ReconcileResult{}, err
-		}
-		issue = issues[0]
+	issues := []connector.Issue{issue}
+	if err := c.populateBlockerReasons(ctx, issues); err != nil {
+		return connector.ReconcileResult{}, err
 	}
+	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+		return connector.ReconcileResult{}, err
+	}
+	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		return connector.ReconcileResult{}, err
+	}
+	issue = issues[0]
 	if hasPullRequest {
 		if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
 			if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {

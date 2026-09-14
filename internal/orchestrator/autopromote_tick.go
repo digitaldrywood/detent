@@ -139,20 +139,12 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			o.logAutoPromoteDecision(issue, decision, "")
 			continue
 		}
-		if decision.Reason == AutoPromoteReasonValidatorMissing {
-			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
-			if !ok {
-				o.startValidatorStage(ctx, state, issue, now)
-				recordAutoPromoteSnapshotDecision(state, issueID, decision)
-				o.logAutoPromoteDecision(issue, decision, "")
-				continue
-			}
-			summary.Validator = validation
-			if shouldComment {
-				o.commentValidatorResult(ctx, issue, validation)
-				o.markValidatorResultCommented(ctx, issue)
-			}
-			decision = EvaluateAutoPromote(issue, summary, cfg, now)
+		var validatorReady bool
+		decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if !validatorReady {
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			continue
 		}
 		if decision.Reason == AutoPromoteReasonCINotGreen &&
 			o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
@@ -163,6 +155,14 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+			// Hydration re-evaluates the gate; a workpad that only now clears can
+			// surface the validator stage for the first time.
+			decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+			if !validatorReady {
+				recordAutoPromoteSnapshotDecision(state, issueID, decision)
+				o.logAutoPromoteDecision(issue, decision, "")
+				continue
+			}
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
@@ -287,32 +287,79 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 	ctx context.Context,
 	state *State,
 	issues []connector.Issue,
-) {
+) []connector.Issue {
+	return o.restoreDurableGateWaitCompletionState(ctx, state, issues).issues
+}
+
+type durableGateWaitCompletionRestore struct {
+	issues                 []connector.Issue
+	validatorHeadHydration map[string]bool
+}
+
+func (o *Orchestrator) restoreDurableGateWaitCompletionState(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+) durableGateWaitCompletionRestore {
 	if o == nil || state == nil {
-		return
+		return durableGateWaitCompletionRestore{issues: cloneIssues(issues)}
 	}
 	issues = o.refreshRequiredGateEvidence(ctx, state, issues)
+	result := durableGateWaitCompletionRestore{
+		issues:                 issues,
+		validatorHeadHydration: map[string]bool{},
+	}
 	if o.workAttempts == nil {
-		return
+		return result
 	}
 	autoCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	gateWaitTracking := autoPromoteDurableGateWaitTrackingEnabled(autoCfg)
 	if state.Completed == nil {
 		state.Completed = map[string]Completed{}
 	}
-	for _, issue := range issues {
+	for index, issue := range issues {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
 		}
-		if completed, ok := state.Completed[issueID]; ok {
+		completed, completedOK := state.Completed[issueID]
+		trackedReworkWait := autoPromoteReworkGateWaitTrackedIssue(issue, o.cfg, autoCfg)
+		completion, operational := operationalCompletionFromIssue(issue)
+		var recentAttempts []store.WorkAttempt
+		recentAttemptsLoaded := false
+		if gate.Effective(autoCfg.Gate).Validator.Enabled && trackedReworkWait && !operational {
+			shouldHydrate := completedOK && strings.TrimSpace(completed.GateWaitReason) == completedReworkGateWaitReason
+			if !completedOK && gateWaitTracking {
+				var err error
+				recentAttempts, err = o.recentAgentTerminalAttempts(ctx, issue)
+				recentAttemptsLoaded = true
+				if err != nil {
+					o.warnRestoreDurableCompletion(issue, err)
+					continue
+				}
+				shouldHydrate = containsReworkGateWaitAttempt(recentAttempts, issue, autoCfg.ReworkState)
+			}
+			if _, running := state.Running[issueID]; running {
+				shouldHydrate = false
+			}
+			if shouldHydrate {
+				result.validatorHeadHydration[issueID] = false
+				hydrated, ok := o.hydrateValidatorStagePullRequest(ctx, issue)
+				if !ok || validatorStageIdentityForIssue(hydrated).Key == "" || pullRequestHydrationBlocksProgress(hydrated.PullRequest) {
+					continue
+				}
+				issue = hydrated
+				issues[index] = hydrated
+				result.validatorHeadHydration[issueID] = true
+			}
+		}
+		if completedOK {
 			if completed.GateWaitReason == completedReworkGateWaitReason &&
 				(!completedReworkGateWaitEvidenceCurrent(completed, issue) || !o.reworkGateWaitCurrent(ctx, issue)) {
 				delete(state.Completed, issueID)
 			}
 			continue
 		}
-		completion, operational := operationalCompletionFromIssue(issue)
 		var (
 			attempt store.WorkAttempt
 			ok      bool
@@ -322,19 +369,16 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 		case operational:
 			attempt, ok, err = o.latestSuccessfulOperationalCompletionAttempt(ctx, issue, completion)
 		case gateWaitTracking && autoPromoteDurableGateWaitTrackedIssue(issue, o.cfg, autoCfg):
-			attempt, ok, err = o.latestSuccessfulGateWaitAttempt(ctx, issue)
+			if recentAttemptsLoaded {
+				attempt, ok = o.latestSuccessfulGateWaitAttemptFromHistory(ctx, issue, recentAttempts)
+			} else {
+				attempt, ok, err = o.latestSuccessfulGateWaitAttempt(ctx, issue)
+			}
 		default:
 			continue
 		}
 		if err != nil {
-			if o.logger != nil {
-				o.logger.Warn(
-					"restore durable completion failed",
-					"issue_id", issueID,
-					"identifier", issue.Identifier,
-					"error", err,
-				)
-			}
+			o.warnRestoreDurableCompletion(issue, err)
 			continue
 		}
 		if !ok {
@@ -342,6 +386,46 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 		}
 		state.Completed[issueID] = completedFromGateWaitAttempt(issue, attempt)
 	}
+	return result
+}
+
+func (o *Orchestrator) warnRestoreDurableCompletion(issue connector.Issue, err error) {
+	if o.logger == nil {
+		return
+	}
+	o.logger.Warn(
+		"restore durable completion failed",
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+		"error", err,
+	)
+}
+
+func (o *Orchestrator) hydrateValidatorStagePullRequest(
+	ctx context.Context,
+	issue connector.Issue,
+) (connector.Issue, bool) {
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return issue, false
+	}
+	hydrated, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"hydrate validator stage pull request failed",
+				"issue_id", strings.TrimSpace(issue.ID),
+				"identifier", issue.Identifier,
+				"pull_request", pullRequestNumber(issue),
+				"error", err,
+			)
+		}
+		return issue, false
+	}
+	if strings.TrimSpace(hydrated.ID) == "" || strings.TrimSpace(hydrated.ID) != strings.TrimSpace(issue.ID) {
+		return issue, false
+	}
+	return hydrated, true
 }
 
 func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
@@ -351,18 +435,27 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 	if o == nil || o.workAttempts == nil {
 		return store.WorkAttempt{}, false, nil
 	}
-	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) && !o.reworkGateWaitCurrent(ctx, issue) {
-		return store.WorkAttempt{}, false, nil
-	}
 	attempts, err := o.recentAgentTerminalAttempts(ctx, issue)
 	if err != nil {
 		return store.WorkAttempt{}, false, err
+	}
+	attempt, ok := o.latestSuccessfulGateWaitAttemptFromHistory(ctx, issue, attempts)
+	return attempt, ok, nil
+}
+
+func (o *Orchestrator) latestSuccessfulGateWaitAttemptFromHistory(
+	ctx context.Context,
+	issue connector.Issue,
+	attempts []store.WorkAttempt,
+) (store.WorkAttempt, bool) {
+	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) && !o.reworkGateWaitCurrent(ctx, issue) {
+		return store.WorkAttempt{}, false
 	}
 	for _, attempt := range attempts {
 		if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) {
 			if record, ok := implementProgressRecordFromAttempt(attempt); ok && normalizeState(record.TrackerState) == normalizeState(issue.State) &&
 				attempt.TerminalState != store.WorkAttemptTerminalSuccess {
-				return store.WorkAttempt{}, false, nil
+				return store.WorkAttempt{}, false
 			}
 		}
 		if attempt.TerminalState != store.WorkAttemptTerminalSuccess {
@@ -371,9 +464,27 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 		if !gateWaitAttemptMatchesPullRequest(attempt, issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) {
 			continue
 		}
-		return attempt, true, nil
+		return attempt, true
 	}
-	return store.WorkAttempt{}, false, nil
+	return store.WorkAttempt{}, false
+}
+
+func containsReworkGateWaitAttempt(attempts []store.WorkAttempt, issue connector.Issue, reworkState string) bool {
+	for _, attempt := range attempts {
+		record, ok := implementProgressRecordFromAttempt(attempt)
+		if ok && normalizeState(record.TrackerState) == normalizeState(issue.State) &&
+			attempt.TerminalState != store.WorkAttemptTerminalSuccess {
+			return false
+		}
+		if !ok || attempt.TerminalState != store.WorkAttemptTerminalSuccess ||
+			normalizeState(record.TrackerState) != normalizeState(issue.State) ||
+			normalizeState(record.TrackerState) != normalizeState(reworkState) ||
+			completionGateWaitReasonFromAttempt(attempt) != completedReworkGateWaitReason {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (o *Orchestrator) latestSuccessfulOperationalCompletionAttempt(
@@ -491,13 +602,14 @@ func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttem
 	}
 	gateWaitReason := completionGateWaitReasonFromAttempt(attempt)
 	return Completed{
-		Issue:            cloneIssue(issue),
-		StartedAt:        attempt.StartedAt,
-		CompletedAt:      attempt.CompletedAt,
-		FinalState:       FinalStateCompleted,
-		CompletionKind:   completionKind,
-		GateWaitReason:   gateWaitReason,
-		gateWaitEvidence: completionGateWaitEvidence(gateWaitReason, issue),
+		Issue:                      cloneIssue(issue),
+		StartedAt:                  attempt.StartedAt,
+		CompletedAt:                attempt.CompletedAt,
+		FinalState:                 FinalStateCompleted,
+		CompletionKind:             completionKind,
+		GateWaitReason:             gateWaitReason,
+		successfulAttemptPersisted: true,
+		gateWaitEvidence:           completionGateWaitEvidence(gateWaitReason, issue),
 	}
 }
 
@@ -745,6 +857,34 @@ func autoPromoteReviewStateDeadlineTrackingEnabled(cfg AutoPromoteConfig) bool {
 
 func issueHasOpenPullRequest(issue connector.Issue) bool {
 	return issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open"
+}
+
+// applyValidatorStage resolves a validator_missing decision against the stored
+// verdict for the current head and re-evaluates with it. It reports false when
+// no verdict exists yet, after starting the validator stage.
+func (o *Orchestrator) applyValidatorStage(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	summary *AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) (AutoPromoteDecision, bool) {
+	if decision.Reason != AutoPromoteReasonValidatorMissing {
+		return decision, true
+	}
+	validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
+	if !ok {
+		o.startValidatorStage(ctx, state, issue, now)
+		return decision, false
+	}
+	summary.Validator = validation
+	if shouldComment {
+		o.commentValidatorResult(ctx, issue, validation)
+		o.markValidatorResultCommented(ctx, issue)
+	}
+	return EvaluateAutoPromote(issue, *summary, cfg, now), true
 }
 
 func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
@@ -2577,12 +2717,6 @@ func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentit
 	if issue.PullRequest != nil {
 		headSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
 	}
-	if headSHA == "" && issue.PullRequest != nil {
-		headSHA = strings.TrimSpace(issue.PullRequest.BranchName)
-	}
-	if headSHA == "" {
-		headSHA = strings.TrimSpace(issue.BranchName)
-	}
 	if headSHA == "" {
 		return validatorStageIdentity{}
 	}
@@ -3299,7 +3433,7 @@ func (o *Orchestrator) recordAutoPromoteReworkHandoff(
 	decision AutoPromoteDecision,
 	targetState string,
 ) {
-	if state == nil || normalizeState(targetState) != normalizeState(autoPromoteReworkState) {
+	if state == nil || normalizeState(targetState) != normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) {
 		return
 	}
 	issueID := strings.TrimSpace(issue.ID)

@@ -1093,8 +1093,15 @@ func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "workspaces")
 	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
 	argsPath := filepath.Join(t.TempDir(), "shell-args.trace")
+	controlPath := filepath.Join(t.TempDir(), "shell.control")
+	runCommand(t, filepath.Dir(controlPath), "mkfifo", controlPath)
+	release, err := os.OpenFile(controlPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release.Close()
 	shellPath := filepath.Join(t.TempDir(), "custom-sh")
-	shellScript := "#!/bin/sh\nprintf '%s\\n' \"$0|$1|$2\" > " + shellQuote(argsPath) + "\nexec /bin/sh \"$@\"\n"
+	shellScript := "#!/bin/sh\nprintf '%s\\n' \"$0|$1|$2\" > " + shellQuote(argsPath) + "\nread -r release < " + shellQuote(controlPath) + "\nexec /bin/sh \"$@\"\n"
 	if err := os.WriteFile(shellPath, []byte(shellScript), 0o700); err != nil {
 		t.Fatalf("write shell wrapper: %v", err)
 	}
@@ -1106,14 +1113,38 @@ func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
 		Hooks: Hooks{
 			Shell:       shellPath,
 			AfterCreate: "printf 'ok\n' > " + shellQuote(tracePath),
-			Timeout:     5 * time.Second,
+			Timeout:     testenv.SubprocessWaitTimeout,
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewBackend() error = %v", err)
 	}
 
-	if _, err := backend.Create(context.Background(), Issue{Identifier: "DD-SHELL-CFG"}); err != nil {
+	done := make(chan error, 1)
+	joined := make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(func() {
+		cancel()
+		_ = release.Close()
+		select {
+		case <-joined:
+		case <-time.After(testenv.SubprocessWaitTimeout):
+			t.Error("configured shell fixture did not join during cleanup")
+		}
+	})
+	go func() {
+		defer close(joined)
+		_, err := backend.Create(ctx, Issue{Identifier: "DD-SHELL-CFG"})
+		done <- err
+	}()
+	waitForFile(t, argsPath, testenv.SubprocessWaitTimeout)
+	if _, err := os.Stat(tracePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hook completed before configured shell release, stat error = %v", err)
+	}
+	if _, err := release.WriteString("release\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForError(t, done, testenv.SubprocessWaitTimeout); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 

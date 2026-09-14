@@ -12,6 +12,42 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 )
 
+func TestAdmissionCandidateHistory(t *testing.T) {
+	t.Parallel()
+	backend := openAdmissionTestStore(t, t.Context())
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	first := admissionmodel.IssueRecord{ID: "one", Identifier: "DD-1", Fingerprint: "first", EvaluatedAt: now, SkipReason: "stale_or_ineligible"}
+	second := admissionmodel.IssueRecord{ID: "two", Fingerprint: "second", EvaluatedAt: now}
+	revised := admissionmodel.IssueRecord{ID: "one", Fingerprint: "revised", EvaluatedAt: now.Add(time.Minute), ProposalID: "proposal"}
+	for _, record := range []admissionmodel.RunRecord{
+		{ProjectID: "detent", Issues: []admissionmodel.IssueRecord{first, second}},
+		{ProjectID: "detent", Issues: []admissionmodel.IssueRecord{revised}},
+		{ProjectID: "detent", Issues: []admissionmodel.IssueRecord{{ID: "one", ProposalID: "legacy"}}},
+		{ProjectID: "detent"},
+		{ProjectID: "other", Issues: []admissionmodel.IssueRecord{first}},
+	} {
+		record.ScheduledFor, record.StartedAt, record.CompletedAt = now, now, now
+		if err := backend.RecordAdmissionRun(t.Context(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		project string
+		want    map[string]admissionmodel.IssueRecord
+	}{
+		{project: "detent", want: map[string]admissionmodel.IssueRecord{"one": revised, "two": second}},
+		{project: "other", want: map[string]admissionmodel.IssueRecord{"one": first}},
+		{project: "empty", want: map[string]admissionmodel.IssueRecord{}},
+	} {
+		t.Run(test.project, func(t *testing.T) {
+			got, err := backend.AdmissionCandidateHistory(t.Context(), test.project)
+			if err != nil || !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("history = %#v, %v; want %#v", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestAdmissionProposalLifecycleAndIdempotency(t *testing.T) {
 	t.Parallel()
 

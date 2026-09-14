@@ -25,6 +25,7 @@ func TestResolveAgentOverride(t *testing.T) {
 		wantEffort        string
 		wantRejectedField string
 		wantReason        string
+		wantError         string
 		wantCatalogCalls  int
 		wantDefaultCalls  int
 	}{
@@ -131,13 +132,23 @@ func TestResolveAgentOverride(t *testing.T) {
 			wantModel: "gpt-default",
 		},
 		{
-			name:              "catalog failure falls back",
-			issue:             connector.Issue{Description: "```detent-agent\nschema: 1\nmodel: gpt-5.5\n```"},
-			catalogErr:        errors.New("offline"),
-			baseModel:         "gpt-default",
-			wantModel:         "gpt-default",
-			wantRejectedField: "model",
-			wantCatalogCalls:  1,
+			name:             "catalog failure returns error",
+			issue:            connector.Issue{Description: "```detent-agent\nschema: 1\nmodel: gpt-5.5\n```"},
+			catalogErr:       errors.New("offline"),
+			baseModel:        "gpt-default",
+			wantModel:        "gpt-default",
+			wantError:        "offline",
+			wantCatalogCalls: 1,
+		},
+		{
+			name:             "catalog failure drops prior parse rejection",
+			issue:            connector.Issue{Description: "```detent-agent\nschema: 1\nunknown: value\n```"},
+			catalogErr:       errors.New("offline"),
+			baseModel:        "gpt-default",
+			projectEffort:    agentEffortCandidate{Field: "agent.effort.code", Effort: "high"},
+			wantModel:        "gpt-default",
+			wantError:        "offline",
+			wantCatalogCalls: 1,
 		},
 		{
 			name:             "effort only uses operator configured model",
@@ -174,7 +185,16 @@ func TestResolveAgentOverride(t *testing.T) {
 			if role == "" {
 				role = RoleCode
 			}
-			got := resolveAgentOverride(context.Background(), tt.issue, "/tmp/workspace", tt.baseModel, role, tt.projectEffort, backend)
+			got, err := resolveAgentOverride(context.Background(), tt.issue, AgentProcessRequest{Workspace: "/tmp/workspace"}, tt.baseModel, role, tt.projectEffort, backend)
+			if tt.wantError == "" && err != nil {
+				t.Fatalf("resolveAgentOverride() error = %v", err)
+			}
+			if tt.wantError != "" && (err == nil || !strings.Contains(err.Error(), tt.wantError)) {
+				t.Fatalf("resolveAgentOverride() error = %v, want containing %q", err, tt.wantError)
+			}
+			if tt.catalogErr != nil && !errors.Is(err, tt.catalogErr) {
+				t.Fatalf("resolveAgentOverride() error = %v, want wrapping %v", err, tt.catalogErr)
+			}
 			if got.Model != tt.wantModel || got.Effort != tt.wantEffort {
 				t.Fatalf("resolved override = %#v, want model %q effort %q", got, tt.wantModel, tt.wantEffort)
 			}
@@ -222,15 +242,18 @@ func TestResolveAgentOverrideAppliesProjectEffortWithoutCatalog(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := resolveAgentOverride(
+			got, err := resolveAgentOverride(
 				context.Background(),
 				tt.issue,
-				"/tmp/workspace",
+				AgentProcessRequest{Workspace: "/tmp/workspace"},
 				"",
 				RoleMerge,
 				agentEffortCandidate{Field: "agent.effort.merge", Effort: tt.projectEffort},
 				nonCatalogAgentBackend{},
 			)
+			if err != nil {
+				t.Fatalf("resolveAgentOverride() error = %v", err)
+			}
 			if got.Effort != tt.wantEffort {
 				t.Fatalf("Effort = %q, want %q", got.Effort, tt.wantEffort)
 			}
@@ -266,14 +289,14 @@ func (*catalogAgentBackend) RunTurn(context.Context, AgentTurnRequest, AgentUpda
 	return AgentTurnResult{}, nil
 }
 
-func (b *catalogAgentBackend) ListModels(context.Context) ([]AgentModel, error) {
+func (b *catalogAgentBackend) ListModels(context.Context, AgentProcessRequest) ([]AgentModel, error) {
 	b.calls++
 	return b.models, b.err
 }
 
-func (b *catalogAgentBackend) DefaultModel(_ context.Context, workspace string) (string, error) {
+func (b *catalogAgentBackend) DefaultModel(_ context.Context, process AgentProcessRequest) (string, error) {
 	b.defaultCalls++
-	if workspace != "/tmp/workspace" {
+	if process.Workspace != "/tmp/workspace" {
 		return "", errors.New("unexpected workspace")
 	}
 	return b.defaultModel, b.defaultModelErr

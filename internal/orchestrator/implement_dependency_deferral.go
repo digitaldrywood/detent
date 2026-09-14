@@ -117,6 +117,11 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 	identifiers := make([]string, 0)
 	seenIdentifiers := make(map[string]struct{})
 	for _, issue := range issues {
+		// Native dependencies are checked by dispatch from the current tracker
+		// snapshot. A past attempt is evidence, not a second dependency authority.
+		if issue.DependencySource == connector.BlockedRefSourceNative {
+			continue
+		}
 		attempts, err := o.recentImplementCompletionAttempts(ctx, issue, Running{Issue: issue, Mode: runpkg.RunModeImplement})
 		if err != nil {
 			if o.logger != nil {

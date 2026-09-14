@@ -85,12 +85,19 @@ legacy state to the current schema.
 
 Detent enforces signed provenance for its release-managed self-update path,
 including an explicit release swap requested for a `go install` binary. It does
-not replace binaries managed by Homebrew, Scoop, Winget, deb/rpm packages, or a
-normal `go install`; automatic update reports the appropriate external command
-instead. Package-manager upgrades, direct `go install`, manual binary copies,
-and service-manager deployment are host-administrator actions outside product
-enforcement. Administrators are responsible for validating the package source
-and confirming the restarted binary's full commit for those paths.
+not automatically replace binaries managed by Homebrew, Scoop, Winget, deb/rpm
+packages, or `go install`; automatic update reports the appropriate external
+command instead. For a Go-managed binary, an explicit `detent update --yes` (or
+selection of the interactive Go-install option) executes `go install` and checks
+the installed version, without enforcing signed release provenance. Using
+`detent update --from-release` instead switches to the release-managed path and
+requires its provenance checks.
+
+Package-manager upgrades, explicit Go-install updates, manual binary copies,
+and service-manager deployment are host-administrator actions outside signed
+release provenance enforcement. Administrators are responsible for validating
+the package source and confirming the restarted binary's full commit for those
+paths.
 
 Release progress and blockers use fingerprinted comments on the first sorted
 originating issue reference, without creating new coordination issues. Comment

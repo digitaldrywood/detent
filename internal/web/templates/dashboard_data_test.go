@@ -2530,6 +2530,42 @@ func TestProjectKanbanCardForIssueCopiesDescriptionPreview(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanCardForIssueMarksOnlyHumanOwnedReviewWaits(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 11, 16, 42, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name    string
+		state   string
+		project ProjectSmallMultiple
+		gate    *telemetry.RequiredGate
+		labels  []string
+		want    bool
+	}{
+		{name: "manual review policy", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true}, want: true},
+		{name: "automatic promotion policy", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true}},
+		{name: "issue opt-out", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteOptoutLabel: "requires-human-review"}, labels: []string{" Requires-Human-Review "}, want: true},
+		{name: "allowed-label miss", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteAllowedLabels: []string{"release"}}, labels: []string{"docs"}, want: true},
+		{name: "allowed-label match", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteAllowedLabels: []string{"release"}}, labels: []string{" Release "}},
+		{name: "human review gate", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteGateKind: "human_review", AutoPromoteApprovalLabel: "release-approved"}, want: true},
+		{name: "satisfied human review gate", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteGateKind: "human_review", AutoPromoteApprovalLabel: "release-approved"}, labels: []string{" Release-Approved "}},
+		{name: "custom review source", state: "Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteSourceState: "Review"}, want: true},
+		{name: "custom review source mismatch", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteSourceState: "Review"}},
+		{name: "manual policy outside review", state: "In Progress", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true}},
+		{name: "unconfigured project policy", state: "Human Review", project: ProjectSmallMultiple{ID: "parable"}},
+		{name: "explicit human gate", state: "In Progress", project: ProjectSmallMultiple{ID: "parable"}, gate: &telemetry.RequiredGate{HumanAction: "Choose a target."}, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			card := projectKanbanCardForIssue(DashboardData{Projects: []ProjectSmallMultiple{tt.project}}, telemetry.Issue{
+				ID: "review", ProjectID: "parable", Identifier: "getparable/parable#3502", State: tt.state, RequiredGate: tt.gate, Labels: tt.labels,
+			}, tt.state, now.Add(-time.Minute), now)
+			if card.HumanActionRequired != tt.want {
+				t.Fatalf("HumanActionRequired = %t, want %t", card.HumanActionRequired, tt.want)
+			}
+		})
+	}
+}
+
 func TestPipelineIssueStageTimePrefersCurrentLaneEntry(t *testing.T) {
 	t.Parallel()
 

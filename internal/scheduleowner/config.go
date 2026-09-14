@@ -8,9 +8,9 @@ import (
 const (
 	BackendGitHubRef           = "github_ref"
 	DefaultBranch              = "detent-schedule-coordination"
-	DefaultLeaseSeconds        = 300
-	DefaultHeartbeatSeconds    = 60
-	DefaultRetrySeconds        = 15
+	DefaultLeaseSeconds        = 900
+	DefaultHeartbeatSeconds    = 300
+	DefaultRetrySeconds        = 120
 	DefaultMaxClockSkewSeconds = 15
 )
 

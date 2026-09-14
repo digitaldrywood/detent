@@ -38,8 +38,6 @@ type tickTransitionRefresh struct {
 
 type githubBudgetReserveDecision struct {
 	degraded       bool
-	restRemaining  int64
-	restReserve    int64
 	graphRemaining int64
 	graphReserve   int64
 }
@@ -87,12 +85,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}
 	if pause := o.gitHubGraphQLPause(state, now); pause > 0 {
 		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
-		if o.scheduling == nil {
-			return
-		}
-	}
-	if pause := o.gitHubRESTPause(state, now); pause > 0 {
-		o.logger.Warn("github rest polling paused", "remaining", gitHubRESTRemaining(state), "pause", pause)
 		if o.scheduling == nil {
 			return
 		}
@@ -184,7 +176,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.observePullRequestHydrationSkips(mergeIssueSlices(fetched.candidates, fetched.status))
 	o.restoreDurableMergeReservations(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	o.reconcileMergeReservations(state, mergeIssueSlices(fetched.candidates, fetched.status), now)
-	o.restoreDurableGateWaitCompletions(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
+	gateWaitRestore := o.restoreDurableGateWaitCompletionState(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
+	fetched.candidates = replaceMatchingIssueSnapshots(fetched.candidates, gateWaitRestore.issues)
+	fetched.status = replaceMatchingIssueSnapshots(fetched.status, gateWaitRestore.issues)
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileOperatorStopHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileMergeDurationHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
 
@@ -262,7 +256,13 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched,
 		o.reconcileStaleLinkedPullRequestIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 	)
-	completedTransitions := o.transitionCompletedActiveIssuesToReview(ctx, state, fetched.candidates, now)
+	completedTransitions := o.transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(
+		ctx,
+		state,
+		fetched.candidates,
+		now,
+		gateWaitRestore.validatorHeadHydration,
+	)
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,
@@ -307,6 +307,22 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.reapDueWorkspacesAfterRefresh(ctx, state, now)
 	}
 	completed = true
+}
+
+func replaceMatchingIssueSnapshots(issues []connector.Issue, replacements []connector.Issue) []connector.Issue {
+	byID := make(map[string]connector.Issue, len(replacements))
+	for _, issue := range replacements {
+		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			byID[issueID] = issue
+		}
+	}
+	out := cloneIssues(issues)
+	for index := range out {
+		if replacement, ok := byID[strings.TrimSpace(out[index].ID)]; ok {
+			out[index] = cloneIssue(replacement)
+		}
+	}
+	return out
 }
 
 func startManualRefresh(state *State, request manualRefreshRequest, now time.Time) {
@@ -390,8 +406,6 @@ func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now 
 	if reserve.degraded {
 		o.logger.Warn(
 			"workspace cleanup skipped to preserve shared github budget",
-			"rest_remaining", reserve.restRemaining,
-			"rest_reserve", reserve.restReserve,
 			"graphql_remaining", reserve.graphRemaining,
 			"graphql_reserve", reserve.graphReserve,
 		)
@@ -443,8 +457,6 @@ func (o *Orchestrator) fetchTickIssues(
 		o.logger.Warn(
 			"observed status polling skipped to preserve shared github budget",
 			"state_count", len(observedStates),
-			"rest_remaining", reserve.restRemaining,
-			"rest_reserve", reserve.restReserve,
 			"graphql_remaining", reserve.graphRemaining,
 			"graphql_reserve", reserve.graphReserve,
 		)
@@ -563,8 +575,8 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			Filter:         o.authorizationFilterHint(),
 		}
 		if resolver := o.providerCapacity; resolver != nil {
-			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue) (providercapacity.Requirement, error) {
-				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext()})
+			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})
 			}
 		}
 		return o.scheduling.FetchCandidateIssues(ctx, request)
@@ -646,8 +658,6 @@ func (o *Orchestrator) refreshStatusDrift(
 	if reserve.degraded {
 		o.logger.Warn(
 			"tracker status drift polling skipped to preserve shared github budget",
-			"rest_remaining", reserve.restRemaining,
-			"rest_reserve", reserve.restReserve,
 			"graphql_remaining", reserve.graphRemaining,
 			"graphql_reserve", reserve.graphReserve,
 		)
@@ -760,23 +770,13 @@ func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []
 
 func (o *Orchestrator) githubBudgetReserveDecision(state *State, now time.Time) githubBudgetReserveDecision {
 	decision := githubBudgetReserveDecision{
-		restRemaining:  gitHubRESTRemaining(state),
-		restReserve:    o.cfg.GitHubRESTMinReserve,
 		graphRemaining: gitHubGraphQLRemaining(state),
 		graphReserve:   o.cfg.GitHubGraphQLMinReserve,
-	}
-	if bucket := gitHubRESTBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubRESTMinReserve, now) && !o.conditionalPollingEnabled() {
-		decision.degraded = true
 	}
 	if bucket := gitHubGraphQLBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubGraphQLMinReserve, now) {
 		decision.degraded = true
 	}
 	return decision
-}
-
-func (o *Orchestrator) conditionalPollingEnabled() bool {
-	poller, ok := o.connector.(connector.ConditionalPoller)
-	return ok && poller.ConditionalPollingEnabled()
 }
 
 func budgetBelowReserve(bucket *telemetry.RateLimitBucket, reserve int64, now time.Time) bool {
@@ -790,8 +790,6 @@ func budgetBelowReserve(bucket *telemetry.RateLimitBucket, reserve int64, now ti
 func (o *Orchestrator) logGitHubBudgetReserveDecision(decision githubBudgetReserveDecision) {
 	o.logger.Warn(
 		"github polling degraded to preserve shared budget",
-		"rest_remaining", decision.restRemaining,
-		"rest_reserve", decision.restReserve,
 		"graphql_remaining", decision.graphRemaining,
 		"graphql_reserve", decision.graphReserve,
 	)
@@ -799,9 +797,7 @@ func (o *Orchestrator) logGitHubBudgetReserveDecision(decision githubBudgetReser
 
 func githubBudgetReserveMessage(decision githubBudgetReserveDecision) string {
 	return fmt.Sprintf(
-		"GitHub polling degraded to preserve shared budget for user and AI work; REST remaining=%d reserve=%d GraphQL remaining=%d reserve=%d",
-		decision.restRemaining,
-		decision.restReserve,
+		"GitHub polling degraded to preserve shared budget for user and AI work; GraphQL remaining=%d reserve=%d",
 		decision.graphRemaining,
 		decision.graphReserve,
 	)

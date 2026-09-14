@@ -402,6 +402,10 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, workerGitHubCheck)
 	}
 	checks = append(checks, checkDoctorCodexInstructions(id, workflow.Config, deps.lookupEnv)...)
+	if deps.modelCatalogProbe != nil {
+		setDoctorCurrentCheck("Project " + id + " backend model catalogs")
+		checks = append(checks, checkDoctorBackendModelCatalogs(ctx, id, workflow.Config, deps)...)
+	}
 	setDoctorCurrentCheck("Project " + id + " progress brake")
 	checks = append(checks, checkDoctorProgressBrake(id, workflow.Config))
 	checks = append(checks, checkDoctorTerminalAttemptRecovery(id, workflow.Config))
@@ -1425,7 +1429,8 @@ func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbe
 	if !ok {
 		return errors.New("backend does not advertise a model catalog")
 	}
-	models, err := provider.ListModels(ctx)
+	process := runnerpkg.AgentProcessRequest{Workspace: req.Workspace}
+	models, err := provider.ListModels(ctx, process)
 	if err != nil {
 		return err
 	}
@@ -1435,7 +1440,7 @@ func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbe
 		if !ok {
 			return errors.New("backend does not advertise its effective default model")
 		}
-		model, err = defaultProvider.DefaultModel(ctx, req.Workspace)
+		model, err = defaultProvider.DefaultModel(ctx, process)
 		if err != nil {
 			return fmt.Errorf("effective default model unavailable: %w", err)
 		}

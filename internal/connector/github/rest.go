@@ -65,6 +65,10 @@ func restPullRequestsPath(repo pullRequestRepo, page int) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls?" + values.Encode()
 }
 
+func restPullRequestsCreatePath(repo pullRequestRepo) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls"
+}
+
 func restPullRequestsByHeadPath(repo pullRequestRepo, branch string) string {
 	values := url.Values{}
 	values.Set("state", "all")
@@ -225,6 +229,7 @@ func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
 	repo := ref.Owner + "/" + ref.Name
 	return githubIssueNode{
 		TypeName:          "Issue",
+		Comments:          nodeConnection[issueComment]{TotalCount: issue.Comments},
 		ID:                strings.TrimSpace(issue.NodeID),
 		Number:            issue.Number,
 		Title:             issue.Title,

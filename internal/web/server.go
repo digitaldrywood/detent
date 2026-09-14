@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -71,6 +72,7 @@ type Dependencies struct {
 	HealthNotifications healthnotify.FailureReader
 	TickLiveness        TickLivenessSource
 	WorkerProcesses     WorkerProcessStore
+	WorkerCredentials   *serviceapi.WorkerCredentials
 	StalenessWarnings   *staleness.Acknowledgements
 	ObserveProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
 }
@@ -232,6 +234,7 @@ type Server struct {
 	healthNotifications healthnotify.FailureReader
 	tickLiveness        TickLivenessSource
 	workerProcesses     WorkerProcessStore
+	workerCredentials   *serviceapi.WorkerCredentials
 	stalenessWarnings   *staleness.Acknowledgements
 	observeProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
 	now                 func() time.Time
@@ -362,6 +365,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		healthNotifications: deps.HealthNotifications,
 		tickLiveness:        tickLiveness,
 		workerProcesses:     deps.WorkerProcesses,
+		workerCredentials:   deps.WorkerCredentials,
 		stalenessWarnings:   deps.StalenessWarnings,
 		observeProcesses:    observeProcesses,
 		now:                 cfg.now(),
@@ -495,6 +499,7 @@ func (s *Server) registerRoutes() {
 	apiWriteScope := s.requireScope(apikey.ScopeWrite)
 	apiAdminScope := s.requireScope(apikey.ScopeAdmin)
 	apiProjectWriteScope := s.requireProjectScope(apikey.ScopeWrite, "project_id")
+	apiAuditDispositionScope := s.requireAuditDispositionScope("project_id")
 	s.echo.POST("/projects/:project_id/issues/new", s.nativeIssueSubmit, s.nativeFormAuth, apiProjectWriteScope)
 	s.echo.POST("/projects/:project_id/issues/:issue_ref/edit", s.nativeIssueSubmit, s.nativeFormAuth, apiProjectWriteScope)
 	s.echo.POST("/fleet/runners/:runner", s.updateFleetRunner, apiKeyDashboardMutateAuth, apiAdminScope)
@@ -506,7 +511,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope)
 	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
-	s.echo.POST("/api/v1/projects/:project_id/security-audits/dispositions", s.apiSecurityAuditDisposition, apiMutateAuth, apiAdminScope)
+	s.echo.POST("/api/v1/projects/:project_id/security-audits/dispositions", s.apiSecurityAuditDisposition, apiMutateAuth, apiAuditDispositionScope)
 	s.echo.POST("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideSet, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)

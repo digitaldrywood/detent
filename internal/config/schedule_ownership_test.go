@@ -52,8 +52,8 @@ func TestScheduleOwnershipValidation(t *testing.T) {
 	}{
 		{name: "missing key", mutate: func(cfg *scheduleowner.Config) { cfg.Key = "" }, want: "key is required"},
 		{name: "invalid repository", mutate: func(cfg *scheduleowner.Config) { cfg.Repository = "repo" }, want: "owner/name"},
-		{name: "heartbeat too late", mutate: func(cfg *scheduleowner.Config) { cfg.HeartbeatSeconds = 280 }, want: "heartbeat_seconds"},
-		{name: "clock skew too large", mutate: func(cfg *scheduleowner.Config) { cfg.MaxClockSkewSeconds = 150 }, want: "less than half"},
+		{name: "heartbeat too late", mutate: func(cfg *scheduleowner.Config) { cfg.HeartbeatSeconds = 880 }, want: "heartbeat_seconds"},
+		{name: "clock skew too large", mutate: func(cfg *scheduleowner.Config) { cfg.MaxClockSkewSeconds = 450 }, want: "less than half"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

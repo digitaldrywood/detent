@@ -24,12 +24,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -71,6 +73,115 @@ func TestAgentTurnIssueRepository(t *testing.T) {
 			cfg := config.Config{Tracker: config.Tracker{Repository: tt.configured}}
 			if got := agentTurnIssueRepository(cfg, tt.issue); got != tt.want {
 				t.Fatalf("agentTurnIssueRepository() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerHandsServiceConnectionToWorker(t *testing.T) {
+	t.Parallel()
+
+	backend := &fakeCodexClient{result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"}}
+	run, err := NewRunner(Dependencies{
+		Workflow:          config.Workflow{Prompt: "Work"},
+		Workspace:         &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+		AgentBackend:      backend,
+		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if _, err := run.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1", Identifier: "acme/widgets#1"}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := map[string]string{
+		serviceapi.AddressEnvironment:          "100.111.222.33:4100",
+		serviceapi.TokenEnvironment:            "",
+		serviceapi.DispositionTokenEnvironment: "worker-token",
+		"DETENT_WORKSPACE":                     backend.request.Workspace,
+		"DETENT_ISSUE_ID":                      "issue-1",
+		"DETENT_ISSUE_IDENTIFIER":              "acme/widgets#1",
+	}
+	for name, value := range want {
+		if got := backend.request.Environment.Variables[name]; got != value {
+			t.Fatalf("worker environment %s = %q, want %q", name, got, value)
+		}
+	}
+}
+
+func TestWorkerServiceEnvironmentIsLimitedToImplementationTurns(t *testing.T) {
+	t.Parallel()
+
+	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"}
+	tests := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "default implementation", want: true},
+		{name: "explicit implementation", mode: RunModeImplement, want: true},
+		{name: "plan", mode: RunModePlan},
+		{name: "merge", mode: RunModeMerge},
+		{name: "routine", mode: RunModeRoutine},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			environment := workerServiceEnvironment(tt.mode, connection, workspace.Info{}, workspace.Issue{})
+			wantAddress := ""
+			wantDispositionToken := ""
+			if tt.want {
+				wantAddress = connection.Address
+				wantDispositionToken = connection.DispositionToken
+			}
+			if got := environment.Variables[serviceapi.AddressEnvironment]; got != wantAddress {
+				t.Fatalf("workerServiceEnvironment(%q) address = %q, want %q", tt.mode, got, wantAddress)
+			}
+			if got := environment.Variables[serviceapi.TokenEnvironment]; got != "" {
+				t.Fatalf("workerServiceEnvironment(%q) inherited API token = %q, want cleared", tt.mode, got)
+			}
+			if got := environment.Variables[serviceapi.DispositionTokenEnvironment]; got != wantDispositionToken {
+				t.Fatalf("workerServiceEnvironment(%q) disposition token = %q, want %q", tt.mode, got, wantDispositionToken)
+			}
+		})
+	}
+}
+
+func TestWorkerServiceEnvironmentOverridesAmbientServiceCredentials(t *testing.T) {
+	t.Setenv(serviceapi.TokenEnvironment, "ambient-admin-token")
+	t.Setenv(serviceapi.AddressEnvironment, "ambient.example:4000")
+	t.Setenv(serviceapi.DispositionTokenEnvironment, "ambient-worker-token")
+
+	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "scoped-worker-token"}
+	tests := []struct {
+		mode            string
+		wantAddress     string
+		wantDisposition string
+	}{
+		{mode: RunModeImplement, wantAddress: connection.Address, wantDisposition: connection.DispositionToken},
+		{mode: RunModePlan},
+		{mode: RunModeMerge},
+		{mode: RunModeRoutine},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), "detent-environment-probe")
+			procgroup.SetEnvironment(cmd, workerServiceEnvironment(tt.mode, connection, workspace.Info{}, workspace.Issue{}))
+			values := map[string]string{}
+			for _, entry := range cmd.Environ() {
+				name, value, ok := strings.Cut(entry, "=")
+				if ok {
+					values[name] = value
+				}
+			}
+			if value := values[serviceapi.TokenEnvironment]; value != "" {
+				t.Fatalf("effective %s = %q, want cleared", serviceapi.TokenEnvironment, value)
+			}
+			if value := values[serviceapi.AddressEnvironment]; value != tt.wantAddress {
+				t.Fatalf("effective %s = %q, want %q", serviceapi.AddressEnvironment, value, tt.wantAddress)
+			}
+			if value := values[serviceapi.DispositionTokenEnvironment]; value != tt.wantDisposition {
+				t.Fatalf("effective %s = %q, want %q", serviceapi.DispositionTokenEnvironment, value, tt.wantDisposition)
 			}
 		})
 	}
@@ -395,6 +506,32 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if codexClient.catalogCalls != 1 {
 		t.Fatalf("model catalog calls = %d, want 1", codexClient.catalogCalls)
+	}
+	if codexClient.catalogProcess.Workspace != workspacePath {
+		t.Fatalf("model catalog workspace = %q, want %q", codexClient.catalogProcess.Workspace, workspacePath)
+	}
+	if codexClient.catalogProcess.TempDir == "" {
+		t.Fatal("model catalog temp dir is empty")
+	}
+	if got := codexClient.catalogProcess.Environment.Variables["GH_CONFIG_DIR"]; got != filepath.Join(codexClient.catalogProcess.TempDir, "github-cli") {
+		t.Fatalf("model catalog GH_CONFIG_DIR = %q, want isolated preflight config", got)
+	}
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		if got := codexClient.catalogProcess.Environment.Variables[name]; got != "" {
+			t.Fatalf("model catalog %s = %q, want disabled worker credential", name, got)
+		}
+	}
+	if _, err := os.Stat(codexClient.catalogProcess.TempDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("model catalog temp dir cleanup error = %v, want not exist", err)
+	}
+	for name, want := range map[string]string{
+		"DETENT_WORKSPACE":        workspacePath,
+		"DETENT_ISSUE_ID":         "issue-22",
+		"DETENT_ISSUE_IDENTIFIER": "digitaldrywood/detent#22",
+	} {
+		if got := codexClient.catalogProcess.Environment.Variables[name]; got != want {
+			t.Fatalf("model catalog %s = %q, want %q", name, got, want)
+		}
 	}
 	for _, want := range []string{
 		"Work on digitaldrywood/detent#22 attempt 2",
@@ -759,6 +896,64 @@ func TestAgentRunProgressUsesStreamedCommandErrorInsteadOfCommandPayload(t *test
 	}
 	if strings.Contains(err.Error(), "workspace instructions must not be logged") {
 		t.Fatalf("deliverable error leaked command payload: %v", err)
+	}
+}
+
+func TestAgentRunProgressClassifiesPullRequestApprovalDecline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		reason             string
+		wantInfrastructure bool
+	}{
+		{name: "tool policy configuration", reason: "tool_not_allowlisted", wantInfrastructure: true},
+		{name: "invalid worker arguments", reason: "invalid_tool_arguments"},
+		{name: "worker repository mismatch", reason: "repository_mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			progress := newAgentRunProgress(runtimeoutput.Policy{}, "", "", 0, "", 0)
+			eventAt := time.Now()
+			progress.apply(AgentUpdate{
+				Type:   AgentUpdateToolStarted,
+				ItemID: "create-pr",
+				Tool:   "codex_apps/github.create_pull_request",
+				Delta:  `{"repository_full_name":"digitaldrywood/detent"}`,
+			}, eventAt)
+			progress.apply(AgentUpdate{
+				Type:   AgentUpdateMCPElicitation,
+				ItemID: "create-pr",
+				Tool:   "codex_apps/github.create_pull_request",
+				Status: "decline",
+				Delta:  "server=codex_apps tool=github.create_pull_request repository=digitaldrywood/detent reason=" + tt.reason,
+			}, eventAt.Add(time.Second))
+			progress.apply(AgentUpdate{
+				Type:                AgentUpdateToolCompleted,
+				ItemID:              "create-pr",
+				Tool:                "codex_apps/github.create_pull_request",
+				Status:              "failed",
+				BackendErrorMessage: "tool call denied",
+			}, eventAt.Add(2*time.Second))
+
+			err := progress.deliverableError()
+			if got := IsDeliverableConfigurationError(err); got != tt.wantInfrastructure {
+				t.Fatalf("IsDeliverableConfigurationError(%v) = %v, want %v", err, got, tt.wantInfrastructure)
+			}
+			var deliverableErr *DeliverableCommandError
+			if !errors.As(err, &deliverableErr) || deliverableErr == nil {
+				t.Fatalf("deliverable error = %#v, want structured pull-request failure", err)
+			}
+			if deliverableErr.ApprovalDenied != tt.wantInfrastructure {
+				t.Fatalf("ApprovalDenied = %v, want %v", deliverableErr.ApprovalDenied, tt.wantInfrastructure)
+			}
+			classified := classifyForgeDeliverableError(err, "github.com", false)
+			_, typed := forgeavailability.As(classified)
+			if typed != tt.wantInfrastructure {
+				t.Fatalf("classifyForgeDeliverableError() typed = %v, want %v; error = %v", typed, tt.wantInfrastructure, classified)
+			}
+		})
 	}
 }
 
@@ -3029,7 +3224,7 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 func TestVerifyAgentResumeRejectsUnsupportedBackend(t *testing.T) {
 	t.Parallel()
 
-	err := verifyAgentResume(context.Background(), nonVerifyingAgentBackend{}, AgentResume{ThreadID: "thread-1155"})
+	err := verifyAgentResume(context.Background(), nonVerifyingAgentBackend{}, AgentProcessRequest{}, AgentResume{ThreadID: "thread-1155"})
 	if !errors.Is(err, ErrAgentResumeUnsupported) {
 		t.Fatalf("verifyAgentResume() error = %v, want ErrAgentResumeUnsupported", err)
 	}
@@ -5558,6 +5753,7 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	workspaceReaped := ""
 
 	runner, err := NewRunner(Dependencies{
+		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Gate: gate.Config{
@@ -5645,6 +5841,59 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	if codeBackend.request.Prompt != "" {
 		t.Fatalf("code backend prompt = %q, want unused code backend", codeBackend.request.Prompt)
 	}
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
+		if value := validatorBackend.request.Environment.Variables[name]; value != "" {
+			t.Fatalf("validator environment %s = %q, want cleared", name, value)
+		}
+	}
+}
+
+func TestRunnerAuditReturnsCatalogSelectionError(t *testing.T) {
+	t.Parallel()
+
+	catalogErr := errors.New("initialize codex app-server: unexpected EOF")
+	auditBackend := &fakeCodexClient{catalogErr: catalogErr}
+	unavailable := "fail"
+	runner, err := NewRunner(Dependencies{
+		ProjectID:         "detent",
+		SecurityAuditRoot: t.TempDir(),
+		Workflow: config.Workflow{Config: config.Config{
+			Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{Enabled: true}},
+			Agents: config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"}},
+				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}},
+				ModelSelection: config.ModelSelection{Preset: new("sol_first"), Unavailable: &unavailable},
+			},
+		}},
+		Workspace:     &fakeWorkspaceBackend{},
+		AgentBackends: map[string]AgentBackend{"codex": auditBackend},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Audit(t.Context(), SecurityAuditRequest{
+		Issue: connector.Issue{ID: "issue-2555", Identifier: "digitaldrywood/detent#2555"},
+		Snapshot: securityaudit.Snapshot{
+			ProjectID:  "detent",
+			IssueID:    "issue-2555",
+			Identifier: "digitaldrywood/detent#2555",
+			Repository: "digitaldrywood/detent",
+			PRNumber:   2559,
+			BaseSHA:    "base-1",
+			HeadSHA:    "head-1",
+			Diff:       "diff --git a/internal/runner/model_selection.go b/internal/runner/model_selection.go\n+surface catalog error",
+		},
+	})
+	if err == nil {
+		t.Fatal("Audit() error = nil, want catalog selection error")
+	}
+	if !errors.Is(err, catalogErr) || !strings.Contains(err.Error(), catalogErr.Error()) {
+		t.Fatalf("Audit() error = %v, want wrapping %v", err, catalogErr)
+	}
+	if auditBackend.calls != 0 || auditBackend.catalogCalls != 1 {
+		t.Fatalf("audit backend turn/catalog calls = %d/%d, want 0/1", auditBackend.calls, auditBackend.catalogCalls)
+	}
 }
 
 func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
@@ -5669,6 +5918,7 @@ func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 	runner, err := NewRunner(Dependencies{
 		ProjectID:         "detent",
 		SecurityAuditRoot: auditRoot,
+		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{Config: config.Config{
 			Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{
 				Enabled:       true,
@@ -5724,6 +5974,11 @@ func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 	for _, key := range []string{"OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"} {
 		if value := auditBackend.request.Environment.Variables[key]; value != "" {
 			t.Fatalf("audit environment %s = %q, want cleared", key, value)
+		}
+	}
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
+		if value := auditBackend.request.Environment.Variables[name]; value != "" {
+			t.Fatalf("security audit environment %s = %q, want cleared", name, value)
 		}
 	}
 	if !strings.Contains(auditBackend.request.ToolInstructions, "Use no tools") || !strings.Contains(auditBackend.request.Prompt, ".detent/skills/audit.md") {
@@ -7190,7 +7445,9 @@ type fakeCodexClient struct {
 	err            error
 	calls          int
 	models         []AgentModel
+	catalogErr     error
 	catalogCalls   int
+	catalogProcess AgentProcessRequest
 	verifyErr      error
 	verifiedResume AgentResume
 }
@@ -7306,16 +7563,17 @@ func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpd
 	return c.result, c.err
 }
 
-func (c *fakeCodexClient) ListModels(context.Context) ([]AgentModel, error) {
+func (c *fakeCodexClient) ListModels(_ context.Context, process AgentProcessRequest) ([]AgentModel, error) {
 	c.catalogCalls++
-	return c.models, nil
+	c.catalogProcess = process
+	return c.models, c.catalogErr
 }
 
-func (*fakeCodexClient) DefaultModel(context.Context, string) (string, error) {
+func (*fakeCodexClient) DefaultModel(context.Context, AgentProcessRequest) (string, error) {
 	return "", nil
 }
 
-func (c *fakeCodexClient) VerifyResume(_ context.Context, resume AgentResume) error {
+func (c *fakeCodexClient) VerifyResume(_ context.Context, _ AgentProcessRequest, resume AgentResume) error {
 	c.verifiedResume = resume
 	return c.verifyErr
 }
@@ -7330,7 +7588,7 @@ func (nonVerifyingAgentBackend) RunTurn(context.Context, AgentTurnRequest, Agent
 	return AgentTurnResult{}, nil
 }
 
-func (*resumeFallbackAgentBackend) VerifyResume(context.Context, AgentResume) error {
+func (*resumeFallbackAgentBackend) VerifyResume(context.Context, AgentProcessRequest, AgentResume) error {
 	return nil
 }
 

@@ -58,6 +58,7 @@ type githubBackend interface {
 	connector.ProjectRemover
 	connector.PullRequestCommenter
 	connector.PullRequestCommentReader
+	connector.PullRequestDraftCreator
 	connector.PullRequestHeadLookup
 	connector.PullRequestHydrator
 	connector.PullRequestReviewThreadHydrator
@@ -115,6 +116,7 @@ var _ connector.RESTRateLimitStatusReporter = (*Connector)(nil)
 var _ connector.RESTRateLimitProber = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.ProjectURLResolver = (*Connector)(nil)
+var _ connector.PullRequestDraftCreator = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentDeleter = (*Connector)(nil)
@@ -573,6 +575,10 @@ func (c *Connector) RemoveIssueFromProject(ctx context.Context, issueID string) 
 
 func (c *Connector) CreatePullRequestComment(ctx context.Context, repository string, number int, body string) error {
 	return c.github.CreatePullRequestComment(ctx, repository, number, body)
+}
+
+func (c *Connector) CreateDraftPullRequest(ctx context.Context, repository string, branch string, title string, body string) (connector.PullRequest, error) {
+	return c.github.CreateDraftPullRequest(ctx, repository, branch, title, body)
 }
 
 func (c *Connector) FetchPullRequestComments(ctx context.Context, repository string, number int) ([]connector.IssueComment, error) {

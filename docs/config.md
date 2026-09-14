@@ -540,9 +540,13 @@ the configured interval, and stops or refuses a worker at its reserve. Keep
 literal tokens out of checked-in project files.
 
 `workpad.structured_only` requires machine-readable workpad status instead of
-accepting legacy narrative signals. `dependencies.source` chooses whether
-native tracker dependencies, merged pull requests, or both determine
-readiness.
+accepting legacy narrative signals. GitHub native blocked-by relations are
+authoritative when supported, including an empty list. Issue-body dependency
+lines are a fallback when native relations are unavailable; historical comments
+never add blockers. Unmatched prose references are reported as ignored in issue
+explanations. The existing `dependencies.source` values (`merged` and
+`native_only`) remain accepted for configuration compatibility; neither unions
+prose with native relations on capable GitHub repositories.
 
 ### Agents, backends, and routing
 
@@ -1215,12 +1219,12 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `schedule_ownership.branch` | `string` | `"detent-schedule-coordination"` | No | must be a valid branch name |
 | `schedule_ownership.enabled` | `boolean` | `false` | No | must be true when scheduled work is configured; add a schedule_ownership block with enabled: true and a shared key |
 | `schedule_ownership.endpoint` | `string` | `none` | No | None |
-| `schedule_ownership.heartbeat_seconds` | `integer` | `60` | No | must be greater than zero<br>must leave more than twice max_clock_skew_seconds before lease expiry |
+| `schedule_ownership.heartbeat_seconds` | `integer` | `300` | No | must be greater than zero<br>must leave more than twice max_clock_skew_seconds before lease expiry |
 | `schedule_ownership.key` | `string` | `none` | Conditional | is required when enabled is true |
-| `schedule_ownership.lease_seconds` | `integer` | `300` | No | must be greater than zero |
+| `schedule_ownership.lease_seconds` | `integer` | `900` | No | must be greater than zero |
 | `schedule_ownership.max_clock_skew_seconds` | `integer` | `15` | No | must be less than half lease_seconds<br>must not be negative |
 | `schedule_ownership.repository` | `string` | `none` | No | must use owner/name syntax |
-| `schedule_ownership.retry_seconds` | `integer` | `15` | No | must be greater than zero |
+| `schedule_ownership.retry_seconds` | `integer` | `120` | No | must be greater than zero |
 | `server` | `object` | `see child fields` | No | None |
 | `server.board_snapshot_stale_after_seconds` | `integer` | `900` | No | must be greater than 0 |
 | `server.host` | `string` | `"127.0.0.1"` | No | is required |

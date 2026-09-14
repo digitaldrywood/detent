@@ -34,21 +34,45 @@ must reject those bypasses too.
 **Change:** Edit INV-1 in this PR before changing the ownership boundary or its
 adapter exceptions; do not expand an exception to admit another lane owner.
 
-## INV-2 — Instance-owned startup failures
+## INV-2 — Instance-owned infrastructure failures
 
-**Statement:** Failures before an agent's first turn attach to the instance, never to the issue.
+**Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
 **Why:** Backend startup, protocol, and workspace-hook failures previously parked
 innocent issues and left the operator to return them to work.
 
 **Enforcement:** `TestPreTurnFailuresDrainInstance` and
 `TestObservedLanePreTurnFailureRemainsInstanceOwned` exercise instance attribution
-and preserve issue ownership even after an observed lane change. These execute
-through the invariant manifest. Runtime evidence is needed to classify a new
-failure correctly; do not infer issue fault merely from a failed attempt.
+and preserve issue ownership even after an observed lane change.
+`TestIssueSpendSinceExcludesInstanceInfrastructureAttempts` excludes established
+workspace, backend-startup, deliverable-authorization, forge, and tracker failure
+classes from issue progress spend. `TestAgentRunProgressClassifiesPullRequestApprovalDecline`
+and `TestApprovalDeniedDeliverableUsesInstanceForgeWait` preserve the connector
+approval-denial classification through the existing instance-owned forge wait, while
+`TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
+reconciliation. These execute through the invariant manifest. Runtime evidence is needed
+to classify a new failure correctly; do not infer issue fault merely from a failed attempt.
 
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when
-changing the first-turn boundary or attribution.
+changing the first-turn boundary, in-turn infrastructure classification, or attribution.
+
+Codex preflight scratch cleanup errors take precedence over simultaneous model
+selection errors in implementation, validator, and security-audit launches
+(#2561). The preceding selection error remains in logs rather than the returned
+error chain or message, so typed and textual issue-configuration classification
+cannot attribute an infrastructure cleanup failure to an issue.
+`TestPreflightCleanupFailurePrecedence` exercises actual cleanup failure and
+successful-cleanup controls for all three launch paths. This consolidates their
+existing error handling without introducing a new failure class or recovery path.
+
+Pre-dispatch provider capacity selection does not launch agent commands before an
+attempt workspace exists (#2561). It shares configured model selection with the
+worker and uses the existing provider report for availability. Attempt catalog
+validation uses the reservation's advertised model scope, preserving automatic
+fallback and legacy override rejection without changing the exact execution
+reservation check. Reports advertise canonical backend model names; a stale
+report cannot authorize a different runtime model. Catalog and effort validation
+still run in the prepared workspace, where startup failures have attempt context.
 
 ## INV-3 — Mechanism moratorium
 
@@ -84,6 +108,23 @@ must remain to reject unverified artifacts before replacement.
 Startup, serving, and readiness workers share cancellation and are joined before
 identity-failure exits allow caller-owned resources to be cleaned up.
 
+GitHub dependency hydration uses native relations as the source of truth when
+available, removing the union with prose dependencies (#2575). Unsupported
+repositories fall back to issue-body lines; historical comments are diagnostic
+only. Public reads select the dependency source before resolving blockers, and
+tracker refreshes replace authoritative empty lists instead of restoring prior
+refs. This also removes the orchestrator's historical-comment union and prevents
+reparsing connector-owned dependencies. Degraded native reads propagate errors
+instead of certifying prose fallback or suppressing subsequent native reads.
+Ignored prose and structured workpad dependency predicates absent from the native
+list are explained without introducing another blocking mechanism. Native-backed
+dispatch uses the current relation list instead of the terminal attempt's saved
+dependency-deferral metadata; past attempts cannot restore a removed relation.
+Removed structured dependencies remain cleared evidence for the existing blocked
+recovery transition. Legacy workpad dependency sections and phrases are not
+reinterpreted as human actions on native repositories; explicit human-action
+sections and non-dependency predicates retain their existing meaning.
+
 Validator launch accounting uses the existing validator-run registry and shared
 worker progress publisher. Validators appear alongside implementation workers in
 runtime snapshots, including during startup and completion, and leave the registry
@@ -111,6 +152,46 @@ the acknowledgement timestamp (#2517). Kanban moves out of Blocked and `detent i
 when the CLI acknowledgement leaves the issue in Blocked; automatic unparks and
 unrelated issue history remain untouched. This consolidates operator retry intent
 instead of adding another breaker or recovery loop.
+
+Scheduled routine occurrences advance from their durable `scheduled_for` identity
+regardless of success or failure. A selected occurrence whose existing ownership
+context is already canceled is consumed without starting an agent. This removes the
+implicit same-slot retry and relies on the existing schedule-ownership context rather
+than adding a retry, backoff, or lease mechanism (#2526).
+
+Backlog admission selection uses the existing run issue records for evaluation
+identity, fingerprints, and stale verdicts. Unchanged stale candidates join the
+existing epic and malformed-result exclusions before the window is capped;
+remaining candidates rotate by last evaluation time. This replaces the fixed
+evaluation window with selection from run/skip bookkeeping, without a
+new routine, reason code, or suppression table (#2568).
+Saved stale verdicts and new evaluations share the same point-lookup revalidation;
+a candidate returning to its original eligible snapshot can re-enter the window.
+This removes unconditional historical suppression across eligibility cycles.
+
+Deliverable recovery opens a draft pull request when a worker already pushed an
+exact-head branch but failed before creating the PR, and returns a missing remote
+branch to Rework (#2528). This retires the human-owned no-PR park by consolidating
+the repair into the existing deliverable-recovery and operator-routine paths.
+
+Successful persisted attempts release dispatch ownership through the same completed
+attempt cleanup even when completion-time pull-request hydration is unavailable
+(#2553). Completion evidence and the existing hydration gate remain authoritative;
+the claim no longer acts as an implicit park while no worker is running, and cleanup
+is limited to the retained attempt claim so it cannot erase replacement ownership.
+
+GitHub REST reserve and lookup decisions use credential-and-endpoint-family
+snapshots instead of the last response labeled `core`. Ambiguous orchestrator
+aggregate telemetry no longer creates the fleet-wide REST capacity outage;
+explicit provider backoffs and worker/shared-pool reserve evidence retain their
+existing handling (#2547). This consolidates the blanket dispatch pause into the
+request-family gates that own the observed budget window.
+
+Darwin process-environment inspection uses the existing workspace scan stage
+budget instead of a separate per-process transient-read deadline (#2573).
+Reconciliation and reaping both receive that stage budget; EINVAL/EIO retries do
+not renew it, and expiration preserves the ownership error and verified partial
+results. This removes a competing timer without adding a recovery mechanism.
 
 ## INV-4 — Native merge queue
 
@@ -176,7 +257,8 @@ operator interventions unrelated to the assigned repository task.
 
 **Enforcement:** `TestPrepareCodexCommandForServiceIsolatesInstructions` and
 `TestPrepareWorkerCodexHomeExistingInstructions` exercise service profile
-isolation and rejection of inherited instructions. The manifest runs both.
+isolation, per-worker SQLite state, and rejection of inherited instructions. The
+manifest runs both.
 Repository instructions and the Detent-provided worktree remain authoritative.
 
 **Change:** Edit INV-6 and isolation tests together in the same PR before changing

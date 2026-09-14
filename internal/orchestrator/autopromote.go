@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -625,6 +626,12 @@ func autoPromoteBlockedRefResolved(ref connector.BlockedRef, terminalStates []st
 }
 
 func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
+	signal, ok := rawIssueWorkpadSignal(issue)
+	issue.WorkpadSignal = signal
+	return issue.WithNativeWorkpadAuthority().WorkpadSignal, ok
+}
+
+func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 	for index := len(issue.Comments) - 1; index >= 0; index-- {
 		comment := issue.Comments[index]
 		body := comment.Body
@@ -635,7 +642,7 @@ func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool
 			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
 		}
-		if signal := autoPromoteWorkpadProseSignalFromBody(body, comment.URL); signal != nil {
+		if signal := autoPromoteWorkpadProseSignalFromBody(body, comment.URL, issue.DependencySource == connector.BlockedRefSourceNative); signal != nil {
 			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
 		}
@@ -675,7 +682,7 @@ func autoPromoteIsWorkpadComment(body string) bool {
 	return false
 }
 
-func autoPromoteWorkpadProseSignalFromBody(body string, commentURL string) *workpad.Signal {
+func autoPromoteWorkpadProseSignalFromBody(body string, commentURL string, native bool) *workpad.Signal {
 	sectionFound := false
 	for _, title := range []string{"Human Action Needed", "Blockers"} {
 		text, ok := autoPromoteMarkdownSectionText(body, title)
@@ -683,6 +690,9 @@ func autoPromoteWorkpadProseSignalFromBody(body string, commentURL string) *work
 			continue
 		}
 		sectionFound = true
+		if native && title == "Blockers" {
+			text = withoutDependencyOnlyWorkpadLines(text)
+		}
 		if reason := autoPromoteNormalizeWorkpadBlockerText(text); reason != "" {
 			return &workpad.Signal{
 				Source:      workpad.SourceProseSection,
@@ -694,6 +704,9 @@ func autoPromoteWorkpadProseSignalFromBody(body string, commentURL string) *work
 	if sectionFound {
 		return nil
 	}
+	if native {
+		body = withoutDependencyOnlyWorkpadLines(body)
+	}
 	if reason := autoPromoteWorkpadBlockerPhraseReason(body); reason != "" {
 		return &workpad.Signal{
 			Source:      workpad.SourceProsePhrase,
@@ -702,6 +715,32 @@ func autoPromoteWorkpadProseSignalFromBody(body string, commentURL string) *work
 		}
 	}
 	return nil
+}
+
+// Dependency-only prose is historical evidence. Retain free text, including
+// approval requests adjacent to a dependency line.
+func withoutDependencyOnlyWorkpadLines(body string) string {
+	lines := strings.Split(body, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if text, ok := dependencyline.Match(line); ok {
+			remainder := dependencyIssueURLPattern.ReplaceAllString(text, "")
+			remainder = dependencyIssueRefPattern.ReplaceAllString(remainder, "")
+			dependencyOnly := true
+			for _, word := range strings.Fields(strings.ToLower(remainder)) {
+				word = strings.Trim(word, " ,;.`*_~[]()<>&")
+				if word != "" && word != "and" && word != "or" {
+					dependencyOnly = false
+					break
+				}
+			}
+			if dependencyOnly {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func autoPromoteWorkpadBlockerPhraseReason(body string) string {

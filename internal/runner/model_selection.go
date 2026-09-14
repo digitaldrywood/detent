@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/agentoverride"
@@ -16,8 +17,9 @@ import (
 
 type agentSelection struct {
 	resolvedAgentOverride
-	Selection agentidentity.Selection
-	Err       error
+	Selection    agentidentity.Selection
+	CatalogError string
+	Err          error
 }
 
 type IssueConfigurationError struct {
@@ -47,7 +49,8 @@ func (r agentRuntime) selectRequestBackend(req RunRequest, ctx selector.Context,
 	return RouteSelection{BackendID: identity.BackendID, Model: model, RouteName: identity.Route}, backend, backendConfig, nil
 }
 
-func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
+func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
+	backend = capacitySelectionBackend(req, backend)
 	if hasResumeIdentity(req) {
 		identity := req.ResumeState.RuntimeIdentity
 		model := effectiveModel("", identity.RequestedModel.Value, identity.ResolvedModel.Value)
@@ -79,9 +82,10 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace
 		if !ok {
 			return result.reject("effort", result.Effort, "changed resume effort requires a backend model catalog")
 		}
-		models, err := provider.ListModels(ctx)
+		models, err := provider.ListModels(ctx, process)
 		if err != nil {
-			return result.reject("effort", result.Effort, "model catalog unavailable while validating changed resume effort")
+			result.Err = fmt.Errorf("changed resume effort validation: model catalog unavailable: %w", err)
+			return result
 		}
 		selected, ok := findAgentModel(models, model)
 		if !ok {
@@ -94,15 +98,82 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace
 		}
 		return result
 	}
-	return resolveAgentSelection(ctx, req.Issue, workspace, baseModel, role, cfg, backendConfig, backend)
+	return resolveAgentSelection(ctx, req.Issue, process, baseModel, role, cfg, backendConfig, backend)
 }
 
-func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
+func resolveAgentSelection(ctx context.Context, issue connector.Issue, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
 	policy := cfg.EffectiveModelSelection()
 	projectEffort, field := cfg.Agent.Effort.Resolve(role)
 	if !policy.Active() || policy.BackendKinds == nil || !slices.Contains(*policy.BackendKinds, backendConfig.Kind) {
-		return agentSelection{resolvedAgentOverride: resolveAgentOverride(ctx, issue, workspace, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)}
+		resolved, err := resolveAgentOverride(ctx, issue, process, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)
+		return agentSelection{resolvedAgentOverride: resolved, Err: err}
 	}
+	result := configuredAutomaticSelection(issue, baseModel, role, cfg, backendConfig)
+	if result.Err != nil {
+		return result
+	}
+	override, _, err := agentoverride.FromIssueBody(issue.Description)
+	if err != nil {
+		return result.rejectIssue("block", "", err.Error())
+	}
+	explicitModel, modelField := override.ModelForRole(role)
+	explicitEffort, effortField := override.EffortForRole(role)
+	if explicitEffort == "" {
+		explicitEffort, effortField = override.Effort, "effort"
+	}
+	automaticModel := strings.TrimSpace(baseModel) == "" && explicitModel == ""
+	provider, ok := backend.(AgentModelCatalogProvider)
+	if !ok {
+		result.Err = errors.New("automatic model selection requires a backend model catalog; configure an eligible backend or disable the policy")
+		return result
+	}
+	models, err := provider.ListModels(ctx, process)
+	if err != nil {
+		catalogErr := fmt.Errorf("automatic model selection: model catalog unavailable: %w", err)
+		result.CatalogError = CatalogErrorDiagnostic(err)
+		if !automaticModel || policy.Unavailable == nil || *policy.Unavailable != "fallback" || !normalModelFallbackConfigured(policy) {
+			result.Err = catalogErr
+			return result
+		}
+		result.Model = policy.Model("normal")
+		result.Selection.ModelSource = selectionSource(policy, "normal_model", "")
+		result.Selection.FallbackReason = "automatic model selection: model catalog unavailable: " + result.CatalogError
+		return result
+	}
+	model, available := availableSelectionModel(models, result.Model)
+	if !available && !automaticModel {
+		return result.rejectIssue(modelField, result.Model, "explicit model is unavailable or retired in the selected backend catalog")
+	}
+	if !available && policy.Unavailable != nil && *policy.Unavailable == "fallback" && policy.FallbackOrder != nil {
+		for _, candidate := range *policy.FallbackOrder {
+			if fallback, ok := availableSelectionModel(models, policy.Model(candidate)); ok {
+				model, available = fallback, true
+				result.Selection.FallbackReason = "automatic model unavailable or retired"
+				break
+			}
+		}
+	}
+	if !available {
+		result.Err = errors.New("automatic model selection: no configured model is available; update agents.model_selection models or fallback_order after checking the backend catalog")
+		return result
+	}
+	result.Model = canonicalAgentModel(model, result.Model)
+	if effort, ok := supportedAgentEffort(model, result.Effort); ok {
+		result.Effort = effort
+	} else {
+		if explicitEffort != "" {
+			return result.rejectIssue(effortField, explicitEffort, "explicit effort is unsupported by the selected model")
+		}
+		result.Err = fmt.Errorf("automatic model selection: effort default %q is unsupported by model %q; configure a supported effort", result.Effort, result.Model)
+	}
+	return result
+}
+
+// configuredAutomaticSelection chooses requested model and effort without launching a
+// backend. Availability and effort support are validated in the attempt workspace.
+func configuredAutomaticSelection(issue connector.Issue, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend) agentSelection {
+	policy := cfg.EffectiveModelSelection()
+	projectEffort, field := cfg.Agent.Effort.Resolve(role)
 	result := agentSelection{Selection: agentidentity.Selection{Policy: "automatic", PolicySource: policy.Sources["enabled"]}}
 	if policy.Preset != nil && *policy.Preset != "" {
 		result.Selection.Policy = *policy.Preset
@@ -159,43 +230,87 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 	}
 	result = boundSelectionEffort(result, policy, level, role)
 	result.Selection.RequestedModel = result.Model
-	provider, ok := backend.(AgentModelCatalogProvider)
-	if !ok {
-		result.Err = errors.New("automatic model selection requires a backend model catalog; configure an eligible backend or disable the policy")
-		return result
-	}
-	models, err := provider.ListModels(ctx)
-	if err != nil {
-		result.Err = errors.New("automatic model selection: model catalog unavailable; retry catalog discovery before dispatch")
-		return result
-	}
-	model, available := availableSelectionModel(models, result.Model)
-	if !available && !automaticModel {
-		return result.rejectIssue(modelField, result.Model, "explicit model is unavailable or retired in the selected backend catalog")
-	}
-	if !available && policy.Unavailable != nil && *policy.Unavailable == "fallback" && policy.FallbackOrder != nil {
-		for _, candidate := range *policy.FallbackOrder {
-			if fallback, ok := availableSelectionModel(models, policy.Model(candidate)); ok {
-				model, available = fallback, true
-				result.Selection.FallbackReason = "automatic model unavailable or retired"
-				break
-			}
-		}
-	}
-	if !available {
-		result.Err = errors.New("automatic model selection: no configured model is available; update agents.model_selection models or fallback_order after checking the backend catalog")
-		return result
-	}
-	result.Model = canonicalAgentModel(model, result.Model)
-	if effort, ok := supportedAgentEffort(model, result.Effort); ok {
-		result.Effort = effort
-	} else {
-		if explicitEffort != "" {
-			return result.rejectIssue(effortField, explicitEffort, "explicit effort is unsupported by the selected model")
-		}
-		result.Err = fmt.Errorf("automatic model selection: effort default %q is unsupported by model %q; configure a supported effort", result.Effort, result.Model)
-	}
 	return result
+}
+
+func normalModelFallbackConfigured(policy config.ModelSelection) bool {
+	if policy.FallbackOrder == nil {
+		return false
+	}
+	normal := policy.Model("normal")
+	return slices.ContainsFunc(*policy.FallbackOrder, func(candidate string) bool {
+		return policy.Model(candidate) == normal
+	})
+}
+
+// CatalogErrorDiagnostic returns a bounded operator-facing catalog error that
+// omits backend response bodies when the backend exposes a separate message.
+func CatalogErrorDiagnostic(err error) string {
+	const maxDiagnosticBytes = 512
+	parts := catalogErrorDiagnosticParts(err)
+	message := strings.Join(parts, "; ")
+	if len(message) <= maxDiagnosticBytes || len(parts) < 2 {
+		return boundCatalogErrorDiagnostic(message, maxDiagnosticBytes)
+	}
+
+	separatorBytes := 2 * (len(parts) - 1)
+	if separatorBytes >= maxDiagnosticBytes {
+		return boundCatalogErrorDiagnostic(message, maxDiagnosticBytes)
+	}
+	partBudget := (maxDiagnosticBytes - separatorBytes) / len(parts)
+	remainder := (maxDiagnosticBytes - separatorBytes) % len(parts)
+	for index := range parts {
+		budget := partBudget
+		if index < remainder {
+			budget++
+		}
+		parts[index] = boundCatalogErrorDiagnostic(parts[index], budget)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func catalogErrorDiagnosticParts(err error) []string {
+	type joinedError interface {
+		Unwrap() []error
+	}
+	if joined, ok := err.(joinedError); ok {
+		parts := make([]string, 0, len(joined.Unwrap()))
+		for _, cause := range joined.Unwrap() {
+			parts = append(parts, catalogErrorDiagnosticParts(cause)...)
+		}
+		if len(parts) > 0 {
+			return parts
+		}
+	}
+
+	type backendErrorMessage interface {
+		BackendErrorMessage() string
+	}
+	var backendErr backendErrorMessage
+	message := ""
+	if errors.As(err, &backendErr) {
+		message = backendErr.BackendErrorMessage()
+		if strings.TrimSpace(message) == "" {
+			message = "backend returned a model catalog error without diagnostic detail"
+		}
+	} else if err != nil {
+		message = err.Error()
+	}
+	return []string{strings.Join(strings.Fields(message), " ")}
+}
+
+func boundCatalogErrorDiagnostic(message string, maxBytes int) string {
+	if len(message) <= maxBytes {
+		return message
+	}
+	if maxBytes <= 3 {
+		return strings.Repeat(".", maxBytes)
+	}
+	end := maxBytes - 3
+	for end > 0 && !utf8.RuneStart(message[end]) {
+		end--
+	}
+	return message[:end] + "..."
 }
 
 func (s agentSelection) reject(field, value, reason string) agentSelection {

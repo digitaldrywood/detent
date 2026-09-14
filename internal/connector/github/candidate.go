@@ -439,10 +439,13 @@ func (c *Connector) hydrateCandidateIssues(ctx context.Context, issues []connect
 		if err := c.populateBlockerReasons(ctx, issues); err != nil {
 			return err
 		}
-		c.hydrateBlockedByRefs(ctx, issues)
-		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-			return err
-		}
 	}
+	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+		return err
+	}
+	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		return err
+	}
+
 	return c.attachStatePullRequests(ctx, issues, true)
 }

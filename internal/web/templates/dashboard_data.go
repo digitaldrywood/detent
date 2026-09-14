@@ -53,6 +53,7 @@ const (
 	projectKanbanBlockedRecoveryActionMetadataKey        = "detent.blocked_recovery_action"
 	projectKanbanBlockedRecoveryReasonMetadataKey        = "detent.blocked_recovery_reason"
 	projectKanbanBlockedRecoveryRemedyMetadataKey        = "detent.blocked_recovery_remedy"
+	projectKanbanBlockedNeedsHumanAttentionMetadataKey   = "detent.blocked_needs_human_attention"
 	projectKanbanAutoPromoteActionMetadataKey            = "detent.auto_promote_action"
 	projectKanbanAutoPromoteReasonMetadataKey            = "detent.auto_promote_reason"
 	projectKanbanAutomatedReviewModeMetadataKey          = "detent.automated_review_mode"
@@ -414,6 +415,13 @@ type ProjectSmallMultiple struct {
 	PauseExitEvaluable        bool
 	PauseExitError            string
 	PauseExitResolver         string
+	ReviewPolicyConfigured    bool
+	AutoPromoteEnabled        bool
+	AutoPromoteSourceState    string
+	AutoPromoteOptoutLabel    string
+	AutoPromoteAllowedLabels  []string
+	AutoPromoteGateKind       string
+	AutoPromoteApprovalLabel  string
 	ActiveHours               telemetry.ActiveHours
 	Dispatch                  telemetry.DispatchStatus
 	Refresh                   telemetry.Refresh
@@ -646,11 +654,13 @@ type projectKanbanCard struct {
 	TimeInStageTitle      string
 	WaitDetail            string
 	GatePending           bool
+	HumanActionRequired   bool
 	BlockedSource         telemetry.BlockedSource
 	BlockedReason         string
 	BlockedRecoveryAction string
 	BlockedRecoveryReason string
 	BlockedRecoveryRemedy string
+	BlockedHumanAttention bool
 	AttentionLabel        string
 	AttentionDetail       string
 	MergeLaneStatus       string
@@ -2617,6 +2627,7 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey] = row.RecoveryAction
 		issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey] = row.RecoveryReason
 		issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey] = row.RecoveryRemedy
+		issue.Metadata[projectKanbanBlockedNeedsHumanAttentionMetadataKey] = strconv.FormatBool(row.NeedsHumanAttention)
 		fallback := "Todo"
 		if !telemetry.BlockedRowDependencyWaiting(row) {
 			issue.State = "Blocked"
@@ -3178,6 +3189,7 @@ func projectKanbanLaneID(state string) string {
 
 func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue), state)
+	clearedBlockers = append(clearedBlockers, issue.DependencyNotes...)
 	card := projectKanbanCard{
 		IssueNumber:           projectKanbanIssueNumber(issue),
 		Identity:              boardCardIdentityToken(issue.Identifier, issue.ID, projectKanbanIssueNumber(issue)),
@@ -3194,11 +3206,13 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		TimeInStageTitle:      prPipelineAgeTitle(state, stageAt, now),
 		WaitDetail:            prPipelineWaitDetail(issue),
 		GatePending:           issue.GatePending,
+		HumanActionRequired:   projectKanbanHumanActionRequired(data, issue, state),
 		BlockedSource:         telemetry.BlockedSource(strings.TrimSpace(issue.Metadata[projectKanbanBlockedSourceMetadataKey])),
 		BlockedReason:         strings.TrimSpace(issue.Metadata[projectKanbanBlockedReasonMetadataKey]),
 		BlockedRecoveryAction: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey]),
 		BlockedRecoveryReason: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey]),
 		BlockedRecoveryRemedy: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey]),
+		BlockedHumanAttention: strings.EqualFold(strings.TrimSpace(issue.Metadata[projectKanbanBlockedNeedsHumanAttentionMetadataKey]), "true"),
 		AttentionLabel:        projectKanbanAttentionLabel(issue),
 		AttentionDetail:       projectKanbanAttentionDetail(issue),
 		Stage:                 chartText(state, "n/a"),
@@ -3254,6 +3268,56 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 	}
 	card.DispatchPriorityLabel, card.DispatchPriorityRank = projectKanbanDispatchPriority(data, card.ProjectID, card.Labels)
 	return card
+}
+
+func projectKanbanHumanActionRequired(data DashboardData, issue telemetry.Issue, state string) bool {
+	if issue.RequiredGate != nil && strings.TrimSpace(issue.RequiredGate.HumanAction) != "" {
+		return true
+	}
+	projectID := strings.TrimSpace(issue.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.ProjectID)
+	}
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.Snapshot.Project.ID)
+	}
+	for _, project := range data.Projects {
+		if strings.EqualFold(strings.TrimSpace(project.ID), projectID) {
+			sourceState := strings.TrimSpace(project.AutoPromoteSourceState)
+			if sourceState == "" {
+				sourceState = "Human Review"
+			}
+			if !strings.EqualFold(strings.TrimSpace(state), sourceState) {
+				return false
+			}
+			if !project.ReviewPolicyConfigured || !project.AutoPromoteEnabled {
+				return project.ReviewPolicyConfigured
+			}
+			if projectKanbanLabelsIntersect(issue.Labels, []string{project.AutoPromoteOptoutLabel}) {
+				return true
+			}
+			if len(project.AutoPromoteAllowedLabels) > 0 && !projectKanbanLabelsIntersect(issue.Labels, project.AutoPromoteAllowedLabels) {
+				return true
+			}
+			if !strings.EqualFold(strings.TrimSpace(project.AutoPromoteGateKind), "human_review") {
+				return false
+			}
+			approvalLabel := strings.TrimSpace(project.AutoPromoteApprovalLabel)
+			return approvalLabel == "" || !projectKanbanLabelsIntersect(issue.Labels, []string{approvalLabel})
+		}
+	}
+	return false
+}
+
+func projectKanbanLabelsIntersect(labels []string, candidates []string) bool {
+	for _, label := range labels {
+		for _, candidate := range candidates {
+			if candidate = strings.TrimSpace(candidate); candidate != "" && strings.EqualFold(strings.TrimSpace(label), candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func WithKanbanCardComments(card projectKanbanCard, comments []telemetry.IssueComment) projectKanbanCard {
@@ -3330,11 +3394,14 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 		if label == "" {
 			continue
 		}
+		if source := strings.TrimSpace(ref.Source); source != "" {
+			label += " [" + source + "]"
+		}
 		if ref.HumanOwned {
 			if ref.HumanCompletionReady {
 				cleared = append(cleared, "human prerequisite "+label+" (completion evidence recorded)")
 			} else {
-				active = append(active, "human prerequisite "+label+" (completion evidence required)")
+				active = append(active, "human prerequisite "+label+" (closure and completion evidence required)")
 			}
 			continue
 		}

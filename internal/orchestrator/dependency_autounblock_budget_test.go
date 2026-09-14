@@ -208,7 +208,7 @@ func TestDeferredDependencyUnblockRevalidatesEvidence(t *testing.T) {
 			}
 			orch.tick(t.Context(), &state, now.Add(time.Minute))
 			want := 0
-			if name == "ready" || name == "native-only comment" {
+			if name == "ready" || name == "native-only comment" || name == "new comment dependency" {
 				want = 1
 			}
 			if len(base.updates) != want {

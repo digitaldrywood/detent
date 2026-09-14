@@ -17,6 +17,16 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 	issues []connector.Issue,
 	now time.Time,
 ) autoPromoteTickResult {
+	return o.transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(ctx, state, issues, now, nil)
+}
+
+func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+	validatorHeadHydration map[string]bool,
+) autoPromoteTickResult {
 	if len(state.Completed) == 0 || len(issues) == 0 {
 		return autoPromoteTickResult{}
 	}
@@ -35,11 +45,32 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		if !ok {
 			continue
 		}
+		if gate.Effective(cfg.Gate).Validator.Enabled &&
+			strings.TrimSpace(completed.GateWaitReason) == completedReworkGateWaitReason {
+			if hydrated, attempted := validatorHeadHydration[issueID]; attempted {
+				if !hydrated {
+					result.transitioned[issueID] = struct{}{}
+					continue
+				}
+			} else {
+				var hydrated bool
+				issue, hydrated = o.hydrateValidatorStagePullRequest(ctx, issue)
+				if !hydrated || validatorStageIdentityForIssue(issue).Key == "" || pullRequestHydrationBlocksProgress(issue.PullRequest) {
+					result.transitioned[issueID] = struct{}{}
+					continue
+				}
+			}
+		}
 		if gateRequiresPullRequest(cfg.Gate) {
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
 				result.transitioned[issueID] = struct{}{}
+				if completed.successfulAttemptPersisted {
+					if _, claimed := state.Claimed[issueID]; claimed {
+						o.releaseCompletedAttemptClaim(ctx, state, issue)
+					}
+				}
 				continue
 			}
 		}
@@ -68,7 +99,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		}
 
 		result.transitioned[issueID] = struct{}{}
-		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
+		if direct, promoted, summary, decision := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
 			if completedActiveReviewThreadsKeepParked(issue, promoted.State, cfg) {
 				continue
 			}
@@ -80,6 +111,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 				o.logMergeWorkerPickup(promoted, "completed_active_auto_promote")
 			}
 			o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
+			o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, promoted.State)
 			continue
 		}
 
@@ -206,41 +238,56 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 	completedFinalState string,
 	cfg AutoPromoteConfig,
 	now time.Time,
-) (bool, connector.Issue) {
+) (bool, connector.Issue, AutoPromoteSummary, AutoPromoteDecision) {
 	if normalizeState(reviewState) != normalizeState(cfg.SourceState) {
-		return false, connector.Issue{}
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
 	}
 
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = completedFinalState
 	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue.ID)
 	unresolvedReviewThreads := gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0
-	if !unresolvedReviewThreads && (!cfg.Enabled || cfg.QuietDuration != 0) {
-		return false, connector.Issue{}
+	validatorRework := gate.Effective(cfg.Gate).Validator.Enabled &&
+		normalizeState(issue.State) == normalizeState(cfg.ReworkState)
+	if !unresolvedReviewThreads && (!cfg.Enabled || cfg.QuietDuration != 0 && !validatorRework) {
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
 	}
 	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
 	if !unresolvedReviewThreads {
 		decision = EvaluateAutoPromote(issue, summary, cfg, now)
 	}
+	var validatorReady bool
+	decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+	if !validatorReady {
+		recordAutoPromoteSnapshotDecision(state, strings.TrimSpace(issue.ID), decision)
+		o.logAutoPromoteDecision(issue, decision, "")
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
+	}
 	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if !validatorReady {
+			recordAutoPromoteSnapshotDecision(state, strings.TrimSpace(issue.ID), decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
+		}
 	}
 	targetState := autoPromoteTargetState(decision.Action, cfg)
 	if targetState == "" {
 		o.logAutoPromoteDecision(issue, decision, "")
-		return false, connector.Issue{}
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
 	}
 	if normalizeState(issue.State) == normalizeState(targetState) {
 		promoted := promotedIssue(issue, targetState, now)
 		o.logAutoPromoteDecision(issue, decision, targetState)
 		o.logCompletedActiveAutoPromoteSameState(issue, decision, cfg)
-		return true, promoted
+		return true, promoted, summary, decision
 	}
 	effectiveTargetState, applied := o.applyAutoPromoteDecisionWithTarget(ctx, state, issue, summary, decision, targetState, now)
 	if !applied {
-		return false, connector.Issue{}
+		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
 	}
-	return true, promotedIssue(issue, effectiveTargetState, now)
+	return true, promotedIssue(issue, effectiveTargetState, now), summary, decision
 }
 
 func (o *Orchestrator) finishCompletedActiveReviewTransition(
@@ -337,6 +384,10 @@ func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConf
 		return true
 	}
 	if gate.Effective(cfg.Gate).Kind == gate.KindArtifact {
+		return true
+	}
+	if gate.Effective(cfg.Gate).Validator.Enabled &&
+		normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
 		return true
 	}
 	return cfg.GateWaitState == autoPromoteGateWaitReview

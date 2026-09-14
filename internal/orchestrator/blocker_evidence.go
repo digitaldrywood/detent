@@ -55,7 +55,7 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 	resolvedReferences map[string]connector.Issue,
 	now time.Time,
 ) recordedBlockerEvaluation {
-	signal := issue.WorkpadSignal
+	signal, _ := rawIssueWorkpadSignal(issue)
 	if signal == nil {
 		return recordedBlockerEvaluation{}
 	}
@@ -83,15 +83,25 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 		return result
 	}
 
+	issue.WorkpadSignal = signal
 	predicateContext := &blockerPredicateContext{
 		issue:           issue,
 		state:           state,
 		now:             now,
-		references:      o.resolveBlockerPredicateReferences(ctx, issue, signal.Blockers, resolvedReferences),
+		references:      o.resolveBlockerPredicateReferences(ctx, issue, issue.WithNativeWorkpadAuthority().WorkpadSignal.Blockers, resolvedReferences),
 		hydrated:        map[string]connector.Issue{},
 		hydrationErrors: map[string]error{},
 	}
 	for _, blocker := range signal.Blockers {
+		if identifier := issue.IgnoredNativeWorkpadDependency(blocker); identifier != "" {
+			result.Found = true
+			result.Evidence = append(result.Evidence, newBlockerEvidence(
+				workpad.PredicateIssueState, workpad.BlockerOwnerOrchestrator, blockerEvidenceStatusCleared,
+				identifier, blocker.Reason, "workpad dependency ignored: native relation absent",
+				recordedAt, blocker.ExpiresAt, blocker.RecheckInterval, now,
+			))
+			continue
+		}
 		if blocker.Predicate == nil && !blocker.Unverifiable {
 			continue
 		}

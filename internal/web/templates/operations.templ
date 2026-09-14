@@ -114,12 +114,28 @@ templ operationsSections(report operations.Report) {
 		}
 	</section>
 	<section id="operations-decisions" class="flex flex-col gap-2" aria-labelledby="operations-decisions-title">
-		<h2 id="operations-decisions-title" class="text-sm font-semibold">Decisions needed</h2>
+		<h2 id="operations-decisions-title" class="text-sm font-semibold">Needs you</h2>
 		if len(report.Decisions) == 0 {
-			<p class="text-sm">No human decisions needed.</p>
+			<p class="text-sm">Nothing needs you right now.</p>
 		}
 		for _, decision := range report.Decisions {
-			<article class="rounded border border-line p-3 text-sm"><a class="underline" href={ templ.SafeURL(decision.URL) }>{ decision.Issue }</a><p>{ decision.Question }</p></article>
+			<article class="rounded border border-line p-3 text-sm">
+				<p><span class="font-semibold">Needs you</span> · <a class="underline" href={ templ.SafeURL(decision.URL) }>{ decision.Issue }</a></p>
+				if decision.Title != "" {
+					<p class="text-xs text-sec">{ decision.Title }</p>
+				}
+				<p>{ decision.Question }</p>
+				if decision.Prerequisite != nil {
+					<p class="mt-1 text-xs">
+						<span class="text-sec">Prerequisite:</span>
+						<a class="underline" href={ templ.SafeURL(decision.Prerequisite.URL) }>{ decision.Prerequisite.Issue }</a>
+						if decision.Prerequisite.Title != "" {
+							<span>{ " · " + decision.Prerequisite.Title }</span>
+						}
+					</p>
+					<p class="text-xs text-sec">{ decision.Prerequisite.Evidence }</p>
+				}
+			</article>
 		}
 	</section>
 }

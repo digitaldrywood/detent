@@ -20,7 +20,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
-const defaultProcessTerminationGrace = 250 * time.Millisecond
+const (
+	defaultProcessTerminationGrace     = 250 * time.Millisecond
+	minimumWorkspaceProcessScanTimeout = 30 * time.Second
+)
 
 func reapWorkspaceProcesses(ctx context.Context, path string, logger *slog.Logger) int {
 	reaped, err := ReapProcesses(ctx, path, defaultProcessTerminationGrace)
@@ -50,9 +53,47 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	if grace <= 0 {
 		grace = defaultProcessTerminationGrace
 	}
-	ctx, cancel := context.WithTimeout(ctx, max(2*grace, 5*time.Second))
-	defer cancel()
+	// The process inventory has independent scratch-environment and cwd stages,
+	// and reaping may inventory again after each signal. Bound a stalled stage,
+	// but renew the budget after each completed stage so healthy progress is not
+	// constrained by one aggregate wall-clock deadline.
+	ctx = withWorkspaceProcessScanBudget(ctx, max(2*grace, minimumWorkspaceProcessScanTimeout), context.WithTimeout)
 	return reapProcesses(ctx, path, grace, workspaceProcessIDs, syscall.Kill)
+}
+
+type workspaceProcessScanContextFactory func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+
+type workspaceProcessScanBudget struct {
+	timeout     time.Duration
+	withTimeout workspaceProcessScanContextFactory
+}
+
+type workspaceProcessScanBudgetKey struct{}
+
+func withWorkspaceProcessScanBudget(
+	ctx context.Context,
+	timeout time.Duration,
+	withTimeout workspaceProcessScanContextFactory,
+) context.Context {
+	return context.WithValue(ctx, workspaceProcessScanBudgetKey{}, workspaceProcessScanBudget{
+		timeout:     timeout,
+		withTimeout: withTimeout,
+	})
+}
+
+func runWorkspaceProcessScan(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
+	budget, ok := ctx.Value(workspaceProcessScanBudgetKey{}).(workspaceProcessScanBudget)
+	if !ok || budget.timeout <= 0 || budget.withTimeout == nil {
+		// Reconciliation also inventories processes without going through
+		// ReapProcesses. Give it the same stage budget as reaping.
+		budget = workspaceProcessScanBudget{
+			timeout:     minimumWorkspaceProcessScanTimeout,
+			withTimeout: context.WithTimeout,
+		}
+	}
+	scanCtx, cancel := budget.withTimeout(ctx, budget.timeout)
+	defer cancel()
+	return scan(scanCtx, path)
 }
 
 type workspaceProcessSignaler func(int, syscall.Signal) error
@@ -78,7 +119,13 @@ func reapProcessesWithWait(
 ) (int, error) {
 	pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, scan)
 	if err != nil {
-		return 0, fmt.Errorf("scan workspace processes: %w", err)
+		scanErr := fmt.Errorf("scan workspace processes: %w", err)
+		if len(pids) == 0 {
+			return 0, scanErr
+		}
+		reaped := make(map[int]struct{}, len(pids))
+		signalErr := signalWorkspaceProcesses(pids, syscall.SIGTERM, signal, reaped)
+		return len(reaped), errors.Join(scanErr, signalErr)
 	}
 	if len(pids) == 0 {
 		return 0, nil
@@ -168,17 +215,30 @@ func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 		return nil, errors.New("workspace path must not resolve to a filesystem root")
 	}
 	path = canonical
-	owned, err := scratchEnvironmentProcessIDs(ctx, path)
-	if err != nil {
-		return nil, err
+	cwdScan := func(ctx context.Context, path string) ([]int, error) {
+		if runtime.GOOS == "linux" {
+			return linuxWorkspaceProcessIDs(path)
+		}
+		return lsofWorkspaceProcessIDs(ctx, path)
 	}
-	var cwd []int
-	if runtime.GOOS == "linux" {
-		cwd, err = linuxWorkspaceProcessIDs(path)
-	} else {
-		cwd, err = lsofWorkspaceProcessIDs(ctx, path)
+	return workspaceProcessIDsWithScanners(ctx, path, scratchEnvironmentProcessIDs, cwdScan)
+}
+
+func workspaceProcessIDsWithScanners(
+	ctx context.Context,
+	path string,
+	scratchScan workspaceProcessScanner,
+	cwdScan workspaceProcessScanner,
+) ([]int, error) {
+	owned, scratchErr := runWorkspaceProcessScan(ctx, path, scratchScan)
+	if err := ctx.Err(); err != nil {
+		return owned, errors.Join(scratchErr, err)
 	}
-	return append(owned, cwd...), err
+	if errors.Is(scratchErr, context.Canceled) || errors.Is(scratchErr, context.DeadlineExceeded) {
+		return owned, scratchErr
+	}
+	cwd, cwdErr := runWorkspaceProcessScan(ctx, path, cwdScan)
+	return append(owned, cwd...), errors.Join(scratchErr, cwdErr)
 }
 
 func linuxWorkspaceProcessIDs(path string) ([]int, error) {
@@ -216,10 +276,12 @@ func linuxWorkspaceProcessIDs(path string) ([]int, error) {
 }
 
 func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
-	// Detent owns the scan deadline through CommandContext. Disable lsof's
-	// per-operation fork timeout machinery: on macOS its global filesystem
-	// lookup overhead can exhaust that deadline before any output.
-	cmd := exec.CommandContext(ctx, "lsof", "-O", "-a", "-d", "cwd", "-t", "+D", path) // #nosec G204 -- the workspace path is passed as an lsof argument without a shell.
+	// List every process's working directory and match by prefix in Go.
+	// lsof +D walks the whole tree, which on a multi-gigabyte worktree
+	// outlives every scan deadline; -d cwd alone is one row per process.
+	// -O disables lsof's per-operation fork timeout machinery: on macOS its
+	// global filesystem lookup overhead can exhaust the deadline before output.
+	cmd := exec.CommandContext(ctx, "lsof", "-O", "-w", "-d", "cwd", "-F", "pn") // #nosec G204 -- fixed arguments, no shell.
 	output, err := workspaceScanOutput(ctx, cmd)
 	if err != nil && len(output) == 0 {
 		var exitErr *exec.ExitError
@@ -228,25 +290,44 @@ func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 		}
 		return nil, err
 	}
+	return parseLsofCwdProcessIDs(string(output), path), nil
+}
 
+// parseLsofCwdProcessIDs reads lsof -F pn records (a p<pid> line followed by
+// the process's n<cwd> line) and keeps the processes whose cwd is inside root.
+func parseLsofCwdProcessIDs(output string, root string) []int {
+	root = filepath.Clean(root)
 	seen := map[int]struct{}{}
 	pids := []int{}
-	for line := range strings.SplitSeq(string(output), "\n") {
-		line = strings.TrimSpace(line)
+	pid := 0
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			continue
 		}
-		pid, err := strconv.Atoi(line)
-		if err != nil {
-			continue
+		switch line[0] {
+		case 'p':
+			parsed, err := strconv.Atoi(strings.TrimSpace(line[1:]))
+			if err != nil {
+				parsed = 0
+			}
+			pid = parsed
+		case 'n':
+			if pid <= 0 {
+				continue
+			}
+			cwd := strings.TrimSuffix(strings.TrimSpace(line[1:]), " (deleted)")
+			if !pathInside(root, cwd) {
+				continue
+			}
+			if _, ok := seen[pid]; ok {
+				continue
+			}
+			seen[pid] = struct{}{}
+			pids = append(pids, pid)
 		}
-		if _, ok := seen[pid]; ok {
-			continue
-		}
-		seen[pid] = struct{}{}
-		pids = append(pids, pid)
 	}
-	return pids, nil
+	return pids
 }
 
 type workspaceScanStderr struct {

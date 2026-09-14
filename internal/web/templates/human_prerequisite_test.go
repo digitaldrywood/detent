@@ -31,8 +31,8 @@ func TestBoardHumanWaitAndFailurePriority(t *testing.T) {
 		name, park, want string
 		ready            bool
 	}{
-		{name: "human wait", want: "Waiting · 1"},
-		{name: "independent failure", park: "repeated_failure_circuit_breaker", want: "Needs review"},
+		{name: "human wait", want: "Needs you"},
+		{name: "independent failure", park: "repeated_failure_circuit_breaker", want: "Needs you"},
 		{name: "completed human", ready: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

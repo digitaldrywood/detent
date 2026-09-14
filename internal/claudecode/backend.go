@@ -65,7 +65,7 @@ func defaultCommandFactory(ctx context.Context) *exec.Cmd {
 	return exec.CommandContext(contextOrBackground(ctx), "claude")
 }
 
-func (*AgentBackend) VerifyResume(_ context.Context, resume runner.AgentResume) error {
+func (*AgentBackend) VerifyResume(_ context.Context, _ runner.AgentProcessRequest, resume runner.AgentResume) error {
 	if resume.SessionID == "" {
 		return runner.ErrAgentResumeUnsupported
 	}

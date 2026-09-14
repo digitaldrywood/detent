@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -29,6 +31,8 @@ type deliverableRecoveryLookupResult struct {
 	LookupResult         string
 	Attempts             int
 	PullRequest          *connector.PullRequest
+	CreatedPullRequest   bool
+	CreateError          error
 	CommitsAhead         int
 	RemoteBranchExists   bool
 	DeliveryStateChecked bool
@@ -143,6 +147,132 @@ func (o *Orchestrator) lookupDeliverableRecovery(
 		result.LookupResult += ": " + o.operatorText(lookupErr.Error())
 	}
 	return result
+}
+
+func (o *Orchestrator) createDeliverableRecoveryPullRequest(
+	ctx context.Context,
+	running Running,
+	result deliverableRecoveryLookupResult,
+) deliverableRecoveryLookupResult {
+	if result.PullRequest != nil || !result.DeliveryStateChecked || result.CommitsAhead <= 0 || !result.RemoteBranchExists ||
+		!strings.HasPrefix(strings.TrimSpace(result.LookupResult), "no exact-head pull request") {
+		return result
+	}
+	creator, ok := o.connector.(connector.PullRequestDraftCreator)
+	if !ok {
+		result.LookupResult = "draft pull request creation unavailable: connector does not support it"
+		return result
+	}
+	pullRequest, err := creator.CreateDraftPullRequest(
+		ctx,
+		result.Repository,
+		result.Branch,
+		running.Issue.Title,
+		deliverableRecoveryPullRequestBody(running.Issue, result.Branch, result.HeadSHA),
+	)
+	if err != nil {
+		result.CreateError = err
+		result.LookupResult += "; draft pull request creation failed: " + o.operatorText(err.Error())
+		return result
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || !pullRequest.Draft ||
+		strings.TrimSpace(pullRequest.BranchName) != result.Branch || strings.TrimSpace(pullRequest.HeadSHA) != result.HeadSHA {
+		result.LookupResult += fmt.Sprintf(
+			"; draft pull request creation returned inconsistent PR #%d state=%q draft=%t branch=%q head=%q",
+			pullRequest.Number,
+			strings.TrimSpace(pullRequest.State),
+			pullRequest.Draft,
+			strings.TrimSpace(pullRequest.BranchName),
+			strings.TrimSpace(pullRequest.HeadSHA),
+		)
+		return result
+	}
+	result.PullRequest = &pullRequest
+	result.CreatedPullRequest = true
+	result.LookupResult = fmt.Sprintf("draft pull request #%d opened for exact current head", pullRequest.Number)
+	return result
+}
+
+func (o *Orchestrator) deliverableRecoveryInfrastructureError(running Running, err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	if availabilityErr, ok := forgeavailability.As(err); ok && availabilityErr != nil {
+		return err, true
+	}
+	if availabilityErr, ok := connector.AsTrackerAvailability(err); ok && availabilityErr != nil {
+		return err, true
+	}
+	if isGitHubRESTBudgetHeadroomError(err) {
+		return err, true
+	}
+	const operation = "create_pull_request"
+	class, unavailable := forgeavailability.Classify(operation, err.Error())
+	configurationErr := &runpkg.DeliverableCommandError{
+		OperationClass: "pull_request",
+		Operation:      operation,
+		Status:         "failed",
+		Message:        err.Error(),
+	}
+	if unavailable {
+		return forgeavailability.NewError(forgeavailability.Scope{
+			Host:      forgeHostForIssue(running.Issue, o.cfg.ForgeHost),
+			Operation: operation,
+		}, class, err), true
+	}
+	if connector.IsRetryable(err) || runpkg.IsDeliverableConfigurationError(configurationErr) {
+		return err, true
+	}
+	return err, false
+}
+
+func deliverableRecoveryPullRequestBody(issue connector.Issue, branch string, headSHA string) string {
+	identifier := strings.TrimSpace(issue.Identifier)
+	body := "Detent recovered this deliverable after the worker pushed its branch without opening a pull request."
+	if identifier != "" {
+		body += "\n\nFixes " + identifier
+	}
+	return issueorigin.Stamp(body, issueorigin.Origin{
+		Kind:        "worker",
+		Source:      "deliverable-recovery/" + identifier,
+		Fingerprint: issueorigin.Fingerprint(strings.Join([]string{"deliverable-recovery", identifier, strings.TrimSpace(branch), strings.TrimSpace(headSHA)}, ":")),
+	})
+}
+
+func deliverableRecoveryMachineOwned(lookup deliverableRecoveryLookupResult) bool {
+	if !lookup.DeliveryStateChecked || lookup.CommitsAhead <= 0 || lookup.PullRequest != nil {
+		return false
+	}
+	return !lookup.RemoteBranchExists || strings.HasPrefix(strings.TrimSpace(lookup.LookupResult), "no exact-head pull request")
+}
+
+func (o *Orchestrator) returnMissingDeliverableBranchToRework(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	lookup deliverableRecoveryLookupResult,
+	at time.Time,
+) connector.Issue {
+	if !lookup.DeliveryStateChecked || lookup.CommitsAhead <= 0 || lookup.RemoteBranchExists {
+		return issue
+	}
+	target := normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
+	if strings.TrimSpace(target) == "" {
+		target = autoPromoteReworkState
+	}
+	if err := o.updateIssueState(ctx, state, issue, target, at, terminalAttemptWithoutWorkProductReason); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("deliverable recovery rework transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return issue
+	}
+	issue.State = target
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      at,
+		Event:   "terminal_attempt_retry_demoted",
+		Message: "moved " + issueLabel(issue) + " to " + target + " because the pushed branch is no longer available",
+	})
+	return issue
 }
 
 func deliverableRecoveryHydrationState(pullRequest *connector.PullRequest) string {

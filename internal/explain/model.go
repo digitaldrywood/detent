@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const SchemaVersion = 3
@@ -68,20 +70,22 @@ type Query struct {
 }
 
 type IssueExplanation struct {
-	Schema           int                 `json:"schema"`
-	Found            bool                `json:"found"`
-	ObservedAt       time.Time           `json:"observed_at"`
-	Identity         Identity            `json:"identity"`
-	CurrentLane      Lane                `json:"current_lane"`
-	LatestTransition *Transition         `json:"latest_transition,omitempty"`
-	Eligibility      Eligibility         `json:"eligibility"`
-	Attempt          *Attempt            `json:"attempt,omitempty"`
-	Sessions         Sessions            `json:"sessions"`
-	PullRequest      *PullRequest        `json:"pull_request,omitempty"`
-	RequiredGate     Gate                `json:"required_gate"`
-	ParkSummary      ParkSummary         `json:"park_summary"`
-	Sources          []SourceStatus      `json:"sources"`
-	Evidence         []EvidenceReference `json:"evidence"`
+	Schema           int                    `json:"schema"`
+	Found            bool                   `json:"found"`
+	ObservedAt       time.Time              `json:"observed_at"`
+	Identity         Identity               `json:"identity"`
+	CurrentLane      Lane                   `json:"current_lane"`
+	LatestTransition *Transition            `json:"latest_transition,omitempty"`
+	Dependencies     []telemetry.BlockedRef `json:"dependencies,omitempty"`
+	DependencyNotes  []string               `json:"dependency_notes,omitempty"`
+	Eligibility      Eligibility            `json:"eligibility"`
+	Attempt          *Attempt               `json:"attempt,omitempty"`
+	Sessions         Sessions               `json:"sessions"`
+	PullRequest      *PullRequest           `json:"pull_request,omitempty"`
+	RequiredGate     Gate                   `json:"required_gate"`
+	ParkSummary      ParkSummary            `json:"park_summary"`
+	Sources          []SourceStatus         `json:"sources"`
+	Evidence         []EvidenceReference    `json:"evidence"`
 }
 
 type ParkSummary struct {

@@ -243,17 +243,18 @@ type Blocked struct {
 }
 
 type Completed struct {
-	Issue            connector.Issue
-	SessionID        string
-	StartedAt        time.Time
-	CompletedAt      time.Time
-	FinalState       string
-	CompletionKind   string
-	GateWaitReason   string
-	gateWaitEvidence connector.Issue
-	Tokens           TokenTotals
-	MergeTiming      MergeTiming
-	RuntimeIdentity  agentidentity.Identity
+	Issue                      connector.Issue
+	SessionID                  string
+	StartedAt                  time.Time
+	CompletedAt                time.Time
+	FinalState                 string
+	CompletionKind             string
+	GateWaitReason             string
+	successfulAttemptPersisted bool
+	gateWaitEvidence           connector.Issue
+	Tokens                     TokenTotals
+	MergeTiming                MergeTiming
+	RuntimeIdentity            agentidentity.Identity
 }
 
 type MergeTiming struct {
@@ -725,6 +726,7 @@ func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 }
 
 func cloneIssue(issue connector.Issue) connector.Issue {
+	issue.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
 	cloned := issue
 	if issue.Priority != nil {
 		priority := *issue.Priority

@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +59,7 @@ func TestSelectionReloadAndResume(t *testing.T) {
 		t.Fatal("active snapshot changed")
 	}
 	backend.err = errors.New("catalog unavailable")
-	got := resolveRequestAgentSelection(context.Background(), resume, "", "gpt-6-astra", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+	got := resolveRequestAgentSelection(context.Background(), resume, AgentProcessRequest{}, "gpt-6-astra", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 	if got.Err != nil || got.Model != "gpt-5.6-sol" || got.Effort != "medium" {
 		t.Fatalf("resume = %+v", got)
 	}
@@ -107,7 +109,7 @@ func TestCustomSelectionSettings(t *testing.T) {
 				role = RoleCode
 			}
 			backend := &catalogAgentBackend{models: selectionCatalog()}
-			got := resolveAgentSelection(context.Background(), connector.Issue{Fields: map[string]string{"Complex": "yes"}}, "", "", role, cfg, config.AgentBackend{Kind: kind}, backend)
+			got := resolveAgentSelection(context.Background(), connector.Issue{Fields: map[string]string{"Complex": "yes"}}, AgentProcessRequest{}, "", role, cfg, config.AgentBackend{Kind: kind}, backend)
 			if got.Err != nil || got.Model != tt.model || got.Effort != tt.effort {
 				t.Fatalf("selection=%+v", got)
 			}
@@ -159,7 +161,7 @@ func TestAutomaticModelSelection(t *testing.T) {
 			if role == "" {
 				role = RoleCode
 			}
-			got := resolveAgentSelection(context.Background(), issue, t.TempDir(), tt.base, role, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			got := resolveAgentSelection(context.Background(), issue, AgentProcessRequest{Workspace: t.TempDir()}, tt.base, role, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			if got.Err != nil || got.Model != tt.model || got.Effort != tt.effort {
 				t.Fatalf("selection = %+v, want %s %s", got, tt.model, tt.effort)
 			}
@@ -176,14 +178,20 @@ func TestAutomaticModelSelection(t *testing.T) {
 func TestAutomaticModelSelectionFailures(t *testing.T) {
 	for _, tt := range []struct {
 		name, body, unavailable     string
+		wantErrorDetail             string
 		catalog                     []AgentModel
 		catalogErr                  error
+		fallbackReason              string
 		fallback, failure, rejected bool
+		clearFallbackOrder          bool
 	}{
 		{name: "Astra unavailable", catalog: selectionCatalog()[:1], fallback: true},
 		{name: "Astra retired", catalog: []AgentModel{selectionCatalog()[0], {ID: "gpt-6-astra", Upgrade: "replacement"}}, fallback: true},
 		{name: "neither available", failure: true},
-		{name: "catalog unavailable", catalogErr: errors.New("secret catalog transport details"), failure: true},
+		{name: "catalog unavailable", catalogErr: errors.New("catalog transport details"), fallback: true, fallbackReason: "automatic model selection: model catalog unavailable: catalog transport details"},
+		{name: "catalog unavailable with fail configured", catalogErr: errors.New("catalog transport details"), unavailable: "fail", failure: true, wantErrorDetail: "catalog transport details"},
+		{name: "catalog unavailable with empty fallback order", catalogErr: errors.New("catalog transport details"), clearFallbackOrder: true, failure: true, wantErrorDetail: "catalog transport details"},
+		{name: "catalog unavailable with explicit model", catalogErr: errors.New("catalog transport details"), body: "model: gpt-6-astra", failure: true, wantErrorDetail: "catalog transport details"},
 		{name: "fail configured", catalog: selectionCatalog()[:1], unavailable: "fail", failure: true},
 		{name: "invalid explicit model", catalog: selectionCatalog(), body: "model: absent", failure: true, rejected: true},
 		{name: "invalid explicit effort", catalog: selectionCatalog(), body: "effort: absent", failure: true, rejected: true},
@@ -196,25 +204,164 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 			if tt.unavailable != "" {
 				cfg.Agents.ModelSelection.Unavailable = &tt.unavailable
 			}
+			if tt.clearFallbackOrder {
+				cfg.Agents.ModelSelection.FallbackOrder = &[]string{}
+			}
 			issue := connector.Issue{Labels: []string{"complexity:complex"}}
 			if tt.body != "" {
 				issue.Description = "```detent-agent\nschema: 1\n" + tt.body + "\n```"
 			}
 			backend := &catalogAgentBackend{models: tt.catalog, err: tt.catalogErr}
-			got := resolveAgentSelection(context.Background(), issue, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			got := resolveAgentSelection(context.Background(), issue, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			if (got.Err != nil) != tt.failure || (len(got.Rejections) > 0) != tt.rejected {
 				t.Fatalf("selection = %+v", got)
 			}
 			if (got.Selection.FallbackReason != "") != tt.fallback {
 				t.Fatalf("fallback = %+v", got.Selection)
 			}
+			if tt.fallbackReason != "" && got.Selection.FallbackReason != tt.fallbackReason {
+				t.Fatalf("fallback reason = %q, want %q", got.Selection.FallbackReason, tt.fallbackReason)
+			}
 			if tt.fallback && (got.Model != "gpt-5.6-sol" || got.Selection.RequestedModel != "gpt-6-astra") {
 				t.Fatalf("fallback identity = %+v", got)
 			}
-			if got.Err != nil && strings.Contains(got.Err.Error(), "secret") {
-				t.Fatal("catalog details leaked")
+			if tt.wantErrorDetail != "" && (got.Err == nil || !strings.Contains(got.Err.Error(), tt.wantErrorDetail)) {
+				t.Fatalf("selection error = %v, want containing %q", got.Err, tt.wantErrorDetail)
 			}
 		})
+	}
+}
+
+func TestModelSelectionCatalogErrorReachesAttemptAndLog(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name               string
+		message            string
+		automaticSelection bool
+	}{
+		{name: "automatic transport start", message: "start codex app-server transport: fork/exec codex: permission denied", automaticSelection: true},
+		{name: "automatic initialize", message: "initialize codex app-server: unexpected EOF", automaticSelection: true},
+		{name: "automatic model list response", message: "model/list response: invalid response id", automaticSelection: true},
+		{name: "override transport start", message: "start codex app-server transport: fork/exec codex: permission denied"},
+		{name: "override initialize", message: "initialize codex app-server: unexpected EOF"},
+		{name: "override model list response", message: "model/list response: invalid response id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
+			if tc.automaticSelection {
+				unavailable := "fail"
+				cfg.Agents.ModelSelection.Unavailable = &unavailable
+			} else {
+				cfg.Agents.ModelSelection.Enabled = new(false)
+			}
+			issue := connector.Issue{
+				ID:         "issue-catalog",
+				Identifier: "digitaldrywood/detent#2555",
+				State:      "In Progress",
+			}
+			if !tc.automaticSelection {
+				issue.Description = "```detent-agent\nschema: 1\nmodel: gpt-5.6-sol\n```"
+			}
+			catalogErr := errors.New(tc.message)
+			backend := &catalogAgentBackend{err: catalogErr}
+			run, err := NewRunner(Dependencies{
+				ProjectID:    "detent",
+				Workflow:     config.Workflow{Config: cfg, Prompt: "work"},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+				AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+			var logs bytes.Buffer
+			supervisor, err := NewSupervisor(run, SupervisorConfig{
+				Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+
+			var rejected []AgentOverrideRejection
+			completion := supervisor.Run(t.Context(), RunRequest{
+				ProjectID: "detent",
+				Issue:     issue,
+				Mode:      RunModeImplement,
+				OnOverrideRejected: func(got []AgentOverrideRejection) error {
+					rejected = append(rejected, got...)
+					return nil
+				},
+			})
+			if completion.Err == nil || !strings.Contains(completion.Err.Error(), tc.message) {
+				t.Fatalf("completion error = %v, want underlying catalog error %q", completion.Err, tc.message)
+			}
+			if !errors.Is(completion.Err, catalogErr) {
+				t.Fatalf("completion error = %v, want wrapping %v", completion.Err, catalogErr)
+			}
+			if got := logs.String(); !strings.Contains(got, tc.message) {
+				t.Fatalf("structured log missing underlying catalog error %q:\n%s", tc.message, got)
+			}
+			if len(rejected) != 0 {
+				t.Fatalf("issue override rejections = %#v, want none for instance-owned catalog failure", rejected)
+			}
+		})
+	}
+}
+
+type catalogResponseError struct {
+	message string
+	body    string
+}
+
+func (e *catalogResponseError) Error() string { return e.message + ": " + e.body }
+
+func (e *catalogResponseError) BackendErrorMessage() string { return e.message }
+
+func TestCatalogErrorDiagnosticOmitsResponseBodyAndBoundsMessage(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("é", 300)
+	for _, tc := range []struct {
+		name         string
+		message      string
+		want         string
+		wantSuffix   string
+		wantMaxBytes int
+	}{
+		{name: "bounded backend message", message: "models/list rejected " + secret, want: "models/list rejected", wantSuffix: "...", wantMaxBytes: 515},
+		{name: "empty backend message", want: "backend returned a model catalog error without diagnostic detail"},
+		{name: "whitespace backend message", message: " \n\t ", want: "backend returned a model catalog error without diagnostic detail"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := CatalogErrorDiagnostic(&catalogResponseError{message: tc.message, body: `{"token":"private"}`})
+			if strings.Contains(got, "private") || !strings.Contains(got, tc.want) || !strings.HasSuffix(got, tc.wantSuffix) || strings.ToValidUTF8(got, "") != got {
+				t.Fatalf("CatalogErrorDiagnostic() = %q", got)
+			}
+			if tc.wantMaxBytes > 0 && len(got) > tc.wantMaxBytes {
+				t.Fatalf("CatalogErrorDiagnostic() bytes = %d, want <= %d", len(got), tc.wantMaxBytes)
+			}
+		})
+	}
+}
+
+func TestCatalogErrorDiagnosticPreservesJoinedCauses(t *testing.T) {
+	t.Parallel()
+
+	responseErr := &catalogResponseError{message: "model/list response: invalid response id", body: `{"token":"private"}`}
+	closeErr := errors.New("close codex app-server transport: context deadline exceeded")
+	got := CatalogErrorDiagnostic(errors.Join(responseErr, closeErr))
+	for _, want := range []string{responseErr.message, closeErr.Error()} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CatalogErrorDiagnostic() = %q, want containing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "private") {
+		t.Fatalf("CatalogErrorDiagnostic() = %q, want response body omitted", got)
 	}
 }
 
@@ -243,11 +390,31 @@ func TestConfiguredEffortCeiling(t *testing.T) {
 				req.ResumeState = store.AgentResumeState{ProviderThreadID: "thread-1", RuntimeIdentity: identity}
 			}
 			backend := &catalogAgentBackend{models: selectionCatalog()}
-			got := resolveRequestAgentSelection(t.Context(), req, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			if got.Err != nil || got.Model != "gpt-6-astra" || got.Effort != test.want {
 				t.Fatalf("selection = %+v, want Astra effort %s", got, test.want)
 			}
 		})
+	}
+}
+
+func TestResumeCatalogFailureDoesNotCreateIssueRejection(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
+	identity := agentidentity.Configured("codex", "codex", "default", RoleCode, "gpt-6-astra", "", "xhigh", "", time.Now())
+	req := RunRequest{
+		Issue:       connector.Issue{Description: "```detent-agent\nschema: 1\neffort: medium\n```"},
+		RetryMode:   RetryModeResume,
+		ResumeState: store.AgentResumeState{ProviderThreadID: "thread-1", RuntimeIdentity: identity},
+	}
+	diagnostic := errors.New("stderr: failed to initialize sqlite state runtime")
+	got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{err: diagnostic})
+	if got.Err == nil || !strings.Contains(got.Err.Error(), diagnostic.Error()) {
+		t.Fatalf("attempt error = %v, want diagnostic %q", got.Err, diagnostic)
+	}
+	if len(got.Rejections) != 0 {
+		t.Fatalf("public rejections = %#v, want none for instance-owned catalog failure", got.Rejections)
 	}
 }
 
@@ -283,6 +450,50 @@ func TestRunnerResumeUsesBoundedEffort(t *testing.T) {
 	}
 }
 
+func TestRunnerCatalogFailureUsesConfiguredNormalModel(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-5.6-sol")}
+	backend := &fakeCodexClient{
+		catalogErr: errors.New("app-server models/list failed"),
+		result:     AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
+	}
+	sessions := &fakeSessionStore{sessionID: 1}
+	var logs bytes.Buffer
+	runner, err := NewRunner(Dependencies{
+		ProjectID:    "detent",
+		Workflow:     config.Workflow{Config: cfg, Prompt: "Work"},
+		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+		AgentBackend: backend,
+		Store:        sessions,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{ID: "issue-1", Identifier: "repo#1", Labels: []string{"complexity:complex"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	wantReason := "automatic model selection: model catalog unavailable: app-server models/list failed"
+	if backend.request.Model != "gpt-5.6-sol" {
+		t.Fatalf("request model = %q, want configured normal model", backend.request.Model)
+	}
+	selection := sessions.started.RuntimeIdentity.Selection
+	if selection.RequestedModel != "gpt-6-astra" || selection.FallbackReason != wantReason {
+		t.Fatalf("persisted selection = %+v", selection)
+	}
+	if !strings.Contains(logs.String(), `model_selection_fallback_reason="`+wantReason+`"`) {
+		t.Fatalf("worker log did not record catalog fallback: %s", logs.String())
+	}
+}
+
 func TestUltracodeEffortCeiling(t *testing.T) {
 	t.Parallel()
 	for _, resume := range []bool{false, true} {
@@ -296,7 +507,7 @@ func TestUltracodeEffortCeiling(t *testing.T) {
 		}
 		catalog := selectionCatalog()
 		catalog[0].SupportedReasoningEfforts = append(catalog[0].SupportedReasoningEfforts, "ultracode")
-		got := resolveRequestAgentSelection(t.Context(), req, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{models: catalog})
+		got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{models: catalog})
 		if got.Err != nil || got.Effort != "medium" {
 			t.Fatalf("resume=%t selection=%+v, want medium effort", resume, got)
 		}
@@ -306,16 +517,18 @@ func TestUltracodeEffortCeiling(t *testing.T) {
 func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		mutate     func(*config.ModelSelection)
-		body       string
-		role       string
-		kind       string
-		catalog    []AgentModel
-		resume     bool
-		catalogErr error
-		want       string
-		wantError  bool
+		name            string
+		mutate          func(*config.ModelSelection)
+		body            string
+		role            string
+		kind            string
+		catalog         []AgentModel
+		resume          bool
+		catalogErr      error
+		wantDetail      string
+		wantNoRejection bool
+		want            string
+		wantError       bool
 	}{
 		{name: "policy permits xhigh", mutate: func(p *config.ModelSelection) {
 			p.Levels = map[string]config.ModelSelectionDefaults{"complex": {Effort: new("xhigh")}}
@@ -327,12 +540,13 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 			p.Stages = map[string]config.ModelSelectionStage{RoleMerge: {Effort: new("xhigh")}}
 		}, body: "effort: xhigh", want: "medium"},
 		{name: "disabled", mutate: func(p *config.ModelSelection) { p.Enabled = new(false) }, body: "model: gpt-6-astra\neffort: max", want: "max"},
+		{name: "disabled catalog unavailable", mutate: func(p *config.ModelSelection) { p.Enabled = new(false) }, body: "model: gpt-6-astra", catalogErr: errors.New("initialize failed without automatic selection"), wantDetail: "initialize failed without automatic selection", wantError: true, wantNoRejection: true},
 		{name: "excluded backend", kind: config.AgentBackendClaudeCode, body: "model: gpt-6-astra\neffort: xhigh", want: "xhigh"},
 		{name: "fallback stays bounded", catalog: selectionCatalog()[:1], body: "effort: xhigh", want: "medium"},
 		{name: "resume no issue override", resume: true, want: "medium"},
 		{name: "resume role override", resume: true, body: "code:\n  effort: low", want: "low"},
 		{name: "resume malformed override", resume: true, body: "effort: unknown", wantError: true},
-		{name: "resume changed effort catalog unavailable", resume: true, catalogErr: errors.New("unavailable"), wantError: true},
+		{name: "resume changed effort catalog unavailable", resume: true, catalogErr: errors.New("initialize failed during resume"), wantDetail: "initialize failed during resume", wantError: true, wantNoRejection: true},
 		{name: "resume changed effort unsupported", resume: true, catalog: []AgentModel{{ID: "gpt-6-astra", Model: "gpt-6-astra", SupportedReasoningEfforts: []string{"xhigh"}}}, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -362,9 +576,15 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 				kind = config.AgentBackendCodex
 			}
 			backend := &catalogAgentBackend{models: catalog, err: test.catalogErr}
-			got := resolveRequestAgentSelection(t.Context(), req, "", "", role, cfg, config.AgentBackend{Kind: kind}, backend)
+			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", role, cfg, config.AgentBackend{Kind: kind}, backend)
 			if (got.Err != nil) != test.wantError || !test.wantError && got.Effort != test.want {
 				t.Fatalf("selection=%+v want effort=%s error=%v", got, test.want, test.wantError)
+			}
+			if test.wantDetail != "" && (got.Err == nil || !strings.Contains(got.Err.Error(), test.wantDetail)) {
+				t.Fatalf("selection error = %v, want containing %q", got.Err, test.wantDetail)
+			}
+			if test.wantNoRejection && len(got.Rejections) != 0 {
+				t.Fatalf("rejections = %#v, want no issue override rejection for catalog infrastructure failure", got.Rejections)
 			}
 		})
 	}
@@ -381,14 +601,14 @@ func TestIssueConfigurationErrorClassification(t *testing.T) {
 	}{
 		{name: "invalid issue effort", effort: "normal", wantConfiguration: true, wantError: true},
 		{name: "corrected effort", effort: "low"},
-		{name: "catalog unavailable", effort: "low", catalogError: errors.New("catalog unavailable"), wantError: true},
+		{name: "catalog unavailable falls back", effort: "low", catalogError: errors.New("catalog unavailable")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
 			cfg.Agents.ModelSelection.Preset = new("sol_first")
 			backend := &catalogAgentBackend{models: selectionCatalog(), err: tc.catalogError}
 			issue := connector.Issue{Description: "```detent-agent\nschema: 1\neffort: " + tc.effort + "\n```"}
-			selection := resolveRequestAgentSelection(t.Context(), RunRequest{Issue: issue}, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			selection := resolveRequestAgentSelection(t.Context(), RunRequest{Issue: issue}, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			var invalid *IssueConfigurationError
 			if errors.As(selection.Err, &invalid) != tc.wantConfiguration || (selection.Err != nil) != tc.wantError {
 				t.Fatalf("classification = %T (%v), want configuration %v, error %v", selection.Err, selection.Err, tc.wantConfiguration, tc.wantError)

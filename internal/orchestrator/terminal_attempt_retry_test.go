@@ -465,13 +465,24 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		name             string
 		cached           *connector.PullRequest
 		lookup           *connector.PullRequest
+		created          *connector.PullRequest
+		createErr        error
 		lookupErrors     []error
 		lookupFoundAfter int
 		wantBlocked      bool
 		wantReason       string
 		wantLookupCalls  int
+		wantCreateCalls  int
+		wantPRNumber     int
+		wantTransitions  []string
+		wantRetry        bool
+		wantActive       bool
 		wantMergedReason bool
 		wantReasonCode   string
+		wantForgeWait    bool
+		wantDeferred     bool
+		withoutCreator   bool
+		errorMessage     string
 		commitsAhead     int
 		remoteBranch     bool
 	}{
@@ -481,14 +492,67 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
 			},
 			wantLookupCalls: 1,
+			wantPRNumber:    18,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
 		{
-			name:            "no pull request parks",
-			wantBlocked:     true,
-			wantReason:      "no exact-head pull request",
+			name: "no pull request opens draft",
+			created: &connector.PullRequest{
+				Number: 19, BranchName: branch, State: "OPEN", HeadSHA: headSHA, Draft: true,
+			},
 			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantPRNumber:    19,
+			wantTransitions: []string{},
+			wantActive:      true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "draft creation outage waits on forge",
+			createErr:       errors.New("HTTP 503: unavailable"),
+			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantForgeWait:   true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "draft creation rate limit waits on forge",
+			createErr:       connector.NewRetryableError("github rate limited"),
+			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantDeferred:    true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "draft creation credentials wait on forge",
+			createErr:       errors.New("github authentication failed"),
+			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantDeferred:    true,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name:            "unsupported draft creation does not retry",
+			withoutCreator:  true,
+			wantBlocked:     true,
+			wantReason:      "draft pull request creation unavailable",
+			wantLookupCalls: 3,
+			commitsAhead:    1,
+			remoteBranch:    true,
+		},
+		{
+			name: "credential failure still reconciles existing pull request",
+			lookup: &connector.PullRequest{
+				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
+			},
+			errorMessage:    "GitHub credentials are unavailable",
+			wantLookupCalls: 1,
+			wantPRNumber:    18,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -500,10 +564,10 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantLookupCalls: 0,
 		},
 		{
-			name:            "deleted remote branch parks accurately",
-			wantBlocked:     true,
-			wantReason:      "remote branch is missing",
+			name:            "deleted remote branch returns to Rework",
 			wantLookupCalls: 0,
+			wantTransitions: []string{autoPromoteReworkState},
+			wantRetry:       true,
 			commitsAhead:    1,
 		},
 		{
@@ -513,6 +577,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			},
 			lookupFoundAfter: 3,
 			wantLookupCalls:  3,
+			wantPRNumber:     18,
 			commitsAhead:     1,
 			remoteBranch:     true,
 		},
@@ -523,6 +588,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				CIStatus: "success", CheckRunCount: 1,
 			},
 			wantLookupCalls:  1,
+			wantPRNumber:     18,
 			wantMergedReason: true,
 			commitsAhead:     1,
 			remoteBranch:     true,
@@ -556,9 +622,9 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			cached: &connector.PullRequest{
 				Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA,
 			},
-			wantBlocked:     true,
-			wantReason:      "lookup result: no exact-head pull request",
 			wantLookupCalls: 3,
+			wantCreateCalls: 1,
+			wantRetry:       true,
 			commitsAhead:    1,
 			remoteBranch:    true,
 		},
@@ -578,13 +644,23 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			tracker := &terminalRetryConnector{
 				issues:           map[string]connector.Issue{issue.ID: cloneIssue(issue)},
 				lookup:           tt.lookup,
+				created:          tt.created,
+				createErr:        tt.createErr,
 				lookupErrors:     append([]error(nil), tt.lookupErrors...),
 				lookupFoundAfter: tt.lookupFoundAfter,
 			}
 			attempts := &terminalRetryWorkAttemptStore{}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			var recoveryConnector connector.Connector = tracker
+			if tt.withoutCreator {
+				recoveryConnector = struct {
+					connector.Connector
+					connector.PullRequestHeadLookup
+				}{Connector: tracker, PullRequestHeadLookup: tracker}
+			}
 			o := &Orchestrator{
-				cfg: cfg, connector: tracker, workAttempts: attempts,
+				cfg: cfg, connector: recoveryConnector, workAttempts: attempts,
+				recoveryInspector:       staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{HeadSHA: headSHA, WorkspacePresent: true, WorkspaceStatus: "present", Health: "ready"}},
 				deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
 			}
 			state := newState(cfg)
@@ -597,9 +673,13 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				},
 			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+			errorMessage := tt.errorMessage
+			if errorMessage == "" {
+				errorMessage = "HTTP 503: unavailable"
+			}
 			commandErr := &runpkg.DeliverableCommandError{
 				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + branch + `"}`,
-				Status: "failed", Message: "HTTP 503: unavailable",
+				Status: "failed", Message: errorMessage,
 			}
 
 			o.handleRunResult(t.Context(), &state, runpkg.Completion{
@@ -627,6 +707,17 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 					branch,
 					headSHA,
 				)
+			}
+			if tracker.createCalls != tt.wantCreateCalls {
+				t.Fatalf("create calls = %d, want %d", tracker.createCalls, tt.wantCreateCalls)
+			}
+			if tt.wantCreateCalls > 0 {
+				if tracker.createRepository != "acme/widgets" || tracker.createBranch != branch || tracker.createTitle != issue.Title {
+					t.Fatalf("create target = (%q, %q, %q), want (%q, %q, %q)", tracker.createRepository, tracker.createBranch, tracker.createTitle, "acme/widgets", branch, issue.Title)
+				}
+				if !strings.Contains(tracker.createBody, "Fixes digitaldrywood/detent#1432-") || !strings.Contains(tracker.createBody, "```detent-origin") {
+					t.Fatalf("create body = %q, want issue reference and provenance stamp", tracker.createBody)
+				}
 			}
 			blocked, ok := state.Blocked[issue.ID]
 			if ok != tt.wantBlocked {
@@ -657,14 +748,76 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 					(blocked.Issue.PullRequest == nil || normalizePullRequestState(blocked.Issue.PullRequest.State) != "closed") {
 					t.Fatalf("Blocked[%q].Issue.PullRequest = %#v, want fresh closed PR", issue.ID, blocked.Issue.PullRequest)
 				}
+				if tt.withoutCreator {
+					parkedIssue := tracker.issues[issue.ID]
+					o.recoverBlockedIssues(t.Context(), &state, []connector.Issue{parkedIssue}, now.Add(time.Minute))
+					blocked = state.Blocked[issue.ID]
+					if blocked.RecoveryAction != "hold" || blocked.RecoveryReason != blockedReadyPullRequestLookupUnavailableReason {
+						t.Fatalf("blocked recovery after sweep = %q/%q, want hold/%s", blocked.RecoveryAction, blocked.RecoveryReason, blockedReadyPullRequestLookupUnavailableReason)
+					}
+					if got := tracker.transitionStates(); !slices.Equal(got, []string{blockedStatusState}) {
+						t.Fatalf("state transitions after sweep = %v, want [%s]", got, blockedStatusState)
+					}
+					if _, retrying := state.Retry[issue.ID]; retrying {
+						t.Fatalf("Retry[%q] present after unsupported recovery sweep", issue.ID)
+					}
+				}
 				return
+			}
+			if tt.wantTransitions != nil && !slices.Equal(tracker.transitionStates(), tt.wantTransitions) {
+				t.Fatalf("state transitions = %v, want %v", tracker.transitionStates(), tt.wantTransitions)
+			}
+			if tt.wantForgeWait {
+				retry, retrying := state.Retry[issue.ID]
+				if !retrying || !retry.ForgeUnavailable || retry.Attempt != 1 || retry.ForgeRetry == nil {
+					t.Fatalf("Retry[%q] = %#v, want same-attempt forge wait", issue.ID, retry)
+				}
+				if retry.ForgeRetry.Branch != branch || !retry.ForgeRetry.WorkProductPushed {
+					t.Fatalf("ForgeRetry = %#v, want pushed branch %q preserved", retry.ForgeRetry, branch)
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity || attempts.completions[0].ErrorClass != forgeUnavailableErrorClass {
+					t.Fatalf("work attempt completions = %#v, want forge capacity wait", attempts.completions)
+				}
+				return
+			}
+			if tt.wantDeferred {
+				if _, deferred := state.deferredCompletions[issue.ID]; !deferred {
+					t.Fatalf("deferredCompletions[%q] missing after infrastructure failure", issue.ID)
+				}
+				if retry := state.Retry[issue.ID]; !retry.CompletionDeferred || retry.Attempt != 1 {
+					t.Fatalf("Retry[%q] = %#v, want same-attempt durable completion deferral", issue.ID, retry)
+				}
+				if len(attempts.completions) != 0 {
+					t.Fatalf("work attempt completions = %#v, want active deferred attempt", attempts.completions)
+				}
+				return
+			}
+			if tt.wantRetry {
+				if _, retrying := state.Retry[issue.ID]; !retrying {
+					t.Fatalf("Retry[%q] missing after machine-recoverable delivery failure", issue.ID)
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass == deliverableRecoveryNeedsHumanReason {
+					t.Fatalf("work attempt completions = %#v, want non-human recovery failure", attempts.completions)
+				}
+				if _, completed := state.Completed[issue.ID]; completed {
+					t.Fatalf("Completed[%q] present during delivery recovery retry", issue.ID)
+				}
+				return
+			}
+			if tt.wantActive {
+				if _, retrying := state.Retry[issue.ID]; !retrying {
+					t.Fatalf("Retry[%q] missing after draft recovery continuation", issue.ID)
+				}
 			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("work attempt completions = %#v, want successful reconciliation", attempts.completions)
 			}
 			completed := state.Completed[issue.ID]
-			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != 18 {
-				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR 18", issue.ID, completed.Issue.PullRequest)
+			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != tt.wantPRNumber {
+				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR %d", issue.ID, completed.Issue.PullRequest, tt.wantPRNumber)
+			}
+			if tt.wantActive && completed.FinalState != issue.State {
+				t.Fatalf("Completed[%q].FinalState = %q, want active state %q", issue.ID, completed.FinalState, issue.State)
 			}
 			if tt.wantMergedReason {
 				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
@@ -673,6 +826,87 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
+	t.Parallel()
+
+	const (
+		branch  = "detent/acme_widgets_19"
+		headSHA = "deferred-head"
+	)
+	now := time.Date(2026, 9, 13, 16, 0, 0, 0, time.UTC)
+	issue := terminalRetryTestIssue("deferred-recovery")
+	issue.BranchName = branch
+	issue.PRRepository = "acme/widgets"
+	tracker := &terminalRetryConnector{
+		issues:    map[string]connector.Issue{issue.ID: cloneIssue(issue)},
+		createErr: connector.NewRetryableError("github rate limited"),
+	}
+	cfg := completionDeferralConfig()
+	path := filepath.Join(t.TempDir(), "attempts.db")
+	runtimeStore := openCompletionDeferralStoreWithoutCleanup(t, path)
+	attemptID := startCompletionDeferralAttempt(t, runtimeStore, issue, now)
+	orch := &Orchestrator{
+		cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return now },
+		deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
+	}
+	state := newState(cfg)
+	running := completionDeferralRunning(issue, attemptID, now)
+	running.WorkProductPushed = true
+	running.DiffStats = DiffStats{Status: "clean", HeadSHA: headSHA, DeliveryStateChecked: true, CommitsAhead: 1, RemoteBranchExists: true}
+	state.Running[issue.ID] = running
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+	event := completionDeferralEvent(issue, attemptID, now)
+	event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+	event.Result.PullRequestHeadPushed = true
+	event.Result.DiffStats = running.DiffStats
+	event.Err = &runpkg.DeliverableRecoveryError{Branch: branch, Err: errors.New("gh pr create failed")}
+
+	orch.handleRunResult(t.Context(), &state, event)
+	if _, deferred := state.deferredCompletions[issue.ID]; !deferred {
+		t.Fatal("draft creation rate limit did not defer completion")
+	}
+	if err := runtimeStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeStore = openCompletionDeferralStoreWithoutCleanup(t, path)
+	t.Cleanup(func() {
+		if err := runtimeStore.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	tracker.createErr = nil
+	tracker.created = &connector.PullRequest{Number: 19, BranchName: branch, State: "OPEN", HeadSHA: headSHA, Draft: true}
+	restartedAt := now.Add(time.Second)
+	restarted := &Orchestrator{
+		cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return restartedAt },
+		deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
+	}
+	recovered := newState(cfg)
+	restarted.recoverDurableWorkAttempts(t.Context(), &recovered, restartedAt)
+	record, deferred := recovered.deferredCompletions[issue.ID]
+	if !deferred {
+		t.Fatal("deliverable recovery completion deferral was not restored")
+	}
+	var restoredRecovery *runpkg.DeliverableRecoveryError
+	if !errors.As(record.completion().Err, &restoredRecovery) || restoredRecovery == nil || restoredRecovery.Branch != branch {
+		t.Fatalf("restored completion error = %#v, want deliverable recovery for %q", record.completion().Err, branch)
+	}
+	if !restarted.retryDeferredCompletions(t.Context(), &recovered, now.Add(cfg.PollInterval)) {
+		t.Fatal("restored deliverable recovery remained deferred after forge recovery")
+	}
+	if tracker.createCalls != 2 {
+		t.Fatalf("draft creation calls = %d, want failed call before restart and successful retry", tracker.createCalls)
+	}
+	attempt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalSuccess {
+		t.Fatalf("restored work attempt = %#v, want successful terminal reconciliation", attempt)
 	}
 }
 
@@ -1126,6 +1360,13 @@ type terminalRetryConnector struct {
 	lookupRepository string
 	lookupBranch     string
 	lookupHeadSHA    string
+	created          *connector.PullRequest
+	createErr        error
+	createCalls      int
+	createRepository string
+	createBranch     string
+	createTitle      string
+	createBody       string
 }
 
 func (c *terminalRetryConnector) Name() string { return "terminal-retry" }
@@ -1168,6 +1409,21 @@ func (c *terminalRetryConnector) LookupPullRequestByHead(_ context.Context, repo
 	}
 	pullRequest := *c.lookup
 	return pullRequest, true, nil
+}
+
+func (c *terminalRetryConnector) CreateDraftPullRequest(_ context.Context, repository string, branch string, title string, body string) (connector.PullRequest, error) {
+	c.createCalls++
+	c.createRepository = repository
+	c.createBranch = branch
+	c.createTitle = title
+	c.createBody = body
+	if c.createErr != nil {
+		return connector.PullRequest{}, c.createErr
+	}
+	if c.created == nil {
+		return connector.PullRequest{}, errors.New("draft pull request unavailable")
+	}
+	return *c.created, nil
 }
 
 func (c *terminalRetryConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
