@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -102,24 +103,38 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.logNativeMergeQueueDelegated(candidate, *status.Entry, "observed")
 			continue
 		}
+		if err := o.restoreNativeMergeQueueRemovals(ctx, state, candidate); err != nil {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			o.logNativeMergeQueueFailure(candidate, "inspection_failed", err)
+			continue
+		}
 		removalApplies := status.RemovalObserved && (strings.TrimSpace(status.RemovedHeadSHA) == "" || strings.TrimSpace(status.RemovedHeadSHA) == strings.TrimSpace(status.HeadSHA))
 		if previouslyQueued && previous.Entry.EnqueuedAt != nil {
 			// beforeCommit can identify a merge-group commit rather than the PR head.
 			// A known enqueue time identifies which queue attempt the removal ended.
 			removalApplies = status.RemovalObserved && status.RemovedAt != nil && status.RemovedAt.After(*previous.Entry.EnqueuedAt)
 		}
+		previousCount := len(state.nativeMergeQueueRemovals[issueID])
 		if removalApplies {
-			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			reason := strings.TrimSpace(status.RemovalReason)
 			if reason == "" {
 				reason = "GitHub removed the pull request from the merge queue without a reason"
 			}
 			removals := appendNativeMergeQueueRemoval(state, issueID, reason, status.RemovedAt)
-			targetState, laneReason := autoPromoteReworkState, reason
-			if len(removals) >= mergeAttemptBudget {
-				targetState, laneReason = autoPromoteSourceState, string(AutoPromoteReasonMergeRevocationLimit)
+			if len(removals) > previousCount {
+				if err := o.persistNativeMergeQueueRemoval(ctx, candidate, removals[len(removals)-1], now); err != nil {
+					// Retry the observation, not admission, if its outcome was not stored.
+					delete(state.nativeMergeQueueRemovals, issueID)
+					state.nativeMergeQueueDeferred[issueID] = struct{}{}
+					o.logNativeMergeQueueFailure(candidate, "inspection_failed", err)
+					continue
+				}
 			}
-			if err := o.updateIssueState(ctx, state, candidate, targetState, now, laneReason); err != nil {
+		}
+		removals := state.nativeMergeQueueRemovals[issueID]
+		if len(removals) >= mergeAttemptBudget {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			if err := o.updateIssueState(ctx, state, candidate, autoPromoteSourceState, now, string(AutoPromoteReasonMergeRevocationLimit)); err != nil {
 				o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", err)
 				continue
 			}
@@ -127,13 +142,18 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			clearNativeMergeQueueEntry(out, issueID)
 			for index := range out {
 				if out[index].ID == issueID {
-					out[index].State = targetState
+					out[index].State = autoPromoteSourceState
 				}
 			}
-			if targetState == autoPromoteSourceState {
-				o.parkNativeMergeQueueBudget(ctx, state, candidate, removals, now)
-				continue
-			}
+			o.parkNativeMergeQueueBudget(ctx, state, candidate, removals, now)
+			continue
+		}
+		if len(removals) > previousCount {
+			// Consume the ended attempt once. The next Merging pass uses
+			// normal admission; queue removal is not a branch conflict.
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			delete(state.nativeMergeQueueEntries, issueID)
+			clearNativeMergeQueueEntry(out, issueID)
 			o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", nil)
 			continue
 		}
@@ -295,12 +315,61 @@ func appendNativeMergeQueueRemoval(state *State, issueID, reason string, removed
 		key = removedAt.UTC().Format(time.RFC3339Nano) + " " + reason
 	}
 	removals := state.nativeMergeQueueRemovals[issueID]
-	if len(removals) > 0 && removals[len(removals)-1] == key {
+	if len(removals) > 0 && (removals[len(removals)-1] == key ||
+		(removedAt != nil && strings.HasPrefix(removals[len(removals)-1], removedAt.UTC().Format(time.RFC3339Nano)+" "))) {
 		return removals
 	}
 	removals = append(removals, key)
 	state.nativeMergeQueueRemovals[issueID] = removals
 	return removals
+}
+
+// The workflow timeline is the durable source for the existing removal budget.
+// Cache it only after a successful read; a process restart must not grant retries.
+func (o *Orchestrator) restoreNativeMergeQueueRemovals(ctx context.Context, state *State, issue connector.Issue) error {
+	issueID := strings.TrimSpace(issue.ID)
+	if _, loaded := state.nativeMergeQueueRemovals[issueID]; loaded {
+		return nil
+	}
+	reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader)
+	if !ok {
+		return nil
+	}
+	timeline, err := reader.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: o.workflowMetricsProjectID(), IssueID: issueID})
+	if err != nil {
+		return fmt.Errorf("load merge queue removals: %w", err)
+	}
+	var resetID int64
+	for _, event := range timeline.Events {
+		if event.PhaseType == store.WorkflowPhaseTypeLane &&
+			(event.Reason == string(AutoPromoteReasonMergeRevocationLimit) || stateIn(event.PhaseName, o.cfg.TerminalStates)) && event.ID > resetID {
+			resetID = event.ID
+		}
+	}
+	removals := []string{}
+	seen := map[string]bool{}
+	for _, event := range timeline.Events {
+		if event.ID <= resetID || event.PhaseType != store.WorkflowPhaseTypeMergeQueue || event.PhaseName != "head_removed_from_queue" || seen[event.Reason] {
+			continue
+		}
+		seen[event.Reason] = true
+		removals = append(removals, event.Reason)
+	}
+	state.nativeMergeQueueRemovals[issueID] = removals
+	return nil
+}
+
+func (o *Orchestrator) persistNativeMergeQueueRemoval(ctx context.Context, issue connector.Issue, removal string, now time.Time) error {
+	if _, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader); !ok {
+		return nil
+	}
+	_, err := o.workflowMetrics.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID: o.workflowMetricsProjectID(), IssueID: strings.TrimSpace(issue.ID),
+		Identifier: issue.Identifier, IssueURL: issue.URL,
+		PhaseType: store.WorkflowPhaseTypeMergeQueue, PhaseName: "head_removed_from_queue",
+		Reason: removal, Status: "failed", StartedAt: now, FinishedAt: now,
+	})
+	return err
 }
 
 func pruneNativeMergeQueueRemovals(state *State, issues []connector.Issue) {

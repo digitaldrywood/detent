@@ -356,6 +356,19 @@ activation time, so a merge from before a queue was enabled can fail the
 check until it ages out of that day; a second queue removal routing to Human
 Review is the budget, not a bypass.
 
+Queue removal is consumed once by the existing removal accounting (#2621).
+The first removal clears ended queue ownership and leaves the issue in Merging;
+the next pass uses normal admission for an eligible PR. Repeated observations
+of that removal do not route clean branches to Rework or spend another attempt.
+The second distinct removal retains the Human Review budget outcome. Removal
+accounting is persisted in the existing workflow timeline before retry admission
+and restored after restart; the budget lane transition resets the accounting.
+`TestNativeMergeQueueBudgetSurvivesRestart` exercises SQLite close/reopen between
+attempts, and `TestNativeMergeQueueRemovalStorageFailure` verifies that unavailable
+accounting cannot authorize admission.
+`TestNativeMergeQueueRepeatedRemovalRetries` and `TestNativeMergeQueueAttemptBudget`
+cover this consolidation of the Rework detour into existing queue admission.
+
 **Change:** Edit INV-4 and the queue delegation tests in the same PR before
 changing the ownership or fallback behavior.
 
