@@ -3531,9 +3531,10 @@ func TestRunDoctorUsesReadOnlyWriteChecksByDefaultForExistingConfiguredProject(t
 	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 		return &fakeDoctorAutoPromoteConnector{}, nil
 	}
-	var gotReadiness ghconnector.ReadinessConfig
+	// Buffer the single capture so a timed-out doctor run cannot leave the stub blocked.
+	readinessCh := make(chan ghconnector.ReadinessConfig, 1)
 	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-		gotReadiness = readiness
+		readinessCh <- readiness
 		return []ghconnector.ReadinessCheck{{
 			Name:   "GitHub issue write permission digitaldrywood/detent",
 			Status: ghconnector.ReadinessOK,
@@ -3550,6 +3551,12 @@ func TestRunDoctorUsesReadOnlyWriteChecksByDefaultForExistingConfiguredProject(t
 		},
 	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
 
+	var gotReadiness ghconnector.ReadinessConfig
+	select {
+	case gotReadiness = <-readinessCh:
+	default:
+		t.Fatal("GitHub readiness check did not capture its configuration")
+	}
 	if !doctorGitHubReadinessRequiresWrites(gotReadiness) {
 		t.Fatalf("readiness write requirements = %#v, want default doctor to retain read-only write checks", gotReadiness)
 	}
@@ -3962,9 +3969,10 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 		return &fakeDoctorAutoPromoteConnector{}, nil
 	}
-	var gotReadiness ghconnector.ReadinessConfig
+	// Buffer the single capture so a timed-out doctor run cannot leave the stub blocked.
+	readinessCh := make(chan ghconnector.ReadinessConfig, 1)
 	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-		gotReadiness = readiness
+		readinessCh <- readiness
 		return []ghconnector.ReadinessCheck{{
 			Name:   "GitHub status label update",
 			Status: ghconnector.ReadinessOK,
@@ -3985,6 +3993,12 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v\n%s", err, stdout.String())
+	}
+	var gotReadiness ghconnector.ReadinessConfig
+	select {
+	case gotReadiness = <-readinessCh:
+	default:
+		t.Fatal("GitHub readiness check did not capture its configuration")
 	}
 	if !gotReadiness.RequireLabelStatusWrite || !gotReadiness.RequireIssueComments {
 		t.Fatalf("readiness write requirements = %#v, want write probes enabled by flag", gotReadiness)
