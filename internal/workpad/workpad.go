@@ -303,7 +303,8 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		ref := strings.TrimSpace(blocker.Ref)
 		reason := strings.TrimSpace(blocker.Reason)
 		owner := normalizeToken(blocker.Owner)
-		predicate, predicateProblems := normalizePredicate(blocker.Predicate, ref, repo)
+		predicate, predicateProblems, predicateRefProblems := normalizePredicate(blocker.Predicate, ref, repo)
+		refProblems += predicateRefProblems
 		for _, problem := range predicateProblems {
 			problems = append(problems, fmt.Sprintf("blockers[%d].%s", index, problem))
 		}
@@ -399,10 +400,11 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	return signal, nil
 }
 
-func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Predicate, []string) {
+func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Predicate, []string, int) {
 	if raw == nil {
-		return nil, nil
+		return nil, nil, 0
 	}
+	refProblems := 0
 	problems := []string{}
 	predicateType := normalizePredicateType(raw.Type)
 	kind := normalizePredicateType(raw.Kind)
@@ -412,7 +414,8 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 		problems = append(problems, "predicate type and kind must match")
 	}
 	ref := strings.TrimSpace(raw.Ref)
-	if ref == "" {
+	inheritedRef := ref == ""
+	if inheritedRef {
 		ref = strings.TrimSpace(blockerRef)
 	}
 	identifier := ""
@@ -420,6 +423,9 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 		parsed, err := ParseRef(ref, repo)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("predicate.ref %q must be #N or owner/repo#N", ref))
+			if inheritedRef {
+				refProblems++
+			}
 		} else {
 			identifier = parsed
 		}
@@ -448,6 +454,10 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 	case PredicateIssueState:
 		if predicate.Identifier == "" {
 			problems = append(problems, "predicate.ref is required for issue_state")
+			// An inherited malformed ref already explains the missing identifier.
+			if inheritedRef && ref != "" {
+				refProblems++
+			}
 		}
 	case PredicatePullRequestState:
 		if len(predicate.States) == 0 {
@@ -490,7 +500,7 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 	default:
 		problems = append(problems, fmt.Sprintf("predicate.type %q must be issue_state, pull_request_state, check_presence, budget_capacity, or config_fingerprint", predicate.Type))
 	}
-	return predicate, problems
+	return predicate, problems, refProblems
 }
 
 func normalizePredicateType(value string) string {

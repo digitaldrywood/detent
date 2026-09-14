@@ -585,6 +585,11 @@ func TestMalformedRefPartialSignal(t *testing.T) {
 		partial             bool
 	}{
 		{"refs only", "blocked", "", true},
+		{"inherited issue ref", "blocked", "    predicate:\n      type: issue_state\n", true},
+		{"inherited PR ref", "blocked", "    predicate:\n      type: pull_request_state\n      state: open\n", true},
+		{"missing PR state", "blocked", "    predicate:\n      type: pull_request_state\n", false},
+		{"explicit invalid predicate ref", "blocked", "    predicate:\n      type: issue_state\n      ref: local:other\n", false},
+		{"invalid predicate type", "blocked", "    predicate:\n      type: invalid\n", false},
 		{"invalid status", "human-review", "", false},
 		{"invalid owner", "blocked", "    owner: invalid\n", false},
 	} {
