@@ -27,8 +27,10 @@ type ModelSelection struct {
 }
 
 type ModelSelectionDefaults struct {
-	Model  *string `yaml:"model,omitempty"`
-	Effort *string `yaml:"effort,omitempty"`
+	Model                *string `yaml:"model,omitempty"`
+	Effort               *string `yaml:"effort,omitempty"`
+	MaxSessionDurationMS *int    `yaml:"max_session_duration_ms,omitempty"`
+	MaxSessionTokens     *int64  `yaml:"max_session_tokens,omitempty"`
 }
 
 type ModelSelectionStage struct {
@@ -159,6 +161,8 @@ func (p *ModelSelection) overlay(v ModelSelection, source string) {
 			level := p.Levels[name]
 			selectionOverride(&level.Model, value.Model, p.Sources, "levels."+name+".model", source)
 			selectionOverride(&level.Effort, value.Effort, p.Sources, "levels."+name+".effort", source)
+			selectionOverride(&level.MaxSessionDurationMS, value.MaxSessionDurationMS, p.Sources, "levels."+name+".max_session_duration_ms", source)
+			selectionOverride(&level.MaxSessionTokens, value.MaxSessionTokens, p.Sources, "levels."+name+".max_session_tokens", source)
 			p.Levels[name] = level
 		}
 	}
@@ -226,6 +230,12 @@ func (p ModelSelection) Validate() []string {
 		add("default_level", "must reference a configured level")
 	}
 	for name, level := range p.Levels {
+		if level.MaxSessionDurationMS != nil && *level.MaxSessionDurationMS < 0 {
+			add("levels."+name+".max_session_duration_ms", "must be non-negative")
+		}
+		if level.MaxSessionTokens != nil && *level.MaxSessionTokens < 0 {
+			add("levels."+name+".max_session_tokens", "must be non-negative")
+		}
 		if p.Model(selectionString(level.Model)) == "" {
 			add("levels."+name+".model", "is required")
 		}
@@ -286,4 +296,22 @@ func (a Agents) ValidateDefaults() error {
 		return fmt.Errorf("invalid agent defaults: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// SessionAgent snapshots the selected level's limits over the project guards.
+// An omitted limit inherits the project value; explicit zero disables that limit.
+// The caller passes the level already selected for the session (empty when the
+// backend does not participate in automatic selection).
+func (p ModelSelection) SessionAgent(agent Agent, level string) Agent {
+	if !p.Active() || level == "" {
+		return agent
+	}
+	defaults := p.Levels[level]
+	if defaults.MaxSessionDurationMS != nil {
+		agent.MaxSessionDurationMS = *defaults.MaxSessionDurationMS
+	}
+	if defaults.MaxSessionTokens != nil {
+		agent.MaxSessionTokens = *defaults.MaxSessionTokens
+	}
+	return agent
 }

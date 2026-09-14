@@ -40,6 +40,16 @@ func checkDoctorModelSelection(id string, cfg workflowconfig.Config) doctorCheck
 		}
 		details = append(details, fmt.Sprintf("route %s: %s, backend=%s, model=%s", route.Name, source, route.Backend, route.Model))
 	}
+	levels := make([]string, 0, len(policy.Levels))
+	for level := range policy.Levels {
+		levels = append(levels, level)
+	}
+	sort.Strings(levels)
+	for _, level := range levels {
+		agent := policy.SessionAgent(cfg.Agent, level)
+		details = append(details, fmt.Sprintf("level %s effective limits: max_session_duration_ms=%d, max_session_tokens=%d", level, agent.MaxSessionDurationMS, agent.MaxSessionTokens))
+	}
+	details = append(details, fmt.Sprintf("flat limits (selection disabled or backend ineligible): max_session_duration_ms=%d, max_session_tokens=%d", cfg.Agent.MaxSessionDurationMS, cfg.Agent.MaxSessionTokens))
 	keys := make([]string, 0, len(policy.Sources))
 	for key := range policy.Sources {
 		keys = append(keys, key)

@@ -1,0 +1,128 @@
+package runner
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+type sessionLimitsBackend struct {
+	fakeCodexClient
+	duringTurn func(AgentTurnRequest, AgentUpdateHandler) error
+}
+
+func (b *sessionLimitsBackend) RunTurn(_ context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	return AgentTurnResult{}, b.duringTurn(req, update)
+}
+
+func TestRunnerSelectedSessionLimits(t *testing.T) {
+	for _, mode := range []string{"worker", "validator"} {
+		for _, stop := range []string{"duration", "tokens"} {
+			for _, explicit := range []bool{false, true} {
+				name := mode + "/" + stop + "/inherit"
+				if explicit {
+					name = mode + "/" + stop + "/override"
+				}
+				t.Run(name, func(t *testing.T) {
+					cfg := config.Config{Agent: config.Agent{MaxSessionDurationMS: 60000, MaxSessionTokens: 100, MaxTurnDurationMS: 30000, MaxTurns: 7, NoProgressTimeoutMS: 45000}}
+					cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
+					level := config.ModelSelectionDefaults{}
+					wantDuration, wantTokens := 60000, int64(100)
+					if explicit {
+						wantDuration, wantTokens = 120000, 200
+						level.MaxSessionDurationMS, level.MaxSessionTokens = new(wantDuration), new(wantTokens)
+					}
+					cfg.Agents.ModelSelection.Levels = map[string]config.ModelSelectionDefaults{"complex": level}
+					// Validators ignore issue-wide complexity by default; exercise the existing stage override.
+					cfg.Agents.ModelSelection.Stages = map[string]config.ModelSelectionStage{RoleValidator: {Level: new("complex")}}
+					issue := connector.Issue{ID: "limits", Identifier: "detent#2597", Labels: []string{"complexity:complex"}}
+					duration := &controlledDurationLimit{}
+					backend := &sessionLimitsBackend{fakeCodexClient: fakeCodexClient{models: selectionCatalog()}}
+					sessions := &fakeSessionStore{sessionID: 2597}
+					runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Store: sessions, sessionLimit: duration.Context})
+					if err != nil {
+						t.Fatal(err)
+					}
+					backend.duringTurn = func(req AgentTurnRequest, update AgentUpdateHandler) error {
+						if req.MaxDuration != 30*time.Second || req.MaxTurns != 7 {
+							t.Fatalf("turn guards changed: %+v", req)
+						}
+						if duration.duration != time.Duration(wantDuration)*time.Millisecond {
+							t.Fatalf("duration = %s", duration.duration)
+						}
+						if err := update(AgentUpdate{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{TotalTokens: 10}}); err != nil {
+							t.Fatal(err)
+						}
+						// Simulate a label refresh and policy reload after the first usage update.
+						issue.Labels[0] = "complexity:very-complex"
+						cfg.Agent.MaxSessionTokens = 9999
+						cfg.Agent.MaxSessionDurationMS = 999999
+						cfg.Agents.ModelSelection.Levels["complex"] = config.ModelSelectionDefaults{MaxSessionDurationMS: new(999999), MaxSessionTokens: new(int64(9999))}
+						if err := runner.UpdateWorkflowChecked(config.Workflow{Config: cfg}); err != nil {
+							t.Fatal(err)
+						}
+						if duration.duration != time.Duration(wantDuration)*time.Millisecond {
+							t.Fatal("running duration changed")
+						}
+						if stop == "duration" {
+							duration.Expire()
+							return context.Canceled
+						}
+						return update(AgentUpdate{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{TotalTokens: wantTokens + 1}})
+					}
+					if mode == "worker" {
+						_, err = runner.Run(t.Context(), RunRequest{Issue: issue, Attempt: 4, WorkAttemptID: 5602})
+						if sessions.started.WorkAttemptID != 5602 {
+							t.Fatalf("attempt changed: %+v", sessions.started)
+						}
+					} else {
+						_, err = runner.Validate(t.Context(), ValidatorRequest{Issue: issue})
+					}
+					if stop == "duration" {
+						if !errors.Is(err, ErrSessionDurationExceeded) {
+							t.Fatalf("error = %v", err)
+						}
+					} else {
+						var ceiling *SessionTokenCeilingError
+						if !errors.As(err, &ceiling) || ceiling.CeilingTokens != wantTokens || ceiling.TotalTokens != wantTokens+1 {
+							t.Fatalf("token limit error = %v", err)
+						}
+						if sessions.finished.TotalTokens != wantTokens+1 {
+							t.Fatalf("usage reset: %+v", sessions.finished)
+						}
+					}
+					if sessions.started.RuntimeIdentity.Selection.Level != "complex" {
+						t.Fatalf("selected level changed: %+v", sessions.started.RuntimeIdentity.Selection)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestResumedSelectionKeepsSessionLevel(t *testing.T) {
+	for _, label := range []string{"complexity:complex", "complexity:very-complex"} {
+		t.Run(label, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
+			backend := &fakeCodexClient{models: selectionCatalog()}
+			selected := resolveAgentSelection(t.Context(), connector.Issue{}, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			identity := configuredRuntimeIdentity(RouteSelection{}, config.AgentBackend{}, RoleCode, selected.Model, time.Now())
+			identity.Selection = selected.Selection
+			req := RunRequest{Issue: connector.Issue{Labels: []string{label}}, Attempt: 4, WorkAttemptID: 5602, RetryMode: RetryModeResume, ResumeState: store.AgentResumeState{ProviderThreadID: "thread", RuntimeIdentity: identity}, sessionTokenOffset: 80, sessionTurnOffset: 3}
+			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			if got.Err != nil || got.Selection.Level != "normal" {
+				t.Fatalf("resumed selection = %+v", got)
+			}
+			if req.Attempt != 4 || req.WorkAttemptID != 5602 || req.sessionTokenOffset != 80 || req.sessionTurnOffset != 3 {
+				t.Fatal("resume accounting changed")
+			}
+		})
+	}
+}

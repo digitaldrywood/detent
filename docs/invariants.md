@@ -105,6 +105,15 @@ still run in the prepared workspace, where startup failures have attempt context
 mechanisms as the main source of incidents; adding another conditional guard
 perpetuates that failure mode.
 
+Session duration and absolute token guards resolve once per session from the
+existing model-selection level (#2597), inheriting omitted limits from the flat
+project values. This consolidates limit resolution into the existing selection
+and guard paths; it adds no guard or escalation mechanism. Running sessions keep
+the resolved limits across turns, checkpoints, and fallbacks; label/configuration
+changes do not reset attempts or lifetime usage. Turn inactivity and no-progress
+behavior remain unchanged. Covered by `TestModelSelectionSessionLimits`,
+`TestRunnerSelectedSessionLimits`, and `TestResumedSelectionKeepsSessionLevel`.
+
 Worker GitHub credential unavailability and connector write-policy denials reuse
 the forge-availability pause and write canary (#2548). They do not park an issue or
 create a human prerequisite, and the named project condition clears after a
