@@ -59,7 +59,15 @@ and `TestApprovalDeniedDeliverableUsesInstanceForgeWait` preserve the connector
 approval-denial classification through the existing instance-owned forge wait, while
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
-reports as write-path failures, and `TestCredentialForgeProbeRequiresSuccessfulWrite`
+reports as write-path failures.
+`TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite` checks that
+credential and API-budget design questions reach durable recording (including write-access
+and manual-PR design choices). Explicit support requests remain rejected across polite
+auxiliaries and manual-open word order, while actual
+access failures and explicit write-enablement/manual-PR requests remain
+instance-owned. Question rejection shares the worker access-failure classifier;
+credential or authentication terminology alone is not failure evidence (#2616).
+The existing `TestCredentialForgeProbeRequiresSuccessfulWrite`
 keeps the named project pause active until its write canary succeeds.
 `TestCredentialWaitSurvivesOverlappingFailures` preserves credential precedence
 when same-host failures overlap. `TestCredentialCanaryRecoversOverlappingHosts`
