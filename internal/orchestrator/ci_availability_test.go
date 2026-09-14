@@ -105,12 +105,15 @@ func TestCIUnavailableDispatchPolicy(t *testing.T) {
 		condition     bool
 		stateName     string
 		withPR        bool
+		ciStatus      string
 		wantAllowed   bool
 		wantSkipCause string
 	}{
 		{name: "merge waits while CI unavailable", condition: true, stateName: "Merging", withPR: true, wantSkipCause: dispatchSkipCIUnavailable},
 		{name: "Todo still dispatches while CI unavailable", condition: true, stateName: "Todo", wantAllowed: true},
-		{name: "Rework still dispatches while CI unavailable", condition: true, stateName: "Rework", withPR: true, wantAllowed: true},
+		{name: "Rework with pending CI waits while CI unavailable", condition: true, stateName: "Rework", withPR: true, wantSkipCause: dispatchSkipCurrentHeadCIWait},
+		{name: "Rework with terminal CI dispatches while CI unavailable", condition: true, stateName: "Rework", withPR: true, ciStatus: "failure", wantAllowed: true},
+		{name: "Rework without PR dispatches while CI unavailable", condition: true, stateName: "Rework", wantAllowed: true},
 		{name: "merge resumes after CI recovery", stateName: "Merging", withPR: true, wantAllowed: true},
 	}
 
@@ -123,7 +126,10 @@ func TestCIUnavailableDispatchPolicy(t *testing.T) {
 			issue := dispatchTestIssue("issue", tt.stateName)
 			if tt.withPR {
 				issue = dispatchTestIssueWithPullRequest("issue", tt.stateName, "open")
-				issue.PullRequest.CIStatus = "pending"
+				issue.PullRequest.CIStatus = tt.ciStatus
+				if tt.ciStatus == "" {
+					issue.PullRequest.CIStatus = "pending"
+				}
 			}
 			decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, now, "")
 			if decision.dispatchable != tt.wantAllowed || decision.reason != tt.wantSkipCause {

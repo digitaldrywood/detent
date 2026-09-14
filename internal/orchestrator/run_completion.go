@@ -2102,8 +2102,12 @@ func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
 	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 || strings.TrimSpace(pullRequest.HeadSHA) == "" {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(pullRequest.CIStatus)) {
-	case "", "pending", "running", "queued", "in_progress", "waiting":
+	return strings.TrimSpace(pullRequest.CIStatus) == "" || currentHeadCIStatusPending(pullRequest.CIStatus)
+}
+
+func currentHeadCIStatusPending(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "running", "queued", "in_progress", "waiting":
 		return true
 	default:
 		return false
