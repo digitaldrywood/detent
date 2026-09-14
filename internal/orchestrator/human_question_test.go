@@ -166,6 +166,10 @@ func TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite(t *testing.T) {
 		rejected bool
 	}{
 		{name: "budget scheduler", question: "Should we replace project timers with a credential-scoped scheduler using GitHub's rate-budget reset window?"},
+		{name: "would enable", question: "Would you enable GitHub connector write access?", rejected: true},
+		{name: "manually open", question: "Could you manually open the PR?", rejected: true},
+		{name: "manual design", question: "Should workers manually open the PR?"},
+		{name: "enable design", question: "Should we enable GitHub connector write access?"},
 		{name: "credential design", question: "Should GitHub authentication use one credential per project?"},
 		{name: "github write enablement", question: "Could you enable GitHub write access?", rejected: true},
 		{name: "connector write grant", question: "Can you grant the GitHub connector write access?", rejected: true},
