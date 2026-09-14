@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -580,6 +581,8 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
+	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
+	ProviderReports           []providercapacity.Report
 	Execution                 Execution
 	Policy                    policy.Descriptor
 	ProjectID                 string

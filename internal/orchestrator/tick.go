@@ -587,8 +587,8 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			Filter:         o.authorizationFilterHint(),
 		}
 		if resolver := o.providerCapacity; resolver != nil {
-			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue) (providercapacity.Requirement, error) {
-				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext()})
+			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})
 			}
 		}
 		return o.scheduling.FetchCandidateIssues(ctx, request)
