@@ -48,6 +48,13 @@ jobs:
             echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks."
             exit 1
           fi
+          # actions/checkout materializes the pushed tag as a lightweight ref to the commit,
+          # which drops the annotation. Re-fetch the real tag object before reading it.
+          git fetch --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "refs/tags/$GITHUB_REF_NAME is not an annotated tag object"
+            exit 1
+          fi
           git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" > "$tag_message"
           gh api -H "Accept: application/vnd.github+json" \
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" > "$check_runs"
