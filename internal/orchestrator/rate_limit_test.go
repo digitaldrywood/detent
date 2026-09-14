@@ -491,8 +491,8 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	if state.RateLimits.GitHubRESTBudgets[0].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[1].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[0].ResetAt.Equal(*state.RateLimits.GitHubRESTBudgets[1].ResetAt) {
 		t.Fatalf("GitHubRESTBudgets = %#v, want distinct endpoint reset windows", state.RateLimits.GitHubRESTBudgets)
 	}
-	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
-		t.Fatalf("PollInterval = %s, want jittered initial lookup backoff between 24s and 36s", state.PollInterval)
+	if state.PollInterval != time.Minute {
+		t.Fatalf("PollInterval = %s, want explicit REST backoff 1m", state.PollInterval)
 	}
 }
 
@@ -612,6 +612,7 @@ func TestTickSkipsConnectorPollingDuringGitHubRESTBackoff(t *testing.T) {
 			ResetAt:        &resetAt,
 			ResetInSeconds: 120,
 		},
+		RESTUsage: &telemetry.RESTUsage{BackoffUntil: &resetAt},
 	}
 	tracker := &rateLimitConnector{}
 	orch := newRateLimitTestOrchestrator(cfg, tracker)
@@ -634,6 +635,7 @@ func TestGitHubRESTAggregateDoesNotPauseDispatch(t *testing.T) {
 
 	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
 	resetAt := now.Add(37 * time.Minute)
+	workflowResetAt := now.Add(2 * time.Minute)
 	issue := connector.Issue{
 		ID:               "issue-1211",
 		Identifier:       "digitaldrywood/detent#1211",
@@ -652,23 +654,39 @@ func TestGitHubRESTAggregateDoesNotPauseDispatch(t *testing.T) {
 	state := newState(cfg)
 	state.RateLimits = &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
 		Limit:      5000,
-		Used:       4100,
-		Remaining:  900,
-		ResetAt:    &resetAt,
+		Used:       5000,
+		Remaining:  0,
+		ResetAt:    &workflowResetAt,
 		ObservedAt: timePointer(now),
+	}, GitHubRESTBudgets: []telemetry.RESTBudget{
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:shared", EndpointFamily: "repository issues", Resource: "core", Limit: 5000, Used: 279, Remaining: 4721, ResetAt: &resetAt, ObservedAt: timePointer(now)},
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:shared", EndpointFamily: "workflow runs", Resource: "core", Limit: 5000, Used: 5000, Remaining: 0, ResetAt: &workflowResetAt, ObservedAt: timePointer(now)},
 	}}
 	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
 	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
-	orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
-	orch.syncGitHubRESTCapacityOutage(&state, now)
+	restUsage := connector.RESTRateLimitUsage{
+		HasRateLimit: true,
+		RateLimit: connector.RESTRateLimit{
+			Limit: 5000, Used: 5000, Remaining: 0, Resource: "core", ResetAt: workflowResetAt, UpdatedAt: now,
+		},
+		Budgets: []connector.RESTRateLimitBudget{
+			{CredentialIdentity: "github-rest:shared", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Limit: 5000, Used: 279, Remaining: 4721, Resource: "core", ResetAt: resetAt, UpdatedAt: now}},
+			{CredentialIdentity: "github-rest:shared", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Limit: 5000, Used: 5000, Remaining: 0, Resource: "core", ResetAt: workflowResetAt, UpdatedAt: now}},
+		},
+	}
+	tracker := &rateLimitConnector{candidates: []connector.Issue{issue}, restStatus: restUsage, restUsage: restUsage}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
 
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want unrelated aggregate window not to pause tick", tracker.fetchCandidateCalls)
+	}
 	dispatches := 0
-	hooks := dispatchPlanHooks{dispatch: func(dispatchAction) bool {
+	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{dispatch: func(dispatchAction) bool {
 		dispatches++
 		return true
-	}}
-	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, now, hooks)
-
+	}})
 	if dispatches != 1 {
 		t.Fatalf("dispatches = %d, want aggregate endpoint telemetry not to pause dispatch", dispatches)
 	}
@@ -681,6 +699,9 @@ func TestGitHubRESTAggregateDoesNotPauseDispatch(t *testing.T) {
 	snapshot := state.Snapshot(now)
 	if len(snapshot.BackendOutages) != 0 {
 		t.Fatalf("snapshot BackendOutages = %#v, want no GitHub REST banner", snapshot.BackendOutages)
+	}
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatalf("BackendOutages = %#v, want no lookup backoff from unrelated workflow budget", state.BackendOutages)
 	}
 }
 
@@ -1091,11 +1112,10 @@ func TestGitHubBudgetReserveDecisionUsesCurrentRateLimitWindow(t *testing.T) {
 		wantDegraded bool
 	}{
 		{
-			name: "active REST window",
+			name: "active aggregate REST window is telemetry only",
 			rateLimits: &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
 				Limit: 5000, Remaining: 900, ResetAt: &activeReset,
 			}},
-			wantDegraded: true,
 		},
 		{
 			name: "expired REST window",

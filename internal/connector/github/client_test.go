@@ -2970,6 +2970,17 @@ func TestClientRESTResourceReserveAdmissionUsesEndpointFamilyWindow(t *testing.T
 			},
 		},
 		{
+			name: "earlier workflow window does not hold later check runs",
+			responses: []struct {
+				path      string
+				remaining int64
+				resetAt   time.Time
+			}{
+				{path: "/repos/o/r/actions/runs/123", remaining: 314, resetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)},
+				{path: "/repos/o/r/commits/abc/check-runs", remaining: 4721, resetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)},
+			},
+		},
+		{
 			name: "check runs window remains held after healthy workflow response",
 			responses: []struct {
 				path      string
@@ -2978,6 +2989,18 @@ func TestClientRESTResourceReserveAdmissionUsesEndpointFamilyWindow(t *testing.T
 			}{
 				{path: "/repos/o/r/commits/abc/check-runs", remaining: 314, resetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)},
 				{path: "/repos/o/r/actions/runs/123", remaining: 4721, resetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)},
+			},
+			want: ErrRESTBudgetReserved,
+		},
+		{
+			name: "later check runs window is held after healthy workflow response",
+			responses: []struct {
+				path      string
+				remaining int64
+				resetAt   time.Time
+			}{
+				{path: "/repos/o/r/actions/runs/123", remaining: 4721, resetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)},
+				{path: "/repos/o/r/commits/abc/check-runs", remaining: 314, resetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)},
 			},
 			want: ErrRESTBudgetReserved,
 		},

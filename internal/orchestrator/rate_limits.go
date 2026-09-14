@@ -480,8 +480,12 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 	if base <= 0 {
 		base = defaultPollInterval
 	}
-	if pause := githubLookupBackoffPause(state, now); pause > 0 {
-		return pause
+	lookupPause := githubLookupBackoffPause(state, now)
+	if backoffPause := gitHubRESTBackoffPause(state, now); backoffPause > lookupPause {
+		return backoffPause
+	}
+	if lookupPause > 0 {
+		return lookupPause
 	}
 	if o.scheduling != nil {
 		source := state.RefreshSources[telemetry.RefreshSourceCandidates]
@@ -492,9 +496,6 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 	}
 
 	if pause := o.gitHubGraphQLPause(state, now); pause > base {
-		return pause
-	}
-	if pause := o.gitHubRESTPause(state, now); pause > base {
 		return pause
 	}
 	bucket := gitHubGraphQLBucketFromState(state)
@@ -512,6 +513,17 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 	return dispatchRecoveryPollInterval(state, now, base*time.Duration(multiplier))
 }
 
+func gitHubRESTBackoffPause(state *State, now time.Time) time.Duration {
+	if state == nil || state.RateLimits == nil || state.RateLimits.RESTUsage == nil || state.RateLimits.RESTUsage.BackoffUntil == nil {
+		return 0
+	}
+	backoffUntil := state.RateLimits.RESTUsage.BackoffUntil
+	if !backoffUntil.After(now) {
+		return 0
+	}
+	return backoffUntil.Sub(now)
+}
+
 func schedulingBackoffInterval(base time.Duration, failureStreak int) time.Duration {
 	if base <= 0 || failureStreak <= 0 {
 		return base
@@ -526,38 +538,6 @@ func schedulingBackoffInterval(base time.Duration, failureStreak int) time.Durat
 		return maximum
 	}
 	return interval
-}
-
-func (o *Orchestrator) gitHubRESTPause(state *State, now time.Time) time.Duration {
-	bucket := gitHubRESTBucketFromState(state)
-	if bucket == nil || bucket.ResetAt == nil {
-		return 0
-	}
-	if bucket.ResetInSeconds > 0 && bucket.ResetAt.After(now) {
-		return bucket.ResetAt.Sub(now)
-	}
-	if bucket.Remaining > 0 {
-		return 0
-	}
-	if !bucket.ResetAt.After(now) {
-		return 0
-	}
-	return bucket.ResetAt.Sub(now)
-}
-
-func gitHubRESTBucketFromState(state *State) *telemetry.RateLimitBucket {
-	if state.RateLimits == nil {
-		return nil
-	}
-	return state.RateLimits.GitHubREST
-}
-
-func gitHubRESTRemaining(state *State) int64 {
-	bucket := gitHubRESTBucketFromState(state)
-	if bucket == nil {
-		return 0
-	}
-	return bucket.Remaining
 }
 
 func (o *Orchestrator) gitHubGraphQLPause(state *State, now time.Time) time.Duration {
