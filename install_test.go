@@ -28,6 +28,7 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
@@ -536,7 +537,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 	)
 
-	install := runInstallWithTimeout(t, root, env, 2*time.Minute)
+	install := runInstallWithInactivityTimeout(t, root, env, 2*time.Minute)
 	if install.err != nil {
 		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", install.err, install.stdout, install.stderr)
 	}
@@ -633,14 +634,14 @@ type installRun struct {
 func runInstall(t *testing.T, root string, env []string) installRun {
 	t.Helper()
 
-	return runInstallWithTimeout(t, root, env, 10*time.Second)
+	return runInstallWithInactivityTimeout(t, root, env, testenv.SubprocessWaitTimeout)
 }
 
-func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time.Duration) installRun {
+func runInstallWithInactivityTimeout(t *testing.T, root string, env []string, inactivityTimeout time.Duration) installRun {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), timeout)
-	defer cancel()
+	ctx, activity, stop := installerActivityContext(t.Context(), inactivityTimeout, newInstallerActivityTimer)
+	defer stop()
 
 	cmd := exec.CommandContext(ctx, "sh", "install.sh")
 	cmd.Dir = root
@@ -648,14 +649,228 @@ func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
+	cmd.Stderr = installerActivityWriter{output: &stderr, activity: activity}
 
 	err := runInstallerCommand(ctx, cmd)
 	return installRun{
 		stdout: stdout.String(),
 		stderr: stderr.String(),
 		err:    err,
+	}
+}
+
+type installerActivityTimer interface {
+	C() <-chan time.Time
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
+type systemInstallerActivityTimer struct {
+	*time.Timer
+}
+
+func (t systemInstallerActivityTimer) C() <-chan time.Time {
+	return t.Timer.C
+}
+
+func newInstallerActivityTimer(timeout time.Duration) installerActivityTimer {
+	return systemInstallerActivityTimer{Timer: time.NewTimer(timeout)}
+}
+
+func installerActivityContext(
+	parent context.Context,
+	inactivityTimeout time.Duration,
+	newTimer func(time.Duration) installerActivityTimer,
+) (context.Context, func(), func()) {
+	ctx, cancel := context.WithCancelCause(parent)
+	timer := newTimer(inactivityTimeout)
+	activity := make(chan chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case acknowledged := <-activity:
+				if !timer.Stop() {
+					select {
+					case <-timer.C():
+					default:
+					}
+				}
+				timer.Reset(inactivityTimeout)
+				close(acknowledged)
+			case <-timer.C():
+				cancel(context.DeadlineExceeded)
+				return
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		}
+	}()
+	recordActivity := func() {
+		acknowledged := make(chan struct{})
+		select {
+		case activity <- acknowledged:
+			select {
+			case <-acknowledged:
+			case <-ctx.Done():
+			}
+		case <-ctx.Done():
+		}
+	}
+	stop := func() {
+		cancel(nil)
+		<-finished
+	}
+	return ctx, recordActivity, stop
+}
+
+type installerActivityWriter struct {
+	output   io.Writer
+	activity func()
+}
+
+func (w installerActivityWriter) Write(data []byte) (int, error) {
+	written, err := w.output.Write(data)
+	if written > 0 {
+		w.activity()
+	}
+	return written, err
+}
+
+type controlledInstallerActivityTimer struct {
+	expired chan time.Time
+	resets  chan time.Duration
+}
+
+func newControlledInstallerActivityTimer() *controlledInstallerActivityTimer {
+	return &controlledInstallerActivityTimer{
+		expired: make(chan time.Time, 1),
+		resets:  make(chan time.Duration, 1),
+	}
+}
+
+func (t *controlledInstallerActivityTimer) C() <-chan time.Time {
+	return t.expired
+}
+
+func (t *controlledInstallerActivityTimer) Reset(timeout time.Duration) bool {
+	t.resets <- timeout
+	return true
+}
+
+func (*controlledInstallerActivityTimer) Stop() bool {
+	return true
+}
+
+func TestInstallerActivityContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	wantParentCause := errors.New("parent canceled")
+	tests := []struct {
+		name            string
+		cancelParent    bool
+		wantCancelCause error
+	}{
+		{name: "inactivity expires", wantCancelCause: context.DeadlineExceeded},
+		{name: "parent cancellation wins", cancelParent: true, wantCancelCause: wantParentCause},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			parent, cancelParent := context.WithCancelCause(t.Context())
+			defer cancelParent(nil)
+			timer := newControlledInstallerActivityTimer()
+			ctx, activity, stop := installerActivityContext(parent, 10*time.Second, func(timeout time.Duration) installerActivityTimer {
+				if timeout != 10*time.Second {
+					t.Fatalf("inactivity timeout = %s, want 10s", timeout)
+				}
+				return timer
+			})
+			defer stop()
+
+			if tt.cancelParent {
+				cancelParent(wantParentCause)
+			} else {
+				activity()
+				select {
+				case timeout := <-timer.resets:
+					if timeout != 10*time.Second {
+						t.Fatalf("renewed inactivity timeout = %s, want 10s", timeout)
+					}
+				case <-time.After(testenv.SubprocessWaitTimeout):
+					t.Fatal("activity context did not acknowledge renewal")
+				}
+				timer.expired <- time.Time{}
+			}
+			select {
+			case <-ctx.Done():
+				if !errors.Is(context.Cause(ctx), tt.wantCancelCause) {
+					t.Fatalf("cancellation cause = %v, want %v", context.Cause(ctx), tt.wantCancelCause)
+				}
+			case <-time.After(testenv.SubprocessWaitTimeout):
+				t.Fatal("activity context did not stop")
+			}
+		})
+	}
+}
+
+func TestInstallerCommandActivityRenewsDuringDelayedCompletion(t *testing.T) {
+	t.Parallel()
+
+	timer := newControlledInstallerActivityTimer()
+	ctx, activity, stop := installerActivityContext(t.Context(), 10*time.Second, func(timeout time.Duration) installerActivityTimer {
+		if timeout != 10*time.Second {
+			t.Fatalf("inactivity timeout = %s, want 10s", timeout)
+		}
+		return timer
+	})
+	defer stop()
+
+	input, release, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	defer release.Close()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "printf ready; read -r release <&3")
+	cmd.ExtraFiles = []*os.File{input}
+	var stdout strings.Builder
+	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
+	done := make(chan error, 1)
+	go func() { done <- runInstallerCommand(ctx, cmd) }()
+
+	select {
+	case timeout := <-timer.resets:
+		if timeout != 10*time.Second {
+			t.Fatalf("renewed inactivity timeout = %s, want 10s", timeout)
+		}
+	case err := <-done:
+		t.Fatalf("installer command returned before delayed completion was released: %v", err)
+	case <-time.After(testenv.SubprocessWaitTimeout):
+		t.Fatal("installer command did not publish activity")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("installer command returned before delayed completion was released: %v", err)
+	default:
+	}
+	if _, err := release.WriteString("release\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("installer command error = %v", err)
+		}
+	case <-time.After(testenv.SubprocessWaitTimeout):
+		t.Fatal("installer command did not finish after release")
+	}
+	if stdout.String() != "ready" {
+		t.Fatalf("installer stdout = %q, want ready", stdout.String())
 	}
 }
 
@@ -1262,8 +1477,8 @@ func runDetentCommand(t *testing.T, binary string, workdir string, env []string,
 func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []string, args ...string) (string, string, error) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx, activity, stop := installerActivityContext(t.Context(), testenv.SubprocessWaitTimeout, newInstallerActivityTimer)
+	defer stop()
 
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = workdir
@@ -1271,8 +1486,8 @@ func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []s
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
+	cmd.Stderr = installerActivityWriter{output: &stderr, activity: activity}
 
 	err := runInstallerCommand(ctx, cmd)
 	return stdout.String(), stderr.String(), err
