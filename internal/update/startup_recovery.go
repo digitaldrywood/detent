@@ -88,8 +88,7 @@ func NewStartupRecovery(cfg StartupRecoveryConfig) (*StartupRecovery, error) {
 	}
 	state, _, err := loadStartupRecoveryState(cfg.StatePath)
 	if err != nil {
-		cfg.Logger.Warn("load startup recovery state failed", "path", cfg.StatePath, "error", err)
-		state = startupRecoveryState{}
+		return nil, err
 	}
 	return &StartupRecovery{cfg: cfg, state: state}, nil
 }
@@ -116,6 +115,9 @@ func (r *StartupRecovery) MarkHealthy(ctx context.Context) error {
 				return err
 			}
 			r.state.PendingUpdate = nil
+			// Successful target startup retires the legacy reader. Rollback
+			// completion must instead keep state readable by the previous binary.
+			r.state.Schema = startupRecoveryStateSchema
 		case strings.TrimSpace(pending.FromVersion):
 			if strings.TrimSpace(pending.FromCommit) != "" && !sameExactCommit(r.cfg.CurrentCommit, pending.FromCommit) {
 				return fmt.Errorf("running Detent commit %q does not match rollback commit %q", r.cfg.CurrentCommit, pending.FromCommit)

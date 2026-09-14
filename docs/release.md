@@ -75,6 +75,11 @@ recorded installation path has that same version and full commit. This confirms
 an unapplied replacement or completed rollback; rollback intent alone is not
 enough. An unexpected version, an unavailable installed identity, or a mismatched
 commit leaves pending state, failure records, and rollback material intact.
+Unreadable, malformed, or unsupported recovery state aborts startup before work
+begins. Legacy recovery records remain readable by the previous binary through
+rollback completion, retaining failure counts, retry delays, and recovery history.
+A successful target startup or a new update carrying commit provenance migrates
+legacy state to the current schema.
 
 ## Host-admin update boundaries
 

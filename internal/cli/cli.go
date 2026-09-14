@@ -451,10 +451,9 @@ detent --format json config path`),
 			if opts.startupRecovery != nil && boot.Mode == BootModeRunning {
 				recovery, err = opts.startupRecovery(cmd.Context(), boot)
 				if err != nil {
-					slog.Warn("initialize startup recovery failed", "error", err)
-				} else {
-					boot.StartupRecovery = recovery
+					return fmt.Errorf("initialize startup recovery: %w", err)
 				}
+				boot.StartupRecovery = recovery
 			}
 			bootErr := opts.boot(cmd.Context(), boot)
 			if bootErr != nil && recovery != nil {

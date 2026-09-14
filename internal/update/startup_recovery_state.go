@@ -98,10 +98,11 @@ func saveStartupRecoveryState(path string, state startupRecoveryState) (saveErr 
 	if path == "" {
 		return nil
 	}
-	// A legacy pending update cannot acquire tested-commit provenance from a
-	// failure-state write. Preserve its schema until the update is resolved or
-	// replaced by a new pending update with a commit.
-	if state.Schema != startupRecoveryLegacyStateSchema || state.PendingUpdate == nil || strings.TrimSpace(state.PendingUpdate.ToCommit) != "" {
+	// Failure and rollback writes must remain readable by a restored legacy
+	// binary, including after PendingUpdate is cleared. Successful target
+	// startup explicitly migrates the schema; a new provenanced update does so
+	// here. Neither transition invents provenance for an old pending update.
+	if state.Schema != startupRecoveryLegacyStateSchema || (state.PendingUpdate != nil && strings.TrimSpace(state.PendingUpdate.ToCommit) != "") {
 		state.Schema = startupRecoveryStateSchema
 	}
 	raw, err := json.Marshal(state)
