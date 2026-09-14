@@ -2802,11 +2802,16 @@ func stateRequestsContain(requests [][]string, want []string) bool {
 
 func receiveRunRequest(t *testing.T, requests <-chan orchestrator.RunRequest) orchestrator.RunRequest {
 	t.Helper()
+	return receiveRunRequestWithin(t, requests, time.Second)
+}
+
+func receiveRunRequestWithin(t *testing.T, requests <-chan orchestrator.RunRequest, timeout time.Duration) orchestrator.RunRequest {
+	t.Helper()
 
 	select {
 	case request := <-requests:
 		return request
-	case <-time.After(time.Second):
+	case <-time.After(timeout):
 		t.Fatal("timed out waiting for runner request")
 	}
 
