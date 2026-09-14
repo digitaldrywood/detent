@@ -260,7 +260,7 @@ func TestWorkspaceScanOutput(t *testing.T) {
 			}
 			if tt.wantStage == "wait" {
 				wantBytes := "output_bytes=" + strconv.Itoa(len(tt.wantOutput))
-				if !strings.Contains(err.Error(), wantBytes) && !(tt.cancelReady && strings.Contains(err.Error(), "output_bytes=unknown")) {
+				if !strings.Contains(err.Error(), wantBytes) && (!tt.cancelReady || !strings.Contains(err.Error(), "output_bytes=unknown")) {
 					t.Errorf("error %q missing output count %q", err, wantBytes)
 				}
 			}
