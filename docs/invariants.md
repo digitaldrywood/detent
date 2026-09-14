@@ -119,6 +119,9 @@ context and subsequent updates retry through the existing write path.
 `TestProviderIdentityFailureDoesNotCancelTurn` covers cancelled and timed-out store
 writes followed by successful persistence and normal turn completion.
 
+Dispatch Workpad comment-read failures use the existing tracker availability observer
+and tracker-unavailable dispatch reason; they never become issue dependency evidence.
+
 ## INV-3 — Mechanism moratorium
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.

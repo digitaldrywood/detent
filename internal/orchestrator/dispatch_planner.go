@@ -17,7 +17,7 @@ import (
 )
 
 type dispatchPlanner struct {
-	recordedBlockers func(connector.Issue, *State, time.Time) recordedBlockerEvaluation
+	recordedBlockers func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
 	cfg              Config
 	now              time.Time
 }
@@ -351,7 +351,7 @@ func (p dispatchPlanner) retryAction(
 		if workerGitHubMonitorProbeReserved {
 			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", decision.reason, now)
 		}
-		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency {
+		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency || decision.reason == dispatchSkipTrackerUnavailable {
 			state.Retry[retry.Issue.ID] = retry
 			return dispatchAction{}, false, decision.reason
 		}
@@ -829,7 +829,10 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
 	}
 	if p.recordedBlockers != nil {
-		evaluation := p.recordedBlockers(issue, state, now)
+		evaluation, err := p.recordedBlockers(issue, state, now)
+		if err != nil {
+			return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
+		}
 		if evaluation.Holds || evaluation.Unverifiable || evaluation.HumanOwned {
 			return dispatchableDecision{reason: dispatchSkipBlockedByDependency}
 		}

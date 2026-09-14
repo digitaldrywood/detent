@@ -29,12 +29,14 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
-	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) recordedBlockerEvaluation {
+	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) (recordedBlockerEvaluation, error) {
 		issue, err := o.refreshDependencyAutoUnblockComments(ctx, issue)
 		if err != nil {
-			return recordedBlockerEvaluation{Unverifiable: true}
+			o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+			markRefreshError(state, "fetch dispatch Workpad comments failed: "+err.Error(), now)
+			return recordedBlockerEvaluation{}, err
 		}
-		return o.evaluateRecordedBlockers(ctx, state, issue, nil, now)
+		return o.evaluateRecordedBlockers(ctx, state, issue, nil, now), nil
 	}
 	return planner
 }

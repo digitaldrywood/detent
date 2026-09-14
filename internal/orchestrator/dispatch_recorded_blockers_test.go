@@ -3,12 +3,15 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -38,13 +41,17 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 			orch := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion)}
 			state := newState(cfg)
 			now := time.Now()
+			savedRetry := Retry{Issue: issue, Attempt: 3, DueAt: now.Add(-time.Minute), RetryMode: runpkg.RetryModeResume, ResumeState: store.AgentResumeState{ProviderThreadID: "saved-thread"}, MergePrecheck: &runpkg.MergePrecheck{HeadSHA: "saved-head"}}
 			if tt.retry {
-				state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 3, DueAt: now.Add(-time.Minute)}
+				state.Retry[issue.ID] = savedRetry
 			}
 			for tick := range 10 {
 				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Duration(tick)*time.Minute))
 				if len(state.Running) != 0 {
 					t.Fatalf("tick %d launched a worker while PR blocker remained unresolved", tick)
+				}
+				if tt.retry && !reflect.DeepEqual(state.Retry[issue.ID], savedRetry) {
+					t.Fatalf("tick %d lost saved retry: %+v", tick, state.Retry)
 				}
 				if len(state.Blocked) != 0 {
 					t.Fatal("dependency wait created a park")
@@ -147,11 +154,53 @@ func TestDispatchLoadsRecordedBlockerComments(t *testing.T) {
 			if len(state.Running) != 0 {
 				t.Fatal("dispatched without clear Workpad evidence")
 			}
+			if tt.readError {
+				if got := state.SchedulerDecisions[0].Reason; got != dispatchSkipTrackerUnavailable {
+					t.Fatalf("skip reason = %s, want tracker unavailability", got)
+				}
+			}
 			tracker.commentErr = nil
 			tracker.blockers[0].PullRequest = &connector.PullRequest{State: "merged"}
 			o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
 			if len(state.Running) != 1 {
 				t.Fatal("cleared comments did not release dispatch")
+			}
+		})
+	}
+}
+
+func TestDispatchCommentFailureRecordsInstanceEvidence(t *testing.T) {
+	for _, retrying := range []bool{false, true} {
+		t.Run(fmt.Sprint("retry=", retrying), func(t *testing.T) {
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}})
+			issue := dispatchTestIssue("2470", "Todo")
+			tracker := &commentRecordedBlockerConnector{blockerEvidenceTestConnector: &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{}}, commentErr: trackerAvailabilityTestError("issue_comments", connector.TrackerAvailabilityClassServer)}
+			o := Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			now := time.Now()
+			saved := Retry{Issue: issue, Attempt: 4, DueAt: now.Add(-time.Minute), ResumeState: store.AgentResumeState{ProviderThreadID: "saved"}}
+			for tick := range 2 {
+				if retrying {
+					state.Retry[issue.ID] = saved
+					_, _, reason := o.liveDispatchPlanner(t.Context()).retryAction(&state, issue, saved, now.Add(time.Duration(tick)*time.Second))
+					if reason != dispatchSkipTrackerUnavailable {
+						t.Fatalf("reason = %s", reason)
+					}
+					if !reflect.DeepEqual(state.Retry[issue.ID], saved) {
+						t.Fatal("tracker failure discarded retry")
+					}
+				} else {
+					decision := o.liveDispatchPlanner(t.Context()).dispatchableIssueDecision(issue, &state, false, now.Add(time.Duration(tick)*time.Second), "")
+					if decision.reason != dispatchSkipTrackerUnavailable {
+						t.Fatalf("decision = %+v", decision)
+					}
+				}
+			}
+			if state.TrackerUnavailable == nil || state.TrackerUnavailable.Operation != "issue_comments" {
+				t.Fatalf("missing instance outage: %+v", state.TrackerUnavailable)
+			}
+			if len(state.Blocked) != 0 {
+				t.Fatal("tracker failure parked issue")
 			}
 		})
 	}
