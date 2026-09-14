@@ -42,6 +42,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var (
@@ -170,6 +171,7 @@ type Dependencies struct {
 }
 
 type Project struct {
+	pausedCache               workspace.CacheUsage
 	id                        ID
 	cfg                       globalconfig.Project
 	workflow                  workflowconfig.Workflow

@@ -303,6 +303,7 @@ type WorkspaceCleanupFailure struct {
 }
 
 type WorkspaceReconcileResult struct {
+	Cache             workspace.CacheUsage
 	Removed           int
 	ActiveSkipped     int
 	PreservedSkipped  int

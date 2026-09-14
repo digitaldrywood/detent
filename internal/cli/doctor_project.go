@@ -503,6 +503,7 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorFilesystemProjectSkills(id, project, workflow.Config))
 		return checks
 	}
+	checks = append(checks, checkDoctorSharedCache(ctx, id, workflow.Config.Workspace.Root))
 	setDoctorCurrentCheck("Project " + id + " workspace growth")
 	if growthCheck, ok := checkDoctorWorkspaceGrowth(ctx, id, workflow.Config.Workspace.Root, projectSourceRoot(project, workflow.Config), deps); ok {
 		checks = append(checks, growthCheck)

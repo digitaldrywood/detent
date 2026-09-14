@@ -15,6 +15,7 @@ import (
 
 type Snapshot struct {
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
+	SharedCaches       []workspace.CacheUsage      `json:"shared_caches,omitempty"`
 
 	LastKnown               bool                `json:"-"`
 	LastKnownUntil          time.Time           `json:"-"`
