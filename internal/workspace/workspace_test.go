@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 			os.Exit(2)
 		}
 	}
-	os.Exit(m.Run())
+	os.Exit(runWorkspaceTests(m))
 }
 
 func TestHasExplicitTestParallelism(t *testing.T) {
@@ -2651,18 +2651,18 @@ func initSourceRepo(t *testing.T) string {
 func initSourceRepoAt(t *testing.T, dir string) {
 	t.Helper()
 
+	sourceRepoSeedOnce.Do(func() {
+		sourceRepoSeedErr = buildSourceRepoSeed(t.Context(), sourceRepoSeedDir)
+	})
+	if sourceRepoSeedErr != nil {
+		t.Fatalf("build source repo seed: %v", sourceRepoSeedErr)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir source repo: %v", err)
 	}
-	runCommand(t, dir, "git", "init", "-b", "main")
-	runGit(t, dir, "config", "core.autocrlf", "false")
-	runGit(t, dir, "config", "user.name", "Test User")
-	runGit(t, dir, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
-		t.Fatalf("write README.md: %v", err)
+	if err := os.CopyFS(dir, os.DirFS(sourceRepoSeedDir)); err != nil {
+		t.Fatalf("copy source repo seed: %v", err)
 	}
-	runGit(t, dir, "add", "README.md")
-	runGit(t, dir, "commit", "-m", "initial")
 }
 
 func initBareRemote(t *testing.T) string {

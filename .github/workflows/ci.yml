@@ -95,7 +95,7 @@ jobs:
     if: github.event_name != 'pull_request'
     name: Verify build and vet
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -117,7 +117,16 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        run: make test
+
+      - name: Upload workspace test evidence
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-test-evidence-${{ runner.os }}
+          path: tmp/workspace-test-evidence
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Repeat subprocess lifecycle readiness
         if: github.event_name != 'pull_request'
@@ -286,7 +295,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 10 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -312,11 +321,30 @@ jobs:
 
       - name: Test
         if: runner.os != 'Windows'
-        run: go test ./...
+        run: make test
+
+      - name: Upload workspace test evidence
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-test-evidence-${{ runner.os }}
+          path: tmp/workspace-test-evidence
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Test with bounded Windows concurrency
         if: runner.os == 'Windows'
-        run: go run ./tools/testgate -output tmp/windows-test-evidence -parallel 4 -timeout 10m ./...
+        shell: bash
+        run: |
+          bash scripts/test-workspace.sh -parallel 4 -output tmp/windows-test-evidence/workspace
+          go list ./... > tmp/windows-packages.txt
+          packages=()
+          while IFS= read -r package; do
+            if [ "$package" != github.com/digitaldrywood/detent/internal/workspace ]; then
+              packages+=("$package")
+            fi
+          done < tmp/windows-packages.txt
+          go run ./tools/testgate -output tmp/windows-test-evidence -parallel 4 -timeout 10m "${packages[@]}"
 
       - name: Repeat Windows workflow overlay lifecycle
         if: runner.os == 'Windows'
@@ -443,7 +471,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
         with:

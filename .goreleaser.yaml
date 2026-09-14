@@ -7,7 +7,7 @@ before:
     - go mod download
     - go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
     - make generate
-    - go test ./...
+    - make test
 
 builds:
   - id: detent
