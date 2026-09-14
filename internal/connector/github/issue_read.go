@@ -443,6 +443,12 @@ func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
 		if err != nil {
 			return nil, err
 		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+			return nil, err
+		}
 		if err := c.attachPullRequests(ctx, issues); err != nil {
 			return nil, err
 		}
@@ -451,6 +457,12 @@ func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
 	if c.usesIssueFieldStatus() {
 		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0, hint)
 		if err != nil {
+			return nil, err
+		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 			return nil, err
 		}
 		if err := c.attachPullRequests(ctx, issues); err != nil {
@@ -466,6 +478,12 @@ func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
 		return stateInList(issue.State, stateNames)
 	}, true)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+		return nil, err
+	}
+	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 		return nil, err
 	}
 	if err := c.attachPullRequests(ctx, issues); err != nil {
@@ -519,6 +537,16 @@ func (c *Connector) fetchProjectRefreshIssues(
 		return connector.RefreshIssueResult{CandidateError: err}
 	}
 
+	if err := c.populateBlockerReasons(ctx, issues); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+
 	result := connector.RefreshIssueResult{
 		Candidates: issuesInStates(issues, candidateStates),
 		Statuses:   issuesInStates(issues, observedStates),
@@ -530,18 +558,6 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 	if len(result.Statuses) == 0 {
 		return result
-	}
-	wantedObservedStates := normalizedStateSet(observedStates)
-	if _, ok := wantedObservedStates[normalizeStateName("Blocked")]; ok {
-		if err := c.populateBlockerReasons(ctx, result.Statuses); err != nil {
-			result.StatusError = err
-			return result
-		}
-		c.hydrateBlockedByRefs(ctx, result.Statuses)
-		if err := c.resolveBlockedByProjectState(ctx, result.Statuses); err != nil {
-			result.StatusError = err
-			return result
-		}
 	}
 	result.StatusError = c.attachStatePullRequests(ctx, result.Statuses, false)
 	return result
@@ -580,10 +596,12 @@ func (c *Connector) fetchIssuesByStates(ctx context.Context, stateNames []string
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
 				return nil, err
 			}
-			c.hydrateBlockedByRefs(ctx, issues)
-			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-				return nil, err
-			}
+		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+			return nil, err
 		}
 		if err := c.attachStatePullRequests(ctx, issues, useStatusCache); err != nil {
 			return nil, err
@@ -599,10 +617,12 @@ func (c *Connector) fetchIssuesByStates(ctx context.Context, stateNames []string
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
 				return nil, err
 			}
-			c.hydrateBlockedByRefs(ctx, issues)
-			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-				return nil, err
-			}
+		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+			return nil, err
 		}
 		if err := c.attachStatePullRequests(ctx, issues, useStatusCache); err != nil {
 			return nil, err
@@ -625,10 +645,12 @@ func (c *Connector) fetchIssuesByStates(ctx context.Context, stateNames []string
 		if err := c.populateBlockerReasons(ctx, statusIssues); err != nil {
 			return nil, err
 		}
-		c.hydrateBlockedByRefs(ctx, statusIssues)
-		if err := c.resolveBlockedByProjectState(ctx, statusIssues); err != nil {
-			return nil, err
-		}
+	}
+	if err := c.hydrateBlockedByRefs(ctx, statusIssues); err != nil {
+		return nil, err
+	}
+	if err := c.resolveBlockedByProjectState(ctx, statusIssues); err != nil {
+		return nil, err
 	}
 	if err := c.attachStatePullRequests(ctx, statusIssues, useStatusCache); err != nil {
 		return nil, err
@@ -653,10 +675,12 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
 				return nil, err
 			}
-			c.hydrateBlockedByRefs(ctx, issues)
-			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-				return nil, err
-			}
+		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+			return nil, err
 		}
 		if err := c.attachStatePullRequests(ctx, issues, false); err != nil {
 			return nil, err
@@ -672,10 +696,12 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
 				return nil, err
 			}
-			c.hydrateBlockedByRefs(ctx, issues)
-			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-				return nil, err
-			}
+		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+			return nil, err
 		}
 		if err := c.attachStatePullRequests(ctx, issues, false); err != nil {
 			return nil, err
@@ -698,10 +724,12 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 		if err := c.populateBlockerReasons(ctx, statusIssues); err != nil {
 			return nil, err
 		}
-		c.hydrateBlockedByRefs(ctx, statusIssues)
-		if err := c.resolveBlockedByProjectState(ctx, statusIssues); err != nil {
-			return nil, err
-		}
+	}
+	if err := c.hydrateBlockedByRefs(ctx, statusIssues); err != nil {
+		return nil, err
+	}
+	if err := c.resolveBlockedByProjectState(ctx, statusIssues); err != nil {
+		return nil, err
 	}
 	if err := c.attachStatePullRequests(ctx, statusIssues, false); err != nil {
 		return nil, err
@@ -741,10 +769,12 @@ func (c *Connector) FetchIssuesByStatesScan(ctx context.Context, stateNames []st
 		if err := c.populateBlockerReasons(ctx, scan.Issues); err != nil {
 			return connector.IssueStateScan{}, err
 		}
-		c.hydrateBlockedByRefs(ctx, scan.Issues)
-		if err := c.resolveBlockedByProjectState(ctx, scan.Issues); err != nil {
-			return connector.IssueStateScan{}, err
-		}
+	}
+	if err := c.hydrateBlockedByRefs(ctx, scan.Issues); err != nil {
+		return connector.IssueStateScan{}, err
+	}
+	if err := c.resolveBlockedByProjectState(ctx, scan.Issues); err != nil {
+		return connector.IssueStateScan{}, err
 	}
 	if err := c.attachStatePullRequests(ctx, scan.Issues, false); err != nil {
 		return connector.IssueStateScan{}, err
@@ -856,6 +886,9 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 				issues = append(issues, c.normalizeLabelIssueStateRead(issue))
 			}
 		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
+		}
 		sortIssuesByRequestedIDs(issues, ids)
 		return issues, nil
 	}
@@ -878,6 +911,9 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			if ok {
 				issues = append(issues, issue)
 			}
+		}
+		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			return nil, err
 		}
 		sortIssuesByRequestedIDs(issues, ids)
 		return issues, nil
@@ -905,7 +941,9 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 		}
 		if ok {
-			c.hydrateIssueBlockedByRefs(ctx, &issue)
+			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
+				return nil, err
+			}
 			issues = append(issues, issue)
 		}
 	}
@@ -926,7 +964,7 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 			return nil, err
 		}
 		if ok {
-			if err := c.hydrateIssueBlockedByRefsWithError(ctx, &issue); err != nil {
+			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
 				return nil, err
 			}
 			issues = append(issues, issue)
@@ -1335,9 +1373,6 @@ func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connect
 			Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name},
 			Comments:   nodeConnection[issueComment]{Nodes: comments},
 		}
-		if len(issues[index].BlockedBy) == 0 {
-			issues[index].BlockedBy = parseBlockedByFromIssueText(node, issueRepo(issues[index].Identifier))
-		}
 		issues[index].Comments = connectorIssueComments(comments)
 		issues[index].WorkpadSignal = parseWorkpadSignal(node)
 		if reason := parseBlockerReason(node); reason != "" {
@@ -1495,12 +1530,13 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		AuthorAssociation: connector.NormalizeAuthorAssociation(issue.AuthorAssociation),
 		AssigneeID:        firstAssigneeLogin(issue.Assignees),
 		Assignees:         allAssigneeLogins(issue.Assignees),
-		BlockedBy:         parseBlockedBy(issue.Body, repo),
+		BlockedBy:         parseBlockedByFromIssueText(issue, repo),
 		ChildIssues:       c.linkedChildIssues(issue, repo),
 		BlockerReason:     workpad.Reason(workpadSignal),
 		WorkpadSignal:     workpadSignal,
 		Labels:            labelNames(issue.Labels),
 		Comments:          connectorIssueComments(issue.Comments.Nodes),
+		CommentCount:      issue.Comments.TotalCount,
 		Fields:            cloneStringMap(fields),
 		FieldUpdatedAt:    fieldUpdatedAt,
 		AssignedToWorker:  true,

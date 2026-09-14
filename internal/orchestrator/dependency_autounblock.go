@@ -431,9 +431,7 @@ func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
 		if !sameIssueIdentity(issue, hydrated) {
 			continue
 		}
-		previousBlockedBy := append([]connector.BlockedRef(nil), issue.BlockedBy...)
 		merged := mergeIssueTrackerFields(issue, hydrated)
-		merged.BlockedBy = mergeDependencyBlockedRefs(merged.BlockedBy, previousBlockedBy)
 		merged = o.issueWithDependencyRefs(merged)
 
 		return merged, stateIn(merged.State, sourceStates), nil
@@ -453,11 +451,12 @@ func (o *Orchestrator) refreshDependencyAutoUnblockComments(ctx context.Context,
 	issue.Comments = comments
 	issue.WorkpadSignal = nil
 	issue.BlockerReason = ""
-	issue.WorkpadSignal, _ = autoPromoteIssueWorkpadSignal(issue)
+	issue.WorkpadSignal, _ = rawIssueWorkpadSignal(issue)
 	return o.issueWithDependencyRefs(issue), nil
 }
 
 func (o *Orchestrator) issueWithDependencyRefs(issue connector.Issue) connector.Issue {
+	issue = issue.WithNativeWorkpadAuthority()
 	if normalizeDependencySource(o.cfg.DependencySource) == workflowconfig.DependencySourceNativeOnly {
 		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 		return issue
@@ -469,13 +468,16 @@ func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
 	ctx context.Context,
 	issue connector.Issue,
 ) (connector.Issue, []connector.BlockedRef, bool) {
+	issue = issue.WithNativeWorkpadAuthority()
 	current := o.workpadSignalMatchesCurrentBlockedEntry(ctx, issue)
 	if !current || issue.WorkpadSignal == nil || strings.TrimSpace(issue.WorkpadSignal.Status) != workpad.StatusBlocked ||
 		len(issue.WorkpadSignal.Blockers) == 0 {
 		return issue, nil, current
 	}
 	refs := workpadDependencyRefs(issue)
-	issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, refs)
+	if issue.DependencySource != connector.BlockedRefSourceNative {
+		issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, refs)
+	}
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 	refs = dependencyBlockedRefsWithoutSelf(refs, issue.Identifier)
 	return issue, refs, true
@@ -582,7 +584,10 @@ func workpadDependencyRefs(issue connector.Issue) []connector.BlockedRef {
 }
 
 func issueWithTextDependencyRefs(issue connector.Issue) connector.Issue {
-	issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, dependencyRefsFromIssueText(issue))
+	// A hydrated connector owns dependency selection, including an empty list.
+	if issue.DependencySource == "" {
+		issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, dependencyRefsFromIssueText(issue))
+	}
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 	return issue
 }
@@ -655,12 +660,6 @@ func dependencyRefsFromIssueText(issue connector.Issue) []connector.BlockedRef {
 	appendRefs(dependencyLineRefs(issue.Description, repo))
 	appendRefs(dependencyRefsInText(dependencyMarkdownSectionText(issue.Description, "Blockers"), repo))
 	appendRefs(dependencyReasonRefs(issue.BlockerReason, repo))
-	for _, comment := range issue.Comments {
-		if autoPromoteIsWorkpadComment(comment.Body) {
-			continue
-		}
-		appendRefs(dependencyLineRefs(comment.Body, repo))
-	}
 	return refs
 }
 

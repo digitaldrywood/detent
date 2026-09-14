@@ -63,10 +63,13 @@ type Issue struct {
 	AssigneeID        string               `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
 	Assignees         []string             `json:"assignees,omitempty" yaml:"assignees,omitempty"`
 	BlockedBy         []BlockedRef         `json:"blocked_by" yaml:"blocked_by"`
+	DependencySource  string               `json:"dependency_source,omitempty" yaml:"-"`
+	DependencyNotes   []string             `json:"dependency_notes,omitempty" yaml:"-"`
 	ChildIssues       []BlockedRef         `json:"child_issues,omitempty" yaml:"child_issues,omitempty"`
 	BlockerReason     string               `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
 	WorkpadSignal     *workpad.Signal      `json:"workpad_signal,omitempty" yaml:"workpad_signal,omitempty"`
 	Labels            []string             `json:"labels" yaml:"labels"`
+	CommentCount      int                  `json:"-" yaml:"-"`
 	Comments          []IssueComment       `json:"comments,omitempty" yaml:"comments,omitempty"`
 	Fields            map[string]string    `json:"fields,omitempty" yaml:"fields,omitempty"`
 	FieldUpdatedAt    map[string]time.Time `json:"field_updated_at,omitempty" yaml:"field_updated_at,omitempty"`

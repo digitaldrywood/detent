@@ -93,6 +93,23 @@ operator reasons, and existing decision helpers remain review boundaries.
 Review must verify removal or consolidation; renaming a mechanism or updating
 a snapshot is not evidence of compliance.
 
+GitHub dependency hydration uses native relations as the source of truth when
+available, removing the union with prose dependencies (#2575). Unsupported
+repositories fall back to issue-body lines; historical comments are diagnostic
+only. Public reads select the dependency source before resolving blockers, and
+tracker refreshes replace authoritative empty lists instead of restoring prior
+refs. This also removes the orchestrator's historical-comment union and prevents
+reparsing connector-owned dependencies. Degraded native reads propagate errors
+instead of certifying prose fallback or suppressing subsequent native reads.
+Ignored prose and structured workpad dependency predicates absent from the native
+list are explained without introducing another blocking mechanism. Native-backed
+dispatch uses the current relation list instead of the terminal attempt's saved
+dependency-deferral metadata; past attempts cannot restore a removed relation.
+Removed structured dependencies remain cleared evidence for the existing blocked
+recovery transition. Legacy workpad dependency sections and phrases are not
+reinterpreted as human actions on native repositories; explicit human-action
+sections and non-dependency predicates retain their existing meaning.
+
 Validator launch accounting uses the existing validator-run registry and shared
 worker progress publisher. Validators appear alongside implementation workers in
 runtime snapshots, including during startup and completion, and leave the registry

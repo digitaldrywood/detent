@@ -156,6 +156,11 @@ func writeIssueExplanationPretty(writer io.Writer, result explain.IssueExplanati
 		"Required gate: " + string(result.RequiredGate.State),
 		"Observed: " + result.ObservedAt.Format(time.RFC3339),
 	}
+	for _, ref := range result.Dependencies {
+		lines = append(lines, "Dependency: "+ref.Identifier+" ["+ref.Source+"]")
+	}
+	lines = append(lines, result.DependencyNotes...)
+
 	if result.Identity.Title != "" {
 		lines = append(lines, "")
 		copy(lines[2:], lines[1:])

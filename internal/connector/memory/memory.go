@@ -695,6 +695,7 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 }
 
 func cloneIssue(issue connector.Issue) connector.Issue {
+	issue.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
 	if issue.Priority != nil {
 		priority := *issue.Priority
 		issue.Priority = &priority

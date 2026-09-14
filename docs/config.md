@@ -540,9 +540,13 @@ the configured interval, and stops or refuses a worker at its reserve. Keep
 literal tokens out of checked-in project files.
 
 `workpad.structured_only` requires machine-readable workpad status instead of
-accepting legacy narrative signals. `dependencies.source` chooses whether
-native tracker dependencies, merged pull requests, or both determine
-readiness.
+accepting legacy narrative signals. GitHub native blocked-by relations are
+authoritative when supported, including an empty list. Issue-body dependency
+lines are a fallback when native relations are unavailable; historical comments
+never add blockers. Unmatched prose references are reported as ignored in issue
+explanations. The existing `dependencies.source` values (`merged` and
+`native_only`) remain accepted for configuration compatibility; neither unions
+prose with native relations on capable GitHub repositories.
 
 ### Agents, backends, and routing
 

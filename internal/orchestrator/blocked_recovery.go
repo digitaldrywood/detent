@@ -505,12 +505,12 @@ func reworkBreakerAutoUnparkReady(issue connector.Issue, park reworkBreakerPark,
 }
 
 func reworkBreakerIssueHeld(issue connector.Issue, terminalStates []string) bool {
-	issue = issueWithTextDependencyRefs(issue)
+	issue = issueWithTextDependencyRefs(issue.WithNativeWorkpadAuthority())
 	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) || strings.TrimSpace(issue.BlockerReason) != "" || blockedRecoveryHumanOnly(issue) {
 		return true
 	}
 	signal := issue.WorkpadSignal
-	return signal != nil && (signal.Invalid != nil || strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 || strings.EqualFold(strings.TrimSpace(signal.Status), "blocked"))
+	return signal != nil && (signal.Invalid != nil || strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0)
 }
 
 func blockedRefsUnresolved(refs []connector.BlockedRef, terminalStates []string) bool {
