@@ -59,7 +59,7 @@ func TestSelectionReloadAndResume(t *testing.T) {
 		t.Fatal("active snapshot changed")
 	}
 	backend.err = errors.New("catalog unavailable")
-	got := resolveRequestAgentSelection(context.Background(), resume, "", "gpt-6-astra", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+	got := resolveRequestAgentSelection(context.Background(), resume, AgentProcessRequest{}, "gpt-6-astra", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 	if got.Err != nil || got.Model != "gpt-5.6-sol" || got.Effort != "medium" {
 		t.Fatalf("resume = %+v", got)
 	}
@@ -109,7 +109,7 @@ func TestCustomSelectionSettings(t *testing.T) {
 				role = RoleCode
 			}
 			backend := &catalogAgentBackend{models: selectionCatalog()}
-			got := resolveAgentSelection(context.Background(), connector.Issue{Fields: map[string]string{"Complex": "yes"}}, "", "", role, cfg, config.AgentBackend{Kind: kind}, backend)
+			got := resolveAgentSelection(context.Background(), connector.Issue{Fields: map[string]string{"Complex": "yes"}}, AgentProcessRequest{}, "", role, cfg, config.AgentBackend{Kind: kind}, backend)
 			if got.Err != nil || got.Model != tt.model || got.Effort != tt.effort {
 				t.Fatalf("selection=%+v", got)
 			}
@@ -161,7 +161,7 @@ func TestAutomaticModelSelection(t *testing.T) {
 			if role == "" {
 				role = RoleCode
 			}
-			got := resolveAgentSelection(context.Background(), issue, t.TempDir(), tt.base, role, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			got := resolveAgentSelection(context.Background(), issue, AgentProcessRequest{Workspace: t.TempDir()}, tt.base, role, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			if got.Err != nil || got.Model != tt.model || got.Effort != tt.effort {
 				t.Fatalf("selection = %+v, want %s %s", got, tt.model, tt.effort)
 			}
@@ -212,7 +212,7 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 				issue.Description = "```detent-agent\nschema: 1\n" + tt.body + "\n```"
 			}
 			backend := &catalogAgentBackend{models: tt.catalog, err: tt.catalogErr}
-			got := resolveAgentSelection(context.Background(), issue, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			got := resolveAgentSelection(context.Background(), issue, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			if (got.Err != nil) != tt.failure || (len(got.Rejections) > 0) != tt.rejected {
 				t.Fatalf("selection = %+v", got)
 			}
@@ -390,7 +390,7 @@ func TestConfiguredEffortCeiling(t *testing.T) {
 				req.ResumeState = store.AgentResumeState{ProviderThreadID: "thread-1", RuntimeIdentity: identity}
 			}
 			backend := &catalogAgentBackend{models: selectionCatalog()}
-			got := resolveRequestAgentSelection(t.Context(), req, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			if got.Err != nil || got.Model != "gpt-6-astra" || got.Effort != test.want {
 				t.Fatalf("selection = %+v, want Astra effort %s", got, test.want)
 			}
@@ -409,7 +409,7 @@ func TestResumeCatalogFailureDoesNotCreateIssueRejection(t *testing.T) {
 		ResumeState: store.AgentResumeState{ProviderThreadID: "thread-1", RuntimeIdentity: identity},
 	}
 	diagnostic := errors.New("stderr: failed to initialize sqlite state runtime")
-	got := resolveRequestAgentSelection(t.Context(), req, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{err: diagnostic})
+	got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{err: diagnostic})
 	if got.Err == nil || !strings.Contains(got.Err.Error(), diagnostic.Error()) {
 		t.Fatalf("attempt error = %v, want diagnostic %q", got.Err, diagnostic)
 	}
@@ -507,7 +507,7 @@ func TestUltracodeEffortCeiling(t *testing.T) {
 		}
 		catalog := selectionCatalog()
 		catalog[0].SupportedReasoningEfforts = append(catalog[0].SupportedReasoningEfforts, "ultracode")
-		got := resolveRequestAgentSelection(t.Context(), req, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{models: catalog})
+		got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{models: catalog})
 		if got.Err != nil || got.Effort != "medium" {
 			t.Fatalf("resume=%t selection=%+v, want medium effort", resume, got)
 		}
@@ -576,7 +576,7 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 				kind = config.AgentBackendCodex
 			}
 			backend := &catalogAgentBackend{models: catalog, err: test.catalogErr}
-			got := resolveRequestAgentSelection(t.Context(), req, "", "", role, cfg, config.AgentBackend{Kind: kind}, backend)
+			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", role, cfg, config.AgentBackend{Kind: kind}, backend)
 			if (got.Err != nil) != test.wantError || !test.wantError && got.Effort != test.want {
 				t.Fatalf("selection=%+v want effort=%s error=%v", got, test.want, test.wantError)
 			}
@@ -608,7 +608,7 @@ func TestIssueConfigurationErrorClassification(t *testing.T) {
 			cfg.Agents.ModelSelection.Preset = new("sol_first")
 			backend := &catalogAgentBackend{models: selectionCatalog(), err: tc.catalogError}
 			issue := connector.Issue{Description: "```detent-agent\nschema: 1\neffort: " + tc.effort + "\n```"}
-			selection := resolveRequestAgentSelection(t.Context(), RunRequest{Issue: issue}, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			selection := resolveRequestAgentSelection(t.Context(), RunRequest{Issue: issue}, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
 			var invalid *IssueConfigurationError
 			if errors.As(selection.Err, &invalid) != tc.wantConfiguration || (selection.Err != nil) != tc.wantError {
 				t.Fatalf("classification = %T (%v), want configuration %v, error %v", selection.Err, selection.Err, tc.wantConfiguration, tc.wantError)

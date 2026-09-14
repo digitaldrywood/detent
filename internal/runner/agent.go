@@ -1391,15 +1391,15 @@ func agentResumeEmpty(resume AgentResume) bool {
 	return strings.TrimSpace(resume.ThreadID) == "" && strings.TrimSpace(resume.SessionID) == ""
 }
 
-func verifyAgentResume(ctx context.Context, backend AgentBackend, resume AgentResume) error {
+func verifyAgentResume(ctx context.Context, backend AgentBackend, process AgentProcessRequest, resume AgentResume) error {
 	verifier, ok := backend.(AgentResumeVerifier)
 	if !ok {
 		return ErrAgentResumeUnsupported
 	}
-	return verifier.VerifyResume(ctx, resume)
+	return verifier.VerifyResume(ctx, process, resume)
 }
 
-func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
+func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult, returnErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1586,7 +1586,20 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	runStartedAt := r.now()
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
-	resolvedOverride := resolveRequestAgentSelection(ctx, req, info.Path, baseModel, role, workflow.Config, backendConfig, backend)
+	baseEnvironment := workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue)
+	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
+		Workspace:   info.Path,
+		Environment: baseEnvironment,
+	}, workerGitHub)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer func() {
+		if cleanupPreflight != nil {
+			returnErr = r.agentPreflightError(returnErr, cleanupPreflight())
+		}
+	}()
+	resolvedOverride := resolveRequestAgentSelection(ctx, req, processRequest, baseModel, role, workflow.Config, backendConfig, backend)
 	if resolvedOverride.CatalogError != "" && resolvedOverride.Err == nil {
 		r.logger.Warn("agent model catalog discovery failed", "issue_id", req.Issue.ID, "identifier", req.Issue.Identifier, "error", resolvedOverride.CatalogError)
 	}
@@ -1650,7 +1663,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 			return RunResult{}, err
 		}
 	}
-	resumeState, err = r.nativeResume(ctx, req, backend, recoveryState, resumeState, executionIdentity)
+	resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -1678,7 +1691,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if !agentResumeStateMatches(resumeState, sessionModel, selection.BackendID, backendConfig.Kind, role) {
 			verifyErr = errors.New("orphaned session runtime identity no longer matches selected backend, model, and role")
 		} else {
-			verifyErr = verifyAgentResume(ctx, backend, agentResumeFromState(resumeState))
+			verifyErr = verifyAgentResume(ctx, backend, processRequest, agentResumeFromState(resumeState))
 		}
 		if verifyErr != nil {
 			orphanRecoveryFallbackReason = errorString(verifyErr)
@@ -1695,6 +1708,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 			resumeState = store.AgentResumeState{}
 			orphanRecoveryOutcome = store.OrphanRecoveryFresh
 		}
+	}
+	preflightCleanupErr := cleanupPreflight()
+	cleanupPreflight = nil
+	if preflightCleanupErr != nil {
+		return RunResult{}, preflightCleanupErr
 	}
 	if req.AcquireModelPermit != nil {
 		if err := req.AcquireModelPermit(ctx); err != nil {
@@ -1786,7 +1804,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		DeliverableKind:       deliverableKind,
 		DeliverableRepository: deliverableRepository,
 		IssueRepository:       agentTurnIssueRepository(workflow.Config, req.Issue),
-		Environment:           workerServiceEnvironment(mode, r.serviceConnection),
+		Environment:           baseEnvironment,
 		MaxRSSBytes:           r.maxAgentRSSBytes,
 		RSSPollInterval:       r.rssPollInterval,
 		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
@@ -2915,9 +2933,17 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		selectedModel = override
 	}
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
-	resolvedSelection := resolveAgentSelection(ctx, req.Issue, info.Path, baseModel, RoleValidator, workflow.Config, backendConfig, backend)
-	if resolvedSelection.Err != nil {
-		return gate.ValidatorResult{}, resolvedSelection.Err
+	baseEnvironment := workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue)
+	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
+		Workspace:   info.Path,
+		Environment: baseEnvironment,
+	}, workerGitHub)
+	if err != nil {
+		return gate.ValidatorResult{}, err
+	}
+	resolvedSelection := resolveAgentSelection(ctx, req.Issue, processRequest, baseModel, RoleValidator, workflow.Config, backendConfig, backend)
+	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
+		return gate.ValidatorResult{}, err
 	}
 	selectedModel = resolvedSelection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
@@ -3006,7 +3032,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
-		Environment:        procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()},
+		Environment:        baseEnvironment,
 		MaxRSSBytes:        r.maxAgentRSSBytes,
 		RSSPollInterval:    r.rssPollInterval,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
@@ -3135,11 +3161,19 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	return validation, nil
 }
 
-func workerServiceEnvironment(mode string, connection serviceapi.Connection) procgroup.Environment {
+func workerServiceEnvironment(mode string, connection serviceapi.Connection, info workspace.Info, issue workspace.Issue) procgroup.Environment {
 	if normalizeRunMode(mode) != RunModeImplement {
-		return procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()}
+		return workerEnvironment(serviceapi.RestrictedEnvironment(), info, issue)
 	}
-	return procgroup.Environment{Variables: connection.Environment()}
+	return workerEnvironment(connection.Environment(), info, issue)
+}
+
+func workerEnvironment(variables map[string]string, info workspace.Info, issue workspace.Issue) procgroup.Environment {
+	merged := workspace.EnvironmentVariables(info, issue)
+	for key, value := range variables {
+		merged[key] = value
+	}
+	return procgroup.Environment{Variables: merged}
 }
 
 func (r *Runner) validatorPromptOptions(ctx context.Context, info workspace.Info, issue workspace.Issue, maxInlineDiffBytes int) ValidatorPromptOptions {

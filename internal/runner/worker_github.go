@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const (
@@ -531,6 +532,52 @@ func configureWorkerGitHubEnvironment(request *AgentTurnRequest) error {
 	variables["GITHUB_ENTERPRISE_TOKEN"] = request.workerGitHub.Token
 	request.Environment.Variables = variables
 	return nil
+}
+
+func (r *Runner) agentPreflightError(preflightErr, cleanupErr error) error {
+	if cleanupErr == nil {
+		return preflightErr
+	}
+	// Cleanup failures belong to the instance. Keep the preceding error in
+	// logs only: joining it or embedding its message can classify the cleanup
+	// failure as issue configuration in the orchestrator.
+	if preflightErr != nil {
+		r.logger.Warn("agent preflight failed before scratch cleanup", "error", preflightErr, "cleanup_error", cleanupErr)
+	}
+	return cleanupErr
+}
+
+func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest, policy workerGitHubPolicy) (AgentProcessRequest, func() error, error) {
+	tempDir, err := workspace.PrepareWorkerScratch(ctx, process.Workspace)
+	cleanup := func() error {
+		if err := workspace.CleanupWorkerScratch(process.Workspace, tempDir); err != nil {
+			return fmt.Errorf("cleanup agent preflight scratch: %w", err)
+		}
+		return nil
+	}
+	if workspace.IsMissingWorkspaceError(err) {
+		tempDir, err = os.MkdirTemp("", "detent-agent-preflight-")
+		cleanup = func() error {
+			if err := os.RemoveAll(tempDir); err != nil {
+				return fmt.Errorf("cleanup agent preflight temp directory: %w", err)
+			}
+			return nil
+		}
+	}
+	if err != nil {
+		return AgentProcessRequest{}, nil, fmt.Errorf("prepare agent preflight scratch: %w", err)
+	}
+	turn := AgentTurnRequest{
+		TempDir:      tempDir,
+		Environment:  process.Environment,
+		workerGitHub: policy,
+	}
+	if err := configureWorkerGitHubEnvironment(&turn); err != nil {
+		return AgentProcessRequest{}, nil, errors.Join(fmt.Errorf("prepare agent preflight github environment: %w", err), cleanup())
+	}
+	process.TempDir = tempDir
+	process.Environment = turn.Environment
+	return process, cleanup, nil
 }
 
 func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, onUpdate AgentUpdateHandler) (context.Context, func() error, error) {

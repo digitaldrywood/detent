@@ -1,26 +1,41 @@
 package hubclient
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/codex"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestProviderSchedulerEndToEnd(t *testing.T) {
 	t.Parallel()
+	for _, unavailable := range []string{"fallback", "fail"} {
+		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
+	}
+}
+
+func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
+	t.Helper()
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("provider-test-admin")})
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +88,12 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, title := range []string{"unsupported model", "compatible model"} {
-		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, State: "Todo"}); err != nil {
+		model := "sol"
+		if title == "unsupported model" {
+			model = "astra"
+		}
+		body := "```detent-agent\nschema: 1\nmodel: " + model + "\n```"
+		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: "Todo"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -82,16 +102,23 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor, ProviderRequirement: func(_ context.Context, issue connector.Issue) (providercapacity.Requirement, error) {
-		model := "sol"
-		if issue.Title == "unsupported model" {
-			model = "astra"
-		}
-		return providercapacity.Requirement{Role: "code", Backend: "codex", Model: model}, nil
+	backend, launches := providerWorkspaceWrapper(t)
+	cfg := config.Default()
+	cfg.Agents.ModelSelection.Preset = new("sol_first")
+	cfg.Agents.ModelSelection.Unavailable = &unavailable
+	localRunner, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor, ProviderRequirement: func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+		return localRunner.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
 	}}
 	candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
 	if err != nil || len(candidates) != 1 || candidates[0].Title != "compatible model" {
 		t.Fatalf("selection = %+v, %v", candidates, err)
+	}
+	if *launches != 0 {
+		t.Fatalf("provider scheduling launched wrapper %d times before workspace existed", *launches)
 	}
 	issue := candidates[0]
 	if _, err := scheduler.AdoptClaim(t.Context(), issue, time.Now()); err != nil {
@@ -100,6 +127,12 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 	execution := scheduler.RunExecution(issue.ID)
 	if execution == nil {
 		t.Fatal("native claim has no execution lifecycle")
+	}
+	attemptWorkspace := t.TempDir()
+	process := runner.AgentProcessRequest{Workspace: attemptWorkspace, Environment: procgroup.Environment{Variables: workspace.EnvironmentVariables(workspace.Info{Path: attemptWorkspace}, workspace.Issue{ID: issue.ID, Identifier: issue.Identifier})}}
+	models, err := backend.ListModels(t.Context(), process)
+	if err != nil || len(models) != 1 || models[0].Model != "sol" || *launches != 1 {
+		t.Fatalf("workspace wrapper catalog = %+v, %v; launches=%d", models, err, *launches)
 	}
 	report.Availability = "exhausted"
 	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
@@ -177,4 +210,78 @@ func TestLocalProviderRevalidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Dispatch must not call any workspace operation before acquiring a claim.
+type providerPreviewWorkspace struct{ workspace.Backend }
+
+func providerWorkspaceWrapper(t *testing.T) (*codex.AgentBackend, *int) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches := new(int)
+	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		(*launches)++
+		cmd := exec.CommandContext(ctx, executable, "-test.run=^TestProviderWorkspaceWrapperProcess$")
+		cmd.Env = append(os.Environ(), "DETENT_TEST_PROVIDER_WRAPPER=1")
+		return cmd
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := codex.NewAppServer(factory, codex.WithReadTimeout(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := codex.NewAgentBackend(server, codex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backend, launches
+}
+
+func TestProviderWorkspaceWrapperProcess(t *testing.T) {
+	if os.Getenv("DETENT_TEST_PROVIDER_WRAPPER") != "1" {
+		return
+	}
+	cwd, err := os.Getwd()
+	expected := os.Getenv("DETENT_WORKSPACE")
+	// This models a wrapper that acquires its work item using PWD/workspace.
+	actualInfo, statErr := os.Stat(cwd)
+	expectedInfo, expectedErr := os.Stat(expected)
+	if err != nil || statErr != nil || expectedErr != nil || !os.SameFile(actualInfo, expectedInfo) || os.Getenv("PWD") != expected || os.Getenv("DETENT_ISSUE_ID") == "" || os.Getenv("DETENT_ISSUE_IDENTIFIER") == "" {
+		os.Exit(12)
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	encoder := json.NewEncoder(os.Stdout)
+	for scanner.Scan() {
+		var request struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &request) != nil {
+			os.Exit(13)
+		}
+		if request.ID == nil {
+			continue
+		}
+		var result json.RawMessage
+		switch request.Method {
+		case "initialize":
+			result = json.RawMessage(`{"userAgent":"workspace-wrapper"}`)
+		case "model/list":
+			result = json.RawMessage(`{"data":[{"id":"sol","model":"sol","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]}`)
+		default:
+			os.Exit(14)
+		}
+		if encoder.Encode(struct {
+			ID     int             `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}{*request.ID, result}) != nil {
+			os.Exit(15)
+		}
+	}
+	os.Exit(0)
 }

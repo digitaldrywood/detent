@@ -104,7 +104,8 @@ func defaultDoctorBackendModelCatalogProbe(ctx context.Context, cfg workflowconf
 	if !ok {
 		return 0, errors.New("backend does not advertise a model catalog")
 	}
-	models, err := provider.ListModels(ctx)
+	// Doctor is an explicit instance probe, outside an attempt workspace.
+	models, err := provider.ListModels(ctx, runnerpkg.AgentProcessRequest{})
 	if err != nil {
 		return 0, err
 	}

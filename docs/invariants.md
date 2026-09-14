@@ -56,6 +56,24 @@ to classify a new failure correctly; do not infer issue fault merely from a fail
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when
 changing the first-turn boundary, in-turn infrastructure classification, or attribution.
 
+Codex preflight scratch cleanup errors take precedence over simultaneous model
+selection errors in implementation, validator, and security-audit launches
+(#2561). The preceding selection error remains in logs rather than the returned
+error chain or message, so typed and textual issue-configuration classification
+cannot attribute an infrastructure cleanup failure to an issue.
+`TestPreflightCleanupFailurePrecedence` exercises actual cleanup failure and
+successful-cleanup controls for all three launch paths. This consolidates their
+existing error handling without introducing a new failure class or recovery path.
+
+Pre-dispatch provider capacity selection does not launch agent commands before an
+attempt workspace exists (#2561). It shares configured model selection with the
+worker and uses the existing provider report for availability. Attempt catalog
+validation uses the reservation's advertised model scope, preserving automatic
+fallback and legacy override rejection without changing the exact execution
+reservation check. Reports advertise canonical backend model names; a stale
+report cannot authorize a different runtime model. Catalog and effort validation
+still run in the prepared workspace, where startup failures have attempt context.
+
 ## INV-3 — Mechanism moratorium
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.

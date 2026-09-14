@@ -2024,25 +2024,41 @@ func pathWithin(root string, path string) bool {
 
 func hookEnv(info Info, issue Issue) []string {
 	env := append([]string{}, os.Environ()...)
-	values := []struct {
-		key   string
-		value string
-	}{
-		{"DETENT_WORKSPACE", info.Path},
-		{"DETENT_WORKSPACE_KEY", info.Key},
-		{"DETENT_BRANCH", info.Branch},
-		{"DETENT_ISSUE_ID", issue.ID},
-		{"DETENT_ISSUE_IDENTIFIER", issue.Identifier},
-		{"WORKSPACE", info.Path},
-		{"WORKSPACE_KEY", info.Key},
-		{"BRANCH", info.Branch},
-		{"ISSUE_ID", issue.ID},
-		{"ISSUE_IDENTIFIER", issue.Identifier},
-	}
-	for _, value := range values {
-		env = append(env, value.key+"="+value.value)
+	variables := EnvironmentVariables(info, issue)
+	for _, key := range workspaceEnvironmentKeys {
+		env = append(env, key+"="+variables[key])
 	}
 	return env
+}
+
+var workspaceEnvironmentKeys = [...]string{
+	"DETENT_WORKSPACE",
+	"DETENT_WORKSPACE_KEY",
+	"DETENT_BRANCH",
+	"DETENT_ISSUE_ID",
+	"DETENT_ISSUE_IDENTIFIER",
+	"WORKSPACE",
+	"WORKSPACE_KEY",
+	"BRANCH",
+	"ISSUE_ID",
+	"ISSUE_IDENTIFIER",
+}
+
+// EnvironmentVariables returns the workspace and issue identity exported to
+// processes that operate on a workspace.
+func EnvironmentVariables(info Info, issue Issue) map[string]string {
+	return map[string]string{
+		"DETENT_WORKSPACE":        info.Path,
+		"DETENT_WORKSPACE_KEY":    info.Key,
+		"DETENT_BRANCH":           info.Branch,
+		"DETENT_ISSUE_ID":         issue.ID,
+		"DETENT_ISSUE_IDENTIFIER": issue.Identifier,
+		"WORKSPACE":               info.Path,
+		"WORKSPACE_KEY":           info.Key,
+		"BRANCH":                  info.Branch,
+		"ISSUE_ID":                issue.ID,
+		"ISSUE_IDENTIFIER":        issue.Identifier,
+	}
 }
 
 func prepareRoot(path string) (string, error) {

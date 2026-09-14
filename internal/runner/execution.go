@@ -157,11 +157,11 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	return "fresh_checkout", "session_restart_required"
 }
 
-func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend AgentBackend, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity) (store.AgentResumeState, error) {
+func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend AgentBackend, process AgentProcessRequest, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity) (store.AgentResumeState, error) {
 	if req.Execution == nil {
 		return state, nil
 	}
-	sessionAvailable := !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, agentResumeFromState(state)) == nil
+	sessionAvailable := !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, process, agentResumeFromState(state)) == nil
 	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, identity)
 	r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", action, "reason", reason)
 	if action == "manual_recovery" {

@@ -15,6 +15,9 @@ func (s *Scheduler) claimProviderCandidate(ctx context.Context, request orchestr
 	if request.ProviderRequirement == nil {
 		return tracker.NativeLease{}, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider dispatch needs the local runner's model resolver"))
 	}
+	s.mu.Lock()
+	reports := append([]providercapacity.Report(nil), s.machine.ProviderReports...)
+	s.mu.Unlock()
 	preview := tracker.NativeCapacityPreview{NativeClaim: claim}
 	claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
 	var waiting error
@@ -28,7 +31,7 @@ func (s *Scheduler) claimProviderCandidate(ctx context.Context, request orchestr
 		}
 		claim.ProviderCandidates = nil
 		for _, issue := range page.Items {
-			requirement, err := request.ProviderRequirement(ctx, issueFromNative(issue))
+			requirement, err := request.ProviderRequirement(ctx, issueFromNative(issue), reports)
 			if err != nil {
 				waiting = errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 				continue
@@ -91,4 +94,8 @@ func (e *nativeExecution) validateProviderStart(identity tracker.NativeExecution
 		}
 	}
 	return e.unavailable(errors.New("local provider account or model capability changed after dispatch"))
+}
+
+func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {
+	return e.claim.lease.ProviderReservation
 }

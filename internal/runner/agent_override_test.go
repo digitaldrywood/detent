@@ -185,7 +185,7 @@ func TestResolveAgentOverride(t *testing.T) {
 			if role == "" {
 				role = RoleCode
 			}
-			got, err := resolveAgentOverride(context.Background(), tt.issue, "/tmp/workspace", tt.baseModel, role, tt.projectEffort, backend)
+			got, err := resolveAgentOverride(context.Background(), tt.issue, AgentProcessRequest{Workspace: "/tmp/workspace"}, tt.baseModel, role, tt.projectEffort, backend)
 			if tt.wantError == "" && err != nil {
 				t.Fatalf("resolveAgentOverride() error = %v", err)
 			}
@@ -245,7 +245,7 @@ func TestResolveAgentOverrideAppliesProjectEffortWithoutCatalog(t *testing.T) {
 			got, err := resolveAgentOverride(
 				context.Background(),
 				tt.issue,
-				"/tmp/workspace",
+				AgentProcessRequest{Workspace: "/tmp/workspace"},
 				"",
 				RoleMerge,
 				agentEffortCandidate{Field: "agent.effort.merge", Effort: tt.projectEffort},
@@ -289,14 +289,14 @@ func (*catalogAgentBackend) RunTurn(context.Context, AgentTurnRequest, AgentUpda
 	return AgentTurnResult{}, nil
 }
 
-func (b *catalogAgentBackend) ListModels(context.Context) ([]AgentModel, error) {
+func (b *catalogAgentBackend) ListModels(context.Context, AgentProcessRequest) ([]AgentModel, error) {
 	b.calls++
 	return b.models, b.err
 }
 
-func (b *catalogAgentBackend) DefaultModel(_ context.Context, workspace string) (string, error) {
+func (b *catalogAgentBackend) DefaultModel(_ context.Context, process AgentProcessRequest) (string, error) {
 	b.defaultCalls++
-	if workspace != "/tmp/workspace" {
+	if process.Workspace != "/tmp/workspace" {
 		return "", errors.New("unexpected workspace")
 	}
 	return b.defaultModel, b.defaultModelErr

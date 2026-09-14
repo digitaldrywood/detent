@@ -13,10 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution SecurityAuditExecution, err error) {
@@ -68,9 +68,25 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	selectionIssue := req.Issue
 	selectionIssue.Description = ""
-	resolvedSelection := resolveAgentSelection(ctx, selectionIssue, auditWorkspace, baseModel, RoleSecurityAudit, workflow.Config, backendConfig, backend)
-	if resolvedSelection.Err != nil {
-		return execution, resolvedSelection.Err
+	baseEnvironment := workerEnvironment(map[string]string{
+		"OPENAI_API_KEY":                       "",
+		"AZURE_OPENAI_API_KEY":                 "",
+		"GH_TOKEN":                             "",
+		"GITHUB_TOKEN":                         "",
+		serviceapi.AddressEnvironment:          "",
+		serviceapi.TokenEnvironment:            "",
+		serviceapi.DispositionTokenEnvironment: "",
+	}, workspace.Info{Path: auditWorkspace}, workspaceIssue(r.projectID, req.Issue))
+	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
+		Workspace:   auditWorkspace,
+		Environment: baseEnvironment,
+	}, workerGitHubPolicy{})
+	if err != nil {
+		return execution, err
+	}
+	resolvedSelection := resolveAgentSelection(ctx, selectionIssue, processRequest, baseModel, RoleSecurityAudit, workflow.Config, backendConfig, backend)
+	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
+		return execution, err
 	}
 	selectedModel = resolvedSelection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
@@ -104,19 +120,11 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		ReasoningEffort:         effort,
 		TurnTimeout:             durationFromMillis(auditConfig.TurnTimeoutMS),
 		MaxDuration:             durationFromMillis(auditConfig.TurnTimeoutMS),
-		Environment: procgroup.Environment{Variables: map[string]string{
-			"OPENAI_API_KEY":                       "",
-			"AZURE_OPENAI_API_KEY":                 "",
-			"GH_TOKEN":                             "",
-			"GITHUB_TOKEN":                         "",
-			serviceapi.AddressEnvironment:          "",
-			serviceapi.TokenEnvironment:            "",
-			serviceapi.DispositionTokenEnvironment: "",
-		}},
-		MaxRSSBytes:     r.maxAgentRSSBytes,
-		RSSPollInterval: r.rssPollInterval,
-		projectID:       r.projectID,
-		processRSS:      r.processRSS,
+		Environment:             baseEnvironment,
+		MaxRSSBytes:             r.maxAgentRSSBytes,
+		RSSPollInterval:         r.rssPollInterval,
+		projectID:               r.projectID,
+		processRSS:              r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 			return ErrSecurityAuditToolUse

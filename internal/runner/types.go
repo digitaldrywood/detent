@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -337,15 +338,21 @@ type AgentToolResult struct {
 type AgentToolHandler func(context.Context, AgentToolCall) (AgentToolResult, error)
 
 type AgentResumeVerifier interface {
-	VerifyResume(context.Context, AgentResume) error
+	VerifyResume(context.Context, AgentProcessRequest, AgentResume) error
 }
 
 type AgentModelCatalogProvider interface {
-	ListModels(context.Context) ([]AgentModel, error)
+	ListModels(context.Context, AgentProcessRequest) ([]AgentModel, error)
 }
 
 type AgentDefaultModelProvider interface {
-	DefaultModel(context.Context, string) (string, error)
+	DefaultModel(context.Context, AgentProcessRequest) (string, error)
+}
+
+type AgentProcessRequest struct {
+	Workspace   string
+	TempDir     string
+	Environment procgroup.Environment
 }
 
 type AgentModel struct {
@@ -574,6 +581,8 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
+	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
+	ProviderReports           []providercapacity.Report
 	Execution                 Execution
 	Policy                    policy.Descriptor
 	ProjectID                 string

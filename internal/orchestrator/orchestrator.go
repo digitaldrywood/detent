@@ -178,7 +178,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
-	ProviderRequirement func(context.Context, connector.Issue) (providercapacity.Requirement, error)
+	ProviderRequirement func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
 	Policy              policy.Descriptor
 	ProjectID           string
 	Repository          string
