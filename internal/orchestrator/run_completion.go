@@ -20,7 +20,6 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -1576,16 +1575,18 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return false
 	}
 	audit := o.securityAuditEvaluation(ctx, issue)
-	if gate.Effective(o.cfg.AutoPromote.Gate).SecurityAudit.Enabled && !audit.Allowed {
-		reason := "security_audit_" + audit.Reason
-		if audit.Reason == securityaudit.ReasonMissing || audit.Reason == securityaudit.ReasonStale {
+	if auditDecision, pending := gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, audit); pending {
+		if auditDecision.Reason == gate.ReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, event.CompletedAt)
-			running.Issue = issue
-			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, reason, errors.New(reason))
+			auditDecision, _ = gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, o.securityAuditEvaluation(ctx, issue))
+		}
+		// An audit can finish between launch and this read. A passing result
+		// proceeds directly; all other verdicts defer to auto-promote routing.
+		if auditDecision.Action != "" {
+			o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt,
+				string(auditDecision.Reason), "merge_worker_gate_wait", "Waiting for security audit routing: ")
 			return true
 		}
-		o.reworkMergeWorkerResult(ctx, state, event, running, issue, reason, nil, "")
-		return true
 	}
 	if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
 		var hydrated bool

@@ -21,6 +21,12 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 		return securityaudit.Evaluation{}
 	}
 	identity := o.securityAuditIdentity(issue)
+	o.securityAuditMu.Lock()
+	_, running := o.securityAuditRuns[identity.cacheKey]
+	o.securityAuditMu.Unlock()
+	if running {
+		return securityaudit.Evaluation{Running: true}
+	}
 	if identity.key.HeadSHA == "" {
 		return securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}
 	}
@@ -302,4 +308,37 @@ func (o *Orchestrator) logSecurityAuditFailure(issue connector.Issue, reason str
 		"identifier", strings.TrimSpace(issue.Identifier),
 		"error", err,
 	)
+}
+
+// publishSecurityAuditFindings uses the trusted run ID only as a publication marker.
+// Comments never supply audit verdicts or dispositions.
+func (o *Orchestrator) publishSecurityAuditFindings(ctx context.Context, issue connector.Issue, audit securityaudit.Evaluation) error {
+	reader, ok := o.connector.(connector.PullRequestCommentReader)
+	if !ok {
+		return errors.New("pull request comment reader unavailable")
+	}
+	commenter, ok := o.connector.(connector.PullRequestCommenter)
+	if !ok {
+		return errors.New("pull request commenter unavailable")
+	}
+	repository, number := pullRequestRepository(issue), pullRequestNumber(issue)
+	comments, err := reader.FetchPullRequestComments(ctx, repository, number)
+	if err != nil {
+		return fmt.Errorf("read security audit comments: %w", err)
+	}
+	marker := fmt.Sprintf("<!-- detent-security-audit:%s:%d -->", o.workflowMetricsProjectID(), audit.RunID)
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, marker) {
+			return nil
+		}
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "%s\n## Security audit findings\n\nAudit run %d, base `%s`, head `%s`. Resolve these findings in Rework.\n", marker, audit.RunID, issue.PullRequest.BaseSHA, issue.PullRequest.HeadSHA)
+	for _, finding := range audit.Findings {
+		fmt.Fprintf(&body, "\n- **%s** `%s:%d`: %s\n", finding.Severity, finding.Path, finding.Line, finding.Body)
+	}
+	if err := commenter.CreatePullRequestComment(ctx, repository, number, body.String()); err != nil {
+		return fmt.Errorf("publish security audit findings: %w", err)
+	}
+	return nil
 }

@@ -103,6 +103,7 @@ type Disposition struct {
 }
 
 type Evaluation struct {
+	Running  bool
 	Allowed  bool
 	Reason   string
 	RunID    int64

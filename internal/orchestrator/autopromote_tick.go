@@ -139,8 +139,23 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
+		if mergeWorkerIssue(issue) {
+			// Merging consumes only the audit verdict here; its other gates remain
+			// owned by merge preparation. Passing audits leave the lane unchanged.
+			auditDecision, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, securityAudit)
+			if !pending {
+				continue
+			}
+			decision = autoPromoteDecision(autoPromoteActionFromGate(auditDecision.Action), autoPromoteReasonFromGate(auditDecision.Reason))
+			decision.Findings = autoPromoteFindingsFromGate(auditDecision.Findings)
+		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
+			if auditDecision, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, o.securityAuditEvaluation(ctx, issue)); pending {
+				decision = autoPromoteDecision(autoPromoteActionFromGate(auditDecision.Action), autoPromoteReasonFromGate(auditDecision.Reason))
+			} else {
+				decision = autoPromoteDecision(AutoPromoteActionPromote, AutoPromoteReasonReady)
+			}
 			recordAutoPromoteSnapshotDecision(state, issueID, decision)
 			o.logAutoPromoteDecision(issue, decision, "")
 			continue
@@ -250,7 +265,11 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 	issues []connector.Issue,
 	cfg AutoPromoteConfig,
 ) []connector.Issue {
-	out := issuesInStates(issues, []string{cfg.SourceState})
+	sourceStates := []string{cfg.SourceState}
+	if gate.Effective(cfg.Gate).SecurityAudit.Enabled {
+		sourceStates = append(sourceStates, autoPromoteMergingState)
+	}
+	out := issuesInStates(issues, sourceStates)
 	seen := make(map[string]struct{}, len(out))
 	for _, issue := range out {
 		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
@@ -3167,6 +3186,12 @@ func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
 		return "", false
 	}
 
+	if decision.Reason == AutoPromoteReasonSecurityAuditFindings {
+		if err := o.publishSecurityAuditFindings(ctx, issue, summary.SecurityAudit); err != nil {
+			o.logSecurityAuditFailure(issue, "publication_failed", err)
+			return "", false
+		}
+	}
 	issueID := strings.TrimSpace(issue.ID)
 	transitionReason := string(decision.Reason)
 	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
