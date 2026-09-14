@@ -27,7 +27,68 @@ func TestScheduleCITriggerLabelCurrentHeadChecks(t *testing.T) {
 		forceReapply  bool
 		wantReapply   bool
 		wantReason    string
+		recordedHead  string
 	}{
+		{
+			name:     "empty configured checks do not trust successful placeholder",
+			required: []string{}, afterHeadPush: true,
+			checks:      []connector.PullRequestCheck{{Name: "Placeholder", Status: "completed", Conclusion: "success"}},
+			wantReapply: true, wantReason: "after_head_push",
+		},
+		{
+			name:     "new recorded head with successful placeholder triggers",
+			required: []string{}, recordedHead: "old-head", head: "new-head",
+			checks:      []connector.PullRequestCheck{{Name: "Placeholder", Status: "completed", Conclusion: "success"}},
+			wantReapply: true, wantReason: "after_head_push",
+		},
+		{
+			name:     "unchanged recorded green head does not trigger",
+			required: []string{}, recordedHead: "old-head", afterHeadPush: true,
+			checks:     []connector.PullRequestCheck{{Name: "Full CI", Status: "completed", Conclusion: "success"}},
+			wantReason: "already_reapplied_for_head",
+		},
+		{
+			name:     "empty configured checks with no live checks trigger",
+			required: []string{}, afterHeadPush: true,
+			wantReapply: true, wantReason: "after_head_push",
+		},
+		{
+			name:     "recorded head ignores reported push with empty checks",
+			required: []string{}, recordedHead: "old-head", afterHeadPush: true,
+			wantReason: "already_reapplied_for_head",
+		},
+		{
+			name:         "new head replaces recorded head once",
+			recordedHead: "old-head", head: "new-head", afterHeadPush: true,
+			wantReapply: true, wantReason: "after_head_push",
+		},
+		{
+			name:         "force can repeat recorded head",
+			recordedHead: "old-head", forceReapply: true,
+			wantReapply: true, wantReason: "forced_reapply",
+		},
+		{
+			name:        "empty configured checks hydrate pending head",
+			required:    []string{},
+			checks:      []connector.PullRequestCheck{{Name: "Full CI", Status: "in_progress"}},
+			wantReapply: true, wantReason: "required_checks_not_green",
+		},
+		{
+			name:        "empty configured checks hydrate skipped head",
+			required:    []string{},
+			checks:      []connector.PullRequestCheck{{Name: "Full CI", Status: "completed", Conclusion: "skipped"}},
+			wantReapply: true, wantReason: "required_checks_not_green",
+		},
+		{
+			name:     "empty configured checks hydration error",
+			required: []string{}, hydrationErr: errors.New("unavailable"),
+			wantReason: "pull_request_refresh_failed",
+		},
+		{
+			name:         "new recorded head detects push without attempt flag",
+			recordedHead: "old-head", head: "new-head",
+			wantReapply: true, wantReason: "after_head_push",
+		},
 		{
 			name:       "green commit status after restart",
 			checks:     []connector.PullRequestCheck{{Name: "Full CI", Status: "success", Conclusion: "success"}},
@@ -108,7 +169,6 @@ func TestScheduleCITriggerLabelCurrentHeadChecks(t *testing.T) {
 					ID: "issue-2250", Identifier: "digitaldrywood/detent#2250", PRRepository: "digitaldrywood/detent",
 					PullRequest: &connector.PullRequest{
 						Number: 2250, HeadSHA: "old-head", State: "OPEN", CIStatus: "success",
-						Checks: []connector.PullRequestCheck{{Name: "Full CI", Status: "success", Conclusion: "success"}},
 					},
 				}
 				fresh := cloneIssue(issue)
@@ -132,6 +192,11 @@ func TestScheduleCITriggerLabelCurrentHeadChecks(t *testing.T) {
 					}}},
 					connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil)),
 				}
+				if tt.recordedHead != "" {
+					orch.ciTriggerLabelHeads = map[string]ciTriggerLabelHead{
+						"digitaldrywood/detent#2250|run-full-ci": {HeadSHA: tt.recordedHead},
+					}
+				}
 				got := orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Full CI"}, 1, tt.afterHeadPush, tt.forceReapply)
 				synctest.Wait()
 				if got != tt.wantReapply || (len(tracker.relabels) == 1) != tt.wantReapply {
@@ -139,6 +204,15 @@ func TestScheduleCITriggerLabelCurrentHeadChecks(t *testing.T) {
 				}
 				if !strings.Contains(logs.String(), "reason="+tt.wantReason) {
 					t.Fatalf("logs = %s, want reason %s", logs.String(), tt.wantReason)
+				}
+				if tt.wantReapply && !tt.forceReapply {
+					if orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Full CI"}, 1, true, false) {
+						t.Fatal("same head scheduled twice")
+					}
+					synctest.Wait()
+					if len(tracker.relabels) != 1 {
+						t.Fatalf("label events = %d, want exactly one", len(tracker.relabels))
+					}
 				}
 				if tt.wantReapply && !strings.Contains(logs.String(), "required_check_states=") {
 					t.Fatalf("logs = %s, want current required-check states", logs.String())
