@@ -248,7 +248,9 @@ dispatch refresh (#2509). Closed tracker state releases ordinary dependencies
 without requiring a terminal lane observation; human completion evidence remains
 required. Current structured Workpad blockers in `in_progress` or `blocked` with
 an open `issue_state` predicate join body fallback dependencies; native relations
-remain authoritative. A dependency wait preserves retry attempt and resume state.
+remain authoritative. Unresolved Workpad evidence preserves the dependency wait;
+explicit open predicates use tracker closure, even in terminal lanes. A dependency
+wait preserves retry attempt and resume state.
 `TestDispatchDependencyRetry` covers open-to-closed transitions for native, body,
 and Workpad sources (#2699). This consolidates dependency readiness without
 adding a recovery loop.

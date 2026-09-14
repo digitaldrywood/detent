@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -96,4 +98,70 @@ func TestDispatchWorkpadDependencySelection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDispatchWorkpadDependencyEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		blockers    []connector.Issue
+		err         error
+		body        bool
+		wantBlocked bool
+	}{
+		{name: "lookup error", err: errors.New("lookup unavailable"), wantBlocked: true},
+		{name: "missing issue", wantBlocked: true},
+		{name: "body and workpad open terminal lane", body: true, blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done"}}, wantBlocked: true},
+		{name: "open terminal lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done"}}, wantBlocked: true},
+		{name: "closed terminal lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done", Closed: true}}},
+		{name: "open empty lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680"}}, wantBlocked: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("issue", "In Progress")
+			issue.Identifier = "digitaldrywood/detent#2699"
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers:\n  - ref: '#2680'\n    predicate: {type: issue_state, states: [open]}\n```"}}
+			if tt.body {
+				issue.Description = "Depends on: digitaldrywood/detent#2680"
+			}
+			o := &Orchestrator{cfg: cfg, connector: dispatchEvidenceConnector{hydratingDispatchConnector: hydratingDispatchConnector{blockers: tt.blockers}, err: tt.err}}
+			hydrated := o.hydrateDispatchDependencies(t.Context(), issue, make(map[string]dependencyBlocker))
+			if got := issueBlockedByNonTerminal(hydrated, cfg.TerminalStates); got != tt.wantBlocked {
+				t.Fatalf("blocked=%t, want %t; refs=%+v", got, tt.wantBlocked, hydrated.BlockedBy)
+			}
+
+			for _, retry := range []bool{false, true} {
+				state := newState(cfg)
+				planner := newDispatchPlanner(cfg)
+				now := time.Now()
+				if retry {
+					planner.scheduleRetryAfter(&state, issue, 2, now, 0, "", "")
+				}
+				plan := planner.plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+					hydrate: func(connector.Issue) (connector.Issue, bool) { return hydrated, true },
+				})
+				if got := len(plan.Dispatches) == 0; got != tt.wantBlocked {
+					t.Fatalf("retry=%t: dispatches=%+v, want blocked=%t", retry, plan.Dispatches, tt.wantBlocked)
+				}
+				if retry && tt.wantBlocked {
+					if entry, ok := state.Retry[issue.ID]; !ok || entry.Attempt != 2 {
+						t.Fatalf("lost retry: %+v", state.Retry)
+					}
+				}
+			}
+		})
+	}
+}
+
+type dispatchEvidenceConnector struct {
+	hydratingDispatchConnector
+	err error
+}
+
+func (c dispatchEvidenceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.hydratingDispatchConnector.FetchIssueStatesByIdentifiers(ctx, refs)
 }

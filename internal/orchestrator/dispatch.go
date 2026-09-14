@@ -304,7 +304,7 @@ func (o *Orchestrator) hydrateDispatchDependencies(ctx context.Context, issue co
 	}
 	pending := connector.Issue{ID: issue.ID, Identifier: issue.Identifier}
 	for _, ref := range issue.BlockedBy {
-		if dependencyBlockerReady(dependencyBlocker{Ref: ref}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, o.cfg.TerminalStates) {
+		if len(dispatchWorkpadDependencyStates(issue, ref)) == 0 && dependencyBlockerReady(dependencyBlocker{Ref: ref}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, o.cfg.TerminalStates) {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
@@ -1434,8 +1434,44 @@ func waitForDispatchBackoff(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
+// dispatchWorkpadDependencyStates preserves explicit open predicates alongside
+// ordinary dependency refs, including refs also declared in the issue body.
+func dispatchWorkpadDependencyStates(issue connector.Issue, ref connector.BlockedRef) []string {
+	if issue.DependencySource == connector.BlockedRefSourceNative || issue.WorkpadSignal == nil ||
+		issue.WorkpadSignal.Invalid != nil || issue.WorkpadSignal.Source != workpad.SourceStructured ||
+		(issue.WorkpadSignal.Status != workpad.StatusInProgress && issue.WorkpadSignal.Status != workpad.StatusBlocked) {
+		return nil
+	}
+	for _, blocker := range issue.WorkpadSignal.Blockers {
+		if blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState || !stateIn("open", blocker.Predicate.States) {
+			continue
+		}
+		identifier := firstNonBlank(blocker.Identifier, blocker.Predicate.Identifier)
+		if identifier == "" {
+			parsed, err := workpad.ParseRef(blocker.Ref, dependencyIssueRepo(issue.Identifier))
+			if err != nil {
+				continue
+			}
+			identifier = parsed
+		}
+		if strings.EqualFold(strings.TrimSpace(identifier), strings.TrimSpace(ref.Identifier)) {
+			return blocker.Predicate.States
+		}
+	}
+	return nil
+}
+
 func issueBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bool {
 	for _, blocker := range issue.BlockedBy {
+		if states := dispatchWorkpadDependencyStates(issue, blocker); len(states) > 0 {
+			if blocker.TrackerState == "" || issueStateMatches(connector.Issue{State: blocker.State, Closed: blocker.TrackerState == connector.BlockedRefTrackerStateClosed}, states) {
+				return true
+			}
+			continue
+		}
+		if blocker.Source == connector.BlockedRefSourceWorkpad && blocker.TrackerState == "" && strings.TrimSpace(blocker.State) == "" {
+			return true
+		}
 		if blocker.HumanOwned {
 			if !blocker.HumanCompletionReady {
 				return true
