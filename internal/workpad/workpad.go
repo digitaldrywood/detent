@@ -83,9 +83,11 @@ type Predicate struct {
 }
 
 type Invalid struct {
-	Hash    string `json:"hash,omitempty" yaml:"hash,omitempty"`
-	Message string `json:"message,omitempty" yaml:"message,omitempty"`
-	Content string `json:"content,omitempty" yaml:"content,omitempty"`
+	// BlockerRefsOnly permits promotion to evaluate the remaining valid blockers.
+	BlockerRefsOnly bool   `json:"blocker_refs_only,omitempty" yaml:"blocker_refs_only,omitempty"`
+	Hash            string `json:"hash,omitempty" yaml:"hash,omitempty"`
+	Message         string `json:"message,omitempty" yaml:"message,omitempty"`
+	Content         string `json:"content,omitempty" yaml:"content,omitempty"`
 }
 
 type statusBlockYAML struct {
@@ -136,15 +138,13 @@ func SignalFromComment(body string, commentURL string, repo string) (*Signal, bo
 
 	block, err := ParseStatusBlock(content, repo)
 	if err != nil {
-		return &Signal{
-			Source:     SourceStructured,
-			CommentURL: strings.TrimSpace(commentURL),
-			Invalid: &Invalid{
-				Hash:    ContentHash(content),
-				Message: err.Error(),
-				Content: content,
-			},
-		}, true
+		refsOnly := block != nil
+		if block == nil {
+			block = &Signal{Source: SourceStructured}
+		}
+		block.CommentURL = strings.TrimSpace(commentURL)
+		block.Invalid = &Invalid{Hash: ContentHash(content), Message: err.Error(), Content: content, BlockerRefsOnly: refsOnly}
+		return block, true
 	}
 	block.CommentURL = strings.TrimSpace(commentURL)
 	return block, true
@@ -249,6 +249,9 @@ func lastCompletionAuthorizationBlock(body string) (string, bool) {
 	return last, found
 }
 
+// ParseStatusBlock returns a partial signal alongside the error only when all
+// validation failures are malformed blocker refs. Callers must still reject the
+// error unless they explicitly support informational refs.
 func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	var raw statusBlockYAML
 	decoder := yaml.NewDecoder(strings.NewReader(content))
@@ -267,6 +270,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		unknownKeys = append(unknownKeys, key)
 	}
 	problems := []string{}
+	refProblems := 0
 	if raw.Schema != 1 {
 		problems = append(problems, "schema must be 1")
 	}
@@ -299,7 +303,8 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		ref := strings.TrimSpace(blocker.Ref)
 		reason := strings.TrimSpace(blocker.Reason)
 		owner := normalizeToken(blocker.Owner)
-		predicate, predicateProblems := normalizePredicate(blocker.Predicate, ref, repo)
+		predicate, predicateProblems, predicateRefProblems := normalizePredicate(blocker.Predicate, ref, repo)
+		refProblems += predicateRefProblems
 		for _, problem := range predicateProblems {
 			problems = append(problems, fmt.Sprintf("blockers[%d].%s", index, problem))
 		}
@@ -308,6 +313,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 			parsed, err := ParseRef(ref, repo)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("blockers[%d].ref %q must be #N or owner/repo#N", index, ref))
+				refProblems++
 			} else {
 				identifier = parsed
 			}
@@ -374,12 +380,12 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	if len(fields) == 0 {
 		fields = nil
 	}
-	if len(problems) > 0 {
+	if len(problems) > refProblems {
 		return nil, errors.New(strings.Join(problems, "; "))
 	}
 
 	sort.Strings(unknownKeys)
-	return &Signal{
+	signal := &Signal{
 		UnknownKeys: unknownKeys,
 		Source:      SourceStructured,
 		Status:      raw.Status,
@@ -387,13 +393,18 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		Blockers:    blockers,
 		HumanAction: humanAction,
 		Fields:      fields,
-	}, nil
+	}
+	if refProblems > 0 {
+		return signal, errors.New(strings.Join(problems, "; "))
+	}
+	return signal, nil
 }
 
-func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Predicate, []string) {
+func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Predicate, []string, int) {
 	if raw == nil {
-		return nil, nil
+		return nil, nil, 0
 	}
+	refProblems := 0
 	problems := []string{}
 	predicateType := normalizePredicateType(raw.Type)
 	kind := normalizePredicateType(raw.Kind)
@@ -403,7 +414,8 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 		problems = append(problems, "predicate type and kind must match")
 	}
 	ref := strings.TrimSpace(raw.Ref)
-	if ref == "" {
+	inheritedRef := ref == ""
+	if inheritedRef {
 		ref = strings.TrimSpace(blockerRef)
 	}
 	identifier := ""
@@ -411,6 +423,9 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 		parsed, err := ParseRef(ref, repo)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("predicate.ref %q must be #N or owner/repo#N", ref))
+			if inheritedRef {
+				refProblems++
+			}
 		} else {
 			identifier = parsed
 		}
@@ -439,6 +454,10 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 	case PredicateIssueState:
 		if predicate.Identifier == "" {
 			problems = append(problems, "predicate.ref is required for issue_state")
+			// An inherited malformed ref already explains the missing identifier.
+			if inheritedRef && ref != "" {
+				refProblems++
+			}
 		}
 	case PredicatePullRequestState:
 		if len(predicate.States) == 0 {
@@ -481,7 +500,7 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 	default:
 		problems = append(problems, fmt.Sprintf("predicate.type %q must be issue_state, pull_request_state, check_presence, budget_capacity, or config_fingerprint", predicate.Type))
 	}
-	return predicate, problems
+	return predicate, problems, refProblems
 }
 
 func normalizePredicateType(value string) string {

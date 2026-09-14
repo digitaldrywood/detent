@@ -1372,3 +1372,35 @@ func autoPromoteTestIssue(id string, labels []string) connector.Issue {
 	issue.Labels = append([]string(nil), labels...)
 	return issue
 }
+
+func TestEvaluateAutoPromoteMalformedBlockerRefs(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, mergeable, ci, extra string
+		want                       AutoPromoteAction
+	}{
+		{"green", "clean", "pass", "", AutoPromoteActionPromote},
+		{"dirty", "dirty", "pass", "", AutoPromoteActionRework},
+		{"red", "clean", "fail", "", AutoPromoteActionRework},
+		{"open dependency", "clean", "pass", "  - ref: '#42'\n    reason: waiting\n", AutoPromoteActionAwaitReview},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := autoPromoteTestIssue("malformed", nil)
+			issue.Identifier = "digitaldrywood/detent#2640"
+			issue.PullRequest = &connector.PullRequest{Number: 2641, State: "OPEN", MergeableState: tt.mergeable, CIStatus: tt.ci}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: local:e2e-verify-2113.loop.local.json\n    reason: local check\n  - ref: worker:github-cli-auth\n    reason: auth\n" + tt.extra + "human_action: null\n```"}}
+			summary := AutoPromoteSummaryFromIssue(issue)
+			summary.CompletedFinalState = FinalStateCompleted
+			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
+			if got.Action != tt.want {
+				t.Fatalf("decision = %#v, want action %s", got, tt.want)
+			}
+			if tt.ci == "fail" && got.Reason != AutoPromoteReasonCINotGreen {
+				t.Fatalf("reason = %s, want CI reason for transient retry", got.Reason)
+			}
+			if !strings.Contains(got.WorkpadStatusInvalid, `blockers[0].ref "local:e2e-verify-2113.loop.local.json" must be #N or owner/repo#N`) {
+				t.Fatalf("missing verbatim diagnostic: %#v", got)
+			}
+		})
+	}
+}

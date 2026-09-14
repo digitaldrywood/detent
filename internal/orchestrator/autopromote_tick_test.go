@@ -6742,3 +6742,47 @@ func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T)
 		t.Fatalf("stored verdict was not consulted after workpad hydration:\n%s", logs.String())
 	}
 }
+
+func TestTickAutoPromoteMalformedRework(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, extra, blockerState, wantState string
+		running                              bool
+	}{
+		{name: "malformed refs promote", wantState: "Merging"},
+		{name: "running worker waits", running: true},
+		{name: "open dependency waits", extra: "  - ref: '#42'\n    reason: waiting\n", blockerState: "In Progress"},
+		{name: "closed dependency promotes", extra: "  - ref: '#42'\n    reason: waiting\n", blockerState: "Done", wantState: "Merging"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			issue := autoPromoteTickIssue("malformed-rework", []string{"bug"}, &connector.PullRequest{Number: 2641, URL: "https://github.test/digitaldrywood/detent/pull/2641", State: "OPEN", MergeableState: "clean", CIStatus: "pass"})
+			issue.State = "Rework"
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: local:e2e-verify-2113.loop.local.json\n    reason: local check\n" + tt.extra + "human_action: null\n```"}}
+			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, ActiveStates: []string{"In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}})
+			state := newState(cfg)
+			if tt.running {
+				state.Running[issue.ID] = Running{Issue: issue}
+			}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}, issueComments: map[string][]connector.IssueComment{issue.ID: issue.Comments}, resolvedIssues: []connector.Issue{{ID: "42", Identifier: "digitaldrywood/detent#42", State: tt.blockerState}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+			if tt.wantState == "" {
+				if len(tracker.updates) != 0 {
+					t.Fatalf("updates = %#v, want wait", tracker.updates)
+				}
+			} else if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState || len(result.transitioned) != 1 {
+				t.Fatalf("updates = %#v, transitioned = %#v", tracker.updates, result.transitioned)
+			}
+			if tt.running {
+				if len(tracker.comments) != 0 {
+					t.Fatalf("comments for running worker: %#v", tracker.comments)
+				}
+				return
+			}
+			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[0].body, `blockers[0].ref "local:e2e-verify-2113.loop.local.json" must be #N or owner/repo#N`) {
+				t.Fatalf("missing diagnostic: %#v", tracker.comments)
+			}
+		})
+	}
+}
