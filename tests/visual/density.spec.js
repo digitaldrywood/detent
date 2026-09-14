@@ -314,7 +314,8 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
       } else {
         await expect(blockers).toBeHidden();
         await expect(card.locator("[data-board-card-details]")).toBeHidden();
-        await expect(signals).toHaveText(density === "compact" ? ["Blocked · 8"] : ["Blocked · 8", "Sync error"]);
+        // The fixture's live session takes precedence over its retained blockers.
+        await expect(signals).toHaveText(density === "compact" ? ["Running"] : ["Running", "Sync error"]);
         const geometry = await card.evaluate(el => {
           const identity = el.querySelector("[data-board-card-identity]");
           const title = el.querySelector("[data-board-card-title]");
@@ -349,7 +350,7 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
     await expect(blockers).toBeHidden();
     await morphSnapshot(page, snapshot);
     await expect(blockers).toBeHidden();
-    await expect(signals).toHaveText(["Blocked · 8", "Sync error"]);
+    await expect(signals).toHaveText(["Running", "Sync error"]);
     expect((await card.boundingBox()).height).toBe(cozyHeight);
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
@@ -379,7 +380,7 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
     await chooseDensity(page, "cozy");
     await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": "board-card-single-blocker" });
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(signals).toHaveText(["Blocked · 1", "Sync error"]);
+    await expect(signals).toHaveText(["Running", "Sync error"]);
     expect((await card.boundingBox()).height).toBe(cozyHeight);
   });
 }
