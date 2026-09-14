@@ -439,3 +439,84 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestAttemptAllowanceLiveHead(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, ci, mergeable, want   string
+		newHead, disabled, preserve bool
+		threads                     []connector.PullRequestReviewThread
+		unavailable                 string
+		wantErr                     bool
+	}{
+		{name: "green replacement head promotes", newHead: true, ci: "green", mergeable: "clean", want: "Merging"},
+		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Human Review"},
+		{name: "observed lane is preserved", preserve: true, ci: "green", mergeable: "clean", want: ""},
+		{name: "green head promotes", ci: "green", mergeable: "clean", want: "Merging"},
+		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Human Review"},
+		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Human Review"},
+		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Human Review"},
+		{name: "unavailable evidence waits", unavailable: "checks_unavailable", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 14, 21, 55, 0, 0, time.UTC)
+			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "Rework", PullRequest: &connector.PullRequest{Number: 2, State: "open", CIStatus: "failure", HeadSHA: "live"}}
+			live := cloneIssue(issue)
+			live.PullRequest = &connector.PullRequest{Number: 2, URL: "https://github.com/owner/repo/pull/2", State: "open", HeadSHA: "live", CIStatus: tt.ci, MergeableState: tt.mergeable, CodexReviewState: "COMMENTED", UnresolvedReviewThreads: tt.threads, HydrationUnavailableReason: tt.unavailable, Checks: []connector.PullRequestCheck{{ID: 42, Name: "Smoke", Status: "completed", Conclusion: tt.ci}}}
+			if tt.newHead {
+				live.PullRequest.HeadSHA = "replacement"
+			}
+			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: live}}
+			cfg := laneMutationTestConfig()
+			cfg.AutoPromote.Enabled = !tt.disabled
+			db, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			state := newState(cfg)
+			attempt := store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": fallbackAttemptTriageNote(issue, "Smoke failed earlier"), "attempt_allowance_preserve_lane": tt.preserve})}
+			err := orch.publishAttemptTriage(t.Context(), &state, issue, attempt, now)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v", err)
+			}
+			if tt.wantErr {
+				if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+					t.Fatal("unavailable evidence published or moved issue")
+				}
+				return
+			}
+			if tt.preserve {
+				if len(tracker.updates) != 0 {
+					t.Fatalf("preserved lane changed: %#v", tracker.updates)
+				}
+				return
+			}
+			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.want {
+				t.Fatalf("updates = %#v, want %s", tracker.updates, tt.want)
+			}
+			// Replay the durable triage after the lane transition, as on restart.
+			issue.State = tt.want
+			tracker.hydrated.State = tt.want
+			if err := orch.publishAttemptTriage(t.Context(), &state, issue, attempt, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			if len(tracker.updates) != 1 {
+				t.Fatalf("replay moved lane again: %#v", tracker.updates)
+			}
+			if tt.want == "Merging" {
+				for _, comment := range tracker.comments {
+					if strings.Contains(comment.body, "Smoke failed earlier") {
+						t.Fatal("published stale triage")
+					}
+				}
+			} else {
+				if len(tracker.comments) != 1 {
+					t.Fatalf("comments = %d", len(tracker.comments))
+				}
+				for _, want := range []string{"live", "Smoke", tt.ci, "2026-09-14T21:55:00Z", "42"} {
+					if !strings.Contains(tracker.comments[0].body, want) {
+						t.Errorf("triage missing %q: %s", want, tracker.comments[0].body)
+					}
+				}
+			}
+		})
+	}
+}

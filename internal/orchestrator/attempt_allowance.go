@@ -247,11 +247,50 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 	if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil {
 		metadata.Note = ""
 	}
+	// The durable triage consumes the single pass, but its explanation is only
+	// historical evidence. Reuse promotion policy against the current PR before
+	// publishing it or moving the issue, including publication retries.
+	issue.Comments = comments
+	if issue.PullRequest != nil || issue.PRNumber != nil {
+		hydrator, ok := o.connector.(connector.PullRequestHydrator)
+		if !ok {
+			return errors.New("triage publication requires live pull request hydration")
+		}
+		issue, err = hydrator.HydratePullRequest(ctx, issue)
+		if err != nil {
+			return err
+		}
+		if issue.PullRequest == nil || pullRequestHydrationUnavailableReason(issue.PullRequest) != "" || issue.PullRequest.HydrationDegradedReason != "" {
+			return errors.New("triage pull request evidence unavailable")
+		}
+		var hydrated bool
+		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+		if !hydrated {
+			return errors.New("triage review thread evidence unavailable")
+		}
+		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+		summary := AutoPromoteSummaryFromIssue(issue)
+		summary.SecurityAudit = o.securityAuditEvaluation(ctx, issue)
+		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issue.ID)
+		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
+		issue, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		decision, _ = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if !metadata.PreserveLane && decision.Action == AutoPromoteActionPromote {
+			target := autoPromoteTargetState(decision.Action, cfg)
+			if normalizeState(issue.State) != normalizeState(target) {
+				if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, target, now) {
+					return errors.New("triage live pull request promotion failed")
+				}
+			}
+			o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+			return nil
+		}
+	}
 	if !posted {
 		if !validAttemptTriageNote(metadata.Note) {
 			metadata.Note = fallbackAttemptTriageNote(issue, "triage interrupted before its result was persisted")
 		}
-		if err := o.connector.CreateComment(ctx, issue.ID, metadata.Note+"\n\n"+marker); err != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, metadata.Note+"\n\n"+marker+attemptTriageObservedEvidence(issue, now)); err != nil {
 			return err
 		}
 	}
@@ -259,4 +298,19 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		return nil
 	}
 	return o.updateIssueState(ctx, state, issue, autoPromoteSourceState, now, attemptAllowanceExhaustedReason)
+}
+
+// Observation timestamps qualify the historical worker explanation without
+// pretending that the provider's check completion time is available here.
+func attemptTriageObservedEvidence(issue connector.Issue, observedAt time.Time) string {
+	pr := issue.PullRequest
+	if pr == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\n### PR evidence observed at %s\nHead: `%s`; mergeable state: `%s`; CI: `%s`; unresolved threads: %d.\nThe worker explanation above predates this observation.\n", observedAt.UTC().Format(time.RFC3339), pr.HeadSHA, pr.MergeableState, pr.CIStatus, len(pr.UnresolvedReviewThreads))
+	for _, check := range pr.Checks {
+		fmt.Fprintf(&b, "- Check %q (run %d): status=%q, conclusion=%q; observed at %s.\n", check.Name, check.ID, check.Status, check.Conclusion, observedAt.UTC().Format(time.RFC3339))
+	}
+	return b.String()
 }
