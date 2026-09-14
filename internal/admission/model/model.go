@@ -82,10 +82,13 @@ type RunRecord struct {
 }
 
 type IssueRecord struct {
-	ID         string `json:"id,omitempty"`
-	Identifier string `json:"identifier,omitempty"`
-	URL        string `json:"url,omitempty"`
-	ProposalID string `json:"proposal_id,omitempty"`
+	ID          string    `json:"id,omitempty"`
+	Identifier  string    `json:"identifier,omitempty"`
+	URL         string    `json:"url,omitempty"`
+	ProposalID  string    `json:"proposal_id,omitempty"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	EvaluatedAt time.Time `json:"evaluated_at,omitzero"`
+	SkipReason  string    `json:"skip_reason,omitempty"`
 }
 
 type MalformedStatus string
