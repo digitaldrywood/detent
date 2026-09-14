@@ -9,6 +9,11 @@ The JSON structure is shared in `internal/operations`. Historical aggregation
 lives in the store; the web layer adds instance identity, current merge-queue
 telemetry, explicit human gates, and issue links.
 
+The operator health metric is tokens per merged PR per project per day across
+both hosts. Compute it from recorded history, never the dashboard or completion
+receipt averages. See [Token spend diagnosis](diagnosis.md#token-spend) for the
+authoritative sources, merge definition, and runnable audit queries.
+
 ## Stats
 
 The two windows are the trailing 24 hours and seven days, ending at `data_time`.
