@@ -901,6 +901,7 @@ func appendNotesBlock(prompt string, workspacePath string) (string, error) {
 	if err != nil {
 		content = ""
 	}
+	content = compactFailedRunNotes(content)
 	if strings.TrimSpace(content) == "" {
 		content = "No handoff notes have been recorded yet."
 	}
@@ -910,6 +911,61 @@ func appendNotesBlock(prompt string, workspacePath string) (string, error) {
 		"Maintain `.detent/notes.md` as you work. Keep it concise: key files, architecture facts, validation commands and results, open items, blockers, and anything the next stage should verify.\n\n" +
 		content
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block, nil
+}
+
+var noteSectionHeading = regexp.MustCompile(`(?m)^## \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z - .+$`)
+
+// compactFailedRunNotes keeps the latest appended failure and its last 40 output
+// lines. The persisted notes remain available for full failure diagnostics.
+func compactFailedRunNotes(content string) string {
+	headings := noteSectionHeading.FindAllStringIndex(content, -1)
+	latest := -1
+	for i, heading := range headings {
+		if strings.HasSuffix(content[heading[0]:heading[1]], " - Failed run output tail") {
+			latest = i
+		}
+	}
+	if latest < 0 {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString(content[:headings[0][0]])
+	for i, heading := range headings {
+		end := len(content)
+		if i+1 < len(headings) {
+			end = headings[i+1][0]
+		}
+		section := content[heading[0]:end]
+		if !strings.HasSuffix(content[heading[0]:heading[1]], " - Failed run output tail") {
+			b.WriteString(section)
+			continue
+		}
+		if i != latest {
+			continue
+		}
+		prefix, output, fenced := strings.Cut(section, "```text\n")
+		if fenced {
+			output = strings.TrimSuffix(strings.TrimRight(output, "\n"), "```")
+		} else {
+			prefix, output, _ = strings.Cut(section, "\n")
+			prefix += "\n"
+		}
+		lines := strings.Split(strings.Trim(output, "\n"), "\n")
+		if len(lines) <= 40 {
+			b.WriteString(section)
+			continue
+		}
+		b.WriteString(prefix)
+		if fenced {
+			b.WriteString("```text\n")
+		}
+		b.WriteString(strings.Join(lines[len(lines)-40:], "\n"))
+		if fenced {
+			b.WriteString("\n```")
+		}
+		b.WriteString("\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {
