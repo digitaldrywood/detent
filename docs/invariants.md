@@ -170,6 +170,10 @@ runtime snapshots, including during startup and completion, and leave the regist
 on exit. This consolidates observability with existing lifecycle ownership; it adds
 no recovery path or orphan-suppression guard (#2505).
 
+Standing capacity requests (#2611) remove request teardown at project-pass
+boundaries and consolidate refresh updates into the existing request set.
+INV-10 below documents the retained request identity and grant lifecycle.
+
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.
@@ -389,7 +393,9 @@ Queued host assignment uses current real grants, including grants not yet
 consumed by an owner. Eligible hosts remain alternatives until acquisition;
 retry host preference cannot strand capacity on another available host.
 Owners consume grants in acquisition order and revalidate current candidates;
-refresh and shutdown discard pending requests and release unused grants.
+refreshes retain standing requests and update their actions and slot requirements
+in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
+explicit pause/configuration invalidation discard requests and release unused grants.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
@@ -399,7 +405,8 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
-`TestQueuedDispatchChoosesAvailableHost`, and
+`TestQueuedDispatchChoosesAvailableHost`,
+`TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
 manifest. The existing boundary fuzz seeds retain free-capacity and release
 failure coverage. `TestRepositorySources` rejects retired selection, rescue,
@@ -409,6 +416,14 @@ configuration compatibility reader may retain old reason strings; negative
 fixtures cover that boundary. Previously valid staleness benign-reason overrides
 remain accepted on startup and reload, but retired reasons are neither emitted
 nor included in defaults.
+
+Project refresh boundaries no longer cancel and resubmit pending requests (#2611).
+The existing request set is reconciled from dispatch decisions, retaining result
+identity and applying updated lane, host, and capacity requirements under the
+existing gate locks. This consolidates the per-pass lifecycle without adding a
+reservation or recovery mechanism. Grants delivered during a synchronous refresh
+are consumed when the project event loop returns, with existing fresh-candidate
+validation before launch.
 
 This change also enforces INV-3 by deleting preemption callbacks, speculative
 selection, reservation weights, lane rescue counters, and the separate strict

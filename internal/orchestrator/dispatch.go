@@ -132,6 +132,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
 	if state.Draining || o.dispatchQuiesced() {
+		o.cancelPendingGlobalDispatches()
 		return
 	}
 	rankingIssues := issues
@@ -226,6 +227,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			}
 		},
 	})
+	o.reconcilePendingGlobalDispatches(issues, decisions, outcomes)
 	o.reconcileMergeControlDemand(decisions, outcomes)
 	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
@@ -1056,12 +1058,9 @@ type projectCycleDispatchGate interface {
 }
 
 func (o *Orchestrator) beginGlobalProjectCycle() {
-	o.cancelPendingGlobalDispatches()
 	if gate, ok := o.globalDispatchGate.(projectCycleDispatchGate); ok {
 		gate.BeginProjectCycle(o.cfg.Project)
-		return
 	}
-	o.markGlobalProjectIdle()
 }
 
 func (o *Orchestrator) endGlobalProjectCycle() {

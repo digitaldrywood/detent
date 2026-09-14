@@ -67,6 +67,8 @@ type DispatchResult struct {
 // must drain any already delivered result and release its slot after Cancel.
 // Wake must be buffered; it coalesces notifications to inspect result channels.
 type QueuedProjectDispatchGate interface {
+	// Update refreshes a still-waiting request without changing its result or ordering.
+	Update(<-chan DispatchResult, SlotRequest, time.Time)
 	Submit(context.Context, ProjectCandidate, SlotRequest, time.Time, chan<- struct{}) (<-chan DispatchResult, func(), DispatchGateDecision)
 }
 
@@ -139,4 +141,41 @@ func (r *PoolRegistry) Submit(ctx context.Context, project ProjectCandidate, req
 func (g *projectPoolGate) Submit(ctx context.Context, project ProjectCandidate, req SlotRequest, now time.Time, wake chan<- struct{}) (<-chan DispatchResult, func(), DispatchGateDecision) {
 	project.ID = g.projectID
 	return g.registry.Submit(ctx, project, req, now, wake)
+}
+
+// Delivered grants belong to the consumer and are never modified by a refresh.
+func (g *GlobalDispatchGate) Update(result <-chan DispatchResult, req SlotRequest, now time.Time) {
+	if g == nil || g.global == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.updateRequestLocked(result, req, now)
+	g.dispatchLocked(nil)
+}
+
+func (g *GlobalDispatchGate) updateRequestLocked(result <-chan DispatchResult, req SlotRequest, now time.Time) {
+	for _, call := range g.waiting {
+		if call.result == result {
+			call.request, call.now = req, now
+			return
+		}
+	}
+}
+
+func (r *PoolRegistry) Update(result <-chan DispatchResult, req SlotRequest, now time.Time) {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+	r.mu.RLock()
+	for _, runtime := range r.active {
+		runtime.gate.mu.Lock()
+		runtime.gate.updateRequestLocked(result, req, now)
+		runtime.gate.mu.Unlock()
+	}
+	r.mu.RUnlock()
+	r.dispatchPendingLocked()
+}
+
+func (g *projectPoolGate) Update(result <-chan DispatchResult, req SlotRequest, now time.Time) {
+	g.registry.Update(result, req, now)
 }

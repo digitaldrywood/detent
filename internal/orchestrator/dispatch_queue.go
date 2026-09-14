@@ -23,9 +23,6 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 	if !queued || o.globalDispatchReady == nil || mergeControlEligible {
 		return o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now, pressureCapacity)
 	}
-	if _, pending := o.globalDispatchPending[action.issue.ID]; pending {
-		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGlobalCapacityFull}
-	}
 	projectCapacity := o.cfg.MaxConcurrentAgents
 	if action.modelPermitRequired {
 		projectCapacity = len(state.Running) + o.dispatchPlanner().availableSlots(state)
@@ -63,11 +60,18 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 			workerHost = action.retryState.WorkerHost
 		}
 	}
-	result, cancel, decision := gate.Submit(ctx, o.cfg.Project, scheduler.SlotRequest{
+	req := scheduler.SlotRequest{
 		ProjectCapacity: projectCapacity, ProjectStateCapacity: stateCapacity, ProjectHostCapacity: hostCapacity,
 		State: slotIssue.State, Host: workerHost, HostCandidates: hosts,
 		Priority: o.dispatchStatePriority(slotIssue.State), PressureCapacity: pressureCapacity,
-	}, now, o.globalDispatchReady)
+	}
+	if pending, exists := o.globalDispatchPending[action.issue.ID]; exists {
+		pending.action = action
+		o.globalDispatchPending[action.issue.ID] = pending
+		gate.Update(pending.result, req, now)
+		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGlobalCapacityFull}
+	}
+	result, cancel, decision := gate.Submit(ctx, o.cfg.Project, req, now, o.globalDispatchReady)
 	select {
 	case grant := <-result:
 		cancel()
@@ -78,13 +82,40 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 	}
 }
 
+func (o *Orchestrator) reconcilePendingGlobalDispatches(issues []connector.Issue, decisions []dispatchPlanDecision, outcomes map[string]dispatchIssueOutcome) {
+	// A partial plan or a failed hydration is not evidence that previously
+	// ready work became ineligible. Only removal or a fresh refusal drops it.
+	retained := make(map[string]bool, len(issues))
+	for _, issue := range issues {
+		retained[issue.ID] = true
+	}
+	for _, decision := range decisions {
+		outcome := outcomes[workflowIssueIdentityKey(decision.Issue)]
+		switch decision.SkipReason {
+		case dispatchSkipHydrationFailed, dispatchSkipProjectCapacityFull:
+			continue
+		}
+		retained[decision.Issue.ID] = decision.Selected && outcome.reason == dispatchIssueFailureGlobalSlotUnavailable
+	}
+	o.removePendingGlobalDispatches(func(id string) bool { return !retained[id] })
+}
+
 func (o *Orchestrator) cancelPendingGlobalDispatches() {
+	o.removePendingGlobalDispatches(func(string) bool { return true })
+}
+
+func (o *Orchestrator) removePendingGlobalDispatches(remove func(string) bool) {
 	// Remove every old request before releasing delivered slots, so release
 	// cannot grant another candidate from the snapshot being discarded.
-	for _, pending := range o.globalDispatchPending {
-		pending.cancel()
+	for id, pending := range o.globalDispatchPending {
+		if remove(id) {
+			pending.cancel()
+		}
 	}
 	for id, pending := range o.globalDispatchPending {
+		if !remove(id) {
+			continue
+		}
 		select {
 		case grant := <-pending.result:
 			o.releaseGlobalDispatchSlot(grant.Slot)
