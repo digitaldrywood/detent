@@ -396,6 +396,7 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 		returnScratchErr bool
 		wantErr          error
 		wantPIDs         []int
+		wantFactoryCalls int
 	}{
 		{
 			name:            "aggregate deadline reproduces lost later scan",
@@ -403,19 +404,24 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 			wantErr:         context.DeadlineExceeded,
 			wantPIDs:        []int{scratchPID},
 		},
-		{name: "completed stage renews expired budget", wantPIDs: []int{scratchPID, cwdPID}},
 		{
-			name:             "stalled stage remains fail closed",
-			returnScratchErr: true,
-			wantErr:          context.DeadlineExceeded,
+			name:             "completed stage renews expired budget",
 			wantPIDs:         []int{scratchPID, cwdPID},
+			wantFactoryCalls: 2,
 		},
 		{
-			name:             "caller cancellation is not renewed",
-			cancelParent:     true,
+			name:             "timed out stage stops renewal",
 			returnScratchErr: true,
+			wantErr:          context.DeadlineExceeded,
+			wantPIDs:         []int{scratchPID},
+			wantFactoryCalls: 1,
+		},
+		{
+			name:             "caller cancellation stops renewal",
+			cancelParent:     true,
 			wantErr:          context.Canceled,
-			wantPIDs:         []int{scratchPID, cwdPID},
+			wantPIDs:         []int{scratchPID},
+			wantFactoryCalls: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -476,12 +482,8 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 			if !reflect.DeepEqual(pids, tt.wantPIDs) {
 				t.Fatalf("partial process IDs = %v, want %v", pids, tt.wantPIDs)
 			}
-			wantFactoryCalls := 2
-			if tt.aggregateBudget {
-				wantFactoryCalls = 0
-			}
-			if factoryCalls != wantFactoryCalls {
-				t.Fatalf("scan context factory calls = %d, want %d", factoryCalls, wantFactoryCalls)
+			if factoryCalls != tt.wantFactoryCalls {
+				t.Fatalf("scan context factory calls = %d, want %d", factoryCalls, tt.wantFactoryCalls)
 			}
 		})
 	}

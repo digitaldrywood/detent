@@ -20,7 +20,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
-const defaultProcessTerminationGrace = 250 * time.Millisecond
+const (
+	defaultProcessTerminationGrace     = 250 * time.Millisecond
+	minimumWorkspaceProcessScanTimeout = 30 * time.Second
+)
 
 func reapWorkspaceProcesses(ctx context.Context, path string, logger *slog.Logger) int {
 	reaped, err := ReapProcesses(ctx, path, defaultProcessTerminationGrace)
@@ -54,7 +57,7 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	// and reaping may inventory again after each signal. Bound a stalled stage,
 	// but renew the budget after each completed stage so healthy progress is not
 	// constrained by one aggregate wall-clock deadline.
-	ctx = withWorkspaceProcessScanBudget(ctx, max(2*grace, 5*time.Second), context.WithTimeout)
+	ctx = withWorkspaceProcessScanBudget(ctx, max(2*grace, minimumWorkspaceProcessScanTimeout), context.WithTimeout)
 	return reapProcesses(ctx, path, grace, workspaceProcessIDs, syscall.Kill)
 }
 
@@ -223,6 +226,12 @@ func workspaceProcessIDsWithScanners(
 	cwdScan workspaceProcessScanner,
 ) ([]int, error) {
 	owned, scratchErr := runWorkspaceProcessScan(ctx, path, scratchScan)
+	if err := ctx.Err(); err != nil {
+		return owned, errors.Join(scratchErr, err)
+	}
+	if errors.Is(scratchErr, context.Canceled) || errors.Is(scratchErr, context.DeadlineExceeded) {
+		return owned, scratchErr
+	}
 	cwd, cwdErr := runWorkspaceProcessScan(ctx, path, cwdScan)
 	return append(owned, cwd...), errors.Join(scratchErr, cwdErr)
 }
