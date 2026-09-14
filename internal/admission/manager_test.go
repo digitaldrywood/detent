@@ -2990,7 +2990,7 @@ func TestReadAdmissionCandidatesPushesAuthorsOnlyToStates(t *testing.T) {
 	cfg.Sources.Labels = []string{"sentry"}
 	cfg.Authors.Allow = []string{"octocat"}
 
-	_, _, _, _, err := readAdmissionCandidates(context.Background(), tracker, cfg)
+	_, _, _, _, err := readAdmissionCandidates(context.Background(), tracker, cfg, &admissionmodel.CandidateProgress{})
 	if err != nil {
 		t.Fatalf("readAdmissionCandidates() error = %v", err)
 	}

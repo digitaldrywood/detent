@@ -137,7 +137,15 @@ func (c *Connector) ReadCandidates(_ context.Context, request connector.Candidat
 	}
 	c.mu.RUnlock()
 
-	return connector.NewCandidateResult(issues, request, 1, false), nil
+	offset, err := connector.CandidateOffset(request.Cursor)
+	if err != nil {
+		return connector.CandidateResult{}, err
+	}
+	connector.SortCandidateIssues(issues)
+	itemsRead := len(issues)
+	result := connector.CandidateOffsetResult(issues[min(offset, len(issues)):], request, offset)
+	result.ItemsRead = itemsRead
+	return result, nil
 }
 
 func (c *Connector) InstanceLogin() string {

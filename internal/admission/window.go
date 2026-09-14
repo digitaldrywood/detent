@@ -32,9 +32,16 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 				// returned to this eligible snapshot without changing its fingerprint.
 				_, _, valid, err := revalidateAdmissionCandidate(ctx, settings, candidate, at)
 				if err != nil {
-					return nil, err
+					deferral, deferred := connector.ErrorLocalDeferral(err)
+					if !deferred || deferral.Reason != connector.LocalDeferralReasonRESTFanoutCap {
+						return nil, err
+					}
+					// The bounded reader may have spent this budget. Keep the
+					// completed snapshot in the normal evaluation window; final
+					// revalidation remains mandatory before applying a proposal.
+				} else {
+					stale = !valid
 				}
-				stale = !valid
 			}
 			if stale || previous.SkipReason == "tracking_epic" {
 				skipped[previous.SkipReason]++

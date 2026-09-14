@@ -244,6 +244,15 @@ on the signal (#2604), removing strict field rejection from the existing parser.
 Known predicate validation and completion authorization remain unchanged; no new
 reason code, gate, or recovery mechanism is introduced.
 
+Admission candidate scans consolidate REST label, repository, and issue-field
+pagination into one reader, retaining page/item continuation in the existing
+admission run ledger (#2574). Completed hydrated candidates remain usable when
+the existing fanout budget ends a read; no retry routine, reason, or configuration
+is added. Exhausting a source resets its continuation for the next scan.
+If that budget also prevents a saved stale snapshot's early recheck, its
+eligibility check consolidates into the mandatory final revalidation; other
+completed candidates can still use the evaluation window.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

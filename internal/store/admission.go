@@ -1010,6 +1010,10 @@ func (s *sqliteStore) RecordAdmissionRun(ctx context.Context, record admissionmo
 	if err != nil {
 		return err
 	}
+	progressJSON, err := admissionJSON(record.CandidateProgress, admissionmodel.CandidateProgress{})
+	if err != nil {
+		return fmt.Errorf("encoding candidate progress: %w", err)
+	}
 	skippedJSON, err := admissionJSON(record.Skipped, map[string]int{})
 	if err != nil {
 		return fmt.Errorf("encoding backlog admission skipped counts: %w", err)
@@ -1034,8 +1038,8 @@ func (s *sqliteStore) RecordAdmissionRun(ctx context.Context, record admissionmo
 INSERT INTO backlog_admission_runs (
   project_id, scheduled_for, started_at, completed_at, outcome, deferred_reason, resume_at, proposal_reason,
   candidates_found_count, candidates_count, proposed_count, skipped_json,
-  truncated_json, issues_json, malformed_json, error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  truncated_json, issues_json, malformed_json, candidate_progress_json, error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(record.ProjectID),
 		scheduledFor,
 		startedAt,
@@ -1051,6 +1055,7 @@ INSERT INTO backlog_admission_runs (
 		truncatedJSON,
 		issuesJSON,
 		malformedJSON,
+		progressJSON,
 		nullString(record.Error),
 	)
 	if err != nil {
@@ -1096,7 +1101,7 @@ func (s *sqliteStore) LatestAdmissionRun(ctx context.Context, projectID string) 
 	row := s.db.QueryRowContext(ctx, `
 SELECT project_id, scheduled_for, started_at, completed_at, outcome,
        COALESCE(deferred_reason, ''), COALESCE(resume_at, ''), COALESCE(proposal_reason, ''), candidates_found_count, candidates_count,
-       proposed_count, skipped_json, truncated_json, issues_json, malformed_json, COALESCE(error, '')
+       proposed_count, skipped_json, truncated_json, issues_json, malformed_json, candidate_progress_json, COALESCE(error, '')
 FROM backlog_admission_runs
 WHERE project_id = ?
 ORDER BY completed_at DESC, id DESC
@@ -1118,7 +1123,7 @@ func (s *sqliteStore) RecentAdmissionRuns(ctx context.Context, projectID string,
 	rows, err := s.db.QueryContext(ctx, `
 SELECT project_id, scheduled_for, started_at, completed_at, outcome,
        COALESCE(deferred_reason, ''), COALESCE(resume_at, ''), COALESCE(proposal_reason, ''), candidates_found_count, candidates_count,
-       proposed_count, skipped_json, truncated_json, issues_json, malformed_json, COALESCE(error, '')
+       proposed_count, skipped_json, truncated_json, issues_json, malformed_json, candidate_progress_json, COALESCE(error, '')
 FROM backlog_admission_runs
 WHERE project_id = ?
 ORDER BY completed_at DESC, id DESC
@@ -1381,6 +1386,7 @@ func scanAdmissionRun(scan admissionScan) (admissionmodel.RunRecord, error) {
 	var truncatedJSON string
 	var issuesJSON string
 	var malformedJSON string
+	var progressJSON string
 	if err := scan(
 		&record.ProjectID,
 		&scheduledFor,
@@ -1397,6 +1403,7 @@ func scanAdmissionRun(scan admissionScan) (admissionmodel.RunRecord, error) {
 		&truncatedJSON,
 		&issuesJSON,
 		&malformedJSON,
+		&progressJSON,
 		&record.Error,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1416,6 +1423,9 @@ func scanAdmissionRun(scan admissionScan) (admissionmodel.RunRecord, error) {
 	}
 	if record.ResumeAt, err = parseAdmissionOptionalTimestamp("resume_at", resumeAt); err != nil {
 		return admissionmodel.RunRecord{}, err
+	}
+	if err := json.Unmarshal([]byte(progressJSON), &record.CandidateProgress); err != nil {
+		return admissionmodel.RunRecord{}, fmt.Errorf("decoding candidate progress: %w", err)
 	}
 	if err := json.Unmarshal([]byte(skippedJSON), &record.Skipped); err != nil {
 		return admissionmodel.RunRecord{}, fmt.Errorf("decoding backlog admission skipped counts: %w", err)
