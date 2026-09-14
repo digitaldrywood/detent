@@ -10,9 +10,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type Snapshot struct {
+	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
+
 	LastKnown               bool                `json:"-"`
 	LastKnownUntil          time.Time           `json:"-"`
 	Tracker                 SnapshotSection     `json:"tracker,omitzero"`

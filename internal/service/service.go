@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var (
@@ -126,6 +127,8 @@ type StartResult struct {
 }
 
 type Status struct {
+	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
+
 	InstallMethod  update.InstallSource      `json:"install_method"`
 	ServiceManager ManagerName               `json:"service_manager"`
 	ServiceScope   string                    `json:"service_scope,omitempty"`

@@ -62,6 +62,7 @@ type Issue struct {
 	State             string               `json:"state,omitempty" yaml:"state,omitempty"`
 	BranchName        string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	URL               string               `json:"url,omitempty" yaml:"url,omitempty"`
+	ClosedAt          *time.Time           `json:"closed_at,omitempty" yaml:"closed_at,omitempty"`
 	Closed            bool                 `json:"closed,omitempty" yaml:"closed,omitempty"`
 	ClosedReason      string               `json:"closed_reason,omitempty" yaml:"closed_reason,omitempty"`
 	PRNumber          *int                 `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`

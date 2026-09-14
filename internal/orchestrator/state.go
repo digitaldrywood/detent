@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type State struct {
@@ -71,6 +72,7 @@ type State struct {
 	ManualRefresh            telemetry.RefreshAttempt
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
+	WorkspaceRetention       []workspace.RetentionTotals
 	CleanupFailures          map[string]string
 	CleanupFailureAt         time.Time
 	RecentEvents             []telemetry.ActivityEvent
@@ -502,6 +504,7 @@ func (s State) clone() State {
 		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
+		WorkspaceRetention:       append([]workspace.RetentionTotals(nil), s.WorkspaceRetention...),
 		CleanupFailures:          maps.Clone(s.CleanupFailures),
 		CleanupFailureAt:         s.CleanupFailureAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),
@@ -800,6 +803,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		deliverable := *issue.Deliverable
 		deliverable.Metadata = cloneStringMap(issue.Deliverable.Metadata)
 		cloned.Deliverable = &deliverable
+	}
+	if issue.ClosedAt != nil {
+		closedAt := *issue.ClosedAt
+		cloned.ClosedAt = &closedAt
 	}
 	if issue.CreatedAt != nil {
 		createdAt := *issue.CreatedAt

@@ -57,6 +57,7 @@ type projectItemNode struct {
 }
 
 type githubIssueNode struct {
+	ClosedAt                       *string                      `json:"closedAt"`
 	TypeName                       string                       `json:"__typename"`
 	ID                             string                       `json:"id"`
 	Number                         int                          `json:"number"`
@@ -218,6 +219,7 @@ type actor struct {
 }
 
 type restIssue struct {
+	ClosedAt          *time.Time     `json:"closed_at"`
 	Comments          int            `json:"comments"`
 	ID                int            `json:"id"`
 	NodeID            string         `json:"node_id"`
