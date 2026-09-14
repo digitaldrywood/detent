@@ -121,9 +121,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, path); err != nil {
 			return err
 		}
-		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {
-			return err
-		}
+		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
 		if update.Type == AgentUpdateMessageDelta {
 			output.WriteString(update.Delta)
 		}

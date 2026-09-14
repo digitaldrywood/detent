@@ -135,9 +135,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, auditWorkspace); err != nil {
 			return err
 		}
-		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {
-			return err
-		}
+		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
 		if update.Type == AgentUpdateMessageDelta {
 			output.WriteString(update.Delta)
 		}
