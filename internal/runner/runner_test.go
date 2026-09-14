@@ -5885,6 +5885,9 @@ func TestRunnerAuditReturnsCatalogSelectionError(t *testing.T) {
 			Diff:       "diff --git a/internal/runner/model_selection.go b/internal/runner/model_selection.go\n+surface catalog error",
 		},
 	})
+	if err == nil {
+		t.Fatal("Audit() error = nil, want catalog selection error")
+	}
 	if !errors.Is(err, catalogErr) || !strings.Contains(err.Error(), catalogErr.Error()) {
 		t.Fatalf("Audit() error = %v, want wrapping %v", err, catalogErr)
 	}
