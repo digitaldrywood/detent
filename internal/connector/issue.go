@@ -65,6 +65,8 @@ type Issue struct {
 	ClosedAt          *time.Time           `json:"closed_at,omitempty" yaml:"closed_at,omitempty"`
 	Closed            bool                 `json:"closed,omitempty" yaml:"closed,omitempty"`
 	ClosedReason      string               `json:"closed_reason,omitempty" yaml:"closed_reason,omitempty"`
+	PRHeadSHA         string               `json:"pr_head_sha,omitempty" yaml:"-"`
+	PRHeadCommittedAt *time.Time           `json:"pr_head_committed_at,omitempty" yaml:"-"`
 	PRNumber          *int                 `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
 	PRRepository      string               `json:"pr_repository,omitempty" yaml:"pr_repository,omitempty"`
 	PRSource          string               `json:"pr_association_source,omitempty" yaml:"pr_association_source,omitempty"`
@@ -125,6 +127,7 @@ type DependencyCapabilityReporter interface {
 }
 
 type PullRequest struct {
+	HeadCommittedAt              *time.Time                  `json:"head_committed_at,omitempty" yaml:"-"`
 	MergedAt                     *time.Time                  `json:"merged_at,omitempty" yaml:"merged_at,omitempty"`
 	NodeID                       string                      `json:"node_id,omitempty" yaml:"node_id,omitempty"`
 	Number                       int                         `json:"number,omitempty" yaml:"number,omitempty"`

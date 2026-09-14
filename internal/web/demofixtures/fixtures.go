@@ -34,6 +34,8 @@ func ProjectByID(projects []templates.ProjectSmallMultiple, id string) (template
 func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	switch variant {
+	case "card-facts":
+		snapshot = demoCardFactsSnapshot()
 	case "board-counts-live", "board-counts-partial", "board-counts-unknown", "board-counts-single-cached", "board-counts-complete-degraded", "board-counts-paused-complete":
 		snapshot = demoBoardCountsSnapshot(variant)
 	case "empty":

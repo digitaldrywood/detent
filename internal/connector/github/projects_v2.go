@@ -152,7 +152,7 @@ query DetentGitHubObservedStatusProjectItems(
               assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }
               labels(first: 20) { nodes { name } }
-              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
+              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }
             }
           }
           statusValue: fieldValueByName(name: "Status") {

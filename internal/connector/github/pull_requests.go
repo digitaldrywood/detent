@@ -998,8 +998,13 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 }
 
 func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pullRequest pullRequestNode) {
+	var committedAt *time.Time
+	if issue.PRNumber != nil && *issue.PRNumber == pullRequest.Number && issue.PRHeadSHA != "" && issue.PRHeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PRRepository, pullRequestRepoName(repo)) {
+		committedAt = cloneGitHubTime(issue.PRHeadCommittedAt)
+	}
 	issue.PullRequest = &connector.PullRequest{
 		NodeID:                       strings.TrimSpace(pullRequest.NodeID),
+		HeadCommittedAt:              committedAt,
 		Number:                       pullRequest.Number,
 		URL:                          strings.TrimSpace(pullRequest.URL),
 		BranchName:                   strings.TrimSpace(pullRequest.HeadRefName),
@@ -1471,10 +1476,12 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 }
 
 type pullRequestReference struct {
-	Number     int
-	Repository string
-	State      string
-	UpdatedAt  *time.Time
+	HeadSHA         string
+	HeadCommittedAt *time.Time
+	Number          int
+	Repository      string
+	State           string
+	UpdatedAt       *time.Time
 }
 
 func firstPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullRequestReference, bool) {
@@ -1532,11 +1539,20 @@ func mergedPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullR
 }
 
 func pullRequestReferenceFromNode(pullRequest pullRequest) pullRequestReference {
+	var committedAt *time.Time
+	if len(pullRequest.Commits.Nodes) == 1 {
+		commit := pullRequest.Commits.Nodes[0].Commit
+		if commit.OID != "" && commit.OID == pullRequest.HeadSHA {
+			committedAt = cloneGitHubTime(commit.CommittedDate)
+		}
+	}
 	return pullRequestReference{
-		Number:     pullRequest.Number,
-		Repository: strings.TrimSpace(pullRequest.Repository.NameWithOwner),
-		State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
-		UpdatedAt:  parseGitHubTime(pullRequest.UpdatedAt),
+		Number:          pullRequest.Number,
+		Repository:      strings.TrimSpace(pullRequest.Repository.NameWithOwner),
+		State:           strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+		UpdatedAt:       parseGitHubTime(pullRequest.UpdatedAt),
+		HeadSHA:         pullRequest.HeadSHA,
+		HeadCommittedAt: committedAt,
 	}
 }
 

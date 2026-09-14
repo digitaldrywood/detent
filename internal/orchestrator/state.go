@@ -753,6 +753,7 @@ func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 func cloneIssue(issue connector.Issue) connector.Issue {
 	issue.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
 	cloned := issue
+	cloned.PRHeadCommittedAt = cloneTimePointer(issue.PRHeadCommittedAt)
 	if issue.Priority != nil {
 		priority := *issue.Priority
 		cloned.Priority = &priority
@@ -763,6 +764,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.PullRequest != nil {
 		pullRequest := *issue.PullRequest
+		pullRequest.HeadCommittedAt = cloneTimePointer(issue.PullRequest.HeadCommittedAt)
 		if issue.PullRequest.MergeQueueEntry != nil {
 			entry := clonePullRequestMergeQueueEntry(*issue.PullRequest.MergeQueueEntry)
 			pullRequest.MergeQueueEntry = &entry

@@ -1790,7 +1790,7 @@ func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix
 	if !strings.Contains(query, "closedByPullRequestsReferences") {
 		t.Fatalf("observed status query does not request linked pull requests:\n%s", query)
 	}
-	if !strings.Contains(query, "nodes { number url state updatedAt repository { nameWithOwner } }") {
+	if !strings.Contains(query, "nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } }") {
 		t.Fatalf("observed status query does not request linked pull request states:\n%s", query)
 	}
 	for _, request := range requests {
