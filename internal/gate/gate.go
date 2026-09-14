@@ -425,16 +425,13 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 			"blockers: []\n" +
 			"human_action: null\n" +
 			"```\n\n" +
-			workpadPredicateInstructions + "Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
+			"Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
 	default:
-		instructions := "The validation gate is a command. Run `" + cfg.Run +
-			"` from the workspace root before Human Review; the pull request still needs green CI before promotion. " +
-			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) +
-			ciTriggerLabelInstructions(cfg, hostname) +
-			"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation and no source files changed during rebase. " +
-			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
-			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad prose: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running. " +
-			"Keep blocker and human-action declarations in the structured detent-status block; narrative Workpad sentences are telemetry only. " + workpadPredicateInstructions
+		instructions := "Run `" + cfg.Run + "` from the workspace root; require green current-head CI before promotion. " +
+			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) + ciTriggerLabelInstructions(cfg, hostname) +
+			"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation; otherwise rerun `" + cfg.Run + "`. " +
+			"Watch CI with REST backoff. Record quiet-window wait, local gate/CI durations, slow checks, and post-merge main CI in Workpad prose."
+
 		switch AutomatedReviewMode(cfg) {
 		case AutomatedReviewRequired:
 			instructions += " Automated review is required on the current pull request head before promotion."
@@ -969,7 +966,3 @@ func automatedReviewWaits(cfg Config) bool {
 	cfg = Effective(cfg)
 	return cfg.Kind == KindCommand && cfg.AutomatedReview != AutomatedReviewOff
 }
-
-const workpadPredicateInstructions = "Blocker predicate keys are type, kind (alias for type), ref, state, states, check, present, scope, resource, condition, and fingerprint. " +
-	"Supported types: issue_state (ref required), pull_request_state (state or states required), check_presence (check and present required), budget_capacity (scope required; condition defaults to exhausted), and config_fingerprint (fingerprint required). " +
-	"Use ref: '#N' or 'owner/repo#N'; predicates inherit the blocker ref when omitted. Unknown keys are ignored and recorded as diagnostics; repository, pull_request, head_sha, and checks do not constrain the predicate. "

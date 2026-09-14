@@ -684,10 +684,10 @@ func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
 
 	got := Instructions(Config{Kind: KindCommand, Run: "make check", RequireAutomatedReview: new(false)})
 	for _, want := range []string{
-		"Run `make check` from the workspace root before Human Review",
-		"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation",
-		"Run full `make check` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown",
-		"REST check-runs",
+		"Run `make check` from the workspace root; require green current-head CI before promotion",
+		"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation",
+		"otherwise rerun `make check`",
+		"REST backoff",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("Instructions() missing %q:\n%s", want, got)
@@ -908,14 +908,14 @@ func stringSlicesEqual(left []string, right []string) bool {
 	return true
 }
 
-func TestInstructionsDescribeWorkpadPredicates(t *testing.T) {
+func TestInstructionsDoNotDuplicateWorkpadPredicates(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{KindCommand, KindArtifact} {
 		t.Run(kind, func(t *testing.T) {
 			got := Instructions(Config{Kind: kind})
-			for _, want := range []string{"type, kind (alias for type), ref, state, states, check, present, scope, resource, condition, and fingerprint", "check_presence (check and present required)", "Unknown keys are ignored"} {
-				if !strings.Contains(got, want) {
-					t.Errorf("instructions missing %q", want)
+			for _, want := range []string{"Blocker predicate keys", "check_presence (check and present required)", "Unknown keys are ignored"} {
+				if strings.Contains(got, want) {
+					t.Errorf("instructions duplicate %q", want)
 				}
 			}
 		})

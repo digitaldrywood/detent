@@ -1,136 +1,63 @@
-# Structured Workpad Signaling Migration
+# Workpad signaling contract
 
-Detent now treats blockers as structured data. New projects should use GitHub's
-native `blocked_by` issue dependency relation first, then the Workpad
-`detent-status` block. Narrative Workpad sentences are notes only and are never
-read as blocker declarations when a valid structured block is present.
+Detent appends the [canonical handoff](templates/blocked-handoff.md) to worker
+prompts. That Markdown is embedded directly in the binary; the runner substitutes
+only the current attempt ID and generation. WORKFLOW authors should remove their
+copies of status examples, blocker syntax, human-question instructions, and lane
+ownership rules, and refer to the appended section instead. Keep project-specific
+validation and deliverable requirements in WORKFLOW.md.
 
-During the deprecation window, Detent still parses legacy issue-body
-`Depends on:` and `Blocked by:` lines as fallback metadata. Projects that rely
-only on prose Workpad blockers continue to run, but doctor reports them as
-prose-only so owners can migrate the workflow prompt.
+The [operator WORKFLOW patch](templates/detent-orchestration-workflow.patch)
+records the matching migration for the separately managed Detent orchestration
+repository. It removes the duplicate protocol and contradictory lane ownership
+instructions while preserving the operator's existing edits and admission rules.
+Admission Criteria are project-owned WORKFLOW text, not a runner-appended block;
+this change does not alter admission policy.
 
-Apply this prompt-body diff to existing `WORKFLOW.md` files:
+## Optional blocker fields
 
-````diff
--Follow repository instructions, keep changes scoped to the issue, and keep a
--single persistent `## Codex Workpad` issue comment updated with the plan,
--validation evidence, blockers, and final handoff.
-+Follow repository instructions, keep changes scoped to the issue, and keep a
-+single persistent `## Codex Workpad` issue comment updated with the plan,
-+validation evidence, and final handoff. Every Workpad update must include one
-+`detent-status` fenced block. Detent reads blocker and human-action
-+declarations from that block; narrative sentences are never read as blockers.
-+
-+```detent-status
-+schema: 1
-+status: in_progress
-+blockers: []
-+human_action: null
-+```
-+
-+For dependency blockers, use this order:
-+
-+1. Create GitHub's native `blocked_by` dependency relation.
-+
-+```sh
-+BLOCKED_NUMBER=<blocked-issue-number>
-+BLOCKER_NUMBER=<blocker-issue-number>
-+BLOCKER_ID="$(gh api repos/{owner}/{repo}/issues/$BLOCKER_NUMBER --jq '.id')"
-+gh api --method POST "repos/{owner}/{repo}/issues/$BLOCKED_NUMBER/dependencies/blocked_by" -F issue_id="$BLOCKER_ID"
-+```
-+
-+2. Declare the blocker in the Workpad status block.
-+
-+```detent-status
-+schema: 1
-+status: blocked
-+blockers:
-+  - ref: "owner/repo#123"
-+    reason: "waiting for the dependency to merge"
-+human_action: null
-+```
-+
-+3. Legacy fallback during the deprecation window: if native dependencies are
-+   unavailable and the project has not migrated, keep a machine-readable
-+   issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123`.
-+
-+When `tracker.blocked_recovery` is enabled and the workflow intentionally
-+parks recoverable PR maintenance in a configured source lane, use a structured
-+reason code instead of prose:
-+
-+```detent-status
-+schema: 1
-+status: blocked
-+reason_code: merge_conflict
-+blockers: []
-+human_action: null
-+```
-````
+The common dependency example in the canonical handoff needs only `ref` and
+`reason`. The parser supplies an issue-state predicate, orchestrator ownership,
+and tick rechecks. `blocked_by` names GitHub's native dependency relation, not a
+Workpad YAML field. Resolve the blocker issue's REST ID, then POST it as `issue_id`
+to `repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by`. Keep an issue-body
+`Depends on: owner/repo#123` line as the durable fallback. Refs accept `#N` or
+`owner/repo#N`, with positive N, never a URL or bare number.
 
-Also update the state-specific instructions:
+For non-default checks, blockers may also specify:
 
-````diff
--2. Create or update the persistent `## Codex Workpad` comment with the plan,
--   acceptance criteria, validation plan, and blockers.
-+2. Create or update the persistent `## Codex Workpad` comment with the plan,
-+   acceptance criteria, validation plan, and the `in_progress`
-+   `detent-status` block shown above.
+- `owner`: `orchestrator` or `human`.
+- `recheck_interval`: `tick` or a positive Go duration; `expires_at`: RFC3339 time.
+- `predicate`: `type` (alias `kind`), `ref` (inherits the blocker ref),
+  `state`/`states`, `check`, `present`, `scope`, `resource`, `condition`, `fingerprint`.
 
--1. Re-read the issue, pull request, comments, and `## Codex Workpad`.
-+1. Re-read the issue, pull request, comments, and `## Codex Workpad`, including
-+   the `detent-status` block.
+Predicate types and required fields:
 
--3. If implementation is complete, run the full pre-review gate and move the
--   issue to `Human Review` only when the gate passes.
-+3. If implementation is complete, run the full pre-review gate, update the
-+   Workpad block to `status: complete` with `blockers: []` and
-+   `human_action: null`, and move the issue to `Human Review` only when the
-+   gate passes.
+| Type | Required fields |
+| --- | --- |
+| `issue_state` | `ref` (may inherit) |
+| `pull_request_state` | `state` or `states` |
+| `check_presence` | `check`, `present` |
+| `budget_capacity` | `scope`; condition defaults to `exhausted` |
+| `config_fingerprint` | `fingerprint` |
 
--   unavailable, keep the issue in `Merging` and record the missing ship workflow
--   as an external blocker in the `## Codex Workpad`.
-+   unavailable, keep the issue in `Merging` and record the missing ship workflow
-+   as `human_action` in the `detent-status` block.
-````
+Unknown YAML keys are ignored with diagnostics. In particular `repository`,
+`pull_request`, `head_sha`, and `checks` do not constrain predicates. Reason-only
+blockers are unverifiable and never auto-clear. When configured blocked recovery
+applies to recoverable PR maintenance, `reason_code` may be `merge_conflict`,
+`stale_base`, or `missing_current_head_ci`; never use these for human-only parking.
 
-For `tracker.kind: github_local`, keep GitHub issues read-only unless a human
-explicitly authorizes upstream metadata writes. The local Workpad still needs
-the same `detent-status` block.
+Operational completion still requires issue-body authorization before dispatch,
+concrete completion evidence, and the supplied attempt identity as described in
+the canonical handoff. Adding authorization at completion cannot bypass the PR gate.
 
-## Operational completion without a pull request
+## Prompt size verification
 
-An issue author may opt an issue into operational completion by putting this
-block in the issue body before the worker is dispatched:
-
-```detent-completion
-schema: 1
-completion_kind: operational
-```
-
-This contract is for authorized host or service work whose intended result has
-no repository diff and no pull request. The completing worker must leave a
-clean workspace and declare the matching kind and concrete verification
-evidence in the final Workpad status block:
-
-```detent-status
-schema: 1
-status: complete
-fields:
-  completion_kind: operational
-  completion_evidence: "what changed on the host and how it was verified"
-blockers: []
-human_action: null
-```
-
-Detent snapshots the issue-body authorization at dispatch. Adding the
-authorization only at completion time is not accepted. An undeclared or
-invalid operational assertion follows the ordinary pull-request gate and the
-existing no-progress breaker. A valid declaration is recorded as
-`operational_completion`, including its completion kind in the work-attempt
-journal and dashboard, and can advance without a linked pull request. Projects
-using a human-review gate still require that approval before Done.
-
-Add both blocks to the project's `WORKFLOW.md` guidance. `detent doctor` warns
-when an active or observed issue opts into operational completion but the
-workflow prompt does not mention this contract.
+`TestPromptWrapperBytes` renders the first worker user message through BuildPrompt
+with the repository's capped skills list, default follow-up and skill-creation
+settings, workspace isolation, and completion identity. It subtracts only the
+WORKFLOW render and requires the remaining wrapper to be under 6,000 UTF-8 bytes.
+Issue bodies, project instructions, and recalled notes/knowledge are variable
+content rather than fixed wrapper overhead. For a live rollout, measure the same
+sections of its first user message after the updated binary is deployed; existing
+rollouts retain the old text.
