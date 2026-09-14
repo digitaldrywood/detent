@@ -560,7 +560,8 @@ func workpadDependencyRefs(issue connector.Issue) []connector.BlockedRef {
 	refs := make([]connector.BlockedRef, 0, len(signal.Blockers))
 	for _, blocker := range signal.Blockers {
 		if blocker.Predicate != nil {
-			if blocker.Predicate.Type != workpad.PredicateIssueState || len(blocker.Predicate.States) > 0 {
+			if blocker.Predicate.Type != workpad.PredicateIssueState ||
+				(len(blocker.Predicate.States) > 0 && !stateIn("open", blocker.Predicate.States)) {
 				continue
 			}
 		}

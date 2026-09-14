@@ -350,7 +350,7 @@ func (p dispatchPlanner) retryAction(
 		if workerGitHubMonitorProbeReserved {
 			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", decision.reason, now)
 		}
-		if decision.reason == dispatchSkipCurrentHeadCIWait {
+		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency {
 			state.Retry[retry.Issue.ID] = retry
 			return dispatchAction{}, false, decision.reason
 		}
@@ -398,7 +398,7 @@ func (p dispatchPlanner) retryAction(
 func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now time.Time) (dispatchAction, bool, string) {
 	decision := p.dispatchableIssueDecision(issue, state, false, now, "")
 	if !decision.dispatchable {
-		if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
+		if issueBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     cloneIssue(issue),
 				Reason:    blockedReasonDependency,
@@ -564,7 +564,7 @@ func (p dispatchPlanner) trackBlockedCandidates(state *State, issues []connector
 		if issue.ID == "" {
 			continue
 		}
-		if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
+		if issueBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 			seenBlocked[issue.ID] = struct{}{}
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     cloneIssue(issue),
@@ -783,7 +783,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if p.needsAssignee(issue) {
 		return dispatchableDecision{reason: dispatchSkipOwnershipAssigneeRequired}
 	}
-	if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
+	if issueBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 		return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: humanDependencyWaitReason(issue.BlockedBy)}
 	}
 	if _, ok := state.Running[issue.ID]; ok {

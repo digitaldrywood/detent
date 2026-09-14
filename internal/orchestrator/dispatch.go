@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
@@ -153,7 +154,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			hydrated, ok := o.hydrateDispatchIssue(ctx, state, issue, now)
 			if ok {
 				hydrated = o.hydrateDispatchDependencies(ctx, hydrated, blockerCache)
-				if blocked, exists := state.Blocked[hydrated.ID]; exists && blockedFromDependency(blocked) && !todoBlockedByNonTerminal(hydrated, o.cfg.TerminalStates) {
+				if blocked, exists := state.Blocked[hydrated.ID]; exists && blockedFromDependency(blocked) && !issueBlockedByNonTerminal(hydrated, o.cfg.TerminalStates) {
 					delete(state.Blocked, hydrated.ID)
 				}
 			}
@@ -294,13 +295,16 @@ func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
 
 // hydrateDispatchDependencies shares blocker reads across candidates in one dispatch refresh.
 func (o *Orchestrator) hydrateDispatchDependencies(ctx context.Context, issue connector.Issue, cache map[string]dependencyBlocker) connector.Issue {
-	if !todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
-		return issue
+	issue = cloneIssue(o.issueWithDependencyRefs(issue))
+	if signal, ok := autoPromoteIssueWorkpadSignal(issue); ok && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
+		(signal.Status == workpad.StatusInProgress || signal.Status == workpad.StatusBlocked) && issue.DependencySource != connector.BlockedRefSourceNative {
+		issue.WorkpadSignal = signal
+		issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, workpadDependencyRefs(issue))
+		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 	}
-	issue = cloneIssue(issue)
 	pending := connector.Issue{ID: issue.ID, Identifier: issue.Identifier}
 	for _, ref := range issue.BlockedBy {
-		if !todoBlockedByNonTerminal(connector.Issue{State: issue.State, BlockedBy: []connector.BlockedRef{ref}}, o.cfg.TerminalStates) {
+		if dependencyBlockerReady(dependencyBlocker{Ref: ref}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, o.cfg.TerminalStates) {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
@@ -363,6 +367,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 	}
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
+	blockerCache := make(map[string]dependencyBlocker)
 	for _, issue := range issues {
 		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 			return
@@ -371,6 +376,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 		if !ok {
 			continue
 		}
+		issue = o.hydrateDispatchDependencies(ctx, issue, blockerCache)
 		if !o.dispatchable(issue, state, now) {
 			continue
 		}
@@ -1428,15 +1434,12 @@ func waitForDispatchBackoff(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
-func todoBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bool {
+func issueBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bool {
 	for _, blocker := range issue.BlockedBy {
 		if blocker.HumanOwned {
 			if !blocker.HumanCompletionReady {
 				return true
 			}
-			continue
-		}
-		if normalizeState(issue.State) != "todo" {
 			continue
 		}
 		if strings.TrimSpace(blocker.State) == "" {
