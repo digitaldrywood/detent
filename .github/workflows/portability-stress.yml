@@ -36,4 +36,23 @@ jobs:
         run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m
 
       - name: Race test
-        run: go test -race ./...
+        shell: bash
+        run: |
+          bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
+          go list ./... > tmp/stress-packages.txt
+          packages=()
+          while IFS= read -r package; do
+            if [ "$package" != github.com/digitaldrywood/detent/internal/workspace ]; then
+              packages+=("$package")
+            fi
+          done < tmp/stress-packages.txt
+          go test -race "${packages[@]}"
+
+      - name: Upload workspace race evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-race-evidence-${{ runner.os }}
+          path: tmp/workspace-race-evidence
+          if-no-files-found: warn
+          retention-days: 14

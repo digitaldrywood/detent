@@ -27,18 +27,19 @@ func TestCombinedCoveragePublishesOnlyCurrentSuccessfulRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"pass", "hub-fail", "rest-fail", "list-fail", "missing-hub", "overlap", "changed-selection", "rest-race-fail", "orchestrator-fail"} {
+	for _, mode := range []string{"pass", "hub-fail", "rest-fail", "list-fail", "missing-hub", "overlap", "changed-selection", "rest-race-fail", "orchestrator-fail", "workspace-fail", "workspace-race-fail", "missing-workspace"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			files := map[string]string{
-				"gate.sh": string(script),
+				"gate.sh":                   string(script),
+				"scripts/test-workspace.sh": readNormalizedFile(t, "scripts/test-workspace.sh"),
 				"go": `#!/usr/bin/env bash
 set -eu
 if [ "$1" = list ]; then
     [ "$FIXTURE_MODE" != list-fail ] || exit 1
     if [ "$2" = ./... ]; then
-        printf '%s\n' github.com/digitaldrywood/detent/internal/hubserver github.com/digitaldrywood/detent/internal/orchestrator example.com/rest
+        printf '%s\n' github.com/digitaldrywood/detent/internal/hubserver github.com/digitaldrywood/detent/internal/orchestrator github.com/digitaldrywood/detent/internal/workspace example.com/rest
     elif [ "$FIXTURE_MODE" = changed-selection ] && [ "$2" = -race ]; then
         printf '%s\n' changed.go
     else
@@ -55,8 +56,20 @@ else
     fi
     group=rest
     if [ "$1" = run ]; then group=hub; fi
+    if [ "$1" = run ] && [ "${!#}" = ./internal/workspace ]; then
+        group=workspace
+        case "$*" in *"-timeout 20m"*) ;; *) exit 10 ;; esac
+        case " $* " in
+            *" -race "*) [ "$FIXTURE_MODE" != workspace-race-fail ]; exit ;;
+        esac
+    fi
+    if [ "$group" = rest ]; then
+        for argument in "$@"; do
+            [ "$argument" != github.com/digitaldrywood/detent/internal/workspace ] || exit 11
+        done
+    fi
     profile_mode=set
-    if [ "$group" = hub ]; then profile_mode=atomic; fi
+    if [ "$group" != rest ]; then profile_mode=atomic; fi
     if [ "$1 $2" = 'test -race' ]; then
         for argument in "$@"; do
             [ "$argument" != github.com/digitaldrywood/detent/internal/orchestrator ] || exit 7
@@ -73,7 +86,7 @@ else
         shift
     done
     [ -n "$profile" ] || exit 8
-    if [ "$FIXTURE_MODE" = missing-hub ] && [ "$group" = hub ]; then exit 0; fi
+    if [ "$FIXTURE_MODE" = "missing-$group" ]; then exit 0; fi
     if [ "$FIXTURE_MODE" = overlap ]; then group=hub; fi
     printf 'mode: %s\nexample.com/%s/file%s.go:1.1,2.2 1 1\n' "$profile_mode" "$group" "$FIXTURE_INPUT" > "$profile"
     [ "$FIXTURE_MODE" != "$group-fail" ] || exit 1
@@ -81,6 +94,9 @@ fi
 `,
 			}
 			for name, data := range files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o700); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -109,7 +125,7 @@ fi
 					t.Fatal(err)
 				}
 				if mode == "pass" {
-					if strings.Contains(string(profile), "stale") || strings.Count(string(profile), "/file"+input+".go:") != 2 {
+					if strings.Contains(string(profile), "stale") || strings.Count(string(profile), "/file"+input+".go:") != 3 {
 						t.Fatalf("published wrong input: %s", profile)
 					}
 				} else if string(profile) != "stale prior result" {

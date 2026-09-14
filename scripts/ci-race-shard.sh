@@ -14,7 +14,11 @@ go list ./... > "tmp/race-packages-$1.txt"
 awk -v shard="$1" -f scripts/ci-race-packages.awk "tmp/race-packages-$1.txt" > "tmp/race-shard-$1.txt"
 packages=()
 while IFS= read -r package; do
-    packages+=("$package")
+    if [ "$package" = github.com/digitaldrywood/detent/internal/workspace ]; then
+        bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
+    else
+        packages+=("$package")
+    fi
 done < "tmp/race-shard-$1.txt"
 if [ "${#packages[@]}" -eq 0 ]; then
     echo "Race shard $1 has no packages" >&2

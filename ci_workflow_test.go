@@ -55,14 +55,14 @@ var integrationStatusChecks = []requiredStatusCheck{
 		budget:   "8m",
 		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "go test ./..."},
+		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "make test", "bash scripts/test-workspace.sh -parallel 4"},
 	},
 	{
 		name:     "Portability Verify (windows-latest)",
 		budget:   "45m",
 		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "go test ./..."},
+		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "make test", "bash scripts/test-workspace.sh -parallel 4"},
 	},
 	{
 		name:     "Windows Core",
@@ -90,7 +90,7 @@ var integrationStatusChecks = []requiredStatusCheck{
 		budget:   "15m",
 		jobStart: "  goreleaser-snapshot:",
 		jobEnd:   "  report-integration-failures:",
-		markers:  []string{"name: GoReleaser Snapshot", "timeout-minutes: 15", "args: release --snapshot --clean", "MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key"},
+		markers:  []string{"name: GoReleaser Snapshot", "timeout-minutes: 35", "args: release --snapshot --clean", "MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key"},
 	},
 }
 
@@ -160,7 +160,7 @@ func TestSnapshotBudgetPreservesReleaseWork(t *testing.T) {
 		end     string
 		markers []string
 	}{
-		{"hooks", "before:", "\nbuilds:", []string{"go mod download", "go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0", "make generate", "go test ./..."}},
+		{"hooks", "before:", "\nbuilds:", []string{"go mod download", "go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0", "make generate", "make test"}},
 		{"targets", "builds:", "\narchives:", []string{"CGO_ENABLED=0", "-trimpath", "- darwin", "- linux", "- windows", "- amd64", "- arm64"}},
 		{"archives", "archives:", "\nbrews:", []string{"- tar.gz", "goos: windows", "- zip", "- README.md", "- LICENSE", "- docs/**/*", "- scripts/hub-smoke.py"}},
 		{"packages", "nfpms:", "\nscoops:", []string{"- deb", "- rpm"}},
@@ -190,10 +190,10 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 		name string
 		want string
 	}{
-		{name: "test", want: "$(GO_TEST) ./..."},
+		{name: "test", want: "$(GO_TEST) $$packages"},
 		{name: "test-race", want: "$(GO_TEST) -race $$packages"},
 		{name: "test-race-hub", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race"},
-		{name: "test-cover", want: "$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./..."},
+		{name: "test-cover", want: "$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -412,7 +412,8 @@ func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
 		"os: [macos-latest, windows-latest]",
 		"go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20",
 		"go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m",
-		"go test -race ./...",
+		"bash scripts/test-workspace.sh -race",
+		`go test -race "${packages[@]}"`,
 	} {
 		if !strings.Contains(stressWorkflow, want) {
 			t.Fatalf("portability stress workflow missing %q", want)
@@ -647,6 +648,8 @@ func TestCIRaceShardFailures(t *testing.T) {
 		wantTests   bool
 	}{
 		{"success", "2", "0", "0", true, true},
+		{"workspace shard", "3", "0", "0", true, true},
+		{"workspace failure", "3", "0", "1", false, false},
 		{"discovery failure", "2", "1", "0", false, false},
 		{"race failure survives tee", "2", "0", "1", false, true},
 		{"invalid shard", "4", "0", "0", false, false},
@@ -658,7 +661,7 @@ func TestCIRaceShardFailures(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			for _, file := range []string{"ci-race-shard.sh", "ci-race-packages.awk"} {
+			for _, file := range []string{"ci-race-shard.sh", "ci-race-packages.awk", "test-workspace.sh"} {
 				if err := os.WriteFile(filepath.Join(root, "scripts", file), []byte(readNormalizedFile(t, "scripts/"+file)), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -666,10 +669,17 @@ func TestCIRaceShardFailures(t *testing.T) {
 			fakeGo := `#!/bin/sh
 case "$1" in
 list)
-  printf '%s\n' github.com/digitaldrywood/detent/internal/cli github.com/digitaldrywood/detent/internal/config
+  printf '%s\n' github.com/digitaldrywood/detent/internal/cli github.com/digitaldrywood/detent/internal/config github.com/digitaldrywood/detent/internal/workspace
   exit "$LIST_EXIT"
   ;;
+run)
+  test -z "${DETENT_API_TOKEN:-}" || exit 99
+  case "$*" in *"-timeout 20m"*) ;; *) exit 97 ;; esac
+  echo invoked > workspace-invoked
+  exit "$TEST_EXIT"
+  ;;
 test)
+  case "$*" in *internal/workspace*) exit 96 ;; esac
   test -z "${DETENT_API_TOKEN:-}" || exit 99
   echo invoked > invoked
   echo '{"Action":"pass"}'
@@ -693,7 +703,7 @@ exit 98
 				t.Fatalf("tests invoked=%v, want %v: %s", err == nil, tc.wantTests, out)
 			}
 			if tc.wantTests {
-				data, err := os.ReadFile(filepath.Join(root, "tmp", "shard-2-race-evidence", "tests.jsonl"))
+				data, err := os.ReadFile(filepath.Join(root, "tmp", "shard-"+tc.shard+"-race-evidence", "tests.jsonl"))
 				if err != nil || !strings.Contains(string(data), `"Action":"pass"`) {
 					t.Fatalf("missing race evidence: %v: %s", err, data)
 				}

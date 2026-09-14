@@ -101,11 +101,15 @@ build: generate
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) $(CMD_PACKAGE)
 
 test:
-	$(GO_TEST) ./...
+	bash scripts/test-workspace.sh
+	@packages="$$(go list ./...)" && \
+	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
+	$(GO_TEST) $$packages
 
 test-race: test-race-hub test-race-orchestrator
+	bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
 	@packages="$$(go list ./...)" && \
-	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver" && $$0 != "github.com/digitaldrywood/detent/internal/orchestrator"')" && \
+	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver" && $$0 != "github.com/digitaldrywood/detent/internal/orchestrator" && $$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
 	$(GO_TEST) -race $$packages
 
 test-race-hub:
@@ -121,7 +125,11 @@ test-race-cover:
 
 test-cover:
 	@mkdir -p tmp
-	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./...
+	bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence
+	@packages="$$(go list ./...)" && \
+	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
+	$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages
+	go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out > $(COVERPROFILE_RAW)
 	@$(MAKE) coverage-check
 
 coverage-check:
@@ -182,7 +190,7 @@ check-unlocked: check-invariants check-migrations check-generated build lint vet
 
 .PHONY: check-fast
 check-fast: check-invariants check-migrations check-generated build lint vet
-	$(GO_TEST) ./...
+	$(MAKE) test
 	@echo "Fast checks passed (race, coverage, and nilaway run in the merge queue)."
 
 .PHONY: check-invariants
