@@ -212,15 +212,75 @@ func TestWatchReportsInvalidReload(t *testing.T) {
 	}
 }
 
+func TestWatchReportsPartialLocalWorkflowOverlay(t *testing.T) {
+	t.Parallel()
+
+	for _, existing := range []bool{false, true} {
+		name := "create"
+		if existing {
+			name = "truncate"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				runtime := newControlledFileRuntime()
+				path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+				localPath := workflowconfig.LocalWorkflowPath(path)
+				writeWorkflow(t, path, 60000, "shared")
+				if existing {
+					writeWorkflow(t, localPath, 61000, "local first")
+				}
+				w, err := New(path, WithDebounce(10*time.Millisecond), withFileOptions(runtime.option()))
+				if err != nil {
+					t.Fatalf("New() error = %v", err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				updates, err := w.Watch(ctx)
+				if err != nil {
+					t.Fatalf("Watch() error = %v", err)
+				}
+
+				// Expose the create/truncate phase of WriteFile until the
+				// loader exhausts its retries, before supplying any content.
+				if err := os.WriteFile(localPath, nil, 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+				runtime.sendEvent(t, localPath)
+				runtime.waitForReset(t)
+				runtime.fireTimer(t)
+				partial := receiveUpdate(t, updates)
+				want := "parse " + localPath + ": missing YAML frontmatter"
+				if partial.Err == nil || partial.Err.Error() != want || partial.WatcherErr {
+					t.Fatalf("partial update = %#v, want parse error %q", partial, want)
+				}
+
+				writeWorkflow(t, localPath, 62000, "local complete")
+				runtime.sendEvent(t, localPath)
+				runtime.waitForReset(t)
+				runtime.fireTimer(t)
+				complete := receiveUpdate(t, updates)
+				if complete.Err != nil {
+					t.Fatalf("complete update error = %v", complete.Err)
+				}
+				if complete.Workflow.Config.Polling.IntervalMS != 62000 || !strings.Contains(complete.Workflow.Prompt, "local complete") {
+					t.Fatalf("complete workflow = %#v, want completed overlay", complete.Workflow)
+				}
+			})
+		})
+	}
+}
+
 func TestWatchReloadsLocalWorkflowOverlayLifecycle(t *testing.T) {
 	t.Parallel()
 
+	runtime := newControlledFileRuntime()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
 	localPath := workflowconfig.LocalWorkflowPath(path)
 	writeWorkflow(t, path, 60000, "shared")
 
-	w, err := New(path, WithDebounce(10*time.Millisecond))
+	w, err := New(path, withFileOptions(runtime.option()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -232,6 +292,10 @@ func TestWatchReloadsLocalWorkflowOverlayLifecycle(t *testing.T) {
 	}
 
 	writeWorkflow(t, localPath, 61000, "local first")
+	// Reload only after the fixture mutation is complete.
+	runtime.sendEvent(t, localPath)
+	runtime.waitForReset(t)
+	runtime.fireTimer(t)
 	created := receiveUpdate(t, updates)
 	if created.Err != nil {
 		t.Fatalf("create update error = %v", created.Err)
@@ -241,6 +305,10 @@ func TestWatchReloadsLocalWorkflowOverlayLifecycle(t *testing.T) {
 	}
 
 	writeWorkflow(t, localPath, 62000, "local second")
+	// Reload only after the fixture mutation is complete.
+	runtime.sendEvent(t, localPath)
+	runtime.waitForReset(t)
+	runtime.fireTimer(t)
 	edited := receiveUpdate(t, updates)
 	if edited.Err != nil {
 		t.Fatalf("edit update error = %v", edited.Err)
@@ -252,6 +320,10 @@ func TestWatchReloadsLocalWorkflowOverlayLifecycle(t *testing.T) {
 	if err := os.Remove(localPath); err != nil {
 		t.Fatalf("Remove() error = %v", err)
 	}
+	// Reload only after the fixture mutation is complete.
+	runtime.sendEvent(t, localPath)
+	runtime.waitForReset(t)
+	runtime.fireTimer(t)
 	deleted := receiveUpdate(t, updates)
 	if deleted.Err != nil {
 		t.Fatalf("delete update error = %v", deleted.Err)
