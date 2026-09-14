@@ -1013,9 +1013,6 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 	if err := configureWorkerGitHubEnvironment(&request); err != nil {
 		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker github environment: %w", err)
 	}
-	if err := configureWorkerCache(&request); err != nil {
-		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker cache: %w", err)
-	}
 	result, runErr := run(ctx, request)
 	return result, cleanupScratch, runErr
 }
@@ -1814,8 +1811,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		Environment:           baseEnvironment,
 		MaxRSSBytes:           r.maxAgentRSSBytes,
 		RSSPollInterval:       r.rssPollInterval,
-		cacheStrategy:         workflow.Config.Workspace.CacheStrategy,
-		projectID:             r.projectID,
 		workerGitHub:          workerGitHub,
 		processRSS:            r.processRSS,
 	}
@@ -3061,8 +3056,6 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		Environment:        baseEnvironment,
 		MaxRSSBytes:        r.maxAgentRSSBytes,
 		RSSPollInterval:    r.rssPollInterval,
-		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
-		projectID:          r.projectID,
 		workerGitHub:       workerGitHub,
 		processRSS:         r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {

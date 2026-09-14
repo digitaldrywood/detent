@@ -1251,9 +1251,7 @@ Ticket prompt {{ issue.title }}
 	if cfg.Workspace.CleanupIdleTTLMS != 7200000 {
 		t.Fatalf("Workspace.CleanupIdleTTLMS = %d, want 7200000", cfg.Workspace.CleanupIdleTTLMS)
 	}
-	if cfg.Workspace.CacheStrategy != WorkspaceCacheShared {
-		t.Fatalf("Workspace.CacheStrategy = %q, want %q", cfg.Workspace.CacheStrategy, WorkspaceCacheShared)
-	}
+
 	if cfg.Workspace.CleanupSweepIntervalMS != 120000 {
 		t.Fatalf("Workspace.CleanupSweepIntervalMS = %d, want 120000", cfg.Workspace.CleanupSweepIntervalMS)
 	}
@@ -1724,9 +1722,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Workspace.AutoBranch != true {
 		t.Fatal("Workspace.AutoBranch = false, want true")
 	}
-	if cfg.Workspace.CacheStrategy != WorkspaceCacheIsolated {
-		t.Fatalf("Workspace.CacheStrategy = %q, want %q", cfg.Workspace.CacheStrategy, WorkspaceCacheIsolated)
-	}
+
 	if cfg.Workspace.CleanupIdleTTLMS != 86400000 {
 		t.Fatalf("Workspace.CleanupIdleTTLMS = %d, want 86400000", cfg.Workspace.CleanupIdleTTLMS)
 	}
@@ -3699,11 +3695,6 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 			name: "dependency source",
 			raw:  "---\ntracker:\n  kind: memory\ndependencies:\n  source: prose\n---\nPrompt\n",
 			want: []string{"dependencies.source must be one of merged, native_only"},
-		},
-		{
-			name: "workspace cache strategy",
-			raw:  "---\ntracker:\n  kind: memory\nworkspace:\n  cache_strategy: ephemeral\n---\nPrompt\n",
-			want: []string{"workspace.cache_strategy must be one of isolated, shared"},
 		},
 		{
 			name: "partial github app credentials",

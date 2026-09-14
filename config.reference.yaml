@@ -577,8 +577,6 @@
 #   source_root: null
 #   # workspace.output_root | type: string | default: none | required: No | validation: None
 #   output_root: null
-#   # workspace.cache_strategy | type: string | default: "isolated" | required: No | validation: must be one of isolated, shared
-#   cache_strategy: "isolated"
 #   # workspace.auto_branch | type: boolean | default: true | required: No | validation: None
 #   auto_branch: true
 #   # workspace.cleanup_idle_ttl_ms | type: integer | default: 86400000 | required: No | validation: must be greater than 0

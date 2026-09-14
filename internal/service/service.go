@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -126,6 +127,7 @@ type StartResult struct {
 }
 
 type Status struct {
+	HostCache      *toolcache.Report         `json:"host_cache,omitempty"`
 	InstallMethod  update.InstallSource      `json:"install_method"`
 	ServiceManager ManagerName               `json:"service_manager"`
 	ServiceScope   string                    `json:"service_scope,omitempty"`

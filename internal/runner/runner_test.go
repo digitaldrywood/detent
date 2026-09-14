@@ -317,7 +317,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		ProjectID: "detent",
 		Workflow: config.Workflow{
 			Config: config.Config{
-				Workspace:   config.Workspace{CacheStrategy: config.WorkspaceCacheShared},
+				Workspace:   config.Workspace{},
 				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
 				Agent: config.Agent{
 					Skills: config.Skills{
@@ -481,22 +481,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		codexClient.request.IssueRepository != "digitaldrywood/detent" {
 		t.Fatalf("codex repositories = deliverable %q/%q, issue %q", codexClient.request.DeliverableKind, codexClient.request.DeliverableRepository, codexClient.request.IssueRepository)
 	}
-	cacheRoot := sharedWorkerCacheRoot(workspacePath, "detent")
-	for name, want := range map[string]string{
-		"GOCACHE":             filepath.Join(cacheRoot, "go-build"),
-		"GOMODCACHE":          filepath.Join(cacheRoot, "go-mod"),
-		"GOBIN":               filepath.Join(cacheRoot, "go-bin"),
-		"GOLANGCI_LINT_CACHE": filepath.Join(cacheRoot, "golangci-lint"),
-	} {
-		if got := codexClient.request.Environment.Variables[name]; got != want {
-			t.Fatalf("codex %s = %q, want %q", name, got, want)
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOBIN", "GOLANGCI_LINT_CACHE"} {
+		if _, ok := codexClient.request.Environment.Variables[name]; ok {
+			t.Fatalf("worker overrides %s", name)
 		}
-	}
-	if len(codexClient.request.ExtraWritableRoots) != 1 || codexClient.request.ExtraWritableRoots[0] != cacheRoot {
-		t.Fatalf("codex writable roots = %#v, want shared cache root %q", codexClient.request.ExtraWritableRoots, cacheRoot)
-	}
-	if !reflect.DeepEqual(codexClient.request.Environment.PathSuffixes, []string{filepath.Join(cacheRoot, "go-bin")}) {
-		t.Fatalf("codex PATH suffixes = %#v, want shared tool fallback", codexClient.request.Environment.PathSuffixes)
 	}
 	if codexClient.request.Model != "gpt-5-codex-high" {
 		t.Fatalf("codex model = %q, want issue override", codexClient.request.Model)

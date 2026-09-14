@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -106,6 +107,16 @@ func withRunnerFactory(
 
 		projectDeps := deps
 		projectDeps.Runner = run
+		if projectDeps.TrimHostCache == nil {
+			projectDeps.TrimHostCache = func(ctx context.Context, policy toolcache.Policy, now time.Time) error {
+				paths, err := toolcache.Resolve(ctx)
+				if err != nil {
+					return err
+				}
+				_, err = toolcache.Trim(ctx, paths.Build, policy, now)
+				return err
+			}
+		}
 		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
 			projectDeps.GitHubToken = githubTokenSource[0]()
 		}

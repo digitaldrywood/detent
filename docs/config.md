@@ -19,6 +19,24 @@ Priority settings order ready work (INV-10). Project priority and
 idle slots or cancel running workers. `max_concurrent_agents` and
 `max_concurrent_agents_by_state` remain independent capacity ceilings.
 
+## Host Go caches
+
+Workers inherit Go's host cache paths and operator environment settings. They
+retain per-attempt temporary directories. Startup removes legacy project caches
+under each configured workspace root; doctor and status report host cache paths
+and sizes.
+
+```yaml
+global:
+  cache:
+    max_age: 48h
+    max_bytes: 1073741824000 # 1000 GiB
+```
+
+The existing workspace reaper expires build-cache entries older than `max_age`.
+Recent entries are protected even above the size target. The module cache is
+reported and shared but is not trimmed.
+
 ## Issue session allowance
 
 Code and rework share a fixed allowance of three sessions without a merged PR.
@@ -1558,7 +1576,6 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `workpad.structured_only` | `boolean` | `false` | No | None |
 | `workspace` | `object` | `see child fields` | No | agent.lessons.path must be a relative path inside the workspace<br>agent.skills.path must be a relative path inside the workspace |
 | `workspace.auto_branch` | `boolean` | `true` | No | None |
-| `workspace.cache_strategy` | `string` | `"isolated"` | No | must be one of isolated, shared |
 | `workspace.cleanup_idle_ttl_ms` | `integer` | `86400000` | No | must be greater than 0 |
 | `workspace.cleanup_sweep_interval_ms` | `integer` | `600000` | No | must be greater than 0 |
 | `workspace.kind` | `string` | `"local_git"` | No | must be one of local_git, filesystem |

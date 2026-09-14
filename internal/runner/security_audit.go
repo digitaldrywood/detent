@@ -123,7 +123,6 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		Environment:             baseEnvironment,
 		MaxRSSBytes:             r.maxAgentRSSBytes,
 		RSSPollInterval:         r.rssPollInterval,
-		projectID:               r.projectID,
 		processRSS:              r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {

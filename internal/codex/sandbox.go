@@ -1,12 +1,14 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 type Options struct {
@@ -175,4 +177,28 @@ func cloneMap(value map[string]any) map[string]any {
 		return value
 	}
 	return cloned
+}
+
+func hostCacheWritableRoots(ctx context.Context, options Options, roots []string, restricted bool) ([]string, error) {
+	if restricted {
+		return roots, nil
+	}
+	policyMap, ok := sandboxPolicyMap(options.TurnSandboxPolicy)
+	if ok {
+		policyMap = config.NormalizeTurnSandboxPolicy(options.ThreadSandbox, policyMap)
+	}
+	if !ok || !isWorkspaceWriteSandboxName(policyType(policyMap)) {
+		return roots, nil
+	}
+	paths, err := toolcache.Resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roots = append([]string(nil), roots...)
+	for _, path := range []string{paths.Build, paths.Modules} {
+		if path != "" && path != "off" {
+			roots = append(roots, path)
+		}
+	}
+	return roots, nil
 }

@@ -1,0 +1,121 @@
+package toolcache
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestTrim(t *testing.T) {
+	now := time.Now()
+	for _, tt := range []struct {
+		name   string
+		age    time.Duration
+		file   string
+		remove bool
+	}{
+		{"old data", 49 * time.Hour, "00/entry-d", true},
+		{"old action", 49 * time.Hour, "00/entry-a", true},
+		{"recent protected above size target", time.Hour, "00/entry-d", false},
+		{"boundary protected", 48 * time.Hour, "00/entry-a", false},
+		{"trim metadata", 72 * time.Hour, "trim.txt", false},
+		{"readme", 72 * time.Hour, "README", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, tt.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("cache entry"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			at := now.Add(-tt.age)
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Trim(context.Background(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: 1}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = os.Stat(path)
+			if os.IsNotExist(err) != tt.remove {
+				t.Fatalf("stat = %v, remove = %t", err, tt.remove)
+			}
+		})
+	}
+}
+
+func TestRemoveLegacy(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		t.Run(map[bool]string{false: "absent", true: "present"}[present], func(t *testing.T) {
+			root := t.TempDir()
+			cache := filepath.Join(root, ".detent", "cache")
+			if present {
+				if err := os.MkdirAll(cache, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(cache, "entry"), []byte("123"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			size, err := RemoveLegacy(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if present && size != 3 {
+				t.Fatalf("reclaimed %d", size)
+			}
+			if _, err := os.Stat(cache); !os.IsNotExist(err) {
+				t.Fatalf("cache remains: %v", err)
+			}
+			if _, err := os.Stat(root); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPolicyDefaults(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		input, want Policy
+	}{
+		{"defaults", Policy{}, Policy{MaxAge: 48 * time.Hour, MaxBytes: 1000 * 1024 * 1024 * 1024}},
+		{"explicit", Policy{MaxAge: time.Hour, MaxBytes: 123}, Policy{MaxAge: time.Hour, MaxBytes: 123}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.input.Normalized(); got != tt.want {
+				t.Fatalf("got %+v want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInspect(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		build, modules string
+	}{
+		{"populated", "123", "12345"}, {"empty", "", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			build := t.TempDir()
+			modules := t.TempDir()
+			t.Setenv("GOCACHE", build)
+			t.Setenv("GOMODCACHE", modules)
+			if err := os.WriteFile(filepath.Join(build, "fixture-d"), []byte(tt.build), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(modules, "fixture"), []byte(tt.modules), 0600); err != nil {
+				t.Fatal(err)
+			}
+			got := Inspect(context.Background())
+			if got.Error != "" || got.BuildPath != build || got.ModulePath != modules || got.BuildBytes != int64(len(tt.build)) || got.ModuleBytes != int64(len(tt.modules)) {
+				t.Fatalf("report=%+v", got)
+			}
+		})
+	}
+}

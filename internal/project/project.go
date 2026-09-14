@@ -42,6 +42,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 var (
@@ -137,6 +138,7 @@ type startOptions struct {
 }
 
 type Dependencies struct {
+	TrimHostCache             func(context.Context, toolcache.Policy, time.Time) error
 	Connector                 connector.Connector
 	Scheduling                orchestrator.SchedulingSource
 	ConnectorFactory          ConnectorFactory
@@ -303,6 +305,11 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if reclaimed, err := toolcache.RemoveLegacy(workflow.Config.Workspace.Root); err != nil {
+		logger.Warn("remove legacy worker caches", "error", err)
+	} else if reclaimed > 0 {
+		logger.Info("removed legacy worker caches", "bytes_reclaimed", reclaimed, "workspace_root", workflow.Config.Workspace.Root)
+	}
 	scheduleFault := &scheduleFaultState{}
 	scheduleHealth, err := schedulehealth.New(string(id), scheduleDefinitions(workflow.Config), deps.ScheduleRuns, schedulehealth.Dependencies{
 		OnFault: func(err error, at time.Time) {
@@ -446,6 +453,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
+		TrimHostCache:      deps.TrimHostCache,
 		LaneCoordination:   projectScheduleOwner.CoordinationStore(),
 		Connector:          projectConnector,
 		Scheduling:         projectSchedulingSource(deps.Scheduling, workflow.Config),
@@ -1743,6 +1751,7 @@ func projectSchedulingSource(source orchestrator.SchedulingSource, workflow work
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	cfg.HostCache = project.GlobalCache.Normalized()
 	memory := project.EffectiveMemory()
 	cfg.MemoryPressureSomeAvg60Max = memory.PressureSomeAvg60Threshold
 	cfg.MemoryPressurePollInterval = time.Duration(memory.PollIntervalMS) * time.Millisecond

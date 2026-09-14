@@ -43,10 +43,8 @@ const (
 	GitHubStatusSourceIssueField = "issue_field"
 	GitHubStatusSourceLabel      = "label"
 
-	WorkspaceLocalGit      = "local_git"
-	WorkspaceFilesystem    = "filesystem"
-	WorkspaceCacheIsolated = "isolated"
-	WorkspaceCacheShared   = "shared"
+	WorkspaceLocalGit   = "local_git"
+	WorkspaceFilesystem = "filesystem"
 
 	DeliverablePullRequest  = "pull_request"
 	DeliverableArtifact     = "artifact"
@@ -301,10 +299,10 @@ type Workspace struct {
 	Root                   string `yaml:"root"`
 	SourceRoot             string `yaml:"source_root"`
 	OutputRoot             string `yaml:"output_root"`
-	CacheStrategy          string `yaml:"cache_strategy"`
-	AutoBranch             bool   `yaml:"auto_branch"`
-	CleanupIdleTTLMS       int    `yaml:"cleanup_idle_ttl_ms"`
-	CleanupSweepIntervalMS int    `yaml:"cleanup_sweep_interval_ms"`
+	legacyCacheStrategy    bool
+	AutoBranch             bool `yaml:"auto_branch"`
+	CleanupIdleTTLMS       int  `yaml:"cleanup_idle_ttl_ms"`
+	CleanupSweepIntervalMS int  `yaml:"cleanup_sweep_interval_ms"`
 }
 
 type Workpad struct {
@@ -580,6 +578,9 @@ func (c Config) USDBrakes() USDBrakes {
 
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
+	if c.Workspace.legacyCacheStrategy {
+		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
+	}
 	if c.USDBrakes().NoProgress {
 		warnings = append(warnings, "budget.billing_mode: metered with agent.no_progress_spend_limit_usd > 0 arms a notional USD progress brake; budget.enabled: false does not disarm it; use budget.billing_mode: subscription to make USD enforcement inert")
 	}
@@ -1483,7 +1484,6 @@ func Default() Config {
 		Workspace: Workspace{
 			Kind:                   WorkspaceLocalGit,
 			Root:                   filepath.Join(os.TempDir(), "detent_workspaces"),
-			CacheStrategy:          WorkspaceCacheIsolated,
 			AutoBranch:             true,
 			CleanupIdleTTLMS:       86400000,
 			CleanupSweepIntervalMS: 600000,
@@ -2177,11 +2177,6 @@ func (w *Workspace) validate(problems *[]string) {
 	default:
 		*problems = append(*problems, "workspace.kind must be one of local_git, filesystem")
 	}
-	switch w.CacheStrategy {
-	case "", WorkspaceCacheIsolated, WorkspaceCacheShared:
-	default:
-		*problems = append(*problems, "workspace.cache_strategy must be one of isolated, shared")
-	}
 	validatePositive("workspace.cleanup_idle_ttl_ms", w.CleanupIdleTTLMS, problems)
 	validatePositive("workspace.cleanup_sweep_interval_ms", w.CleanupSweepIntervalMS, problems)
 }
@@ -2194,7 +2189,6 @@ func (w *Workspace) Normalize() {
 	w.Root = strings.TrimSpace(w.Root)
 	w.SourceRoot = strings.TrimSpace(w.SourceRoot)
 	w.OutputRoot = strings.TrimSpace(w.OutputRoot)
-	w.CacheStrategy = normalizeWorkspaceCacheStrategy(w.CacheStrategy)
 }
 
 func normalizeWorkspaceKind(kind string) string {
@@ -2205,17 +2199,6 @@ func normalizeWorkspaceKind(kind string) string {
 		return WorkspaceFilesystem
 	default:
 		return strings.ToLower(strings.TrimSpace(kind))
-	}
-}
-
-func normalizeWorkspaceCacheStrategy(strategy string) string {
-	switch strings.ToLower(strings.TrimSpace(strategy)) {
-	case "", WorkspaceCacheIsolated:
-		return WorkspaceCacheIsolated
-	case WorkspaceCacheShared:
-		return WorkspaceCacheShared
-	default:
-		return strings.ToLower(strings.TrimSpace(strategy))
 	}
 }
 
@@ -3828,4 +3811,21 @@ func cleanKanbanPolicyState(state string) string {
 
 func kanbanPolicyStateKey(state string) string {
 	return strings.ToLower(cleanKanbanPolicyState(state))
+}
+
+// UnmarshalYAML retains a one-release warning for the removed cache setting.
+func (w *Workspace) UnmarshalYAML(node *yaml.Node) error {
+	type plain Workspace
+	value := plain(*w)
+	value.legacyCacheStrategy = false
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+	*w = Workspace(value)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "cache_strategy" {
+			w.legacyCacheStrategy = true
+		}
+	}
+	return nil
 }

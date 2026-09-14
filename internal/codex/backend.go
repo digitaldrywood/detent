@@ -82,6 +82,11 @@ func (b *AgentBackend) runTurn(
 	ctx = withWorkerTempDir(ctx, req.TempDir)
 	ctx = withAgentProcess(ctx, runner.AgentProcessRequest{Workspace: req.Workspace, Environment: req.Environment})
 	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
+	var err error
+	req.ExtraWritableRoots, err = hostCacheWritableRoots(ctx, b.options, req.ExtraWritableRoots, restricted)
+	if err != nil {
+		return runner.AgentTurnResult{}, err
+	}
 	instructionTools := tools
 	if req.SupplementalTools {
 		instructionTools = nil

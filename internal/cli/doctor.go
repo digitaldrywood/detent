@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 var ErrDoctorFailed = errors.New("doctor found failed checks")
@@ -243,6 +244,7 @@ type doctorTelemetryStore interface {
 }
 
 type doctorDeps struct {
+	inspectCaches        func(context.Context) toolcache.Report
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
 	resolveCommandOnPath func(string, string) (string, error)
@@ -504,7 +506,14 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		report.Add(check)
 	}
 	binaryEnvironment := resolveDoctorBinaryEnvironment(ctx, resolution, liveBoot, deps)
-	jobs := []doctorCheckJob{}
+	jobs := []doctorCheckJob{{Name: "Host Go caches", Run: func(ctx context.Context) []doctorCheck {
+		report := deps.inspectCaches(ctx)
+		check := doctorCheck{Name: "Host Go caches", Status: doctorOK, Detail: report.String()}
+		if report.Error != "" {
+			check.Status = doctorWarn
+		}
+		return []doctorCheck{check}
+	}}}
 	if global != nil {
 		globalConfig := *global
 		workflowDriftBoot := liveBoot
@@ -1177,6 +1186,9 @@ func doctorOptions(opts options) options {
 
 func (d doctorDeps) withDefaults() doctorDeps {
 	defaults := defaultDoctorDeps()
+	if d.inspectCaches == nil {
+		d.inspectCaches = toolcache.Inspect
+	}
 	if d.loadWorkflow == nil {
 		d.loadWorkflow = defaults.loadWorkflow
 	}

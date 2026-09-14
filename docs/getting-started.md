@@ -172,7 +172,6 @@ worker:
 workspace:
   root: /absolute/path/to/detent-workspaces
   source_root: /absolute/path/to/project-checkout
-  cache_strategy: isolated
   auto_branch: true
   cleanup_idle_ttl_ms: 86400000
   cleanup_sweep_interval_ms: 600000
@@ -472,13 +471,12 @@ If `workspace.source_root` is omitted, Detent falls back to the project
 `workdir` from global config, then to `workspace.root` for older single-root
 setups.
 
-`workspace.cache_strategy` controls the worker build environment. The default,
-`isolated`, sets `GOCACHE`, `GOMODCACHE`, `GOBIN`, and
-`GOLANGCI_LINT_CACHE` inside the per-turn scratch directory and removes them
-after the worker exits. Set it to `shared` to place those caches in a stable,
-per-project directory under `workspace.root/.detent/cache`, prepend the shared
-`GOBIN` to `PATH`, and reuse compiled dependencies and tools across worktrees
-and Detent restarts. `TMPDIR`, `TMP`, and `TEMP` remain per-turn in both modes.
+Workers inherit the host Go build and module caches and operator toolchain
+settings. `TMPDIR`, `TMP`, and `TEMP` remain per-attempt. At startup, Detent
+removes legacy `workspace.root/.detent/cache` directories. The existing reaper
+expires host Go build entries older than `global.cache.max_age` (default 48h).
+The size target `global.cache.max_bytes` defaults to 1000 GiB; recent entries
+are protected even when their total exceeds this target.
 
 When `workspace.auto_branch` is enabled and the source repository has an
 `origin` remote, Detent fetches that remote's default branch before creating a
