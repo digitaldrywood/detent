@@ -85,12 +85,8 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		return execution, err
 	}
 	resolvedSelection := resolveAgentSelection(ctx, selectionIssue, processRequest, baseModel, RoleSecurityAudit, workflow.Config, backendConfig, backend)
-	cleanupErr := cleanupPreflight()
-	if resolvedSelection.Err != nil {
-		return execution, errors.Join(resolvedSelection.Err, cleanupErr)
-	}
-	if cleanupErr != nil {
-		return execution, cleanupErr
+	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
+		return execution, err
 	}
 	selectedModel = resolvedSelection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))

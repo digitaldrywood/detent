@@ -534,6 +534,19 @@ func configureWorkerGitHubEnvironment(request *AgentTurnRequest) error {
 	return nil
 }
 
+func (r *Runner) agentPreflightError(preflightErr, cleanupErr error) error {
+	if cleanupErr == nil {
+		return preflightErr
+	}
+	// Cleanup failures belong to the instance. Keep the preceding error in
+	// logs only: joining it or embedding its message can classify the cleanup
+	// failure as issue configuration in the orchestrator.
+	if preflightErr != nil {
+		r.logger.Warn("agent preflight failed before scratch cleanup", "error", preflightErr, "cleanup_error", cleanupErr)
+	}
+	return cleanupErr
+}
+
 func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest, policy workerGitHubPolicy) (AgentProcessRequest, func() error, error) {
 	tempDir, err := workspace.PrepareWorkerScratch(ctx, process.Workspace)
 	cleanup := func() error {

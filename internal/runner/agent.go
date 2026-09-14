@@ -1596,7 +1596,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	defer func() {
 		if cleanupPreflight != nil {
-			returnErr = errors.Join(returnErr, cleanupPreflight())
+			returnErr = r.agentPreflightError(returnErr, cleanupPreflight())
 		}
 	}()
 	resolvedOverride := resolveRequestAgentSelection(ctx, req, processRequest, baseModel, role, workflow.Config, backendConfig, backend)
@@ -2942,12 +2942,8 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	resolvedSelection := resolveAgentSelection(ctx, req.Issue, processRequest, baseModel, RoleValidator, workflow.Config, backendConfig, backend)
-	cleanupErr := cleanupPreflight()
-	if resolvedSelection.Err != nil {
-		return gate.ValidatorResult{}, errors.Join(resolvedSelection.Err, cleanupErr)
-	}
-	if cleanupErr != nil {
-		return gate.ValidatorResult{}, cleanupErr
+	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
+		return gate.ValidatorResult{}, err
 	}
 	selectedModel = resolvedSelection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
