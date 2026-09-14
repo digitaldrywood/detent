@@ -1,5 +1,9 @@
 const { test, expect } = require("@playwright/test");
 const { startDetentRuntime } = require("./detent-runtime");
+const {
+  recordKanbanTouchEvents,
+  attachKanbanTouchEvidence,
+} = require("./kanban-touch-evidence");
 
 test.describe.configure({ mode: "serial" });
 test.skip(({ isMobile }) => !isMobile, "mobile project only");
@@ -762,7 +766,7 @@ async function expectContentToFit(locator) {
 
 test("project kanban supports long-press touch status moves", async ({
   page,
-}) => {
+}, testInfo) => {
   const kanbanRuntime = await startDetentRuntime("mobile-kanban-touch-drag", [
     "--demo",
     "kanban",
@@ -771,10 +775,12 @@ test("project kanban supports long-press touch status moves", async ({
   ]);
   let session;
   let touchActive = false;
+  const laneSamples = [];
   try {
     await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
       waitUntil: "domcontentloaded",
     });
+    await recordKanbanTouchEvents(page);
     const lanes = page.locator("#board-lanes");
     const card = page.locator(
       '#board-lanes [data-kanban-card][data-kanban-current-state="Backlog"]',
@@ -947,6 +953,7 @@ test("project kanban supports long-press touch status moves", async ({
     await expect
       .poll(async () => {
         const box = await targetLane.boundingBox();
+        laneSamples.push({ time: Date.now(), box });
         return Boolean(box && box.x <= 340 && box.x + box.width > 340);
       })
       .toBe(true);
@@ -971,11 +978,15 @@ test("project kanban supports long-press touch status moves", async ({
     await expect(lanes).not.toHaveCSS("touch-action", "none");
     await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
   } finally {
-    if (session && touchActive) {
-      await dispatchTouch(session, "touchCancel", 0, 0).catch(() => {});
+    try {
+      await attachKanbanTouchEvidence(page, testInfo, laneSamples);
+    } finally {
+      if (session && touchActive) {
+        await dispatchTouch(session, "touchCancel", 0, 0).catch(() => {});
+      }
+      await session?.detach().catch(() => {});
+      await kanbanRuntime.stop();
     }
-    await session?.detach().catch(() => {});
-    await kanbanRuntime.stop();
   }
 });
 
