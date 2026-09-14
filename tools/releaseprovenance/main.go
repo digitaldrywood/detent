@@ -85,7 +85,9 @@ func run(args []string, stderr io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(*outputPath), 0o755); err != nil {
 		return fmt.Errorf("create release provenance directory: %w", err)
 	}
-	if err := os.WriteFile(*outputPath, encoded, 0o600); err != nil {
+	// The local CLI caller selects the destination, not tag or GitHub evidence.
+	// Absolute and parent-relative paths are intentional; there is no sandbox root.
+	if err := os.WriteFile(*outputPath, encoded, 0o600); err != nil { // #nosec G703 -- trusted caller-selected CLI output path.
 		return fmt.Errorf("write release provenance: %w", err)
 	}
 	return nil
