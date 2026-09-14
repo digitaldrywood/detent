@@ -139,6 +139,7 @@ type Dependencies struct {
 
 type Runner struct {
 	mu                        sync.RWMutex
+	promptHistory             map[string]sessionPrompt
 	projectID                 string
 	workflow                  config.Workflow
 	workspace                 workspace.Backend
@@ -1779,8 +1780,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	commandStartedAttrs = append(commandStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_command_started", commandStartedAttrs...)
-	turnPrompt := prompt
-	if req.ForgeRetry == nil && orphanRecovery && !agentResumeStateEmpty(resumeState) {
+	promptKey := selection.BackendID + "\x00" + info.Path + "\x00" + req.Issue.ID
+	turnPrompt := r.followupPrompt(promptKey, agentResumeFromState(resumeState), prompt)
+	usingOrphanPrompt := req.ForgeRetry == nil && orphanRecovery && !agentResumeStateEmpty(resumeState)
+	if usingOrphanPrompt {
 		turnPrompt = orphanResumePrompt
 		if req.WorkAttemptID > 0 && req.Generation > 0 {
 			turnPrompt = appendBlockedHandoffBlock(turnPrompt+"\n\nThe current attempt fields below supersede any completion lease values in earlier provider history. Use these values for the completion handshake when this attempt succeeds.", promptOptions)
@@ -1833,6 +1836,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		})
 	}
 	execution := runWithCheckpoint(turnRequest, req, runtimeIdentity, 0)
+	if !usingOrphanPrompt {
+		r.rememberPrompt(promptKey, prompt, execution)
+	}
 	execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 	execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 	execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
@@ -1862,6 +1868,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, sessionCtx, info, workspaceIssue, "resume_fallback_initial")
 		}
 		execution = runWithCheckpoint(turnRequest, req, runtimeIdentity, 0)
+		r.rememberPrompt(promptKey, prompt, execution)
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
