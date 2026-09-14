@@ -30,10 +30,15 @@ func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithou
 // Unlike progress accounting, every started code/rework attempt consumes the same
 // issue allowance. The window starts at the last merge or operator move out of
 // Human Review; ordinary head, lane, and diff changes do not replenish it.
-func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt time.Time) attemptAllowance {
+func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
 	var result attemptAllowance
 	for _, attempt := range attempts {
 		if !mergedAt.IsZero() && !attempt.StartedAt.After(mergedAt) {
+			continue
+		}
+		// Operator moves are observed before dispatch in the same tick, so a
+		// session at resetAt belongs to the renewed window. Merges stay exclusive.
+		if !resetAt.IsZero() && attempt.StartedAt.Before(resetAt) {
 			continue
 		}
 		if allowanceInfrastructureAttempt(attempt) {
@@ -100,7 +105,7 @@ func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connecto
 		mergeEvents = timeline.Events
 	}
 	resetAt := lastAllowanceOperatorMoveAt(mergeEvents)
-	mergedAt := laterDispatchLoopTime(lastAllowanceMergeAt(issue, mergeEvents), resetAt)
+	mergedAt := lastAllowanceMergeAt(issue, mergeEvents)
 	// No recent-history cap: excluded infrastructure attempts must never hide the
 	// three chargeable sessions, even after a prolonged instance outage.
 	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
@@ -119,14 +124,14 @@ func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connecto
 		}
 	}
 	if !resetAt.IsZero() {
-		prior := countSessionsWithoutMerge(attempts, time.Time{})
+		prior := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{})
 		if prior.Triage != nil && !prior.Triage.StartedAt.After(resetAt) {
 			if err := o.annotateAllowanceReset(ctx, issue, prior.Triage.ID, resetAt); err != nil && o.logger != nil {
 				o.logger.Warn("annotate operator allowance reset", "issue_id", issue.ID, "error", err)
 			}
 		}
 	}
-	return countSessionsWithoutMerge(attempts, mergedAt), nil
+	return countSessionsWithoutMerge(attempts, mergedAt, resetAt), nil
 }
 
 // Use the existing durable lane history so the operator's decision survives restart.

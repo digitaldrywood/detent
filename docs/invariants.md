@@ -263,7 +263,9 @@ attempt accounting into one fixed allowance: three code/rework sessions started
 since the last merged PR or operator move out of Human Review (#2692). The
 durable attempt log owns the count, with the window derived from existing lane
 history. Human-origin moves, and moves not initiated by the Detent instance,
-reset the window for any destination; Detent-instance moves do not. New commits,
+reset the window for any destination; Detent-instance moves do not. Sessions
+started at the operator-move timestamp count in the renewed window because lane
+observation precedes dispatch in the same tick; merge boundaries remain exclusive. New commits,
 new PR heads, CI signatures, ordinary lane changes, and acknowledgements alone
 do not reset it. The existing triage comment receives a timestamped reset line
 when comment updates are supported; publication failure does not undo the move. Instance-attributed startup, transport, workspace and restart failures

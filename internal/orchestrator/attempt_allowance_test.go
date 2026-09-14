@@ -30,6 +30,7 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 		name      string
 		attempts  []store.WorkAttempt
 		mergedAt  time.Time
+		resetAt   time.Time
 		count     int
 		exhausted bool
 		triage    int64
@@ -37,13 +38,18 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 		{name: "two code sessions permit another", attempts: base[:2], count: 2},
 		{name: "three code and rework sessions refuse fourth despite new heads and lanes", attempts: base, count: 3, exhausted: true},
 		{name: "merge resets prior sessions", attempts: base, mergedAt: now.Add(time.Minute), count: 1},
+		{name: "reset includes same tick session", attempts: base, resetAt: now, count: 3, exhausted: true},
+		{name: "reset excludes earlier sessions", attempts: base, resetAt: now.Add(time.Minute), count: 2},
+		{name: "reset after merge includes same tick session", attempts: base, mergedAt: now, resetAt: now.Add(time.Minute), count: 2},
+		{name: "merge after reset excludes same tick session", attempts: base, mergedAt: now.Add(time.Minute), resetAt: now, count: 1},
+		{name: "simultaneous merge and reset preserves merge boundary", attempts: base, mergedAt: now.Add(time.Minute), resetAt: now.Add(time.Minute), count: 1},
 		{name: "merge after all sessions", attempts: base, mergedAt: now.Add(3 * time.Minute)},
 		{name: "triage is recorded but not charged", attempts: append(append([]store.WorkAttempt{}, base...), store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, StartedAt: now.Add(3 * time.Minute)}), count: 3, exhausted: true, triage: 4},
 		{name: "validator and merge runs are not code sessions", attempts: []store.WorkAttempt{{WorkerType: "validator"}, {WorkerType: "merge"}, {WorkerType: "planner"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := countSessionsWithoutMerge(tt.attempts, tt.mergedAt)
+			got := countSessionsWithoutMerge(tt.attempts, tt.mergedAt, tt.resetAt)
 			var triage int64
 			if got.Triage != nil {
 				triage = got.Triage.ID
@@ -57,7 +63,7 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 		t.Run(class+" does not consume allowance", func(t *testing.T) {
 			attempts := append([]store.WorkAttempt{}, base...)
 			attempts[2].ErrorClass = class
-			if got := countSessionsWithoutMerge(attempts, time.Time{}); got.Sessions != 2 || got.exhausted() {
+			if got := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{}); got.Sessions != 2 || got.exhausted() {
 				t.Fatalf("allowance = %#v", got)
 			}
 		})
@@ -621,7 +627,7 @@ func TestAttemptAllowanceOperatorMove(t *testing.T) {
 				orch.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
 				orch.runResults = make(chan runpkg.Completion, 1)
 				state := newState(cfg)
-				if !orch.dispatchIssue(t.Context(), &state, issue, 4, now.Add(time.Second), "") {
+				if !orch.dispatchIssue(t.Context(), &state, issue, 4, now, "") {
 					t.Fatal("operator move did not permit dispatch")
 				}
 				select {
