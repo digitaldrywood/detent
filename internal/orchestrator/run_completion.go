@@ -154,6 +154,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
+	if running.Mode == runpkg.RunModeTriage {
+		o.finishAttemptTriage(ctx, state, event, running)
+		return
+	}
 	if running.CompletionLane != "" {
 		event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {

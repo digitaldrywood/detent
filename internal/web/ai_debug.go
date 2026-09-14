@@ -194,7 +194,7 @@ func aiDebugProjectEvidence(ctx context.Context, trackedProject *project.Project
 		DetentDefectDestinationRepo: "digitaldrywood/detent",
 		ConfigDestinationRepo:       strings.TrimSpace(workflow.Tracker.Repository),
 		Brakes: aidebug.BrakeEvidence{
-			NoProgressLimit:      workflow.Agent.AutoPromote.NoProgressLimit,
+			NoProgressLimit:      0,
 			MaxSessionTokens:     workflow.Agent.MaxSessionTokens,
 			LifetimeSessionLimit: workflow.Agent.LifetimeSessionLimit,
 			LifetimeTokenLimit:   workflow.Agent.LifetimeTokenLimit,
@@ -277,7 +277,7 @@ func (s *Server) aiDebugIssueEvidence(ctx context.Context, trackedProject *proje
 		CurrentLane:         strings.TrimSpace(issue.State),
 		TimeInLaneSeconds:   issue.CurrentLaneAgeSeconds,
 		Blocked:             aiDebugBlockedEvidence(issue, blocked, blockedFound),
-		Park:                aiDebugParkEvidence(snapshot, issue, trackedProject.Workflow().Config.Agent.AutoPromote.NoProgressLimit),
+		Park:                aiDebugParkEvidence(snapshot, issue, 0),
 		Dependencies:        aiDebugDependencies(snapshot, issue),
 		Attempts:            aiDebugAttempts(attempts),
 		Sessions:            aiDebugSessions(sessions),

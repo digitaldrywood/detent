@@ -98,17 +98,6 @@ func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.C
 			Hint:   "Add " + reworkState + " to tracker.active_states or tracker.terminal_states.",
 		}
 	}
-	if cfg.Agent.AutoPromote.ReworkLimit > 0 &&
-		!doctorStateInList("Blocked", cfg.Tracker.ActiveStates) &&
-		!doctorStateInList("Blocked", cfg.Tracker.ObservedStates) &&
-		!doctorStateInList("Blocked", cfg.Tracker.TerminalStates) {
-		return doctorCheck{
-			Name:   name,
-			Status: doctorFail,
-			Detail: "agent.auto_promote.rework_limit is greater than 0 but Blocked is not configured in tracker.active_states, tracker.observed_states, or tracker.terminal_states",
-			Hint:   "Add Blocked to a tracker state list so rework-limit handoff status writes can be provisioned and verified.",
-		}
-	}
 	if !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		return doctorCheck{
 			Name:   name,
@@ -168,15 +157,12 @@ func checkDoctorAutoPromoteLive(
 	}
 	if verifier, ok := projectConnector.(doctorStatusOptionVerifier); ok {
 		verifyStates := []string{sourceState, passState, reworkState}
-		if cfg.Agent.AutoPromote.ReworkLimit > 0 {
-			verifyStates = append(verifyStates, "Blocked")
-		}
 		if err := verifier.VerifyStatusOptions(ctx, verifyStates); err != nil {
 			return doctorCheck{
 				Name:   name,
 				Status: doctorFail,
 				Detail: fmt.Sprintf("status option verification failed: %v", err),
-				Hint:   "Ensure auto-promote source, pass, rework, and rework-limit target states resolve through tracker.state_map to existing GitHub Project Status options.",
+				Hint:   "Ensure auto-promote source, pass, and rework states resolve through tracker.state_map to existing GitHub Project Status options.",
 			}
 		}
 	}
@@ -576,7 +562,6 @@ func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromote
 		SourceState:           cfg.Agent.AutoPromote.SourceState,
 		PassState:             cfg.Agent.AutoPromote.PassState,
 		ReworkState:           cfg.Agent.AutoPromote.ReworkState,
-		ReworkLimit:           cfg.Agent.AutoPromote.ReworkLimit,
 		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),
 		WorkpadStructuredOnly: cfg.Workpad.StructuredOnly,
 		Gate:                  cfg.Gate,

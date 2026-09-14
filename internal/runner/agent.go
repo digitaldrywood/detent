@@ -594,6 +594,8 @@ func normalizeRunMode(mode string) string {
 		return RunModeMerge
 	case RunModeRoutine:
 		return RunModeRoutine
+	case RunModeTriage:
+		return RunModeTriage
 	default:
 		return RunModeImplement
 	}
@@ -1414,6 +1416,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	forgeHost := forgeavailability.HostFromEndpoint(workflow.Config.Tracker.Endpoint)
 	mode := normalizeRunMode(req.Mode)
+	if mode == RunModeTriage {
+		return r.runTriage(ctx, req)
+	}
 	if mode == RunModeMerge && mergeFastPathCheckedHead(req.Issue) && req.MergeRefreshHeadSHA != req.Issue.PullRequest.HeadSHA {
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,

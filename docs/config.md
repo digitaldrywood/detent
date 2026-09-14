@@ -19,6 +19,20 @@ Priority settings order ready work (INV-10). Project priority and
 idle slots or cancel running workers. `max_concurrent_agents` and
 `max_concurrent_agents_by_state` remain independent capacity ceilings.
 
+## Issue session allowance
+
+Code and rework share a fixed allowance of three sessions without a merged PR.
+The next code dispatch runs one read-only triage pass, publishes its explanation,
+and leaves the issue in Human Review. New PR heads, changed CI signatures, lane
+moves, and acknowledgements do not renew the allowance. A merged PR resets it;
+instance-attributed failures do not consume it.
+
+The former `agent.auto_promote.rework_limit` and
+`agent.auto_promote.no_progress_limit` keys are retired and have no effect.
+Remove them from existing configuration. There is no replacement tuning key.
+See [INV-3](invariants.md#inv-3--mechanism-moratorium) for the consolidation and
+historical-reader compatibility contract.
+
 ## Terminal attempt recovery
 
 Set `recovery.terminal_attempt_retry_limit` in `detent.yaml` or
@@ -854,11 +868,9 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.auto_promote.gate_wait_state` | `string` | `"source"` | No | must be one of source, review |
 | `agent.auto_promote.gate_wait_timeout_action` | `string` | `"human_review"` | No | must be one of merge, human_review |
 | `agent.auto_promote.gate_wait_timeout_seconds` | `integer` | `3600` | No | must be greater than 0 |
-| `agent.auto_promote.no_progress_limit` | `integer` | `3` | No | must be greater than or equal to 0<br>tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0 |
 | `agent.auto_promote.optout_label` | `string` | `"requires-human-review"` | No | must not be blank |
 | `agent.auto_promote.pass_state` | `string` | `"Merging"` | No | None |
 | `agent.auto_promote.quiet_seconds` | `integer` | `600` | No | must be greater than or equal to 0 |
-| `agent.auto_promote.rework_limit` | `integer` | `3` | No | must be greater than or equal to 0 |
 | `agent.auto_promote.rework_state` | `string` | `"Rework"` | No | None |
 | `agent.auto_promote.source_state` | `string` | `"Human Review"` | No | None |
 | `agent.budget` | `object` | `see child fields` | No | None |
@@ -1241,7 +1253,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `server.kanban.show_blocked_alerts` | `boolean` | `false` | No | None |
 | `server.port` | `integer` | `none` | No | must be greater than or equal to 0 |
 | `tracker` | `object` | `see child fields` | No | intake.sources[].creates.status must name a configured tracker state<br>retro.target_state must name a configured tracker state |
-| `tracker.active_states` | `list<string>` | `["Todo","In Progress"]` | No | , tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0<br>must include Rework when tracker.dependency_auto_unblock.enabled is true<br>must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true<br>state names must be unique<br>state names must not be blank |
+| `tracker.active_states` | `list<string>` | `["Todo","In Progress"]` | No | must include Rework when tracker.dependency_auto_unblock.enabled is true<br>must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true<br>state names must be unique<br>state names must not be blank |
 | `tracker.api_key` | `string` | `none` | Conditional | is required for linear<br>or GitHub App credentials are required for github<br>or GitHub App credentials are required for github_local |
 | `tracker.assignee` | `string` | `none` | No | None |
 | `tracker.authorization` | `object` | `see child fields` | No | None |
@@ -1410,6 +1422,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].pull_request.merge_queue_entry.state` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.merge_queue_entry.url` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.mergeable_state` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.merged_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].pull_request.node_id` | `string` | `none` | No | None |
 | `tracker.issues[].pull_request.number` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].pull_request.required_check_failures` | `list<object>` | `[]` | No | None |
@@ -1485,7 +1498,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.local_sqlite` | `object` | `see child fields` | No | tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite.path` | `string` | `none` | Conditional | is required for local_sqlite |
 | `tracker.local_sqlite.project_id` | `string` | `none` | No | None |
-| `tracker.observed_states` | `list<string>` | `["Backlog","Human Review","Blocked"]` | No | agent.stop_run.target_state must be included in tracker.observed_states<br>state names must be unique<br>state names must not be blank<br>tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0 |
+| `tracker.observed_states` | `list<string>` | `["Backlog","Human Review","Blocked"]` | No | agent.stop_run.target_state must be included in tracker.observed_states<br>state names must be unique<br>state names must not be blank |
 | `tracker.priority_map` | `string or mapping` | `{"High":2,"Low":4,"Medium":3,"No priority":null,"Urgent":1}` | No | option names must not be blank<br>ranks must be integers 1 through 4 or null |
 | `tracker.project_slug` | `string` | `none` | Conditional | is required for github project_v2<br>is required for linear |
 | `tracker.repository` | `string` | `none` | Conditional | is required for github_local<br>is required for intake sources<br>must be owner/name when release.enabled is true |
@@ -1493,7 +1506,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.status_field` | `string` | `"Status"` | No | None |
 | `tracker.status_label_prefix` | `string` | `"detent:"` | No | None |
 | `tracker.status_page_url` | `string` | `"https://linearstatus.com" for linear; "https://www.githubstatus.com" for github or github_local; unused otherwise` | No | must be an absolute http or https base URL without credentials, path, query, or fragment |
-| `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank<br>tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0 |
+| `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | None |
 | `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0 |

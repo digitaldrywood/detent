@@ -22,7 +22,6 @@ type AutoPromoteConfig struct {
 	SourceState           string
 	PassState             string
 	ReworkState           string
-	ReworkLimit           int
 	TerminalStates        []string
 	NoProgressLimit       int
 	WorkpadStructuredOnly bool
@@ -306,9 +305,6 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	cfg.ReworkState = strings.TrimSpace(cfg.ReworkState)
 	if cfg.ReworkState == "" {
 		cfg.ReworkState = autoPromoteReworkState
-	}
-	if cfg.ReworkLimit < 0 {
-		cfg.ReworkLimit = 0
 	}
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	if cfg.NoProgressLimit < 0 {

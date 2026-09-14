@@ -183,12 +183,34 @@ dispatch refresh (#2509). Closed tracker state releases ordinary dependencies
 without requiring a terminal lane observation; human completion evidence remains
 required. This consolidates dependency readiness without adding a recovery loop.
 
-An explicit operator acknowledgement resets that issue's dispatch-loop history at
-the acknowledgement timestamp (#2517). Kanban moves out of Blocked and `detent issue
---acknowledge-parks` share the existing recovery-park acknowledgement path, including
-when the CLI acknowledgement leaves the issue in Blocked; automatic unparks and
-unrelated issue history remain untouched. This consolidates operator retry intent
-instead of adding another breaker or recovery loop.
+Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
+attempt accounting into one fixed allowance: three code/rework sessions started
+since the last merged PR. The durable attempt log owns the count; lane changes,
+new commits, new PR heads, CI signatures, and operator acknowledgements do not
+reset it. Instance-attributed startup, transport, workspace and restart failures
+are excluded. Immutable PR merge times and merge observations in the durable lane timeline
+reset prior work; subsequent activity on a merged PR is not a reset.
+
+The fourth code dispatch becomes one read-only triage turn using the existing
+code/rework role. Its durable attempt identity prevents another triage turn after
+restart. The runner has no mutation tools, no resume state, no writable worktree,
+and no workspace or publication hooks. It returns one fixed-format explanation;
+the orchestrator persists that result, publishes one issue comment, and moves the
+issue to Human Review with `attempt_allowance_exhausted`. Publication checks the
+existing attempt marker before retrying; interrupted triage yields an explicit
+incomplete-diagnosis note, never another worker turn. Automatic promotion also
+honors exhaustion and existing running-worker ownership. Triage retains an
+operator lane change observed at completion, including across publication retries. Historical reason strings and progress records remain readable.
+
+This is the issue-authorized replacement reason and consolidation, not an
+additional breaker, configuration key, or recovery loop. Non-PR artifact and
+explicit operational completion workflows retain their own deliverable rules.
+`TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
+`TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
+`TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
+`TestAttemptAllowancePreservesOperatorCompletionLane`, and
+`TestPullRequestMergeTimeSurvivesLaterActivity` enforce the allowance and restricted publication
+contract.
 
 Scheduled routine occurrences advance from their durable `scheduled_for` identity
 regardless of success or failure. A selected occurrence whose existing ownership
