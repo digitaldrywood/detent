@@ -530,14 +530,19 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 	}
 	next := make(map[string]time.Time)
 	origins := make(map[string]provenance.Attribution)
+	observed := make(map[string]struct{})
 	for _, issue := range stateLaneEntryIssues(state) {
 		key := workflowLaneEntryKey(issue)
 		if key == "" {
 			continue
 		}
-		if _, exists := next[key]; exists {
+		// Board issues come first: retained runtime snapshots must not replay
+		// an older lane over the freshly fetched tracker observation.
+		identity := workflowIssueIdentityKey(issue)
+		if _, exists := observed[identity]; exists {
 			continue
 		}
+		observed[identity] = struct{}{}
 		observation, origin, err := o.observeLane(ctx, state, issue, observedAt)
 		if err != nil {
 			if o.logger != nil {

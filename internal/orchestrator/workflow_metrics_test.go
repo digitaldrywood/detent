@@ -889,3 +889,63 @@ func (c *workflowMetricsConnector) SetAssignee(context.Context, string, string) 
 func (c *workflowMetricsConnector) SetField(context.Context, string, string, string) error {
 	return nil
 }
+
+func TestRefreshCurrentLaneEntriesOperatorMoveOnce(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"pipeline", "running", "retry", "blocked", "completed", "status drift"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			at := time.Date(2026, 9, 14, 18, 26, 14, 0, time.UTC)
+			issue := connector.Issue{ID: "issue-2470", Identifier: "digitaldrywood/detent#2470", State: "Todo"}
+			cfg := laneMutationTestConfig()
+			recorder := &workflowMetricsRecorderSpy{}
+			orch := &Orchestrator{cfg: cfg, workflowMetrics: recorder}
+			state := newState(cfg)
+			state.BoardIssues = []connector.Issue{issue}
+			orch.refreshCurrentLaneEntries(t.Context(), &state, at.Add(-time.Minute))
+			switch source {
+			case "pipeline":
+				state.Pipeline = []connector.Issue{issue}
+			case "running":
+				state.Running[issue.ID] = Running{Issue: issue}
+			case "retry":
+				state.Retry[issue.ID] = Retry{Issue: issue}
+			case "blocked":
+				state.Blocked[issue.ID] = Blocked{Issue: issue}
+			case "completed":
+				state.Completed[issue.ID] = Completed{Issue: issue}
+			case "status drift":
+				state.StatusDrift.UntrackedOpen = []connector.Issue{issue}
+			}
+			issue.State = "Backlog"
+			state.BoardIssues = []connector.Issue{issue}
+			for pass := range 3 {
+				now := at.Add(time.Duration(pass) * 4 * time.Minute)
+				// Refresh classifies fetched tracker issues before publishing lane entries.
+				if _, _, err := orch.observeLane(t.Context(), &state, issue, now); err != nil {
+					t.Fatal(err)
+				}
+				orch.refreshCurrentLaneEntries(t.Context(), &state, now)
+			}
+			var entered []store.WorkflowPhaseEvent
+			for _, event := range recorder.events {
+				if event.Status == "entered" {
+					entered = append(entered, event)
+				}
+			}
+			if len(entered) != 1 || entered[0].PhaseName != "Backlog" || entered[0].Reason != "operator_move" {
+				t.Fatalf("entered events = %+v, want one Backlog operator_move", entered)
+			}
+			if len(state.laneEntries) != 1 || !state.laneEntries[workflowLaneEntryKey(issue)].Equal(at) {
+				t.Fatalf("lane entries = %v, want only original Backlog entry", state.laneEntries)
+			}
+			// A later genuine move must still be recorded, even when returning to Todo.
+			issue.State = "Todo"
+			state.BoardIssues = []connector.Issue{issue}
+			orch.refreshCurrentLaneEntries(t.Context(), &state, at.Add(12*time.Minute))
+			if len(recorder.events) != 4 || recorder.events[3].PhaseName != "Todo" || recorder.events[3].Status != "entered" {
+				t.Fatalf("events after return = %+v, want two exited/entered pairs", recorder.events)
+			}
+		})
+	}
+}

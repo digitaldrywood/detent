@@ -135,6 +135,14 @@ the forge-availability pause and write canary (#2548). They do not park an issue
 create a human prerequisite, and the named project condition clears after a
 successful write proves recovery.
 
+Lane-entry refresh consolidates overlapping board and retained runtime snapshots
+into one observation per issue (#2649). Freshly fetched board issues take
+precedence, so stale attempt or pipeline lanes cannot reset the ledger and
+replay an operator move on every refresh. This replaces lane-key deduplication
+with issue-identity deduplication in the existing refresh; it adds no recovery
+path or transition reason. `TestRefreshCurrentLaneEntriesOperatorMoveOnce`
+checks three unchanged passes and a later genuine return move.
+
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
 Unknown constants, including concatenations, fail. Existing dynamic forwarding
