@@ -91,6 +91,7 @@ const (
 	AutoPromoteReasonValidatorRework                 AutoPromoteReason = "validator_rework"
 	AutoPromoteReasonValidatorScoreBelowThreshold    AutoPromoteReason = "validator_score_below_threshold"
 	AutoPromoteReasonValidatorBlockedSeverity        AutoPromoteReason = "validator_blocked_severity"
+	AutoPromoteReasonSecurityAuditWait               AutoPromoteReason = "security_audit_wait"
 	AutoPromoteReasonSecurityAuditMissing            AutoPromoteReason = "security_audit_missing"
 	AutoPromoteReasonSecurityAuditFailed             AutoPromoteReason = "security_audit_failed"
 	AutoPromoteReasonSecurityAuditFindings           AutoPromoteReason = "security_audit_findings"
@@ -1002,6 +1003,8 @@ func autoPromoteReasonFromGate(reason gate.Reason) AutoPromoteReason {
 		return AutoPromoteReasonValidatorScoreBelowThreshold
 	case gate.ReasonValidatorBlockedSeverity:
 		return AutoPromoteReasonValidatorBlockedSeverity
+	case gate.ReasonSecurityAuditWait:
+		return AutoPromoteReasonSecurityAuditWait
 	case gate.ReasonSecurityAuditMissing:
 		return AutoPromoteReasonSecurityAuditMissing
 	case gate.ReasonSecurityAuditFailed:

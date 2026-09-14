@@ -153,6 +153,7 @@ const (
 	ReasonValidatorRework              Reason = "validator_rework"
 	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
 	ReasonValidatorBlockedSeverity     Reason = "validator_blocked_severity"
+	ReasonSecurityAuditWait            Reason = "security_audit_wait"
 	ReasonSecurityAuditMissing         Reason = "security_audit_missing"
 	ReasonSecurityAuditFailed          Reason = "security_audit_failed"
 	ReasonSecurityAuditFindings        Reason = "security_audit_findings"
@@ -530,7 +531,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 		out.Findings = cloneFindings(summary.P1Findings)
 		return out
 	}
-	if out, ok := evaluateSecurityAudit(cfg.SecurityAudit, summary.SecurityAudit); ok {
+	if out, ok := EvaluateSecurityAudit(cfg.SecurityAudit, summary.SecurityAudit); ok {
 		return out
 	}
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
@@ -547,13 +548,17 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	return decision(ActionPass, ReasonReady)
 }
 
-func evaluateSecurityAudit(cfg SecurityAuditConfig, evaluation securityaudit.Evaluation) (Decision, bool) {
+// EvaluateSecurityAudit evaluates trusted audit evidence independently of the source lane.
+func EvaluateSecurityAudit(cfg SecurityAuditConfig, evaluation securityaudit.Evaluation) (Decision, bool) {
 	cfg = effectiveSecurityAuditConfig(cfg)
 	if !cfg.Enabled {
 		return Decision{}, false
 	}
 	if evaluation.Allowed && evaluation.Reason == securityaudit.ReasonReady {
 		return Decision{}, false
+	}
+	if evaluation.Running {
+		return decision(ActionWait, ReasonSecurityAuditWait), true
 	}
 	switch evaluation.Reason {
 	case "", securityaudit.ReasonMissing, securityaudit.ReasonStale:

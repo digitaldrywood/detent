@@ -336,6 +336,17 @@ If that budget also prevents a saved stale snapshot's early recheck, its
 eligibility check consolidates into the mandatory final revalidation; other
 completed candidates can still use the evaluation window.
 
+Security audit verdict routing from Merging shares the existing auto-promote
+consumer with source-lane completion (#2642). The merge completion handler no
+longer independently fails or routes audit outcomes. Findings publish to the PR
+before the existing lane writer routes to Rework; the trusted run marker prevents
+repeat publication after a failed lane write. Comments remain explanatory, never
+verdict evidence. Required-gate telemetry uses the same audit classifier.
+`security_audit_wait`, explicitly requested by #2642, distinguishes an active run
+from missing evidence in wait telemetry; it is not a new lane-transition reason
+or recovery path. `TestMergingSecurityAuditVerdict` and
+`TestSecurityAuditPublicationRetry` cover the shared routing and publication.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.
