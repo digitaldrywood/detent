@@ -47,14 +47,6 @@ func (l *LocalGit) PreserveIssue(ctx context.Context, issue Issue) (Preservation
 	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
 		return result, err
 	}
-	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
-	if err != nil {
-		return result, err
-	}
-	record.Preserve = true
-	if err := l.writeOwnershipRecord(record); err != nil {
-		return result, fmt.Errorf("retain workspace ownership: %w", err)
-	}
 	result.Preserved = true
 	recovery, err := l.RecoveryState(ctx, info, issue)
 	if err != nil {
@@ -93,11 +85,11 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
-	if !exists && !record.Preserve {
+	if !exists {
 		return nil
 	}
 	if !isDir || !l.isSourceWorktree(ctx, info.Path) {
-		if exists && record.CleanupStarted && !record.Preserve && !l.isGitWorkspace(ctx, info.Path) {
+		if exists && record.CleanupStarted && !l.isGitWorkspace(ctx, info.Path) {
 			return nil
 		}
 		return fmt.Errorf("%w at %s: worktree registration is unavailable or not managed by source", ErrWorkspacePreserved, info.Path)

@@ -170,6 +170,17 @@ runtime snapshots, including during startup and completion, and leave the regist
 on exit. This consolidates observability with existing lifecycle ownership; it adds
 no recovery path or orphan-suppression guard (#2505).
 
+Git workspace cleanup removes the durable `preserve` latch and the residual
+sweep's registration-only exemption (#2612). Recorded and discovered worktrees
+share the existing checks for ownership, active issues/processes, uncommitted
+files, and commits absent from remote refs. Legacy `preserve` JSON fields no
+longer exempt a workspace; checkpoint journals and filesystem retention remain.
+`TestLocalGitReconcileRechecksPreservation` covers restart, legacy records,
+published and merged work, and continued retention of unsafe candidates. No
+merge inference, expiration mechanism, or configuration is added. Expected
+retention keeps path evidence without failing the sweep, so the existing sweep
+interval advances even when local work remains.
+
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.
