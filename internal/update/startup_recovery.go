@@ -106,6 +106,9 @@ func (r *StartupRecovery) MarkHealthy(ctx context.Context) error {
 		case strings.TrimSpace(pending.ToVersion):
 			targetCommit := strings.TrimSpace(pending.ToCommit)
 			if targetCommit == "" {
+				if r.state.Schema != startupRecoveryLegacyStateSchema {
+					return errors.New("pending update does not include the tested target commit")
+				}
 				// Older updaters did not record a target commit. Complete their
 				// version-matched update through the normal healthy cleanup.
 				r.cfg.Logger.Info("accepting legacy pending update without target commit", "version", r.cfg.CurrentVersion)

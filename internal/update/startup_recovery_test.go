@@ -333,9 +333,9 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 		{name: "legacy pending update after two failed startups", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2},
 		{name: "legacy pending update with missing running commit", stateSchema: startupRecoveryLegacyStateSchema},
 		{name: "legacy pending update with wrong running commit", currentCommit: testPreviousCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2},
-		{name: "current missing commit after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, failedStarts: 1},
+		{name: "current missing commit after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, failedStarts: 1, wantErr: "pending update does not include the tested target commit"},
 		{name: "wrong commit after failed startup", currentCommit: testPreviousCommit, failedStarts: 1, wantErr: "does not match pending update commit"},
-		{name: "current pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema},
+		{name: "current pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, wantErr: "pending update does not include the tested target commit"},
 		{name: "same version from wrong commit", currentCommit: testPreviousCommit, wantErr: "does not match pending update commit"},
 	}
 	for _, tt := range tests {
