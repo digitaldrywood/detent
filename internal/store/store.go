@@ -284,6 +284,7 @@ type AdmissionStore interface {
 	AdmissionDownstreamOutcomes(context.Context, string) ([]admissionmodel.DownstreamOutcome, error)
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
+	AdmissionCandidateHistory(context.Context, string) (map[string]admissionmodel.IssueRecord, error)
 	RecentAdmissionRuns(context.Context, string, int) ([]admissionmodel.RunRecord, error)
 	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult, int) (admissionmodel.MalformedResult, error)
 	BlockedAdmissionMalformedResult(context.Context, string, string) (admissionmodel.MalformedResult, bool, error)

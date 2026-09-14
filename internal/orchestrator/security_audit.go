@@ -245,6 +245,11 @@ func (o *Orchestrator) recordSecurityAuditExecution(ctx context.Context, snapsho
 	if auditErr != nil {
 		exitStatus = securityaudit.ExitStatusFailed
 		failure = auditErr.Error()
+		o.logSecurityAuditFailure(
+			connector.Issue{ID: snapshot.IssueID, Identifier: snapshot.Identifier},
+			"execution_failed",
+			auditErr,
+		)
 	}
 	outputDigest := ""
 	if execution.Output != "" {

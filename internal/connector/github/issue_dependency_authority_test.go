@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -132,9 +134,18 @@ func TestTodoNativeDependencyBudgetReserveDoesNotReturnCandidates(t *testing.T) 
 		t.Run(body, func(t *testing.T) {
 			t.Parallel()
 			server := newGraphQLTestServer(t, []graphqlTestResponse{
-				{method: http.MethodGet, headers: map[string]string{"X-RateLimit-Limit": "5000", "X-RateLimit-Remaining": "900", "X-RateLimit-Resource": "core"}, body: `[{"node_id":"I_101","number":101,"body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/101","labels":[{"name":"detent:todo"}]}]`},
+				{method: http.MethodGet, headers: map[string]string{"X-RateLimit-Limit": "5000", "X-RateLimit-Remaining": "2000", "X-RateLimit-Resource": "core"}, body: `[{"node_id":"I_101","number":101,"body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/101","labels":[{"name":"detent:todo"}]}]`},
 			})
 			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}, RESTMinRemainingReserve: 1000})
+			now := time.Now()
+			headers := http.Header{}
+			headers.Set("X-RateLimit-Limit", "5000")
+			headers.Set("X-RateLimit-Remaining", "900")
+			headers.Set("X-RateLimit-Resource", "core")
+			headers.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+			c.client.recordRESTRateLimitFromHeaders(t.Context(), "", c.client.restCredentialIdentity("token"), http.MethodGet,
+				"/repos/digitaldrywood/detent/issues/101/dependencies/blocked_by?per_page=100", http.StatusOK, headers, nil, now, false)
+
 			result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
 			if !errors.Is(err, ErrRESTBudgetReserved) || len(result.Issues) != 0 {
 				t.Fatalf("candidates = %+v, err = %v", result.Issues, err)

@@ -270,6 +270,7 @@ type doctorDeps struct {
 	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	proposalLaneWriter   func(context.Context, string, workflowconfig.Config, connector.Connector, connector.Issue, string) error
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
+	modelCatalogProbe    func(context.Context, workflowconfig.AgentBackend) (int, error)
 	executable           func() (string, error)
 	shipSkillProbe       func(string) (doctorShipSkill, error)
 	now                  func() time.Time
@@ -1250,6 +1251,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.modelProbe == nil {
 		d.modelProbe = defaults.modelProbe
 	}
+	if d.modelCatalogProbe == nil {
+		d.modelCatalogProbe = defaults.modelCatalogProbe
+	}
 	if d.executable == nil {
 		d.executable = defaults.executable
 	}
@@ -1294,6 +1298,7 @@ func defaultDoctorDeps() doctorDeps {
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
+		modelCatalogProbe:    defaultDoctorBackendModelCatalogProbe,
 		executable:           os.Executable,
 		shipSkillProbe:       probeDoctorShipSkill,
 		now:                  time.Now,

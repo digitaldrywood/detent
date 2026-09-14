@@ -1,7 +1,10 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -186,6 +189,31 @@ func TestStartSecurityAuditStagePersistsTrustedExecution(t *testing.T) {
 	}
 }
 
+func TestStartSecurityAuditStageLogsFailedExecution(t *testing.T) {
+	t.Parallel()
+
+	issue := securityAuditTestIssue()
+	snapshot := securityAuditSnapshotFromIssue("detent", issue)
+	auditErr := errors.New("agent override validation: model catalog unavailable: initialize codex app-server: unexpected EOF")
+	memo := newSecurityAuditMemoryStore()
+	connector := &securityAuditTestConnector{snapshot: snapshot}
+	var logs bytes.Buffer
+	orch := securityAuditTestOrchestrator(memo)
+	orch.connector = connector
+	orch.securityAuditor = &securityAuditTestAuditor{err: auditErr}
+	orch.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	orch.startSecurityAuditStage(t.Context(), issue, time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC))
+	orch.securityAuditWG.Wait()
+
+	if len(memo.runs) != 1 || memo.runs[0].Failure != auditErr.Error() {
+		t.Fatalf("persisted runs = %#v, want failure %q", memo.runs, auditErr)
+	}
+	if got := logs.String(); !strings.Contains(got, auditErr.Error()) {
+		t.Fatalf("structured log missing security audit catalog failure %q:\n%s", auditErr, got)
+	}
+}
+
 func TestLiveSecurityAuditEvaluationRefreshesExactHead(t *testing.T) {
 	t.Parallel()
 
@@ -264,6 +292,7 @@ func (s *securityAuditMemoryStore) ListSecurityAuditDispositions(_ context.Conte
 
 type securityAuditTestAuditor struct {
 	request SecurityAuditRequest
+	err     error
 }
 
 func (a *securityAuditTestAuditor) Audit(_ context.Context, request SecurityAuditRequest) (SecurityAuditExecution, error) {
@@ -284,7 +313,7 @@ func (a *securityAuditTestAuditor) Audit(_ context.Context, request SecurityAudi
 		},
 		StartedAt:   startedAt,
 		CompletedAt: startedAt.Add(time.Second),
-	}, nil
+	}, a.err
 }
 
 type securityAuditTestConnector struct {
