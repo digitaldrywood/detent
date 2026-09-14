@@ -239,6 +239,11 @@ Reconciliation and reaping both receive that stage budget; EINVAL/EIO retries do
 not renew it, and expiration preserves the ownership error and verified partial
 results. This removes a competing timer without adding a recovery mechanism.
 
+Structured Workpad status parsing ignores unknown YAML keys and records their paths
+on the signal (#2604), removing strict field rejection from the existing parser.
+Known predicate validation and completion authorization remain unchanged; no new
+reason code, gate, or recovery mechanism is introduced.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

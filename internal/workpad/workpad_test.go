@@ -63,10 +63,10 @@ func TestSignalFromComment(t *testing.T) {
 			wantInvalid: "parse detent-status YAML",
 		},
 		{
-			name:        "unknown field",
-			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\nextra: nope\n```",
-			wantOK:      true,
-			wantInvalid: "field extra not found",
+			name:       "unknown field",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\nextra: nope\n```",
+			wantOK:     true,
+			wantStatus: StatusComplete,
 		},
 		{
 			name:        "invalid status value",
@@ -543,4 +543,37 @@ func TestParseStatusBlockTypedBlockers(t *testing.T) {
 
 func boolPointer(value bool) *bool {
 	return &value
+}
+
+func TestSignalUnknownPredicateKeys(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, extra string }{
+		{"scalar", "      repository: private/project\n      pull_request: 42\n      head_sha: abc123\n"},
+		{"sequence", "      checks: [CI, security-audit]\n"},
+		{"mapping", "      checks: {CI: pending}\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := "```detent-status\nschema: 1\nstatus: complete\nblockers:\n  - reason: waiting for CI\n    predicate:\n      type: check_presence\n      check: CI\n      present: false\n" + tt.extra + "```"
+			signal, ok := SignalFromComment(body, "", "digitaldrywood/detent")
+			if !ok || signal.Invalid != nil {
+				t.Fatalf("signal = %#v", signal)
+			}
+			wantKeys := []string{"blockers[0].predicate.checks"}
+			if tt.name == "scalar" {
+				wantKeys = []string{"blockers[0].predicate.head_sha", "blockers[0].predicate.pull_request", "blockers[0].predicate.repository"}
+			}
+			if !reflect.DeepEqual(signal.UnknownKeys, wantKeys) {
+				t.Fatalf("unknown keys = %v, want %v", signal.UnknownKeys, wantKeys)
+			}
+			clone := CloneSignal(signal)
+			clone.UnknownKeys[0] = "changed"
+			if !reflect.DeepEqual(signal.UnknownKeys, wantKeys) {
+				t.Fatal("clone shares unknown keys")
+			}
+			p := signal.Blockers[0].Predicate
+			if p.Type != PredicateCheckPresence || p.Check != "CI" || p.Present == nil || *p.Present {
+				t.Fatalf("predicate = %#v", p)
+			}
+		})
+	}
 }

@@ -45,6 +45,8 @@ const (
 var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)$`)
 
 type Signal struct {
+	// UnknownKeys records ignored YAML field paths for diagnostics only.
+	UnknownKeys []string          `json:"unknown_keys,omitempty" yaml:"unknown_keys,omitempty"`
 	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
 	CommentURL  string            `json:"comment_url,omitempty" yaml:"comment_url,omitempty"`
 	Status      string            `json:"status,omitempty" yaml:"status,omitempty"`
@@ -87,12 +89,13 @@ type Invalid struct {
 }
 
 type statusBlockYAML struct {
-	Schema      int               `yaml:"schema"`
-	Status      string            `yaml:"status"`
-	ReasonCode  string            `yaml:"reason_code"`
-	Blockers    []blockerYAML     `yaml:"blockers"`
-	HumanAction *string           `yaml:"human_action"`
-	Fields      map[string]string `yaml:"fields"`
+	Unknown     map[string]yaml.Node `yaml:",inline"`
+	Schema      int                  `yaml:"schema"`
+	Status      string               `yaml:"status"`
+	ReasonCode  string               `yaml:"reason_code"`
+	Blockers    []blockerYAML        `yaml:"blockers"`
+	HumanAction *string              `yaml:"human_action"`
+	Fields      map[string]string    `yaml:"fields"`
 }
 
 type completionAuthorizationYAML struct {
@@ -101,26 +104,28 @@ type completionAuthorizationYAML struct {
 }
 
 type blockerYAML struct {
-	Ref             string         `yaml:"ref"`
-	Reason          string         `yaml:"reason"`
-	Owner           string         `yaml:"owner"`
-	Predicate       *predicateYAML `yaml:"predicate"`
-	ExpiresAt       string         `yaml:"expires_at"`
-	RecheckInterval string         `yaml:"recheck_interval"`
+	Unknown         map[string]yaml.Node `yaml:",inline"`
+	Ref             string               `yaml:"ref"`
+	Reason          string               `yaml:"reason"`
+	Owner           string               `yaml:"owner"`
+	Predicate       *predicateYAML       `yaml:"predicate"`
+	ExpiresAt       string               `yaml:"expires_at"`
+	RecheckInterval string               `yaml:"recheck_interval"`
 }
 
 type predicateYAML struct {
-	Type        string   `yaml:"type"`
-	Kind        string   `yaml:"kind"`
-	Ref         string   `yaml:"ref"`
-	State       string   `yaml:"state"`
-	States      []string `yaml:"states"`
-	Check       string   `yaml:"check"`
-	Present     *bool    `yaml:"present"`
-	Scope       string   `yaml:"scope"`
-	Resource    string   `yaml:"resource"`
-	Condition   string   `yaml:"condition"`
-	Fingerprint string   `yaml:"fingerprint"`
+	Unknown     map[string]yaml.Node `yaml:",inline"`
+	Type        string               `yaml:"type"`
+	Kind        string               `yaml:"kind"`
+	Ref         string               `yaml:"ref"`
+	State       string               `yaml:"state"`
+	States      []string             `yaml:"states"`
+	Check       string               `yaml:"check"`
+	Present     *bool                `yaml:"present"`
+	Scope       string               `yaml:"scope"`
+	Resource    string               `yaml:"resource"`
+	Condition   string               `yaml:"condition"`
+	Fingerprint string               `yaml:"fingerprint"`
 }
 
 func SignalFromComment(body string, commentURL string, repo string) (*Signal, bool) {
@@ -247,7 +252,6 @@ func lastCompletionAuthorizationBlock(body string) (string, bool) {
 func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	var raw statusBlockYAML
 	decoder := yaml.NewDecoder(strings.NewReader(content))
-	decoder.KnownFields(true)
 	if err := decoder.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse detent-status YAML: %w", err)
 	}
@@ -258,6 +262,10 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		return nil, errors.New("parse detent-status YAML: multiple YAML documents are not supported")
 	}
 
+	unknownKeys := make([]string, 0, len(raw.Unknown))
+	for key := range raw.Unknown {
+		unknownKeys = append(unknownKeys, key)
+	}
 	problems := []string{}
 	if raw.Schema != 1 {
 		problems = append(problems, "schema must be 1")
@@ -280,6 +288,14 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	reasonCode := normalizeReasonCode(raw.ReasonCode)
 	blockers := make([]Blocker, 0, len(raw.Blockers))
 	for index, blocker := range raw.Blockers {
+		for key := range blocker.Unknown {
+			unknownKeys = append(unknownKeys, fmt.Sprintf("blockers[%d].%s", index, key))
+		}
+		if blocker.Predicate != nil {
+			for key := range blocker.Predicate.Unknown {
+				unknownKeys = append(unknownKeys, fmt.Sprintf("blockers[%d].predicate.%s", index, key))
+			}
+		}
 		ref := strings.TrimSpace(blocker.Ref)
 		reason := strings.TrimSpace(blocker.Reason)
 		owner := normalizeToken(blocker.Owner)
@@ -362,7 +378,9 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		return nil, errors.New(strings.Join(problems, "; "))
 	}
 
+	sort.Strings(unknownKeys)
 	return &Signal{
+		UnknownKeys: unknownKeys,
 		Source:      SourceStructured,
 		Status:      raw.Status,
 		ReasonCode:  reasonCode,
@@ -627,6 +645,7 @@ func CloneSignal(signal *Signal) *Signal {
 		return nil
 	}
 	cloned := *signal
+	cloned.UnknownKeys = append([]string(nil), signal.UnknownKeys...)
 	cloned.Blockers = make([]Blocker, len(signal.Blockers))
 	for index, blocker := range signal.Blockers {
 		cloned.Blockers[index] = blocker
