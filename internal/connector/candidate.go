@@ -158,6 +158,10 @@ func NewCandidateResult(issues []Issue, request CandidateRequest, pagesRead int,
 	issues = append([]Issue(nil), issues...)
 	itemsRead := len(issues)
 	SortCandidateIssues(issues)
+	return orderedCandidateResult(issues, request, pagesRead, incomplete, itemsRead)
+}
+
+func orderedCandidateResult(issues []Issue, request CandidateRequest, pagesRead int, incomplete bool, itemsRead int) CandidateResult {
 	truncated := incomplete || len(issues) > request.Limit
 	if len(issues) > request.Limit {
 		issues = issues[:request.Limit]
@@ -276,9 +280,10 @@ func CandidateOffset(cursor string) (int, error) {
 	return offset, nil
 }
 
-// CandidateOffsetResult records continuation after an already sliced local read.
+// CandidateOffsetResult records continuation after an already ordered and sliced
+// local read. Preserve that order so partial consumers advance the same scan.
 func CandidateOffsetResult(issues []Issue, request CandidateRequest, offset int) CandidateResult {
-	result := NewCandidateResult(issues, request, 1, false)
+	result := orderedCandidateResult(append([]Issue(nil), issues...), request, 1, false, len(issues))
 	if result.Truncated {
 		result.NextCursor = strconv.Itoa(offset + len(result.Issues))
 	}
