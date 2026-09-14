@@ -109,6 +109,13 @@ func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
 			t.Fatalf("missing dependency property %s", name)
 		}
 	}
+	reasons, ok := explanation.Value.Properties["reasons"]
+	if !ok || reasons == nil || reasons.Value == nil || reasons.Value.Items == nil || reasons.Value.Items.Value == nil {
+		t.Fatal("OpenAPI IssueExplanation reasons property is missing")
+	}
+	if got := reasons.Value.Items.Ref; got != "#/components/schemas/IssueExplanationReason" {
+		t.Fatalf("OpenAPI IssueExplanation reasons ref = %q", got)
+	}
 }
 
 func TestServerOpenAPIIssueProgressCredit(t *testing.T) {

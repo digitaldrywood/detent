@@ -1241,7 +1241,7 @@ components:
     IssueExplanation:
       type: object
       description: Version 3 issue state assembled from tracker, runtime, session, pull-request, gate, provenance trust, and cumulative park evidence.
-      required: [schema, found, observed_at, identity, current_lane, eligibility, sessions, required_gate, park_summary, sources, evidence]
+      required: [schema, found, observed_at, identity, current_lane, eligibility, sessions, required_gate, park_summary, reasons, sources, evidence]
       properties:
         schema: {type: integer, enum: [3]}
         found: {type: boolean}
@@ -1261,6 +1261,9 @@ components:
         pull_request: {$ref: "#/components/schemas/GenericObject"}
         required_gate: {$ref: "#/components/schemas/GenericObject"}
         park_summary: {$ref: "#/components/schemas/IssueParkSummary"}
+        reasons:
+          type: array
+          items: {$ref: "#/components/schemas/IssueExplanationReason"}
         sources:
           type: array
           items: {$ref: "#/components/schemas/IssueExplanationSource"}
@@ -1334,6 +1337,13 @@ components:
         freshness: {$ref: "#/components/schemas/IssueExplanationSourceState"}
         degraded: {type: boolean}
         evidence_id: {type: string}
+    IssueExplanationReason:
+      type: object
+      required: [code, detail]
+      properties:
+        code: {type: string}
+        detail: {type: string}
+        action: {type: string}
     IssueExplanationSource:
       type: object
       required: [name, state]

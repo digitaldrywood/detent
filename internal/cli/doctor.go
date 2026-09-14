@@ -67,6 +67,7 @@ type doctorCheck struct {
 	BacklogAdmission           *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
 	OverloadRetriesLastHour    int                                        `json:"overload_retries_last_hour,omitempty"`
 	DependencyCapabilities     []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
+	LaneSignalWarnings         []telemetry.LaneSignalWarning              `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings          []telemetry.StalenessWarning               `json:"staleness_warnings,omitempty"`
 	StrandedIssues             []telemetry.StrandedIssue                  `json:"stranded_active_issues,omitempty"`
 	DispatchStalls             []telemetry.DispatchStatus                 `json:"dispatch_stalls,omitempty"`
@@ -593,6 +594,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Backend capacity",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, boot, cfg.ProjectID, deps, time.Now())}
+			},
+		},
+		doctorCheckJob{
+			Name: "Ignored lane signals",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorLaneSignals(jobCtx, boot, cfg.ProjectID, deps)}
 			},
 		},
 		doctorCheckJob{

@@ -635,6 +635,65 @@ func liveIssueObservation(at time.Time, issue telemetry.Issue) SnapshotObservati
 	return SnapshotObservation{State: SourceLive, Snapshot: telemetry.Snapshot{GeneratedAt: at, BoardIssues: []telemetry.Issue{issue}}}
 }
 
+func TestServiceExplainsIgnoredLaneSignals(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		issue      telemetry.Issue
+		warning    telemetry.LaneSignalWarning
+		driftOnly  bool
+		wantDetail string
+		wantAction string
+		wantLane   string
+	}{
+		{
+			name:       "ignored label on status source",
+			issue:      telemetry.Issue{ID: "issue-label", Identifier: "owner/repo#1", ProjectID: "detent", State: "Backlog"},
+			warning:    telemetry.LaneSignalWarning{ReasonCode: telemetry.LaneSignalIgnoredReasonCode, ProjectID: "detent", IssueID: "issue-label", ConfiguredSource: "ProjectV2 Status", Reason: "this project reads lanes from ProjectV2 Status; label detent:todo has no effect; set Status to Todo", Action: "set Status to Todo"},
+			wantDetail: "label detent:todo has no effect",
+			wantAction: "set Status to Todo",
+			wantLane:   "Backlog",
+		},
+		{
+			name:       "ignored status on label source from drift scan",
+			issue:      telemetry.Issue{ID: "issue-status", Identifier: "owner/repo#2", ProjectID: "detent"},
+			warning:    telemetry.LaneSignalWarning{ReasonCode: telemetry.LaneSignalIgnoredReasonCode, ProjectID: "detent", IssueID: "issue-status", ConfiguredSource: "labels with prefix detent:", Reason: "this project reads lanes from labels with prefix detent:; Status Todo has no effect; apply label detent:todo", Action: "apply label detent:todo"},
+			driftOnly:  true,
+			wantDetail: "Status Todo has no effect",
+			wantAction: "apply label detent:todo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := telemetry.Snapshot{GeneratedAt: now, LaneSignalWarnings: []telemetry.LaneSignalWarning{tt.warning}}
+			if tt.driftOnly {
+				snapshot.TrackerDrift.UntrackedOpen = []telemetry.Issue{tt.issue}
+			} else {
+				snapshot.BoardIssues = []telemetry.Issue{tt.issue}
+			}
+			reader := &evidenceReader{observation: SnapshotObservation{State: SourceLive, Snapshot: snapshot}}
+			got, err := newTestService(now, reader).Explain(t.Context(), Query{ProjectID: "detent", IssueID: tt.issue.ID})
+			if err != nil {
+				t.Fatalf("Explain() error = %v", err)
+			}
+			if got.CurrentLane.Name != tt.wantLane {
+				t.Fatalf("current lane = %q, want %q", got.CurrentLane.Name, tt.wantLane)
+			}
+			if len(got.Reasons) != 1 {
+				t.Fatalf("reasons = %#v, want one reason", got.Reasons)
+			}
+			reason := got.Reasons[0]
+			if reason.Code != telemetry.LaneSignalIgnoredReasonCode || reason.Action != tt.wantAction || !strings.Contains(reason.Detail, tt.wantDetail) {
+				t.Fatalf("reason = %#v", reason)
+			}
+		})
+	}
+}
+
 func findSourceStatus(statuses []SourceStatus, name string) SourceStatus {
 	for _, status := range statuses {
 		if status.Name == name {

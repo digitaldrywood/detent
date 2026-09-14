@@ -56,6 +56,62 @@ func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
 	}
 }
 
+func TestBoardAndHealthWarnAboutIgnoredLaneSignals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		warning telemetry.LaneSignalWarning
+		want    string
+	}{
+		{
+			name: "label ignored by status source",
+			warning: telemetry.LaneSignalWarning{
+				ProjectID: "detent", IssueID: "issue-label", Identifier: "owner/repo#1", IssueURL: "https://github.com/owner/repo/issues/1",
+				ConfiguredSource: "ProjectV2 Status", Reason: "this project reads lanes from ProjectV2 Status; label detent:todo has no effect; set Status to Todo", Action: "set Status to Todo",
+			},
+			want: "label detent:todo has no effect",
+		},
+		{
+			name: "status ignored by label source",
+			warning: telemetry.LaneSignalWarning{
+				ProjectID: "detent", IssueID: "issue-status", Identifier: "owner/repo#2", IssueURL: "https://github.com/owner/repo/issues/2",
+				ConfiguredSource: "labels with prefix detent:", Reason: "this project reads lanes from labels with prefix detent:; Status Todo has no effect; apply label detent:todo", Action: "apply label detent:todo",
+			},
+			want: "Status Todo has no effect",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := telemetry.Snapshot{GeneratedAt: time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC), LaneSignalWarnings: []telemetry.LaneSignalWarning{tt.warning}}
+			alerts := boardAlerts(snapshot)
+			if len(alerts) != 1 || alerts[0].Kind != boardAlertKindLaneSignalIgnored || len(alerts[0].DetailRows) != 1 {
+				t.Fatalf("board alerts = %#v, want ignored-lane-signal alert", alerts)
+			}
+			if row := alerts[0].DetailRows[0]; row.Label != tt.warning.Identifier || !strings.Contains(row.Detail, tt.want) {
+				t.Fatalf("board alert row = %#v", row)
+			}
+
+			health := healthViewFromDashboard(DashboardData{Snapshot: snapshot})
+			if health.Kind != primitives.KindWarn || health.Verdict != "Lane signals are being ignored." {
+				t.Fatalf("health verdict = %#v", health)
+			}
+			found := false
+			for _, row := range health.Rows {
+				if strings.Contains(row.Detail, tt.want) && row.Resets == tt.warning.Action {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("health rows = %#v, want warning detail/action", health.Rows)
+			}
+		})
+	}
+}
+
 func TestBoardDetailSheetShowsRetryLimitAttemptError(t *testing.T) {
 	t.Parallel()
 

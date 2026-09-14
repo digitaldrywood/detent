@@ -87,6 +87,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = strandedActiveHealthDetail(snapshot.StrandedActiveIssues)
 		return view
 	}
+	if len(snapshot.LaneSignalWarnings) > 0 {
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Lane signals are being ignored."
+		view.Detail = boardCountLabel(len(snapshot.LaneSignalWarnings), "Issue has", "Issues have") + " a lane label or Status value that does not control its configured lane source."
+		return view
+	}
 	if len(recoveryFaults) > 0 {
 		view.Kind = primitives.KindErr
 		view.Verdict = "Dispatch recovery is overdue."
@@ -256,6 +262,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows = append(rows, healthTrackerUnavailableRows(snapshot.TrackerUnavailable)...)
 	rows = append(rows, healthForgeUnavailableRows(snapshot.ForgeUnavailable)...)
 	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
+	rows = append(rows, healthLaneSignalRows(snapshot.LaneSignalWarnings)...)
 	rows = append(rows, healthStalenessRows(healthFaultStalenessWarnings(snapshot.StalenessWarnings))...)
 	rows = append(rows, healthStrandedActiveRows(snapshot.StrandedActiveIssues)...)
 	rows = append(rows, healthDispatchRecoveryRows(healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt), snapshot.GeneratedAt)...)
@@ -267,6 +274,26 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	}
 	for _, outage := range healthFaultBackendOutages(snapshot.BackendOutages) {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
+	}
+	return rows
+}
+
+func healthLaneSignalRows(warnings []telemetry.LaneSignalWarning) []healthRow {
+	rows := make([]healthRow, 0, len(warnings))
+	for index, warning := range warnings {
+		component := "Lane source"
+		if projectID := strings.TrimSpace(warning.ProjectID); projectID != "" {
+			component += " · " + projectID
+		}
+		rows = append(rows, healthRow{
+			ID:        "health-lane-signal-" + boardCardSlug(boardFirstNonBlank(warning.IssueID, warning.Identifier, warning.Signal)) + "-" + formatCount(index+1),
+			Component: component,
+			Kind:      primitives.KindWarn,
+			Status:    "Ignored signal",
+			Detail:    strings.TrimSpace(warning.Reason),
+			Link:      strings.TrimSpace(warning.IssueURL),
+			Resets:    strings.TrimSpace(warning.Action),
+		})
 	}
 	return rows
 }

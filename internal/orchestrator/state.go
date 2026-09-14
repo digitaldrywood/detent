@@ -47,6 +47,12 @@ type State struct {
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
 	TerminalStates           []string
+	TrackerKind              string
+	TrackerStatusSource      string
+	TrackerStatusField       string
+	TrackerStatusLabelPrefix string
+	TrackerStateMap          map[string]string
+	LaneSignalStates         []string
 	StopRunTargetState       string
 	PrioritizeUnblockers     bool
 	Instance                 telemetry.Instance
@@ -396,6 +402,12 @@ func newState(cfg Config) State {
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
 		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
 		TerminalStates:           append([]string(nil), cfg.TerminalStates...),
+		TrackerKind:              cfg.TrackerKind,
+		TrackerStatusSource:      cfg.TrackerStatusSource,
+		TrackerStatusField:       cfg.TrackerStatusField,
+		TrackerStatusLabelPrefix: cfg.TrackerStatusLabelPrefix,
+		TrackerStateMap:          cloneStringMap(cfg.TrackerStateMap),
+		LaneSignalStates:         append([]string(nil), cfg.LaneSignalStates...),
 		StopRunTargetState:       cfg.StopRunTargetState,
 		PrioritizeUnblockers:     cfg.PrioritizeUnblockers,
 		Instance:                 instanceSnapshot(cfg),
@@ -465,6 +477,12 @@ func (s State) clone() State {
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),
 		TerminalStates:           append([]string(nil), s.TerminalStates...),
+		TrackerKind:              s.TrackerKind,
+		TrackerStatusSource:      s.TrackerStatusSource,
+		TrackerStatusField:       s.TrackerStatusField,
+		TrackerStatusLabelPrefix: s.TrackerStatusLabelPrefix,
+		TrackerStateMap:          cloneStringMap(s.TrackerStateMap),
+		LaneSignalStates:         append([]string(nil), s.LaneSignalStates...),
 		StopRunTargetState:       s.StopRunTargetState,
 		PrioritizeUnblockers:     s.PrioritizeUnblockers,
 		Instance:                 s.Instance,
@@ -720,9 +738,10 @@ func clonePriorAttempts(in map[string]runpkg.PriorAttempt) map[string]runpkg.Pri
 
 func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 	return connector.StatusDrift{
-		UntrackedOpen: cloneIssues(drift.UntrackedOpen),
-		OpenTerminal:  cloneIssues(drift.OpenTerminal),
-		ClosedActive:  cloneIssues(drift.ClosedActive),
+		UntrackedOpen:        cloneIssues(drift.UntrackedOpen),
+		OpenTerminal:         cloneIssues(drift.OpenTerminal),
+		ClosedActive:         cloneIssues(drift.ClosedActive),
+		LaneSignalCandidates: cloneIssues(drift.LaneSignalCandidates),
 	}
 }
 

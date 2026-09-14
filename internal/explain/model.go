@@ -84,8 +84,15 @@ type IssueExplanation struct {
 	PullRequest      *PullRequest           `json:"pull_request,omitempty"`
 	RequiredGate     Gate                   `json:"required_gate"`
 	ParkSummary      ParkSummary            `json:"park_summary"`
+	Reasons          []Reason               `json:"reasons"`
 	Sources          []SourceStatus         `json:"sources"`
 	Evidence         []EvidenceReference    `json:"evidence"`
+}
+
+type Reason struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+	Action string `json:"action,omitempty"`
 }
 
 type ParkSummary struct {

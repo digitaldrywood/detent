@@ -1695,6 +1695,7 @@ func diagnosticsSnapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
 		len(snapshot.Events) > 0 ||
 		len(snapshot.WorkAttempts) > 0 ||
 		len(snapshot.SchedulerDecisions) > 0 ||
+		len(snapshot.LaneSignalWarnings) > 0 ||
 		len(snapshot.StalenessWarnings) > 0 ||
 		len(snapshot.DispatchStalls) > 0 ||
 		len(snapshot.BackendOutages) > 0 ||
