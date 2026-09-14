@@ -69,6 +69,7 @@
       "TestPrepareWorkerCodexHomeExistingInstructions",
       "TestDoctorMergeQueueRecordedHistory",
       "TestDoctorInvariantAdmission",
+      "TestDoctorInvariantAdmissionBatches",
       "TestDoctorInvariantScopeClassification",
       "TestDoctorInvariantAdmissionRepeatedEntries",
       "TestDoctorInvariantAdmissionUnavailableEvidence"

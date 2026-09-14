@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -17,6 +18,7 @@ import (
 var doctorFeatureTitle = regexp.MustCompile(`(?i)^\s*(feat|perf|refactor)(\([^\r\n)]*\))?!?:`)
 var doctorMechanismDeclaration = regexp.MustCompile(`(?i)\b(new|add|adds|adding|introduce|introduces|introducing|expand|expands|expanding)\b[^.!?;\n]*\b(config(uration)?\s+keys?|reason\s+codes?|brakes?|breakers?|leases?|parks?|recovery\s+paths?|reservations?)\b`)
 var doctorNegatedDeclaration = regexp.MustCompile(`(?i)\b(no|not|never|without|remove|removes|removing|delete|deletes|deleting|consolidate|consolidates|consolidating)\b`)
+var doctorDeclarationBoundary = regexp.MustCompile(`(?i)[.!?;,\n]|\b(and|but|then)\b`)
 
 type doctorInvariantIssueReader interface {
 	FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error)
@@ -89,13 +91,16 @@ func doctorInvariantAdmissionCheck(ctx context.Context, id string, cfg workflowc
 	if !ok {
 		return warn(errors.New("tracker cannot read issues by ID"))
 	}
-	issues, err := reader.FetchIssueStatesByIDs(ctx, ids)
-	if err != nil {
-		return warn(err)
-	}
-	byID := make(map[string]connector.Issue, len(issues))
-	for _, issue := range issues {
-		byID[issue.ID] = issue
+	byID := make(map[string]connector.Issue, len(ids))
+	// GitHub's issue identity lookup uses nodes(ids:), limited to 100 IDs.
+	for batch := range slices.Chunk(ids, 100) {
+		issues, err := reader.FetchIssueStatesByIDs(ctx, batch)
+		if err != nil {
+			return warn(err)
+		}
+		for _, issue := range issues {
+			byID[issue.ID] = issue
+		}
 	}
 	var violations, missing []string
 	for _, e := range entries {
@@ -135,7 +140,9 @@ func doctorIssueRequiresScopeApproval(title, body string) bool {
 	if doctorFeatureTitle.MatchString(title) {
 		return true
 	}
-	for _, clause := range strings.FieldsFunc(body, func(r rune) bool { return r == '.' || r == '!' || r == '?' || r == ';' || r == '\n' }) {
+	// A removal or negation in an earlier coordinated clause does not govern
+	// a later addition ("remove the lease and add a breaker").
+	for _, clause := range doctorDeclarationBoundary.Split(title+"\n"+body, -1) {
 		match := doctorMechanismDeclaration.FindStringIndex(clause)
 		if match != nil && !doctorNegatedDeclaration.MatchString(clause[:match[0]]) {
 			return true

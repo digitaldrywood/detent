@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -35,6 +36,8 @@ func TestDoctorInvariantAdmission(t *testing.T) {
 		{name: "routine using human login", title: "feat: add view", origin: "operator_routine", reason: "operator_move", metadata: human, want: doctorFail},
 		{name: "admission actor is not scope approval", title: "feat: add view", origin: "human", reason: "admission_proposal_accepted", metadata: human, want: doctorFail},
 		{name: "fix expands mechanism", title: "fix: recover dispatch", body: "Add a new recovery path for lost workers.", reason: "admission_proposal_accepted", want: doctorFail},
+		{name: "title declares recovery", title: "fix: add a new recovery path", reason: "admission_proposal_accepted", want: doctorFail},
+		{name: "removal plus addition", title: "fix: repair", body: "Remove the old lease and add a new breaker", reason: "admission_proposal_accepted", want: doctorFail},
 		{name: "unknown origin", title: "feat: add view", want: doctorFail},
 		{name: "old entry", title: "feat: add view", age: 8 * 24 * time.Hour, want: doctorOK},
 		{name: "window boundary", title: "feat: add view", age: 7 * 24 * time.Hour, want: doctorFail},
@@ -117,6 +120,14 @@ func TestDoctorInvariantScopeClassification(t *testing.T) {
 		{"fix: repair", "Do not add a new recovery path.", false},
 		{"fix: repair", "Consolidate existing breakers. Introduce a new lease.", true},
 		{"fix: repair", "Attempt 123 logs show the lease leaked. Remove it.", false},
+		{"fix: add a new recovery path", "", true},
+		{"fix: remove the old lease and add a new breaker", "", true},
+		{"fix: repair", "Remove the old lease and add a new breaker", true},
+		{"fix: repair", "Delete the old park, introduce a new reservation", true},
+		{"fix: repair", "No new lease but add a recovery path", true},
+		{"fix: repair", "Do not add a new lease and do not introduce a breaker", false},
+		{"fix: remove the new breaker", "", false},
+		{"fix: repair", "Remove the old lease and consolidate existing breakers", false},
 		{"feature flags broken", "Repair incorrect parsing.", false},
 	} {
 		t.Run(tt.title+"/"+tt.body, func(t *testing.T) {
@@ -188,6 +199,77 @@ func TestDoctorInvariantAdmissionUnavailableEvidence(t *testing.T) {
 			status, detail := doctorInvariantStatus(t, checks, "INV-11")
 			if status != doctorWarn || !strings.Contains(detail, "scope evidence unavailable") {
 				t.Fatalf("%s: %s", status, detail)
+			}
+		})
+	}
+}
+
+// Mimic the GitHub nodes query limit while returning scope for every requested ID.
+type doctorAdmissionBatchReader struct {
+	doctorAutoPromoteConnector
+	failID string
+}
+
+func (r doctorAdmissionBatchReader) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	if len(ids) > 100 {
+		return nil, fmt.Errorf("nodes query exceeds 100 IDs: %d", len(ids))
+	}
+	var issues []connector.Issue
+	for _, id := range ids {
+		if id == r.failID {
+			return nil, fmt.Errorf("tracker unavailable for %s", id)
+		}
+		issues = append(issues, connector.Issue{ID: id, Identifier: id, Title: "feat: add view"})
+	}
+	return issues, nil
+}
+
+func TestDoctorInvariantAdmissionBatches(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		count  int
+		failID string
+		want   doctorStatus
+	}{
+		{name: "at limit", count: 100, want: doctorFail},
+		{name: "over limit", count: 101, want: doctorFail},
+		{name: "multiple full batches", count: 200, want: doctorFail},
+		{name: "partial final batch", count: 205, want: doctorFail},
+		{name: "later batch unavailable", count: 205, failID: "issue-150", want: doctorWarn},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := doctorInvariantFixtureDB(t)
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { db.Close() })
+			for i := range tt.count {
+				_, err := db.ExecContext(t.Context(), `INSERT INTO lane_ledger(project_id,issue_id,to_state,written_at,result,origin,reason) VALUES ('alpha',?,'Todo','2026-09-14T10:00:00Z','applied','admission','admission_proposal_accepted')`, fmt.Sprintf("issue-%d", i))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			deps := doctorDeps{autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+				return doctorAdmissionBatchReader{failID: tt.failID}, nil
+			}}
+			check := doctorInvariantAdmissionCheck(t.Context(), "alpha", workflowconfig.Config{}, deps, db, "2026-09-07T12:00:00Z", "2026-09-14T12:00:00Z")
+			if check.Status != tt.want {
+				t.Fatalf("status=%s detail=%s; want %s", check.Status, check.Detail, tt.want)
+			}
+			if tt.failID != "" {
+				if !strings.Contains(check.Detail, "tracker unavailable for "+tt.failID) {
+					t.Fatalf("missing failure: %s", check.Detail)
+				}
+				return
+			}
+			for i := range tt.count {
+				want := fmt.Sprintf(`issue-%d origin="admission"`, i)
+				if !strings.Contains(check.Detail, want) {
+					t.Errorf("missing violation %s", want)
+				}
 			}
 		})
 	}

@@ -459,11 +459,15 @@ That workflow is outside this repository and was updated by the operator.
 
 The doctor check `INV-11 human scope approval` inspects every applied Todo
 ledger entry in the last seven days, including repeat entries. It fetches current
-issue titles and bodies by ID. Conventional `feat`, `perf`, and `refactor` titles
-and declarations adding or expanding config keys, reason codes, brakes, breakers,
-leases, parks, recovery paths, or reservations require a human move. Each
-violation reports the issue, ledger origin, reason, and timestamp. Human ledger
-origin is accepted; an operator move with an empty or operator ledger origin must
+issue titles and bodies by ID in batches of at most 100 so GitHub's identity
+lookup can audit busy projects. Conventional `feat`, `perf`, and `refactor` titles
+and declarations in either titles or bodies adding or expanding config keys,
+reason codes, brakes, breakers, leases, parks, recovery paths, or reservations
+require a human move. Each
+violation reports the issue, ledger origin, reason, and timestamp. Declaration
+clauses are separated at punctuation and coordinating words so removal or
+negation of one mechanism does not hide a later addition in the same sentence.
+Human ledger origin is accepted; an operator move with an empty or operator ledger origin must
 have matching phase-event provenance naming a human initiator and either an
 authenticated human session or a human actor. Dashboard sessions record their
 authentication basis without a tracker login. The
@@ -471,8 +475,8 @@ event must match the project, issue, source/target lanes, reason, and write time
 interval. Admission acceptance and explicit machine origins cannot borrow a human
 actor's identity. Failed and prepared writes are not Todo entries.
 
-`TestDoctorInvariantAdmission` and `TestDoctorInvariantScopeClassification` run
-through the invariant manifest. `TestDoctorInvariantRegistration` in
+`TestDoctorInvariantAdmission`, `TestDoctorInvariantAdmissionBatches`, and
+`TestDoctorInvariantScopeClassification` run through the invariant manifest. `TestDoctorInvariantRegistration` in
 `internal/invariants` preserves the doctor entry point and check name. Missing
 store/schema/tracker/issue evidence warns rather than passing silently. This is
 a diagnostic, not an admission gate: body classification is a conservative
