@@ -211,6 +211,7 @@ func historicalPriorityReader(file string) bool {
 func retiredPrioritySymbol(text string) bool {
 	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "", ".", "").Replace(text))
 	for _, forbidden := range []string{
+		"mergefairnessblocks", "mergefairnessheadreserved",
 		"setpreempt", "preemptions", "preemptablerunningproject", "preemptionweightlocked", "preemptprojectslocked", "preemptprojectlocked",
 		"selectedprojectslot", "fillselectionslocked", "reconcileselectionslocked", "runningprojectswithselectionslocked", "unreservedcapacitylocked", "selectedreservationweightlocked", "strictfreecapacity", "beststrictreadyprojectranklocked", "readyprojectsforselectionlocked",
 		"elasticpoolstate", "reclaimtargets", "hasreclaimdemand", "hasguaranteedreadydemand", "cleanupelasticwaiters",

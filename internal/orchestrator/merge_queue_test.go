@@ -76,7 +76,7 @@ func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t
 	}
 }
 
-func TestDelegateNativeMergeQueueIssuesHonorsAgedHeadReservation(t *testing.T) {
+func TestDelegateNativeMergeQueueIssuesSerializesOnlyRunningHeads(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 9, 4, 20, 0, 0, time.UTC)
@@ -129,14 +129,16 @@ func TestDelegateNativeMergeQueueIssuesHonorsAgedHeadReservation(t *testing.T) {
 			},
 		},
 		{
-			name:           "retrying aged head protects same repository",
+			name:           "retrying aged head allows same repository",
+			wantEnqueued:   1,
 			sameRepository: true,
 			setup: func(state *State) {
 				state.Retry[aged.ID] = Retry{Issue: aged, DueAt: now.Add(time.Minute)}
 			},
 		},
 		{
-			name:           "CI reservation protects same repository",
+			name:           "CI wait allows same repository",
+			wantEnqueued:   1,
 			sameRepository: true,
 			setup:          func(state *State) { reserveMergeCandidate(state, aged, now) },
 		},

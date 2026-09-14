@@ -5579,7 +5579,7 @@ func TestMergeWorkerDispatchCandidatesSelectsOneQueueHeadPerRepository(t *testin
 	}
 }
 
-func TestMergeWorkerDispatchCandidatesConsumesNotReadyQueueHeadRepository(t *testing.T) {
+func TestMergeWorkerDispatchCandidatesSkipsNotReadyQueueHead(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 21, 45, 0, 0, time.UTC)
@@ -5636,7 +5636,7 @@ func TestMergeWorkerDispatchCandidatesConsumesNotReadyQueueHeadRepository(t *tes
 	for _, issue := range got {
 		gotIDs = append(gotIDs, issue.ID)
 	}
-	wantIDs := []string{"issue-outlet-head-ready"}
+	wantIDs := []string{"issue-phone-sibling-ready", "issue-outlet-head-ready"}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("mergeWorkerDispatchCandidates() ids = %#v, want %#v", gotIDs, wantIDs)
 	}

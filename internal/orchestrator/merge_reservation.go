@@ -10,6 +10,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
+// mergeReservationMetadataKey retains the persisted CI wait format. The in-memory
+// records are keyed by issue ID and carry no scheduling ownership.
 const mergeReservationMetadataKey = "merge_reservation"
 
 type mergeReservation struct {
@@ -31,7 +33,7 @@ func reserveMergeCandidate(state *State, issue connector.Issue, now time.Time) m
 	if state.mergeReservations == nil {
 		state.mergeReservations = map[string]mergeReservation{}
 	}
-	if reservation := state.mergeReservations[repository]; reservation.IssueID == issue.ID {
+	if reservation := state.mergeReservations[issue.ID]; reservation.IssueID == issue.ID {
 		return reservation
 	}
 	reservation := mergeReservation{
@@ -39,38 +41,22 @@ func reserveMergeCandidate(state *State, issue connector.Issue, now time.Time) m
 		HeadSHA: strings.TrimSpace(issue.PullRequest.HeadSHA), BaseSHA: strings.TrimSpace(issue.PullRequest.BaseSHA),
 		StartedAt: now.UTC(), ExpiresAt: now.Add(mergeWorkerCurrentHeadCIWaitTimeout).UTC(),
 	}
-	state.mergeReservations[repository] = reservation
+	state.mergeReservations[issue.ID] = reservation
 	return reservation
 }
 
-func mergeReservationBlocks(state *State, issue connector.Issue, now time.Time) (mergeReservation, bool) {
+// mergeReservationBlocks serializes only running merges against the same base.
+// Persisted CI wait metadata and retries never own the merge slot.
+func mergeReservationBlocks(state *State, issue connector.Issue, _ time.Time) (mergeReservation, bool) {
 	if state == nil || !mergeWorkerIssue(issue) {
 		return mergeReservation{}, false
 	}
 	for _, running := range state.Running {
-		if mergeWorkerIssue(running.Issue) && running.Issue.ID != issue.ID && mergeWorkerRepositoryKey(running.Issue) == mergeWorkerRepositoryKey(issue) {
+		if mergeWorkerIssue(running.Issue) && running.Issue.ID != issue.ID && nativeMergeQueueRepositoryKey(running.Issue) == nativeMergeQueueRepositoryKey(issue) {
 			return mergeReservation{IssueID: running.Issue.ID, Repository: mergeWorkerRepositoryKey(issue)}, true
 		}
 	}
-	reservation := state.mergeReservations[mergeWorkerRepositoryKey(issue)]
-	return reservation, reservation.IssueID != "" && reservation.IssueID != issue.ID &&
-		reservation.ReleasedReason == "" && now.Before(reservation.ExpiresAt)
-}
-
-func mergeFairnessBlocks(state *State, stickyID string, issue connector.Issue, now time.Time) bool {
-	if stickyID == "" || stickyID == issue.ID || !mergeWorkerIssue(issue) {
-		return false
-	}
-	if reservation := state.mergeReservations[mergeWorkerRepositoryKey(issue)]; reservation.IssueID != "" && reservation.ReleasedReason == "" && now.Before(reservation.ExpiresAt) {
-		return false
-	}
-	if running, ok := state.Running[stickyID]; ok {
-		return mergeWorkerRepositoryKey(running.Issue) == mergeWorkerRepositoryKey(issue)
-	}
-	if retry, ok := state.Retry[stickyID]; ok {
-		return mergeWorkerRepositoryKey(retry.Issue) == mergeWorkerRepositoryKey(issue)
-	}
-	return false
+	return mergeReservation{}, false
 }
 
 func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Config, now time.Time) []mergeReservation {
@@ -79,7 +65,7 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 		current[issue.ID] = issue
 	}
 	var released []mergeReservation
-	for repository, reservation := range state.mergeReservations {
+	for issueID, reservation := range state.mergeReservations {
 		if reservation.ReleasedReason != "" {
 			continue
 		}
@@ -103,7 +89,7 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 			switch {
 			case normalizePullRequestState(pr.State) != "open" || pr.Draft:
 				reason = "withdrawn"
-			case mergeWorkerRepositoryKey(issue) != repository:
+			case mergeWorkerRepositoryKey(issue) != reservation.Repository:
 				reason = "repository_changed"
 			case strings.TrimSpace(pr.HeadSHA) != reservation.HeadSHA && !running:
 				reason = "head_changed"
@@ -123,7 +109,7 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 		}
 		if reason != "" {
 			reservation.ReleasedReason = reason
-			state.mergeReservations[repository] = reservation
+			state.mergeReservations[issueID] = reservation
 			released = append(released, reservation)
 			if retry := state.Retry[issue.ID]; reason == "required_checks_failed" && retry.Wait.Kind == retryWaitCurrentHeadCI && !running {
 				delete(state.Retry, issue.ID)
@@ -180,7 +166,7 @@ func (o *Orchestrator) recordMergeReservationWait(state *State, issue connector.
 	reservation.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
 	reservation.BaseSHA = strings.TrimSpace(issue.PullRequest.BaseSHA)
 	reservation.RefreshHeadSHA = ""
-	state.mergeReservations[reservation.Repository] = reservation
+	state.mergeReservations[reservation.IssueID] = reservation
 	return reservation
 }
 
@@ -208,18 +194,18 @@ func (o *Orchestrator) recoverMergeReservations(state *State, attempts []store.W
 		if issue.ID != reservation.IssueID || mergeWorkerRepositoryKey(issue) != reservation.Repository || issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
 			continue
 		}
-		validation := State{mergeReservations: map[string]mergeReservation{reservation.Repository: reservation}}
+		validation := State{mergeReservations: map[string]mergeReservation{reservation.IssueID: reservation}}
 		o.reconcileMergeReservations(&validation, []connector.Issue{issue}, now)
-		if validation.mergeReservations[reservation.Repository].ReleasedReason != "" {
+		if validation.mergeReservations[reservation.IssueID].ReleasedReason != "" {
 			continue
 		}
 		if state.mergeReservations == nil {
 			state.mergeReservations = map[string]mergeReservation{}
 		}
-		if existing := state.mergeReservations[reservation.Repository]; existing.IssueID != "" && existing.ReleasedReason == "" && now.Before(existing.ExpiresAt) && !reservation.StartedAt.Before(existing.StartedAt) {
+		if existing := state.mergeReservations[reservation.IssueID]; existing.IssueID != "" && existing.ReleasedReason == "" && now.Before(existing.ExpiresAt) && !reservation.StartedAt.Before(existing.StartedAt) {
 			continue
 		}
-		state.mergeReservations[reservation.Repository] = reservation
+		state.mergeReservations[reservation.IssueID] = reservation
 		state.Retry[issue.ID] = Retry{Issue: cloneIssue(issue), Attempt: attempt.AttemptNumber,
 			DueAt: now, WorkerHost: attempt.WorkerHost, Error: mergeWorkerCurrentHeadCIWaitReason(issue),
 			Wait: RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: reservation.StartedAt}}
@@ -241,7 +227,7 @@ func (o *Orchestrator) restoreDurableMergeReservations(ctx context.Context, stat
 		if !mergeWorkerIssue(issue) || state.mergeRecoveryChecked[issue.ID] || issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
 			continue
 		}
-		if reservation := state.mergeReservations[mergeWorkerRepositoryKey(issue)]; reservation.IssueID == issue.ID {
+		if reservation := state.mergeReservations[issue.ID]; reservation.IssueID == issue.ID {
 			state.mergeRecoveryChecked[issue.ID] = true
 			continue
 		}

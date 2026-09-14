@@ -20,7 +20,143 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestMergeCIWaitReservesRepositoryBeforeFairnessAge(t *testing.T) {
+func TestMergeIdleHeadDoesNotReserveSlot(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"waiting", "retrying", "unready", "running", "running other base", "running case-distinct base", "ready"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			for _, path := range []string{"planner", "fresh", "native"} {
+				t.Run(path, func(t *testing.T) {
+					t.Parallel()
+					now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+					cfg := nativeMergeQueueTestConfig(Config{MaxConcurrentAgents: 3, MaxConcurrentAgentsByState: map[string]int{"Merging": 3}, ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true, MergeFairnessAge: time.Hour})
+					state := newState(cfg)
+					head := nativeMergeQueueTestIssue(2221, "success")
+					head.StageUpdatedAt = timePointer(now.Add(-3 * time.Hour))
+					other := nativeMergeQueueTestIssue(2220, "success")
+					other.StageUpdatedAt = timePointer(now.Add(-time.Minute))
+					switch kind {
+					case "waiting":
+						head.PullRequest.CIStatus = "pending"
+						reserveMergeCandidate(&state, head, now)
+						state.Retry[head.ID] = Retry{Issue: head, DueAt: now.Add(time.Minute), Wait: RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: now}}
+					case "retrying":
+						state.Retry[head.ID] = Retry{Issue: head, DueAt: now.Add(time.Minute)}
+					case "unready":
+						head.PullRequest.HydrationUnavailableReason = "unavailable"
+					case "running", "running other base", "running case-distinct base":
+						if kind == "running other base" {
+							head.PullRequest.BaseRef = "release"
+						}
+						if kind == "running case-distinct base" {
+							head.PullRequest.BaseRef = "Main"
+						}
+						state.Running[head.ID] = Running{Issue: head, Mode: runpkg.RunModeMerge}
+					}
+					tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+					orch := Orchestrator{cfg: cfg, connector: tracker}
+					issues := []connector.Issue{other, head}
+					var got []string
+					switch path {
+					case "planner":
+						for _, dispatch := range newDispatchPlanner(cfg).plan(&state, issues, now, dispatchPlanHooks{}).Dispatches {
+							got = append(got, dispatch.IssueID)
+						}
+					case "fresh":
+						for _, issue := range orch.mergeWorkerDispatchCandidates(&state, issues, now) {
+							got = append(got, issue.ID)
+						}
+					case "native":
+						orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, now)
+						got = tracker.enqueued
+					}
+					want := []string{other.ID}
+					if kind == "running" {
+						want = nil
+					}
+					if kind == "ready" {
+						want = []string{head.ID}
+						if path == "native" {
+							want = append(want, other.ID)
+						}
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("started = %v, want %v", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMergeSerializationUsesHydratedBase(t *testing.T) {
+	t.Parallel()
+	for _, retry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retry=%t", retry), func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range []struct {
+				cached, hydrated string
+				want             int
+			}{
+				{"release", "main", 0}, {"", "main", 0}, {"main", "release", 1},
+			} {
+				t.Run(tt.cached+"_to_"+tt.hydrated, func(t *testing.T) {
+					t.Parallel()
+					now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+					cfg := normalizeConfig(Config{MaxConcurrentAgents: 3, ActiveStates: []string{"Merging"}, MergeFastPathEnabled: true})
+					state := newState(cfg)
+					running := nativeMergeQueueTestIssue(2221, "success")
+					state.Running[running.ID] = Running{Issue: running, Mode: runpkg.RunModeMerge}
+					issue := nativeMergeQueueTestIssue(2220, "success")
+					issue.PullRequest.BaseRef = tt.cached
+					if retry {
+						state.Retry[issue.ID] = Retry{Issue: issue, DueAt: now}
+					}
+					hooks := dispatchPlanHooks{hydrate: func(i connector.Issue) (connector.Issue, bool) { i.PullRequest.BaseRef = tt.hydrated; return i, true }}
+					plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now, hooks)
+					if len(plan.Dispatches) != tt.want {
+						t.Fatalf("dispatches = %v, want %d", plan.Dispatches, tt.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMergeWaitMetadataRemainsIndependent(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}})
+	orch := Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	issues := []connector.Issue{nativeMergeQueueTestIssue(2221, "pending"), nativeMergeQueueTestIssue(2220, "pending")}
+	var attempts []store.WorkAttempt
+	for index, issue := range issues {
+		wait := orch.recordMergeReservationWait(&state, issue, now.Add(time.Duration(index)*time.Minute))
+		attempts = append(attempts, store.WorkAttempt{ID: int64(index + 1), IssueID: issue.ID, Phase: "waiting", Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess, CompletedAt: now.Add(time.Duration(index) * time.Minute), WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{mergeReservationMetadataKey: wait})})
+	}
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			current := state.clone()
+			if restart {
+				current = newState(cfg)
+				orch.recoverMergeReservations(&current, attempts, issues, now.Add(2*time.Minute))
+			}
+			for index, issue := range issues {
+				wait := orch.recordMergeReservationWait(&current, issue, now.Add(3*time.Minute))
+				want := now.Add(time.Duration(index)*time.Minute + mergeWorkerCurrentHeadCIWaitTimeout)
+				if wait.ExpiresAt != want {
+					t.Fatalf("%s deadline = %v, want %v", issue.ID, wait.ExpiresAt, want)
+				}
+				if _, blocked := mergeReservationBlocks(&current, issue, now); blocked {
+					t.Fatal("wait metadata owns merge slot")
+				}
+			}
+		})
+	}
+}
+
+func TestMergeCIWaitAllowsReadyRetryBeforeFairnessAge(t *testing.T) {
 	t.Parallel()
 	for _, ci := range []string{"pending", "success"} {
 		t.Run(ci, func(t *testing.T) {
@@ -49,13 +185,8 @@ func TestMergeCIWaitReservesRepositoryBeforeFairnessAge(t *testing.T) {
 				Running{Issue: selected, Attempt: 1}, selected)
 			selected.PullRequest.CIStatus = ci
 			plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{other, selected}, now.Add(time.Minute), dispatchPlanHooks{})
-			for _, dispatch := range plan.Dispatches {
-				if dispatch.IssueID == other.ID {
-					t.Fatal("another same-repository retry advanced the base during the selected head's CI reservation")
-				}
-			}
-			if ci == "success" && (len(plan.Dispatches) != 1 || plan.Dispatches[0].IssueID != selected.ID) {
-				t.Fatalf("dispatches = %#v, want selected candidate after asynchronous CI completion", plan.Dispatches)
+			if len(plan.Dispatches) != 1 || plan.Dispatches[0].IssueID != other.ID {
+				t.Fatalf("dispatches = %#v, want the older ready retry", plan.Dispatches)
 			}
 		})
 	}
@@ -126,8 +257,9 @@ func TestMergeReservationLifecycle(t *testing.T) {
 			var logs bytes.Buffer
 			orch := Orchestrator{cfg: cfg, logger: slog.New(slog.NewTextHandler(&logs, nil))}
 			orch.reconcileMergeReservations(&state, []connector.Issue{issue, other}, now.Add(tt.elapsed))
-			reservation, blocked := mergeReservationBlocks(&state, other, now.Add(tt.elapsed))
-			if blocked != (tt.reason == "") || reservation.ReleasedReason != tt.reason {
+			_, blocked := mergeReservationBlocks(&state, other, now.Add(tt.elapsed))
+			reservation := state.mergeReservations[original.IssueID]
+			if blocked || reservation.ReleasedReason != tt.reason {
 				t.Fatalf("reservation = %#v, blocked = %t, want reason %q", reservation, blocked, tt.reason)
 			}
 			if tt.reason != "" && !strings.Contains(logs.String(), "reason="+tt.reason) {
@@ -193,8 +325,8 @@ func TestMergeReservationFailedHeadAdmitsNextCandidate(t *testing.T) {
 						state = newState(cfg)
 						orch.restoreDurableMergeReservations(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
 					}
-					if _, blocked := mergeReservationBlocks(&state, other, now.Add(time.Minute)); !blocked {
-						t.Fatal("pending head did not reserve repository")
+					if _, blocked := mergeReservationBlocks(&state, other, now.Add(time.Minute)); blocked {
+						t.Fatal("pending head reserved repository")
 					}
 					issue.PullRequest.CIStatus = ci
 					issue.PullRequest.MergeableState = "blocked"
@@ -255,7 +387,7 @@ func TestMergeReservationTracksWorkerPushWithoutRenewal(t *testing.T) {
 			delete(state.Running, issue.ID)
 			reservation := orch.recordMergeReservationWait(&state, issue, now.Add(elapsed))
 			other := nativeMergeQueueTestIssue(2220, "success")
-			if _, blocked := mergeReservationBlocks(&state, other, now.Add(elapsed)); blocked == expired {
+			if _, blocked := mergeReservationBlocks(&state, other, now.Add(elapsed)); blocked {
 				t.Fatalf("blocked = %t after worker push, expired = %t", blocked, expired)
 			}
 			if reservation.HeadSHA != issue.PullRequest.HeadSHA || reservation.ExpiresAt != original.ExpiresAt {
@@ -362,7 +494,7 @@ func TestMergeReservationRecoversCurrentWaitingHead(t *testing.T) {
 			if restored != tt.want {
 				t.Fatalf("restored = %t, want %t", restored, tt.want)
 			}
-			if restored && restarted.mergeReservations[reservation.Repository].ExpiresAt != reservation.ExpiresAt {
+			if restored && restarted.mergeReservations[reservation.IssueID].ExpiresAt != reservation.ExpiresAt {
 				t.Fatal("restart renewed reservation")
 			}
 		})
@@ -446,8 +578,9 @@ func TestMergeReservationPersistsAndRestoresWait(t *testing.T) {
 			restarted := newState(cfg)
 			orch.restoreDurableMergeReservations(t.Context(), &restarted, []connector.Issue{issue}, now.Add(tt.age))
 			other := nativeMergeQueueTestIssue(2220, "success")
-			reservation, blocked := mergeReservationBlocks(&restarted, other, now.Add(tt.age))
-			if blocked != tt.want {
+			_, blocked := mergeReservationBlocks(&restarted, other, now.Add(tt.age))
+			reservation := restarted.mergeReservations[issue.ID]
+			if blocked {
 				t.Fatalf("blocked = %t, want %t, metadata: %s", blocked, tt.want, completion.WorkerMetadataJSON)
 			}
 			if tt.want && (reservation.ExpiresAt != now.Add(mergeWorkerCurrentHeadCIWaitTimeout) || (reservation.RefreshHeadSHA != "") != tt.refresh) {
@@ -494,17 +627,18 @@ func TestMergeReservationNeverBypassesUnsafeHead(t *testing.T) {
 	}
 }
 
-func TestMergeTrainDrainsWithoutAvoidableCIInvalidation(t *testing.T) {
+func TestMergeTrainDrainsWhileOtherHeadsWait(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name          string
 		strict        bool
 		external      bool
 		wantRefreshes map[int]int
+		wantMerged    []int
 	}{
-		{name: "protection bypass still requires integration", wantRefreshes: map[int]int{2221: 1, 2220: 1}},
-		{name: "strict protection", strict: true, wantRefreshes: map[int]int{2221: 1, 2220: 1}},
-		{name: "external base advance during CI", strict: true, external: true, wantRefreshes: map[int]int{2221: 2, 2220: 1}},
+		{name: "protection bypass still requires integration", wantRefreshes: map[int]int{2221: 1, 2220: 2}, wantMerged: []int{2221, 2220}},
+		{name: "strict protection", strict: true, wantRefreshes: map[int]int{2221: 1, 2220: 2}, wantMerged: []int{2221, 2220}},
+		{name: "external base advance during CI", strict: true, external: true, wantRefreshes: map[int]int{2221: 3, 2220: 1}, wantMerged: []int{2220, 2221}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -558,7 +692,7 @@ func TestMergeTrainDrainsWithoutAvoidableCIInvalidation(t *testing.T) {
 					if !mergeWorkerIssue(running.Issue) {
 						t.Fatalf("dependent dispatched before prerequisite: %#v", dispatch)
 					}
-					reservation := state.mergeReservations[mergeWorkerRepositoryKey(running.Issue)]
+					reservation := state.mergeReservations[running.Issue.ID]
 					request := runpkg.RunRequest{Issue: running.Issue, Mode: runpkg.RunModeMerge, Attempt: running.Attempt, StartedAt: now, MergeRefreshHeadSHA: reservation.RefreshHeadSHA}
 					running.Mode = runpkg.RunModeMerge
 					state.Running[dispatch.IssueID] = running
@@ -573,8 +707,8 @@ func TestMergeTrainDrainsWithoutAvoidableCIInvalidation(t *testing.T) {
 				}
 				now = now.Add(time.Minute)
 			}
-			if !reflect.DeepEqual(tracker.merged, []int{2221, 2220}) {
-				t.Fatalf("merged = %v, want prerequisite then other; logs: %s", tracker.merged, logs.String())
+			if !reflect.DeepEqual(tracker.merged, tt.wantMerged) {
+				t.Fatalf("merged = %v, want %v; logs: %s", tracker.merged, tt.wantMerged, logs.String())
 			}
 			if !reflect.DeepEqual(backend.refreshes, tt.wantRefreshes) {
 				t.Fatalf("refreshes = %v, want %v", backend.refreshes, tt.wantRefreshes)

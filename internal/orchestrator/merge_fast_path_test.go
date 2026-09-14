@@ -90,7 +90,7 @@ func TestMergingFastPathCurrentReadyPreservesCheckedHead(t *testing.T) {
 	previous.ID = "previous-candidate"
 	reservation := reserveMergeCandidate(&state, previous, now.Add(-mergeWorkerCurrentHeadCIWaitTimeout))
 	reservation.RefreshHeadSHA = issue.PullRequest.HeadSHA
-	state.mergeReservations[reservation.Repository] = reservation
+	state.mergeReservations[reservation.IssueID] = reservation
 	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{issue}, now)
 
 	completion := receiveMergeFastPathCompletion(t, orch.runResults)

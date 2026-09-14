@@ -30,6 +30,8 @@
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool",
       "TestRunDispatchesQueuedRequestsWithoutPolling",
+      "TestMergeIdleHeadDoesNotReserveSlot",
+      "TestMergeWaitMetadataRemainsIndependent",
       "TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling",
       "TestQueuedDispatchPreservesRetry",
       "TestQueuedDispatchPreservesPullRequestEnrichment"

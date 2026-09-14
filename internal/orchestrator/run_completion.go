@@ -1905,7 +1905,7 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
-		map[string]any{mergeReservationMetadataKey: state.mergeReservations[mergeWorkerRepositoryKey(issue)]})
+		map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]})
 	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
 	if attempt < 1 {
 		attempt = 1
@@ -1966,7 +1966,7 @@ func (o *Orchestrator) refreshMergeWorkerBase(
 ) {
 	reservation := reserveMergeCandidate(state, issue, event.CompletedAt)
 	reservation.RefreshHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
-	state.mergeReservations[reservation.Repository] = reservation
+	state.mergeReservations[reservation.IssueID] = reservation
 	running.Issue = issue
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess,
 		"", "", "waiting", "base refresh required before merge", map[string]any{mergeReservationMetadataKey: reservation})
@@ -2953,8 +2953,8 @@ func (o *Orchestrator) completeNativeMergeQueueWorker(ctx context.Context, state
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "waiting for native merge queue")
 	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
 	delete(state.Retry, issue.ID)
-	if reservation := state.mergeReservations[mergeWorkerRepositoryKey(issue)]; reservation.IssueID == issue.ID {
-		delete(state.mergeReservations, mergeWorkerRepositoryKey(issue))
+	if reservation := state.mergeReservations[issue.ID]; reservation.IssueID == issue.ID {
+		delete(state.mergeReservations, issue.ID)
 	}
 	queued := o.delegateNativeMergeQueueIssues(ctx, state, mergeIssueSlices([]connector.Issue{issue}, state.Pipeline), event.CompletedAt)
 	state.Pipeline = overlayNativeMergeQueueIssues(state.Pipeline, queued)

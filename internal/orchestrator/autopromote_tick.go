@@ -1179,13 +1179,12 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 		if nativeMergeQueueHasEntry(state, issue) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
 			continue
 		}
-		repository := mergeWorkerRepositoryKey(issue)
+		repository := nativeMergeQueueRepositoryKey(issue)
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg)
 		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) && decision.reason != string(AutoPromoteReasonCINotGreen) {
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
-			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		if decision.reason == string(AutoPromoteReasonOperationalCompletion) {
@@ -1624,15 +1623,6 @@ func activeMergeWorkerRepositories(state *State) map[string]struct{} {
 	for _, running := range state.Running {
 		repositories = consumeActiveMergeWorkerRepository(repositories, running.Issue)
 	}
-	for _, claimed := range state.Claimed {
-		repositories = consumeActiveMergeWorkerRepository(repositories, claimed.Issue)
-	}
-	for _, retry := range state.Retry {
-		if reservation := state.mergeReservations[mergeWorkerRepositoryKey(retry.Issue)]; reservation.IssueID == retry.Issue.ID && reservation.ReleasedReason != "" {
-			continue
-		}
-		repositories = consumeActiveMergeWorkerRepository(repositories, retry.Issue)
-	}
 	if len(repositories) == 0 {
 		return nil
 	}
@@ -1643,7 +1633,7 @@ func consumeActiveMergeWorkerRepository(repositories map[string]struct{}, issue 
 	if !mergeWorkerIssue(issue) {
 		return repositories
 	}
-	return consumeMergeWorkerRepository(repositories, mergeWorkerRepositoryKey(issue))
+	return consumeMergeWorkerRepository(repositories, nativeMergeQueueRepositoryKey(issue))
 }
 
 func consumeMergeWorkerRepository(repositories map[string]struct{}, repository string) map[string]struct{} {
@@ -1675,7 +1665,6 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		return nil
 	}
 	o.logMergeWorkerQueueCycle(state, issues, now)
-	stickyID := stickyMergingIssueID(state, issues, now, o.cfg.MergeFairnessAge)
 	candidates := o.staleMergingQueueDispatchCandidates(state, issues, now)
 	if len(candidates) == 0 {
 		return nil
@@ -1683,7 +1672,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	out := make([]connector.Issue, 0, len(candidates))
 	selectedByState := map[string]int{}
 	for _, issue := range candidates {
-		if nativeMergeQueueOwnsIssue(state, issue, o.cfg) || mergeFairnessBlocks(state, stickyID, issue, now) {
+		if nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 			continue
 		}
 		issueID := strings.TrimSpace(issue.ID)
@@ -1912,7 +1901,7 @@ func stickyMergingIssueID(state *State, issues []connector.Issue, now time.Time,
 		if refreshed, ok := current[issueID]; ok {
 			issue = refreshed
 		}
-		if reservation := state.mergeReservations[mergeWorkerRepositoryKey(issue)]; reservation.IssueID == issueID {
+		if reservation := state.mergeReservations[issue.ID]; reservation.IssueID == issueID {
 			return
 		}
 		if !mergeWorkerIssueAged(issue, now, fairnessAge) {
@@ -1976,15 +1965,11 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 	consumedRepositories := activeMergeWorkerRepositories(state)
 	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
 		issueID := strings.TrimSpace(issue.ID)
-		repository := mergeWorkerRepositoryKey(issue)
+		repository := nativeMergeQueueRepositoryKey(issue)
 		if mergeWorkerCIFailed(issue.PullRequest) {
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
-			if reservation := state.mergeReservations[repository]; reservation.IssueID == issueID && reservation.ReleasedReason != "" {
-				continue
-			}
-			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
@@ -1995,7 +1980,6 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 			if decision.applicable && !decision.proceed {
 				o.logMergeBaseRefreshDeferred(issue, decision.reason)
 			}
-			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		candidates = append(candidates, cloneIssue(issue))

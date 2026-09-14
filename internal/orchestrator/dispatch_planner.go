@@ -104,22 +104,6 @@ func (p dispatchPlanner) plan(
 		if correctableDispatchEscalated(state, issue.ID, dispatchSkipOwnershipAssigneeRequired) {
 			continue
 		}
-		if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
-			logDecision(dispatchPlanDecision{
-				Issue: issue, QueuePosition: queuePosition,
-				SkipReason: "merge_ci_reservation",
-				SkipDetail: "reserved for " + reservation.IssueID + " head=" + reservation.HeadSHA + " base=" + reservation.BaseSHA + " until=" + reservation.ExpiresAt.Format(time.RFC3339),
-			})
-			continue
-		}
-		if mergeFairnessBlocks(state, mergePriority.stickyIssueID, issue, now) {
-			logDecision(dispatchPlanDecision{
-				Issue:         issue,
-				QueuePosition: queuePosition,
-				SkipReason:    dispatchSkipMergeFairnessReserved,
-			})
-			continue
-		}
 		if !mergeControlAvailable && p.hardAvailableSlots(state) == 0 && p.readyMergeControlCandidate(state, issue) {
 			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipMergeControlLimit})
 			continue
@@ -155,6 +139,14 @@ func (p dispatchPlanner) plan(
 					logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, Attempt: retry.Attempt, WorkerHost: retry.WorkerHost, Retry: true, SkipReason: dispatchSkipHydrationFailed})
 					continue
 				}
+			}
+			if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
+				logDecision(dispatchPlanDecision{
+					Issue: issue, QueuePosition: queuePosition,
+					SkipReason: "merge_ci_reservation",
+					SkipDetail: "merge running for " + reservation.IssueID,
+				})
+				continue
 			}
 			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
@@ -200,6 +192,14 @@ func (p dispatchPlanner) plan(
 				})
 				continue
 			}
+		}
+		if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
+			logDecision(dispatchPlanDecision{
+				Issue: issue, QueuePosition: queuePosition,
+				SkipReason: "merge_ci_reservation",
+				SkipDetail: "merge running for " + reservation.IssueID,
+			})
+			continue
 		}
 		action, ok, reason := p.dispatchAction(state, issue, now)
 		if !ok {
@@ -656,7 +656,6 @@ const (
 	dispatchSkipMergeControlLimit         = scheduler.DecisionReasonReadyMergeControlLimit
 	dispatchSkipHydrationFailed           = scheduler.DecisionReasonHydrateFailed
 	dispatchSkipDispatchBackoffCancelled  = scheduler.DecisionReasonDispatchBackoffCancelled
-	dispatchSkipMergeFairnessReserved     = scheduler.DecisionReasonMergeFairnessHeadReserved
 	dispatchSkipGitHubRESTCapacity        = scheduler.DecisionReasonGitHubRESTCapacityPaused
 	dispatchSkipTrackerUnavailable        = scheduler.DecisionReasonTrackerUnavailable
 	dispatchSkipCompletionDeferred        = scheduler.DecisionReasonCompletionDeferred
