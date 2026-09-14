@@ -6772,6 +6772,9 @@ func successfulDoctorDeps() doctorDeps {
 		shipSkillProbe: func(string) (doctorShipSkill, error) {
 			return doctorShipSkill{Version: "1.6.0", Path: "/plugins/go-workflow/1.6.0/skills/ship/SKILL.md"}, nil
 		},
+		modelCatalogProbe: func(context.Context, workflowconfig.AgentBackend) (int, error) {
+			return 2, nil
+		},
 		now: time.Now,
 	}
 }
