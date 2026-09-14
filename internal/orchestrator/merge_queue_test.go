@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t *testing.T) {
@@ -1121,6 +1123,126 @@ func TestNativeMergeQueueRepeatedRemovalRetries(t *testing.T) {
 				if len(state.nativeMergeQueueRemovals[issue.ID]) != 1 {
 					t.Fatalf("removals=%v", state.nativeMergeQueueRemovals)
 				}
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueBudgetSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	for _, restartBeforeRetry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart_before_retry_%t", restartBeforeRetry), func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "queue.db")
+			backend, err := store.Open(t.Context(), store.Config{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := backend.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			issue := nativeMergeQueueTestIssue(2621, "success")
+			first := time.Date(2026, 9, 14, 15, 44, 41, 0, time.UTC)
+			tracker := &nativeMergeQueueConnector{removedHeads: map[string]string{issue.ID: issue.PullRequest.HeadSHA}, removalReason: "failed_checks", removedAt: &first, enqueuedAt: timePointer(first.Add(2 * time.Minute)), autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: backend}
+			state := newState(cfg)
+			restart := func() {
+				if err := backend.Close(); err != nil {
+					t.Fatal(err)
+				}
+				backend, err = store.Open(t.Context(), store.Config{Path: path})
+				if err != nil {
+					t.Fatal(err)
+				}
+				orch = &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: backend}
+				state = newState(cfg)
+			}
+			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, first.Add(time.Minute))
+			if restartBeforeRetry {
+				restart()
+			}
+			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, first.Add(2*time.Minute))
+			if len(tracker.enqueued) != 1 {
+				t.Fatalf("duplicate removal after restart did not admit retry: %v", tracker.enqueued)
+			}
+			restart()
+			second := first.Add(time.Hour)
+			tracker.removedAt = &second
+			tracker.updateErr = errors.New("tracker unavailable")
+			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, second.Add(time.Minute))
+			restart()
+			tracker.updateErr = nil
+			tracker.removedHeads[issue.ID] = "merge-group-before-commit"
+			got := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, second.Add(time.Minute))
+			if got[0].State != autoPromoteSourceState || len(tracker.enqueued) != 1 {
+				t.Fatalf("restart bypassed budget: state=%s enqueues=%v", got[0].State, tracker.enqueued)
+			}
+			restart()
+			third := second.Add(time.Hour)
+			tracker.removedAt = &third
+			tracker.removedHeads[issue.ID] = issue.PullRequest.HeadSHA
+			got = orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, third.Add(time.Minute))
+			if got[0].State != "Merging" || len(state.nativeMergeQueueRemovals[issue.ID]) != 1 {
+				t.Fatalf("budget transition did not reset durable count: state=%s removals=%v", got[0].State, state.nativeMergeQueueRemovals)
+			}
+		})
+	}
+}
+
+// Fail storage operations without changing the real timeline semantics.
+type nativeQueueFailingMetrics struct {
+	*autoPromoteWorkflowMetricsRecorder
+	readErr, writeErr error
+}
+
+func (m *nativeQueueFailingMetrics) IssueWorkflowTimeline(ctx context.Context, identity store.IssueIdentity) (store.WorkflowTimeline, error) {
+	if m.readErr != nil {
+		return store.WorkflowTimeline{}, m.readErr
+	}
+	return m.autoPromoteWorkflowMetricsRecorder.IssueWorkflowTimeline(ctx, identity)
+}
+
+func (m *nativeQueueFailingMetrics) RecordWorkflowPhaseEvent(ctx context.Context, event store.WorkflowPhaseEvent) (int64, error) {
+	if m.writeErr != nil {
+		return 0, m.writeErr
+	}
+	return m.autoPromoteWorkflowMetricsRecorder.RecordWorkflowPhaseEvent(ctx, event)
+}
+
+func TestNativeMergeQueueRemovalStorageFailure(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"read", "write"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			issue := nativeMergeQueueTestIssue(2621, "success")
+			removed := time.Date(2026, 9, 14, 15, 44, 41, 0, time.UTC)
+			tracker := &nativeMergeQueueConnector{removedHeads: map[string]string{issue.ID: issue.PullRequest.HeadSHA}, removalReason: "failed_checks", removedAt: &removed, autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			metrics := &nativeQueueFailingMetrics{autoPromoteWorkflowMetricsRecorder: &autoPromoteWorkflowMetricsRecorder{}}
+			if operation == "read" {
+				metrics.readErr = errors.New("storage unavailable")
+			} else {
+				metrics.writeErr = errors.New("storage unavailable")
+			}
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics}
+			state := newState(cfg)
+			for range 2 {
+				got := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, removed.Add(time.Minute))
+				if got[0].State != "Merging" || len(tracker.enqueued) != 0 || len(tracker.updates) != 0 {
+					t.Fatalf("storage failure mutated queue/lane: %+v", tracker)
+				}
+				if _, deferred := state.nativeMergeQueueDeferred[issue.ID]; !deferred {
+					t.Fatal("storage failure was not deferred")
+				}
+			}
+			metrics.readErr, metrics.writeErr = nil, nil
+			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, removed.Add(2*time.Minute))
+			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, removed.Add(3*time.Minute))
+			if len(tracker.enqueued) != 1 || len(metrics.snapshot()) != 1 {
+				t.Fatalf("recovered storage: enqueues=%v events=%v", tracker.enqueued, metrics.snapshot())
 			}
 		})
 	}
