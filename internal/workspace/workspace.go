@@ -1091,7 +1091,7 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 		return "", fmt.Errorf("release quarantined worktree admin name: %w", err)
 	}
 	if err := detachWorktreeHead(ctx, quarantinePath); err != nil {
-		return quarantinePath, err
+		return quarantinePath, fmt.Errorf("workspace quarantined at %q: %w", quarantinePath, err)
 	}
 	return quarantinePath, nil
 }
