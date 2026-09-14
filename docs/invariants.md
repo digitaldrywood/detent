@@ -44,6 +44,14 @@ innocent issues and left the operator to return them to work.
 **Enforcement:** `TestPreTurnFailuresDrainInstance` and
 `TestObservedLanePreTurnFailureRemainsInstanceOwned` exercise instance attribution
 and preserve issue ownership even after an observed lane change.
+`TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
+completion handlers to triage workspace, startup, transport, protocol, and capacity
+failures. These failures publish no triage comment and do not consume the triage
+pass; recovered admission uses the same durable allowance. The shared Codex
+capacity classifier also sends typed in-turn transport/JSON-RPC failures through
+that existing instance wait; model-parameter rejection and operator cancellation
+retain their prior classification. `TestClassifyCapacityErrorTransportAndProtocol`
+and `TestRunnerTriageClassifiesProviderFailure` cover the provider/runner boundary.
 `TestIssueSpendSinceExcludesInstanceInfrastructureAttempts` excludes established
 workspace, backend-startup, deliverable-authorization, forge, and tracker failure
 classes from issue progress spend. `TestAgentRunProgressClassifiesPullRequestApprovalDecline`
@@ -193,7 +201,10 @@ reset prior work; subsequent activity on a merged PR is not a reset.
 
 The fourth code dispatch becomes one read-only triage turn using the existing
 code/rework role. Its durable attempt identity prevents another triage turn after
-restart. The runner has no mutation tools, no resume state, no writable worktree,
+restart, excluding instance-attributed failures. Triage uses the shared native
+reservation-aware selection and execution-start contract, plus metered budget
+admission and in-turn projection enforcement. The runner has no mutation tools,
+no resume state, no writable worktree,
 and no workspace or publication hooks. It returns one fixed-format explanation;
 the orchestrator persists that result, publishes one issue comment, and moves the
 issue to Human Review with `attempt_allowance_exhausted`. Publication checks the
@@ -210,7 +221,12 @@ explicit operational completion workflows retain their own deliverable rules.
 `TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
 `TestAttemptAllowancePreservesOperatorCompletionLane`, and
 `TestPullRequestMergeTimeSurvivesLaterActivity` enforce the allowance and restricted publication
-contract.
+contract. `TestRunnerTriageNativeAdmission` and `TestRunnerTriageBudget` verify
+reservation identity, capacity loss, issue/daily budget refusal, and metered
+projection enforcement without launching an unauthorized backend turn.
+`TestRunnerTriageReportsTurnStart` preserves observed primary-turn evidence before
+usage arrives; `TestAttemptAllowanceTriageFallbackCompletion` keeps budget refusal,
+invalid output, tool refusal, and interrupted turns to one fallback comment.
 
 Scheduled routine occurrences advance from their durable `scheduled_for` identity
 regardless of success or failure. A selected occurrence whose existing ownership

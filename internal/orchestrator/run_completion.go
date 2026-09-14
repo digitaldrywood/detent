@@ -154,11 +154,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
-	if running.Mode == runpkg.RunModeTriage {
-		o.finishAttemptTriage(ctx, state, event, running)
-		return
-	}
-	if running.CompletionLane != "" {
+	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
 		event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
@@ -310,7 +306,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.Err)
 	}
 
-	if !deliverableLookup.reconciles() && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+	if running.Mode != runpkg.RunModeTriage && !deliverableLookup.reconciles() && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 		tokens := event.Result.Tokens
 		if tokens == (TokenTotals{}) {
@@ -331,6 +327,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if o.handlePreTurnFailure(ctx, state, event, running) {
+		return
+	}
+	if running.Mode == runpkg.RunModeTriage {
+		o.finishAttemptTriage(ctx, state, event, running)
 		return
 	}
 	if o.handlePermissionWaitCompletion(ctx, state, event, running) {

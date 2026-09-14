@@ -364,3 +364,30 @@ func TestRateLimitsFromCodexPreservesReachedType(t *testing.T) {
 		t.Fatalf("Primary.ObservedAt = nil, want observation timestamp")
 	}
 }
+
+func TestClassifyCapacityErrorTransportAndProtocol(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"transport closed during turn", fmt.Errorf("read turn notification: %w", io.EOF), true},
+		{"partial response", io.ErrUnexpectedEOF, true},
+		{"closed pipe", io.ErrClosedPipe, true},
+		{"invalid frame", fmt.Errorf("decode notification: %w", ErrInvalidFrame), true},
+		{"invalid request", &ResponseError{Request: "turn/start", Code: -32600, Message: "invalid request"}, true},
+		{"internal RPC failure", &ResponseError{Request: "turn/start", Code: -32603, Message: "internal error"}, true},
+		{"domain rejection", &ResponseError{Request: "turn/start", Code: -32000, Message: "invalid model"}, false},
+		{"invalid model parameter", &ResponseError{Request: "turn/start", Code: -32602, Message: "invalid model"}, false},
+		{"ordinary failure", errors.New("agent did not produce a diagnosis"), false},
+		{"operator cancellation", errors.Join(context.Canceled, io.EOF), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			details, got := ClassifyCapacityError(tt.err, nil, time.Now())
+			if got != tt.want || got && details.Type != backendcapacity.ErrorTypeTransientOverload {
+				t.Fatalf("classification = %+v, %v", details, got)
+			}
+		})
+	}
+}

@@ -35,6 +35,9 @@ func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt time.Time)
 		if !mergedAt.IsZero() && !attempt.StartedAt.After(mergedAt) {
 			continue
 		}
+		if allowanceInfrastructureAttempt(attempt) {
+			continue
+		}
 		if attempt.WorkerType == runpkg.RunModeTriage {
 			if result.Triage == nil || attempt.ID > result.Triage.ID {
 				copy := attempt
@@ -45,9 +48,6 @@ func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt time.Time)
 		switch attempt.WorkerType {
 		case "agent", "code", "rework", "implementation":
 		default:
-			continue
-		}
-		if allowanceInfrastructureAttempt(attempt) {
 			continue
 		}
 		result.Sessions++
@@ -202,6 +202,8 @@ func (o *Orchestrator) finishAttemptTriage(ctx context.Context, state *State, ev
 	note := strings.TrimSpace(event.Result.Output)
 	if event.Err != nil {
 		note = fallbackAttemptTriageNote(running.Issue, event.Err.Error())
+	} else if refusal := event.Result.BudgetRefusal; refusal != nil {
+		note = fallbackAttemptTriageNote(running.Issue, "budget admission refused ("+refusal.Code+"): "+refusal.Message)
 	} else if !validAttemptTriageNote(note) {
 		note = fallbackAttemptTriageNote(running.Issue, "invalid or missing output")
 	}

@@ -3,13 +3,16 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -25,15 +28,18 @@ Do not claim actions were performed. Detent publishes the comment and routes the
 // runTriage uses the existing code/rework role in an empty read-only workspace.
 // It receives a complete evidence snapshot and exposes no mutation tools.
 func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResult, err error) {
-	workflow, runtime, _, _ := r.runtimeSnapshot()
+	workflow, runtime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
+	// Triage always starts fresh, but still uses the native provider reservation.
+	req.RetryMode = ""
+	req.ResumeState = store.AgentResumeState{}
 	role := runRole(RunModeImplement, req.Issue)
-	selection, backend, backendConfig, err := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
+	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return result, err
 	}
 	path, err := r.prepareSecurityAuditWorkspace()
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("%w: %w", ErrWorkspacePreparation, err)
 	}
 	removeWorkspace := true
 	defer func() {
@@ -41,6 +47,11 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 			err = errors.Join(err, os.RemoveAll(path))
 		}
 	}()
+	if req.Execution != nil {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return result, err
+		}
+	}
 	startedAt := r.now().UTC()
 	model := effectiveModel("", selection.Model, runtime.defaultModelForRole(role))
 	environment := workerEnvironment(map[string]string{
@@ -51,7 +62,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	if err != nil {
 		return result, err
 	}
-	resolved := resolveAgentSelection(ctx, req.Issue, process, model, role, workflow.Config, backendConfig, backend)
+	resolved := resolveRequestAgentSelection(ctx, req, process, model, role, workflow.Config, backendConfig, backend)
 	if err := r.agentPreflightError(resolved.Err, cleanup()); err != nil {
 		return result, err
 	}
@@ -61,16 +72,34 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	if resolved.Effort != "" {
 		identity.ReasoningEffort = agentidentity.NewValue(resolved.Effort, agentidentity.ProvenanceConfigured)
 	}
+	var budgetProjection *dispatchBudgetProjection
+	if workflow.Config.Budget.EffectiveBillingMode() != config.BillingModeSubscription {
+		admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, model, startedAt)
+		if err != nil || refused {
+			return admission, err
+		}
+		budgetProjection = admission.budgetProjection
+	}
+	if req.Execution != nil {
+		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: model}
+		if executionIdentity.Model == "" {
+			executionIdentity.Model = "provider_default"
+		}
+		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+			return result, err
+		}
+	}
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, identity, store.AgentResumeState{}, "", "")
 	if err != nil {
 		return result, err
 	}
-	result = RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: identity}
+	result = RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: identity, budgetProjection: budgetProjection}
 	provider, tier, effort := agentTurnIdentityOptions(backendConfig)
 	if resolved.Effort != "" {
 		effort = resolved.Effort
 	}
 	var output strings.Builder
+	turnCount := 0
 	removeWorkspace = false
 	turn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, AgentTurnRequest{
 		Workspace: path, Prompt: triageInstructions + "\n\nEvidence:\n" + req.TriageContext,
@@ -79,6 +108,10 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		Environment: environment, MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval,
 		projectID: r.projectID, processRSS: r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
+		if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
+			result.TurnStarted = true
+			turnCount = 1
+		}
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 			return ErrSecurityAuditToolUse
 		}
@@ -93,13 +126,17 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		}
 		applyAgentUpdate(&result, update)
 		if req.OnUsageUpdate != nil {
-			return req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity})
+			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), TurnCount: turnCount, Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity}); err != nil {
+				return err
+			}
 		}
-		return nil
+		observedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, model)
+		return r.enforceSessionBudgetProjection(budgetProjection, 0, observedModel, backendConfig.Kind, update)
 	}, r.turnLimit)
 	reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
 	removeWorkspace = reapErr == nil
 	turnErr = errors.Join(turnErr, reapErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
+	turnErr = classifyAgentCapacityError(backend, selection, backendConfig, result.RuntimeIdentity, turnErr, result.RateLimits, startedAt)
 	result.Output = output.String()
 	if turnErr != nil {
 		result.FinalState = finalStateForTurnError(turnErr)

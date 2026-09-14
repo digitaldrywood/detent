@@ -2,11 +2,16 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -294,7 +299,8 @@ func TestAttemptAllowancePreservesOperatorCompletionLane(t *testing.T) {
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			state := newState(cfg)
 			running := Running{Issue: issue, WorkAttemptID: id, Mode: runpkg.RunModeTriage, CompletionLane: lane}
-			orch.finishAttemptTriage(t.Context(), &state, runpkg.Completion{CompletedAt: now, Result: runpkg.RunResult{Output: fallbackAttemptTriageNote(issue, "test")}}, running)
+			state.Running[issue.ID] = running
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{Output: fallbackAttemptTriageNote(issue, "test")}})
 			attempt, err := db.WorkAttempt(t.Context(), id)
 			if err != nil {
 				t.Fatal(err)
@@ -304,6 +310,131 @@ func TestAttemptAllowancePreservesOperatorCompletionLane(t *testing.T) {
 			}
 			if len(tracker.comments) != 1 || len(tracker.updates) != 0 {
 				t.Fatalf("operator lane overridden: comments=%d updates=%#v", len(tracker.comments), tracker.updates)
+			}
+		})
+	}
+}
+
+func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		failure error
+		started bool
+	}{
+		{"workspace", fmt.Errorf("%w: cannot create directory", runpkg.ErrWorkspacePreparation), false},
+		{"startup", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("backend exited")), false},
+		{"transport", io.ErrUnexpectedEOF, false},
+		{"protocol", errors.New("codex turn/start: JSON-RPC -32600 invalid request"), false},
+		{"in-turn transport", io.ErrUnexpectedEOF, true},
+		{"in-turn protocol", &codex.ResponseError{Request: "turn/start", Code: -32600, Message: "invalid request"}, true},
+		{"in-turn overload", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("overloaded")), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			issue := connector.Issue{ID: "stalled", Identifier: "owner/repo#2595", URL: "https://github.com/owner/repo/issues/2595", State: "Rework"}
+			cfg := laneMutationTestConfig()
+			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now.Add(-time.Hour))
+			for i := range 3 {
+				if i > 0 {
+					var err error
+					id, err = db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: "Rework", AttemptNumber: i + 1, StartedAt: now.Add(-time.Duration(10-i) * time.Minute)})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: issue}}
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			orch.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
+			orch.runResults = make(chan runpkg.Completion, 1)
+			state := newState(cfg)
+			if !orch.dispatchIssue(t.Context(), &state, issue, 4, now, "") {
+				t.Fatal("triage not dispatched")
+			}
+			var completion runpkg.Completion
+			select {
+			case completion = <-orch.runResults:
+			case <-time.After(5 * time.Second):
+				t.Fatal("runner did not complete")
+			}
+			completion.Err = tt.failure
+			if details, ok := codex.ClassifyCapacityError(tt.failure, nil, now); ok {
+				completion.Err = backendcapacity.NewError(backendcapacity.Scope{}, details, tt.failure)
+			}
+			completion.Result = runpkg.RunResult{TurnStarted: tt.started}
+			if tt.started {
+				completion.Result.Tokens.TotalTokens = 1
+			}
+			writesBefore := len(tracker.updates)
+			orch.handleRunResult(t.Context(), &state, completion)
+			if len(tracker.comments) != 0 || len(tracker.updates) != writesBefore || len(state.Blocked) != 0 {
+				t.Fatalf("infrastructure failure produced issue writes: comments=%+v updates=%+v blocked=%+v", tracker.comments, tracker.updates, state.Blocked)
+			}
+			allowance, err := orch.issueAttemptAllowance(t.Context(), issue)
+			if err != nil || allowance.Sessions != 3 || allowance.Triage != nil {
+				t.Fatalf("allowance after infrastructure failure=%+v, err=%v", allowance, err)
+			}
+			// Simulate recovered instance admission with the same durable attempt log.
+			restarted := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now.Add(time.Minute))
+			restarted.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
+			restarted.runResults = make(chan runpkg.Completion, 1)
+			recovered := newState(cfg)
+			if !restarted.dispatchIssue(t.Context(), &recovered, issue, 5, now.Add(time.Minute), "") {
+				t.Fatal("recovered instance could not dispatch triage")
+			}
+			select {
+			case completion = <-restarted.runResults:
+			case <-time.After(5 * time.Second):
+				t.Fatal("recovered runner did not complete")
+			}
+			if completion.Request.Mode != runpkg.RunModeTriage {
+				t.Fatalf("mode = %s", completion.Request.Mode)
+			}
+			restarted.handleRunResult(t.Context(), &recovered, completion)
+			if len(tracker.comments) != 1 || !validAttemptTriageNote(strings.Split(tracker.comments[0].body, "<!--")[0]) {
+				t.Fatalf("comments = %+v", tracker.comments)
+			}
+		})
+	}
+}
+
+func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		result runpkg.RunResult
+		err    error
+		detail string
+	}{
+		{name: "invalid output", result: runpkg.RunResult{TurnStarted: true, Output: "bad format"}, detail: "invalid or missing output"},
+		{name: "tool refused", result: runpkg.RunResult{TurnStarted: true}, err: runpkg.ErrSecurityAuditToolUse, detail: runpkg.ErrSecurityAuditToolUse.Error()},
+		{name: "interrupted turn", result: runpkg.RunResult{TurnStarted: true}, err: context.Canceled, detail: context.Canceled.Error()},
+		{name: "budget admission", result: runpkg.RunResult{BudgetRefusal: &runpkg.BudgetRefusal{Code: string(budget.ReasonPerDayMaxUSD), Message: "daily budget exhausted"}}, detail: "daily budget exhausted"},
+		{name: "projection exceeded", result: runpkg.RunResult{TurnStarted: true}, err: &runpkg.SessionBudgetProjectionError{ProjectedCostUSD: 0.1, ObservedCostUSD: 0.2}, detail: "projected"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "Rework"}
+			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue}}
+			cfg := laneMutationTestConfig()
+			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: id, Mode: runpkg.RunModeTriage}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: tt.result, Err: tt.err})
+			if len(tracker.comments) != 1 || len(tracker.updates) != 1 || tracker.updates[0].state != "Human Review" {
+				t.Fatalf("writes: comments=%+v updates=%+v", tracker.comments, tracker.updates)
+			}
+			note := strings.Split(tracker.comments[0].body, "<!--")[0]
+			if !validAttemptTriageNote(note) || !strings.Contains(note, tt.detail) {
+				t.Fatalf("note = %s", note)
+			}
+			if len(state.Retry) != 0 || len(state.Blocked) != 0 {
+				t.Fatalf("terminal triage scheduled more work: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 		})
 	}
