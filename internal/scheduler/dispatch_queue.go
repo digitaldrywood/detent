@@ -101,11 +101,7 @@ func (g *GlobalDispatchGate) finishRequestLocked(call *dispatchRequest) {
 			return
 		}
 	}
-	slot := call.slot
-	if call.granted && call.decorate != nil {
-		slot = call.decorate(slot)
-	}
-	call.result <- DispatchResult{Order: slot.token, Slot: slot, Decision: call.decision, Err: call.err}
+	call.result <- DispatchResult{Order: call.slot.token, Slot: call.slot, Decision: call.decision, Err: call.err}
 	select {
 	case call.wake <- struct{}{}:
 	default:

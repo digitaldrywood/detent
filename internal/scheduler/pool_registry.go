@@ -336,11 +336,26 @@ func (r *PoolRegistry) dispatchPendingLocked() {
 	r.pending = nil
 	r.requestMu.Unlock()
 
-	// Keep routing and elastic pool accounting serialized while collecting
-	// concurrent callers before taking that lock. Each pool ranks its ready
-	// requests and acquires real slots in one operation.
-	var runtimes []*poolRuntime
-	byPool := make(map[*poolRuntime][]*dispatchRequest)
+	// Routing, ranking, and real acquisition share reconfigureMu. Collect
+	// executable requests across all pools before any pool consumes capacity.
+	requests := make([]*dispatchRequest, 0, len(pending))
+	r.mu.RLock()
+	runtimes := make([]*poolRuntime, 0, len(r.active))
+	for _, runtime := range r.active {
+		runtimes = append(runtimes, runtime)
+	}
+	r.mu.RUnlock()
+	// Stable ties must not depend on map iteration order.
+	slices.SortFunc(runtimes, func(a, b *poolRuntime) int { return strings.Compare(a.name, b.name) })
+	for _, runtime := range runtimes {
+		runtime.gate.mu.Lock()
+		for _, call := range runtime.gate.waiting {
+			call.now = time.Now()
+			requests = append(requests, call)
+		}
+		runtime.gate.waiting = nil
+		runtime.gate.mu.Unlock()
+	}
 	for _, request := range pending {
 		runtime := r.runtimeForCandidate(request.project)
 		if runtime == nil {
@@ -351,34 +366,31 @@ func (r *PoolRegistry) dispatchPendingLocked() {
 			continue
 		}
 		request.gate = runtime.gate
-		request.decorate = func(slot Slot) Slot {
-			slot.poolName = runtime.name
-			slot.poolGeneration = runtime.generation
-			return slot
-		}
-		if _, exists := byPool[runtime]; !exists {
-			runtimes = append(runtimes, runtime)
-		}
-		byPool[runtime] = append(byPool[runtime], request)
-	}
-	r.mu.RLock()
-	for _, runtime := range r.active {
-		if _, exists := byPool[runtime]; !exists {
-			runtimes = append(runtimes, runtime)
-		}
-	}
-	r.mu.RUnlock()
-	for _, runtime := range runtimes {
-		runtime.gate.mu.Lock()
-		runtime.gate.dispatchLocked(byPool[runtime])
-		runtime.gate.mu.Unlock()
-		for _, request := range byPool[runtime] {
-			request.decision = r.elasticDecision(runtime, request.decision)
-			if request.granted && request.err == nil {
-				request.slot.poolName = runtime.name
-				request.slot.poolGeneration = runtime.generation
+		request.decorate = func(slot Slot, decision DispatchGateDecision) (Slot, DispatchGateDecision) {
+			if slot != (Slot{}) {
+				slot.poolName = runtime.name
+				slot.poolGeneration = runtime.generation
 			}
+			return slot, r.elasticDecision(runtime, decision)
 		}
+		requests = append(requests, request)
+	}
+	for len(requests) > 0 {
+		index, err := selectDispatchRequest(requests)
+		call := requests[index]
+		gate := call.gate
+		gate.mu.Lock()
+		if err != nil {
+			call.err = err
+		} else {
+			call.slot, call.granted, call.decision, call.err = gate.acquireRequestHostLocked(call)
+		}
+		gate.mu.Unlock()
+		call.slot, call.decision = call.decorate(call.slot, call.decision)
+		gate.mu.Lock()
+		gate.finishRequestLocked(call)
+		gate.mu.Unlock()
+		requests = append(requests[:index], requests[index+1:]...)
 	}
 }
 

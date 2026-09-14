@@ -863,3 +863,90 @@ func assertPoolPaused(t *testing.T, registry *scheduler.PoolRegistry, project sc
 		t.Fatalf("TryAcquireWithDecision() ok = %t decision = %#v, want paused", ok, decision)
 	}
 }
+
+func TestPoolRegistryQueuedBorrowersUseFreedCapacity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		higherFirst  bool
+		higherWeight int
+	}{
+		{name: "higher submitted first", higherFirst: true, higherWeight: 1},
+		{name: "lower submitted first", higherWeight: 1},
+		{name: "higher cannot fit", higherFirst: true, higherWeight: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			projects := []scheduler.ProjectCandidate{
+				{ID: "lender"},
+				{ID: "higher", Pool: "alpha", Priority: 1},
+				{ID: "lower", Pool: "beta", Priority: 4},
+			}
+			registry := newPoolRegistry(t, []scheduler.PoolConfig{
+				poolConfig(scheduler.DefaultPoolName, "strict", 1, nil),
+				elasticPoolConfig("alpha", "strict", 1, 2, nil),
+				elasticPoolConfig("beta", "strict", 1, 2, nil),
+			}, projects)
+			held := acquirePoolSlots(t, registry, time.Now(), projects...)
+			order := []int{2, 1}
+			if tc.higherFirst {
+				order = []int{1, 2}
+			}
+			responses := make(map[int]<-chan scheduler.DispatchResult)
+			cancels := make(map[int]func())
+			for _, index := range order {
+				weight := 1
+				if index == 1 {
+					weight = tc.higherWeight
+				}
+				response, cancel, decision := registry.Submit(t.Context(), projects[index], scheduler.SlotRequest{State: "Todo", Weight: weight}, time.Now(), nil)
+				defer cancel()
+				responses[index], cancels[index] = response, cancel
+				if decision.Reason != scheduler.DispatchGateReasonGlobalCapacityFull {
+					t.Fatalf("refusal = %+v", decision)
+				}
+			}
+			if err := registry.Release(held[0]); err != nil {
+				t.Fatal(err)
+			}
+			winner, loser := 1, 2
+			if tc.higherWeight == 2 {
+				winner, loser = 2, 1
+			}
+			var grant scheduler.DispatchResult
+			select {
+			case grant = <-responses[winner]:
+				if grant.Err != nil || grant.Decision.SharedAvailable != 0 || grant.Decision.BorrowedSlots != 1 {
+					t.Fatalf("grant = %+v", grant)
+				}
+			default:
+				t.Fatal("release left a dispatchable borrower waiting")
+			}
+			select {
+			case unexpected := <-responses[loser]:
+				t.Fatalf("second borrower exceeded shared capacity: %+v", unexpected)
+			default:
+			}
+			if tc.higherWeight == 2 {
+				cancels[loser]()
+			}
+			if err := registry.Release(grant.Slot); err != nil {
+				t.Fatal(err)
+			}
+			if tc.higherWeight == 1 {
+				select {
+				case next := <-responses[loser]:
+					if next.Err != nil {
+						t.Fatal(next.Err)
+					}
+					if err := registry.Release(next.Slot); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatal("next borrower required polling after release")
+				}
+			}
+			releasePoolSlots(t, registry, held[1:])
+		})
+	}
+}

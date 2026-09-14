@@ -143,3 +143,86 @@ func TestPoolRegistryConcurrentAcquisitionRetainsSlotIdentity(t *testing.T) {
 		}
 	}
 }
+
+// Release must rank a retained executable borrower with a newly enrolled caller
+// from another pool before either acquires the last shared slot.
+func TestPoolRegistryRanksBorrowersAcrossPools(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		kind           string
+		lowerKind      string
+		higherPriority int
+		lowerPriority  int
+		higherLane     int
+		lowerLane      int
+	}{
+		{name: "strict project rank", kind: "strict", higherPriority: 1, lowerPriority: 4},
+		{name: "round robin lane rank", kind: "round_robin", higherLane: 1, lowerLane: 4},
+		{name: "weighted lane rank", kind: "weighted", higherLane: 1, lowerLane: 4},
+		{name: "mixed mode neutral project rank", kind: "round_robin", lowerKind: "strict", lowerPriority: 4, higherLane: 4, lowerLane: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lowerKind := tc.lowerKind
+			if lowerKind == "" {
+				lowerKind = tc.kind
+			}
+			lender := ProjectCandidate{ID: "lender"}
+			higher := ProjectCandidate{ID: "higher", Pool: "alpha", Priority: tc.higherPriority}
+			lower := ProjectCandidate{ID: "lower", Pool: "beta", Priority: tc.lowerPriority}
+			registry, err := NewPoolRegistry([]PoolConfig{
+				{Name: DefaultPoolName, Scheduler: Config{Kind: tc.kind, Capacity: 1}},
+				{Name: "alpha", BurstTo: 2, Scheduler: Config{Kind: tc.kind, Capacity: 1}},
+				{Name: "beta", BurstTo: 2, Scheduler: Config{Kind: lowerKind, Capacity: 1}},
+			}, []ProjectCandidate{lender, higher, lower})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var held []Slot
+			for _, project := range []ProjectCandidate{lender, higher, lower} {
+				slot, ok, err := registry.TryAcquire(t.Context(), project, SlotRequest{State: "Todo"}, time.Now())
+				if err != nil || !ok {
+					t.Fatalf("fill %s: granted=%t err=%v", project.ID, ok, err)
+				}
+				held = append(held, slot)
+			}
+			response, cancel, decision := registry.Submit(t.Context(), higher, SlotRequest{State: "Todo", Priority: tc.higherLane}, time.Now(), nil)
+			defer cancel()
+			if decision.Reason != DispatchGateReasonGlobalCapacityFull {
+				t.Fatalf("queued decision = %+v", decision)
+			}
+			// Freeze the synchronous caller after intake enrollment, just as it
+			// waits for reconfigureMu. Release must include it in the same ranking.
+			call := &dispatchRequest{ctx: t.Context(), project: lower, request: SlotRequest{State: "Todo", Priority: tc.lowerLane}, now: time.Now()}
+			registry.requestMu.Lock()
+			registry.pending = append(registry.pending, call)
+			registry.requestMu.Unlock()
+			if err := registry.Release(held[0]); err != nil {
+				t.Fatal(err)
+			}
+			var grant DispatchResult
+			select {
+			case grant = <-response:
+				if grant.Err != nil {
+					t.Fatal(grant.Err)
+				}
+			default:
+				t.Fatal("higher-ranked borrower did not receive freed shared capacity")
+			}
+			if call.slot != (Slot{}) || call.granted || call.err != nil || call.decision.Reason != DispatchGateReasonGlobalCapacityFull || call.decision.SharedAvailable != 0 {
+				t.Fatalf("lower borrower = %+v", call)
+			}
+			if err := registry.Release(grant.Slot); err != nil {
+				t.Fatal(err)
+			}
+			next, ok, decision, err := registry.TryAcquireWithDecision(t.Context(), lower, call.request, time.Now())
+			if err != nil || !ok {
+				t.Fatalf("next borrow: granted=%t decision=%+v err=%v", ok, decision, err)
+			}
+			for _, slot := range append(held[1:], next) {
+				if err := registry.Release(slot); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
