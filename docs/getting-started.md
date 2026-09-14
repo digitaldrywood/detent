@@ -1,5 +1,8 @@
 # Quick Start
 
+For concise agent instructions, use the [instruction-cost guide](instruction-cost.md)
+when writing `WORKFLOW.md`, `AGENTS.md`, and skills.
+
 [Back to README](../README.md#documentation)
 
 The quickest compatibility setup is one GitHub ProjectV2 board and one local
