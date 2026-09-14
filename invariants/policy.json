@@ -57,7 +57,8 @@
       "TestRepositoryWorkflow",
       "TestSourceViolations",
       "TestWorkflowViolations",
-      "TestMutationDocuments"
+      "TestMutationDocuments",
+      "TestDoctorInvariantRegistration"
     ],
     "./internal/admission": [
       "TestAdmissionRequiresLedgerWriter",
@@ -66,7 +67,12 @@
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
       "TestPrepareWorkerCodexHomeExistingInstructions",
-      "TestDoctorMergeQueueRecordedHistory"
+      "TestDoctorMergeQueueRecordedHistory",
+      "TestDoctorInvariantAdmission",
+      "TestDoctorInvariantAdmissionBatches",
+      "TestDoctorInvariantScopeClassification",
+      "TestDoctorInvariantAdmissionRepeatedEntries",
+      "TestDoctorInvariantAdmissionUnavailableEvidence"
     ],
     "./internal/connector/github": [
       "TestMachineIssueDuplicate",

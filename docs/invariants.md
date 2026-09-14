@@ -442,6 +442,62 @@ idle reconciliation then handles its release.
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.
 
+## INV-11 — Human scope approval before Todo
+
+**Statement:** No feature and no new or expanded operational mechanism enters
+Todo without a human's explicit approval of that scope, regardless of who filed
+the issue or how its title is typed. Only a fix with recorded runtime evidence
+whose remedy removes or consolidates may reach Todo without a human.
+
+**Why:** The operator's September 14, 2026 audit of 253 PRs merged between
+August 31 and September 14 found 225 PRs (183,808 added lines) from the untagged
+operator/assistant admission channel. Of those, 45 were features (94,884 lines);
+many “fixes” expanded mechanisms, including outage backoff, durable operator
+retries, review-thread gating, artifact breakers, credential pauses, and merge
+reservations. Worker-filed issues produced 13 PRs and 1,909 lines, none in
+orchestrator code. Non-test orchestrator code grew from 23,828 lines at v0.44.0
+to 51,369 at v0.114.8. The growth came through unapproved scope, not machine
+self-filing.
+
+**Enforcement:** Admission Criteria rule 9 in the operator-managed
+`detent-orchestration/WORKFLOW.md` leaves features and new or expanded mechanisms
+in Backlog until a human approves their scope by moving them. Assistants file
+that work to Backlog only. The rule applies regardless of title type or author;
+only evidenced fixes that remove or consolidate qualify for automatic admission.
+That workflow is outside this repository and was updated by the operator.
+
+The doctor check `INV-11 human scope approval` inspects every applied Todo
+ledger entry in the last seven days, including repeat entries. It fetches current
+issue titles and bodies by ID in batches of at most 100 so GitHub's identity
+lookup can audit busy projects. Conventional `feat`, `perf`, and `refactor` titles
+and declarations in either titles or bodies adding or expanding config keys,
+reason codes, brakes, breakers, leases, parks, recovery paths, or reservations
+require a human move. Each
+violation reports the issue, ledger origin, reason, and timestamp. Declaration
+clauses are separated at punctuation and coordinating words so removal or
+negation of one mechanism does not hide a later addition in the same sentence.
+Human ledger origin is accepted; an operator move with an empty or operator ledger origin must
+have matching phase-event provenance naming a human initiator and either an
+authenticated human session or a human actor. Dashboard sessions record their
+authentication basis without a tracker login. The
+event must match the project, issue, source/target lanes, reason, and write time
+interval. Admission acceptance and explicit machine origins cannot borrow a human
+actor's identity. Failed and prepared writes are not Todo entries.
+
+`TestDoctorInvariantAdmission`, `TestDoctorInvariantAdmissionBatches`, and
+`TestDoctorInvariantScopeClassification` run through the invariant manifest. `TestDoctorInvariantRegistration` in
+`internal/invariants` preserves the doctor entry point and check name. Missing
+store/schema/tracker/issue evidence warns rather than passing silently. This is
+a diagnostic, not an admission gate: body classification is a conservative
+natural-language heuristic, current issue text can differ from admission-time
+scope, and historical tracker moves absent from the ledger cannot be audited.
+It does not prove that every ordinary fix contains sufficient runtime evidence;
+admission rule 9 and review enforce that broader requirement.
+
+**Change:** Editing INV-11 requires updating the doctor check and the admission
+criteria in the same PR. Identify INV-11 in the PR template and record the
+operator-managed workflow update when it lives outside the repository.
+
 ## Check boundaries
 
 The source walk covers non-test Go packages under `internal`, `cmd`, and `tools`
