@@ -271,8 +271,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # Successful retries still contain failed-attempt diagnostics.
       - name: Upload browser visual failure artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: browser-visual-failure-artifacts

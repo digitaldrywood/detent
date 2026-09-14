@@ -1,0 +1,73 @@
+[
+  {
+    "millisecondsAfterEdgeMove": 0.0,
+    "type": "touchmove",
+    "touches": [
+      {
+        "id": 0,
+        "x": 340,
+        "y": 502.1171875
+      }
+    ],
+    "changed": [
+      0
+    ],
+    "scrollLeft": 0,
+    "targetX": 390,
+    "dragging": true,
+    "connection": "connected"
+  },
+  {
+    "millisecondsAfterEdgeMove": 541.5,
+    "type": "scroll",
+    "touches": [],
+    "changed": [],
+    "scrollLeft": 3,
+    "targetX": 387,
+    "dragging": true,
+    "connection": "connected"
+  },
+  {
+    "millisecondsAfterEdgeMove": 590.9,
+    "type": "scroll",
+    "touches": [],
+    "changed": [],
+    "scrollLeft": 90,
+    "targetX": 300,
+    "dragging": true,
+    "connection": "connected"
+  },
+  {
+    "millisecondsAfterEdgeMove": 873.7,
+    "type": "scrollend",
+    "touches": [],
+    "changed": [],
+    "scrollLeft": 370,
+    "targetX": 20,
+    "dragging": true,
+    "connection": "connected"
+  },
+  {
+    "millisecondsAfterEdgeMove": 888.8,
+    "type": "pointerup",
+    "x": 340,
+    "touches": [],
+    "changed": [],
+    "scrollLeft": 370,
+    "targetX": 20,
+    "dragging": true,
+    "connection": "connected"
+  },
+  {
+    "millisecondsAfterEdgeMove": 890.3,
+    "type": "touchend",
+    "touches": [],
+    "changed": [
+      0
+    ],
+    "scrollLeft": 370,
+    "targetX": 20,
+    "dragging": false,
+    "connection": "connected"
+  }
+]
