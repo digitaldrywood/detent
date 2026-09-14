@@ -156,6 +156,62 @@ func TestMergeWaitMetadataRemainsIndependent(t *testing.T) {
 	}
 }
 
+func TestMergeReleasedWaitStartsFreshOnRedispatch(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		mutate  func(*connector.Issue)
+		elapsed time.Duration
+	}{
+		{name: "failed checks", mutate: func(i *connector.Issue) { i.PullRequest.CIStatus = "failure" }},
+		{name: "expired", elapsed: mergeWorkerCurrentHeadCIWaitTimeout},
+		{name: "withdrawn", mutate: func(i *connector.Issue) { i.State = "Rework" }},
+		{name: "changed head", mutate: func(i *connector.Issue) { i.PullRequest.HeadSHA = "replacement-head" }},
+		{name: "changed repository", mutate: func(i *connector.Issue) { i.PRRepository = "example/replacement" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true})
+			orch := Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			issue := nativeMergeQueueTestIssue(2221, "success")
+			issue.PullRequest.BaseSHA = "base"
+			old := reserveMergeCandidate(&state, issue, now)
+			old.RefreshHeadSHA = issue.PullRequest.HeadSHA
+			state.mergeReservations[issue.ID] = old
+			if tt.mutate != nil {
+				tt.mutate(&issue)
+			}
+			later := now.Add(time.Minute + tt.elapsed)
+			orch.reconcileMergeReservations(&state, []connector.Issue{issue}, later)
+			issue.State = "Merging"
+			issue.PullRequest.CIStatus = "success"
+			if !newDispatchPlanner(cfg).readyMergeControlCandidate(&state, issue) {
+				t.Error("released refresh marker excludes merge-control admission")
+			}
+			fresh := reserveMergeCandidate(&state, issue, later)
+			if fresh.ReleasedReason != "" || fresh.RefreshHeadSHA != "" || fresh.Repository != mergeWorkerRepositoryKey(issue) || fresh.HeadSHA != issue.PullRequest.HeadSHA || !fresh.StartedAt.Equal(later) || !fresh.ExpiresAt.Equal(later.Add(mergeWorkerCurrentHeadCIWaitTimeout)) {
+				t.Fatalf("redispatch inherited stale wait metadata: %+v", fresh)
+			}
+			issue.PullRequest.CIStatus = "pending"
+			wait := orch.recordMergeReservationWait(&state, issue, later.Add(time.Minute))
+			restarted := newState(cfg)
+			orch.recoverMergeReservations(&restarted, []store.WorkAttempt{{
+				ID: 2, IssueID: issue.ID, Phase: "waiting", Status: store.WorkAttemptStatusTerminal,
+				TerminalState: store.WorkAttemptTerminalSuccess, CompletedAt: later.Add(time.Minute),
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{mergeReservationMetadataKey: wait}),
+			}}, []connector.Issue{issue}, later.Add(2*time.Minute))
+			if got := restarted.mergeReservations[issue.ID]; got != fresh {
+				t.Fatalf("recovered wait = %+v, want %+v", got, fresh)
+			}
+			if retry := restarted.Retry[issue.ID]; retry.Wait.Kind != retryWaitCurrentHeadCI || !retry.Wait.StartedAt.Equal(later) {
+				t.Fatalf("recovered retry = %+v", retry)
+			}
+		})
+	}
+}
+
 func TestMergeCIWaitAllowsReadyRetryBeforeFairnessAge(t *testing.T) {
 	t.Parallel()
 	for _, ci := range []string{"pending", "success"} {
@@ -258,14 +314,14 @@ func TestMergeReservationLifecycle(t *testing.T) {
 			orch := Orchestrator{cfg: cfg, logger: slog.New(slog.NewTextHandler(&logs, nil))}
 			orch.reconcileMergeReservations(&state, []connector.Issue{issue, other}, now.Add(tt.elapsed))
 			_, blocked := mergeReservationBlocks(&state, other, now.Add(tt.elapsed))
-			reservation := state.mergeReservations[original.IssueID]
-			if blocked || reservation.ReleasedReason != tt.reason {
-				t.Fatalf("reservation = %#v, blocked = %t, want reason %q", reservation, blocked, tt.reason)
+			reservation, active := state.mergeReservations[original.IssueID]
+			if blocked || active != (tt.reason == "") {
+				t.Fatalf("reservation = %#v, active = %t, blocked = %t, want reason %q", reservation, active, blocked, tt.reason)
 			}
 			if tt.reason != "" && !strings.Contains(logs.String(), "reason="+tt.reason) {
 				t.Fatalf("missing release reason in %s", logs.String())
 			}
-			if !reservation.ExpiresAt.Equal(original.ExpiresAt) {
+			if active && !reservation.ExpiresAt.Equal(original.ExpiresAt) {
 				t.Fatal("reservation deadline moved")
 			}
 		})

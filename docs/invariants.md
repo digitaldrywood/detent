@@ -393,6 +393,13 @@ CI wait metadata remains compatible on disk but is keyed by issue in memory so
 concurrent waits preserve separate deadlines and refresh state across restart
 (`TestMergeWaitMetadataRemainsIndependent`). This enforces INV-3 by removing the
 fairness exclusion and idle repository ownership, without adding a mechanism.
+Released idle wait metadata is removed from the active map during reconciliation;
+release reasons remain diagnostic and historical. Redispatch therefore starts
+with a fresh CI deadline and no stale refresh marker, while active waits retain
+their deadlines (`TestMergeReleasedWaitStartsFreshOnRedispatch`). This removes
+retained released state instead of adding separate admission exclusions.
+Running workers retain their original metadata through completion; the same
+idle reconciliation then handles its release.
 
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.

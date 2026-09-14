@@ -66,7 +66,13 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 	}
 	var released []mergeReservation
 	for issueID, reservation := range state.mergeReservations {
+		// A running worker still needs its original deadline when it reports
+		// completion. Reconcile its metadata once that operation has finished.
+		if _, running := state.Running[issueID]; running {
+			continue
+		}
 		if reservation.ReleasedReason != "" {
+			delete(state.mergeReservations, issueID)
 			continue
 		}
 		reason := ""
@@ -76,7 +82,6 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 				issue, present = completed.Issue, true
 			}
 		}
-		_, running := state.Running[reservation.IssueID]
 		switch {
 		case !now.Before(reservation.ExpiresAt):
 			reason = "expired"
@@ -91,7 +96,7 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 				reason = "withdrawn"
 			case mergeWorkerRepositoryKey(issue) != reservation.Repository:
 				reason = "repository_changed"
-			case strings.TrimSpace(pr.HeadSHA) != reservation.HeadSHA && !running:
+			case strings.TrimSpace(pr.HeadSHA) != reservation.HeadSHA:
 				reason = "head_changed"
 			case mergeWorkerCIFailed(pr):
 				reason = "required_checks_failed"
@@ -109,9 +114,11 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 		}
 		if reason != "" {
 			reservation.ReleasedReason = reason
-			state.mergeReservations[issueID] = reservation
+			// Released metadata is diagnostic only. Remove it before admission
+			// so another merge attempt cannot inherit its deadline or refresh.
+			delete(state.mergeReservations, issueID)
 			released = append(released, reservation)
-			if retry := state.Retry[issue.ID]; reason == "required_checks_failed" && retry.Wait.Kind == retryWaitCurrentHeadCI && !running {
+			if retry := state.Retry[issue.ID]; reason == "required_checks_failed" && retry.Wait.Kind == retryWaitCurrentHeadCI {
 				delete(state.Retry, issue.ID)
 			}
 		}
@@ -196,7 +203,7 @@ func (o *Orchestrator) recoverMergeReservations(state *State, attempts []store.W
 		}
 		validation := State{mergeReservations: map[string]mergeReservation{reservation.IssueID: reservation}}
 		o.reconcileMergeReservations(&validation, []connector.Issue{issue}, now)
-		if validation.mergeReservations[reservation.IssueID].ReleasedReason != "" {
+		if _, active := validation.mergeReservations[reservation.IssueID]; !active {
 			continue
 		}
 		if state.mergeReservations == nil {
