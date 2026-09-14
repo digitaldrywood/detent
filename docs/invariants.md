@@ -69,6 +69,13 @@ operator reasons, and existing decision helpers remain review boundaries.
 Review must verify removal or consolidation; renaming a mechanism or updating
 a snapshot is not evidence of compliance.
 
+Updater provenance (#2419) uses the existing candidate verification and startup
+recovery paths to require the tested commit before accepting new updates. It
+retains the existing rollback and retry limits. Legacy pending updates keep their
+schema across failed startups until resolved, consolidating compatibility at the
+state writer without adding a recovery path. The existing verification mechanism
+must remain to reject unverified artifacts before replacement.
+
 Validator launch accounting uses the existing validator-run registry and shared
 worker progress publisher. Validators appear alongside implementation workers in
 runtime snapshots, including during startup and completion, and leave the registry
@@ -96,13 +103,6 @@ the acknowledgement timestamp (#2517). Kanban moves out of Blocked and `detent i
 when the CLI acknowledgement leaves the issue in Blocked; automatic unparks and
 unrelated issue history remain untouched. This consolidates operator retry intent
 instead of adding another breaker or recovery loop.
-
-Updater provenance (#2419) uses the existing candidate verification and startup
-recovery paths to require the tested commit before accepting new updates. It
-retains the existing rollback and retry limits. Legacy pending updates keep their
-schema across failed startups until resolved, consolidating compatibility at the
-state writer without adding a recovery path. The existing verification mechanism
-must remain to reject unverified artifacts before replacement.
 
 ## INV-4 — Native merge queue
 
