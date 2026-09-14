@@ -538,11 +538,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		"## Existing workspace recovery",
 		"unpushed commits: 1",
 		"## Available skills",
-		"review — Issue needs code review.",
+		"## Available skills\n\n- review",
 	} {
 		if !strings.Contains(codexClient.request.Prompt, want) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
+	}
+	if strings.Contains(codexClient.request.Prompt, "Issue needs code review.") {
+		t.Fatal("codex prompt includes skill trigger prose")
 	}
 	if workspaceBackend.recoveryCalls != 2 {
 		t.Fatalf("RecoveryState calls = %d, want initial and final checks", workspaceBackend.recoveryCalls)
