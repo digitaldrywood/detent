@@ -878,20 +878,21 @@ func TestRunInstallerCommand(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		script             string
-		missing            bool
-		cancelWith         error
-		expired            bool
-		wantStage          string
-		wantError          error
-		wantExit           int
-		wantStdout         string
-		wantStderr         string
-		wantChild          bool
-		exitDuringSnapshot bool
-		snapshotAfterExit  bool
-		delaySnapshot      bool
+		name                string
+		script              string
+		missing             bool
+		cancelWith          error
+		expired             bool
+		wantStage           string
+		wantError           error
+		wantExit            int
+		wantStdout          string
+		wantStderr          string
+		wantChild           bool
+		exitDuringSnapshot  bool
+		snapshotAfterExit   bool
+		delaySnapshot       bool
+		snapshotUnavailable bool
 	}{
 		{name: "success", script: "printf stdout; printf stderr >&2", wantStdout: "stdout", wantStderr: "stderr"},
 		{name: "expired before start", expired: true, wantStage: "start", wantError: context.DeadlineExceeded},
@@ -901,6 +902,8 @@ func TestRunInstallerCommand(t *testing.T) {
 		{name: "deadline during wait", script: "printf ready; read line <&3", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", delaySnapshot: true},
 		{name: "deadline in nested command", script: "sh -c 'printf ready; read line <&3' & wait", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", wantChild: true, delaySnapshot: true},
 		{name: "exit during deadline snapshot", script: "printf ready; read line <&3; exit 0", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", exitDuringSnapshot: true, delaySnapshot: true},
+		{name: "deadline during unavailable snapshot", script: "printf ready; read line <&3", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", delaySnapshot: true, snapshotUnavailable: true},
+		{name: "exit during unavailable snapshot", script: "printf ready; read line <&3; exit 0", cancelWith: context.DeadlineExceeded, wantStage: "wait", wantError: context.DeadlineExceeded, wantStdout: "ready", exitDuringSnapshot: true, delaySnapshot: true, snapshotUnavailable: true},
 		{name: "completed before snapshot", script: "printf ready; read line <&3; exit 0", cancelWith: context.DeadlineExceeded, wantStdout: "ready", exitDuringSnapshot: true, snapshotAfterExit: true},
 		{name: "descendant holds stdout", script: "(read line <&3) 2>/dev/null & printf stdout; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStdout: "stdout"},
 		{name: "descendant holds stderr", script: "(read line <&3) >/dev/null & printf stderr >&2; exit 0", wantStage: "output drain", wantError: exec.ErrWaitDelay, wantStderr: "stderr"},
@@ -950,7 +953,9 @@ func TestRunInstallerCommand(t *testing.T) {
 					<-snapshotRelease
 				}
 				var evidence installerProcessSnapshot
-				if !tt.snapshotAfterExit {
+				if tt.snapshotUnavailable {
+					evidence = installerProcessSnapshot{description: "snapshot unavailable: signal: killed; context deadline exceeded"}
+				} else if !tt.snapshotAfterExit {
 					evidence = installerProcessEvidence(group)
 				}
 				if !tt.exitDuringSnapshot {
@@ -1022,6 +1027,9 @@ func TestRunInstallerCommand(t *testing.T) {
 					t.Fatalf("runInstallerCommand() error = %v, want process evidence containing %q and executable", err, want)
 				}
 			}
+			if tt.snapshotUnavailable && !strings.Contains(err.Error(), "snapshot unavailable: signal: killed; context deadline exceeded") {
+				t.Fatalf("runInstallerCommand() error = %v, want unavailable snapshot cause", err)
+			}
 			if tt.wantChild && !strings.Contains(err.Error(), fmt.Sprintf("ppid=%d pgid=%d", cmd.Process.Pid, cmd.Process.Pid)) {
 				t.Fatalf("runInstallerCommand() error = %v, want nested command captured before cleanup", err)
 			}
@@ -1058,7 +1066,7 @@ func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapsho
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var processEvidence installerProcessSnapshot
 	cmd.Cancel = func() error {
-		processEvidence = snapshot(cmd.Process.Pid)
+		processEvidence = installerProcessSnapshotWithIdentity(cmd, snapshot(cmd.Process.Pid))
 		return terminateInstallerProcessGroup(cmd.Process.Pid, processEvidence, syscall.Kill)
 	}
 
@@ -1077,7 +1085,7 @@ func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapsho
 	}
 	waitDuration := time.Since(waiting)
 	if processEvidence.description == "" {
-		processEvidence = snapshot(cmd.Process.Pid)
+		processEvidence = installerProcessSnapshotWithIdentity(cmd, snapshot(cmd.Process.Pid))
 	}
 	if killErr := terminateInstallerProcessGroup(cmd.Process.Pid, processEvidence, syscall.Kill); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 		err = errors.Join(err, fmt.Errorf("clean up command process group: %w", killErr))
@@ -1088,6 +1096,21 @@ func runInstallerCommandWithEvidence(ctx context.Context, cmd *exec.Cmd, snapsho
 	}
 	return fmt.Errorf("command %q args=%q pid=%d stage=%s start=%s wait=%s processes=%q: %w", cmd.Path, cmd.Args[1:], cmd.Process.Pid, stage,
 		startDuration.Round(time.Millisecond), waitDuration.Round(time.Millisecond), processEvidence.description, errors.Join(err, context.Cause(ctx)))
+}
+
+func installerProcessSnapshotWithIdentity(cmd *exec.Cmd, snapshot installerProcessSnapshot) installerProcessSnapshot {
+	if snapshot.available {
+		return snapshot
+	}
+	identity := fmt.Sprintf("pid=%d ppid=%d pgid=%d state=unknown executable=%s", cmd.Process.Pid, os.Getpid(), cmd.Process.Pid, cmd.Path)
+	if snapshot.description != "" {
+		identity += "; " + snapshot.description
+	}
+	snapshot.description = identity
+	// Cancellation began while exec still owned this process. Retain that fact
+	// when the diagnostic subprocess cannot determine the current group state.
+	snapshot.live = true
+	return snapshot
 }
 
 type installerProcessSnapshot struct {
