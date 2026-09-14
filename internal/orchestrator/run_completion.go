@@ -2158,32 +2158,30 @@ func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connect
 		}
 		return false
 	}
-	if len(cfg.RequiredStatusChecks) > 0 {
-		hydrator, ok := o.connector.(connector.PullRequestHydrator)
-		if !ok {
-			if o.logger != nil {
-				o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "hydration_unsupported")...)
-			}
-			return false
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "hydration_unsupported")...)
 		}
-		refreshed, err := hydrator.HydratePullRequest(ctx, issue)
-		if err != nil {
-			if o.logger != nil {
-				o.logger.Warn("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_refresh_failed", "error", err)...)
-			}
-			return false
+		return false
+	}
+	refreshed, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_refresh_failed", "error", err)...)
 		}
-		issue = refreshed
-		attrs = mergeWorkerLogAttrs(issue, "required_checks", strings.Join(checkNames, ","))
-		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
-			if o.logger != nil {
-				o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_hydration_unavailable")...)
-			}
-			return false
+		return false
+	}
+	issue = refreshed
+	attrs = mergeWorkerLogAttrs(issue, "required_checks", strings.Join(checkNames, ","))
+	if pullRequestHydrationBlocksProgress(issue.PullRequest) {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_hydration_unavailable")...)
 		}
+		return false
 	}
 	checkStates, green := ciTriggerRequiredCheckStates(issue.PullRequest, cfg.RequiredStatusChecks)
-	attrs = append(attrs, "required_check_states", checkStates, "after_head_push", afterHeadPush, "force_reapply", forceReapply)
+	attrs = append(attrs, "required_check_states", checkStates, "force_reapply", forceReapply)
 	if green && !forceReapply {
 		if o.logger != nil {
 			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "required_checks_green")...)
@@ -2220,6 +2218,10 @@ func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connect
 		o.ciTriggerLabelHeads = map[string]ciTriggerLabelHead{}
 	}
 	current, exists := o.ciTriggerLabelHeads[key]
+	if exists {
+		afterHeadPush = current.HeadSHA != headSHA
+	}
+	attrs = append(attrs, "after_head_push", afterHeadPush)
 	if exists && current.HeadSHA == headSHA && (current.Pending || !forceReapply) {
 		o.ciTriggerLabelMu.Unlock()
 		reason := "already_reapplied_for_head"
@@ -2263,6 +2265,14 @@ func ciTriggerRequiredCheckStates(pr *connector.PullRequest, required []string) 
 		for _, check := range pr.RequiredCheckFailures {
 			checks[strings.TrimSpace(check.Name)] = check
 		}
+	}
+	// With no configured contexts, use the freshly hydrated inventory rather
+	// than treating an empty configuration as evidence that CI is missing.
+	if len(required) == 0 {
+		for name := range checks {
+			required = append(required, name)
+		}
+		required = gate.NormalizeRequiredStatusChecks(required)
 	}
 	states := make([]connector.PullRequestCheck, 0, len(required))
 	green := len(required) > 0
