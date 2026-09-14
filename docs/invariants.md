@@ -59,7 +59,15 @@ and `TestApprovalDeniedDeliverableUsesInstanceForgeWait` preserve the connector
 approval-denial classification through the existing instance-owned forge wait, while
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
-reports as write-path failures, and `TestCredentialForgeProbeRequiresSuccessfulWrite`
+reports as write-path failures.
+`TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite` checks that
+credential and API-budget design questions reach durable recording (including write-access
+and manual-PR design choices). Explicit support requests remain rejected across polite
+auxiliaries and manual-open word order, while actual
+access failures and explicit write-enablement/manual-PR requests remain
+instance-owned. Question rejection shares the worker access-failure classifier;
+credential or authentication terminology alone is not failure evidence (#2616).
+The existing `TestCredentialForgeProbeRequiresSuccessfulWrite`
 keeps the named project pause active until its write canary succeeds.
 `TestCredentialWaitSurvivesOverlappingFailures` preserves credential precedence
 when same-host failures overlap. `TestCredentialCanaryRecoversOverlappingHosts`
@@ -143,9 +151,13 @@ recovery paths to require the tested commit before accepting new updates. It
 retains the existing rollback and retry limits. Recovery initialization errors
 propagate before boot; unreadable or malformed state cannot disable verification.
 Legacy updates keep their schema across failed startups and completed rollbacks
-so the restored reader retains retry and recovery history. Legacy pending updates
-without a tested target commit cannot pass target startup verification or discard
-rollback material. Only verified target startup or a new provenanced update
+so the restored reader retains retry and recovery history. Legacy schema-1 pending updates
+without a target commit are accepted when the running version matches the target
+(#2618), logging legacy acceptance and using the existing healthy transition to
+clear pending state and retire rollback material. Records carrying a target commit
+still require an exact running-commit match; schema-2 records without a target
+commit fail closed and preserve rollback material. New update writers still require
+provenance. Successful target startup or a new provenanced update
 migrates that state, consolidating compatibility
 at the existing state writer and health transition without adding a recovery path. Recovery verifies the recorded
 installation before accepting the previous build, and rejects unrelated restarted
@@ -181,6 +193,25 @@ no recovery path or orphan-suppression guard (#2505).
 Standing capacity requests (#2611) remove request teardown at project-pass
 boundaries and consolidate refresh updates into the existing request set.
 INV-10 below documents the retained request identity and grant lifecycle.
+
+Git workspace cleanup removes the durable `preserve` latch and the residual
+sweep's registration-only exemption (#2612). Recorded and discovered worktrees
+share the existing checks for ownership, active issues/processes, uncommitted
+files, and commits absent from verified live remote heads. Stale tracking refs
+from deleted or force-pushed branches do not establish publication; unavailable
+remotes and unfetched tips retain work until it can be verified. Every running
+worker remains active through finalization, including terminal lane updates.
+Legacy `preserve` JSON fields no
+longer exempt a workspace; checkpoint journals and filesystem retention remain.
+`TestLocalGitReconcileRechecksPreservation` covers restart, legacy records,
+published and merged work, and continued retention of unsafe candidates. No
+merge inference, expiration mechanism, or configuration is added. Expected
+retention keeps path evidence without failing the sweep, so the existing sweep
+interval advances even when local work remains.
+`TestCleanupVerifiesLiveRemoteCommits` covers stale refs and remote failures in
+residual, direct, and branch cleanup;
+`TestResidualCleanupProtectsFinalizingTerminalWorkers` covers terminal worker
+ownership until its completion event.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the

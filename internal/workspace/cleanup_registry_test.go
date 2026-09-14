@@ -156,7 +156,7 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 		{name: "retains unverified residual", unverified: true, wantExists: true},
 		{name: "skips active issue", active: true, wantActive: 1, wantExists: true},
 		{name: "skips active process", activeProcess: true, wantActive: 1, wantExists: true},
-		{name: "skips registered worktree", registered: true, wantRegistered: 1, wantExists: true},
+		{name: "removes safe registered worktree", registered: true, wantRemoved: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,7 +205,7 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 
 			result, err := backend.ReconcileResiduals(t.Context(), active)
 			if tt.unverified {
-				if !errors.Is(err, ErrWorkspacePreserved) || result.PreservedSkipped != 1 {
+				if err != nil || result.PreservedSkipped != 1 {
 					t.Fatalf("reconcile = %+v, %v; want preservation", result, err)
 				}
 			} else if err != nil {
@@ -370,7 +370,7 @@ func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
 				active = []Issue{issue}
 			}
 			result, err := backend.ReconcileResiduals(t.Context(), active)
-			if (err != nil) != (tt.wantPreserved > 0) {
+			if err != nil {
 				t.Fatalf("reconcile error = %v", err)
 			}
 			if result.Removed != tt.wantRemoved || result.PreservedSkipped != tt.wantPreserved || result.ActiveSkipped != tt.wantActive {

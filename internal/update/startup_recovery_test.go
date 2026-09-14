@@ -326,14 +326,16 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 		wantErr       string
 	}{
 		{name: "matching full commit", currentCommit: testUpdatedCommit},
-		{name: "legacy pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, wantErr: "does not include the tested target commit"},
-		{name: "legacy pending update after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 1, wantErr: "does not include the tested target commit"},
-		{name: "legacy pending update after two failed startups", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2, wantErr: "does not include the tested target commit"},
-		{name: "legacy pending update with missing running commit", stateSchema: startupRecoveryLegacyStateSchema, wantErr: "does not include the tested target commit"},
-		{name: "legacy pending update with wrong running commit", currentCommit: testPreviousCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2, wantErr: "does not include the tested target commit"},
-		{name: "current missing commit after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, failedStarts: 1, wantErr: "does not include the tested target commit"},
+		{name: "missing running commit with target commit", wantErr: "does not match pending update commit"},
+		{name: "abbreviated running commit", currentCommit: testUpdatedCommit[:12], wantErr: "does not match pending update commit"},
+		{name: "legacy pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema},
+		{name: "legacy pending update after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 1},
+		{name: "legacy pending update after two failed startups", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2},
+		{name: "legacy pending update with missing running commit", stateSchema: startupRecoveryLegacyStateSchema},
+		{name: "legacy pending update with wrong running commit", currentCommit: testPreviousCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2},
+		{name: "current missing commit after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, failedStarts: 1, wantErr: "pending update does not include the tested target commit"},
 		{name: "wrong commit after failed startup", currentCommit: testPreviousCommit, failedStarts: 1, wantErr: "does not match pending update commit"},
-		{name: "current pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, wantErr: "does not include the tested target commit"},
+		{name: "current pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, wantErr: "pending update does not include the tested target commit"},
 		{name: "same version from wrong commit", currentCommit: testPreviousCommit, wantErr: "does not match pending update commit"},
 	}
 	for _, tt := range tests {

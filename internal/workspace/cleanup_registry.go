@@ -28,7 +28,6 @@ type cleanupOwnershipRecord struct {
 	Identifier      string `json:"identifier,omitempty"`
 	Branch          string `json:"branch,omitempty"`
 	SourceCommonDir string `json:"source_common_dir"`
-	Preserve        bool   `json:"preserve,omitempty"`
 	CleanupStarted  bool   `json:"cleanup_started,omitempty"`
 }
 
@@ -63,12 +62,9 @@ func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue 
 	if record.Identifier != "" && issueKey(issue) != record.Key {
 		return fmt.Errorf("cleanup ownership issue does not match workspace key %q", record.Key)
 	}
-	previous, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(path))
+	_, err = l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(path))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read previous cleanup ownership: %w", err)
-	}
-	if l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(path), previous) {
-		record.Preserve = previous.Preserve
 	}
 	if err := l.writeOwnershipRecord(record); err != nil {
 		return fmt.Errorf("record cleanup ownership: %w", err)
@@ -245,16 +241,15 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 			result.ActiveSkipped++
 			continue
 		}
-		if record.Preserve {
-			result.PreservedSkipped++
-			continue
-		}
 		removed, reconcileErr := l.reconcileWorkspace(ctx, record, seen[record.Path], &result)
 		if reconcileErr != nil {
-			if errors.Is(reconcileErr, ErrWorkspacePreserved) {
-				result.PreservedSkipped++
-			}
 			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: reconcileErr.Error()})
+			if errors.Is(reconcileErr, ErrWorkspacePreserved) {
+				// Retention is a completed inspection, not a failed sweep. Keep
+				// path evidence without causing the caller to retry every refresh.
+				result.PreservedSkipped++
+				continue
+			}
 			reconcileErrors = append(reconcileErrors, reconcileErr)
 			continue
 		}
@@ -275,14 +270,6 @@ func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnersh
 		return false, err
 	}
 	if exists {
-		registered, err := l.sourceWorktreeRegistered(ctx, record.Path)
-		if err != nil {
-			return false, err
-		}
-		if recorded && registered {
-			result.RegisteredSkipped++
-			return false, nil
-		}
 		pids, err := scanOwnedWorkspaceProcessIDs(ctx, record.Path, l.scanWorkspacePaths)
 		if err != nil {
 			return false, err

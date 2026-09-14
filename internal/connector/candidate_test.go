@@ -2,7 +2,9 @@ package connector
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -214,5 +216,26 @@ func TestNewCandidateResultSortsBeforeApplyingLimit(t *testing.T) {
 	}
 	if issues[0].ID != "3" {
 		t.Fatalf("NewCandidateResult mutated input = %#v", issues)
+	}
+}
+
+func TestCandidateOffsetResultPreservesScanOrder(t *testing.T) {
+	t.Parallel()
+	for _, limit := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			t.Parallel()
+			issues := []Issue{{ID: "c"}, {ID: "a"}, {ID: "b"}}
+			got := CandidateOffsetResult(issues, CandidateRequest{Limit: limit}, 7)
+			if !reflect.DeepEqual(got.Issues, issues[:limit]) {
+				t.Fatalf("issues = %v, want scan prefix %v", got.Issues, issues[:limit])
+			}
+			wantCursor := ""
+			if limit < len(issues) {
+				wantCursor = strconv.Itoa(7 + limit)
+			}
+			if got.NextCursor != wantCursor || got.Truncated != (limit < len(issues)) || got.ItemsRead != 3 {
+				t.Fatalf("result = %#v, want cursor %q and 3 items read", got, wantCursor)
+			}
+		})
 	}
 }
