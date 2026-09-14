@@ -3506,81 +3506,90 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 func TestRunDoctorUsesReadOnlyWriteChecksByDefaultForExistingConfiguredProject(t *testing.T) {
 	t.Parallel()
 
-	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
-	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-	workflow.Tracker.Repository = "digitaldrywood/detent"
-	workflow.Tracker.StatusLabelPrefix = "detent:"
-	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	workflow.Tracker.ObservedStates = []string{"Human Review", "Blocked"}
-	workflow.Tracker.TerminalStates = []string{"Done"}
-	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
-	workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
+	// This tests readiness configuration, not elapsed time. Keep suite scheduling
+	// and filesystem work from consuming the doctor inactivity timeout.
+	synctest.Test(t, func(t *testing.T) {
+		workflow := validDoctorWorkflow("/repo")
+		workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+		workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+		workflow.Tracker.Repository = "digitaldrywood/detent"
+		workflow.Tracker.StatusLabelPrefix = "detent:"
+		workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+		workflow.Tracker.ObservedStates = []string{"Human Review", "Blocked"}
+		workflow.Tracker.TerminalStates = []string{"Done"}
+		workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+		workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
 
-	configPath := filepath.Join(t.TempDir(), "global.yaml")
-	global := globalconfig.Config{
-		Path:       configPath,
-		APIVersion: globalconfig.APIVersion,
-		Kind:       globalconfig.Kind,
-		Global: globalconfig.Settings{
-			MaxConcurrentAgents: 1,
-			Scheduling:          globalconfig.SchedulingWeighted,
-		},
-		Projects: []globalconfig.Project{{
-			ID:       "existing",
-			Workflow: "WORKFLOW.md",
-			Workdir:  "/repo",
-			Weight:   1,
-		}},
-	}
-	deps := successfulDoctorDeps()
-	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
-		return workflowconfig.Workflow{Config: workflow}, nil
-	}
-	deps.gitRemoteURL = func(context.Context, string) (string, error) {
-		return "https://github.com/digitaldrywood/detent.git", nil
-	}
-	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-		return &fakeDoctorAutoPromoteConnector{}, nil
-	}
-	// Buffer the single capture so a timed-out doctor run cannot leave the stub blocked.
-	readinessCh := make(chan ghconnector.ReadinessConfig, 1)
-	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-		readinessCh <- readiness
-		return []ghconnector.ReadinessCheck{{
-			Name:   "GitHub issue write permission digitaldrywood/detent",
-			Status: ghconnector.ReadinessOK,
-			Detail: "repository permission push permits issue writes",
-		}}, nil
-	}
-
-	report := runDoctor(context.Background(), doctorConfig{
-		ConfigPath:   configPath,
-		Output:       io.Discard,
-		CheckTimeout: time.Second,
-		Flags: runtimeFlags{
-			Port: runtimeIntFlag{Value: 0, Set: true},
-		},
-	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
-
-	var gotReadiness ghconnector.ReadinessConfig
-	select {
-	case gotReadiness = <-readinessCh:
-	default:
-		t.Fatal("GitHub readiness check did not capture its configuration")
-	}
-	if !doctorGitHubReadinessRequiresWrites(gotReadiness) {
-		t.Fatalf("readiness write requirements = %#v, want default doctor to retain read-only write checks", gotReadiness)
-	}
-	if gotReadiness.AllowWriteProbes {
-		t.Fatalf("AllowWriteProbes = true, want default doctor to avoid mutation probes")
-	}
-	assertDoctorCheck(t, report, "Project existing GitHub issue write permission digitaldrywood/detent", doctorOK, "repository permission push")
-	for _, check := range report.Checks {
-		if check.Name == "Project existing GitHub write probes" {
-			t.Fatalf("checks include legacy write-probe warning: %#v", check)
+		configPath := filepath.Join(t.TempDir(), "global.yaml")
+		global := globalconfig.Config{
+			Path:       configPath,
+			APIVersion: globalconfig.APIVersion,
+			Kind:       globalconfig.Kind,
+			Global: globalconfig.Settings{
+				MaxConcurrentAgents: 1,
+				Scheduling:          globalconfig.SchedulingWeighted,
+			},
+			Projects: []globalconfig.Project{{
+				ID:       "existing",
+				Workflow: "WORKFLOW.md",
+				Workdir:  "/repo",
+				Weight:   1,
+			}},
 		}
-	}
+		deps := successfulDoctorDeps()
+		deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		}
+		deps.gitRemoteURL = func(context.Context, string) (string, error) {
+			return "https://github.com/digitaldrywood/detent.git", nil
+		}
+		// Branch-policy checks precede readiness; keep them off the real GitHub API.
+		deps.githubBranchPolicy = func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
+			return ghconnector.BranchMergePolicy{}, nil
+		}
+
+		deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return &fakeDoctorAutoPromoteConnector{}, nil
+		}
+		// Buffer the single capture so a timed-out doctor run cannot leave the stub blocked.
+		readinessCh := make(chan ghconnector.ReadinessConfig, 1)
+		deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+			readinessCh <- readiness
+			return []ghconnector.ReadinessCheck{{
+				Name:   "GitHub issue write permission digitaldrywood/detent",
+				Status: ghconnector.ReadinessOK,
+				Detail: "repository permission push permits issue writes",
+			}}, nil
+		}
+
+		report := runDoctor(context.Background(), doctorConfig{
+			ConfigPath:   configPath,
+			Output:       io.Discard,
+			CheckTimeout: time.Second,
+			Flags: runtimeFlags{
+				Port: runtimeIntFlag{Value: 0, Set: true},
+			},
+		}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+
+		var gotReadiness ghconnector.ReadinessConfig
+		select {
+		case gotReadiness = <-readinessCh:
+		default:
+			t.Fatal("GitHub readiness check did not capture its configuration")
+		}
+		if !doctorGitHubReadinessRequiresWrites(gotReadiness) {
+			t.Fatalf("readiness write requirements = %#v, want default doctor to retain read-only write checks", gotReadiness)
+		}
+		if gotReadiness.AllowWriteProbes {
+			t.Fatalf("AllowWriteProbes = true, want default doctor to avoid mutation probes")
+		}
+		assertDoctorCheck(t, report, "Project existing GitHub issue write permission digitaldrywood/detent", doctorOK, "repository permission push")
+		for _, check := range report.Checks {
+			if check.Name == "Project existing GitHub write probes" {
+				t.Fatalf("checks include legacy write-probe warning: %#v", check)
+			}
+		}
+	})
 }
 
 func TestRunDoctorWithProjectScopeSkipsUnrelatedProjectFailures(t *testing.T) {
