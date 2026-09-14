@@ -109,33 +109,37 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			removalApplies = status.RemovalObserved && status.RemovedAt != nil && status.RemovedAt.After(*previous.Entry.EnqueuedAt)
 		}
 		if removalApplies {
-			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			reason := strings.TrimSpace(status.RemovalReason)
 			if reason == "" {
 				reason = "GitHub removed the pull request from the merge queue without a reason"
 			}
+			previousCount := len(state.nativeMergeQueueRemovals[issueID])
 			removals := appendNativeMergeQueueRemoval(state, issueID, reason, status.RemovedAt)
-			targetState, laneReason := autoPromoteReworkState, reason
 			if len(removals) >= mergeAttemptBudget {
-				targetState, laneReason = autoPromoteSourceState, string(AutoPromoteReasonMergeRevocationLimit)
-			}
-			if err := o.updateIssueState(ctx, state, candidate, targetState, now, laneReason); err != nil {
-				o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", err)
-				continue
-			}
-			delete(state.nativeMergeQueueEntries, issueID)
-			clearNativeMergeQueueEntry(out, issueID)
-			for index := range out {
-				if out[index].ID == issueID {
-					out[index].State = targetState
+				state.nativeMergeQueueDeferred[issueID] = struct{}{}
+				if err := o.updateIssueState(ctx, state, candidate, autoPromoteSourceState, now, string(AutoPromoteReasonMergeRevocationLimit)); err != nil {
+					o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", err)
+					continue
 				}
-			}
-			if targetState == autoPromoteSourceState {
+				delete(state.nativeMergeQueueEntries, issueID)
+				clearNativeMergeQueueEntry(out, issueID)
+				for index := range out {
+					if out[index].ID == issueID {
+						out[index].State = autoPromoteSourceState
+					}
+				}
 				o.parkNativeMergeQueueBudget(ctx, state, candidate, removals, now)
 				continue
 			}
-			o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", nil)
-			continue
+			if len(removals) > previousCount {
+				// Consume the ended attempt once. The next Merging pass uses
+				// normal admission; queue removal is not a branch conflict.
+				state.nativeMergeQueueDeferred[issueID] = struct{}{}
+				delete(state.nativeMergeQueueEntries, issueID)
+				clearNativeMergeQueueEntry(out, issueID)
+				o.logNativeMergeQueueFailure(candidate, "head_removed_from_queue", nil)
+				continue
+			}
 		}
 		if !status.Available {
 			// A disabled queue with no provider entry releases cached ownership.
@@ -295,7 +299,8 @@ func appendNativeMergeQueueRemoval(state *State, issueID, reason string, removed
 		key = removedAt.UTC().Format(time.RFC3339Nano) + " " + reason
 	}
 	removals := state.nativeMergeQueueRemovals[issueID]
-	if len(removals) > 0 && removals[len(removals)-1] == key {
+	if len(removals) > 0 && (removals[len(removals)-1] == key ||
+		(removedAt != nil && strings.HasPrefix(removals[len(removals)-1], removedAt.UTC().Format(time.RFC3339Nano)+" "))) {
 		return removals
 	}
 	removals = append(removals, key)
