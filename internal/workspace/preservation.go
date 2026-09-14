@@ -47,21 +47,13 @@ func (l *LocalGit) PreserveIssue(ctx context.Context, issue Issue) (Preservation
 	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
 		return result, err
 	}
-	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
-	if err != nil {
-		return result, err
-	}
-	record.Preserve = true
-	if err := l.writeOwnershipRecord(record); err != nil {
-		return result, fmt.Errorf("retain workspace ownership: %w", err)
-	}
 	result.Preserved = true
 	recovery, err := l.RecoveryState(ctx, info, issue)
 	if err != nil {
 		return result, fmt.Errorf("inspect retained workspace: %w", err)
 	}
 	result.HeadSHA = recovery.HeadSHA
-	result.UnpushedCommits, err = retainedGitCommitCount(ctx, info.Path)
+	result.UnpushedCommits, err = retainedGitCommitCount(ctx, info.Path, "HEAD")
 	if err != nil {
 		return result, err
 	}
@@ -93,11 +85,11 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
-	if !exists && !record.Preserve {
+	if !exists {
 		return nil
 	}
 	if !isDir || !l.isSourceWorktree(ctx, info.Path) {
-		if exists && record.CleanupStarted && !record.Preserve && !l.isGitWorkspace(ctx, info.Path) {
+		if exists && record.CleanupStarted && !l.isGitWorkspace(ctx, info.Path) {
 			return nil
 		}
 		return fmt.Errorf("%w at %s: worktree registration is unavailable or not managed by source", ErrWorkspacePreserved, info.Path)
@@ -106,7 +98,7 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
-	unpushed, err := retainedGitCommitCount(ctx, info.Path)
+	unpushed, err := retainedGitCommitCount(ctx, info.Path, "HEAD")
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
@@ -124,11 +116,11 @@ func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string) error 
 	if err != nil || !exists {
 		return err
 	}
-	output, err := l.runGit(ctx, "rev-list", "--count", "refs/heads/"+branch, "--not", "--remotes")
+	count, err := retainedGitCommitCount(ctx, l.sourceRoot, "refs/heads/"+branch)
 	if err != nil {
 		return fmt.Errorf("inspect cleanup branch: %w", err)
 	}
-	if strings.TrimSpace(output) != "0" {
+	if count != 0 {
 		return fmt.Errorf("%w: branch %s contains commits absent from remote refs", ErrWorkspacePreserved, branch)
 	}
 	return nil
@@ -149,8 +141,40 @@ func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue I
 	return l.writeOwnershipRecord(record)
 }
 
-func retainedGitCommitCount(ctx context.Context, path string) (int, error) {
-	output, err := runGitAt(ctx, path, "rev-list", "--count", "HEAD", "--not", "--remotes")
+func retainedGitCommitCount(ctx context.Context, path, revision string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, failedWorkspacePreservationTimeout)
+	defer cancel()
+	// A remote-tracking ref can outlive a deleted or force-pushed branch. Only
+	// exclude commits whose tracking tip is still advertised by a live remote.
+	// Unfetched remote tips provide no local ancestry proof, so retain the work
+	// until the ordinary fetch path makes that evidence available.
+	output, err := runGitAt(ctx, path, "for-each-ref", "--format=%(objectname)", "refs/remotes/")
+	if err != nil {
+		return 0, fmt.Errorf("inspect remote tracking refs: %w", err)
+	}
+	known := make(map[string]bool)
+	for _, sha := range strings.Fields(output) {
+		known[sha] = true
+	}
+	output, err = runGitAt(ctx, path, "remote")
+	if err != nil {
+		return 0, fmt.Errorf("list cleanup remotes: %w", err)
+	}
+	args := []string{"rev-list", "--count", revision, "--not"}
+	for _, remote := range strings.Fields(output) {
+		refs, err := runGitAtWithEnv(ctx, path, []string{"GIT_TERMINAL_PROMPT=0"}, "ls-remote", "--heads", "--refs", remote)
+		if err != nil {
+			return 0, fmt.Errorf("verify cleanup remote %s: %w", remote, err)
+		}
+		for _, line := range strings.Split(refs, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && known[fields[0]] {
+				args = append(args, fields[0])
+				delete(known, fields[0])
+			}
+		}
+	}
+	output, err = runGitAt(ctx, path, args...)
 	if err != nil {
 		return 0, fmt.Errorf("inspect retained commits: %w", err)
 	}

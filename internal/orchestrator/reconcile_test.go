@@ -1413,3 +1413,33 @@ type telemetryEvent struct {
 	Event   string
 	Message string
 }
+
+func TestResidualCleanupProtectsFinalizingTerminalWorkers(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"Done", "Cancelled"} {
+		t.Run(lane, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done", "Cancelled"}})
+			state := newState(cfg)
+			issue := connector.Issue{ID: "finalizing", Identifier: "detent#2612", State: "In Progress"}
+			state.Running[issue.ID] = Running{Issue: issue}
+			issue.State = lane
+			state.BoardIssues = []connector.Issue{issue}
+			reaper := &residualCleanupReaper{cleanupSweepReaper: &cleanupSweepReaper{}, results: []WorkspaceReconcileResult{{}}, errors: []error{nil}}
+			orch := &Orchestrator{cfg: cfg, reaper: reaper}
+			now := time.Now()
+			if !orch.completeRunningIssueFromWorkspaceCleanup(t.Context(), &state, issue, now) {
+				t.Fatal("terminal update did not retain running worker")
+			}
+			orch.reconcileResidualWorkspaces(t.Context(), &state, now)
+			if len(reaper.active) != 1 || len(reaper.active[0]) != 1 || reaper.active[0][0].ID != issue.ID {
+				t.Fatalf("finalizing worker absent from cleanup exclusions: %+v", reaper.active)
+			}
+			delete(state.Running, issue.ID)
+			orch.reconcileResidualWorkspaces(t.Context(), &state, now.Add(time.Hour))
+			if len(reaper.active) != 2 || len(reaper.active[1]) != 0 {
+				t.Fatalf("completed worker still excluded: %+v", reaper.active)
+			}
+		})
+	}
+}

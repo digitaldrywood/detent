@@ -65,14 +65,6 @@ func (l *LocalGit) PrepareCheckpoint(ctx context.Context, info Info, issue Issue
 	if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
 		return CheckpointPlan{}, err
 	}
-	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
-	if err != nil {
-		return CheckpointPlan{}, err
-	}
-	record.Preserve = true
-	if err := l.writeOwnershipRecord(record); err != nil {
-		return CheckpointPlan{}, err
-	}
 	gitDir, err := runGitAt(ctx, info.Path, "rev-parse", "--absolute-git-dir")
 	if err != nil {
 		return CheckpointPlan{}, err

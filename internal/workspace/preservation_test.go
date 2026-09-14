@@ -279,7 +279,7 @@ func TestLocalGitPreservationVerifiesWorkEvidence(t *testing.T) {
 				t.Fatalf("unverified local evidence: %#v", preserved)
 			}
 			localWork := preserved.UnpushedCommits > 0 || len(preserved.TrackedPaths) > 0 || len(preserved.UntrackedPaths) > 0
-			if localWork != (kind == "dirty" || kind == "local commit") {
+			if localWork != (kind == "dirty" || kind == "local commit" || kind == "remote branch deleted") {
 				t.Fatalf("local evidence = %#v", preserved)
 			}
 			delivery := preserved.Delivery
