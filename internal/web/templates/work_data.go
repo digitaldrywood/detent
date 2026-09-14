@@ -145,10 +145,12 @@ func workItemMetadataFromCard(data DashboardData, card projectKanbanCard, view b
 
 func workItemReadiness(card projectKanbanCard, view boardCardView) (string, string, string, primitives.Kind) {
 	switch {
+	case view.Running:
+		return "Running", "running", firstNonBlank(view.RuntimeCozyText, "Active work attempt"), primitives.KindOK
+	case view.DispatchStatus == "Ready":
+		return "Ready", "ready", view.ExtraText, primitives.KindInfo
 	case view.Terminal:
 		return "Complete", "complete", "Terminal workflow state", primitives.KindOK
-	case view.Running:
-		return "Running", "running", firstNonBlank(view.RuntimeCozyText, "Active machine lease"), primitives.KindOK
 	case view.ExtraChip && view.ExtraKind == primitives.KindErr:
 		return "Blocked", "blocked", firstNonBlank(view.ExtraText, card.BlockedReason, "Operator attention required"), primitives.KindErr
 	case len(card.Blockers) > 0:

@@ -4665,15 +4665,15 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		card projectKanbanCard
 		want string
 	}{
-		{name: "blocked beats running and runtime", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, card: projectKanbanCard{Blockers: []string{"repo#1", "repo#2"}}, want: "Blocked · 2|Running"},
-		{name: "operator hold beats dependency count", view: boardCardView{Running: true}, card: projectKanbanCard{BlockedRecoveryAction: "hold", Blockers: []string{"repo#1"}}, want: "Needs you|Running"},
+		{name: "running precedes historical blockers", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, card: projectKanbanCard{Blockers: []string{"repo#1", "repo#2"}}, want: "Running|model · high"},
+		{name: "running precedes retained hold", view: boardCardView{Running: true}, card: projectKanbanCard{BlockedRecoveryAction: "hold", Blockers: []string{"repo#1"}}, want: "Running"},
 		{name: "human recovery beats dependency count", card: projectKanbanCard{BlockedRecoveryReason: "human_blocker", BlockedReason: "operator must repair credentials", Blockers: []string{"repo#1"}}, want: "Needs you"},
 		{name: "human prerequisite", card: projectKanbanCard{HumanDependencyWait: "Needs you · human prerequisite owner/repo#1 · closure and completion evidence required", Blockers: []string{"human prerequisite owner/repo#1"}}, want: "Needs you"},
 		{name: "deferred dependencies retain count", card: projectKanbanCard{BlockedRecoveryAction: "defer", Blockers: []string{"repo#1"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies do not count", card: projectKanbanCard{Blockers: []string{"repo#1"}, ClearedBlockers: []string{"repo#2 (Done)"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies alone are quiet", card: projectKanbanCard{ClearedBlockers: []string{"repo#2 (Done)"}}, want: ""},
 		{name: "sync error beats merge", view: boardCardView{Work: workItemMetadata{SyncKey: "error", Sync: "Error", SyncKind: primitives.KindErr}, MergeLaneStatus: "CI running"}, want: "Sync error|CI running"},
-		{name: "maximal actionable budget", view: boardCardView{Running: true, MergeLaneStatus: "CI running", Work: workItemMetadata{SyncKey: "error", Sync: "Error"}}, card: projectKanbanCard{Blockers: []string{"repo#1"}, WaitDetail: "artifact_status_wait"}, want: "Blocked · 1|Sync error"},
+		{name: "maximal actionable budget", view: boardCardView{Running: true, MergeLaneStatus: "CI running", Work: workItemMetadata{SyncKey: "error", Sync: "Error"}}, card: projectKanbanCard{Blockers: []string{"repo#1"}, WaitDetail: "artifact_status_wait"}, want: "Running|Sync error"},
 		{name: "stranded", view: boardCardView{ExtraText: "Stranded 18m · no worker", Waiting: true}, want: "Stranded · no worker|No live attempt"},
 		{name: "stale", view: boardCardView{MoveDisabledLabel: "Stale", State: "Todo"}, want: "Stale"},
 		{name: "blocked lane", view: boardCardView{State: "Blocked"}, want: "Blocked"},
@@ -4688,7 +4688,7 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		{name: "operator attention", card: projectKanbanCard{BlockedReason: "credentials require operator repair"}, want: "Needs you"},
 		{name: "gate", card: projectKanbanCard{GatePending: true}, want: "Awaiting checks"},
 		{name: "retry", view: boardCardView{Retrying: true}, want: "Awaiting retry"},
-		{name: "failed checks beat running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "CI failed|Running"},
+		{name: "failed checks follow running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "Running|CI failed"},
 		{name: "done dependencies are historical", view: boardCardView{Done: true}, card: projectKanbanCard{Blockers: []string{"repo#1"}, CIStatus: "fail"}, want: ""},
 		{name: "terminal waits are historical", view: boardCardView{Terminal: true}, card: projectKanbanCard{WaitDetail: "former wait reason"}, want: ""},
 		{name: "idle lane does not repeat state", view: boardCardView{State: "Todo", AgeFooter: "12m", OriginDetail: "via human", ProgressSummary: "Last turn", ParkSummary: "2 parks"}, want: ""},

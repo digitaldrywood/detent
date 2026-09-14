@@ -690,6 +690,9 @@ templ boardCardView2(card boardCardView) {
 				{ card.ExtraText }
 			</div>
 		}
+		if card.TrackerSummary != "" {
+			<div class="min-w-0 text-2xs text-dim" title={ "Tracker snapshot observed " + card.TrackerObservedAt } data-board-tracker-observation={ card.TrackerObservedAt }>{ card.TrackerSummary }</div>
+		}
 		if card.AgeFooter != "" {
 			<div class="flex min-w-0 items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer>
 				<span class="min-w-0 truncate">In lane</span>

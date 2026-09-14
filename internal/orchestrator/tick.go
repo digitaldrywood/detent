@@ -156,78 +156,101 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		}
 	}
 	timing.next("reconciliation")
+	timing.step("retain_pull_request_snapshots")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
+	timing.step("revalidate_pull_request_associations")
 	fetched = o.revalidateTickPullRequestAssociations(ctx, fetched)
 	if fetched.statusOK {
+		timing.step("recover_stale_todo_reviews")
 		fetched = filterReconciledTickIssues(state, fetched, o.recoverStaleTodoReviews(ctx, state, fetched.status, now))
 		ciIssues := mergeIssueSlices(fetched.candidates, fetched.status)
 		for _, running := range state.Running {
 			ciIssues = mergeIssueSlices(ciIssues, []connector.Issue{running.Issue})
 		}
+		timing.step("sync_ci_availability")
 		o.syncCIAvailability(state, ciIssues, now)
 	}
+	timing.step("restore_retry_intents")
 	recoveryTransitions := o.restoreWorkAttemptRetryIntents(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	fetched.candidates = overlayIssueStateSnapshots(fetched.candidates, recoveryTransitions)
 	fetched.status = overlayIssueStateSnapshots(fetched.status, recoveryTransitions)
+	timing.step("reconcile_terminal_retries")
 	terminalRetryTransitions := o.reconcileTerminalAttemptRetryStates(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	fetched.candidates = overlayIssueStateSnapshots(fetched.candidates, terminalRetryTransitions)
 	fetched.status = overlayIssueStateSnapshots(fetched.status, terminalRetryTransitions)
+	timing.step("observe_hydration_skips")
 	o.observePullRequestHydrationSkips(mergeIssueSlices(fetched.candidates, fetched.status))
+	timing.step("restore_merge_reservations")
 	o.restoreDurableMergeReservations(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
+	timing.step("reconcile_merge_reservations")
 	o.reconcileMergeReservations(state, mergeIssueSlices(fetched.candidates, fetched.status), now)
+	timing.step("restore_gate_wait_completion")
 	gateWaitRestore := o.restoreDurableGateWaitCompletionState(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
 	fetched.candidates = replaceMatchingIssueSnapshots(fetched.candidates, gateWaitRestore.issues)
 	fetched.status = replaceMatchingIssueSnapshots(fetched.status, gateWaitRestore.issues)
+	timing.step("reconcile_operator_stop_holds")
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileOperatorStopHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
+	timing.step("reconcile_merge_duration_holds")
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileMergeDurationHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
 
+	timing.step("refresh_transition_sets")
 	transitions := o.refreshTransitionSets(ctx, state, fetched, previous)
+	timing.step("resolve_completed_epics")
 	completedEpics := o.resolveCompletedEpics(ctx, state, transitions, previous)
+	timing.step("reconcile_closed_completed_issue_statuses")
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
 	if fetched.statusOK {
+		timing.step("operator_return_retired_parks")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
 			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
 		)
+		timing.step("recover_backend_capacity_blocked_issues")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
 			o.recoverBackendCapacityBlockedIssues(ctx, state, fetched.status, now),
 		)
+		timing.step("auto_promote_blocker_issues")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
 			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 		)
 		if !earlyDependencyUnblock {
+			timing.step("operator_clear_closed_dependencies")
 			fetched = filterReconciledTickIssues(
 				state,
 				fetched,
 				o.operatorClearClosedDependencies(ctx, state, fetched.status, now),
 			)
 		}
+		timing.step("review_plan_issues")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
 			o.reviewPlanIssues(ctx, state, fetched.status, now),
 		)
+		timing.step("promote_human_review")
 		autoPromoted := o.autoPromoteHumanReviewIssues(ctx, state, mergeIssueSlices(fetched.status, fetched.candidates), now)
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
 			autoPromoted.transitioned,
 		)
+		timing.step("operator_restore_stuck_merging")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
 			o.operatorRestoreStuckMerging(ctx, state, fetched.status, now),
 		)
+		timing.step("operator_merge_wedged_pull_requests")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
@@ -237,6 +260,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched.candidates,
 			autoPromoted.dispatchCandidates,
 		)
+		timing.step("delegate_native_merge_queue")
 		mergeQueueIssues := o.delegateNativeMergeQueueIssues(
 			ctx,
 			state,
@@ -251,11 +275,13 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			o.mergeWorkerDispatchCandidates(state, mergeQueueIssues, now),
 		)
 	}
+	timing.step("reconcile_stale_linked_pull_request_issues")
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,
 		o.reconcileStaleLinkedPullRequestIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 	)
+	timing.step("transition_completed_active_issues")
 	completedTransitions := o.transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads(
 		ctx,
 		state,
@@ -272,12 +298,14 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched.candidates,
 		completedTransitions.dispatchCandidates,
 	)
+	timing.step("transition_artifact_gate_waits")
 	artifactWaitTransitions := o.transitionActiveArtifactGateWaitIssuesToReview(ctx, state, fetched.candidates, now)
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,
 		artifactWaitTransitions.transitioned,
 	)
+	timing.step("recover_stranded_active_issues")
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,

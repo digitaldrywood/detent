@@ -1014,6 +1014,8 @@ type boardCardView struct {
 	Retrying          bool
 	Waiting           bool
 	DispatchStatus    string
+	TrackerSummary    string
+	TrackerObservedAt string
 	Done              bool
 	Terminal          bool
 	MetaRight         string
@@ -1528,6 +1530,11 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooter = boardCompactAge(card.TimeInStage)
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
+	tracker, _, _ := boardProjectObservations(data.Snapshot, projectID)
+	if !tracker.IsZero() {
+		view.TrackerSummary = "Tracker snapshot · " + prPipelineAge(tracker, data.Snapshot.GeneratedAt) + " ago"
+		view.TrackerObservedAt = tracker.UTC().Format(time.RFC3339)
+	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
 	if strings.EqualFold(lane.Title, "Todo") && !running && !retrying {
 		issue := telemetry.Issue{ID: card.IssueID, Identifier: card.Identifier, ProjectID: projectID, State: "Todo", UpdatedAt: card.UpdatedAt}
@@ -1549,7 +1556,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		waiting := BlockedRecoveryWaiting(card.BlockedHumanAttention, card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
 		blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
 		attention := card.AttentionLabel != "" || card.ConflictReason != "" || !waiting && (blockedDetail != "" || strings.EqualFold(strings.TrimSpace(card.BlockedRecoveryAction), "hold"))
-		if attention {
+		if attention && !evidence.Ready {
 			if view.ExtraText == "" {
 				view.ExtraText = "Needs you"
 				view.ExtraKind = primitives.KindErr
@@ -1561,7 +1568,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 			if !evidence.Ready {
 				view.ExtraKind = primitives.KindWarn
 			}
-			if BlockedRecoveryWaiting(card.BlockedHumanAttention, card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) || len(card.Blockers) > 0 {
+			if !evidence.Ready && (BlockedRecoveryWaiting(card.BlockedHumanAttention, card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason) || len(card.Blockers) > 0) {
 				view.Waiting = true
 				view.DispatchStatus = "Waiting"
 				view.ExtraText += " · " + evidence.Detail
@@ -1571,7 +1578,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 			}
 		}
 	}
-	if stranded, ok := boardCardStrandedActiveIssue(data.Snapshot, card); ok {
+	if stranded, ok := boardCardStrandedActiveIssue(data.Snapshot, card); ok && !running {
 		view.ExtraKind = primitives.KindWarn
 		view.ExtraText = "Stranded " + boardCardStrandedAge(stranded.DurationSeconds) + " · no worker"
 		view.ExtraChip = true
@@ -1726,6 +1733,28 @@ type boardCardSignal struct {
 }
 
 func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSignal {
+	if view.Running {
+		label := "Running"
+		switch view.ExtraText {
+		case "waiting for local validation":
+			label = "Validation queued"
+		case "running local validation":
+			label = "Validating"
+		}
+		signals := []boardCardSignal{{Text: label, Kind: primitives.KindOK}}
+		switch {
+		case view.Work.SyncKey == "error" || view.Work.SyncKey == "retrying":
+			signals = append(signals, boardCardSignal{Text: "Sync " + strings.ToLower(view.Work.Sync), Kind: view.Work.SyncKind})
+		case card.CIStatus == "fail" || card.CIStatus == "failure" || card.CIStatus == "error":
+			signals = append(signals, boardCardSignal{Text: "CI failed", Kind: primitives.KindErr})
+		case view.RuntimeBadge && view.RuntimeCozyText != "" && view.RuntimeCozyText != "agent working":
+			signals = append(signals, boardCardSignal{Text: view.RuntimeCozyText, Kind: primitives.KindOK})
+		}
+		return signals
+	}
+	if view.DispatchStatus == "Ready" {
+		return []boardCardSignal{{Text: "Ready", Kind: primitives.KindInfo}}
+	}
 	if view.Done || view.Terminal {
 		return nil
 	}
@@ -1932,6 +1961,9 @@ func unblockerPriorityDetail(count int) string {
 // boardCardExtra picks the single allowed extra signal, most urgent first:
 // an exception chip, then a status line. Cards never stack signals.
 func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind, string, bool) {
+	if view.Running {
+		return primitives.KindOK, firstNonBlank(card.WaitDetail, "agent working"), false
+	}
 	if view.Done || view.Terminal {
 		return primitives.KindNeutral, "", false
 	}
@@ -1975,8 +2007,21 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 }
 
 func boardCardIsRunning(snapshot telemetry.Snapshot, card projectKanbanCard) bool {
+	if snapshot.LastKnown {
+		return false
+	}
 	for _, running := range snapshot.Running {
 		if boardCardMatchesIssue(running.Issue, card) {
+			return true
+		}
+	}
+	for _, attempt := range snapshot.WorkAttempts {
+		// Deferred completion retains an active receipt after the worker exits.
+		if attempt.Phase == "completion_deferred" {
+			continue
+		}
+		issue := telemetry.Issue{ID: attempt.IssueID, Identifier: attempt.Identifier, ProjectID: attempt.ProjectID}
+		if attempt.Status == "active" && !attempt.Stale && attempt.CompletedAt == nil && boardCardMatchesIssue(issue, card) {
 			return true
 		}
 	}

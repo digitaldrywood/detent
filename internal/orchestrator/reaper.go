@@ -62,6 +62,10 @@ func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state 
 }
 
 func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *State, now time.Time) bool {
+	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
+	timing.phase = "workspace_cleanup"
+	timing.step("residual_workspaces")
+	defer func() { timing.finishStep(time.Now()) }()
 	reconciler, ok := o.reaper.(WorkspaceReconciler)
 	if !ok {
 		return true
@@ -150,6 +154,10 @@ func activeWorkspaceIssues(state *State, terminalStates []string) []connector.Is
 }
 
 func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, issueIDs []string, now time.Time) (bool, bool) {
+	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
+	timing.phase = "workspace_cleanup"
+	timing.step("fetch_cleanup_issue_ids")
+	defer func() { timing.finishStep(time.Now()) }()
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup issue IDs failed", slog.Any("error", err))
@@ -161,6 +169,7 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 		})
 		return false, false
 	}
+	timing.step("reap_cleanup_issue_ids")
 	cleaned := false
 	for _, issue := range issues {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
@@ -178,6 +187,10 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 }
 
 func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, states []string, now time.Time) bool {
+	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
+	timing.phase = "workspace_cleanup"
+	timing.step("fetch_cleanup_candidates")
+	defer func() { timing.finishStep(time.Now()) }()
 	issues, err := o.fetchWorkspaceCleanupCandidates(ctx, states)
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup candidates failed", slog.Any("error", err))
@@ -189,6 +202,7 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 		})
 		return false
 	}
+	timing.step("reap_cleanup_candidates")
 	for _, issue := range issues {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
@@ -361,6 +375,13 @@ func (o *Orchestrator) completeRunningIssueFromWorkspaceCleanup(ctx context.Cont
 }
 
 func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string, now time.Time) bool {
+	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
+	timing.phase = "workspace_cleanup"
+	if o.logger != nil {
+		timing.logger = o.logger.With("issue_id", issue.ID, "identifier", issue.Identifier)
+	}
+	timing.step("reap_workspace")
+	defer func() { timing.finishStep(time.Now()) }()
 	if o.reaper == nil {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(now),

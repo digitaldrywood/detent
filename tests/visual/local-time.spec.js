@@ -15,6 +15,8 @@ test.afterAll(async () => {
 
 for (const updates of [false, true]) {
   test(`relative labels advance ${updates ? "through SSE morphs" : "on idle pages"}`, async ({ page }) => {
+    // A fleet timestamp requires an observation for every project.
+    await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": "board-counts-live" });
     await page.clock.install({ time: new Date("2026-07-10T18:00:00Z") });
     await page.clock.pauseAt(new Date("2026-07-10T18:00:00Z"));
     await page.addInitScript(() => {
