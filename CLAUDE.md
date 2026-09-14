@@ -52,6 +52,7 @@ of interacting self-protection mechanisms (brakes, breakers, leases, parks,
 recovery sweeps, revocations, reconcilers). Their interactions are now the main
 source of incidents.
 
+- INV-11: features and new or expanded mechanisms require explicit human scope approval before Todo; assistants file them to Backlog only.
 - Do not add a new brake, breaker, lease, park, recovery path, revocation,
   reason code, or reconciliation loop.
 - A fix for a misbehaving mechanism must remove or consolidate a mechanism, or

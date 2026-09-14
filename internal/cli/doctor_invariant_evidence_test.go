@@ -23,9 +23,9 @@ func doctorInvariantFixtureDB(t *testing.T, statements ...string) string {
 	}
 	defer db.Close()
 	for _, stmt := range append([]string{
-		`CREATE TABLE workflow_phase_events (id INTEGER PRIMARY KEY, project_id TEXT, identifier TEXT, phase_name TEXT, previous_phase_name TEXT, reason TEXT, started_at TEXT)`,
+		`CREATE TABLE workflow_phase_events (id INTEGER PRIMARY KEY, project_id TEXT, identifier TEXT, phase_name TEXT, previous_phase_name TEXT, reason TEXT, started_at TEXT, issue_id TEXT, phase_type TEXT, metadata_json TEXT)`,
 		`CREATE TABLE work_attempts (id INTEGER PRIMARY KEY, project_id TEXT, identifier TEXT, error_class TEXT, completed_at TEXT)`,
-		`CREATE TABLE lane_ledger (id INTEGER PRIMARY KEY, project_id TEXT, written_at TEXT)`,
+		`CREATE TABLE lane_ledger (id INTEGER PRIMARY KEY, project_id TEXT, written_at TEXT, issue_id TEXT, from_state TEXT, to_state TEXT, reason TEXT, result TEXT, origin TEXT, resolved_at TEXT)`,
 	}, statements...) {
 		if _, err := db.ExecContext(t.Context(), stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

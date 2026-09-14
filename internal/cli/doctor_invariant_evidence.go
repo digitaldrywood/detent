@@ -31,6 +31,7 @@ func checkDoctorInvariantEvidence(ctx context.Context, id string, project global
 
 	db, err := deps.openSQLiteReadOnly(ctx, storePath)
 	if err != nil {
+		checks = append(checks, doctorInvariantAdmissionCheck(ctx, id, cfg, deps, nil, since, deps.now().UTC().Format(time.RFC3339Nano)))
 		checks = append(checks, doctorInvariantCheck(id, "INV-1", "single lane writer", doctorOK, "runtime store unavailable; no lane evidence to measure ("+err.Error()+")"))
 		return append(checks, doctorInvariantRepositoryChecks(ctx, id, project, cfg, deps, nil, deps.now().Add(-doctorInvariantQueueWindow).UTC().Format(time.RFC3339Nano))...)
 	}
@@ -39,6 +40,8 @@ func checkDoctorInvariantEvidence(ctx context.Context, id string, project global
 			checks = append(checks, doctorInvariantCheck(id, "INV-1", "single lane writer", doctorWarn, "runtime store close failed: "+closeErr.Error()))
 		}
 	}()
+
+	checks = append(checks, doctorInvariantAdmissionCheck(ctx, id, cfg, deps, db, since, deps.now().UTC().Format(time.RFC3339Nano)))
 
 	var transitions, writes int64
 	if err := db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM workflow_phase_events WHERE project_id = ? AND started_at > ? AND previous_phase_name IS NOT NULL AND previous_phase_name <> ''), (SELECT count(*) FROM lane_ledger WHERE project_id = ? AND written_at > ?)`, id, since, id, since).Scan(&transitions, &writes); err != nil {
