@@ -372,6 +372,16 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	setDoctorCurrentCheck("Project " + id + " workflow_source_drift")
+	checks = append(checks, checkDoctorWorkflowSourceDrift(ctx, id, project, workflow.Config, deps))
+	files, instructionProblems := doctorInstructionFiles(ctx, projectSourceRoot(project, workflow.Config), workflow.Prompt)
+	checks = append(checks, checkDoctorInstructionBudget(id, files, instructionProblems))
+	checks = append(checks, checkDoctorGateInstructionConflict(id, workflow.Config.Gate.Run, files, instructionProblems))
+	setDoctorCurrentCheck("Project " + id + " model_policy")
+	checks = append(checks, checkDoctorModelPolicy(ctx, id, storePath, workflow.Config, deps))
+	checks = append(checks, checkDoctorTokenAccounting(ctx, id, storePath, deps))
+	setDoctorCurrentCheck("Project " + id + " ci_trigger_shape")
+	checks = append(checks, checkDoctorCITriggerShape(ctx, id, workflow.Config, deps))
 	if workflow.Config.SchedulersEnabled() {
 		setDoctorCurrentCheck("Project " + id + " schedule ownership")
 		checks = append(checks, checkDoctorScheduleOwnership(ctx, id, workflow.Config, deps))

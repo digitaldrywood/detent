@@ -1109,8 +1109,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "inherited spend breaker warns about billing ambiguity",
@@ -1118,8 +1118,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -1128,8 +1128,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "all progress brakes disabled",
@@ -1137,8 +1137,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledProgressWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -1146,8 +1146,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -1171,7 +1171,14 @@ func TestCheckDoctorProjects(t *testing.T) {
 				},
 			}, RuntimeSecret{}, false)
 			if len(got) != len(tt.wantStatus) {
-				t.Fatalf("len(checks) = %d, want %d: %#v", len(got), len(tt.wantStatus), got)
+				t.Fatalf("len(checks) = %d, want %d", len(got), len(tt.wantStatus))
+			}
+			if len(tt.wantStatus) > 10 {
+				for i, name := range []string{"workflow_source_drift", "instruction_budget", "gate_instruction_conflict", "model_policy", "token_accounting", "ci_trigger_shape"} {
+					if got[i+1].Name != "Project alpha "+name {
+						t.Fatalf("check %d name = %q, want %s", i+1, got[i+1].Name, name)
+					}
+				}
 			}
 			for i, check := range got {
 				if check.Status != tt.wantStatus[i] {

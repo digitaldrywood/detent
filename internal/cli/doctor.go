@@ -243,6 +243,7 @@ type doctorTelemetryStore interface {
 }
 
 type doctorDeps struct {
+	githubWorkflows      func(context.Context, workflowconfig.Config, string) (map[string]string, error)
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
 	resolveCommandOnPath func(string, string) (string, error)
@@ -1213,6 +1214,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.githubMergeSettings == nil {
 		d.githubMergeSettings = defaults.githubMergeSettings
 	}
+	if d.githubWorkflows == nil {
+		d.githubWorkflows = defaults.githubWorkflows
+	}
 	if d.githubRepositoryInfo == nil {
 		d.githubRepositoryInfo = defaults.githubRepositoryInfo
 	}
@@ -1291,6 +1295,7 @@ func defaultDoctorDeps() doctorDeps {
 		githubMergeSettings:  defaultDoctorGitHubMergeSettings,
 		githubBranchPolicy:   defaultDoctorGitHubBranchMergePolicy,
 		githubRepositoryInfo: defaultDoctorGitHubRepositoryInfo,
+		githubWorkflows:      defaultDoctorWorkflowSources,
 		githubLabels:         defaultDoctorGitHubRepositoryLabels,
 		ghAuthToken:          defaultGHAuthToken,
 		listen:               net.Listen,
