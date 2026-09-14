@@ -127,6 +127,12 @@ explicit provider backoffs and worker/shared-pool reserve evidence retain their
 existing handling (#2547). This consolidates the blanket dispatch pause into the
 request-family gates that own the observed budget window.
 
+Darwin process-environment inspection uses the existing workspace scan stage
+budget instead of a separate per-process transient-read deadline (#2573).
+Reconciliation and reaping both receive that stage budget; EINVAL/EIO retries do
+not renew it, and expiration preserves the ownership error and verified partial
+results. This removes a competing timer without adding a recovery mechanism.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

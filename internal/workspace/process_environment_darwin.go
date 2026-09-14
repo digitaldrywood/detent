@@ -13,14 +13,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const darwinScratchEnvironmentRetryTimeout = time.Second
-
 func scratchEnvironmentProcessIDs(ctx context.Context, root string) ([]int, error) {
 	processes, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Geteuid())
 	if err != nil {
 		return nil, err
 	}
-	return darwinScratchEnvironmentProcessIDs(ctx, root, processes, darwinScratchEnvironmentRetryTimeout,
+	return darwinScratchEnvironmentProcessIDs(ctx, root, processes,
 		func(pid int) ([]byte, error) {
 			return unix.SysctlRaw("kern.procargs2", pid)
 		}, func(pid int) (bool, error) {
@@ -33,7 +31,6 @@ func darwinScratchEnvironmentProcessIDs(
 	ctx context.Context,
 	root string,
 	processes []unix.KinfoProc,
-	retryTimeout time.Duration,
 	read func(int) ([]byte, error),
 	alive func(int) (bool, error),
 ) ([]int, error) {
@@ -47,7 +44,7 @@ func darwinScratchEnvironmentProcessIDs(
 		if pid <= 0 || pid == os.Getpid() || process.Proc.P_stat == 5 {
 			continue
 		}
-		data, err := readDarwinScratchEnvironment(ctx, retryTimeout, func() ([]byte, error) {
+		data, err := readDarwinScratchEnvironment(ctx, func() ([]byte, error) {
 			return read(pid)
 		}, func() (bool, error) {
 			return alive(pid)
@@ -63,12 +60,11 @@ func darwinScratchEnvironmentProcessIDs(
 	return owned, result
 }
 
-func readDarwinScratchEnvironment(ctx context.Context, retryTimeout time.Duration, read func() ([]byte, error), alive func() (bool, error)) ([]byte, error) {
+func readDarwinScratchEnvironment(ctx context.Context, read func() ([]byte, error), alive func() (bool, error)) ([]byte, error) {
 	// XNU can report EINVAL while exec or exit leaves a live process without a
-	// readable user stack. Bound each process separately so a stalled transition
-	// cannot consume the reap operation's entire deadline before the scan advances.
-	ctx, cancel := context.WithTimeout(ctx, retryTimeout)
-	defer cancel()
+	// readable user stack. Use the scan stage's existing liveness budget so a
+	// healthy transition under load is not cut short by a competing timer.
+	// A still-unreadable process at cancellation remains an ownership error.
 	var transientErr error
 	for {
 		if err := ctx.Err(); err != nil {

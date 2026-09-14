@@ -84,7 +84,12 @@ func withWorkspaceProcessScanBudget(
 func runWorkspaceProcessScan(ctx context.Context, path string, scan workspaceProcessScanner) ([]int, error) {
 	budget, ok := ctx.Value(workspaceProcessScanBudgetKey{}).(workspaceProcessScanBudget)
 	if !ok || budget.timeout <= 0 || budget.withTimeout == nil {
-		return scan(ctx, path)
+		// Reconciliation also inventories processes without going through
+		// ReapProcesses. Give it the same stage budget as reaping.
+		budget = workspaceProcessScanBudget{
+			timeout:     minimumWorkspaceProcessScanTimeout,
+			withTimeout: context.WithTimeout,
+		}
 	}
 	scanCtx, cancel := budget.withTimeout(ctx, budget.timeout)
 	defer cancel()
