@@ -16,6 +16,7 @@ import (
 type Snapshot struct {
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 
+	CardActiveStates        map[string][]string `json:"-"`
 	LastKnown               bool                `json:"-"`
 	LastKnownUntil          time.Time           `json:"-"`
 	Tracker                 SnapshotSection     `json:"tracker,omitzero"`

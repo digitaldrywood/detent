@@ -8,6 +8,17 @@ import (
 )
 
 func (s *Server) snapshotCardHistory(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
+	snapshot.CardActiveStates = make(map[string][]string)
+	for _, issue := range telemetry.CardIssues(snapshot) {
+		workflow := s.kanbanWorkflow
+		if s.registry != nil {
+			target, _, _ := s.kanbanActionTarget(issue.ProjectID)
+			workflow = target.workflow
+		}
+		if len(workflow.Tracker.ActiveStates) > 0 {
+			snapshot.CardActiveStates[issue.ProjectID] = append([]string(nil), workflow.Tracker.ActiveStates...)
+		}
+	}
 	reader, ok := s.store.(store.CardHistoryStore)
 	if !ok {
 		return snapshot
@@ -17,7 +28,9 @@ func (s *Server) snapshotCardHistory(ctx context.Context, snapshot telemetry.Sna
 		result := append([]telemetry.Issue(nil), issues...)
 		for i := range result {
 			issue := &result[i]
-			if !telemetry.ActiveCardLane(telemetry.CardRuntimeLane(issue.State, fallback)) {
+			laneIssue := *issue
+			laneIssue.State = telemetry.CardRuntimeLane(issue.State, fallback)
+			if !telemetry.ActiveIssueCard(snapshot, laneIssue) {
 				continue
 			}
 			identity := boardIssueParkIdentity(*issue)

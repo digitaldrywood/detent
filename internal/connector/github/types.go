@@ -153,6 +153,7 @@ type pullRequest struct {
 }
 
 type pullRequestNode struct {
+	HeadCommittedAt            *time.Time                          `json:"-"`
 	MergedAt                   *time.Time                          `json:"mergedAt"`
 	NodeID                     string                              `json:"id"`
 	Number                     int                                 `json:"number"`

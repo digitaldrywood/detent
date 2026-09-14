@@ -1664,9 +1664,9 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","updated_at":"2026-06-05T11:30:00Z","head":{"ref":"detent/digitaldrywood_detent_182_followup","sha":"sha-187"}},{"number":188,"html_url":"https://github.com/digitaldrywood/detent/pull/188","state":"closed","head":{"ref":"detent/digitaldrywood_detent_181","sha":"sha-188"},"merged_at":"2026-06-01T00:00:00Z"}]`,
 		},
 		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls/187",
-			body:   `{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","updated_at":"2026-06-05T11:30:00Z","head":{"ref":"detent/digitaldrywood_detent_182_followup","sha":"sha-187"}}`,
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"number":187,"url":"https://github.com/digitaldrywood/detent/pull/187","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182_followup","headSHA":"sha-187","activityAt":"2026-06-05T11:30:00Z","commits":{"nodes":[{"commit":{"oid":"sha-187","committedDate":"2026-06-05T10:30:00Z"}}]}}}}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -1709,6 +1709,9 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	}
 	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
 		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
+	}
+	if pr.HeadCommittedAt == nil || pr.HeadCommittedAt.Format(time.RFC3339) != "2026-06-05T10:30:00Z" {
+		t.Fatalf("branch PR head time = %v", pr.HeadCommittedAt)
 	}
 	wantActivityAt := time.Date(2026, 6, 5, 11, 30, 0, 0, time.UTC)
 	if pr.ActivityAt == nil || !pr.ActivityAt.Equal(wantActivityAt) {
@@ -1876,9 +1879,7 @@ func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t 
 			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}]`,
 		},
 		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls/187",
-			body:   `{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}`,
+			method: http.MethodPost, path: "/", body: `{"data":{"repository":{"pullRequest":{"number":187,"url":"https://github.com/digitaldrywood/detent/pull/187","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182","headSHA":"sha-187","activityAt":null,"mergedAt":null}}}}`,
 		},
 		{
 			method:  http.MethodGet,
@@ -1953,18 +1954,18 @@ func TestConnectorCachesPullRequestStatusByHeadSHA(t *testing.T) {
 
 	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`
 	pullsBody := `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}]`
-	pullBody := `{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}`
+	pullBody := `{"data":{"repository":{"pullRequest":{"number":187,"url":"https://github.com/digitaldrywood/detent/pull/187","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182","headSHA":"sha-187","activityAt":null,"mergedAt":null}}}}`
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{body: projectBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all", body: pullsBody},
-		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/187", body: pullBody},
+		{method: http.MethodPost, path: "/", body: pullBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/sha-187/statuses?per_page=100", body: `[]`},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/187/reviews?per_page=100", body: `[]`},
 		emptyPullRequestCommentsResponse("digitaldrywood/detent", 187),
 		{body: projectBody},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all", body: pullsBody},
-		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/187", body: pullBody},
+		{method: http.MethodPost, path: "/", body: pullBody},
 	})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -2150,6 +2151,22 @@ func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
 		switch {
+		case r.Method == http.MethodPost:
+			var request struct {
+				Variables struct {
+					Number int `json:"number"`
+				} `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+				return
+			}
+			number := strconv.Itoa(request.Variables.Number)
+			mu.Lock()
+			detailedPullRequests = append(detailedPullRequests, number)
+			mu.Unlock()
+			fmt.Fprintf(w, `{"data":{"repository":{"pullRequest":{"number":%s,"url":"https://github.com/digitaldrywood/detent/pull/%s","state":"OPEN","headRefName":"detent/digitaldrywood_detent_2","headSHA":"sha-%s"}}}}`, number, number, number)
+
 		case path == "/repos/digitaldrywood/detent/pulls":
 			mu.Lock()
 			pullRequestLists++
@@ -2175,7 +2192,7 @@ func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing
 		Endpoint:                   server.URL,
 		APIKey:                     "token",
 		HTTPClient:                 server.Client(),
-		RESTFanoutMaxRequests:      6,
+		RESTFanoutMaxRequests:      5,
 		DisableConditionalRequests: true,
 	})
 	if err != nil {
@@ -2215,8 +2232,8 @@ func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing
 	if got, want := detailedPullRequests, []string{"101", "202"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("detailed pull requests = %v, want %v", got, want)
 	}
-	if pullRequestLists != 2 {
-		t.Fatalf("pull request list calls = %d, want 2", pullRequestLists)
+	if pullRequestLists != 1 {
+		t.Fatalf("pull request list calls = %d, want 1", pullRequestLists)
 	}
 }
 
@@ -2233,9 +2250,9 @@ func TestConnectorFetchCandidateIssuesStopsBranchPullRequestHydrationAfterSecond
 			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}},{"number":188,"html_url":"https://github.com/digitaldrywood/detent/pull/188","state":"open","head":{"ref":"detent/digitaldrywood_detent_183","sha":"sha-188"}}]`,
 		},
 		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls/187",
-			body:   `{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}`,
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"number":187,"url":"https://github.com/digitaldrywood/detent/pull/187","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182","headSHA":"sha-187","activityAt":null,"commits":{"nodes":[{"commit":{"oid":"sha-187","committedDate":"2026-06-05T10:30:00Z"}}]}}}}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -2737,9 +2754,7 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 			body:   `[{"number":190,"html_url":"https://github.com/digitaldrywood/detent/pull/190","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-190"}}]`,
 		},
 		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls/190",
-			body:   `{"number":190,"html_url":"https://github.com/digitaldrywood/detent/pull/190","state":"open","mergeable_state":"dirty","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-190"}}`,
+			method: http.MethodPost, path: "/", body: `{"data":{"repository":{"pullRequest":{"number":190,"url":"https://github.com/digitaldrywood/detent/pull/190","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182","headSHA":"sha-190","mergeableState":"DIRTY","activityAt":null,"mergedAt":null}}}}`,
 		},
 		{
 			method: http.MethodGet,

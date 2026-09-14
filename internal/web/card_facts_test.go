@@ -79,3 +79,21 @@ func TestSnapshotCardHistoryRuntimeAndCopies(t *testing.T) {
 		})
 	}
 }
+
+func TestCardHistoryConfiguredLanes(t *testing.T) {
+	for _, tt := range []struct {
+		lane string
+		want int
+	}{{"Production", 1}, {"Rework", 1}, {"Merging", 1}, {"Done", 0}} {
+		t.Run(tt.lane, func(t *testing.T) {
+			backend := &cardHistoryTestStore{}
+			server := &Server{store: backend, now: time.Now}
+			server.kanbanWorkflow.Tracker.ActiveStates = []string{"Todo", "Production"}
+			snapshot := telemetry.Snapshot{Project: telemetry.Project{ID: "p"}, BoardIssues: []telemetry.Issue{{ID: "i", State: tt.lane}}}
+			got := server.snapshotCardHistory(t.Context(), snapshot)
+			if backend.calls != tt.want || len(boardResponse(got).Cards) != tt.want {
+				t.Fatalf("calls=%d cards=%+v", backend.calls, boardResponse(got).Cards)
+			}
+		})
+	}
+}

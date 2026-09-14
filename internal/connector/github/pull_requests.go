@@ -890,7 +890,7 @@ func (c *Connector) attachMatchingPullRequests(
 			hydratedPullRequest, ok := hydrated[pullRequest.Number]
 			if !ok {
 				var err error
-				hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
+				hydratedPullRequest, err = c.fetchBranchPullRequest(ctx, repo, pullRequest.Number)
 				if err != nil {
 					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
 						applyPullRequestHydrationUnavailableState(&pullRequest, state)
@@ -998,9 +998,12 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 }
 
 func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pullRequest pullRequestNode) {
-	var committedAt *time.Time
-	if issue.PRNumber != nil && *issue.PRNumber == pullRequest.Number && issue.PRHeadSHA != "" && issue.PRHeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PRRepository, pullRequestRepoName(repo)) {
+	committedAt := cloneGitHubTime(pullRequest.HeadCommittedAt)
+	if committedAt == nil && issue.PRNumber != nil && *issue.PRNumber == pullRequest.Number && issue.PRHeadSHA != "" && issue.PRHeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PRRepository, pullRequestRepoName(repo)) {
 		committedAt = cloneGitHubTime(issue.PRHeadCommittedAt)
+	}
+	if previous := issue.PullRequest; committedAt == nil && previous != nil && previous.Number == pullRequest.Number && previous.HeadSHA != "" && previous.HeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PRRepository, pullRequestRepoName(repo)) {
+		committedAt = cloneGitHubTime(previous.HeadCommittedAt)
 	}
 	issue.PullRequest = &connector.PullRequest{
 		NodeID:                       strings.TrimSpace(pullRequest.NodeID),
@@ -1933,4 +1936,44 @@ func pullRequestCheckNames(checks []connector.PullRequestCheck) []string {
 		names = append(names, check.Name)
 	}
 	return uniqueNonBlank(names)
+}
+
+// fetchBranchPullRequest replaces the branch association's REST detail request.
+// GraphQL returns the same PR details plus the head commit date in one round-trip.
+func (c *Connector) fetchBranchPullRequest(ctx context.Context, repo pullRequestRepo, number int) (pullRequestNode, error) {
+	const query = `query DetentGitHubBranchPullRequest($owner: String!, $name: String!, $number: Int!) {
+ repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+  id number url state mergedAt draft: isDraft activityAt: updatedAt
+  mergeableState: mergeStateStatus headRefName baseRefName headSHA: headRefOid baseRefOid
+  labels(first: 100) { nodes { name } }
+  commits(last: 1) { nodes { commit { oid committedDate } } }
+ } }
+ rateLimit { limit used remaining cost resetAt }
+}`
+	var response struct {
+		Repository *struct {
+			PullRequest *struct {
+				pullRequestNode
+				LabelNodes nodeConnection[struct {
+					Name string `json:"name"`
+				}] `json:"labels"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := c.client.GraphQL(ctx, query, map[string]any{"owner": repo.Owner, "name": repo.Name, "number": number}, &response); err != nil {
+		return pullRequestNode{}, fmt.Errorf("fetch github branch pull request: %w", err)
+	}
+	if response.Repository == nil || response.Repository.PullRequest == nil {
+		return pullRequestNode{}, ErrNotFound
+	}
+	node := response.Repository.PullRequest
+	pr := node.pullRequestNode
+	pr.MergeableState = strings.ToLower(pr.MergeableState)
+	for _, label := range node.LabelNodes.Nodes {
+		pr.Labels = append(pr.Labels, label.Name)
+	}
+	if len(pr.Commits.Nodes) == 1 && pr.Commits.Nodes[0].Commit.OID == pr.HeadSHA {
+		pr.HeadCommittedAt = cloneGitHubTime(pr.Commits.Nodes[0].Commit.CommittedDate)
+	}
+	return pr, nil
 }

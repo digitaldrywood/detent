@@ -11,7 +11,7 @@ import (
 type cardFactView struct{ Name, Text, Detail string }
 
 func boardCardFacts(data DashboardData, card projectKanbanCard) []cardFactView {
-	if !telemetry.ActiveCardLane(card.Stage) {
+	if !telemetry.ActiveCardLane(card.Stage, projectKanbanCardKanbanData(data, card).ActiveStates...) {
 		return nil
 	}
 	issue := telemetry.Issue{ID: card.IssueID, Identifier: card.Identifier, ProjectID: card.ProjectID, State: card.Stage}

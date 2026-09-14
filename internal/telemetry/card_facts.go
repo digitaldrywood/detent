@@ -20,7 +20,14 @@ type CardFacts struct {
 	LaneReasonAt     *time.Time `json:"lane_reason_at"`
 }
 
-func ActiveCardLane(state string) bool {
+func ActiveCardLane(state string, configured ...string) bool {
+	if len(configured) > 0 {
+		for _, lane := range configured {
+			if strings.EqualFold(strings.TrimSpace(state), strings.TrimSpace(lane)) {
+				return true
+			}
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "todo", "in progress", "rework", "merging":
 		return true
@@ -42,7 +49,7 @@ func IssueCardFacts(snapshot Snapshot, issue Issue) CardFacts {
 		return facts
 	}
 	for _, running := range snapshot.Running {
-		if (running.ProjectID == issue.ProjectID || running.ProjectID == "" && snapshot.Project.ID == issue.ProjectID) && running.ID == issue.ID {
+		if (running.ProjectID == issue.ProjectID || running.ProjectID == "" && snapshot.Project.ID == issue.ProjectID) && cardSessionMatches(running.Issue, issue) {
 			facts.HasSession = true
 			if !running.StartedAt.IsZero() {
 				at := running.StartedAt
@@ -170,4 +177,19 @@ func CardRuntimeLane(state, fallback string) string {
 	default:
 		return strings.TrimSpace(state)
 	}
+}
+
+func cardSessionMatches(running, issue Issue) bool {
+	if running.ID != "" && issue.ID != "" {
+		return running.ID == issue.ID
+	}
+	return running.Identifier != "" && running.Identifier == issue.Identifier
+}
+
+func ActiveIssueCard(snapshot Snapshot, issue Issue) bool {
+	projectID := issue.ProjectID
+	if projectID == "" {
+		projectID = snapshot.Project.ID
+	}
+	return ActiveCardLane(issue.State, snapshot.CardActiveStates[projectID]...)
 }

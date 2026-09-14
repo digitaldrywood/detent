@@ -33,3 +33,29 @@ func TestHeadCommitReferenceEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestBranchPullRequestHeadEvidence(t *testing.T) {
+	for _, tt := range []struct {
+		name, oid string
+		want      bool
+	}{
+		{"matching", "head", true}, {"changed head", "old", false}, {"missing", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{method: "POST", path: "/", body: `{"data":{"repository":{"pullRequest":{"number":42,"state":"OPEN","headSHA":"head","mergeableState":"CLEAN","labels":{"nodes":[{"name":"ready"}]},"commits":{"nodes":[{"commit":{"oid":"` + tt.oid + `","committedDate":"2026-09-14T12:00:00Z"}}]}}}}}`}})
+			c := newGitHubTestConnector(t, server, Config{})
+			pr, err := c.fetchBranchPullRequest(t.Context(), pullRequestRepo{Owner: "o", Name: "r"}, 42)
+			if err != nil {
+				t.Fatal(err)
+			}
+			applyPullRequestStatus(&pr, pullRequestStatus{})
+			issue := connector.Issue{}
+			attachPullRequestToIssue(&issue, pullRequestRepo{Owner: "o", Name: "r"}, pr)
+			// A subsequent ordinary REST refresh of the same head retains the date.
+			attachPullRequestToIssue(&issue, pullRequestRepo{Owner: "o", Name: "r"}, pullRequestNode{Number: 42, HeadSHA: "head", MergeableState: "clean"})
+			if (issue.PullRequest.HeadCommittedAt != nil) != tt.want || issue.PullRequest.MergeableState != "clean" || len(pr.Labels) != 1 {
+				t.Fatalf("PR = %+v", issue.PullRequest)
+			}
+		})
+	}
+}

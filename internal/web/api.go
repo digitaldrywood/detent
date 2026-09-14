@@ -751,7 +751,7 @@ func instanceResponse(instance telemetry.Instance, displayName string, build bui
 func boardResponse(snapshot telemetry.Snapshot) boardAPIResponse {
 	cards := []boardCardAPIResponse{}
 	for _, issue := range telemetry.CardIssues(snapshot) {
-		if telemetry.ActiveCardLane(issue.State) {
+		if telemetry.ActiveIssueCard(snapshot, issue) {
 			cards = append(cards, boardCardAPIResponse{ProjectID: issue.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, State: issue.State, CardFacts: telemetry.IssueCardFacts(snapshot, issue)})
 		}
 	}

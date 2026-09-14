@@ -95,3 +95,38 @@ func TestIssueCardFactsSessionLiveness(t *testing.T) {
 		})
 	}
 }
+
+func TestCardSessionIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name, id, identifier string
+		want                 int64
+	}{
+		{"identifier only", "", "second", 22}, {"missing running ID", "id", "second", 22}, {"unknown", "", "unknown", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := Snapshot{Project: Project{ID: "p"}, Running: []Running{
+				{Issue: Issue{Identifier: "first"}, Tokens: Tokens{Total: 11}}, {Issue: Issue{Identifier: "second"}, Tokens: Tokens{Total: 22}},
+			}}
+			got := IssueCardFacts(snapshot, Issue{ID: tt.id, Identifier: tt.identifier, ProjectID: "p"})
+			if got.SessionTokens != tt.want || got.HasSession != (tt.want != 0) {
+				t.Fatalf("facts = %+v", got)
+			}
+		})
+	}
+}
+
+func TestActiveIssueCardConfiguredLanes(t *testing.T) {
+	for _, tt := range []struct {
+		project, lane string
+		want          bool
+	}{
+		{"custom", "Production", true}, {"custom", "Rework", true}, {"custom", "Merging", true}, {"custom", "Done", false}, {"default", "Rework", true},
+	} {
+		t.Run(tt.project+tt.lane, func(t *testing.T) {
+			snapshot := Snapshot{CardActiveStates: map[string][]string{"custom": {"Todo", "Production"}}}
+			if got := ActiveIssueCard(snapshot, Issue{ProjectID: tt.project, State: tt.lane}); got != tt.want {
+				t.Fatalf("active = %v", got)
+			}
+		})
+	}
+}

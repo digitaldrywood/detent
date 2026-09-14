@@ -100,3 +100,39 @@ func TestIssueCardHistoryLatestTransition(t *testing.T) {
 		})
 	}
 }
+
+func TestCardHistoryAliases(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		identity IssueIdentity
+	}{
+		{"identifier", IssueIdentity{ProjectID: "p", Identifier: "o/r#1"}},
+		{"URL", IssueIdentity{ProjectID: "p", IssueURL: "https://example/1"}},
+		{"other project", IssueIdentity{ProjectID: "other", Identifier: "o/r#1"}},
+		{"empty", IssueIdentity{ProjectID: "p"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openParkTestStore(t, filepath.Join(t.TempDir(), "cards.db"))
+			at := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+			for _, query := range []string{
+				`INSERT INTO work_attempts(project_id,identifier,issue_url,worker_type,status,started_at) VALUES ('p','o/r#1','https://example/1','codex','running',?)`,
+				`INSERT INTO workflow_phase_events(project_id,identifier,issue_url,phase_type,phase_name,reason,status,started_at,event_day) VALUES ('p','o/r#1','https://example/1','lane','Production','operator_move','entered',?,'2026-09-14')`,
+			} {
+				if _, err := db.db.ExecContext(t.Context(), query, at.Format(time.RFC3339Nano)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := db.IssueCardHistory(t.Context(), tt.identity, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := int64(1)
+			if tt.name == "other project" || tt.name == "empty" {
+				want = 0
+			}
+			if got.AttemptsToday != want || (got.LaneReason == "operator_move") != (want == 1) {
+				t.Fatalf("history = %+v", got)
+			}
+		})
+	}
+}

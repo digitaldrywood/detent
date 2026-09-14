@@ -42,3 +42,18 @@ func TestCardFactCompact(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardCardFactsCustomLane(t *testing.T) {
+	for _, tt := range []struct {
+		lane string
+		want bool
+	}{{"Production", true}, {"Rework", true}, {"Merging", true}, {"Done", false}} {
+		t.Run(tt.lane, func(t *testing.T) {
+			data := DashboardData{Kanban: KanbanData{Projects: map[string]KanbanProjectData{"p": {ProjectID: "p", ActiveStates: []string{"Production"}}}}}
+			facts := boardCardFacts(data, projectKanbanCard{ProjectID: "p", Stage: tt.lane})
+			if (len(facts) > 0) != tt.want {
+				t.Fatalf("facts = %+v", facts)
+			}
+		})
+	}
+}
