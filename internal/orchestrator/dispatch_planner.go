@@ -440,6 +440,7 @@ func (p dispatchPlanner) newDispatchAction(
 
 func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
 	issue := cloneIssue(action.issue)
+	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	reserveMergeCandidate(state, issue, now)
 	state.Running[issue.ID] = Running{
 		Issue:             issue,
@@ -447,6 +448,7 @@ func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now
 		StartedAt:         now,
 		WorkerHost:        action.workerHost,
 		GitHubCredential:  reservedGitHubCredential(state, issue.ID),
+		ForgeProbeHost:    reservedForgeProbeHost(state, issue.ID),
 		ModelPermitExempt: !action.modelPermitRequired,
 	}
 	state.Claimed[issue.ID] = Claimed{

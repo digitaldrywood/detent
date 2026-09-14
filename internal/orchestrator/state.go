@@ -183,6 +183,7 @@ type Running struct {
 	CapacityScope               backendcapacity.Scope
 	CapacityProbe               bool
 	ForgeProbeHost              string
+	ForgeWriteCompleted         bool
 	GitHubCredential            string
 	ModelPermitExempt           bool
 	CIStopRequested             bool

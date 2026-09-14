@@ -2262,16 +2262,41 @@ func workerCredentialBlockerError(message string) error {
 	firstLine, _, _ := strings.Cut(message, "\n")
 	firstLine = strings.TrimSpace(strings.TrimLeft(firstLine, "#>*_- "))
 	blocked := strings.HasPrefix(strings.ToLower(firstLine), "blocked") || strings.HasPrefix(strings.ToLower(firstLine), "work is blocked")
-	if !blocked || !workerGitHubCredentialFailureDetail(message) {
+	credentialQuestion := IsWorkerGitHubCredentialQuestion(message)
+	if (!blocked || !workerGitHubCredentialFailureDetail(message)) && !credentialQuestion {
 		return nil
 	}
 	return &DeliverableCommandError{
 		OperationClass: "pull_request",
-		Operation:      "read GitHub issue and pull request",
+		Operation:      "create_pull_request",
 		Status:         "blocked",
 		Message:        truncateDeliverableDetail(firstLine),
 		Body:           truncateDeliverableDetail(message),
+		ApprovalDenied: credentialQuestion,
 	}
+}
+
+func IsWorkerGitHubCredentialQuestion(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	if !strings.Contains(detail, "?") {
+		return false
+	}
+	githubScoped := false
+	for _, marker := range []string{"github", "gh cli", "gh auth", "pull request", "open the pr", "open pr"} {
+		if strings.Contains(detail, marker) {
+			githubScoped = true
+			break
+		}
+	}
+	if !githubScoped {
+		return false
+	}
+	for _, marker := range []string{"credential", "authentication", "write access", "enable write", "allow write", "approval policy", "open manually", "open the pull request", "open the pr"} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func workerGitHubCredentialFailureDetail(detail string) bool {
@@ -2299,7 +2324,7 @@ func workerGitHubCredentialFailureDetail(detail string) bool {
 }
 
 func deliverableCredentialFailureDetail(detail string) bool {
-	if githubCredentialFailureDetail(detail) {
+	if githubCredentialFailureDetail(detail) || IsWorkerGitHubCredentialQuestion(detail) {
 		return true
 	}
 	detail = strings.ToLower(strings.TrimSpace(detail))
@@ -2314,32 +2339,7 @@ func deliverableCredentialFailureDetail(detail string) bool {
 }
 
 func githubCredentialFailureDetail(detail string) bool {
-	detail = strings.ToLower(strings.TrimSpace(detail))
-	for _, phrase := range []string{
-		"gh auth login",
-		"populate gh_token",
-		"not logged into any github hosts",
-		"no credentials provided",
-		"bad credentials",
-		"authentication failed",
-		"authentication required",
-		"could not read username",
-		"permission denied (publickey)",
-		"github token is not configured",
-		"gh_token environment variable is empty",
-		"missing github authentication",
-		"missing github credentials",
-		"github authentication is unavailable",
-		"github credentials are unavailable",
-		"github credential injection is disabled",
-		"github credential policy is disabled",
-		"github_credential_policy: isolated_disabled",
-	} {
-		if strings.Contains(detail, phrase) {
-			return true
-		}
-	}
-	return false
+	return forgeavailability.WorkerGitHubCredentialUnavailable(detail)
 }
 
 func classifyForgeOperationError(err error, operation string, host string) error {

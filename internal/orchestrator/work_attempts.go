@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -87,7 +88,9 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 		ProjectID: projectID,
 		Limit:     maxRecentWorkAttemptSnapshots,
 	})
+	forgeRecoveryAttempts := recent
 	if err != nil {
+		forgeRecoveryAttempts = nil
 		if o.logger != nil {
 			o.logger.Warn("work attempt history recovery failed", "project_id", projectID, "error", err)
 		}
@@ -96,11 +99,23 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
 		}
 		o.recoverWorkspaceBranchHolds(ctx, state, recent, now)
-		o.recoverForgeAvailabilityWaits(ctx, state, recent, now)
 		o.recoverGitHubRESTCapacityWaits(ctx, state, recent, now)
 		o.recoverWorkerGitHubMonitorWaits(ctx, state, recent, now)
 		o.recoverWorkerGitHubTokenResolutionWaits(ctx, state, recent, now)
 	}
+	if waits, ok := o.workAttempts.(store.ForgeAvailabilityWaitStore); ok {
+		pending, waitErr := waits.ListPendingForgeAvailabilityWaits(ctx, projectID)
+		if waitErr != nil {
+			if o.logger != nil {
+				o.logger.Warn("forge availability wait recovery failed", "project_id", projectID, "error", waitErr)
+			}
+		} else {
+			// This read owns pending-wait selection, including durable write proof.
+			// General history must not reintroduce a resolved wait or hide an old one.
+			forgeRecoveryAttempts = pending
+		}
+	}
+	o.recoverForgeAvailabilityWaits(ctx, state, forgeRecoveryAttempts, now)
 	decisions, err := o.workAttempts.ListRecentSchedulerDecisions(ctx, store.SchedulerDecisionQuery{
 		ProjectID: projectID,
 		Limit:     maxRecentSchedulerDecisions,
@@ -1063,6 +1078,9 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 		"run_mode":            strings.TrimSpace(running.Mode),
 		"issue_title":         strings.TrimSpace(running.Issue.Title),
 		"work_product_pushed": running.WorkProductPushed,
+	}
+	if running.ForgeWriteCompleted && strings.TrimSpace(running.ForgeProbeHost) != "" {
+		out["forge_write_completed_host"] = forgeavailability.NormalizeHost(running.ForgeProbeHost)
 	}
 	if running.Cancellation != nil {
 		out["cancellation"] = running.Cancellation

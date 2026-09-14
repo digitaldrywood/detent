@@ -17,11 +17,22 @@
       "TestObservedLanePreTurnFailureRemainsInstanceOwned",
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
       "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
+      "TestCredentialForgeProbeRequiresSuccessfulWrite",
+      "TestCredentialWaitSurvivesOverlappingFailures",
+      "TestCredentialCanaryRecoversOverlappingHosts",
+      "TestCredentialCanaryReplacementOverlappingHosts",
+      "TestCredentialCanaryCrossHostFailureReleasesReservation",
+      "TestCredentialCanaryDurableRecovery",
+      "TestCredentialConditionOutlivesOriginatingIssue",
+      "TestCredentialClearSchedulesCanaryWithoutUnpausing",
+      "TestObservedLaneCredentialCanaryCompletion",
+      "TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool"
     ],
     "./internal/runner": [
-      "TestAgentRunProgressClassifiesPullRequestApprovalDecline"
+      "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
+      "TestWorkerCredentialBlockerError"
     ],
     "./internal/store": [
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"

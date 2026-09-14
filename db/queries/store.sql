@@ -857,6 +857,19 @@ SET status = ?,
 WHERE id = sqlc.arg(work_attempt_id)
   AND completed_at IS NULL;
 
+-- name: UpdateTerminalWorkAttemptWait :execrows
+UPDATE work_attempts
+SET terminal_state = sqlc.arg(terminal_state),
+    error_class = sqlc.arg(error_class),
+    error_message = sqlc.arg(error_message),
+    phase = sqlc.arg(phase),
+    status_message = sqlc.arg(status_message),
+    worker_metadata_json = sqlc.arg(worker_metadata_json)
+WHERE id = sqlc.arg(work_attempt_id)
+  AND status = 'terminal'
+  AND completed_at IS NOT NULL
+  AND error_class = sqlc.arg(expected_error_class);
+
 -- name: ListActiveWorkAttempts :many
 SELECT *
 FROM work_attempts
@@ -881,6 +894,42 @@ WHERE completed_at IS NOT NULL
   )
 ORDER BY completed_at DESC, id DESC
 LIMIT sqlc.arg(result_limit);
+
+-- name: ListPendingForgeAvailabilityWaits :many
+SELECT waiting.*
+FROM work_attempts AS waiting
+WHERE waiting.project_id = sqlc.arg(project_id)
+  AND waiting.completed_at IS NOT NULL
+  AND waiting.status = 'terminal'
+  AND waiting.terminal_state = 'capacity'
+  AND waiting.error_class = 'forge_unavailable'
+  AND COALESCE(TRIM(waiting.issue_id), '') != ''
+  AND json_type(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.forge_wait') = 'object'
+  AND COALESCE(json_extract(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND NOT EXISTS (
+    SELECT 1
+    FROM work_attempts AS newer
+    WHERE newer.project_id = waiting.project_id
+      AND newer.completed_at IS NOT NULL
+      AND newer.status = 'terminal'
+      AND COALESCE(json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+      AND (newer.completed_at > waiting.completed_at OR (newer.completed_at = waiting.completed_at AND newer.id > waiting.id))
+      AND (
+        json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.forge_write_completed_host') =
+          json_extract(waiting.worker_metadata_json, '$.forge_wait.host')
+        OR (
+          newer.issue_id = waiting.issue_id
+          AND (
+            COALESCE(json_extract(waiting.worker_metadata_json, '$.forge_wait.error_class'), '') != 'worker_github_credential_unavailable'
+            OR (
+              newer.terminal_state = 'capacity' AND newer.error_class = 'forge_unavailable'
+              AND json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.forge_wait.error_class') = 'worker_github_credential_unavailable'
+            )
+          )
+        )
+      )
+  )
+ORDER BY waiting.completed_at, waiting.id;
 
 -- name: ListIssueWorkAttempts :many
 SELECT *

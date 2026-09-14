@@ -14,6 +14,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -148,13 +149,27 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	running.ArtifactEvidence = event.Result.ArtifactEvidence
+	running.ForgeWriteCompleted = event.Result.ForgeWriteCompleted
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
 	if running.CompletionLane != "" {
+		event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
+		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
+			return
+		}
+		o.finishForgeAvailabilityProbe(state, event, running)
 		o.finishObservedLaneRun(ctx, state, running, event)
 		return
+	}
+	if running.ForgeProbeHost != "" && !event.Result.ForgeWriteCompleted {
+		if condition, active := forgeCondition(state, running.ForgeProbeHost); active &&
+			condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable &&
+			o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+			return
+		}
 	}
 	if issueConfigurationFailure(event.Err, "", "") {
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "issue_configuration", event.Err.Error(), "blocked", "correct the issue agent override before recovery")
@@ -182,10 +197,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleWorkspaceBranchHoldCompletion(ctx, state, event, running) {
 		return
 	}
-	if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
+	credentialForgeWait := workerGitHubCredentialUnavailableError(event.Err)
+	if !credentialForgeWait && o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 		return
 	}
-	o.finishForgeAvailabilityProbe(state, event, running)
 	deliverableLookup := deliverableRecoveryLookupResult{}
 	var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
 	if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
@@ -232,6 +248,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			)
 		}
 	}
+	if credentialForgeWait && event.Err != nil && o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	o.finishForgeAvailabilityProbe(state, event, running)
 	if event.Err != nil {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
@@ -363,29 +383,24 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			statusMessage = running.Cancellation.Error()
 		}
 		deliverableRecoveryErr = nil
-		credentialFailure := runpkg.IsDeliverableConfigurationError(event.Err)
 		var projectionErr *runpkg.SessionBudgetProjectionError
 		projectionFailure := errors.As(event.Err, &projectionErr) && projectionErr != nil
 		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil && !deliverableRecoveryMachineOwned(deliverableLookup) {
 			errorClass = deliverableRecoveryReasonCode(deliverableLookup)
 			phase = "blocked"
 			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
-		} else if credentialFailure {
-			errorClass = deliverableConfigurationFailureCause
-			phase = "blocked"
-			statusMessage = "deliverable credentials require human configuration"
 		} else if projectionFailure {
 			errorClass = budgetProjectionCeilingFailureCause
 			phase = "blocked"
 			statusMessage = "session stopped at its projected budget ceiling"
 		}
-		if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && deliverableRecoveryErr == nil && !credentialFailure && !projectionFailure && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+		if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && deliverableRecoveryErr == nil && !projectionFailure && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = dispatchLoopDetectedReason
 			errorMessage = dispatchLoopBlockMessage(progress)
 			phase = "no_progress"
 			statusMessage = "dispatch loop circuit breaker tripped"
-		} else if spendProgress.Block && deliverableRecoveryErr == nil && !credentialFailure && !projectionFailure && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+		} else if spendProgress.Block && deliverableRecoveryErr == nil && !projectionFailure && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = spendProgressReason
 			errorMessage = spendProgressBlockMessage(spendProgress)
@@ -405,18 +420,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if deliverableRecoveryMachineOwned(deliverableLookup) {
 			running.Issue = o.returnMissingDeliverableBranchToRework(ctx, state, running.Issue, deliverableLookup, event.CompletedAt)
 		} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
-			return
-		}
-		if credentialFailure && o.blockHumanOwnedWorkerFailure(
-			ctx,
-			state,
-			event,
-			running,
-			deliverableConfigurationFailureCause,
-			"GitHub credentials are unavailable for the deliverable command",
-			"configure GitHub CLI authentication or GH_TOKEN, then move the issue to Rework",
-			"worker_deliverable_configuration_blocked",
-		) {
 			return
 		}
 		if projectionFailure && o.blockHumanOwnedWorkerFailure(

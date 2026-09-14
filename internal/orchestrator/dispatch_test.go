@@ -4033,6 +4033,10 @@ type recordingWorkAttemptStore struct {
 	heartbeats              []store.WorkAttemptHeartbeat
 	completions             []store.WorkAttemptCompletion
 	completionErrors        []error
+	workAttempt             *store.WorkAttempt
+	workAttemptErr          error
+	terminalWaitUpdates     []store.WorkAttemptTerminalWaitUpdate
+	terminalWaitErrors      []error
 	decisions               []store.SchedulerDecision
 	reclaimed               []store.WorkAttempt
 	recent                  []store.WorkAttempt
@@ -4071,7 +4075,23 @@ func (s *recordingWorkAttemptStore) StartWorkAttempt(_ context.Context, attrs st
 }
 
 func (s *recordingWorkAttemptStore) WorkAttempt(context.Context, int64) (store.WorkAttempt, error) {
+	if s.workAttemptErr != nil {
+		return store.WorkAttempt{}, s.workAttemptErr
+	}
+	if s.workAttempt != nil {
+		return *s.workAttempt, nil
+	}
 	return store.WorkAttempt{}, store.ErrNotFound
+}
+
+func (s *recordingWorkAttemptStore) UpdateTerminalWorkAttemptWait(_ context.Context, attrs store.WorkAttemptTerminalWaitUpdate) error {
+	s.terminalWaitUpdates = append(s.terminalWaitUpdates, attrs)
+	if len(s.terminalWaitErrors) == 0 {
+		return nil
+	}
+	err := s.terminalWaitErrors[0]
+	s.terminalWaitErrors = s.terminalWaitErrors[1:]
+	return err
 }
 
 func (s *recordingWorkAttemptStore) RecordWorkAttemptHeartbeat(_ context.Context, attrs store.WorkAttemptHeartbeat) error {

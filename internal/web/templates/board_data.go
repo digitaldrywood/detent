@@ -11,6 +11,7 @@ import (
 	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -426,6 +427,12 @@ func boardForgeUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 		Overflow:      overflow,
 		DeepLink:      "/health/ui",
 	}
+	for _, condition := range snapshot.ForgeUnavailable {
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			alert.DetailSummary = "Project dispatch is paused until a successful write canary proves the worker GitHub credential is available."
+			break
+		}
+	}
 	if len(snapshot.ForgeUnavailable) == 1 {
 		condition := snapshot.ForgeUnavailable[0]
 		query := url.Values{}
@@ -444,6 +451,10 @@ func boardForgeUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 			Path:    path,
 			Target:  "#board-alert-forge-unavailable",
 			Confirm: "Clear the forge availability condition and allow write delivery to resume?",
+		}
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			alert.Action.Label = "Retry write canary"
+			alert.Action.Confirm = "Retry the GitHub write canary now? Project dispatch stays paused until a write succeeds."
 		}
 	}
 	return alert, true

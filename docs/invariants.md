@@ -50,7 +50,30 @@ classes from issue progress spend. `TestAgentRunProgressClassifiesPullRequestApp
 and `TestApprovalDeniedDeliverableUsesInstanceForgeWait` preserve the connector
 approval-denial classification through the existing instance-owned forge wait, while
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
-reconciliation. These execute through the invariant manifest. Runtime evidence is needed
+reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
+reports as write-path failures, and `TestCredentialForgeProbeRequiresSuccessfulWrite`
+keeps the named project pause active until its write canary succeeds.
+`TestCredentialWaitSurvivesOverlappingFailures` preserves credential precedence
+when same-host failures overlap. `TestCredentialCanaryRecoversOverlappingHosts`
+keeps one project credential canary admissible across overlapping host pauses,
+including operator retries; the project remains paused while retained credential
+conditions await a successful write canary.
+`TestCredentialCanaryReplacementOverlappingHosts` preserves the same single-canary
+admission when a condition needs a replacement issue.
+`TestCredentialCanaryCrossHostFailureReleasesReservation` releases completed
+canary ownership even when an error names another host, including terminal issues.
+`TestCredentialCanaryDurableRecovery` preserves
+inconclusive probes as durable waits and records successful write proof so restart
+recovery cannot resurrect a resolved pause.
+`TestCredentialConditionOutlivesOriginatingIssue` separates project health from
+issue eligibility, and `TestCredentialClearSchedulesCanaryWithoutUnpausing`
+consolidates the operator clear action onto that same write canary.
+`TestObservedLaneCredentialCanaryCompletion` preserves instance recovery when
+a canary observes a lane transition. When a condition outlives its original
+issue, the existing dispatch reservation selects one replacement canary.
+`TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause` preserves migrated
+credential waits across restart even after they leave the bounded general history window.
+These execute through the invariant manifest. Runtime evidence is needed
 to classify a new failure correctly; do not infer issue fault merely from a failed attempt.
 
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when
@@ -81,6 +104,11 @@ still run in the prepared workspace, where startup failures have attempt context
 **Why:** The September 10 audit identified interactions among self-protection
 mechanisms as the main source of incidents; adding another conditional guard
 perpetuates that failure mode.
+
+Worker GitHub credential unavailability and connector write-policy denials reuse
+the forge-availability pause and write canary (#2548). They do not park an issue or
+create a human prerequisite, and the named project condition clears after a
+successful write proves recovery.
 
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).

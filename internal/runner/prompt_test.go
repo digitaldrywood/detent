@@ -114,6 +114,8 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Blocked handoff",
 		"`status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid.",
 		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.",
+		"Worker GitHub credentials and connector write-policy denials are instance conditions.",
+		"Do not use ask_human_question, create a prerequisite issue, or request a manual pull request for them",
 		"dependencies/blocked_by",
 		"```detent-status",
 		"status: blocked",

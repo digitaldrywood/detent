@@ -55,15 +55,9 @@ func (o *Orchestrator) registerForgeUnavailable(state *State, availabilityErr *f
 		}
 	}
 	condition.Operation = scope.Operation
-	condition.ErrorClass = strings.TrimSpace(availabilityErr.Class)
+	condition.ErrorClass = mergedForgeAvailabilityClass(condition.ErrorClass, availabilityErr.Class)
 	condition.LastObservedAt = observedAt
 	condition.LastError = strings.TrimSpace(availabilityErr.Error())
-	if condition.ProbeIssueID == running.Issue.ID {
-		condition.ProbeIssueID = ""
-		condition.LastProbeAt = observedAt
-		condition.LastProbeResult = "failed"
-		condition.LastProbeDetail = condition.LastError
-	}
 	condition.NextProbeAt = backendCapacityBoundedProbeAt(
 		time.Time{},
 		observedAt.Add(backendCapacityProbeDelayForAttempt(condition.ProbeAttempts)),
@@ -81,6 +75,15 @@ func (o *Orchestrator) registerForgeUnavailable(state *State, availabilityErr *f
 		)
 	}
 	return condition
+}
+
+// Credential failures pause the whole project, so overlapping host failures cannot
+// downgrade them before the existing write canary proves recovery.
+func mergedForgeAvailabilityClass(current, observed string) string {
+	if current == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+		return current
+	}
+	return strings.TrimSpace(observed)
 }
 
 func forgeCondition(state *State, host string) (ForgeCondition, bool) {
@@ -119,12 +122,16 @@ func forgeHostForIssue(issue connector.Issue, fallback string) string {
 }
 
 func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, fallbackHost string, now time.Time) bool {
+	if workerGitHubCredentialAvailabilityBlocks(state, issue.ID, retry, now) {
+		return true
+	}
 	host := retry.ForgeHost
 	if host == "" {
 		host = forgeHostForIssue(issue, fallbackHost)
 	}
 	condition, active := forgeCondition(state, host)
-	if !active {
+	if !active || condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+		// Credential admission was decided across the whole project above.
 		return false
 	}
 	if condition.ProbeIssueID == issue.ID {
@@ -134,6 +141,63 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 		return false
 	}
 	return retry.ForgeUnavailable || mergeWorkerIssue(issue)
+}
+
+func workerGitHubCredentialAvailabilityBlocks(state *State, issueID string, retry Retry, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	retryHost := forgeavailability.NormalizeHost(retry.ForgeHost)
+	active, canary := false, false
+	for _, condition := range state.ForgeUnavailable {
+		if condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			continue
+		}
+		active = true
+		// Credential conditions share project-wide admission: one host's write
+		// canary must pass overlapping pauses, while all other workers wait.
+		if condition.ProbeIssueID != "" {
+			if condition.ProbeIssueID != issueID {
+				return true
+			}
+			canary = true
+			continue
+		}
+		if credentialCanaryNeedsIssue(state, condition, now) ||
+			retry.ForgeUnavailable && retryHost == forgeavailability.NormalizeHost(condition.Host) && !now.Before(condition.NextProbeAt) {
+			canary = true
+		}
+	}
+	return active && !canary
+}
+
+// A retained project condition can outlive its original issue. Reuse the next
+// eligible worker as the canary only when no existing forge retry can serve it.
+func credentialCanaryNeedsIssue(state *State, condition ForgeCondition, now time.Time) bool {
+	if condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable || condition.ProbeIssueID != "" || now.Before(condition.NextProbeAt) {
+		return false
+	}
+	for _, retry := range state.Retry {
+		if retry.ForgeUnavailable && forgeavailability.NormalizeHost(retry.ForgeHost) == forgeavailability.NormalizeHost(condition.Host) {
+			return false
+		}
+	}
+	return true
+}
+
+func reserveCredentialCanaryForDispatch(state *State, issueID string, now time.Time) {
+	for _, condition := range state.ForgeUnavailable {
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable && condition.ProbeIssueID != "" {
+			return
+		}
+	}
+	for _, key := range sortedKeys(state.ForgeUnavailable) {
+		condition := state.ForgeUnavailable[key]
+		if credentialCanaryNeedsIssue(state, condition, now) {
+			reserveForgeAvailabilityProbe(state, issueID, Retry{ForgeUnavailable: true, ForgeHost: condition.Host}, now)
+			return
+		}
+	}
 }
 
 func reserveForgeAvailabilityProbe(state *State, issueID string, retry Retry, now time.Time) (string, bool) {
@@ -188,32 +252,29 @@ func reservedForgeProbeHost(state *State, issueID string) string {
 func (o *Orchestrator) handleForgeUnavailableCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
 	availabilityErr, unavailable := forgeavailability.As(event.Err)
 	if !unavailable || availabilityErr == nil {
-		return false
+		condition, active := forgeCondition(state, running.ForgeProbeHost)
+		if strings.TrimSpace(running.ForgeProbeHost) == "" || !active ||
+			condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable || event.Result.ForgeWriteCompleted {
+			return false
+		}
+		// An inconclusive credential canary remains the same durable forge wait.
+		// Completing it as an ordinary failure loses the canary retry on restart.
+		cause := event.Err
+		if cause == nil {
+			cause = errors.New("credential write canary completed without a successful forge write")
+		}
+		availabilityErr = forgeavailability.NewError(forgeavailability.Scope{
+			Host: condition.Host, Operation: condition.Operation,
+		}, condition.ErrorClass, cause)
 	}
+	// Completion releases the worker's reservation even when the error names
+	// another host. The unresolved conditions remain available for later probes.
+	releaseForgeAvailabilityProbe(state, running.Issue.ID, "failed", availabilityErr.Error(), event.CompletedAt)
 	condition := o.registerForgeUnavailable(state, availabilityErr, running, event.CompletedAt)
 	forgeRetry := forgeRetryFromCompletion(event, running, condition)
 	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	message := strings.TrimSpace(availabilityErr.Error())
-	o.completeDurableWorkAttemptWithMetadata(
-		ctx,
-		state,
-		running,
-		event.CompletedAt,
-		store.WorkAttemptTerminalCapacity,
-		forgeUnavailableErrorClass,
-		message,
-		"waiting",
-		message,
-		map[string]any{"forge_wait": forgeWaitMetadata{
-			Host:              condition.Host,
-			Operation:         forgeRetry.Operation,
-			Branch:            forgeRetry.Branch,
-			WorkProductPushed: forgeRetry.WorkProductPushed,
-			ErrorClass:        condition.ErrorClass,
-			DetectedAt:        condition.DetectedAt,
-			NextProbeAt:       condition.NextProbeAt,
-		}},
-	)
+	o.persistForgeAvailabilityWait(ctx, state, running, event.CompletedAt, condition, forgeRetry, message)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		return true
 	}
@@ -236,6 +297,86 @@ func (o *Orchestrator) handleForgeUnavailableCompletion(ctx context.Context, sta
 		Message: "waiting to retry the forge write for " + issueLabel(running.Issue) + " without tripping a failure breaker",
 	})
 	return true
+}
+
+func (o *Orchestrator) persistForgeAvailabilityWait(
+	ctx context.Context,
+	state *State,
+	running Running,
+	completedAt time.Time,
+	condition ForgeCondition,
+	forgeRetry *runpkg.ForgeRetry,
+	message string,
+) bool {
+	if forgeRetry == nil {
+		return false
+	}
+	return o.completeDurableWorkAttemptWithMetadata(
+		ctx,
+		state,
+		running,
+		completedAt,
+		store.WorkAttemptTerminalCapacity,
+		forgeUnavailableErrorClass,
+		message,
+		"waiting",
+		message,
+		forgeAvailabilityWaitMetadata(condition, forgeRetry),
+	)
+}
+
+func (o *Orchestrator) persistLegacyForgeAvailabilityWait(
+	ctx context.Context,
+	running Running,
+	condition ForgeCondition,
+	forgeRetry *runpkg.ForgeRetry,
+	message string,
+	existingMetadataJSON string,
+) bool {
+	updater, ok := o.workAttempts.(store.TerminalWorkAttemptStore)
+	if !ok || forgeRetry == nil || running.WorkAttemptID <= 0 {
+		return false
+	}
+	err := updater.UpdateTerminalWorkAttemptWait(ctx, store.WorkAttemptTerminalWaitUpdate{
+		AttemptID:          running.WorkAttemptID,
+		ExpectedErrorClass: deliverableConfigurationFailureCause,
+		TerminalState:      store.WorkAttemptTerminalCapacity,
+		ErrorClass:         forgeUnavailableErrorClass,
+		ErrorMessage:       message,
+		Phase:              "waiting",
+		StatusMessage:      message,
+		WorkerMetadataJSON: mergeLegacyForgeAvailabilityWaitMetadata(existingMetadataJSON, running, condition, forgeRetry),
+	})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("persist legacy forge wait failed", "attempt_id", running.WorkAttemptID, "issue_id", running.Issue.ID, "error", err)
+		}
+		return false
+	}
+	return true
+}
+
+func mergeLegacyForgeAvailabilityWaitMetadata(existing string, running Running, condition ForgeCondition, forgeRetry *runpkg.ForgeRetry) string {
+	metadata := map[string]any{}
+	if json.Unmarshal([]byte(strings.TrimSpace(existing)), &metadata) != nil || metadata == nil {
+		return runningWorkAttemptMetadataJSON(running, forgeAvailabilityWaitMetadata(condition, forgeRetry))
+	}
+	for key, value := range forgeAvailabilityWaitMetadata(condition, forgeRetry) {
+		metadata[key] = value
+	}
+	return marshalWorkAttemptJSON(metadata)
+}
+
+func forgeAvailabilityWaitMetadata(condition ForgeCondition, forgeRetry *runpkg.ForgeRetry) map[string]any {
+	return map[string]any{"forge_wait": forgeWaitMetadata{
+		Host:              condition.Host,
+		Operation:         forgeRetry.Operation,
+		Branch:            forgeRetry.Branch,
+		WorkProductPushed: forgeRetry.WorkProductPushed,
+		ErrorClass:        condition.ErrorClass,
+		DetectedAt:        condition.DetectedAt,
+		NextProbeAt:       condition.NextProbeAt,
+	}}
 }
 
 func (o *Orchestrator) recoverForgeAvailabilityWaits(ctx context.Context, state *State, attempts []store.WorkAttempt, now time.Time) {
@@ -264,6 +405,9 @@ func (o *Orchestrator) recoverForgeAvailabilityWaits(ctx context.Context, state 
 			var ok bool
 			issue, ok = issuesByID[issueID]
 			if !ok || !stateIn(issue.State, o.cfg.ActiveStates) || workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+				if metadata.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+					o.restoreForgeAvailabilityCondition(state, attempt, metadata, now)
+				}
 				continue
 			}
 		}
@@ -312,11 +456,55 @@ func forgeWaitMetadataFromAttempt(attempt store.WorkAttempt) (forgeWaitMetadata,
 
 func validForgeAvailabilityClass(class string) bool {
 	switch strings.TrimSpace(class) {
-	case forgeavailability.ClassServer, forgeavailability.ClassTimeout, forgeavailability.ClassTransport:
+	case forgeavailability.ClassServer, forgeavailability.ClassTimeout, forgeavailability.ClassTransport,
+		forgeavailability.ClassWorkerGitHubCredentialUnavailable:
 		return true
 	default:
 		return false
 	}
+}
+
+func (o *Orchestrator) classifyWorkerGitHubCredentialUnavailable(err error, running Running) error {
+	if err == nil {
+		return nil
+	}
+	var deliverableErr *runpkg.DeliverableCommandError
+	if !errors.As(err, &deliverableErr) || deliverableErr == nil {
+		return err
+	}
+	detail := strings.TrimSpace(deliverableErr.Message + "\n" + deliverableErr.Body)
+	if !deliverableErr.ApprovalDenied && !forgeavailability.WorkerGitHubCredentialUnavailable(detail) {
+		return err
+	}
+	operation := strings.TrimSpace(deliverableErr.Operation)
+	if deliverableErr.OperationClass == "push" && !strings.Contains(strings.ToLower(operation), "git push") {
+		operation = "git push"
+	}
+	if !forgeavailability.WriteOperation(operation) {
+		return err
+	}
+	scope := forgeavailability.Scope{Operation: operation}
+	if availabilityErr, ok := forgeavailability.As(err); ok && availabilityErr != nil {
+		if availabilityErr.Class == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			return err
+		}
+		scope = availabilityErr.Scope
+		if strings.TrimSpace(scope.Operation) == "" {
+			scope.Operation = operation
+		}
+	}
+	if strings.TrimSpace(scope.Host) == "" {
+		scope.Host = forgeavailability.HostFromText(deliverableErr.Arguments + " " + deliverableErr.Error())
+	}
+	if strings.TrimSpace(scope.Host) == "" {
+		scope.Host = forgeHostForIssue(running.Issue, o.cfg.ForgeHost)
+	}
+	return forgeavailability.NewError(scope, forgeavailability.ClassWorkerGitHubCredentialUnavailable, err)
+}
+
+func workerGitHubCredentialUnavailableError(err error) bool {
+	availabilityErr, ok := forgeavailability.As(err)
+	return ok && availabilityErr != nil && availabilityErr.Class == forgeavailability.ClassWorkerGitHubCredentialUnavailable
 }
 
 func (o *Orchestrator) validateForgeWaitIssues(ctx context.Context, issueIDs []string) (map[string]connector.Issue, bool) {
@@ -353,7 +541,7 @@ func forgeWaitIssueFromAttempt(attempt store.WorkAttempt) connector.Issue {
 	return issue
 }
 
-func (o *Orchestrator) restoreForgeAvailabilityWait(state *State, issue connector.Issue, attempt store.WorkAttempt, metadata forgeWaitMetadata, now time.Time) {
+func (o *Orchestrator) restoreForgeAvailabilityCondition(state *State, attempt store.WorkAttempt, metadata forgeWaitMetadata, now time.Time) ForgeCondition {
 	detectedAt := metadata.DetectedAt
 	if detectedAt.IsZero() {
 		detectedAt = attempt.CompletedAt
@@ -371,13 +559,20 @@ func (o *Orchestrator) restoreForgeAvailabilityWait(state *State, issue connecto
 		condition.DetectedAt = detectedAt.UTC()
 	}
 	condition.Operation = metadata.Operation
-	condition.ErrorClass = metadata.ErrorClass
+	condition.ErrorClass = mergedForgeAvailabilityClass(condition.ErrorClass, metadata.ErrorClass)
 	condition.LastObservedAt = attempt.CompletedAt.UTC()
 	condition.LastError = strings.TrimSpace(attempt.ErrorMessage)
 	if condition.NextProbeAt.IsZero() || nextProbeAt.Before(condition.NextProbeAt) {
 		condition.NextProbeAt = nextProbeAt.UTC()
 	}
 	state.ForgeUnavailable[host] = condition
+	return condition
+}
+
+func (o *Orchestrator) restoreForgeAvailabilityWait(state *State, issue connector.Issue, attempt store.WorkAttempt, metadata forgeWaitMetadata, now time.Time) {
+	condition := o.restoreForgeAvailabilityCondition(state, attempt, metadata, now)
+	host := condition.Host
+	nextProbeAt := condition.NextProbeAt
 	state.Retry[issue.ID] = Retry{
 		Issue:            cloneIssue(issue),
 		Attempt:          attempt.AttemptNumber,
@@ -424,7 +619,9 @@ func (o *Orchestrator) finishForgeAvailabilityProbe(state *State, event runpkg.C
 	if state == nil || strings.TrimSpace(running.ForgeProbeHost) == "" {
 		return
 	}
-	if event.Result.ForgeWriteCompleted || forgeWriteReachedRemote(event.Err) {
+	condition, active := forgeCondition(state, running.ForgeProbeHost)
+	credentialProbe := active && condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable
+	if event.Result.ForgeWriteCompleted || !credentialProbe && forgeWriteReachedRemote(event.Err) {
 		o.completeForgeAvailabilityRecovery(state, running.ForgeProbeHost, event.CompletedAt, "canary")
 		return
 	}
@@ -506,6 +703,21 @@ func (o *Orchestrator) clearForgeAvailability(state *State, host string, cleared
 	for _, key := range sortedKeys(state.ForgeUnavailable) {
 		condition := state.ForgeUnavailable[key]
 		if host != "" && forgeavailability.NormalizeHost(condition.Host) != host {
+			continue
+		}
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			// The existing operator action requests the write canary; it cannot
+			// establish credential recovery independently of that canary.
+			if condition.ProbeIssueID == "" {
+				condition.NextProbeAt = clearedAt.UTC()
+				state.ForgeUnavailable[key] = condition
+				for issueID, retry := range state.Retry {
+					if retry.ForgeUnavailable && forgeavailability.NormalizeHost(retry.ForgeHost) == key {
+						retry.DueAt = clearedAt.UTC()
+						state.Retry[issueID] = retry
+					}
+				}
+			}
 			continue
 		}
 		condition.LastProbeAt = clearedAt.UTC()

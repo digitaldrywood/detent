@@ -219,6 +219,32 @@ func (s *sqliteStore) WorkAttempt(ctx context.Context, id int64) (WorkAttempt, e
 	return workAttemptFromRow(row)
 }
 
+func (s *sqliteStore) UpdateTerminalWorkAttemptWait(ctx context.Context, attrs WorkAttemptTerminalWaitUpdate) error {
+	if attrs.AttemptID <= 0 {
+		return errors.New("attempt_id is required")
+	}
+	if strings.TrimSpace(attrs.ExpectedErrorClass) == "" {
+		return errors.New("expected_error_class is required")
+	}
+	if attrs.TerminalState == "" {
+		return errors.New("terminal_state is required")
+	}
+	rows, err := s.queries.UpdateTerminalWorkAttemptWait(ctx, sqlc.UpdateTerminalWorkAttemptWaitParams{
+		TerminalState:      nullString(string(attrs.TerminalState)),
+		ErrorClass:         nullString(attrs.ErrorClass),
+		ErrorMessage:       nullString(attrs.ErrorMessage),
+		Phase:              nullString(attrs.Phase),
+		StatusMessage:      nullString(attrs.StatusMessage),
+		WorkerMetadataJson: completionMetadataJSON(attrs.WorkerMetadataJSON),
+		WorkAttemptID:      attrs.AttemptID,
+		ExpectedErrorClass: nullString(attrs.ExpectedErrorClass),
+	})
+	if err != nil {
+		return fmt.Errorf("updating terminal work attempt wait: %w", err)
+	}
+	return requireAffected(rows, "work attempt", attrs.AttemptID)
+}
+
 func (s *sqliteStore) ListActiveWorkAttempts(ctx context.Context, query WorkAttemptQuery) ([]WorkAttempt, error) {
 	rows, err := s.queries.ListActiveWorkAttempts(ctx, strings.TrimSpace(query.ProjectID))
 	if err != nil {
@@ -250,6 +276,18 @@ func (s *sqliteStore) ListRecentTerminalWorkAttempts(ctx context.Context, query 
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing recent terminal work attempts: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) ListPendingForgeAvailabilityWaits(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	rows, err := s.queries.ListPendingForgeAvailabilityWaits(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending forge availability waits: %w", err)
 	}
 	return workAttemptsFromRows(rows)
 }

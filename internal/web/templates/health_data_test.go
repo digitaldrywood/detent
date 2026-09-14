@@ -848,6 +848,31 @@ func TestHealthRowsIdleWithoutData(t *testing.T) {
 	}
 }
 
+func TestHealthSurfacesWorkerGitHubCredentialPauseAndResolution(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC)
+	condition := telemetry.ForgeCondition{
+		ProjectID: "detent", Host: "github.com", Operation: "gh pr create",
+		ErrorClass: "worker_github_credential_unavailable", NextProbeAt: now.Add(time.Minute), LastObservedAt: now,
+	}
+	rows := healthForgeUnavailableRows([]telemetry.ForgeCondition{condition})
+	if len(rows) != 1 || !strings.Contains(rows[0].Detail, "worker_github_credential_unavailable") || rows[0].Resets != "on successful write canary" {
+		t.Fatalf("credential health rows = %#v, want named condition and resolving action", rows)
+	}
+	for _, conditions := range [][]telemetry.ForgeCondition{
+		{condition},
+		{{Host: "other.example", ErrorClass: "transport"}, condition},
+	} {
+		detail := forgeUnavailableHealthDetail(conditions)
+		for _, want := range []string{"project dispatch is paused", "successful write canary", "gh auth login", "GH_TOKEN", "connector write approval", "credential injection"} {
+			if !strings.Contains(detail, want) {
+				t.Fatalf("credential health detail = %q, want %q", detail, want)
+			}
+		}
+	}
+}
+
 func TestHealthUpdateRowShowsRuntimeStatus(t *testing.T) {
 	t.Parallel()
 
