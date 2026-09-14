@@ -24,7 +24,7 @@ type agentEffortCandidate struct {
 func resolveAgentOverride(
 	ctx context.Context,
 	issue connector.Issue,
-	workspace string,
+	process AgentProcessRequest,
 	baseModel string,
 	role string,
 	projectEffort agentEffortCandidate,
@@ -50,7 +50,7 @@ func resolveAgentOverride(
 	if !ok {
 		return resolveWithoutAgentCatalog(result, override.Model, efforts, "selected backend does not advertise a model catalog")
 	}
-	models, err := provider.ListModels(ctx)
+	models, err := provider.ListModels(ctx, process)
 	if err != nil {
 		return rejectUnavailableCatalog(result, override.Model, efforts, "model catalog unavailable: "+err.Error())
 	}
@@ -87,7 +87,7 @@ func resolveAgentOverride(
 				rejectEffortCandidates(&result, efforts, "selected backend does not advertise its effective default model")
 				return result
 			}
-			effectiveBaseModel, err = defaultProvider.DefaultModel(ctx, workspace)
+			effectiveBaseModel, err = defaultProvider.DefaultModel(ctx, process)
 			if err != nil {
 				rejectEffortCandidates(&result, efforts, "effective default model unavailable: "+err.Error())
 				return result

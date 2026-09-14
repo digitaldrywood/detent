@@ -507,6 +507,32 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if codexClient.catalogCalls != 1 {
 		t.Fatalf("model catalog calls = %d, want 1", codexClient.catalogCalls)
 	}
+	if codexClient.catalogProcess.Workspace != workspacePath {
+		t.Fatalf("model catalog workspace = %q, want %q", codexClient.catalogProcess.Workspace, workspacePath)
+	}
+	if codexClient.catalogProcess.TempDir == "" {
+		t.Fatal("model catalog temp dir is empty")
+	}
+	if got := codexClient.catalogProcess.Environment.Variables["GH_CONFIG_DIR"]; got != filepath.Join(codexClient.catalogProcess.TempDir, "github-cli") {
+		t.Fatalf("model catalog GH_CONFIG_DIR = %q, want isolated preflight config", got)
+	}
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		if got := codexClient.catalogProcess.Environment.Variables[name]; got != "" {
+			t.Fatalf("model catalog %s = %q, want disabled worker credential", name, got)
+		}
+	}
+	if _, err := os.Stat(codexClient.catalogProcess.TempDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("model catalog temp dir cleanup error = %v, want not exist", err)
+	}
+	for name, want := range map[string]string{
+		"DETENT_WORKSPACE":        workspacePath,
+		"DETENT_ISSUE_ID":         "issue-22",
+		"DETENT_ISSUE_IDENTIFIER": "digitaldrywood/detent#22",
+	} {
+		if got := codexClient.catalogProcess.Environment.Variables[name]; got != want {
+			t.Fatalf("model catalog %s = %q, want %q", name, got, want)
+		}
+	}
 	for _, want := range []string{
 		"Work on digitaldrywood/detent#22 attempt 2",
 		"## Existing workspace recovery",
@@ -3198,7 +3224,7 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 func TestVerifyAgentResumeRejectsUnsupportedBackend(t *testing.T) {
 	t.Parallel()
 
-	err := verifyAgentResume(context.Background(), nonVerifyingAgentBackend{}, AgentResume{ThreadID: "thread-1155"})
+	err := verifyAgentResume(context.Background(), nonVerifyingAgentBackend{}, AgentProcessRequest{}, AgentResume{ThreadID: "thread-1155"})
 	if !errors.Is(err, ErrAgentResumeUnsupported) {
 		t.Fatalf("verifyAgentResume() error = %v, want ErrAgentResumeUnsupported", err)
 	}
@@ -7373,6 +7399,7 @@ type fakeCodexClient struct {
 	models         []AgentModel
 	catalogErr     error
 	catalogCalls   int
+	catalogProcess AgentProcessRequest
 	verifyErr      error
 	verifiedResume AgentResume
 }
@@ -7488,16 +7515,17 @@ func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpd
 	return c.result, c.err
 }
 
-func (c *fakeCodexClient) ListModels(context.Context) ([]AgentModel, error) {
+func (c *fakeCodexClient) ListModels(_ context.Context, process AgentProcessRequest) ([]AgentModel, error) {
 	c.catalogCalls++
+	c.catalogProcess = process
 	return c.models, c.catalogErr
 }
 
-func (*fakeCodexClient) DefaultModel(context.Context, string) (string, error) {
+func (*fakeCodexClient) DefaultModel(context.Context, AgentProcessRequest) (string, error) {
 	return "", nil
 }
 
-func (c *fakeCodexClient) VerifyResume(_ context.Context, resume AgentResume) error {
+func (c *fakeCodexClient) VerifyResume(_ context.Context, _ AgentProcessRequest, resume AgentResume) error {
 	c.verifiedResume = resume
 	return c.verifyErr
 }
@@ -7512,7 +7540,7 @@ func (nonVerifyingAgentBackend) RunTurn(context.Context, AgentTurnRequest, Agent
 	return AgentTurnResult{}, nil
 }
 
-func (*resumeFallbackAgentBackend) VerifyResume(context.Context, AgentResume) error {
+func (*resumeFallbackAgentBackend) VerifyResume(context.Context, AgentProcessRequest, AgentResume) error {
 	return nil
 }
 

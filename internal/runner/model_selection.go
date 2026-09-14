@@ -49,7 +49,7 @@ func (r agentRuntime) selectRequestBackend(req RunRequest, ctx selector.Context,
 	return RouteSelection{BackendID: identity.BackendID, Model: model, RouteName: identity.Route}, backend, backendConfig, nil
 }
 
-func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
+func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
 	if hasResumeIdentity(req) {
 		identity := req.ResumeState.RuntimeIdentity
 		model := effectiveModel("", identity.RequestedModel.Value, identity.ResolvedModel.Value)
@@ -81,7 +81,7 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace
 		if !ok {
 			return result.reject("effort", result.Effort, "changed resume effort requires a backend model catalog")
 		}
-		models, err := provider.ListModels(ctx)
+		models, err := provider.ListModels(ctx, process)
 		if err != nil {
 			result = result.reject("effort", result.Effort, "model catalog unavailable while validating changed resume effort")
 			result.Err = fmt.Errorf("%w: %w", result.Err, err)
@@ -98,14 +98,14 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace
 		}
 		return result
 	}
-	return resolveAgentSelection(ctx, req.Issue, workspace, baseModel, role, cfg, backendConfig, backend)
+	return resolveAgentSelection(ctx, req.Issue, process, baseModel, role, cfg, backendConfig, backend)
 }
 
-func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
+func resolveAgentSelection(ctx context.Context, issue connector.Issue, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
 	policy := cfg.EffectiveModelSelection()
 	projectEffort, field := cfg.Agent.Effort.Resolve(role)
 	if !policy.Active() || policy.BackendKinds == nil || !slices.Contains(*policy.BackendKinds, backendConfig.Kind) {
-		return agentSelection{resolvedAgentOverride: resolveAgentOverride(ctx, issue, workspace, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)}
+		return agentSelection{resolvedAgentOverride: resolveAgentOverride(ctx, issue, process, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)}
 	}
 	result := agentSelection{Selection: agentidentity.Selection{Policy: "automatic", PolicySource: policy.Sources["enabled"]}}
 	if policy.Preset != nil && *policy.Preset != "" {
@@ -168,7 +168,7 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 		result.Err = errors.New("automatic model selection requires a backend model catalog; configure an eligible backend or disable the policy")
 		return result
 	}
-	models, err := provider.ListModels(ctx)
+	models, err := provider.ListModels(ctx, process)
 	if err != nil {
 		catalogErr := fmt.Errorf("automatic model selection: model catalog unavailable: %w", err)
 		result.CatalogError = catalogErrorDiagnostic(err)

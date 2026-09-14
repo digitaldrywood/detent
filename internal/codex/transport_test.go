@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -436,8 +438,9 @@ func TestLocalTransportFactoryAppliesWorkerWorkspace(t *testing.T) {
 
 			hostDir := t.TempDir()
 			workspace := t.TempDir()
+			probePath := filepath.Join(t.TempDir(), "workspace-probe.json")
 			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-				cmd := helperCommand(ctx, "silent")
+				cmd := helperCommand(ctx, "workspace-probe")
 				cmd.Dir = hostDir
 				return cmd
 			})
@@ -447,7 +450,8 @@ func TestLocalTransportFactoryAppliesWorkerWorkspace(t *testing.T) {
 
 			ctx := withWorkerWorkspace(context.Background(), workspace)
 			ctx = withWorkerEnvironment(ctx, procgroup.Environment{Variables: map[string]string{
-				"DETENT_WORKSPACE": workspace,
+				"DETENT_WORKSPACE":             workspace,
+				"DETENT_CODEX_TRANSPORT_PROBE": probePath,
 			}})
 			transport, err := factory.NewTransport(ctx)
 			if err != nil {
@@ -470,6 +474,17 @@ func TestLocalTransportFactoryAppliesWorkerWorkspace(t *testing.T) {
 			}
 			if got := environmentValue(local.cmd.Env, "DETENT_WORKSPACE"); got != workspace {
 				t.Fatalf("DETENT_WORKSPACE = %q, want %q", got, workspace)
+			}
+
+			probe := waitForWorkspaceProbe(t, probePath)
+			if probe.WorkingDirectory != workspace {
+				t.Fatalf("child working directory = %q, want %q", probe.WorkingDirectory, workspace)
+			}
+			if runtime.GOOS != "windows" && probe.PWD != workspace {
+				t.Fatalf("child PWD = %q, want %q", probe.PWD, workspace)
+			}
+			if probe.DetentWorkspace != workspace {
+				t.Fatalf("child DETENT_WORKSPACE = %q, want %q", probe.DetentWorkspace, workspace)
 			}
 		})
 	}
@@ -866,6 +881,23 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		helperInvalidFrameBackpressure(true)
 	case "silent":
 		_, _ = io.Copy(io.Discard, os.Stdin)
+	case "workspace-probe":
+		workingDirectory, err := os.Getwd()
+		if err != nil {
+			helperBackpressureExit("read working directory", err)
+		}
+		payload, err := json.Marshal(workspaceProbe{
+			WorkingDirectory: workingDirectory,
+			PWD:              os.Getenv("PWD"),
+			DetentWorkspace:  os.Getenv("DETENT_WORKSPACE"),
+		})
+		if err != nil {
+			helperBackpressureExit("marshal workspace probe", err)
+		}
+		if err := os.WriteFile(os.Getenv("DETENT_CODEX_TRANSPORT_PROBE"), payload, 0o600); err != nil {
+			helperBackpressureExit("write workspace probe", err)
+		}
+		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "block-send":
 		time.Sleep(time.Hour)
 	case "ignore-close":
@@ -913,6 +945,39 @@ func environmentValue(environment []string, name string) string {
 		}
 	}
 	return value
+}
+
+type workspaceProbe struct {
+	WorkingDirectory string `json:"working_directory"`
+	PWD              string `json:"pwd"`
+	DetentWorkspace  string `json:"detent_workspace"`
+}
+
+func waitForWorkspaceProbe(t *testing.T, path string) workspaceProbe {
+	t.Helper()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		payload, err := os.ReadFile(path)
+		if err == nil {
+			var probe workspaceProbe
+			if err := json.Unmarshal(payload, &probe); err != nil {
+				t.Fatalf("unmarshal workspace probe: %v", err)
+			}
+			return probe
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read workspace probe: %v", err)
+		}
+		select {
+		case <-timer.C:
+			t.Fatal("timed out waiting for workspace probe")
+		case <-ticker.C:
+		}
+	}
 }
 
 func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood bool) {

@@ -97,11 +97,15 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	if cmd == nil {
 		return nil, errors.New("command factory returned nil command")
 	}
-	procgroup.SetEnvironment(cmd, workerEnvironment(ctx))
-	procgroup.SetTempDir(cmd, workerTempDir(ctx))
-	if workspace := workerWorkspace(ctx); workspace != "" {
+	workspace := workerWorkspace(ctx)
+	if workspace != "" {
 		cmd.Dir = workspace
 	}
+	procgroup.SetEnvironment(cmd, workerEnvironment(ctx))
+	if workspace != "" {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"PWD": workspace}})
+	}
+	procgroup.SetTempDir(cmd, workerTempDir(ctx))
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

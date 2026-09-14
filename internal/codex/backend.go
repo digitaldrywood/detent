@@ -80,8 +80,7 @@ func (b *AgentBackend) runTurn(
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
 	ctx = withWorkerTempDir(ctx, req.TempDir)
-	ctx = withWorkerEnvironment(ctx, req.Environment)
-	ctx = withWorkerWorkspace(ctx, req.Workspace)
+	ctx = withAgentProcess(ctx, runner.AgentProcessRequest{Workspace: req.Workspace, Environment: req.Environment})
 	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
 	instructionTools := tools
 	if req.SupplementalTools {
@@ -181,15 +180,15 @@ func toolTurnInstructions(tools []DynamicTool, override string) string {
 	return dynamicToolTurnInstructions
 }
 
-func (b *AgentBackend) VerifyResume(ctx context.Context, resume runner.AgentResume) error {
+func (b *AgentBackend) VerifyResume(ctx context.Context, process runner.AgentProcessRequest, resume runner.AgentResume) error {
 	if strings.TrimSpace(resume.ThreadID) == "" {
 		return runner.ErrAgentResumeUnsupported
 	}
-	return b.client.VerifyThread(ctx, resume.ThreadID)
+	return b.client.VerifyThread(withAgentProcess(ctx, process), resume.ThreadID)
 }
 
-func (b *AgentBackend) ListModels(ctx context.Context) ([]runner.AgentModel, error) {
-	models, err := b.client.ListModels(ctx)
+func (b *AgentBackend) ListModels(ctx context.Context, process runner.AgentProcessRequest) ([]runner.AgentModel, error) {
+	models, err := b.client.ListModels(withAgentProcess(ctx, process))
 	if err != nil {
 		return nil, err
 	}
@@ -206,8 +205,14 @@ func (b *AgentBackend) ListModels(ctx context.Context) ([]runner.AgentModel, err
 	return out, nil
 }
 
-func (b *AgentBackend) DefaultModel(ctx context.Context, workspace string) (string, error) {
-	return b.client.DefaultModel(ctx, workspace)
+func (b *AgentBackend) DefaultModel(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
+	return b.client.DefaultModel(withAgentProcess(ctx, process), process.Workspace)
+}
+
+func withAgentProcess(ctx context.Context, process runner.AgentProcessRequest) context.Context {
+	ctx = withWorkerTempDir(ctx, process.TempDir)
+	ctx = withWorkerWorkspace(ctx, process.Workspace)
+	return withWorkerEnvironment(ctx, process.Environment)
 }
 
 func agentUpdateFromCodex(update Update) runner.AgentUpdate {

@@ -337,15 +337,21 @@ type AgentToolResult struct {
 type AgentToolHandler func(context.Context, AgentToolCall) (AgentToolResult, error)
 
 type AgentResumeVerifier interface {
-	VerifyResume(context.Context, AgentResume) error
+	VerifyResume(context.Context, AgentProcessRequest, AgentResume) error
 }
 
 type AgentModelCatalogProvider interface {
-	ListModels(context.Context) ([]AgentModel, error)
+	ListModels(context.Context, AgentProcessRequest) ([]AgentModel, error)
 }
 
 type AgentDefaultModelProvider interface {
-	DefaultModel(context.Context, string) (string, error)
+	DefaultModel(context.Context, AgentProcessRequest) (string, error)
+}
+
+type AgentProcessRequest struct {
+	Workspace   string
+	TempDir     string
+	Environment procgroup.Environment
 }
 
 type AgentModel struct {

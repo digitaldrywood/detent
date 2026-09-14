@@ -18,7 +18,7 @@ func (r *Runner) DispatchCapacity(ctx context.Context, req RunRequest) (provider
 		return providercapacity.Requirement{}, err
 	}
 	baseModel := effectiveModel("", selection.Model, runtime.defaultModelForRole(role))
-	override := resolveRequestAgentSelection(ctx, req, "", baseModel, role, workflow.Config, backendConfig, backend)
+	override := resolveRequestAgentSelection(ctx, req, AgentProcessRequest{}, baseModel, role, workflow.Config, backendConfig, backend)
 	if override.Err != nil {
 		return providercapacity.Requirement{}, override.Err
 	}

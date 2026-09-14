@@ -1425,7 +1425,8 @@ func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbe
 	if !ok {
 		return errors.New("backend does not advertise a model catalog")
 	}
-	models, err := provider.ListModels(ctx)
+	process := runnerpkg.AgentProcessRequest{Workspace: req.Workspace}
+	models, err := provider.ListModels(ctx, process)
 	if err != nil {
 		return err
 	}
@@ -1435,7 +1436,7 @@ func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbe
 		if !ok {
 			return errors.New("backend does not advertise its effective default model")
 		}
-		model, err = defaultProvider.DefaultModel(ctx, req.Workspace)
+		model, err = defaultProvider.DefaultModel(ctx, process)
 		if err != nil {
 			return fmt.Errorf("effective default model unavailable: %w", err)
 		}
