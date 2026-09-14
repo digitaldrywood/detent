@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -81,6 +82,8 @@ func CandidateCapabilitiesFor(backend Backend, statusSource string) CandidateCap
 }
 
 type CandidateRequest struct {
+	// Cursor is an opaque continuation returned by the same reader and request.
+	Cursor   string            `json:"cursor,omitempty" yaml:"cursor,omitempty"`
 	Selector CandidateSelector `json:"selector" yaml:"selector"`
 	States   []string          `json:"states,omitempty" yaml:"states,omitempty"`
 	Labels   []string          `json:"labels,omitempty" yaml:"labels,omitempty"`
@@ -136,11 +139,14 @@ func (r CandidateRequest) ProbeLimit() int {
 }
 
 type CandidateResult struct {
-	Issues    []Issue        `json:"issues" yaml:"issues"`
-	PagesRead int            `json:"pages_read" yaml:"pages_read"`
-	ItemsRead int            `json:"items_read" yaml:"items_read"`
-	Truncated bool           `json:"truncated" yaml:"truncated"`
-	Filtered  map[string]int `json:"filtered,omitempty" yaml:"filtered,omitempty"`
+	// NextCursor is empty when the source has been exhausted. Partial results
+	// accompanying an error contain only fully hydrated issues before this cursor.
+	NextCursor string         `json:"next_cursor,omitempty" yaml:"next_cursor,omitempty"`
+	Issues     []Issue        `json:"issues" yaml:"issues"`
+	PagesRead  int            `json:"pages_read" yaml:"pages_read"`
+	ItemsRead  int            `json:"items_read" yaml:"items_read"`
+	Truncated  bool           `json:"truncated" yaml:"truncated"`
+	Filtered   map[string]int `json:"filtered,omitempty" yaml:"filtered,omitempty"`
 }
 
 type CandidateReader interface {
@@ -256,4 +262,25 @@ func normalizedCandidateValues(values []string) []string {
 		normalized = append(normalized, value)
 	}
 	return normalized
+}
+
+// CandidateOffset decodes the continuation used by local candidate readers.
+func CandidateOffset(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	offset, err := strconv.Atoi(cursor)
+	if err != nil || offset < 0 {
+		return 0, fmt.Errorf("%w: invalid offset cursor", ErrInvalidCandidateRequest)
+	}
+	return offset, nil
+}
+
+// CandidateOffsetResult records continuation after an already sliced local read.
+func CandidateOffsetResult(issues []Issue, request CandidateRequest, offset int) CandidateResult {
+	result := NewCandidateResult(issues, request, 1, false)
+	if result.Truncated {
+		result.NextCursor = strconv.Itoa(offset + len(result.Issues))
+	}
+	return result
 }

@@ -126,23 +126,24 @@ type BacklogAdmissionProposal struct {
 }
 
 type BacklogAdmissionRun struct {
-	ID                   int64          `json:"id"`
-	ProjectID            string         `json:"project_id"`
-	ScheduledFor         string         `json:"scheduled_for"`
-	StartedAt            string         `json:"started_at"`
-	CompletedAt          string         `json:"completed_at"`
-	Outcome              string         `json:"outcome"`
-	DeferredReason       sql.NullString `json:"deferred_reason"`
-	CandidatesFoundCount int64          `json:"candidates_found_count"`
-	CandidatesCount      int64          `json:"candidates_count"`
-	ProposedCount        int64          `json:"proposed_count"`
-	SkippedJson          string         `json:"skipped_json"`
-	TruncatedJson        string         `json:"truncated_json"`
-	IssuesJson           string         `json:"issues_json"`
-	Error                sql.NullString `json:"error"`
-	ProposalReason       sql.NullString `json:"proposal_reason"`
-	ResumeAt             sql.NullString `json:"resume_at"`
-	MalformedJson        string         `json:"malformed_json"`
+	ID                    int64          `json:"id"`
+	ProjectID             string         `json:"project_id"`
+	ScheduledFor          string         `json:"scheduled_for"`
+	StartedAt             string         `json:"started_at"`
+	CompletedAt           string         `json:"completed_at"`
+	Outcome               string         `json:"outcome"`
+	DeferredReason        sql.NullString `json:"deferred_reason"`
+	CandidatesFoundCount  int64          `json:"candidates_found_count"`
+	CandidatesCount       int64          `json:"candidates_count"`
+	ProposedCount         int64          `json:"proposed_count"`
+	SkippedJson           string         `json:"skipped_json"`
+	TruncatedJson         string         `json:"truncated_json"`
+	IssuesJson            string         `json:"issues_json"`
+	Error                 sql.NullString `json:"error"`
+	ProposalReason        sql.NullString `json:"proposal_reason"`
+	ResumeAt              sql.NullString `json:"resume_at"`
+	MalformedJson         string         `json:"malformed_json"`
+	CandidateProgressJson string         `json:"candidate_progress_json"`
 }
 
 type BudgetOverride struct {

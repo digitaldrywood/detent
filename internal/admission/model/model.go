@@ -62,23 +62,31 @@ type Decline struct {
 	CommentedAt     time.Time
 }
 
+// CandidateProgress belongs to the existing run ledger, including which source
+// starts the next bounded union read so no selector monopolizes the REST budget.
+type CandidateProgress struct {
+	Cursors      map[string]string `json:"cursors,omitempty"`
+	NextSelector int               `json:"next_selector,omitempty"`
+}
+
 type RunRecord struct {
-	ProjectID       string
-	ScheduledFor    time.Time
-	StartedAt       time.Time
-	CompletedAt     time.Time
-	Outcome         string
-	DeferredReason  string
-	ResumeAt        time.Time
-	ProposalReason  string
-	CandidatesFound int
-	Candidates      int
-	Proposed        int
-	Skipped         map[string]int
-	Truncated       map[string]int
-	Issues          []IssueRecord
-	Malformed       []MalformedEvidence
-	Error           string
+	CandidateProgress CandidateProgress
+	ProjectID         string
+	ScheduledFor      time.Time
+	StartedAt         time.Time
+	CompletedAt       time.Time
+	Outcome           string
+	DeferredReason    string
+	ResumeAt          time.Time
+	ProposalReason    string
+	CandidatesFound   int
+	Candidates        int
+	Proposed          int
+	Skipped           map[string]int
+	Truncated         map[string]int
+	Issues            []IssueRecord
+	Malformed         []MalformedEvidence
+	Error             string
 }
 
 type IssueRecord struct {

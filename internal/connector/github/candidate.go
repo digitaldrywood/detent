@@ -2,12 +2,28 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
+
+// candidateCursor tracks the next source item, including an unfinished page.
+// It contains no issue bodies, and remains useful when hydration consumes the budget.
+type candidateCursor struct {
+	Source int    `json:"source,omitempty"`
+	Page   int    `json:"page,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+	After  string `json:"after,omitempty"`
+}
+
+func (p candidateCursor) encode() (string, error) {
+	data, err := json.Marshal(p)
+	return string(data), err
+}
 
 func (c *Connector) CandidateCapabilities() connector.CandidateCapabilities {
 	if c == nil {
@@ -20,316 +36,261 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	if err := request.Validate(c.CandidateCapabilities()); err != nil {
 		return connector.CandidateResult{}, err
 	}
-
-	var (
-		issues         []connector.Issue
-		pagesRead      int
-		itemsRead      int
-		incomplete     bool
-		authorRejected int
-		err            error
-	)
-	switch request.Selector {
-	case connector.CandidateSelectorLabels:
-		issues, pagesRead, incomplete, err = c.readRepositoryLabelCandidates(ctx, request)
-	case connector.CandidateSelectorUntracked:
-		var drift connector.StatusDrift
-		drift, pagesRead, incomplete, err = c.readRepositoryStatusDrift(ctx, repositoryStatusDriftReadOptions{
-			PageSize:      request.EffectivePageSize(),
-			Limit:         request.ProbeLimit(),
-			Deterministic: true,
-		})
-		issues = drift.UntrackedOpen
-	case connector.CandidateSelectorStates:
-		switch {
-		case c.usesLabelStatus():
-			issues, pagesRead, incomplete, err = c.readLabelCandidates(ctx, request)
-		case c.usesIssueFieldStatus():
-			issues, pagesRead, incomplete, authorRejected, err = c.readIssueFieldCandidates(ctx, request)
-		default:
-			issues, pagesRead, itemsRead, incomplete, err = c.readProjectCandidates(ctx, request)
+	position := candidateCursor{Page: 1}
+	if request.Cursor != "" {
+		if err := json.Unmarshal([]byte(request.Cursor), &position); err != nil || position.Page < 1 || position.Source < 0 || position.Offset < 0 {
+			return connector.CandidateResult{}, fmt.Errorf("%w: invalid github cursor", connector.ErrInvalidCandidateRequest)
 		}
 	}
-	if err != nil {
-		return connector.CandidateResult{}, err
+	if request.Selector == connector.CandidateSelectorStates && !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
+		return c.readProjectCandidates(ctx, request, position)
 	}
-
-	result := connector.NewCandidateResult(issues, request, pagesRead, incomplete)
-	if itemsRead > 0 {
-		result.ItemsRead = itemsRead
-	}
-	if authorRejected > 0 {
-		result.Filtered["author"] = authorRejected
-	}
-	if err := c.hydrateCandidateIssues(ctx, result.Issues, request.States); err != nil {
-		return connector.CandidateResult{}, err
-	}
-	return result, nil
+	return c.readRESTCandidates(ctx, request, position)
 }
 
-func (c *Connector) readRepositoryLabelCandidates(
-	ctx context.Context,
-	request connector.CandidateRequest,
-) ([]connector.Issue, int, bool, error) {
-	if !validPullRequestRepo(c.repository) {
-		return nil, 0, false, ErrMissingRepository
+func candidateReadResult(result connector.CandidateResult, position candidateCursor, more bool, err error) (connector.CandidateResult, error) {
+	connector.SortCandidateIssues(result.Issues)
+	result.Truncated = more
+	if more {
+		var encodeErr error
+		result.NextCursor, encodeErr = position.encode()
+		err = errors.Join(err, encodeErr)
 	}
-	labelNames := normalizeStateList(request.Labels, nil)
-	scanLimit := request.ProbeLimit()
-	issues := []connector.Issue{}
-	seenIssues := map[string]struct{}{}
-	queriedLabels := map[string]struct{}{}
-	pagesRead := 0
-	pageSize := min(request.EffectivePageSize(), repositoryIssuesPageSize, scanLimit)
-	incomplete := false
-
-	for _, labelName := range labelNames {
-		labelKey := normalizeLabelName(labelName)
-		if _, ok := queriedLabels[labelKey]; ok {
-			continue
-		}
-		queriedLabels[labelKey] = struct{}{}
-		itemsRead := 0
-		for page := 1; ; page++ {
-			if itemsRead >= scanLimit {
-				incomplete = true
-				break
-			}
-			var response []restIssue
-			path := restRepositoryIssuesByLabelPagePath(c.repository, labelName, page, pageSize, true)
-			if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
-				return nil, 0, false, fmt.Errorf("fetch github label selector candidates: %w", err)
-			}
-			pagesRead++
-			pageItems := response
-			if remaining := scanLimit - itemsRead; len(pageItems) > remaining {
-				pageItems = pageItems[:remaining]
-			}
-			itemsRead += len(pageItems)
-			for _, item := range pageItems {
-				if item.PullRequest != nil {
-					continue
-				}
-				ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
-				node := githubIssueNodeFromREST(ref, item)
-				if strings.TrimSpace(node.ID) == "" {
-					continue
-				}
-				if _, ok := seenIssues[node.ID]; ok {
-					continue
-				}
-				var (
-					issue connector.Issue
-					ok    bool
-					err   error
-				)
-				if c.usesIssueFieldStatus() {
-					issue, ok, err = c.fetchIssueFieldIssueFromREST(ctx, ref, item)
-				} else {
-					issue = c.buildLabelIssue(node, c.githubIssueStateToDetentState(node.State))
-					ok = true
-					c.cacheIssueRef(node)
-				}
-				if err != nil {
-					return nil, 0, false, err
-				}
-				if !ok {
-					continue
-				}
-				seenIssues[node.ID] = struct{}{}
-				issues = append(issues, issue)
-			}
-			if len(pageItems) < len(response) {
-				incomplete = true
-				break
-			}
-			if len(response) < pageSize {
-				break
-			}
-			if itemsRead >= scanLimit {
-				incomplete = true
-				break
-			}
-		}
-	}
-	return issues, pagesRead, incomplete, nil
+	return result, err
 }
 
-func (c *Connector) readLabelCandidates(
-	ctx context.Context,
-	request connector.CandidateRequest,
-) ([]connector.Issue, int, bool, error) {
+// readRESTCandidates shares pagination and partial-result handling across label,
+// repository, and issue-field selectors. Every run bounds source items as well
+// as requests; rejected items advance the cursor just like eligible ones.
+func (c *Connector) readRESTCandidates(ctx context.Context, request connector.CandidateRequest, position candidateCursor) (connector.CandidateResult, error) {
+	result := connector.CandidateResult{Filtered: map[string]int{}}
 	if !validPullRequestRepo(c.repository) {
-		return nil, 0, false, ErrMissingRepository
+		return result, ErrMissingRepository
 	}
-	stateNames := normalizeStateList(request.States, nil)
-	stateLabels := c.statusLabelStates(stateNames)
-	if len(stateLabels) == 0 {
-		return []connector.Issue{}, 0, false, nil
-	}
-	wantedStates := normalizedStateSet(stateNames)
-	scanLimit := request.ProbeLimit()
-	issues := []connector.Issue{}
-	seen := map[string]struct{}{}
-	queriedLabels := map[string]struct{}{}
-	pagesRead := 0
-	pageSize := min(request.EffectivePageSize(), repositoryIssuesPageSize, scanLimit)
-	incomplete := false
-
-	for _, stateName := range stateNames {
-		labelName := c.statusLabelForState(stateName)
-		labelKey := normalizeLabelName(labelName)
-		externalState, ok := stateLabels[labelKey]
-		if !ok {
-			continue
-		}
-		if _, ok := queriedLabels[labelKey]; ok {
-			continue
-		}
-		queriedLabels[labelKey] = struct{}{}
-		itemsRead := 0
-		for page := 1; ; page++ {
-			if itemsRead >= scanLimit {
-				incomplete = true
-				break
-			}
-			var response []restIssue
-			path := restRepositoryIssuesByLabelPagePath(c.repository, labelName, page, pageSize, true)
-			if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
-				return nil, 0, false, fmt.Errorf("fetch github label candidates: %w", err)
-			}
-			pagesRead++
-			pageItems := response
-			if remaining := scanLimit - itemsRead; len(pageItems) > remaining {
-				pageItems = pageItems[:remaining]
-			}
-			itemsRead += len(pageItems)
-			for _, item := range pageItems {
-				if item.PullRequest != nil {
-					continue
-				}
-				ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
-				node := githubIssueNodeFromREST(ref, item)
-				if strings.TrimSpace(node.ID) == "" {
-					continue
-				}
-				if githubIssueClosed(node.State) && !stateInList(c.githubToDetentState(externalState), c.terminalStates) {
-					continue
-				}
-				if _, ok := seen[node.ID]; ok {
-					continue
-				}
-				built := c.buildLabelIssue(node, externalState)
-				if _, ok := wantedStates[normalizeStateName(built.State)]; !ok {
-					continue
-				}
-				seen[node.ID] = struct{}{}
-				c.cacheIssueRef(node)
-				issues = append(issues, built)
-			}
-			if len(pageItems) < len(response) {
-				incomplete = true
-				break
-			}
-			if len(response) < pageSize {
-				break
-			}
-			if itemsRead >= scanLimit {
-				incomplete = true
-				break
+	sources := []string{""}
+	search := request.Selector == connector.CandidateSelectorStates && c.usesIssueFieldStatus()
+	switch {
+	case request.Selector == connector.CandidateSelectorLabels:
+		sources = normalizeStateList(request.Labels, nil)
+	case request.Selector == connector.CandidateSelectorStates && c.usesLabelStatus():
+		sources = nil
+		labels := c.statusLabelStates(request.States)
+		for _, state := range normalizeStateList(request.States, nil) {
+			label := c.statusLabelForState(state)
+			if _, ok := labels[normalizeLabelName(label)]; ok {
+				sources = append(sources, label)
 			}
 		}
+	case search:
+		if err := c.verifyIssueFieldStatusOptions(ctx, request.States); err != nil {
+			return result, err
+		}
 	}
-	return issues, pagesRead, incomplete, nil
-}
-
-func (c *Connector) readIssueFieldCandidates(
-	ctx context.Context,
-	request connector.CandidateRequest,
-) ([]connector.Issue, int, bool, int, error) {
-	if !validPullRequestRepo(c.repository) {
-		return nil, 0, false, 0, ErrMissingRepository
-	}
-	wantedStates := normalizedStateSet(request.States)
-	githubStates := c.detentToGitHubStates(request.States)
-	if len(wantedStates) == 0 || len(githubStates) == 0 {
-		return []connector.Issue{}, 0, false, 0, nil
-	}
-	if err := c.verifyIssueFieldStatusOptions(ctx, request.States); err != nil {
-		return nil, 0, false, 0, err
-	}
-
-	scanLimit := request.ProbeLimit()
-	issues := []connector.Issue{}
-	itemsRead := 0
-	pagesRead := 0
+	pageSize := min(request.EffectivePageSize(), repositoryIssuesPageSize)
+	seen := map[string]bool{}
 	filteredTotal := 0
-	pageSize := min(request.EffectivePageSize(), issueSearchPageSize, scanLimit)
-	for page := 1; ; page++ {
-		if itemsRead >= scanLimit {
-			return issues, pagesRead, true, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
-		}
-		var response restIssueSearchResponse
-		path := restIssueFieldSearchPagePath(
-			c.repository,
-			c.statusField,
-			githubStates,
-			connector.IssueFilterHint{Authors: connector.NormalizeAuthorHandles(request.Authors)},
-			page,
-			pageSize,
-			true,
-		)
-		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
-			return nil, 0, false, 0, fmt.Errorf("search github issue field candidates: %w", err)
-		}
-		pagesRead++
-		filteredTotal = max(filteredTotal, response.TotalCount)
-		pageItems := response.Items
-		if remaining := scanLimit - itemsRead; len(pageItems) > remaining {
-			pageItems = pageItems[:remaining]
-		}
-		itemsRead += len(pageItems)
-		for _, item := range pageItems {
-			ref, ok := issueRefFromRESTSearchItem(item, issueRef{Owner: c.repository.Owner, Name: c.repository.Name})
-			if !ok {
-				continue
+	for position.Source < len(sources) {
+		var items []restIssue
+		var total int
+		var err error
+		switch {
+		case search:
+			var response restIssueSearchResponse
+			path := restIssueFieldSearchPagePath(c.repository, c.statusField, c.detentToGitHubStates(request.States), connector.IssueFilterHint{Authors: connector.NormalizeAuthorHandles(request.Authors)}, position.Page, pageSize, true)
+			err = c.client.REST(ctx, http.MethodGet, path, nil, &response)
+			items, total = response.Items, response.TotalCount
+			filteredTotal = max(filteredTotal, total)
+		default:
+			path := restRepositoryOpenIssuesPagePath(c.repository, position.Page, pageSize, true)
+			if request.Selector != connector.CandidateSelectorUntracked {
+				path = restRepositoryIssuesByLabelPagePath(c.repository, sources[position.Source], position.Page, pageSize, true)
 			}
-			issue, ok, err := c.fetchIssueFieldIssueFromREST(ctx, ref, item)
+			err = c.client.REST(ctx, http.MethodGet, path, nil, &items)
+		}
+		if err != nil {
+			return candidateReadResult(result, position, true, fmt.Errorf("fetch github candidates: %w", err))
+		}
+		result.PagesRead++
+		for position.Offset < len(items) {
+			item := items[position.Offset]
+			issue, ok, err := c.readRESTCandidate(ctx, request, item, sources[position.Source])
 			if err != nil {
-				return nil, 0, false, 0, err
+				return candidateReadResult(result, position, true, err)
 			}
-			if !ok {
-				continue
+			if ok && !seen[issue.ID] {
+				hydrated := []connector.Issue{issue}
+				if err := c.hydrateCandidateIssues(ctx, hydrated, request.States); err != nil {
+					return candidateReadResult(result, position, true, err)
+				}
+				seen[issue.ID] = true
+				result.Issues = append(result.Issues, hydrated[0])
 			}
-			if _, ok := wantedStates[normalizeStateName(issue.State)]; ok {
-				issues = append(issues, issue)
+			position.Offset++
+			result.ItemsRead++
+			if result.ItemsRead >= request.Limit {
+				break
 			}
 		}
-		if len(pageItems) < len(response.Items) {
-			return issues, pagesRead, true, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
+		if position.Offset >= len(items) {
+			position.Offset = 0
+			if len(items) < pageSize || (search && position.Page*pageSize >= total) {
+				position.Source++
+				position.Page = 1
+			} else {
+				position.Page++
+			}
 		}
-		exhausted := len(response.Items) < pageSize ||
-			(response.TotalCount > 0 && itemsRead >= response.TotalCount)
-		if exhausted {
-			return issues, pagesRead, false, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
-		}
-		if itemsRead >= scanLimit {
-			return issues, pagesRead, true, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
+		if result.ItemsRead >= request.Limit {
+			break
 		}
 	}
+	if search {
+		result.Filtered["author"] = c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal)
+	}
+	return candidateReadResult(result, position, position.Source < len(sources), nil)
 }
 
-func (c *Connector) bestEffortIssueFieldAuthorRejections(
-	ctx context.Context,
-	request connector.CandidateRequest,
-	filteredTotal int,
-) int {
+func (c *Connector) readRESTCandidate(ctx context.Context, request connector.CandidateRequest, item restIssue, source string) (connector.Issue, bool, error) {
+	if item.PullRequest != nil {
+		return connector.Issue{}, false, nil
+	}
+	ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
+	if request.Selector == connector.CandidateSelectorStates && c.usesIssueFieldStatus() {
+		var ok bool
+		ref, ok = issueRefFromRESTSearchItem(item, ref)
+		if !ok {
+			return connector.Issue{}, false, nil
+		}
+	}
+	node := githubIssueNodeFromREST(ref, item)
+	if strings.TrimSpace(node.ID) == "" {
+		return connector.Issue{}, false, nil
+	}
+	var issue connector.Issue
+	if c.usesIssueFieldStatus() {
+		var ok bool
+		var err error
+		issue, ok, err = c.fetchIssueFieldIssueFromREST(ctx, ref, item)
+		if err != nil || !ok {
+			return issue, ok, err
+		}
+	} else {
+		state := c.githubIssueStateToDetentState(node.State)
+		switch request.Selector {
+		case connector.CandidateSelectorUntracked:
+			if c.hasConfiguredStatusLabel(node.Labels) {
+				return connector.Issue{}, false, nil
+			}
+			state = ""
+		case connector.CandidateSelectorStates:
+			state = c.statusLabelStates(request.States)[normalizeLabelName(source)]
+			if githubIssueClosed(node.State) && !stateInList(c.githubToDetentState(state), c.terminalStates) {
+				return connector.Issue{}, false, nil
+			}
+		}
+		issue = c.buildLabelIssue(node, state)
+		c.cacheIssueRef(node)
+	}
+	if request.Selector == connector.CandidateSelectorStates {
+		if _, ok := normalizedStateSet(request.States)[normalizeStateName(issue.State)]; !ok {
+			return connector.Issue{}, false, nil
+		}
+	}
+	return issue, true, nil
+}
+
+func (c *Connector) bestEffortIssueFieldAuthorRejections(ctx context.Context, request connector.CandidateRequest, filteredTotal int) int {
 	rejected, err := c.issueFieldAuthorRejections(ctx, request, filteredTotal)
 	if err != nil {
 		c.logger.WarnContext(ctx, "count github issue field author rejections failed", "error", err)
 		return 0
 	}
 	return rejected
+}
+
+func (c *Connector) readProjectCandidates(ctx context.Context, request connector.CandidateRequest, position candidateCursor) (connector.CandidateResult, error) {
+	result := connector.CandidateResult{Filtered: map[string]int{}}
+	wantedStates := normalizedStateSet(request.States)
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
+	var blankStatusItemIDs []string
+	defer func() {
+		// Keep one worker pool for the read, including completed partial pages.
+		c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
+	}()
+	for {
+		var response struct {
+			Node *struct {
+				Items projectItemsConnection `json:"items"`
+			} `json:"node"`
+		}
+		var after *string
+		if position.After != "" {
+			after = &position.After
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, observedStatusProjectItemsQuery, map[string]any{
+			"projectId": c.projectID, "first": min(request.EffectivePageSize(), projectItemsPageSize), "after": after,
+		}, &response); err != nil {
+			return candidateReadResult(result, position, true, fmt.Errorf("fetch github project candidates: %w", err))
+		}
+		result.PagesRead++
+		if response.Node == nil {
+			return result, ErrProjectNotFound
+		}
+		items := response.Node.Items.Nodes
+		for position.Offset < len(items) {
+			issue, _, ok, blankStatusItemID, err := c.normalizeProjectItem(items[position.Offset])
+			if err != nil {
+				return candidateReadResult(result, position, true, err)
+			}
+			if ok {
+				if blankStatusItemID != "" && repairBlankStatuses {
+					blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
+				}
+				if _, wanted := wantedStates[normalizeStateName(issue.State)]; wanted {
+					hydrated := []connector.Issue{issue}
+					if err := c.hydrateCandidateIssues(ctx, hydrated, request.States); err != nil {
+						return candidateReadResult(result, position, true, err)
+					}
+					result.Issues = append(result.Issues, hydrated[0])
+				}
+			}
+			position.Offset++
+			result.ItemsRead++
+			if len(result.Issues) >= request.Limit {
+				break
+			}
+		}
+		if position.Offset >= len(items) {
+			if !response.Node.Items.PageInfo.HasNextPage {
+				return candidateReadResult(result, position, false, nil)
+			}
+			cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
+			if cursor == "" {
+				return result, ErrInvalidResponse
+			}
+			position.After, position.Offset = cursor, 0
+		}
+		if len(result.Issues) >= request.Limit || result.PagesRead >= projectCandidatePageLimit {
+			return candidateReadResult(result, position, true, nil)
+		}
+	}
+}
+
+func (c *Connector) hydrateCandidateIssues(ctx context.Context, issues []connector.Issue, stateNames []string) error {
+	wantedStates := normalizedStateSet(stateNames)
+	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
+		if err := c.populateBlockerReasons(ctx, issues); err != nil {
+			return err
+		}
+	}
+	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+		return err
+	}
+	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		return err
+	}
+
+	return c.attachStatePullRequests(ctx, issues, true)
 }
 
 func (c *Connector) issueFieldAuthorRejections(
@@ -354,98 +315,4 @@ func (c *Connector) issueFieldAuthorRejections(
 		return 0, fmt.Errorf("count github issue field author rejections: %w", err)
 	}
 	return max(0, response.TotalCount-filteredTotal), nil
-}
-
-func (c *Connector) readProjectCandidates(
-	ctx context.Context,
-	request connector.CandidateRequest,
-) ([]connector.Issue, int, int, bool, error) {
-	if c.projectID == "" {
-		return nil, 0, 0, false, ErrMissingProject
-	}
-	wantedStates := normalizedStateSet(request.States)
-	if len(wantedStates) == 0 {
-		return []connector.Issue{}, 0, 0, false, nil
-	}
-
-	scanLimit := request.ProbeLimit()
-	var after *string
-	issues := []connector.Issue{}
-	blankStatusItemIDs := []string{}
-	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
-	itemsRead := 0
-	totalItems := 0
-	pagesRead := 0
-	for {
-		var response struct {
-			Node *struct {
-				Items projectItemsConnection `json:"items"`
-			} `json:"node"`
-		}
-		pageSize := min(request.EffectivePageSize(), projectItemsPageSize)
-		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, observedStatusProjectItemsQuery, map[string]any{
-			"projectId": c.projectID,
-			"first":     pageSize,
-			"after":     after,
-		}, &response); err != nil {
-			return nil, 0, 0, false, fmt.Errorf("fetch github project candidates: %w", err)
-		}
-		pagesRead++
-		if response.Node == nil {
-			return nil, 0, 0, false, ErrProjectNotFound
-		}
-		pageItems := response.Node.Items.Nodes
-		itemsRead += len(pageItems)
-		totalItems = max(totalItems, response.Node.Items.TotalCount)
-		for _, item := range pageItems {
-			issue, _, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
-			if err != nil {
-				return nil, 0, 0, false, err
-			}
-			if !ok {
-				continue
-			}
-			if blankStatusItemID != "" && repairBlankStatuses {
-				blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
-			}
-			if _, ok := wantedStates[normalizeStateName(issue.State)]; ok && len(issues) < scanLimit {
-				issues = append(issues, issue)
-			}
-		}
-		if len(issues) >= scanLimit {
-			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, pagesRead, itemsRead, true, nil
-		}
-
-		if !response.Node.Items.PageInfo.HasNextPage {
-			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, pagesRead, itemsRead, totalItems > itemsRead, nil
-		}
-		if pagesRead >= projectCandidatePageLimit {
-			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, pagesRead, itemsRead, true, nil
-		}
-		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
-		if cursor == "" {
-			return nil, 0, 0, false, ErrInvalidResponse
-		}
-		after = &cursor
-	}
-}
-
-func (c *Connector) hydrateCandidateIssues(ctx context.Context, issues []connector.Issue, stateNames []string) error {
-	wantedStates := normalizedStateSet(stateNames)
-	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
-		if err := c.populateBlockerReasons(ctx, issues); err != nil {
-			return err
-		}
-	}
-	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
-		return err
-	}
-	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-		return err
-	}
-
-	return c.attachStatePullRequests(ctx, issues, true)
 }
