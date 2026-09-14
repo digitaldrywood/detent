@@ -213,7 +213,7 @@ db-migrate:
 setup: $(GOLANGCI_LINT)
 	go install github.com/air-verse/air@latest
 	go install github.com/a-h/templ/cmd/templ@v0.3.1001
-	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+	go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 	go install github.com/pressly/goose/v3/cmd/goose@latest
 	@if [ -f package.json ]; then npm install; fi
 
