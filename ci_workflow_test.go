@@ -103,8 +103,8 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		"statuses: read",
 		"commits/$GITHUB_SHA/check-runs?filter=all&per_page=100",
 		"commits/$GITHUB_SHA/status?per_page=100",
-		"rulesets?includes_parents=true&per_page=100",
 		"repos/$GITHUB_REPOSITORY\" --jq '.default_branch'",
+		"scripts/collect-release-rulesets.sh \"$GITHUB_REPOSITORY\" \"$rulesets\"",
 		"-default-branch-ref \"$default_branch_ref\"",
 		"-github-check-runs \"$check_runs\"",
 		"-github-statuses \"$statuses\"",
@@ -116,6 +116,22 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("release workflow missing authenticated provenance marker %q", marker)
 		}
+	}
+
+	collector := readNormalizedFile(t, "scripts/collect-release-rulesets.sh")
+	for _, marker := range []string{
+		"set -euo pipefail",
+		"rulesets?includes_parents=true&per_page=100",
+		"> \"$ruleset_ids\"",
+		"done < \"$ruleset_ids\"",
+		"mv \"$rulesets_staged\" \"$output\"",
+	} {
+		if !strings.Contains(collector, marker) {
+			t.Fatalf("release ruleset collector missing fail-closed marker %q", marker)
+		}
+	}
+	if strings.Contains(collector, "< <(") {
+		t.Fatal("release ruleset discovery must not run inside process substitution")
 	}
 }
 

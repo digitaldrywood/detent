@@ -98,7 +98,12 @@ func saveStartupRecoveryState(path string, state startupRecoveryState) (saveErr 
 	if path == "" {
 		return nil
 	}
-	state.Schema = startupRecoveryStateSchema
+	// A legacy pending update cannot acquire tested-commit provenance from a
+	// failure-state write. Preserve its schema until the update is resolved or
+	// replaced by a new pending update with a commit.
+	if state.Schema != startupRecoveryLegacyStateSchema || state.PendingUpdate == nil || strings.TrimSpace(state.PendingUpdate.ToCommit) != "" {
+		state.Schema = startupRecoveryStateSchema
+	}
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("encode startup recovery state: %w", err)

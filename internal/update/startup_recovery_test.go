@@ -322,10 +322,15 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 		name          string
 		currentCommit string
 		stateSchema   int
+		failedStarts  int
 		wantErr       string
 	}{
 		{name: "matching full commit", currentCommit: testUpdatedCommit},
 		{name: "legacy pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema},
+		{name: "legacy pending update after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 1},
+		{name: "legacy pending update after two failed startups", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2},
+		{name: "current missing commit after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, failedStarts: 1, wantErr: "does not include the tested target commit"},
+		{name: "wrong commit after failed startup", currentCommit: testPreviousCommit, failedStarts: 1, wantErr: "does not match pending update commit"},
 		{name: "current pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, wantErr: "does not include the tested target commit"},
 		{name: "same version from wrong commit", currentCommit: testPreviousCommit, wantErr: "does not match pending update commit"},
 	}
@@ -356,12 +361,24 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 			}
 
 			healthyAt := pending.AppliedAt.Add(time.Minute)
-			recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
+			cfg := StartupRecoveryConfig{
 				StatePath:      statePath,
 				CurrentVersion: pending.ToVersion,
 				CurrentCommit:  tt.currentCommit,
 				Now:            func() time.Time { return healthyAt },
-			})
+			}
+			for attempt := 1; attempt <= tt.failedStarts; attempt++ {
+				recovery := newTestStartupRecovery(t, cfg)
+				recovery.HandleFailure(t.Context(), errors.New("temporary startup failure"))
+				state := readTestStartupRecoveryState(t, statePath)
+				if state.PendingUpdate == nil || state.ActiveFailure == nil || state.ActiveFailure.Count != attempt {
+					t.Fatalf("state = %#v, want pending update and failure count %d", state, attempt)
+				}
+				if _, err := os.Stat(previousPath); err != nil {
+					t.Fatalf("Stat(previous) error = %v, want rollback material preserved", err)
+				}
+			}
+			recovery := newTestStartupRecovery(t, cfg)
 			err := recovery.MarkHealthy(context.Background())
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
