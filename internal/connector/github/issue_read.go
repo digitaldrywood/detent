@@ -1536,6 +1536,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		WorkpadSignal:     workpadSignal,
 		Labels:            labelNames(issue.Labels),
 		Comments:          connectorIssueComments(issue.Comments.Nodes),
+		CommentCount:      issue.Comments.TotalCount,
 		Fields:            cloneStringMap(fields),
 		FieldUpdatedAt:    fieldUpdatedAt,
 		AssignedToWorker:  true,

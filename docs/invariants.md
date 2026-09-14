@@ -83,8 +83,14 @@ tracker refreshes replace authoritative empty lists instead of restoring prior
 refs. This also removes the orchestrator's historical-comment union and prevents
 reparsing connector-owned dependencies. Degraded native reads propagate errors
 instead of certifying prose fallback or suppressing subsequent native reads.
-Ignored prose is explained without
-introducing another blocking mechanism.
+Ignored prose and structured workpad dependency predicates absent from the native
+list are explained without introducing another blocking mechanism. Native-backed
+dispatch uses the current relation list instead of the terminal attempt's saved
+dependency-deferral metadata; past attempts cannot restore a removed relation.
+Removed structured dependencies remain cleared evidence for the existing blocked
+recovery transition. Legacy workpad dependency sections and phrases are not
+reinterpreted as human actions on native repositories; explicit human-action
+sections and non-dependency predicates retain their existing meaning.
 
 Validator launch accounting uses the existing validator-run registry and shared
 worker progress publisher. Validators appear alongside implementation workers in

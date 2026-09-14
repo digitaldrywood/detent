@@ -117,8 +117,9 @@ type linkedIssue struct {
 }
 
 type nodeConnection[T any] struct {
-	PageInfo pageInfo `json:"pageInfo"`
-	Nodes    []T      `json:"nodes"`
+	TotalCount int      `json:"totalCount"`
+	PageInfo   pageInfo `json:"pageInfo"`
+	Nodes      []T      `json:"nodes"`
 }
 
 type assignee struct {
@@ -216,6 +217,7 @@ type actor struct {
 }
 
 type restIssue struct {
+	Comments          int            `json:"comments"`
 	ID                int            `json:"id"`
 	NodeID            string         `json:"node_id"`
 	Number            int            `json:"number"`

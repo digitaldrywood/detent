@@ -165,11 +165,22 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 		return nil
 	}
 
+	// Fetch comment evidence only when GitHub reports comments that are not
+	// already loaded. It is diagnostic input, never dependency authority.
+	if issue.CommentCount > len(issue.Comments) {
+		comments, err := c.fetchIssueComments(ctx, ref)
+		if err != nil {
+			return fmt.Errorf("fetch dependency comment evidence: %w", err)
+		}
+		issue.Comments = connectorIssueComments(comments)
+		issue.WorkpadSignal = parseWorkpadSignal(githubIssueNode{Body: issue.Description, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}, Comments: nodeConnection[issueComment]{Nodes: comments}})
+	}
 	// Native relations are authoritative, including an empty list. Historical
 	// prose is retained only as explanation evidence, never as scheduler input.
 	issue.DependencySource = connector.BlockedRefSourceNative
 	issue.DependencyNotes = ignoredProseDependencyNotes(*issue, ref.Owner+"/"+ref.Name, nativeRefs)
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(nativeRefs, issue.Identifier)
+	*issue = issue.WithNativeWorkpadAuthority()
 	return nil
 }
 

@@ -1249,6 +1249,12 @@ components:
         identity: {$ref: "#/components/schemas/IssueExplanationIdentity"}
         current_lane: {$ref: "#/components/schemas/IssueExplanationLane"}
         latest_transition: {$ref: "#/components/schemas/GenericObject"}
+        dependencies:
+          type: array
+          items: {$ref: "#/components/schemas/IssueDependency"}
+        dependency_notes:
+          type: array
+          items: {type: string}
         eligibility: {$ref: "#/components/schemas/GenericObject"}
         attempt: {$ref: "#/components/schemas/GenericObject"}
         sessions: {$ref: "#/components/schemas/GenericObject"}
@@ -1261,6 +1267,17 @@ components:
         evidence:
           type: array
           items: {$ref: "#/components/schemas/IssueExplanationEvidence"}
+    IssueDependency:
+      type: object
+      required: [identifier]
+      properties:
+        identifier: {type: string}
+        id: {type: string}
+        state: {type: string}
+        tracker_state: {type: string}
+        source: {type: string}
+        human_owned: {type: boolean}
+        human_completion_ready: {type: boolean}
     IssueProgressCredit:
       type: object
       required: [project_id, credited_at]

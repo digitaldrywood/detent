@@ -56,57 +56,60 @@ func TestDependencyAuthority(t *testing.T) {
 	}
 }
 
-func TestTodoReadDependencyAuthority(t *testing.T) {
+func TestPublicReadDependencyAuthority(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		read func(*Connector) ([]connector.Issue, error)
-	}{
-		{name: "bounded candidates", read: func(c *Connector) ([]connector.Issue, error) {
-			result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
-			return result.Issues, err
-		}},
-		{name: "legacy candidates", read: func(c *Connector) ([]connector.Issue, error) { return c.FetchCandidateIssues(t.Context()) }},
-		{name: "limited board states", read: func(c *Connector) ([]connector.Issue, error) {
-			return c.FetchIssuesByStatesLimit(t.Context(), []string{"Todo"}, 1)
-		}},
-		{name: "board states", read: func(c *Connector) ([]connector.Issue, error) {
-			return c.FetchIssuesByStates(t.Context(), []string{"Todo"})
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			server := newGraphQLTestServer(t, []graphqlTestResponse{
-				{method: http.MethodGet, body: `[{"node_id":"I_101","number":101,"title":"Dependency authority","body":"Depends on: #100","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/101","labels":[{"name":"detent:todo"}]}]`},
-				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/101/dependencies/blocked_by?per_page=100", body: `[]`},
-				{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_101","closedByPullRequestsReferences":{"nodes":[]}}]}}`},
-				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all", body: `[]`},
-			})
-			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}})
-			issues, err := tt.read(c)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(issues) != 1 {
-				t.Fatalf("issues = %+v", issues)
-			}
-			issue := issues[0]
-			if len(issue.BlockedBy) != 0 || issue.DependencySource != connector.BlockedRefSourceNative {
-				t.Fatalf("dependencies = %+v, source %q", issue.BlockedBy, issue.DependencySource)
-			}
-			if got := strings.Join(issue.DependencyNotes, " "); got != "digitaldrywood/detent#100: prose dependency ignored: native relation absent" {
-				t.Fatalf("notes = %q", got)
-			}
-			nativeReads := 0
-			for _, request := range server.requests() {
-				if strings.Contains(request["path"].(string), "/dependencies/blocked_by") {
-					nativeReads++
+	for _, state := range []string{"Todo", "In Progress"} {
+		for _, tt := range []struct {
+			name string
+			read func(*Connector) ([]connector.Issue, error)
+		}{
+			{name: "bounded candidates", read: func(c *Connector) ([]connector.Issue, error) {
+				result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{state}, Limit: 1})
+				return result.Issues, err
+			}},
+			{name: "legacy candidates", read: func(c *Connector) ([]connector.Issue, error) { return c.FetchCandidateIssues(t.Context()) }},
+			{name: "limited board states", read: func(c *Connector) ([]connector.Issue, error) {
+				return c.FetchIssuesByStatesLimit(t.Context(), []string{state}, 1)
+			}},
+			{name: "board states", read: func(c *Connector) ([]connector.Issue, error) {
+				return c.FetchIssuesByStates(t.Context(), []string{state})
+			}},
+		} {
+			t.Run(state+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				server := newGraphQLTestServer(t, []graphqlTestResponse{
+					{method: http.MethodGet, body: `[{"node_id":"I_101","number":101,"title":"Dependency authority","body":"","comments":1,"state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/101","labels":[{"name":"detent:` + strings.ToLower(strings.ReplaceAll(state, " ", "-")) + `"}]}]`},
+					{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/101/dependencies/blocked_by?per_page=100", body: `[]`},
+					{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/101/comments?per_page=100", body: `[{"id":1,"body":"Blocked by: #100"}]`},
+					{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_101","closedByPullRequestsReferences":{"nodes":[]}}]}}`},
+					{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all", body: `[]`},
+				})
+				c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{state}})
+				issues, err := tt.read(c)
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			if nativeReads != 1 {
-				t.Fatalf("native reads = %d, want 1", nativeReads)
-			}
-		})
+				if len(issues) != 1 {
+					t.Fatalf("issues = %+v", issues)
+				}
+				issue := issues[0]
+				if len(issue.BlockedBy) != 0 || issue.DependencySource != connector.BlockedRefSourceNative {
+					t.Fatalf("dependencies = %+v, source %q", issue.BlockedBy, issue.DependencySource)
+				}
+				if got := strings.Join(issue.DependencyNotes, " "); got != "digitaldrywood/detent#100: prose dependency ignored: native relation absent" {
+					t.Fatalf("notes = %q", got)
+				}
+				nativeReads := 0
+				for _, request := range server.requests() {
+					if strings.Contains(request["path"].(string), "/dependencies/blocked_by") {
+						nativeReads++
+					}
+				}
+				if nativeReads != 1 {
+					t.Fatalf("native reads = %d, want 1", nativeReads)
+				}
+			})
+		}
 	}
 }
 

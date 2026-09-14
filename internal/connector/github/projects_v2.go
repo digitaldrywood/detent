@@ -37,6 +37,7 @@ query DetentGitHubProjectItems(
               stateReason
               url
               author { login }
+              comments { totalCount }
               authorAssociation
               assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }
@@ -79,6 +80,7 @@ query DetentGitHubProjectItems(
               stateReason
               url
               author { login }
+              comments { totalCount }
               authorAssociation
               assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }
@@ -142,6 +144,7 @@ query DetentGitHubObservedStatusProjectItems(
               url
               createdAt
               author { login }
+              comments { totalCount }
               authorAssociation
               assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }

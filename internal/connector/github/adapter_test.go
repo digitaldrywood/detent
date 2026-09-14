@@ -3933,8 +3933,8 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 	if len(requests) != 4 {
 		t.Fatalf("request count = %d, want 4", len(requests))
 	}
-	if strings.Contains(requests[0]["query"].(string), "comments") {
-		t.Fatalf("project query = %q, want no comments", requests[0]["query"])
+	if !strings.Contains(requests[0]["query"].(string), "comments { totalCount }") || strings.Contains(requests[0]["query"].(string), "comments(first:") {
+		t.Fatalf("project query = %q, want comment count without comment bodies", requests[0]["query"])
 	}
 	if requests[1]["method"] != http.MethodGet || requests[1]["path"] != "/repos/digitaldrywood/detent/issues/98/comments?per_page=100" {
 		t.Fatalf("comments request = %#v, want REST issue comments", requests[1])

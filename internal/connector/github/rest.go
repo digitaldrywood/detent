@@ -229,6 +229,7 @@ func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
 	repo := ref.Owner + "/" + ref.Name
 	return githubIssueNode{
 		TypeName:          "Issue",
+		Comments:          nodeConnection[issueComment]{TotalCount: issue.Comments},
 		ID:                strings.TrimSpace(issue.NodeID),
 		Number:            issue.Number,
 		Title:             issue.Title,
