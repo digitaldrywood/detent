@@ -3142,3 +3142,61 @@ func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalGitStaleQuarantineReleasesBranch(t *testing.T) {
+	for _, failDetach := range []bool{false, true} {
+		t.Run(fmt.Sprintf("detach_failure=%t", failDetach), func(t *testing.T) {
+			source := initSourceRepo(t)
+			root := filepath.Join(t.TempDir(), "workspaces")
+			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "DD-STALE-REUSE"}
+			first, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			branch := strings.TrimSpace(runGit(t, first.Path, "branch", "--show-current"))
+			head := runGit(t, first.Path, "rev-parse", "HEAD")
+			if err := os.WriteFile(filepath.Join(first.Path, "progress.txt"), []byte("keep\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if failDetach {
+				if err := os.WriteFile(filepath.Join(linkedWorktreeGitDir(t, first.Path), "HEAD.lock"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = backend.recoverStaleSourceWorktree(t.Context(), first.Path, branch, branch)
+			quarantined := singleQuarantinedWorkspace(t, root)
+			if got := readFile(t, filepath.Join(quarantined, "progress.txt")); got != "keep\n" {
+				t.Fatalf("preserved progress = %q", got)
+			}
+			if got := runGit(t, quarantined, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("HEAD = %q, want %q", got, head)
+			}
+			if failDetach {
+				if err == nil || !strings.Contains(err.Error(), "detach quarantined worktree HEAD") || !strings.Contains(err.Error(), quarantined) {
+					t.Fatalf("recovery error = %v, want detach failure and quarantine path", err)
+				}
+				if _, err := os.Stat(first.Path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("replacement path exists: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatalf("same-pass branch reuse: %v", err)
+			}
+			if got := strings.TrimSpace(runGit(t, second.Path, "branch", "--show-current")); got != branch {
+				t.Fatalf("replacement branch = %q, want %q", got, branch)
+			}
+			if got := strings.TrimSpace(runGit(t, quarantined, "branch", "--show-current")); got != "" {
+				t.Fatalf("quarantine branch = %q, want detached", got)
+			}
+		})
+	}
+}
