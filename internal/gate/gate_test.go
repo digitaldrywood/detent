@@ -907,3 +907,17 @@ func stringSlicesEqual(left []string, right []string) bool {
 	}
 	return true
 }
+
+func TestInstructionsDescribeWorkpadPredicates(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{KindCommand, KindArtifact} {
+		t.Run(kind, func(t *testing.T) {
+			got := Instructions(Config{Kind: kind})
+			for _, want := range []string{"type, kind (alias for type), ref, state, states, check, present, scope, resource, condition, and fingerprint", "check_presence (check and present required)", "Unknown keys are ignored"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("instructions missing %q", want)
+				}
+			}
+		})
+	}
+}
