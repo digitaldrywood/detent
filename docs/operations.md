@@ -143,7 +143,8 @@ thread-history databases are not pruned.
 The existing workspace reaper removes rollout JSONL files older than thirty
 days by modification time only when their first `session_meta` record identifies
 `detent-orchestrator`. Active attempt references and unfinished or recent
-sessions across all projects protect their provider session IDs. Recent rollout
+sessions across all projects protect their provider thread IDs, including
+thread references recovered from composite thread/turn session IDs. Recent rollout
 files or metadata for the same session also protect that session. Unknown or
 malformed ownership records and non-Detent rollouts remain untouched. The
 shared `sessions` directory may be a symlink; rollout file symlinks are not
