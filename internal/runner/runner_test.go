@@ -991,15 +991,12 @@ func TestRunnerSkipsAuxiliaryTurnProviderIdentityPersistence(t *testing.T) {
 
 	sessionStore := &fakeSessionStore{}
 	runner := &Runner{store: sessionStore}
-	err := runner.persistSessionProviderIdentity(t.Context(), 2059, AgentUpdate{
+	runner.persistSessionProviderIdentity(t.Context(), 2059, AgentUpdate{
 		ThreadID:          "thread-child",
 		TurnID:            "turn-child",
 		AuxiliaryTurn:     true,
 		ProviderSessionID: "thread-child-turn-child",
 	})
-	if err != nil {
-		t.Fatalf("persistSessionProviderIdentity() error = %v", err)
-	}
 	if len(sessionStore.providerUpdates) != 0 {
 		t.Fatalf("provider updates = %#v, want child identity excluded", sessionStore.providerUpdates)
 	}

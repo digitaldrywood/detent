@@ -1152,9 +1152,7 @@ func (r *Runner) runAgentTurn(
 		if err := r.persistSessionWorkerProcess(updateCtx, detentSessionID, update, info.Path, update.workerScratchPath); err != nil {
 			return err
 		}
-		if err := r.persistSessionProviderIdentity(updateCtx, detentSessionID, update); err != nil {
-			return err
-		}
+		r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
 		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
 			return err
 		}
@@ -3075,9 +3073,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, info.Path, update.workerScratchPath); err != nil {
 			return err
 		}
-		if err := r.persistSessionProviderIdentity(updateCtx, sessionID, update); err != nil {
-			return err
-		}
+		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
 		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
 			return err
 		}
@@ -3487,26 +3483,29 @@ func (r *Runner) startSession(
 	return sessionID, true, nil
 }
 
-func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID int64, update AgentUpdate) error {
+func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID int64, update AgentUpdate) {
 	if sessionID <= 0 || update.AuxiliaryTurn {
-		return nil
+		return
 	}
 	threadID := strings.TrimSpace(update.ThreadID)
 	providerSessionID := strings.TrimSpace(update.ProviderSessionID)
 	if threadID == "" && providerSessionID == "" {
-		return nil
+		return
 	}
 	providerStore, ok := r.store.(sessionProviderStore)
 	if !ok {
-		return nil
+		return
 	}
+	// Provider identity is bookkeeping: a store outage must not terminate the turn.
+	// Subsequent provider updates retry through this same path.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	if err := providerStore.UpdateSessionProviderIdentity(ctx, sessionID, store.SessionProviderIdentity{
 		ThreadID:  threadID,
 		SessionID: providerSessionID,
 	}); err != nil {
-		return fmt.Errorf("update agent session provider identity: %w", err)
+		r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", sessionID, "error", err)
 	}
-	return nil
 }
 
 func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate, cleanupRoot string, cleanupPath string) error {

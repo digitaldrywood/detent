@@ -113,6 +113,12 @@ reservation check. Reports advertise canonical backend model names; a stale
 report cannot authorize a different runtime model. Catalog and effort validation
 still run in the prepared workspace, where startup failures have attempt context.
 
+Provider-identity bookkeeping failures during implementation, validator, and security-audit turns
+are logged without failing the turn (#2626). Persistence uses a bounded detached
+context and subsequent updates retry through the existing write path.
+`TestProviderIdentityFailureDoesNotCancelTurn` covers cancelled and timed-out store
+writes followed by successful persistence and normal turn completion.
+
 ## INV-3 — Mechanism moratorium
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
