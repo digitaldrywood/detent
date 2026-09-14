@@ -252,11 +252,19 @@ signature permit (#2486). The vocabulary consolidates onto the existing
 `lifetime_limit_recovered` reason, emitted only when an override is present or
 the configured limits no longer apply. Elapsed time cannot release the park.
 
-Todo dispatch resolves non-terminal dependency refs through the existing dependency
+Every dispatch, including In Progress retries and stranded re-dispatches, resolves
+non-terminal dependency refs through the existing dependency
 auto-unblock resolver and readiness predicate, sharing blocker reads within each
 dispatch refresh (#2509). Closed tracker state releases ordinary dependencies
 without requiring a terminal lane observation; human completion evidence remains
-required. This consolidates dependency readiness without adding a recovery loop.
+required. Current structured Workpad blockers in `in_progress` or `blocked` with
+an open `issue_state` predicate join body fallback dependencies; native relations
+remain authoritative. Unresolved Workpad evidence preserves the dependency wait;
+explicit open predicates use tracker closure, even in terminal lanes. A dependency
+wait preserves retry attempt and resume state.
+`TestDispatchDependencyRetry` covers open-to-closed transitions for native, body,
+and Workpad sources (#2699). This consolidates dependency readiness without
+adding a recovery loop.
 
 Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
 attempt accounting into one fixed allowance: three code/rework sessions started

@@ -81,7 +81,7 @@ func TestHumanDependencyChildrenAndPriorPhase(t *testing.T) {
 			}
 			unrelated := dispatchTestIssue("unrelated", "Todo")
 			unrelated.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#11", State: "Backlog", HumanOwned: true}}
-			if !todoBlockedByNonTerminal(unrelated, cfg.TerminalStates) {
+			if !issueBlockedByNonTerminal(unrelated, cfg.TerminalStates) {
 				t.Fatal("unrelated human dependency released")
 			}
 			resolved := dependencyBlocker{Resolved: true, Issue: blocker}
