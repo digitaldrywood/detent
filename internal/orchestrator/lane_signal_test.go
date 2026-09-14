@@ -131,6 +131,9 @@ func TestLaneSignalDiagnosticsSurviveRefreshAndSnapshot(t *testing.T) {
 		{name: "unconfigured ProjectV2 lane", source: workflowconfig.GitHubStatusSourceProjectV2,
 			issue:       connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Triage", Labels: []string{"detent:todo"}},
 			wantSignals: []string{"detent:todo"}},
+		{name: "unconfigured issue-field lane", source: workflowconfig.GitHubStatusSourceIssueField,
+			issue:       connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Triage", Labels: []string{"detent:todo"}},
+			wantSignals: []string{"detent:todo"}},
 		{name: "distinct project statuses", source: workflowconfig.GitHubStatusSourceLabel,
 			issue: connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Backlog", LaneSignalStatuses: []connector.LaneSignalStatus{
 				{Field: "Status", Value: "Todo", ProjectID: "PVT_1", ProjectTitle: "Delivery"},

@@ -64,7 +64,7 @@ type labelStatusResolution struct {
 	ConflictLabels []string
 }
 
-type labelStatusDriftReadOptions struct {
+type repositoryStatusDriftReadOptions struct {
 	PageSize      int
 	Limit         int
 	Deterministic bool
@@ -407,7 +407,7 @@ func (c *Connector) fetchRemainingLabelIssuePullRequestReferences(
 }
 
 func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift, error) {
-	drift, _, _, err := c.readLabelStatusDrift(ctx, labelStatusDriftReadOptions{
+	drift, _, _, err := c.readRepositoryStatusDrift(ctx, repositoryStatusDriftReadOptions{
 		PageSize: repositoryIssuesPageSize,
 	})
 	if err != nil {
@@ -417,7 +417,9 @@ func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift
 	if err != nil {
 		return connector.StatusDrift{}, err
 	}
-	c.hydrateIgnoredProjectStatuses(ctx, drift.LaneSignalCandidates)
+	if c.usesLabelStatus() {
+		c.hydrateIgnoredProjectStatuses(ctx, drift.LaneSignalCandidates)
+	}
 	if err := c.attachLabelIssuePullRequestReferencesWithState(ctx, drift.OpenTerminal, true); err != nil {
 		return connector.StatusDrift{}, fmt.Errorf("hydrate open terminal issue pull requests: %w", err)
 	}
@@ -474,11 +476,11 @@ func (c *Connector) readClosedActiveLabelIssues(ctx context.Context) ([]connecto
 	}
 }
 
-func (c *Connector) readLabelStatusDrift(
+func (c *Connector) readRepositoryStatusDrift(
 	ctx context.Context,
-	options labelStatusDriftReadOptions,
+	options repositoryStatusDriftReadOptions,
 ) (connector.StatusDrift, int, bool, error) {
-	if !c.usesLabelStatus() {
+	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
 		return connector.StatusDrift{}, 0, false, nil
 	}
 	if !validPullRequestRepo(c.repository) {
@@ -499,7 +501,7 @@ func (c *Connector) readLabelStatusDrift(
 		var response []restIssue
 		path := restRepositoryOpenIssuesPagePath(c.repository, page, pageSize, options.Deterministic)
 		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
-			return connector.StatusDrift{}, 0, false, fmt.Errorf("fetch github label status drift: %w", err)
+			return connector.StatusDrift{}, 0, false, fmt.Errorf("fetch github repository status drift: %w", err)
 		}
 		pagesRead++
 		pageItems := response
@@ -516,6 +518,21 @@ func (c *Connector) readLabelStatusDrift(
 			ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
 			issue := githubIssueNodeFromREST(ref, item)
 			if strings.TrimSpace(issue.ID) == "" {
+				continue
+			}
+			if c.usesIssueFieldStatus() {
+				// Labels are diagnostic signals only; retain the authoritative field
+				// state without adding issues to any label reconciliation category.
+				if !c.hasConfiguredStatusLabel(issue.Labels) {
+					continue
+				}
+				candidate, ok, err := c.fetchIssueFieldIssueFromNode(ctx, ref, issue)
+				if err != nil {
+					return connector.StatusDrift{}, 0, false, err
+				}
+				if ok {
+					drift.LaneSignalCandidates = append(drift.LaneSignalCandidates, candidate)
+				}
 				continue
 			}
 			c.cacheIssueRef(issue)
