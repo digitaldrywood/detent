@@ -35,6 +35,10 @@ func TestRetentionCompletionClock(t *testing.T) {
 	}{
 		{name: "done", state: "Done", stage: true, want: done},
 		{name: "cancelled", state: "Cancelled", stage: true, want: done},
+		{name: "closed lane", state: "Closed", stage: true, want: done},
+		{name: "duplicate lane", state: "Duplicate", stage: true, want: done},
+		{name: "custom terminal", state: "Archived", stage: true, want: done},
+		{name: "custom terminal unknown time", state: "Archived"},
 		{name: "closed later comment", state: "Backlog", closed: true, closeTime: true, want: closed},
 		{name: "done then closed", state: "Done", stage: true, closed: true, closeTime: true, want: done},
 		{name: "unknown time", state: "Done"},
@@ -50,7 +54,7 @@ func TestRetentionCompletionClock(t *testing.T) {
 				issue.ClosedAt = &closed
 			}
 			reaper := &retentionTestReaper{}
-			o := &Orchestrator{reaper: reaper, connector: memory.New(memory.Config{Issues: []connector.Issue{issue}}), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			o := &Orchestrator{cfg: Config{TerminalStates: normalizedStates([]string{"Done", "Cancelled", "Canceled", "Closed", "Duplicate", "Archived"})}, reaper: reaper, connector: memory.New(memory.Config{Issues: []connector.Issue{issue}}), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			state := State{}
 			o.sweepRetention(t.Context(), &state, now)
 			if got := reaper.completed[issue.ID]; !got.Equal(test.want) {

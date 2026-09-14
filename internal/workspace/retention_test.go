@@ -369,3 +369,65 @@ func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
 		})
 	}
 }
+
+func TestRetentionRemovalFailureDeduplicatesArchives(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"unchanged", "modified", "partially removed"} {
+		t.Run(change, func(t *testing.T) {
+			backend := retentionBackend(t)
+			issue := Issue{ID: "2681", Identifier: "repo#2681"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+			retentionFixture(t, filepath.Join(info.Path, "untracked.txt"), now)
+			runGit(t, backend.sourceRoot, "worktree", "lock", info.Path)
+			request := RetentionRequest{Now: now, Completed: func(context.Context, []Issue) (map[string]time.Time, error) {
+				return map[string]time.Time{issue.ID: now.Add(-8 * 24 * time.Hour)}, nil
+			}}
+			for sweep := range 3 {
+				if change == "partially removed" && sweep == 1 {
+					if err := os.Remove(filepath.Join(info.Path, "untracked.txt")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if change == "modified" && sweep == 1 {
+					if err := os.WriteFile(filepath.Join(info.Path, "untracked.txt"), []byte("changed content"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				totals, err := backend.SweepRetention(t.Context(), request)
+				if err == nil {
+					t.Fatal("expected locked worktree removal to fail")
+				}
+				if totals.Workspaces.Count != 0 {
+					t.Fatalf("totals=%+v", totals)
+				}
+			}
+			archives, err := filepath.Glob(filepath.Join(backend.root, ".detent/retained", info.Key+"-*"))
+			want := 1
+			if change != "unchanged" {
+				want = 2
+			}
+			if err != nil || len(archives) != want {
+				t.Fatalf("archives=%v want=%d err=%v", archives, want, err)
+			}
+			for _, archive := range archives {
+				runGit(t, backend.sourceRoot, "bundle", "verify", filepath.Join(archive, "commits.bundle"))
+			}
+			runGit(t, backend.sourceRoot, "worktree", "unlock", info.Path)
+			totals, err := backend.SweepRetention(t.Context(), request)
+			if err != nil || totals.Workspaces.Count != 1 {
+				t.Fatalf("totals=%+v err=%v", totals, err)
+			}
+			archives, err = filepath.Glob(filepath.Join(backend.root, ".detent/retained", info.Key+"-*"))
+			if err != nil || len(archives) != want {
+				t.Fatalf("archives after retry=%v want=%d err=%v", archives, want, err)
+			}
+		})
+	}
+}

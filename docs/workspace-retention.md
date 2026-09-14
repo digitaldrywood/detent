@@ -5,7 +5,7 @@ The existing periodic workspace reaper applies these operator-approved limits
 
 | Artifact | Retention |
 | --- | --- |
-| Retained completed worktree | Seven days after Done, Cancelled, or issue closure |
+| Retained completed worktree | Seven days after entering a configured terminal lane or issue closure |
 | Quarantine | Three days; at most the five newest entries per workdir |
 | Hook log file | Fourteen days since its last modification |
 | Attempt scratch directory | A terminal work attempt, or no session registry row and at least one hour old |
@@ -36,7 +36,9 @@ Before removing a retained worktree, the sweep creates a durable directory under
 The log records the commit SHA, bundle, diff, and archive paths. Archives have no
 automatic expiry. Archive failures, including an unresolved Git index, leave the
 original worktree intact. Partial archives from failed archival attempts are
-removed.
+removed. Identical archives share a content-based path, so repeated removal
+failures do not accumulate duplicate copies. Distinct snapshots remain available
+because a failed removal can already have deleted some original files.
 
 Restore into a new directory:
 

@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -35,12 +37,8 @@ func (l *LocalGit) removeExpiredWorkspace(ctx context.Context, root *os.Root, re
 	if err != nil {
 		return err
 	}
-	archived := false
-	defer func() {
-		if !archived {
-			returnErr = errors.Join(returnErr, os.RemoveAll(archive))
-		}
-	}()
+	temporaryArchive := archive
+	defer func() { returnErr = errors.Join(returnErr, os.RemoveAll(temporaryArchive)) }()
 	unmerged, err := runGitAt(ctx, record.Path, "ls-files", "--unmerged")
 	if err != nil {
 		return err
@@ -82,7 +80,12 @@ func (l *LocalGit) removeExpiredWorkspace(ctx context.Context, root *os.Root, re
 			return err
 		}
 	}
-	archived = true
+	archive, err = publishRetentionArchive(root, archive, record.Key)
+	if err != nil {
+		return err
+	}
+	bundle = filepath.Join(archive, "commits.bundle")
+	diffPath = filepath.Join(archive, "working-tree.diff")
 	archiveRelative, err := filepath.Rel(l.root, archive)
 	if err != nil {
 		return err
@@ -158,4 +161,61 @@ func archiveWorkingTree(path, destination string) (returnErr error) {
 		return errors.Join(copyErr, source.Close())
 	})
 	return errors.Join(walkErr, writer.Close(), compressed.Close(), file.Sync())
+}
+
+// Publish by content so failed removals cannot accumulate identical recovery
+// copies. Keep distinct snapshots: removal may have partially deleted the source,
+// in which case an earlier archive still owns files absent from the next snapshot.
+func publishRetentionArchive(root *os.Root, temporary, key string) (string, error) {
+	digest, err := retentionArchiveDigest(temporary)
+	if err != nil {
+		return "", err
+	}
+	relative := filepath.Join(".detent/retained", key+"-"+digest)
+	destination := filepath.Join(filepath.Dir(temporary), key+"-"+digest)
+	if _, err := root.Lstat(relative); err == nil {
+		if err := retentionDirectory(root, relative); err != nil {
+			return "", err
+		}
+		existing, err := retentionArchiveDigest(destination)
+		if err != nil {
+			return "", err
+		}
+		if existing != digest {
+			return "", fmt.Errorf("retention archive content mismatch: %s", destination)
+		}
+		return destination, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		return "", err
+	}
+	return destination, nil
+}
+
+func retentionArchiveDigest(path string) (string, error) {
+	digest := sha256.New()
+	for _, name := range []string{"commits.bundle", "working-tree.diff", "staged.diff", "working-tree.tar.gz"} {
+		path := filepath.Join(path, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("not a regular archive file: %s", path)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		content := sha256.New()
+		_, copyErr := io.Copy(content, file)
+		if err := errors.Join(copyErr, file.Close()); err != nil {
+			return "", err
+		}
+		// Each file contributes exactly one SHA-256 digest in fixed name order.
+		digest.Write(content.Sum(nil))
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }

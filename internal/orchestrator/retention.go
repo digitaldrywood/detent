@@ -32,14 +32,14 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 				return nil, err
 			}
 			for _, issue := range issues {
-				if !issue.Closed && !stateIn(issue.State, []string{"done", "cancelled", "canceled"}) {
+				if !issue.Closed && !stateIn(issue.State, o.cfg.TerminalStates) {
 					continue
 				}
 				var since *time.Time
 				if issue.Closed {
 					since = issue.ClosedAt
 				}
-				if stateIn(issue.State, []string{"done", "cancelled", "canceled"}) {
+				if stateIn(issue.State, o.cfg.TerminalStates) {
 					entered := issue.StageUpdatedAt
 					if entered == nil {
 						if observed, ok := state.laneEntries[workflowLaneEntryKey(issue)]; ok {
