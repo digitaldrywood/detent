@@ -157,7 +157,9 @@ head enters the configured promotion lane without publishing the historical
 triage explanation; the persisted triage attempt still consumes its single pass.
 If the issue still needs triage, the note includes the observed head, check-run
 IDs, states, and UTC observation timestamps. Unavailable PR evidence leaves
-publication pending. `TestAttemptAllowanceLiveHead` covers this consolidation;
+publication pending. A merge discovered during hydration uses the existing merged-PR
+lifecycle; missing or running audit and validator stages leave publication pending
+while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
 
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons

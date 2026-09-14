@@ -263,6 +263,12 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		if issue.PullRequest == nil || pullRequestHydrationUnavailableReason(issue.PullRequest) != "" || issue.PullRequest.HydrationDegradedReason != "" {
 			return errors.New("triage pull request evidence unavailable")
 		}
+		if autoPromotePullRequestMerged(issue.PullRequest) {
+			if !metadata.PreserveLane {
+				o.reconcileStaleLinkedPullRequestIssues(ctx, state, []connector.Issue{issue}, now)
+			}
+			return nil
+		}
 		var hydrated bool
 		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 		if !hydrated {
@@ -274,7 +280,18 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issue.ID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
 		issue, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
-		decision, _ = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
+			o.startSecurityAuditStage(ctx, issue, now)
+			return nil
+		}
+		if decision.Reason == AutoPromoteReasonSecurityAuditWait {
+			return nil
+		}
+		var validatorReady bool
+		decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if !validatorReady {
+			return nil
+		}
 		if !metadata.PreserveLane && decision.Action == AutoPromoteActionPromote {
 			target := autoPromoteTargetState(decision.Action, cfg)
 			if normalizeState(issue.State) != normalizeState(target) {

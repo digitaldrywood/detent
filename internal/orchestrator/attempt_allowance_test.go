@@ -443,12 +443,17 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 func TestAttemptAllowanceLiveHead(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, ci, mergeable, want   string
-		newHead, disabled, preserve bool
-		threads                     []connector.PullRequestReviewThread
-		unavailable                 string
-		wantErr                     bool
+		name, ci, mergeable, want                       string
+		newHead, disabled, preserve                     bool
+		threads                                         []connector.PullRequestReviewThread
+		unavailable                                     string
+		wantErr                                         bool
+		merged, validator, audit, auditRunning, pending bool
 	}{
+		{name: "merge discovered during hydration", merged: true, ci: "green", mergeable: "clean", want: "Done"},
+		{name: "validator pending", validator: true, pending: true, ci: "green", mergeable: "clean"},
+		{name: "audit missing", audit: true, pending: true, ci: "green", mergeable: "clean"},
+		{name: "audit running", audit: true, auditRunning: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "green replacement head promotes", newHead: true, ci: "green", mergeable: "clean", want: "Merging"},
 		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Human Review"},
 		{name: "observed lane is preserved", preserve: true, ci: "green", mergeable: "clean", want: ""},
@@ -463,14 +468,27 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "Rework", PullRequest: &connector.PullRequest{Number: 2, State: "open", CIStatus: "failure", HeadSHA: "live"}}
 			live := cloneIssue(issue)
 			live.PullRequest = &connector.PullRequest{Number: 2, URL: "https://github.com/owner/repo/pull/2", State: "open", HeadSHA: "live", CIStatus: tt.ci, MergeableState: tt.mergeable, CodexReviewState: "COMMENTED", UnresolvedReviewThreads: tt.threads, HydrationUnavailableReason: tt.unavailable, Checks: []connector.PullRequestCheck{{ID: 42, Name: "Smoke", Status: "completed", Conclusion: tt.ci}}}
+			if tt.merged {
+				live.PullRequest.State = "merged"
+			}
+			live.PullRequest.BaseSHA = "base"
 			if tt.newHead {
 				live.PullRequest.HeadSHA = "replacement"
 			}
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: live}}
 			cfg := laneMutationTestConfig()
 			cfg.AutoPromote.Enabled = !tt.disabled
+			cfg.AutoPromote.Gate.Validator.Enabled = tt.validator
+			cfg.AutoPromote.Gate.SecurityAudit.Enabled = tt.audit
+			cfg.ServiceIdentity = "test-service"
 			db, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			orch.securityAuditStore = db
+			orch.securityAuditRuns = make(map[string]struct{})
+			if tt.auditRunning {
+				orch.securityAuditRuns[orch.securityAuditIdentity(live).cacheKey] = struct{}{}
+			}
+			t.Cleanup(orch.securityAuditWG.Wait)
 			state := newState(cfg)
 			attempt := store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": fallbackAttemptTriageNote(issue, "Smoke failed earlier"), "attempt_allowance_preserve_lane": tt.preserve})}
 			err := orch.publishAttemptTriage(t.Context(), &state, issue, attempt, now)
@@ -480,6 +498,23 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			if tt.wantErr {
 				if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
 					t.Fatal("unavailable evidence published or moved issue")
+				}
+				return
+			}
+			if tt.pending {
+				if tt.audit && !tt.auditRunning {
+					orch.securityAuditWG.Wait()
+					if _, err := db.LatestSecurityAuditRun(t.Context(), orch.securityAuditIdentity(live).key); err != nil {
+						t.Fatalf("missing audit was not started: %v", err)
+					}
+				}
+				if tt.validator {
+					if _, _, ready := orch.validatorStageResult(t.Context(), live); !ready {
+						t.Fatal("missing validator was not started")
+					}
+				}
+				if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+					t.Fatalf("pending stage published or moved issue: %#v %#v", tracker.updates, tracker.comments)
 				}
 				return
 			}
@@ -501,7 +536,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			if len(tracker.updates) != 1 {
 				t.Fatalf("replay moved lane again: %#v", tracker.updates)
 			}
-			if tt.want == "Merging" {
+			if tt.want == "Merging" || tt.want == "Done" {
 				for _, comment := range tracker.comments {
 					if strings.Contains(comment.body, "Smoke failed earlier") {
 						t.Fatal("published stale triage")
