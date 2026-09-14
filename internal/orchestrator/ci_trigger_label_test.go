@@ -30,10 +30,22 @@ func TestScheduleCITriggerLabelCurrentHeadChecks(t *testing.T) {
 		recordedHead  string
 	}{
 		{
-			name:     "empty configured checks hydrate live green head",
+			name:     "empty configured checks do not trust successful placeholder",
 			required: []string{}, afterHeadPush: true,
+			checks:      []connector.PullRequestCheck{{Name: "Placeholder", Status: "completed", Conclusion: "success"}},
+			wantReapply: true, wantReason: "after_head_push",
+		},
+		{
+			name:     "new recorded head with successful placeholder triggers",
+			required: []string{}, recordedHead: "old-head", head: "new-head",
+			checks:      []connector.PullRequestCheck{{Name: "Placeholder", Status: "completed", Conclusion: "success"}},
+			wantReapply: true, wantReason: "after_head_push",
+		},
+		{
+			name:     "unchanged recorded green head does not trigger",
+			required: []string{}, recordedHead: "old-head", afterHeadPush: true,
 			checks:     []connector.PullRequestCheck{{Name: "Full CI", Status: "completed", Conclusion: "success"}},
-			wantReason: "required_checks_green",
+			wantReason: "already_reapplied_for_head",
 		},
 		{
 			name:     "empty configured checks with no live checks trigger",

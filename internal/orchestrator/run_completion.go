@@ -2266,14 +2266,8 @@ func ciTriggerRequiredCheckStates(pr *connector.PullRequest, required []string) 
 			checks[strings.TrimSpace(check.Name)] = check
 		}
 	}
-	// With no configured contexts, use the freshly hydrated inventory rather
-	// than treating an empty configuration as evidence that CI is missing.
-	if len(required) == 0 {
-		for name := range checks {
-			required = append(required, name)
-		}
-		required = gate.NormalizeRequiredStatusChecks(required)
-	}
+	// Unconfigured checks may be placeholders, so only explicit required
+	// contexts can establish that the label-gated suite is green.
 	states := make([]connector.PullRequestCheck, 0, len(required))
 	green := len(required) > 0
 	for _, name := range required {
