@@ -974,6 +974,9 @@ func workAttemptRepository(issue connector.Issue) string {
 }
 
 func workAttemptWorkerType(issue connector.Issue, mode string) string {
+	if mode == runpkg.RunModeTriage {
+		return runpkg.RunModeTriage
+	}
 	if mergeWorkerIssue(issue) {
 		return "merge"
 	}

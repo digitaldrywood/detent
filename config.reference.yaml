@@ -86,11 +86,11 @@
 #   write_probe_issue: null
 #   # tracker.assignee | type: string | default: none | required: No | validation: None
 #   assignee: null
-#   # tracker.active_states | type: list<string> | default: ["Todo","In Progress"] | required: No | validation: , tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0; must include Rework when tracker.dependency_auto_unblock.enabled is true; must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true; state names must be unique; state names must not be blank
+#   # tracker.active_states | type: list<string> | default: ["Todo","In Progress"] | required: No | validation: must include Rework when tracker.dependency_auto_unblock.enabled is true; must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true; state names must be unique; state names must not be blank
 #   active_states: ["Todo","In Progress"]
-#   # tracker.observed_states | type: list<string> | default: ["Backlog","Human Review","Blocked"] | required: No | validation: agent.stop_run.target_state must be included in tracker.observed_states; state names must be unique; state names must not be blank; tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0
+#   # tracker.observed_states | type: list<string> | default: ["Backlog","Human Review","Blocked"] | required: No | validation: agent.stop_run.target_state must be included in tracker.observed_states; state names must be unique; state names must not be blank
 #   observed_states: ["Backlog","Human Review","Blocked"]
-#   # tracker.terminal_states | type: list<string> | default: ["Closed","Cancelled","Canceled","Duplicate","Done"] | required: No | validation: state names must be unique; state names must not be blank; tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0
+#   # tracker.terminal_states | type: list<string> | default: ["Closed","Cancelled","Canceled","Duplicate","Done"] | required: No | validation: state names must be unique; state names must not be blank
 #   terminal_states: ["Closed","Cancelled","Canceled","Duplicate","Done"]
 #   # tracker.state_map | type: string or mapping | default: {} | required: No | validation: state names must not be blank
 #   state_map: {}
@@ -210,6 +210,8 @@
 #       pr_association_checked_at: {}
 #       # tracker.issues[].pull_request | type: object | default: none | required: No | validation: None
 #       pull_request:
+#         # tracker.issues[].pull_request.merged_at | type: mapping | default: none | required: No | validation: None
+#         merged_at: null
 #         # tracker.issues[].pull_request.node_id | type: string | default: none | required: No | validation: None
 #         node_id: null
 #         # tracker.issues[].pull_request.number | type: integer | default: 0 when configured | required: No | validation: None
@@ -731,10 +733,6 @@
 #     pass_state: "Merging"
 #     # agent.auto_promote.rework_state | type: string | default: "Rework" | required: No | validation: None
 #     rework_state: "Rework"
-#     # agent.auto_promote.rework_limit | type: integer | default: 3 | required: No | validation: must be greater than or equal to 0
-#     rework_limit: 3
-#     # agent.auto_promote.no_progress_limit | type: integer | default: 3 | required: No | validation: must be greater than or equal to 0; tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0
-#     no_progress_limit: 3
 #   # agent.output_truncation | type: object | default: see child fields | required: No | validation: None
 #   output_truncation:
 #     # agent.output_truncation.max_bytes | type: integer | default: 0 | required: No | validation: must be greater than or equal to 0

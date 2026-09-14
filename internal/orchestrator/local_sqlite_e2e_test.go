@@ -361,7 +361,6 @@ update detent_work_items set fields_json = ? where project_id = ? and id = ?`,
 			SourceState:   "Review",
 			PassState:     "Ready for Pickup",
 			ReworkState:   "Rework",
-			ReworkLimit:   0,
 			Gate: gate.Config{
 				Kind: gate.KindArtifact,
 				Artifact: gate.ArtifactConfig{

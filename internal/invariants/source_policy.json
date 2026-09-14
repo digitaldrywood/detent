@@ -2,6 +2,7 @@
   "reasons": [
     "artifact_gate_convergence_breaker",
     "artifact_gate_wait_review_reconciliation",
+    "attempt_allowance_exhausted",
     "auto_promote_gate_wait_timeout",
     "backend_capacity_pause",
     "backend_capacity_recovered",
@@ -44,7 +45,7 @@
     "internal/orchestrator/autopromote_tick.go:applyStaleMergingPullRequestDecision": "33131312123c9f6af35e0cce3e1b900ecf63e135632453bbde8199fecb4c0986",
     "internal/orchestrator/autopromote_tick.go:applyStaleMergedPullRequestDecision": "b2375d9ed50f28adde05079e47cc2482be5e3c8b230addbc099ce95c6ae57e4d",
     "internal/orchestrator/autopromote_tick.go:applyStaleTodoPullRequestDecision": "bc21a3871b4509cd8118ed97b4ef7d1f1158770ef60210badb2a35aa536b96c2",
-    "internal/orchestrator/autopromote_tick.go:applyAutoPromoteDecisionWithTarget": "c601a68e07a0e7eba0f8f9ee6ac71f08b8658514d20d9b12ac23c4d77da1e20a",
+    "internal/orchestrator/autopromote_tick.go:applyAutoPromoteDecisionWithTarget": "282298791c4b2ed89218ceab200f1541d71246f295c6130268f8a0d36520857c",
     "internal/orchestrator/deliverable_recovery.go:blockDeliverableRecoveryFailure": "89e1e4edb638590695e01d674ee279ca49a3feb9ea079875e44224a43dbc8f87",
     "internal/orchestrator/deliverable_recovery.go:blockHumanOwnedWorkerFailure": "3befb701b009a454bca09078a7eb600949e4ca7119c027dfde3ef71b09bd1fbc",
     "internal/orchestrator/implement_progress.go:blockImplementProgress": "7d5ced0b0a6b3dcf7963fff04f59b96625d04d1a7662d9c4ca4d88b0b7451126",

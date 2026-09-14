@@ -71,18 +71,6 @@ type mergingIssuePriority struct {
 	stickyIssueID string
 }
 
-type autoPromoteReworkLimitSummary struct {
-	Limit        int
-	Count        int
-	ReasonCounts []autoPromoteReworkReasonCount
-	Signature    autoPromoteReworkSignature
-}
-
-type autoPromoteReworkReasonCount struct {
-	Reason string
-	Count  int
-}
-
 type autoPromoteReworkSignature struct {
 	PRNumber     int64
 	HeadSHA      string
@@ -124,6 +112,24 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			if !hydrated {
 				continue
 			}
+		}
+
+		allowance, allowanceErr := o.issueAttemptAllowance(ctx, issue)
+		if allowanceErr != nil {
+			continue
+		}
+		if allowance.exhausted() && o.cfg.DeliverableKind != "artifact" {
+			if _, running := state.Running[issueID]; running {
+				continue
+			}
+			if allowance.Triage != nil {
+				if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
+					o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
+				}
+			} else if !mergeWorkerIssue(issue) {
+				o.dispatchIssue(ctx, state, issue, 1, now, "")
+			}
+			continue
 		}
 
 		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
@@ -3165,39 +3171,6 @@ func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
 	transitionReason := string(decision.Reason)
 	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
 	metadata := workflowLaneMetadata{}
-	if decision.Action == AutoPromoteActionRework {
-		limit, err := o.autoPromoteReworkLimit(ctx, issue, summary)
-		if err != nil {
-			if o.logger != nil {
-				o.logger.Warn(
-					"auto promote rework limit check failed",
-					"issue_id", issueID,
-					"identifier", issue.Identifier,
-					"action", decision.Action,
-					"reason", decision.Reason,
-					"target_state", targetState,
-					"error", err,
-				)
-			}
-			return "", false
-		}
-		if limit.Exceeded() {
-			targetState = blockedStatusState
-			transitionReason = "rework_limit"
-			body = autoPromoteReworkLimitComment(summary, decision, displayStateName(issue.State), limit)
-			metadata.ReworkBreaker = &workflowLaneReworkBreakerMetadata{Reason: string(decision.Reason)}
-			recovery := o.newBlockedRecoveryMetadata(
-				ctx,
-				issue,
-				RunModeImplement,
-				"rework_limit",
-				blockedRecoveryPredicateManaged,
-				autoPromoteReworkState,
-				DiffStats{},
-			)
-			metadata.BlockedRecovery = recovery.BlockedRecovery
-		}
-	}
 
 	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, transitionReason, metadata); err != nil {
 		if o.logger != nil {
@@ -3241,108 +3214,6 @@ func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
 	return targetState, true
 }
 
-func (s autoPromoteReworkLimitSummary) Exceeded() bool {
-	return s.Limit > 0 && s.Count >= s.Limit
-}
-
-func (o *Orchestrator) autoPromoteReworkLimit(
-	ctx context.Context,
-	issue connector.Issue,
-	summary AutoPromoteSummary,
-) (autoPromoteReworkLimitSummary, error) {
-	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	limitSummary := autoPromoteReworkLimitSummary{
-		Limit:     cfg.ReworkLimit,
-		Signature: autoPromoteReworkSignatureFromIssue(issue, summary),
-	}
-	if cfg.ReworkLimit <= 0 {
-		return limitSummary, nil
-	}
-	if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
-		return limitSummary, nil
-	}
-	reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader)
-	if !ok || reader == nil {
-		return limitSummary, errors.New("workflow metrics timeline reader unavailable")
-	}
-
-	timeline, err := reader.IssueWorkflowTimeline(ctx, store.IssueIdentity{
-		ProjectID:  o.workflowMetricsProjectID(),
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		IssueURL:   issue.URL,
-	})
-	if err != nil {
-		return limitSummary, err
-	}
-	entries := autoPromoteReworkLaneEntries(timeline.Events, cfg.ReworkState)
-	entries = autoPromoteReworkLaneEntriesForSignature(entries, limitSummary.Signature)
-	limitSummary.Count = len(entries)
-	limitSummary.ReasonCounts = autoPromoteReworkReasonCounts(entries)
-	return limitSummary, nil
-}
-
-func autoPromoteReworkLaneEntries(events []store.WorkflowPhaseEvent, reworkState string) []store.WorkflowPhaseEvent {
-	reworkState = normalizeState(reworkState)
-	entries := make([]store.WorkflowPhaseEvent, 0, len(events))
-	currentLane := ""
-	for _, event := range events {
-		if event.PhaseType != store.WorkflowPhaseTypeLane {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
-			continue
-		}
-		lane := normalizeState(event.PhaseName)
-		previousLane := normalizeState(event.PreviousPhaseName)
-		if previousLane == "" {
-			previousLane = currentLane
-		}
-		if lane == reworkState && previousLane != reworkState {
-			entries = append(entries, event)
-		}
-		currentLane = lane
-	}
-	return entries
-}
-
-func autoPromoteReworkReasonCounts(events []store.WorkflowPhaseEvent) []autoPromoteReworkReasonCount {
-	counts := map[string]int{}
-	order := make([]string, 0, len(events))
-	for _, event := range events {
-		reason := strings.TrimSpace(event.Reason)
-		if reason == "" {
-			reason = "state_transition"
-		}
-		if _, ok := counts[reason]; !ok {
-			order = append(order, reason)
-		}
-		counts[reason]++
-	}
-
-	out := make([]autoPromoteReworkReasonCount, 0, len(order))
-	for _, reason := range order {
-		out = append(out, autoPromoteReworkReasonCount{Reason: reason, Count: counts[reason]})
-	}
-	return out
-}
-
-func autoPromoteReworkLaneEntriesForSignature(
-	events []store.WorkflowPhaseEvent,
-	signature autoPromoteReworkSignature,
-) []store.WorkflowPhaseEvent {
-	if signature.empty() {
-		return events
-	}
-	matching := make([]store.WorkflowPhaseEvent, 0, len(events))
-	for _, event := range events {
-		if autoPromoteReworkSignatureMatches(signature, autoPromoteReworkSignatureFromEvent(event)) {
-			matching = append(matching, event)
-		}
-	}
-	return matching
-}
-
 func autoPromoteReworkSignatureFromIssue(issue connector.Issue, summary AutoPromoteSummary) autoPromoteReworkSignature {
 	signature := autoPromoteReworkSignature{}
 	if issue.PRNumber != nil && *issue.PRNumber > 0 {
@@ -3359,46 +3230,6 @@ func autoPromoteReworkSignatureFromIssue(issue connector.Issue, summary AutoProm
 		signature.FailedChecks = autoPromoteCanonicalChecks(autoPromoteFailedChecksFromPullRequest(issue.PullRequest))
 	}
 	return signature
-}
-
-func autoPromoteReworkSignatureFromEvent(event store.WorkflowPhaseEvent) autoPromoteReworkSignature {
-	signature := autoPromoteReworkSignature{}
-	if event.PRNumber != nil && *event.PRNumber > 0 {
-		signature.PRNumber = *event.PRNumber
-	}
-	if metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON); ok {
-		if metadata.PullRequest != nil {
-			if metadata.PullRequest.Number > 0 {
-				signature.PRNumber = metadata.PullRequest.Number
-			}
-			signature.HeadSHA = strings.TrimSpace(metadata.PullRequest.HeadSHA)
-			signature.FailedChecks = autoPromoteCanonicalChecks(metadata.PullRequest.FailedChecks)
-		}
-	}
-	return signature
-}
-
-func autoPromoteReworkSignatureMatches(current autoPromoteReworkSignature, event autoPromoteReworkSignature) bool {
-	if current.empty() {
-		return true
-	}
-	if current.PRNumber > 0 && event.PRNumber > 0 && current.PRNumber != event.PRNumber {
-		return false
-	}
-	if current.HeadSHA != "" && event.HeadSHA != current.HeadSHA {
-		return false
-	}
-	if len(current.FailedChecks) > 0 && !slices.Equal(current.FailedChecks, event.FailedChecks) {
-		return false
-	}
-	if current.HeadSHA != "" || len(current.FailedChecks) > 0 {
-		return true
-	}
-	return current.PRNumber <= 0 || event.PRNumber <= 0 || current.PRNumber == event.PRNumber
-}
-
-func (s autoPromoteReworkSignature) empty() bool {
-	return s.PRNumber <= 0 && s.HeadSHA == "" && len(s.FailedChecks) == 0
 }
 
 func autoPromoteCanonicalChecks(checks []string) []string {
@@ -3677,78 +3508,6 @@ func appendAutoPromoteWorkpadCommentFields(b *strings.Builder, decision AutoProm
 		b.WriteString("\n- workpad_status_hash: ")
 		b.WriteString(hash)
 	}
-}
-
-func autoPromoteReworkLimitComment(
-	summary AutoPromoteSummary,
-	decision AutoPromoteDecision,
-	sourceState string,
-	limit autoPromoteReworkLimitSummary,
-) string {
-	var b strings.Builder
-	sourceState = displayStateName(sourceState)
-	if sourceState == "" {
-		sourceState = autoPromoteSourceState
-	}
-	b.WriteString("Auto-promote routed this issue from ")
-	b.WriteString(sourceState)
-	b.WriteString(" to Blocked because the Rework limit was reached.")
-	b.WriteString("\n\n")
-	b.WriteString("- rework_limit: ")
-	b.WriteString(strconv.Itoa(limit.Limit))
-	b.WriteString("\n- prior_rework_transitions: ")
-	b.WriteString(strconv.Itoa(limit.Count))
-	b.WriteString("\n- current_rework_reason: ")
-	b.WriteString(string(decision.Reason))
-	if reasons := autoPromoteReworkReasonsText(limit.ReasonCounts); reasons != "" {
-		b.WriteString("\n- repeated_rework_reasons: ")
-		b.WriteString(reasons)
-	}
-	if summary.PullRequestURL != "" {
-		b.WriteString("\n- pull request: ")
-		b.WriteString(summary.PullRequestURL)
-	}
-	if summary.MergeableState != "" {
-		b.WriteString("\n- mergeable_state: ")
-		b.WriteString(summary.MergeableState)
-	}
-	if decision.CIStatus != "" {
-		b.WriteString("\n- ci_status: ")
-		b.WriteString(decision.CIStatus)
-	}
-	if failedChecks := strings.Join(summary.FailedChecks, ", "); failedChecks != "" {
-		b.WriteString("\n- failed_checks: ")
-		b.WriteString(failedChecks)
-	}
-	if len(summary.UnresolvedReviewThreads) > 0 {
-		b.WriteString("\n- unresolved_review_threads: ")
-		b.WriteString(strconv.Itoa(len(summary.UnresolvedReviewThreads)))
-		if location := pullRequestReviewThreadLocation(summary.UnresolvedReviewThreads[0]); location != "" {
-			b.WriteString("\n- first_unresolved_review_thread: ")
-			b.WriteString(location)
-		}
-	}
-
-	if len(decision.Findings) > 0 {
-		b.WriteString("\n\nCurrent findings:")
-		for _, finding := range decision.Findings {
-			b.WriteString("\n- ")
-			b.WriteString(autoPromoteFindingText(finding))
-		}
-	}
-
-	return b.String()
-}
-
-func autoPromoteReworkReasonsText(counts []autoPromoteReworkReasonCount) string {
-	parts := make([]string, 0, len(counts))
-	for _, count := range counts {
-		if strings.TrimSpace(count.Reason) == "" || count.Count <= 0 {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s x%d", count.Reason, count.Count))
-	}
-	return strings.Join(parts, ", ")
 }
 
 func autoPromoteFindingText(finding AutoPromoteFinding) string {

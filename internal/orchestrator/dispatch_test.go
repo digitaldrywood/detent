@@ -284,7 +284,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.AllowedIssueLabels = []string{" Docs ", "docs", "Chore"}
 	cfg.Agent.AutoPromote.GateWaitState = " Review "
 	cfg.Agent.AutoPromote.GateWaitTimeoutSeconds = 900
-	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Agent.OverloadRetryDelayMS = 60000
 	cfg.Agent.MergeWorkerStartupTimeoutMS = 180000
 	cfg.Agent.MergeWorkerMaxDurationMS = 7200000
@@ -389,9 +388,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.AutoPromote.GateWaitTimeout != 15*time.Minute {
 		t.Fatalf("AutoPromote.GateWaitTimeout = %s, want 15m0s", got.AutoPromote.GateWaitTimeout)
-	}
-	if got.AutoPromote.ReworkLimit != 2 {
-		t.Fatalf("AutoPromote.ReworkLimit = %d, want 2", got.AutoPromote.ReworkLimit)
 	}
 	if !got.MergeFastPathEnabled {
 		t.Fatal("MergeFastPathEnabled = false, want true")

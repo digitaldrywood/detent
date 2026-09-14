@@ -66,12 +66,11 @@ const (
 	defaultGitHubStatusPageURL = "https://www.githubstatus.com"
 	defaultLinearStatusPageURL = "https://linearstatus.com"
 
-	DefaultAgentBackendID                    = "codex"
-	AgentBackendCodex                        = "codex"
-	AgentBackendClaudeCode                   = "claude_code"
-	DefaultKnowledgeMaxBytes                 = 64 * 1024
-	DefaultReworkLimit                       = 3
-	DefaultNoProgressLimit                   = 3
+	DefaultAgentBackendID    = "codex"
+	AgentBackendCodex        = "codex"
+	AgentBackendClaudeCode   = "claude_code"
+	DefaultKnowledgeMaxBytes = 64 * 1024
+
 	DefaultNoProgressTokenLimit              = 25_000_000
 	DefaultNoProgressSpendLimitUSD           = 3.0
 	DefaultLifetimeSessionLimit              = 120
@@ -495,8 +494,6 @@ type AutoPromote struct {
 	SourceState            string   `yaml:"source_state,omitempty"`
 	PassState              string   `yaml:"pass_state,omitempty"`
 	ReworkState            string   `yaml:"rework_state,omitempty"`
-	ReworkLimit            int      `yaml:"rework_limit,omitempty"`
-	NoProgressLimit        int      `yaml:"no_progress_limit,omitempty"`
 }
 
 type OutputTruncation struct {
@@ -1545,8 +1542,6 @@ func Default() Config {
 				SourceState:            "Human Review",
 				PassState:              "Merging",
 				ReworkState:            "Rework",
-				ReworkLimit:            DefaultReworkLimit,
-				NoProgressLimit:        DefaultNoProgressLimit,
 			},
 			Budget:    budget,
 			Lessons:   defaultLessons(),
@@ -1675,8 +1670,6 @@ func (c *Config) Validate() error {
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)
 	c.validateAgentInstructions(&problems)
-	c.validateAutoPromoteReworkLimit(&problems)
-	c.validateAutoPromoteNoProgressLimit(&problems)
 	c.Agents.validate(&problems)
 	c.Codex.validate(&problems)
 	problems = append(problems, gate.Validate("gate", c.Gate)...)
@@ -2075,30 +2068,6 @@ func (c Config) configuredWorkflowStates() map[string]string {
 	add(c.Tracker.ObservedStates)
 	add(c.Tracker.TerminalStates)
 	return states
-}
-
-func (c *Config) validateAutoPromoteReworkLimit(problems *[]string) {
-	if !c.Agent.AutoPromote.Enabled || c.Agent.AutoPromote.ReworkLimit <= 0 {
-		return
-	}
-	if stateListContains(c.Tracker.ActiveStates, "Blocked") ||
-		stateListContains(c.Tracker.ObservedStates, "Blocked") ||
-		stateListContains(c.Tracker.TerminalStates, "Blocked") {
-		return
-	}
-	*problems = append(*problems, "tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.rework_limit is greater than 0")
-}
-
-func (c *Config) validateAutoPromoteNoProgressLimit(problems *[]string) {
-	if c.Agent.AutoPromote.NoProgressLimit <= 0 {
-		return
-	}
-	if stateListContains(c.Tracker.ActiveStates, "Blocked") ||
-		stateListContains(c.Tracker.ObservedStates, "Blocked") ||
-		stateListContains(c.Tracker.TerminalStates, "Blocked") {
-		return
-	}
-	*problems = append(*problems, "tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0")
 }
 
 func (l *LocalSQLite) Normalize() {
@@ -2754,12 +2723,6 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	}
 	if strings.TrimSpace(a.ReworkState) == "" {
 		*problems = append(*problems, prefix+".rework_state must not be blank")
-	}
-	if a.ReworkLimit < 0 {
-		*problems = append(*problems, prefix+".rework_limit must be greater than or equal to 0")
-	}
-	if a.NoProgressLimit < 0 {
-		*problems = append(*problems, prefix+".no_progress_limit must be greater than or equal to 0")
 	}
 }
 

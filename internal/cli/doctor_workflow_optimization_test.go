@@ -288,7 +288,7 @@ func TestDoctorWorkflowOptimizationProposesGovernedSelfImprovement(t *testing.T)
 	}
 
 	rework := doctorWorkflowProposalBySignal(t, report.Proposals, "doctor_finding", doctorWorkflowRuleReworkLaps)
-	if rework.TargetKind != "workflow" || rework.TargetPath != "agent.auto_promote.rework_limit" || rework.Count != 3 {
+	if rework.TargetKind != "workflow" || rework.TargetPath != "" || rework.Count != 3 {
 		t.Fatalf("rework proposal = %#v", rework)
 	}
 	if !strings.Contains(rework.Governance, "must not self-apply") || !strings.Contains(rework.IssueBody, "status: pending") {
@@ -1589,9 +1589,6 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 	}
 	if workflow.Config.Agent.MaxSessionTokens != 40000 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want 40000", workflow.Config.Agent.MaxSessionTokens)
-	}
-	if workflow.Config.Agent.AutoPromote.ReworkLimit != 2 {
-		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want 2", workflow.Config.Agent.AutoPromote.ReworkLimit)
 	}
 	if workflow.Config.Gate.Validator.Model != doctorWorkflowValidatorModel {
 		t.Fatalf("Gate.Validator.Model = %q, want %s", workflow.Config.Gate.Validator.Model, doctorWorkflowValidatorModel)
