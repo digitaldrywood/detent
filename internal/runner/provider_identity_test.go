@@ -19,7 +19,7 @@ import (
 
 func TestProviderIdentityFailureDoesNotCancelTurn(t *testing.T) {
 	t.Parallel()
-	for _, role := range []string{"implementation", "validator"} {
+	for _, role := range []string{"implementation", "validator", "triage"} {
 		for _, tc := range []struct {
 			name string
 			err  error
@@ -41,15 +41,25 @@ func TestProviderIdentityFailureDoesNotCancelTurn(t *testing.T) {
 				info := workspace.Info{Path: t.TempDir(), Key: "provider-identity"}
 				var logs bytes.Buffer
 				r, err := NewRunner(Dependencies{
-					Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
-					Workflow:  config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Work"},
-					Workspace: &fakeWorkspaceBackend{info: info}, AgentBackend: backend, Store: ss,
+					SecurityAuditRoot: t.TempDir(),
+					Logger:            slog.New(slog.NewTextHandler(&logs, nil)),
+					Workflow:          config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Work"},
+					Workspace:         &fakeWorkspaceBackend{info: info}, AgentBackend: backend, Store: ss,
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
 				issue := connector.Issue{ID: "2626", Identifier: "digitaldrywood/detent#2626"}
-				if role == "validator" {
+				switch role {
+				case "triage":
+					result, err := r.Run(t.Context(), RunRequest{Issue: issue, Mode: RunModeTriage})
+					if err != nil {
+						t.Fatalf("Run triage: %v", err)
+					}
+					if result.FinalState != FinalStateCompleted || !strings.Contains(result.Output, "continued") {
+						t.Fatalf("result = %+v", result)
+					}
+				case "validator":
 					result, err := r.Validate(t.Context(), ValidatorRequest{Issue: issue})
 					if err != nil {
 						t.Fatalf("Validate: %v", err)
@@ -57,7 +67,7 @@ func TestProviderIdentityFailureDoesNotCancelTurn(t *testing.T) {
 					if result.Summary != "continued" || result.Verdict != gate.ValidatorVerdictPass {
 						t.Fatalf("result = %+v", result)
 					}
-				} else {
+				default:
 					execution := r.runAgentTurn(t.Context(), backend, AgentTurnRequest{Workspace: info.Path}, RunRequest{Issue: issue}, info, workspace.Issue{ID: issue.ID, Identifier: issue.Identifier}, config.Agent{}, "", nil, time.Now(), 2626, agentidentity.Identity{}, nil, 0, "", "")
 					if execution.err != nil {
 						t.Fatalf("runAgentTurn: %v", execution.err)
