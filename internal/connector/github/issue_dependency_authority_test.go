@@ -142,3 +142,38 @@ func TestTodoNativeDependencyBudgetReserveDoesNotReturnCandidates(t *testing.T) 
 		})
 	}
 }
+
+func TestNativeDependencyFailurePreservesRefsAndRechecksCapability(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusInternalServerError, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			const path = "/repos/digitaldrywood/detent/issues/101/dependencies/blocked_by?per_page=100"
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{method: http.MethodGet, path: path, body: `[{"node_id":"I_100","number":100,"state":"open"}]`},
+				{method: http.MethodGet, path: path, status: status, body: `{"message":"temporary failure"}`},
+				{method: http.MethodGet, path: path, body: `[]`},
+			})
+			c := newGitHubTestConnector(t, server, Config{})
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#101"}
+			if err := c.hydrateIssueBlockedByRefs(t.Context(), &issue); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.hydrateIssueBlockedByRefs(t.Context(), &issue); err == nil {
+				t.Fatal("native failure certified a successful fallback")
+			}
+			if len(issue.BlockedBy) != 1 || issue.BlockedBy[0].Source != connector.BlockedRefSourceNative || issue.DependencySource == connector.BlockedRefSourceProse {
+				t.Fatalf("native failure cleared blockers: %+v", issue)
+			}
+			if err := c.hydrateIssueBlockedByRefs(t.Context(), &issue); err != nil {
+				t.Fatal(err)
+			}
+			if len(issue.BlockedBy) != 0 || issue.DependencySource != connector.BlockedRefSourceNative {
+				t.Fatalf("successful retry did not use empty native list: %+v", issue)
+			}
+			if got := len(server.requests()); got != 3 {
+				t.Fatalf("native reads = %d, want 3", got)
+			}
+		})
+	}
+}

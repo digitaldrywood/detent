@@ -126,7 +126,9 @@ repositories fall back to issue-body lines; historical comments are diagnostic
 only. Public reads select the dependency source before resolving blockers, and
 tracker refreshes replace authoritative empty lists instead of restoring prior
 refs. This also removes the orchestrator's historical-comment union and prevents
-reparsing connector-owned dependencies. Ignored prose is explained without
+reparsing connector-owned dependencies. Degraded native reads propagate errors
+instead of certifying prose fallback or suppressing subsequent native reads.
+Ignored prose is explained without
 introducing another blocking mechanism.
 
 ## INV-4 — Native merge queue

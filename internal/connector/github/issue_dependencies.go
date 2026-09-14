@@ -176,7 +176,7 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 func (c *Connector) fetchNativeBlockedByRefs(ctx context.Context, ref issueRef) ([]connector.BlockedRef, bool, error) {
 	repo := ref.Owner + "/" + ref.Name
 	if cap, ok := c.nativeDependencyCapability(repo); ok {
-		if cap.Status != nativeDependencyStatusAvailable {
+		if cap.Status == nativeDependencyStatusUnavailable {
 			return nil, false, nil
 		}
 	}
@@ -184,7 +184,7 @@ func (c *Connector) fetchNativeBlockedByRefs(ctx context.Context, ref issueRef) 
 	refs, err := c.restNativeBlockedByRefs(ctx, ref)
 	if err != nil {
 		c.handleNativeDependencyFetchError(ctx, repo, err)
-		if nativeDependencyRetryableError(err) {
+		if !nativeDependencyUnavailableError(err) {
 			return nil, false, err
 		}
 		return nil, false, nil
