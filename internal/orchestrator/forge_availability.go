@@ -58,12 +58,6 @@ func (o *Orchestrator) registerForgeUnavailable(state *State, availabilityErr *f
 	condition.ErrorClass = mergedForgeAvailabilityClass(condition.ErrorClass, availabilityErr.Class)
 	condition.LastObservedAt = observedAt
 	condition.LastError = strings.TrimSpace(availabilityErr.Error())
-	if condition.ProbeIssueID == running.Issue.ID {
-		condition.ProbeIssueID = ""
-		condition.LastProbeAt = observedAt
-		condition.LastProbeResult = "failed"
-		condition.LastProbeDetail = condition.LastError
-	}
 	condition.NextProbeAt = backendCapacityBoundedProbeAt(
 		time.Time{},
 		observedAt.Add(backendCapacityProbeDelayForAttempt(condition.ProbeAttempts)),
@@ -136,7 +130,8 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 		host = forgeHostForIssue(issue, fallbackHost)
 	}
 	condition, active := forgeCondition(state, host)
-	if !active {
+	if !active || condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+		// Credential admission was decided across the whole project above.
 		return false
 	}
 	if condition.ProbeIssueID == issue.ID {
@@ -144,9 +139,6 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 	}
 	if retry.ForgeUnavailable && condition.ProbeIssueID == "" && !now.Before(condition.NextProbeAt) {
 		return false
-	}
-	if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
-		return !credentialCanaryNeedsIssue(state, condition, now)
 	}
 	return retry.ForgeUnavailable || mergeWorkerIssue(issue)
 }
@@ -156,25 +148,27 @@ func workerGitHubCredentialAvailabilityBlocks(state *State, issueID string, retr
 		return false
 	}
 	retryHost := forgeavailability.NormalizeHost(retry.ForgeHost)
+	active, canary := false, false
 	for _, condition := range state.ForgeUnavailable {
 		if condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
 			continue
 		}
-		if condition.ProbeIssueID == issueID {
+		active = true
+		// Credential conditions share project-wide admission: one host's write
+		// canary must pass overlapping pauses, while all other workers wait.
+		if condition.ProbeIssueID != "" {
+			if condition.ProbeIssueID != issueID {
+				return true
+			}
+			canary = true
 			continue
 		}
-		if credentialCanaryNeedsIssue(state, condition, now) {
-			continue
+		if credentialCanaryNeedsIssue(state, condition, now) ||
+			retry.ForgeUnavailable && retryHost == forgeavailability.NormalizeHost(condition.Host) && !now.Before(condition.NextProbeAt) {
+			canary = true
 		}
-		if retry.ForgeUnavailable &&
-			retryHost == forgeavailability.NormalizeHost(condition.Host) &&
-			condition.ProbeIssueID == "" &&
-			!now.Before(condition.NextProbeAt) {
-			continue
-		}
-		return true
 	}
-	return false
+	return active && !canary
 }
 
 // A retained project condition can outlive its original issue. Reuse the next
@@ -192,6 +186,11 @@ func credentialCanaryNeedsIssue(state *State, condition ForgeCondition, now time
 }
 
 func reserveCredentialCanaryForDispatch(state *State, issueID string, now time.Time) {
+	for _, condition := range state.ForgeUnavailable {
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable && condition.ProbeIssueID != "" {
+			return
+		}
+	}
 	for _, key := range sortedKeys(state.ForgeUnavailable) {
 		condition := state.ForgeUnavailable[key]
 		if credentialCanaryNeedsIssue(state, condition, now) {
@@ -268,6 +267,9 @@ func (o *Orchestrator) handleForgeUnavailableCompletion(ctx context.Context, sta
 			Host: condition.Host, Operation: condition.Operation,
 		}, condition.ErrorClass, cause)
 	}
+	// Completion releases the worker's reservation even when the error names
+	// another host. The unresolved conditions remain available for later probes.
+	releaseForgeAvailabilityProbe(state, running.Issue.ID, "failed", availabilityErr.Error(), event.CompletedAt)
 	condition := o.registerForgeUnavailable(state, availabilityErr, running, event.CompletedAt)
 	forgeRetry := forgeRetryFromCompletion(event, running, condition)
 	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)

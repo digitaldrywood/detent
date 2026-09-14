@@ -54,7 +54,15 @@ reconciliation. `TestWorkerCredentialBlockerError` preserves final-message crede
 reports as write-path failures, and `TestCredentialForgeProbeRequiresSuccessfulWrite`
 keeps the named project pause active until its write canary succeeds.
 `TestCredentialWaitSurvivesOverlappingFailures` preserves credential precedence
-when same-host failures overlap. `TestCredentialCanaryDurableRecovery` preserves
+when same-host failures overlap. `TestCredentialCanaryRecoversOverlappingHosts`
+keeps one project credential canary admissible across overlapping host pauses,
+including operator retries; the project remains paused while retained credential
+conditions await a successful write canary.
+`TestCredentialCanaryReplacementOverlappingHosts` preserves the same single-canary
+admission when a condition needs a replacement issue.
+`TestCredentialCanaryCrossHostFailureReleasesReservation` releases completed
+canary ownership even when an error names another host, including terminal issues.
+`TestCredentialCanaryDurableRecovery` preserves
 inconclusive probes as durable waits and records successful write proof so restart
 recovery cannot resurrect a resolved pause.
 `TestCredentialConditionOutlivesOriginatingIssue` separates project health from
