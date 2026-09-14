@@ -17,8 +17,9 @@ import (
 )
 
 type dispatchPlanner struct {
-	cfg Config
-	now time.Time
+	recordedBlockers func(connector.Issue, *State, time.Time) recordedBlockerEvaluation
+	cfg              Config
+	now              time.Time
 }
 
 type dispatchPlanHooks struct {
@@ -826,6 +827,12 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
+	}
+	if p.recordedBlockers != nil {
+		evaluation := p.recordedBlockers(issue, state, now)
+		if evaluation.Holds || evaluation.Unverifiable || evaluation.HumanOwned {
+			return dispatchableDecision{reason: dispatchSkipBlockedByDependency}
+		}
 	}
 	return dispatchableDecision{dispatchable: true}
 }

@@ -290,6 +290,12 @@ wait preserves retry attempt and resume state.
 and Workpad sources (#2699). This consolidates dependency readiness without
 adding a recovery loop.
 
+Dispatch also consults the existing recorded-blocker evaluator for structured
+Workpad predicates, including direct PR references (#2645). Normal dispatch,
+due retries, and queued grants wait while evidence holds or is unverifiable;
+cleared predicates release dispatch without a new park or recovery loop. Native
+relations remain authoritative for issue-state dependencies.
+
 Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
 attempt accounting into one fixed allowance: three code/rework sessions started
 since the last merged PR or operator move out of Human Review (#2692). The
