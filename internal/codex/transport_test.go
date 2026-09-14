@@ -894,8 +894,13 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		if err != nil {
 			helperBackpressureExit("marshal workspace probe", err)
 		}
-		if err := os.WriteFile(os.Getenv("DETENT_CODEX_TRANSPORT_PROBE"), payload, 0o600); err != nil {
+		probePath := os.Getenv("DETENT_CODEX_TRANSPORT_PROBE")
+		tempPath := probePath + ".tmp"
+		if err := os.WriteFile(tempPath, payload, 0o600); err != nil {
 			helperBackpressureExit("write workspace probe", err)
+		}
+		if err := os.Rename(tempPath, probePath); err != nil {
+			helperBackpressureExit("publish workspace probe", err)
 		}
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "block-send":
