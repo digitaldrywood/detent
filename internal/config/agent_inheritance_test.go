@@ -83,7 +83,7 @@ func TestModelSelectionPartialOverrides(t *testing.T) {
 		{"clear backends", "backend_kinds: []", func(p ModelSelection) bool { return p.BackendKinds != nil && len(*p.BackendKinds) == 0 }},
 		{"clear fallback", "fallback_order: []", func(p ModelSelection) bool { return len(*p.FallbackOrder) == 0 }},
 		{"clear rules", "rules: []", func(p ModelSelection) bool { return len(*p.Rules) == 0 }},
-		{"disable rule", "rules: [{name: complex, disabled: true}]", func(p ModelSelection) bool { return len(*p.Rules) == 3 && (*p.Rules)[2].Disabled }},
+		{"disable rule", "rules: [{name: complex, disabled: true}]", func(p ModelSelection) bool { return len(*p.Rules) == 2 && (*p.Rules)[1].Disabled }},
 		{"clear stages", "stages: {}", func(p ModelSelection) bool { return p.Stages != nil && len(p.Stages) == 0 }},
 		{"one stage field", "stages: {merge: {model: complex}}", func(p ModelSelection) bool {
 			return *p.Stages["merge"].Model == "complex" && !*p.Stages["merge"].IssueComplexity
