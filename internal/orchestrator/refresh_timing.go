@@ -19,6 +19,8 @@ type refreshTiming struct {
 	startedAt    time.Time
 	phaseStarted time.Time
 	phase        string
+	stepName     string
+	stepStarted  time.Time
 	phases       []any
 }
 
@@ -94,9 +96,34 @@ func refreshTimingStatus(state *State) string {
 }
 
 func (t *refreshTiming) finishPhase(now time.Time) {
+	t.finishStep(now)
 	if t.phase == "" {
 		return
 	}
 	t.phases = append(t.phases, t.phase+"_duration", now.Sub(t.phaseStarted))
 	t.phase = ""
+}
+
+// step reports progress at info level without changing refresh stage ownership.
+// The previous step is timed before the next starts, including on early returns.
+func (t *refreshTiming) step(name string) {
+	if t == nil {
+		return
+	}
+	now := time.Now()
+	t.finishStep(now)
+	t.stepName, t.stepStarted = name, now
+	if t.logger != nil {
+		t.logger.Info("project refresh sub-step started", "project_id", t.projectID, "stage", t.phase, "step", name)
+	}
+}
+
+func (t *refreshTiming) finishStep(now time.Time) {
+	if t.stepName == "" {
+		return
+	}
+	if t.logger != nil {
+		t.logger.Info("project refresh sub-step completed", "project_id", t.projectID, "stage", t.phase, "step", t.stepName, "duration", now.Sub(t.stepStarted))
+	}
+	t.stepName = ""
 }

@@ -179,7 +179,7 @@ func appLiveStatusLabel(data DashboardShellData) string {
 	if data.Snapshot.LastKnown {
 		return "Live · last-known data"
 	}
-	if data.Snapshot.Refresh.Stale(data.Snapshot.GeneratedAt) || data.Snapshot.Refresh.Behind() {
+	if !boardObservationsCurrent(data.Snapshot) && (data.Snapshot.Refresh.Stale(data.Snapshot.GeneratedAt) || data.Snapshot.Refresh.Behind()) {
 		return "Live · data delayed"
 	}
 	if appLiveStatusKind(data) == primitives.KindOK {
@@ -199,6 +199,9 @@ func appLiveStatusTextClass(data DashboardShellData) string {
 }
 
 func appLiveStatusAt(data DashboardShellData) time.Time {
+	if at := boardDataObservedAt(data.Snapshot); !at.IsZero() || len(data.Snapshot.Projects) > 0 {
+		return at
+	}
 	if at := refreshOldestSuccess(data.Snapshot.Refresh.Sources); !at.IsZero() {
 		return at
 	}

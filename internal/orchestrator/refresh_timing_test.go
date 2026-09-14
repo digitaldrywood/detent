@@ -55,3 +55,34 @@ func TestRefreshTimingLogsEveryCompletedPhase(t *testing.T) {
 		}
 	}
 }
+
+func TestRefreshSubstepTiming(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		stage    string
+		duration time.Duration
+	}{
+		{"reconciliation", 61 * time.Second},
+		{"reconciliation", 296 * time.Second},
+		{"workspace_cleanup", 290 * time.Second},
+	} {
+		t.Run(tt.stage+tt.duration.String(), func(t *testing.T) {
+			var logs bytes.Buffer
+			timing := newRefreshTiming(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})), "detent", false)
+			timing.next(tt.stage)
+			timing.step("fetch")
+			started := timing.stepStarted
+			timing.finishStep(started.Add(tt.duration))
+			timing.step("apply")
+			timing.next("publish")
+			for _, want := range []string{"sub-step started", "sub-step completed", "stage=" + tt.stage, "step=fetch", "duration=" + tt.duration.String(), "step=apply"} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("logs missing %q: %s", want, logs.String())
+				}
+			}
+			if timing.stepName != "" {
+				t.Error("stage transition retained open step")
+			}
+		})
+	}
+}

@@ -16,6 +16,9 @@ func refreshFreshnessKind(snapshot telemetry.Snapshot) primitives.Kind {
 	if refreshSnapshotPartiallyFailed(snapshot) {
 		return primitives.KindWarn
 	}
+	if boardObservationsCurrent(snapshot) {
+		return primitives.KindOK
+	}
 	if snapshot.Refresh.Status == telemetry.RefreshStatusInitializing {
 		return primitives.KindNeutral
 	}
@@ -50,7 +53,7 @@ func refreshFreshnessLabel(snapshot telemetry.Snapshot) string {
 	if snapshot.LastKnown {
 		return "Last-known data"
 	}
-	if snapshot.Refresh.Behind() {
+	if snapshot.Refresh.Behind() && !boardObservationsCurrent(snapshot) {
 		return "Loop behind"
 	}
 	switch refreshFreshnessKind(snapshot) {
@@ -81,12 +84,7 @@ func refreshPartialFailureSummary(snapshot telemetry.Snapshot) string {
 
 func refreshFreshnessSummary(snapshot telemetry.Snapshot) string {
 	label := refreshFreshnessLabel(snapshot)
-	oldest := refreshOldestSuccess(snapshot.Refresh.Sources)
-	if oldest.IsZero() {
-		if snapshot.Refresh.LastRefreshAt != nil {
-			oldest = *snapshot.Refresh.LastRefreshAt
-		}
-	}
+	oldest := boardDataObservedAt(snapshot)
 	if oldest.IsZero() {
 		return label
 	}
