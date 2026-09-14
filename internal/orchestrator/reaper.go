@@ -115,8 +115,8 @@ func activeWorkspaceIssues(state *State, terminalStates []string) []connector.Is
 	}
 	seen := map[string]struct{}{}
 	active := []connector.Issue{}
-	appendIssue := func(issue connector.Issue) {
-		if strings.TrimSpace(issue.Identifier) == "" || workspaceIssueTerminal(issue, terminalStates) {
+	appendIssue := func(issue connector.Issue, running bool) {
+		if strings.TrimSpace(issue.Identifier) == "" || (!running && workspaceIssueTerminal(issue, terminalStates)) {
 			return
 		}
 		key := strings.TrimSpace(issue.ID)
@@ -130,19 +130,21 @@ func activeWorkspaceIssues(state *State, terminalStates []string) []connector.Is
 		active = append(active, issue)
 	}
 	for _, issue := range state.BoardIssues {
-		appendIssue(issue)
+		appendIssue(issue, false)
 	}
 	for _, issue := range state.Pipeline {
-		appendIssue(issue)
+		appendIssue(issue, false)
 	}
 	for _, running := range state.Running {
-		appendIssue(running.Issue)
+		// Terminal lane updates can arrive before the worker finishes validation
+		// and checkpointing. Running ownership ends at its completion event.
+		appendIssue(running.Issue, true)
 	}
 	for _, retry := range state.Retry {
-		appendIssue(retry.Issue)
+		appendIssue(retry.Issue, false)
 	}
 	for _, blocked := range state.Blocked {
-		appendIssue(blocked.Issue)
+		appendIssue(blocked.Issue, false)
 	}
 	return active
 }

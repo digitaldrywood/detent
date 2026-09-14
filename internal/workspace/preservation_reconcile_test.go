@@ -133,3 +133,90 @@ func TestLocalGitReconcileRechecksPreservation(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanupVerifiesLiveRemoteCommits(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"residual", "cleanup", "branch"} {
+		for _, remoteState := range []string{"published", "deleted", "rewound", "merged", "unavailable"} {
+			t.Run(action+"/"+remoteState, func(t *testing.T) {
+				t.Parallel()
+				source := initSourceRepo(t)
+				remote := initBareRemote(t)
+				runGit(t, source, "remote", "add", "origin", remote)
+				runGit(t, source, "push", "-u", "origin", "main")
+				backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := Issue{Identifier: "live-remote-cleanup"}
+				info, err := backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("unique implementation\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, info.Path, "add", "README.md")
+				runGit(t, info.Path, "commit", "-m", "implementation")
+				runGit(t, info.Path, "push", "origin", info.Branch)
+				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				switch remoteState {
+				case "deleted":
+					runGit(t, remote, "update-ref", "-d", "refs/heads/"+info.Branch)
+				case "rewound":
+					base := strings.TrimSpace(runGit(t, remote, "rev-parse", "main"))
+					runGit(t, remote, "update-ref", "refs/heads/"+info.Branch, base)
+				case "merged":
+					runGit(t, source, "merge", "--ff-only", info.Branch)
+					runGit(t, source, "push", "origin", "main")
+					runGit(t, remote, "update-ref", "-d", "refs/heads/"+info.Branch)
+				case "unavailable":
+					if err := os.Rename(remote, remote+"-offline"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Server-side changes deliberately leave the local tracking branch stale.
+				if got := strings.TrimSpace(runGit(t, source, "rev-parse", "refs/remotes/origin/"+info.Branch)); got != head {
+					t.Fatalf("tracking ref = %s, want %s", got, head)
+				}
+				if _, err := backend.PreserveIssue(t.Context(), issue); err != nil && remoteState != "unavailable" {
+					t.Fatal(err)
+				}
+				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return nil, nil }
+				safe := remoteState == "published" || remoteState == "merged"
+				switch action {
+				case "residual":
+					result, err := backend.ReconcileResiduals(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if (result.Removed == 1) != safe {
+						t.Fatalf("safe=%v, result=%+v", safe, result)
+					}
+				case "cleanup":
+					result, err := backend.CleanupIssue(t.Context(), issue)
+					if safe && err != nil {
+						t.Fatal(err)
+					}
+					if !safe && !errors.Is(err, ErrWorkspacePreserved) {
+						t.Fatalf("want preservation, got %+v, %v", result, err)
+					}
+				case "branch":
+					runGit(t, info.Path, "checkout", "--detach", "origin/main")
+					deleted, err := backend.deleteBranch(t.Context(), info.Branch)
+					if deleted != safe || (safe && err != nil) {
+						t.Fatalf("safe=%v, deleted=%v, err=%v", safe, deleted, err)
+					}
+				}
+				if !safe {
+					if !branchExists(t, source, info.Branch) {
+						t.Fatal("deleted implementation branch")
+					}
+					if _, err := os.Stat(info.Path); err != nil {
+						t.Fatalf("lost worktree: %v", err)
+					}
+				}
+			})
+		}
+	}
+}

@@ -173,13 +173,21 @@ no recovery path or orphan-suppression guard (#2505).
 Git workspace cleanup removes the durable `preserve` latch and the residual
 sweep's registration-only exemption (#2612). Recorded and discovered worktrees
 share the existing checks for ownership, active issues/processes, uncommitted
-files, and commits absent from remote refs. Legacy `preserve` JSON fields no
+files, and commits absent from verified live remote heads. Stale tracking refs
+from deleted or force-pushed branches do not establish publication; unavailable
+remotes and unfetched tips retain work until it can be verified. Every running
+worker remains active through finalization, including terminal lane updates.
+Legacy `preserve` JSON fields no
 longer exempt a workspace; checkpoint journals and filesystem retention remain.
 `TestLocalGitReconcileRechecksPreservation` covers restart, legacy records,
 published and merged work, and continued retention of unsafe candidates. No
 merge inference, expiration mechanism, or configuration is added. Expected
 retention keeps path evidence without failing the sweep, so the existing sweep
 interval advances even when local work remains.
+`TestCleanupVerifiesLiveRemoteCommits` covers stale refs and remote failures in
+residual, direct, and branch cleanup;
+`TestResidualCleanupProtectsFinalizingTerminalWorkers` covers terminal worker
+ownership until its completion event.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
