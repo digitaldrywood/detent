@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1111,64 +1112,82 @@ func TestConnectorBoundedBacklogFetchesUseUnfilteredLightweightQuery(t *testing.
 func TestConnectorFetchCandidateIssuesDoesNotBlockOnBlankProjectStatusDefaulting(t *testing.T) {
 	t.Parallel()
 
-	releaseDefaultWrite := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() {
-		releaseOnce.Do(func() {
-			close(releaseDefaultWrite)
+	synctest.Test(t, func(t *testing.T) {
+		releaseDefaultWrite := make(chan struct{})
+		var releaseOnce sync.Once
+		release := func() {
+			releaseOnce.Do(func() {
+				close(releaseDefaultWrite)
+			})
+		}
+		defer release()
+		server := &graphqlTestServer{t: t, unsupportedNative: true, responses: []graphqlTestResponse{
+			{
+				body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
+			},
+			{
+				release: releaseDefaultWrite,
+				body:    `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
+			},
+			{
+				body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
+			},
+		}}
+		c, err := NewConnector(Config{
+			Endpoint: "https://blank-status.test/",
+			APIKey:   "token",
+			HTTPClient: recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
+				w := httptest.NewRecorder()
+				server.serveHTTP(w, r)
+				return w.Result(), nil
+			}),
+			ProjectSlug:  "PVT_1",
+			ActiveStates: []string{"Todo"},
 		})
-	}
-	defer release()
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
-		},
-		{
-			release: releaseDefaultWrite,
-			body:    `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
-		},
-		{
-			body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
-		},
-	})
-	c := newGitHubTestConnector(t, server, Config{
-		ProjectSlug:  "PVT_1",
-		ActiveStates: []string{"Todo"},
-	})
 
-	type result struct {
-		issues []connector.Issue
-		err    error
-	}
-	results := make(chan result, 1)
-	go func() {
-		issues, err := c.FetchCandidateIssues(context.Background())
-		results <- result{issues: issues, err: err}
-	}()
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	select {
-	case result := <-results:
-		if result.err != nil {
-			t.Fatalf("FetchCandidateIssues() error = %v", result.err)
+		type result struct {
+			issues []connector.Issue
+			err    error
 		}
-		if len(result.issues) != 0 {
-			t.Fatalf("FetchCandidateIssues() len = %d, want 0", len(result.issues))
+		results := make(chan result, 1)
+		go func() {
+			issues, err := c.FetchCandidateIssues(context.Background())
+			results <- result{issues: issues, err: err}
+		}()
+
+		// Wait until fetch has returned or is durably blocked on the held response.
+		// No wall-clock deadline competes with scheduling the fetch goroutine.
+		synctest.Wait()
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Fatalf("FetchCandidateIssues() error = %v", result.err)
+			}
+			if len(result.issues) != 0 {
+				t.Fatalf("FetchCandidateIssues() len = %d, want 0", len(result.issues))
+			}
+		default:
+			t.Fatal("FetchCandidateIssues() blocked on default status write")
 		}
-	case <-time.After(200 * time.Millisecond):
+
+		if requests := server.requests(); len(requests) != 2 {
+			t.Fatalf("request count before release = %d, want scan and held status lookup", len(requests))
+		}
 		release()
-		result := <-results
-		t.Fatalf("FetchCandidateIssues() blocked on default status write; issues = %#v error = %v", result.issues, result.err)
-	}
-
-	release()
-	requests := waitForGraphQLRequests(t, server, 3)
-	if len(requests) != 3 {
-		t.Fatalf("request count = %d, want 3", len(requests))
-	}
-	updateVariables := requestVariables(t, requests[2])
-	if updateVariables["itemId"] != "PVTI_blank" || updateVariables["optionId"] != "OPT_backlog" {
-		t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
-	}
+		synctest.Wait()
+		requests := server.requests()
+		if len(requests) != 3 {
+			t.Fatalf("request count = %d, want 3", len(requests))
+		}
+		updateVariables := requestVariables(t, requests[2])
+		if updateVariables["itemId"] != "PVTI_blank" || updateVariables["optionId"] != "OPT_backlog" {
+			t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
+		}
+	})
 }
 
 func TestConnectorFetchCandidateIssuesDefaultStatusWriteSurvivesParentCancellation(t *testing.T) {
