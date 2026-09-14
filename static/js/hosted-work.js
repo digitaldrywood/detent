@@ -117,4 +117,8 @@
     } catch (error) { result.textContent = error.message; }
     finally { button.disabled = false; }
   });
+  // These forms require the submit handler; never POST to the document URL.
+  for (const button of root.querySelectorAll('[data-work-action] button[type="submit"]')) {
+    button.disabled = false;
+  }
 })();

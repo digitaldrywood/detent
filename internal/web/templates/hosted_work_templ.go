@@ -438,14 +438,14 @@ func hostedWorkForm(data HostedPageData, action, label string, title bool) templ
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "</span><textarea name=\"body\" required rows=\"4\" maxlength=\"65536\" class=\"w-full min-w-0 rounded-card border border-line bg-page p-3\"></textarea></label> <button type=\"submit\" class=\"min-h-11 rounded-card border border-line px-4 text-sm font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "</span><textarea name=\"body\" required rows=\"4\" maxlength=\"65536\" class=\"w-full min-w-0 rounded-card border border-line bg-page p-3\"></textarea></label> <button type=\"submit\" disabled class=\"min-h-11 rounded-card border border-line px-4 text-sm font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 77, Col: 117}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 77, Col: 126}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 		if templ_7745c5c3_Err != nil {

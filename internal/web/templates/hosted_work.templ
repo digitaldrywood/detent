@@ -74,7 +74,7 @@ templ hostedWorkForm(data HostedPageData, action, label string, title bool) {
 			<label class="block space-y-2 text-sm font-medium"><span>Change title</span><input name="title" required maxlength="512" class="min-h-11 w-full min-w-0 rounded-card border border-line bg-page px-3"/></label>
 		}
 		<label class="block space-y-2 text-sm font-medium"><span>{ label }</span><textarea name="body" required rows="4" maxlength="65536" class="w-full min-w-0 rounded-card border border-line bg-page p-3"></textarea></label>
-		<button type="submit" class="min-h-11 rounded-card border border-line px-4 text-sm font-medium text-accent">{ label }</button>
+		<button type="submit" disabled class="min-h-11 rounded-card border border-line px-4 text-sm font-medium text-accent">{ label }</button>
 		<p role="status" data-work-result class="text-sm text-sec"></p>
 	</form>
 }

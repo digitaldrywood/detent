@@ -188,3 +188,37 @@ test('project Changes paginate without loading full discussion bodies', async ({
   await page.getByRole('link', {name: 'Archived Change 0', exact: true}).click();
   await expect(page.locator('[data-change-id]')).toContainText('Full body belongs on the detail page');
 });
+
+for (const kind of ['issue', 'comment', 'discussion']) {
+  test(`${kind} submission waits for its deferred handler`, async ({ page }) => {
+    await project(page);
+    let target = page.url();
+    if (kind !== 'issue') {
+      await page.getByRole('link', {name: /Review the invitation flow/}).click();
+      if (kind === 'discussion') await page.locator('#changes').getByRole('link', {name: 'Stored Change'}).click();
+      target = page.url();
+    }
+    const script = kind === 'issue' ? '**/static/js/hosted-setup.js' : '**/static/js/hosted-work.js';
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    await page.route(script, async route => { await held; await route.continue(); });
+    const form = page.locator(kind === 'issue' ? '[data-setup-action="issue"]' : `[data-work-action="${kind}"]`);
+    const text = `Deferred ${kind} saved`;
+    try {
+      await page.goto(target, {waitUntil: 'commit'});
+      await form.locator('[name="body"]').fill(text);
+      if (kind === 'issue') await form.locator('[name="title"]').fill(text);
+      await expect(form.locator('button[type="submit"]')).toBeDisabled();
+    } finally { release(); }
+    await expect(form.locator('button[type="submit"]')).toBeEnabled();
+    const reloaded = page.waitForEvent('domcontentloaded');
+    const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes('/api/v2/'));
+    await form.locator('button[type="submit"]').click();
+    expect((await saved).status()).toBe(200);
+    await reloaded;
+    if (kind === 'comment') await page.locator('#discussion').getByRole('button', {name: 'Load more'}).click();
+    if (kind === 'issue') await expect(page.getByRole('link', {name: new RegExp(text)})).toBeVisible();
+    else await expect(page.locator(kind === 'comment' ? '#discussion' : 'main')).toContainText(text);
+    expect(await page.evaluate(() => document.contentType)).toBe('text/html');
+  });
+}
