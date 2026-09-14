@@ -8,12 +8,84 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
+
+func TestRootCommandRequiresStartupRecoveryInitialization(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name    string
+		state   string
+		dir     bool
+		wantErr string
+	}{
+		{name: "missing state is first startup"},
+		{name: "valid legacy state", state: `{"schema":1}`},
+		{name: "valid current state", state: `{"schema":2}`},
+		{name: "malformed state", state: `{"schema":2,`, wantErr: "decode startup recovery state"},
+		{name: "unsupported schema", state: `{"schema":3}`, wantErr: "unsupported schema 3"},
+		{name: "unreadable state", dir: true, wantErr: "read startup recovery state"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			configPath := t.TempDir() + "/global.yaml"
+			statePath := detentupdate.RecoveryStatePath(configPath)
+			if tt.dir {
+				// A directory deterministically fails ReadFile, including as root.
+				if err := os.Mkdir(statePath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else if tt.state != "" {
+				if err := os.WriteFile(statePath, []byte(tt.state), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bootCalls := 0
+			cmd := NewRootCommand(t.Context(),
+				func(opts *options) {
+					configured := successfulDoctorOptionsWithConfig(configPath, validDoctorGlobalWithProjects(configPath))
+					opts.resolvePath = configured.resolvePath
+					opts.read = configured.read
+				},
+				WithVersion("0.94.0"),
+				WithStartupRecovery(),
+				WithBootFunc(func(ctx context.Context, cfg BootConfig) error {
+					bootCalls++
+					if cfg.StartupRecovery == nil {
+						t.Fatal("boot started without startup recovery")
+					}
+					return cfg.StartupRecovery.MarkHealthy(ctx)
+				}),
+			)
+			cmd.SetArgs([]string{"--config", configPath, "--headless", "--port", "0"})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			if tt.wantErr == "" {
+				if err != nil || bootCalls != 1 {
+					t.Fatalf("Execute() = %v, boot calls = %d; want successful startup", err, bootCalls)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) || bootCalls != 0 {
+				t.Fatalf("Execute() = %v, boot calls = %d; want %q before boot", err, bootCalls, tt.wantErr)
+			}
+			if !tt.dir {
+				raw, readErr := os.ReadFile(statePath)
+				if readErr != nil || string(raw) != tt.state {
+					t.Fatalf("recovery state = %q, %v; want original state preserved", raw, readErr)
+				}
+			}
+		})
+	}
+}
 
 func TestRootCommandHandlesBootFailureWithStartupRecovery(t *testing.T) {
 	t.Parallel()

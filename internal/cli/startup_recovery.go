@@ -44,6 +44,7 @@ func newDefaultStartupRecovery(_ context.Context, cfg BootConfig) (StartupRecove
 	return detentupdate.NewStartupRecovery(detentupdate.StartupRecoveryConfig{
 		StatePath:      statePath,
 		CurrentVersion: version,
+		CurrentCommit:  cfg.Build.Commit,
 		ExecutablePath: executable,
 		GOOS:           runtime.GOOS,
 		AutoUpdate:     autoUpdate,
@@ -58,6 +59,7 @@ func newDefaultStartupRecovery(_ context.Context, cfg BootConfig) (StartupRecove
 func newRuntimeUpdater(cfg BootConfig, executable string, version string) detentupdate.Updater {
 	return detentupdate.NewService(detentupdate.Config{
 		CurrentVersion: version,
+		CurrentCommit:  cfg.Build.Commit,
 		ExecutablePath: executable,
 		GOOS:           runtime.GOOS,
 		GOARCH:         runtime.GOARCH,

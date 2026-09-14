@@ -121,6 +121,23 @@ operator reasons, and existing decision helpers remain review boundaries.
 Review must verify removal or consolidation; renaming a mechanism or updating
 a snapshot is not evidence of compliance.
 
+Updater provenance (#2419) uses the existing candidate verification and startup
+recovery paths to require the tested commit before accepting new updates. It
+retains the existing rollback and retry limits. Recovery initialization errors
+propagate before boot; unreadable or malformed state cannot disable verification.
+Legacy updates keep their schema across failed startups and completed rollbacks
+so the restored reader retains retry and recovery history. Legacy pending updates
+without a tested target commit cannot pass target startup verification or discard
+rollback material. Only verified target startup or a new provenanced update
+migrates that state, consolidating compatibility
+at the existing state writer and health transition without adding a recovery path. Recovery verifies the recorded
+installation before accepting the previous build, and rejects unrelated restarted
+versions without changing pending or failure records. This consolidates prior-build
+acceptance into the existing binary identity verifier. The existing verification mechanism
+must remain to reject unverified artifacts before replacement.
+Startup, serving, and readiness workers share cancellation and are joined before
+identity-failure exits allow caller-owned resources to be cleaned up.
+
 GitHub dependency hydration uses native relations as the source of truth when
 available, removing the union with prose dependencies (#2575). Unsupported
 repositories fall back to issue-body lines; historical comments are diagnostic
@@ -252,6 +269,12 @@ The worker convention is to finish local validation/review before marking ready;
 Rework can produce a new ready head. Workflow assertions cannot deduplicate
 manual reruns or repeated ready/reopened events. Other projects may opt into
 label gating or their own CI convention.
+
+CI push triggers are restricted to main: release tags run the release workflow
+without creating newer mandatory check IDs that invalidate their own provenance
+(#2419). `TestCoordinatorTagToSigningProvenance` exercises coordinator annotation,
+the repository's workflow triggers, and the signing input gate, including retries
+and rejection of missing, stale, cancelled, skipped, or failed evidence.
 
 `detent doctor` also reads every workflow under the project's source root and
 warns when a job runs on pull_request events: a job is exempt only when its

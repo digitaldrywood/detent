@@ -11,3 +11,11 @@ when_to_use: Use when shutdown returns while startup work still writes files, us
 3. Preserve cancellation as the startup result, but derive cleanup with a bounded timeout over `context.WithoutCancel(ctx)`. Stop and join every started worker, close owned resources, and only remove them from registries after cleanup completes; retain incomplete resources so their owner can retry closure.
 4. Add channel-driven regressions: verify normal rollback cannot finish before a blocked worker is released, then verify stalled rollback respects its cleanup bound without losing ownership of incomplete resources.
 5. Rerun the focused regression under `-race`, then repeat the original pressure reproduction with coverage before the full validation gate.
+
+- When multiple workers publish one result each, include every worker in one
+  owner-held wait group and cancel before waiting on every return path. Size the
+  result buffer for all producers so an early error cannot strand a producer
+  after the owner stops reading. Preserve worker-specific shutdown bounds.
+- A helper that reads until one named result appears may discard other workers'
+  completion messages. Do not call it sequentially to join several workers;
+  use the shared wait group or retain all observed completion results.

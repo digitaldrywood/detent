@@ -25,6 +25,8 @@ import (
 	"time"
 	"unicode"
 
+	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
+
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -35,6 +37,8 @@ const (
 	moduleInstallCommand     = "go install " + moduleInstallTarget
 	homebrewUpdateCommand    = "brew upgrade digitaldrywood/tap/detent"
 	defaultChecksumName      = "checksums.txt"
+	provenanceAssetName      = "detent_release_provenance.json"
+	releaseRepository        = "digitaldrywood/detent"
 	projectName              = "detent"
 	windowsExecutableName    = "detent.exe"
 	nonWindowsArchiveExt     = ".tar.gz"
@@ -90,6 +94,7 @@ type ReleaseAssets struct {
 	Archive           Asset
 	Checksum          Asset
 	ChecksumSignature Asset
+	Provenance        Asset
 }
 
 type ReleaseClient interface {
@@ -284,6 +289,7 @@ func IsDevelopmentVersion(version string) bool {
 
 type Config struct {
 	CurrentVersion            string
+	CurrentCommit             string
 	ExecutablePath            string
 	GOOS                      string
 	GOARCH                    string
@@ -292,7 +298,6 @@ type Config struct {
 	BinaryVerifier            BinaryVerifier
 	BinarySigner              BinarySigner
 	ChecksumSignatureVerifier ChecksumSignatureVerifier
-	RequireChecksumSignature  bool
 	HomeDir                   string
 	Env                       map[string]string
 	EvalSymlinks              func(string) (string, error)
@@ -341,6 +346,7 @@ type Replacement struct {
 
 type Status struct {
 	CurrentVersion  string        `json:"current_version"`
+	LatestCommit    string        `json:"latest_commit,omitempty"`
 	LatestVersion   string        `json:"latest_version,omitempty"`
 	LatestTag       string        `json:"latest_tag,omitempty"`
 	UpdateAvailable bool          `json:"update_available"`
@@ -354,7 +360,6 @@ type Status struct {
 }
 
 func NewService(cfg Config) *Service {
-	checksumSignatureVerifierConfigured := cfg.ChecksumSignatureVerifier != nil
 	if cfg.GOOS == "" {
 		cfg.GOOS = runtime.GOOS
 	}
@@ -375,9 +380,6 @@ func NewService(cfg Config) *Service {
 	}
 	if cfg.ChecksumSignatureVerifier == nil {
 		cfg.ChecksumSignatureVerifier = VerifyChecksumSignature
-	}
-	if !cfg.RequireChecksumSignature {
-		cfg.RequireChecksumSignature = checksumSignatureVerifierConfigured || checksumSignaturePublicKeyConfigured()
 	}
 	return &Service{cfg: cfg}
 }
@@ -514,7 +516,7 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		}
 	}
 
-	assets, err := selectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH, s.cfg.RequireChecksumSignature)
+	assets, err := SelectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -526,19 +528,35 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		status.Message = err.Error()
 		return status, err
 	}
-	if s.cfg.RequireChecksumSignature {
-		checksumSignature, err := s.cfg.Client.Download(ctx, assets.ChecksumSignature.BrowserDownloadURL)
-		if err != nil {
-			status.Action = ActionRefused
-			status.Message = err.Error()
-			return status, err
-		}
-		if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
-			status.Action = ActionRefused
-			status.Message = err.Error()
-			return status, err
-		}
+	checksumSignature, err := s.cfg.Client.Download(ctx, assets.ChecksumSignature.BrowserDownloadURL)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, err
 	}
+	if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, err
+	}
+	provenanceBytes, err := s.cfg.Client.Download(ctx, assets.Provenance.BrowserDownloadURL)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, err
+	}
+	if err := VerifyChecksum(checksums, assets.Provenance.Name, provenanceBytes); err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, err
+	}
+	manifest, err := provenance.Parse(provenanceBytes, releaseRepository, release.TagName, "")
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, err
+	}
+	status.LatestCommit = manifest.Commit
 	archive, err := s.cfg.Client.Download(ctx, assets.Archive.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
@@ -557,14 +575,15 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		status.Message = err.Error()
 		return status, err
 	}
+	identityVerifier := binaryIdentityVerifier(s.cfg.BinaryVerifier, status.LatestVersion, manifest.Commit)
 	replacement := Replacement{
 		Target:         s.cfg.ExecutablePath,
 		Binary:         binary,
 		Mode:           mode,
 		GOOS:           s.cfg.GOOS,
 		Context:        ctx,
-		Verify:         s.cfg.BinaryVerifier,
-		Preflight:      opts.Preflight,
+		Verify:         identityVerifier,
+		Preflight:      candidateIdentityPreflight(identityVerifier, opts.Preflight),
 		Sign:           s.cfg.BinarySigner,
 		BackupPath:     PreviousBinaryPath(s.cfg.ExecutablePath),
 		PreserveBackup: strings.TrimSpace(opts.RecoveryStatePath) != "",
@@ -580,7 +599,9 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 			}
 			return recordPendingUpdate(opts.RecoveryStatePath, PendingUpdate{
 				FromVersion:              status.CurrentVersion,
+				FromCommit:               s.cfg.CurrentCommit,
 				ToVersion:                status.LatestVersion,
+				ToCommit:                 manifest.Commit,
 				InstallSource:            status.InstallSource,
 				ExecutablePath:           target,
 				PreviousBinaryPath:       previous,
@@ -598,7 +619,7 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
 			HomeDir: s.cfg.HomeDir,
 			Env:     s.cfg.Env,
-		}, target, status.LatestVersion)
+		}, target, status.LatestVersion, manifest.Commit)
 	}
 	if err := ReplaceBinary(ctx, replacement); err != nil {
 		status.Action = ActionRefused
@@ -724,10 +745,6 @@ func CompareVersions(a string, b string) (int, error) {
 }
 
 func SelectReleaseAssets(release Release, goos string, goarch string) (ReleaseAssets, error) {
-	return selectReleaseAssets(release, goos, goarch, true)
-}
-
-func selectReleaseAssets(release Release, goos string, goarch string, requireChecksumSignature bool) (ReleaseAssets, error) {
 	archiveNames := archiveAssetNames(release.TagName, goos, goarch)
 	checksumNames := checksumAssetNames(release.TagName)
 
@@ -739,10 +756,14 @@ func selectReleaseAssets(release Release, goos string, goarch string, requireChe
 	if !checksumFound {
 		return ReleaseAssets{}, fmt.Errorf("release %s does not include a checksum asset", release.TagName)
 	}
-	if requireChecksumSignature && !signatureFound {
+	if !signatureFound {
 		return ReleaseAssets{}, fmt.Errorf("release %s does not include a minisign signature for checksum asset %s", release.TagName, checksum.Name)
 	}
-	return ReleaseAssets{Archive: archive, Checksum: checksum, ChecksumSignature: checksumSignature}, nil
+	provenanceAsset, provenanceFound := assetByName(release.Assets, []string{provenanceAssetName})
+	if !provenanceFound {
+		return ReleaseAssets{}, fmt.Errorf("release %s does not include provenance asset %s", release.TagName, provenanceAssetName)
+	}
+	return ReleaseAssets{Archive: archive, Checksum: checksum, ChecksumSignature: checksumSignature, Provenance: provenanceAsset}, nil
 }
 
 func VerifyChecksum(checksums []byte, assetName string, archive []byte) error {
@@ -766,10 +787,6 @@ func VerifyChecksumSignature(ctx context.Context, checksums []byte, signature []
 		return fmt.Errorf("verify checksum signature: %w", err)
 	}
 	return nil
-}
-
-func checksumSignaturePublicKeyConfigured() bool {
-	return strings.TrimSpace(defaultChecksumMinisignPublicKey) != ""
 }
 
 func VerifyMinisignSignature(publicKey string, message []byte, signature []byte) error {
@@ -1211,6 +1228,84 @@ func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
 		return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
+}
+
+func binaryIdentityVerifier(verifier BinaryVerifier, expectedVersion string, expectedCommit string) BinaryVerifier {
+	return func(ctx context.Context, path string) (string, error) {
+		if verifier == nil {
+			return "", errors.New("binary identity verifier is required")
+		}
+		output, err := verifier(ctx, path)
+		if err != nil {
+			return output, fmt.Errorf("read binary identity: %w", err)
+		}
+		version, commit, err := parseBinaryIdentity(output)
+		if err != nil {
+			return output, err
+		}
+		if err := verifyInstalledVersion(Status{LatestVersion: expectedVersion}, version); err != nil {
+			return output, fmt.Errorf("binary version: %w", err)
+		}
+		if !strings.EqualFold(strings.TrimSpace(commit), strings.TrimSpace(expectedCommit)) {
+			return output, fmt.Errorf("binary commit %q does not match tested release commit %q", strings.TrimSpace(commit), strings.TrimSpace(expectedCommit))
+		}
+		return output, nil
+	}
+}
+
+func candidateIdentityPreflight(verifier BinaryVerifier, next BinaryPreflight) BinaryPreflight {
+	return func(ctx context.Context, path string) error {
+		if _, err := verifier(ctx, path); err != nil {
+			return fmt.Errorf("candidate binary identity: %w", err)
+		}
+		if next != nil {
+			return next(ctx, path)
+		}
+		return nil
+	}
+}
+
+func parseBinaryIdentity(output string) (string, string, error) {
+	var version string
+	var commit string
+	trimmed := strings.TrimSpace(output)
+	if strings.HasPrefix(trimmed, "{") {
+		var identity struct {
+			Version string `json:"version"`
+			Commit  string `json:"commit"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &identity); err != nil {
+			return "", "", fmt.Errorf("decode candidate binary identity: %w", err)
+		}
+		version = strings.TrimSpace(identity.Version)
+		commit = strings.TrimSpace(identity.Commit)
+	} else {
+		for line := range strings.SplitSeq(output, "\n") {
+			key, value, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "version":
+				version = strings.TrimSpace(value)
+			case "commit":
+				commit = strings.TrimSpace(value)
+			}
+		}
+	}
+	if version == "" {
+		return "", "", errors.New("candidate binary did not report a version")
+	}
+	if commit == "" || commit == "none" {
+		return "", "", errors.New("candidate binary did not report a full commit")
+	}
+	if len(commit) != 40 && len(commit) != 64 {
+		return "", "", fmt.Errorf("candidate binary commit %q is not a full commit", commit)
+	}
+	if _, err := hex.DecodeString(commit); err != nil {
+		return "", "", fmt.Errorf("candidate binary commit %q is not hexadecimal", commit)
+	}
+	return version, strings.ToLower(commit), nil
 }
 
 func signBinary(ctx context.Context, path string) error {
@@ -1750,6 +1845,7 @@ func readInstallLockBinary(path string) (string, bool) {
 type installLockMetadata struct {
 	binary  string
 	version string
+	commit  string
 }
 
 func readInstallLock(path string) (installLockMetadata, bool) {
@@ -1769,6 +1865,8 @@ func readInstallLock(path string) (installLockMetadata, bool) {
 			metadata.binary = value
 		case "version":
 			metadata.version = value
+		case "commit":
+			metadata.commit = value
 		}
 	}
 	return metadata, metadata.binary != ""
@@ -1798,12 +1896,12 @@ func InstalledReleaseVersion(opts DetectionOptions) string {
 	return ""
 }
 
-func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, version string) error {
+func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, version string, commit string) error {
 	lockPath, ok := installLockPath(goos, opts)
 	if !ok {
 		return errors.New("resolve release install lock path: home directory is unavailable")
 	}
-	return writeInstallLock(lockPath, binary, version, time.Now().UTC())
+	return writeInstallLock(lockPath, binary, version, commit, time.Now().UTC())
 }
 
 type installLockSnapshot struct {
@@ -1844,14 +1942,17 @@ func installLockPath(goos string, opts DetectionOptions) (string, bool) {
 	return "", false
 }
 
-func writeInstallLock(path string, binary string, version string, installedAt time.Time) error {
+func writeInstallLock(path string, binary string, version string, commit string, installedAt time.Time) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("install lock path is required")
 	}
 	if strings.TrimSpace(binary) == "" {
 		return errors.New("install lock binary path is required")
 	}
-	raw := fmt.Sprintf("binary=%s\nversion=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), installedAt.UTC().Format(time.RFC3339))
+	if strings.TrimSpace(commit) == "" {
+		return errors.New("install lock commit is required")
+	}
+	raw := fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), strings.TrimSpace(commit), installedAt.UTC().Format(time.RFC3339))
 	return writeInstallLockContents(path, raw)
 }
 

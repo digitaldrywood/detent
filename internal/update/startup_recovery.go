@@ -32,7 +32,9 @@ type CrashLoopEvent struct {
 type StartupRecoveryConfig struct {
 	StatePath      string
 	CurrentVersion string
+	CurrentCommit  string
 	ExecutablePath string
+	BinaryVerifier BinaryVerifier
 	GOOS           string
 	HomeDir        string
 	Env            map[string]string
@@ -64,6 +66,7 @@ func NewStartupRecovery(cfg StartupRecoveryConfig) (*StartupRecovery, error) {
 	if cfg.CurrentVersion == "" {
 		return nil, errors.New("startup recovery current version is required")
 	}
+	cfg.CurrentCommit = strings.TrimSpace(cfg.CurrentCommit)
 	cfg.ExecutablePath = strings.TrimSpace(cfg.ExecutablePath)
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -77,18 +80,20 @@ func NewStartupRecovery(cfg StartupRecoveryConfig) (*StartupRecovery, error) {
 	if cfg.Remove == nil {
 		cfg.Remove = os.Remove
 	}
+	if cfg.BinaryVerifier == nil {
+		cfg.BinaryVerifier = verifyBinaryVersion
+	}
 	if cfg.GOOS == "" {
 		cfg.GOOS = runtime.GOOS
 	}
 	state, _, err := loadStartupRecoveryState(cfg.StatePath)
 	if err != nil {
-		cfg.Logger.Warn("load startup recovery state failed", "path", cfg.StatePath, "error", err)
-		state = startupRecoveryState{}
+		return nil, err
 	}
 	return &StartupRecovery{cfg: cfg, state: state}, nil
 }
 
-func (r *StartupRecovery) MarkHealthy(context.Context) error {
+func (r *StartupRecovery) MarkHealthy(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
@@ -96,18 +101,38 @@ func (r *StartupRecovery) MarkHealthy(context.Context) error {
 	defer r.mu.Unlock()
 
 	now := r.cfg.Now().UTC()
-	if failure := r.state.ActiveFailure; failure != nil && failure.CrashLoop {
-		archived := *failure
-		r.state.LastCrashLoop = &archived
-	}
 	if pending := r.state.PendingUpdate; pending != nil {
 		switch r.cfg.CurrentVersion {
 		case strings.TrimSpace(pending.ToVersion):
+			targetCommit := strings.TrimSpace(pending.ToCommit)
+			if targetCommit == "" {
+				return errors.New("pending update does not include the tested target commit")
+			}
+			if !sameExactCommit(r.cfg.CurrentCommit, targetCommit) {
+				return fmt.Errorf("running Detent commit %q does not match pending update commit %q", r.cfg.CurrentCommit, pending.ToCommit)
+			}
 			if err := r.removePreviousBinary(pending.PreviousBinaryPath); err != nil {
 				return err
 			}
 			r.state.PendingUpdate = nil
+			// Successful target startup retires the legacy reader. Rollback
+			// completion must instead keep state readable by the previous binary.
+			r.state.Schema = startupRecoveryStateSchema
 		case strings.TrimSpace(pending.FromVersion):
+			if strings.TrimSpace(pending.FromCommit) != "" && !sameExactCommit(r.cfg.CurrentCommit, pending.FromCommit) {
+				return fmt.Errorf("running Detent commit %q does not match rollback commit %q", r.cfg.CurrentCommit, pending.FromCommit)
+			}
+			// Intent is recorded before replacement or rollback takes effect. An
+			// old process can also restart from another copy while the candidate
+			// remains installed. Confirm the recorded installation actually holds
+			// this previous build before resolving either outcome.
+			verify := binaryIdentityVerifier(r.cfg.BinaryVerifier, r.cfg.CurrentVersion, r.cfg.CurrentCommit)
+			if _, err := verify(ctx, pending.ExecutablePath); err != nil {
+				return fmt.Errorf("confirm previous Detent installation: %w", err)
+			}
+			if err := r.removePreviousBinary(pending.PreviousBinaryPath); err != nil {
+				return err
+			}
 			if pending.RollbackRequestedAt != nil {
 				r.state.LastRollback = &StartupRollback{
 					FromVersion:  pending.ToVersion,
@@ -115,11 +140,15 @@ func (r *StartupRecovery) MarkHealthy(context.Context) error {
 					RolledBackAt: now,
 				}
 			}
-			if err := r.removePreviousBinary(pending.PreviousBinaryPath); err != nil {
-				return err
-			}
 			r.state.PendingUpdate = nil
+		default:
+			return fmt.Errorf("running Detent version %q matches neither pending update version %q nor previous version %q", r.cfg.CurrentVersion, pending.ToVersion, pending.FromVersion)
 		}
+	}
+
+	if failure := r.state.ActiveFailure; failure != nil && failure.CrashLoop {
+		archived := *failure
+		r.state.LastCrashLoop = &archived
 	}
 	r.state.ActiveFailure = nil
 	r.state.LastHealthyAt = &now
@@ -302,7 +331,7 @@ func restorePendingInstallLock(pending PendingUpdate, goos string, opts Detectio
 		return removePendingReleaseInstallLock(path, pending, goos)
 	}
 	if pending.InstallSource == InstallSourceRelease {
-		return writeReleaseInstallLock(goos, opts, pending.ExecutablePath, pending.FromVersion)
+		return writeReleaseInstallLock(goos, opts, pending.ExecutablePath, pending.FromVersion, pending.FromCommit)
 	}
 	resolved, ok := installLockPath(goos, opts)
 	if !ok {
@@ -313,7 +342,7 @@ func restorePendingInstallLock(pending PendingUpdate, goos string, opts Detectio
 
 func removePendingReleaseInstallLock(path string, pending PendingUpdate, goos string) error {
 	metadata, ok := readInstallLock(path)
-	if !ok || strings.TrimSpace(metadata.version) != strings.TrimSpace(pending.ToVersion) ||
+	if !ok || strings.TrimSpace(metadata.version) != strings.TrimSpace(pending.ToVersion) || !sameExactCommit(metadata.commit, pending.ToCommit) ||
 		!samePath(cleanPath(metadata.binary, goos), cleanPath(pending.ExecutablePath, goos), goos) {
 		return nil
 	}
@@ -321,6 +350,12 @@ func removePendingReleaseInstallLock(path string, pending PendingUpdate, goos st
 		return fmt.Errorf("remove rolled back release install lock: %w", err)
 	}
 	return nil
+}
+
+func sameExactCommit(left string, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	return left != "" && right != "" && strings.EqualFold(left, right)
 }
 
 func (r *StartupRecovery) signalCrashLoop(ctx context.Context) {

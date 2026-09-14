@@ -18,7 +18,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }} -X main.date={{ .Date }}
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .FullCommit }} -X main.date={{ .Date }}
     goos:
       - darwin
       - linux
@@ -155,6 +155,12 @@ winget:
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256
+  extra_files:
+    - glob: ./tmp/detent_release_provenance.json
+
+release:
+  extra_files:
+    - glob: ./tmp/detent_release_provenance.json
 
 signs:
   - artifacts: checksum

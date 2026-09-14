@@ -2,13 +2,18 @@
 
 [Back to README](../README.md#documentation)
 
-Cut releases from `main` by pushing a semver tag:
+The release coordinator cuts releases from `main` after every configured
+mandatory check succeeds for the exact candidate commit. It creates an
+annotated semver tag containing that check evidence. Plain manually-created
+tags do not carry this provenance and the release workflow rejects them.
 
-```sh
-git tag v0.1.0 && git push origin v0.1.0
-```
+General CI runs on the main push, not the release tag. Tag pushes run only the
+release workflow, so creating the tag does not supersede its recorded mandatory
+check IDs. An independent check rerun still invalidates older evidence even if
+the rerun succeeds; retrying the release workflow does not waive that check.
 
-Tags matching `v*` trigger the release workflow, which runs GoReleaser and
+Tags matching `v*` trigger the release workflow, which validates the annotated
+tag against the tagged full commit, runs GoReleaser, and
 publishes the GitHub Release archives, checksums, Homebrew formula, and Windows
 package-manager manifests. Scoop publishing targets
 `digitaldrywood/scoop-bucket`; Winget publishing pushes to the
@@ -40,6 +45,62 @@ A restart or lost acknowledgment never grants another automatic rerun. If the
 process stops between reservation and dispatch, the reservation remains consumed;
 the issue report records the uncertainty for operator investigation. Current
 candidate checks are inspected again on every evaluation.
+
+The coordinator's annotation is materialized as
+`detent_release_provenance.json`. GoReleaser includes that manifest and every
+platform archive in the same signed checksum file, and embeds the full commit
+in each binary. Before the signing key is available, the release workflow
+re-reads active default-branch ruleset requirements plus authenticated check-run
+and status evidence from GitHub. The annotation must include every repository
+requirement, and every declared ruleset or release-only check must identify
+successful evidence for the tagged commit; policy drift, fabricated names, stale
+runs, or incomplete API results fail the release.
+
+Configure the GitHub Actions repository variable
+`DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON` as a JSON array containing the same
+release-only names as `release.required_check_names`; configure it explicitly as
+`[]` when there are none. The release workflow treats a missing or malformed
+variable as a signing failure. This independently authenticated policy input keeps
+a manually constructed tag from omitting checks that are required only by the
+release coordinator's host configuration.
+
+The updater fails closed if the signature, provenance checksum,
+repository, tag, full commit, or successful mandatory-check evidence is absent
+or inconsistent. Before replacement it executes the staged binary and requires
+its version and full commit to match the signed provenance. After restart,
+startup recovery requires both identities from the running instance before it
+marks the update healthy or removes rollback material.
+If the previous version starts instead, recovery verifies that the binary at the
+recorded installation path has that same version and full commit. This confirms
+an unapplied replacement or completed rollback; rollback intent alone is not
+enough. An unexpected version, an unavailable installed identity, or a mismatched
+commit leaves pending state, failure records, and rollback material intact.
+Unreadable, malformed, or unsupported recovery state aborts startup before work
+begins. Legacy recovery records remain readable by the previous binary through
+rollback completion, retaining failure counts, retry delays, and recovery history.
+Legacy pending updates without a tested target commit cannot be declared healthy,
+even when the running version matches. Rejection preserves the pending record and
+rollback binary; repeated startup failures use the existing rollback threshold.
+A target startup with verified commit identity or a new update carrying commit
+provenance migrates legacy state to the current schema.
+
+## Host-admin update boundaries
+
+Detent enforces signed provenance for its release-managed self-update path,
+including an explicit release swap requested for a `go install` binary. It does
+not automatically replace binaries managed by Homebrew, Scoop, Winget, deb/rpm
+packages, or `go install`; automatic update reports the appropriate external
+command instead. For a Go-managed binary, an explicit `detent update --yes` (or
+selection of the interactive Go-install option) executes `go install` and checks
+the installed version, without enforcing signed release provenance. Using
+`detent update --from-release` instead switches to the release-managed path and
+requires its provenance checks.
+
+Package-manager upgrades, explicit Go-install updates, manual binary copies,
+and service-manager deployment are host-administrator actions outside signed
+release provenance enforcement. Administrators are responsible for validating
+the package source and confirming the restarted binary's full commit for those
+paths.
 
 Release progress and blockers use fingerprinted comments on the first sorted
 originating issue reference, without creating new coordination issues. Comment

@@ -53,6 +53,7 @@ type releaseRESTPullRequest struct {
 }
 
 type releaseRESTCheckRun struct {
+	ID         int64  `json:"id"`
 	HeadSHA    string `json:"head_sha"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
@@ -69,6 +70,7 @@ type releaseRESTStatus struct {
 	SHA        string `json:"sha"`
 	TotalCount int    `json:"total_count"`
 	Statuses   []struct {
+		ID      int64  `json:"id"`
 		Context string `json:"context"`
 		State   string `json:"state"`
 	} `json:"statuses"`
@@ -246,6 +248,7 @@ func (c *Connector) releaseChecks(ctx context.Context, base string, sha string) 
 			Status:     run.Status,
 			Conclusion: run.Conclusion,
 			RunID:      workflowRunID(run.DetailsURL),
+			CheckRunID: run.ID,
 		})
 	}
 	var combined releaseRESTStatus
@@ -256,7 +259,7 @@ func (c *Connector) releaseChecks(ctx context.Context, base string, sha string) 
 		return nil, errors.New("release status evidence is truncated")
 	}
 	for _, status := range combined.Statuses {
-		check := releasepkg.Check{SHA: combined.SHA, Name: status.Context}
+		check := releasepkg.Check{SHA: combined.SHA, Name: status.Context, StatusID: status.ID}
 		switch strings.ToLower(strings.TrimSpace(status.State)) {
 		case "pending":
 			check.Status = "in_progress"

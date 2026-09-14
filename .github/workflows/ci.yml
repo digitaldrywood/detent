@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
@@ -462,6 +461,11 @@ jobs:
 
       - name: Prepare minisign snapshot key
         run: minisign -G -W -s "$RUNNER_TEMP/detent-minisign.key" -p "$RUNNER_TEMP/detent-minisign.pub"
+
+      - name: Prepare non-published snapshot provenance fixture
+        run: |
+          mkdir -p tmp
+          printf '{"schema":1,"repository":"%s","tag":"snapshot","commit":"%s","checks":[{"name":"snapshot packaging only","status":"completed","conclusion":"success"}]}\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" > tmp/detent_release_provenance.json
 
       - name: Run GoReleaser snapshot
         uses: goreleaser/goreleaser-action@v7
