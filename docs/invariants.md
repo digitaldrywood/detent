@@ -220,6 +220,12 @@ exact-head branch but failed before creating the PR, and returns a missing remot
 branch to Rework (#2528). This retires the human-owned no-PR park by consolidating
 the repair into the existing deliverable-recovery and operator-routine paths.
 
+Deliverable-park retirement transitions also acknowledge that retired park during
+durable timeline replay (#2603). This consolidates automatic retirement with the
+existing park acknowledgement path, so a return to Rework cannot resurrect the
+retired block. Independent human parks and later parks remain protected. Covered
+by `TestDeliverableRecoveryRetirementAcknowledgement`.
+
 Successful persisted attempts release dispatch ownership through the same completed
 attempt cleanup even when completion-time pull-request hydration is unavailable
 (#2553). Completion evidence and the existing hydration gate remain authoritative;

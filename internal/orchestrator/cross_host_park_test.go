@@ -261,10 +261,14 @@ func TestRecoveryParkAcknowledgementBoundaries(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		owner  string
+		cause  string
 		reason string
 		source provenance.Source
 		want   bool
 	}{
+		{name: "instance retires deliverable park", owner: "human", cause: deliverableRecoveryNeedsHumanReason, reason: workflowActionCauseBlockedRecovery, source: provenance.SourceDetentInstance, want: true},
+		{name: "tracker cannot retire deliverable park", owner: "human", cause: deliverableRecoveryNeedsHumanReason, reason: workflowActionCauseBlockedRecovery, source: provenance.SourceTrackerObservation},
+		{name: "dependency cannot retire deliverable park", owner: "human", cause: deliverableRecoveryNeedsHumanReason, reason: "dependency_auto_unblock", source: provenance.SourceDetentInstance},
 		{name: "shared identity observation", owner: "human", reason: "tracker_state_observed", source: provenance.SourceTrackerObservation},
 		{name: "peer dependency transition", owner: "human", reason: "dependency_auto_unblock", source: provenance.SourceDetentInstance},
 		{name: "human action", owner: "human", reason: "operator_kanban_move", source: provenance.SourceHumanSession, want: true},
@@ -278,7 +282,11 @@ func TestRecoveryParkAcknowledgementBoundaries(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := recoveryParkAcknowledged(store.WorkflowPhaseEvent{Reason: tt.reason}, workflowLaneMetadata{Provenance: provenance.AttributionFromSource(tt.source, provenance.Actor{Login: "shared-user", Kind: "User"})}, workflowLaneBlockedRecoveryMetadata{Owner: tt.owner, Cause: spendProgressReason})
+			cause := tt.cause
+			if cause == "" {
+				cause = spendProgressReason
+			}
+			got := recoveryParkAcknowledged(store.WorkflowPhaseEvent{Reason: tt.reason}, workflowLaneMetadata{Provenance: provenance.AttributionFromSource(tt.source, provenance.Actor{Login: "shared-user", Kind: "User"})}, workflowLaneBlockedRecoveryMetadata{Owner: tt.owner, Cause: cause})
 			if got != tt.want {
 				t.Fatalf("acknowledged = %t, want %t", got, tt.want)
 			}
@@ -623,6 +631,57 @@ func TestTrackerRecoveryParkPublicationFailures(t *testing.T) {
 			candidate.StageUpdatedAt = timePointer(now.Add(time.Hour))
 			if got := host.trackerRecoveryParkHold(t.Context(), candidate); (got != "") != tt.wantHold {
 				t.Fatalf("hold = %q, wantHold = %t", got, tt.wantHold)
+			}
+		})
+	}
+}
+
+func TestDeliverableRecoveryRetirementAcknowledgement(t *testing.T) {
+	t.Parallel()
+	for _, cause := range []string{deliverableRecoveryNeedsHumanReason, deliverableRecoveryNeedsHumanReason + ": pushed branch has no recoverable pull request"} {
+		t.Run(cause, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+			issue := dependencyAutoUnblockIssue("2603", "In Progress")
+			issue.BranchName = "detent/recovery"
+			issue.PullRequest = &connector.PullRequest{Number: 2604, State: "OPEN", Draft: true}
+			tracker := &crossHostParkConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{issue}}, now: now}
+			host := blockedCauseTestOrchestrator(tracker.dependencyAutoUnblockConnector)
+			host.connector = tracker
+			host.cfg.ActiveStates = append(host.cfg.ActiveStates, normalizeState("Rework"))
+			host.workflowMetrics = openValidatorMemoStore(t)
+			state := newState(host.cfg)
+			park := workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: cause, CauseFingerprint: "retired"}
+			if err := host.updateIssueStateByIDStrictWithMetadata(t.Context(), &state, issue.ID, issue, "Blocked", now, cause, workflowLaneMetadata{BlockedRecovery: &park}); err != nil {
+				t.Fatal(err)
+			}
+			tracker.now = now.Add(time.Minute)
+			if handled, recovered := host.returnBlockedDeliverableRecoveryToRework(t.Context(), &state, tracker.stateIssues[0], park, "existing draft pull request", tracker.now); !handled || !recovered {
+				t.Fatal("deliverable park did not return to Rework")
+			}
+			for _, fresh := range []bool{false, true} {
+				if fresh {
+					state = newState(host.cfg)
+				}
+				// Reproduce the stale runtime block left by an earlier recovery sweep.
+				state.Blocked[issue.ID] = Blocked{Issue: tracker.stateIssues[0], Source: BlockedSourceProjectStatus, Reason: cause, BlockedAt: now, RecoveryReason: "park_acknowledgement_required"}
+				host.retainUnacknowledgedRecoveryParks(t.Context(), &state, tracker.stateIssues)
+				if blocked, held := state.Blocked[issue.ID]; held {
+					t.Fatalf("retired park restored (fresh state %t): %+v", fresh, blocked)
+				}
+			}
+			// Retirement must not acknowledge a later independent park.
+			tracker.now = now.Add(2 * time.Minute)
+			park.Cause = spendProgressReason
+			park.CauseFingerprint = "later"
+			if err := host.updateIssueStateByIDStrictWithMetadata(t.Context(), &state, issue.ID, tracker.stateIssues[0], "Blocked", tracker.now, park.Cause, workflowLaneMetadata{BlockedRecovery: &park}); err != nil {
+				t.Fatal(err)
+			}
+			moved := cloneIssue(tracker.stateIssues[0])
+			moved.State = "Rework"
+			host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{moved})
+			if blocked, held := state.Blocked[issue.ID]; !held || blocked.Reason != spendProgressReason {
+				t.Fatalf("later independent park was not retained: %+v", blocked)
 			}
 		})
 	}

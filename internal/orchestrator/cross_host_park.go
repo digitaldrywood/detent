@@ -275,7 +275,7 @@ func recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowL
 	}
 	switch event.Reason {
 	case workflowActionCauseBlockedRecovery:
-		return park.Owner == blockedRecoveryOwnerOrchestrator
+		return park.Owner == blockedRecoveryOwnerOrchestrator || deliverableRecoveryPark(park)
 	case workflowActionBlockedReadyPRReconciliation:
 		return blockedReadyPullRequestRecoverableCause(park)
 	case "obsolete_artifact_spend_recovery":
