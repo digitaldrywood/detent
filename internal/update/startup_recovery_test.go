@@ -326,9 +326,11 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 		wantErr       string
 	}{
 		{name: "matching full commit", currentCommit: testUpdatedCommit},
-		{name: "legacy pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema},
-		{name: "legacy pending update after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 1},
-		{name: "legacy pending update after two failed startups", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2},
+		{name: "legacy pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, wantErr: "does not include the tested target commit"},
+		{name: "legacy pending update after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 1, wantErr: "does not include the tested target commit"},
+		{name: "legacy pending update after two failed startups", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2, wantErr: "does not include the tested target commit"},
+		{name: "legacy pending update with missing running commit", stateSchema: startupRecoveryLegacyStateSchema, wantErr: "does not include the tested target commit"},
+		{name: "legacy pending update with wrong running commit", currentCommit: testPreviousCommit, stateSchema: startupRecoveryLegacyStateSchema, failedStarts: 2, wantErr: "does not include the tested target commit"},
 		{name: "current missing commit after failed startup", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, failedStarts: 1, wantErr: "does not include the tested target commit"},
 		{name: "wrong commit after failed startup", currentCommit: testPreviousCommit, failedStarts: 1, wantErr: "does not match pending update commit"},
 		{name: "current pending update without target commit", currentCommit: testUpdatedCommit, stateSchema: startupRecoveryStateSchema, wantErr: "does not include the tested target commit"},
@@ -378,18 +380,29 @@ func TestStartupRecoveryMarkHealthyRequiresPendingCommit(t *testing.T) {
 					t.Fatalf("Stat(previous) error = %v, want rollback material preserved", err)
 				}
 			}
+			before, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
 			recovery := newTestStartupRecovery(t, cfg)
-			err := recovery.MarkHealthy(context.Background())
+			err = recovery.MarkHealthy(context.Background())
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("MarkHealthy() error = %v, want containing %q", err, tt.wantErr)
 				}
-				if _, statErr := os.Stat(previousPath); statErr != nil {
-					t.Fatalf("Stat(previous) error = %v, want rollback material preserved", statErr)
+				// Rejection must preserve all durable history, and a fresh process
+				// must reject the same record instead of completing the update.
+				restarted := newTestStartupRecovery(t, cfg)
+				if err := restarted.MarkHealthy(t.Context()); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("restarted MarkHealthy() = %v, want %q", err, tt.wantErr)
 				}
-				state := readTestStartupRecoveryState(t, statePath)
-				if state.PendingUpdate == nil || state.LastHealthyAt != nil {
-					t.Fatalf("state = %#v, want pending update preserved and not healthy", state)
+				after, readErr := os.ReadFile(statePath)
+				if readErr != nil || string(after) != string(before) {
+					t.Fatalf("rejection changed recovery state: %s, %v", after, readErr)
+				}
+				previous, readErr := os.ReadFile(previousPath)
+				if readErr != nil || string(previous) != "previous" {
+					t.Fatalf("rollback material = %q, %v", previous, readErr)
 				}
 				return
 			}

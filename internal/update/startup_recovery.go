@@ -105,10 +105,10 @@ func (r *StartupRecovery) MarkHealthy(ctx context.Context) error {
 		switch r.cfg.CurrentVersion {
 		case strings.TrimSpace(pending.ToVersion):
 			targetCommit := strings.TrimSpace(pending.ToCommit)
-			if targetCommit == "" && r.state.Schema != startupRecoveryLegacyStateSchema {
+			if targetCommit == "" {
 				return errors.New("pending update does not include the tested target commit")
 			}
-			if targetCommit != "" && !sameExactCommit(r.cfg.CurrentCommit, targetCommit) {
+			if !sameExactCommit(r.cfg.CurrentCommit, targetCommit) {
 				return fmt.Errorf("running Detent commit %q does not match pending update commit %q", r.cfg.CurrentCommit, pending.ToCommit)
 			}
 			if err := r.removePreviousBinary(pending.PreviousBinaryPath); err != nil {

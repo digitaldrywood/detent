@@ -3,7 +3,6 @@ package update
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +36,11 @@ func TestLegacyRollbackPreservesOldReaderState(t *testing.T) {
 						return nil
 					},
 				})
-				recovery.HandleFailure(t.Context(), errors.New("candidate cannot start"))
+				identityErr := recovery.MarkHealthy(t.Context())
+				if identityErr == nil {
+					t.Fatal("legacy target without tested commit must not become healthy")
+				}
+				recovery.HandleFailure(t.Context(), identityErr)
 				state := readLegacyStartupRecoveryState(t, statePath)
 				if state.ActiveFailure == nil || state.ActiveFailure.Count != attempt {
 					t.Fatalf("ActiveFailure = %#v, want count %d", state.ActiveFailure, attempt)

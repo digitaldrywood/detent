@@ -98,8 +98,10 @@ recovery paths to require the tested commit before accepting new updates. It
 retains the existing rollback and retry limits. Recovery initialization errors
 propagate before boot; unreadable or malformed state cannot disable verification.
 Legacy updates keep their schema across failed startups and completed rollbacks
-so the restored reader retains retry and recovery history. Only successful target
-startup or a new provenanced update migrates that state, consolidating compatibility
+so the restored reader retains retry and recovery history. Legacy pending updates
+without a tested target commit cannot pass target startup verification or discard
+rollback material. Only verified target startup or a new provenanced update
+migrates that state, consolidating compatibility
 at the existing state writer and health transition without adding a recovery path. Recovery verifies the recorded
 installation before accepting the previous build, and rejects unrelated restarted
 versions without changing pending or failure records. This consolidates prior-build

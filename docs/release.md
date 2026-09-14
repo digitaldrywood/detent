@@ -78,8 +78,11 @@ commit leaves pending state, failure records, and rollback material intact.
 Unreadable, malformed, or unsupported recovery state aborts startup before work
 begins. Legacy recovery records remain readable by the previous binary through
 rollback completion, retaining failure counts, retry delays, and recovery history.
-A successful target startup or a new update carrying commit provenance migrates
-legacy state to the current schema.
+Legacy pending updates without a tested target commit cannot be declared healthy,
+even when the running version matches. Rejection preserves the pending record and
+rollback binary; repeated startup failures use the existing rollback threshold.
+A target startup with verified commit identity or a new update carrying commit
+provenance migrates legacy state to the current schema.
 
 ## Host-admin update boundaries
 
