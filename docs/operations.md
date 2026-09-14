@@ -128,3 +128,35 @@ launchd agent keeps a synced copy current:
 
 On Linux, a systemd user timer calling the same command is equivalent.
 
+
+## Codex disk retention
+
+Detent retains seven days of Codex feedback log rows in the `.detent-worker`
+and `.detent-launchd` profiles beneath each configured Codex home. At boot,
+after the prior-worker sweep, it deletes older `logs_<N>.sqlite` rows and
+vacuums the database. If the database still exceeds 1 GiB, it removes that
+log database and its SQLite sidecars; Codex recreates it. Maintenance skips
+when any Codex app-server is running or the process list cannot be inspected.
+It never stops a process to reclaim disk space. Worker thread state and
+thread-history databases are not pruned.
+
+The existing workspace reaper removes rollout JSONL files older than thirty
+days by modification time only when their first `session_meta` record identifies
+`detent-orchestrator`. Active attempt references and unfinished or recent
+sessions across all projects protect their provider session IDs. Recent rollout
+files or metadata for the same session also protect that session. Unknown or
+malformed ownership records and non-Detent rollouts remain untouched. The
+shared `sessions` directory may be a symlink; rollout file symlinks are not
+followed. Successful sweeps log `removed_bytes` for measurement.
+
+`detent doctor` reports each worker-profile SQLite file size (including
+sidecars), the Detent rollout total, and their combined size. It warns above
+2 GiB; the doctor check does not delete files. Inspect the sizes before and
+after an operator-controlled boot on each host to verify reclaimed bytes.
+A host with a running Codex app-server will defer log maintenance.
+
+User-level Codex databases, such as `~/.codex/logs_<N>.sqlite`, are the
+operator's responsibility. With Codex closed, its disposable log database and
+sidecars can safely be removed and will be recreated. Thread state and history
+contain session data: back them up and review what would be lost before manual
+pruning. Detent never prunes user-level SQLite databases.
