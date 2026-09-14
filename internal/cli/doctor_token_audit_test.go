@@ -114,6 +114,41 @@ func TestDoctorTokenAuditInstructionFiles(t *testing.T) {
 	}
 }
 
+func TestDoctorTokenAuditTransitiveInstructions(t *testing.T) {
+	for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
+		t.Run(name, func(t *testing.T) {
+			root, _ := initDoctorWorkflowSourceRepository(t)
+			instructions := "Follow policy.md."
+			policy := "Read nested.md.\nRun make check.\n" + strings.Repeat("x", 25*1024)
+			nested := "Follow policy.md and AGENTS.md."
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, name), instructions)
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "policy.md"), policy)
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "nested.md"), nested)
+			if name == "AGENTS.override.md" {
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), "ignored")
+			}
+			prompt := "Do not run make check."
+			files, problems := doctorInstructionFiles(t.Context(), root, prompt)
+			if len(problems) != 0 {
+				t.Fatal(problems)
+			}
+			counts := map[string]int{}
+			for _, file := range files {
+				counts[filepath.Base(file.path)]++
+			}
+			if counts["policy.md"] != 1 || counts["nested.md"] != 1 {
+				t.Fatalf("reference counts: %v", counts)
+			}
+			if got := checkDoctorInstructionBudget("p", files, problems); got.Status != doctorWarn {
+				t.Fatalf("budget: %+v", got)
+			}
+			if got := checkDoctorGateInstructionConflict("p", "make check", files, problems); got.Status != doctorWarn {
+				t.Fatalf("conflict: %+v", got)
+			}
+		})
+	}
+}
+
 func TestDoctorTokenAuditGateConflict(t *testing.T) {
 	for _, tt := range []struct {
 		name, a, b string
@@ -197,6 +232,14 @@ func TestDoctorTokenAuditModelPolicy(t *testing.T) {
 		want   doctorStatus
 	}{
 		{"none", 0, "issue.effort", doctorOK}, {"ten percent", 1, "issue.effort", doctorOK}, {"above threshold", 2, "issue.effort", doctorWarn}, {"configured effort", 2, "instance", doctorOK},
+		{"code override", 2, "issue.code.effort", doctorWarn},
+		{"rework override", 2, "issue.rework.effort", doctorWarn},
+		{"merge override", 2, "issue.merge.effort", doctorWarn},
+		{"plan override", 2, "issue.plan.effort", doctorWarn},
+		{"routine override", 2, "issue.routine.effort", doctorWarn},
+		{"validator override", 2, "issue.validator.effort", doctorWarn},
+		{"security audit override", 2, "issue.security_audit.effort", doctorWarn},
+		{"role threshold", 1, "issue.code.effort", doctorOK},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			path, db := doctorTokenAuditDB(t)

@@ -79,46 +79,49 @@ func doctorInstructionFiles(ctx context.Context, root, prompt string) ([]doctorI
 		}
 	}
 	files = append(files, doctorInstructionFile{"WORKFLOW.md (effective prompt)", prompt, len(prompt)})
-	for _, line := range strings.Split(prompt, "\n") {
-		if !doctorReadDirective.MatchString(line) {
-			continue
-		}
-		names := doctorInstructionPath.FindAllString(line, -1)
-		for _, match := range doctorQuotedInstructionPath.FindAllStringSubmatchIndex(line, -1) {
-			name := line[match[2]:match[3]]
-			if strings.ContainsAny(name, "${}:=*|;&") {
+	// Scan newly discovered files too; seen deduplicates references and cycles.
+	for i := 0; i < len(files); i++ {
+		for _, line := range strings.Split(files[i].text, "\n") {
+			if !doctorReadDirective.MatchString(line) {
 				continue
 			}
-			path := name
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(root, path)
+			names := doctorInstructionPath.FindAllString(line, -1)
+			for _, match := range doctorQuotedInstructionPath.FindAllStringSubmatchIndex(line, -1) {
+				name := line[match[2]:match[3]]
+				if strings.ContainsAny(name, "${}:=*|;&") {
+					continue
+				}
+				path := name
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(root, path)
+				}
+				info, statErr := os.Stat(path)
+				// Quoted lane names and Git refs are not file reads. Extensionless
+				// paths need either an existing file or an immediate read directive.
+				if statErr == nil && !info.IsDir() || doctorDirectReadPath.MatchString(line[:match[0]]) {
+					names = append(names, name)
+				}
 			}
-			info, statErr := os.Stat(path)
-			// Quoted lane names and Git refs are not file reads. Extensionless
-			// paths need either an existing file or an immediate read directive.
-			if statErr == nil && !info.IsDir() || doctorDirectReadPath.MatchString(line[:match[0]]) {
-				names = append(names, name)
+			for _, name := range names {
+				if name == "WORKFLOW.md" || strings.Contains(filepath.Base(name), "..") {
+					continue
+				}
+				path := name
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(root, path)
+				}
+				path = filepath.Clean(path)
+				if seen[path] {
+					continue
+				}
+				seen[path] = true
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					problems = append(problems, path+": "+readErr.Error())
+					continue
+				}
+				files = append(files, doctorInstructionFile{path, string(data), len(data)})
 			}
-		}
-		for _, name := range names {
-			if name == "WORKFLOW.md" || strings.Contains(filepath.Base(name), "..") {
-				continue
-			}
-			path := name
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(root, path)
-			}
-			path = filepath.Clean(path)
-			if seen[path] {
-				continue
-			}
-			seen[path] = true
-			data, readErr := os.ReadFile(path)
-			if readErr != nil {
-				problems = append(problems, path+": "+readErr.Error())
-				continue
-			}
-			files = append(files, doctorInstructionFile{path, string(data), len(data)})
 		}
 	}
 	return files, problems

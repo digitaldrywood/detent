@@ -122,7 +122,7 @@ func checkDoctorModelPolicy(ctx context.Context, id, storePath string, cfg workf
 			unknown++
 			continue
 		}
-		if source == "issue.effort" && doctorEffortRank(effort) > doctorEffortRank(doctorPolicyString(level.Effort)) {
+		if (strings.HasPrefix(source, "issue.") && strings.HasSuffix(source, ".effort")) && doctorEffortRank(effort) > doctorEffortRank(doctorPolicyString(level.Effort)) {
 			above++
 		}
 	}
@@ -134,7 +134,7 @@ func checkDoctorModelPolicy(ctx context.Context, id, storePath string, cfg workf
 	if above*10 > total || unknown > 0 {
 		check.Status = doctorWarn
 	}
-	check.Detail += fmt.Sprintf("; last 24h: %d/%d dispatches used issue.effort above the current level default; %d lack comparable provenance", above, total, unknown)
+	check.Detail += fmt.Sprintf("; last 24h: %d/%d dispatches used issue.effort (including role overrides) above the current level default; %d lack comparable provenance", above, total, unknown)
 	check.Hint = "Compare printed policy sources with the operator's intended fleet policy; warn threshold is more than 10% of dispatches. Historical comparisons use current level defaults."
 	return check
 }
