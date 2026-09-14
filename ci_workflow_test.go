@@ -87,7 +87,7 @@ var integrationStatusChecks = []requiredStatusCheck{
 	},
 	{
 		name:     "GoReleaser Snapshot",
-		budget:   "15m",
+		budget:   "35m",
 		jobStart: "  goreleaser-snapshot:",
 		jobEnd:   "  report-integration-failures:",
 		markers:  []string{"name: GoReleaser Snapshot", "timeout-minutes: 35", "args: release --snapshot --clean", "MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key"},
@@ -325,7 +325,7 @@ func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 		}
 	}
 
-	for _, check := range requiredPRStatusChecks {
+	for _, check := range append(append([]requiredStatusCheck{}, requiredPRStatusChecks...), integrationStatusChecks...) {
 		if !strings.Contains(protection, "- `"+check.name+"` - budget: `"+check.budget+"`") {
 			t.Fatalf("main branch protection docs missing required check %q", check.name)
 		}

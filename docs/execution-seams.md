@@ -141,15 +141,19 @@ by the operator (see [Merge Train](merge-train.md)):
 - `Windows Core` - budget: `4m`
 - `Installer Smoke (ubuntu-latest)` - budget: `6m`
 - `Installer Smoke (windows-latest)` - budget: `6m`
-- `GoReleaser Snapshot` - budget: `15m`
+- `GoReleaser Snapshot` - budget: `35m`
 
 Browser and snapshot budgets are whole-job ceilings, enforced with
-`timeout-minutes: 15`, including setup and artifact handling. Repeated hosted
+`timeout-minutes: 15` and `timeout-minutes: 35`, respectively, including setup
+and artifact handling. The snapshot ceiling accommodates the shared 20-minute
+workspace package budget (#2646), leaving 15 minutes for setup, remaining tests,
+packaging, and artifacts. Individual test lifecycle deadlines remain unchanged.
+Repeated hosted
 Linux measurements put full browser jobs at `10m49s`–`11m23s` and snapshot jobs
 at `10m3s`–`10m39s`, even with Go cache hits. The full Playwright step alone
 took `8m17s`–`8m41s`; a non-visual PR's binary smoke took `21s` in a `48s` job
-and is not a basis for the full-check budget. The ceilings leave more than
-three minutes above the observed maxima for runner variation and retries;
+and is not a basis for the full-check budget. The browser ceiling leaves more than
+three minutes above its observed maximum for runner variation and retries;
 they are bounds, not predicted runtimes or measured cold-cache guarantees.
 See [browser and snapshot measurements](../.detent/validation/2310/README.md)
 for runner/cache provenance, generation and compilation costs, packaging
