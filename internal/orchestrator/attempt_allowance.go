@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -27,8 +28,8 @@ type attemptAllowance struct {
 func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
 
 // Unlike progress accounting, every started code/rework attempt consumes the same
-// issue allowance. A changed head, lane, diff, or operator acknowledgement is not
-// a merge and cannot replenish it.
+// issue allowance. The window starts at the last merge or operator move out of
+// Human Review; ordinary head, lane, and diff changes do not replenish it.
 func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt time.Time) attemptAllowance {
 	var result attemptAllowance
 	for _, attempt := range attempts {
@@ -98,7 +99,8 @@ func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connecto
 		}
 		mergeEvents = timeline.Events
 	}
-	mergedAt := lastAllowanceMergeAt(issue, mergeEvents)
+	resetAt := lastAllowanceOperatorMoveAt(mergeEvents)
+	mergedAt := laterDispatchLoopTime(lastAllowanceMergeAt(issue, mergeEvents), resetAt)
 	// No recent-history cap: excluded infrastructure attempts must never hide the
 	// three chargeable sessions, even after a prolonged instance outage.
 	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
@@ -116,7 +118,57 @@ func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connecto
 			attempts = append(attempts, attempt)
 		}
 	}
+	if !resetAt.IsZero() {
+		prior := countSessionsWithoutMerge(attempts, time.Time{})
+		if prior.Triage != nil && !prior.Triage.StartedAt.After(resetAt) {
+			if err := o.annotateAllowanceReset(ctx, issue, prior.Triage.ID, resetAt); err != nil && o.logger != nil {
+				o.logger.Warn("annotate operator allowance reset", "issue_id", issue.ID, "error", err)
+			}
+		}
+	}
 	return countSessionsWithoutMerge(attempts, mergedAt), nil
+}
+
+// Use the existing durable lane history so the operator's decision survives restart.
+func lastAllowanceOperatorMoveAt(events []store.WorkflowPhaseEvent) time.Time {
+	var latest time.Time
+	for _, event := range events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(event.Status, "entered") ||
+			normalizeState(event.PreviousPhaseName) != normalizeState(autoPromoteSourceState) ||
+			normalizeState(event.PhaseName) == normalizeState(autoPromoteSourceState) || strings.TrimSpace(event.PhaseName) == "" {
+			continue
+		}
+		metadata, _ := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		attribution := provenance.Prepare(metadata.Provenance)
+		if attribution.Origin != provenance.OriginHuman && (metadata.Provenance.Initiator == provenance.InitiatorDetentInstance || attribution.Initiator == provenance.InitiatorDetentInstance) {
+			continue
+		}
+		latest = laterDispatchLoopTime(latest, workflowLaneTransitionAt(event))
+	}
+	return latest
+}
+
+func (o *Orchestrator) annotateAllowanceReset(ctx context.Context, issue connector.Issue, triageID int64, at time.Time) error {
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		return nil
+	}
+	updater, ok := o.connector.(connector.IssueCommentUpdater)
+	if !ok {
+		return nil
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		return err
+	}
+	marker := fmt.Sprintf("<!-- detent-attempt-triage:%d -->", triageID)
+	line := "allowance reset by operator move at " + at.UTC().Format(time.RFC3339Nano)
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, marker) && !strings.Contains(comment.Body, line) {
+			return updater.UpdateIssueComment(ctx, issue.ID, comment.ID, comment.Body+"\n\n"+line)
+		}
+	}
+	return nil
 }
 
 func lastAllowanceMergeAt(issue connector.Issue, events []store.WorkflowPhaseEvent) time.Time {

@@ -23,9 +23,11 @@ idle slots or cancel running workers. `max_concurrent_agents` and
 
 Code and rework share a fixed allowance of three sessions without a merged PR.
 The next code dispatch runs one read-only triage pass, publishes its explanation,
-and leaves the issue in Human Review. New PR heads, changed CI signatures, lane
-moves, and acknowledgements do not renew the allowance. A merged PR resets it;
-instance-attributed failures do not consume it.
+and leaves the issue in Human Review. An operator move out of Human Review
+renews the allowance, as does a merged PR. Detent-instance moves, new PR heads,
+changed CI signatures, ordinary lane moves, and acknowledgements alone do not
+renew it; instance-attributed failures do not consume it. The existing triage
+comment records the operator reset timestamp when comment updates are supported.
 
 The former `agent.auto_promote.rework_limit` and
 `agent.auto_promote.no_progress_limit` keys are retired and have no effect.
