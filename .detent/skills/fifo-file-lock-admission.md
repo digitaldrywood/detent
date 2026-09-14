@@ -25,6 +25,6 @@ when_to_use: Use when periodic nonblocking lock retries allow new processes to o
   Cover registration crashes, queued crashes, live holders, and owner handoff.
 - Give each instrumented helper a unique existing GOCOVERDIR. Use fake time for
   deadline policy and generous real deadlines only to detect stuck OS handshakes.
-  Run focused race tests, Windows compilation/runtime tests, and the full gate.
+  Run focused race tests, Windows compilation/runtime tests.
 - State the rollout boundary: older clients retain exclusion on the original
   lock but cannot participate in the new fairness protocol.

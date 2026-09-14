@@ -11,4 +11,4 @@ when_to_use: Use when a focused HTMX test passes but a serial browser suite expo
 - Remove impossible target and payload combinations. Test only event shapes the server and HTMX extension can produce in normal operation.
 - Preserve the behavior contract with realistic same-state and changed-state cases instead of asserting before an unintended swap wins a race.
 - Wait on observable completion conditions such as the intended element, settled DOM, or application state. Do not use sleeps or assertions that depend on catching a transient frame.
-- Run the focused case, the complete serial file with retries disabled, and the repository's full browser and validation gates.
+- Run the focused case, the complete serial file with retries disabled, and the repository's full browser gate.

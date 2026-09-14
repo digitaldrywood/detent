@@ -36,6 +36,6 @@ canceling the turn. Require exactly one reap, the inside helper's exit and
 released lock, and the outside helper's survival and retained lock. Capture
 the native file matches before reaping so failures retain ownership evidence.
 
-Repeat race tests under concurrent validation load, then run the full gate.
+Repeat race tests under concurrent validation load.
 Separate reproduced identities from historical attribution when the original
 failure recorded only a count.

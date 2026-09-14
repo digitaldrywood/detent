@@ -12,4 +12,4 @@ when_to_use: Use when an operator mutation succeeds in the tracker or UI but sch
 4. Update cached issue state and clear only matching item memory. Preserve unrelated blocked entries, retries, claims, failure signals, and project-wide breaker evidence.
 5. Record structured runtime telemetry with the operator mutation as the reason and whether each veto was cleared.
 6. Build the regression with one moved item and one unrelated stale-status item. Fail the unrelated transition refresh, prove the moved item dispatches, and assert board, API snapshot, and scheduler-decision counts converge.
-7. Run focused package tests, the race suite, and the full repository validation gate.
+7. Run focused package tests, the race suite.

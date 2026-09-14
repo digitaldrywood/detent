@@ -28,5 +28,4 @@ so it does not by itself establish an interruptible deadline.
 Reproduce blocked Wait deterministically with a descendant that retains stdout
 and stderr after its parent exits. Cancel while those pipes remain open and prove
 the scanner returns before releasing the descendant. Retain ownership, observer
-survival, lock-release, error and output tests; run focused race tables and the
-full repository gate after the final change.
+survival, lock-release, error and output tests; run focused race tables.

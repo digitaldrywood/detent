@@ -12,4 +12,4 @@ when_to_use: Use when a bounded logical sample still requires a full remote scan
 - Keep liveness pulses separate from result publication. Snapshot completed results and the current stage atomically at named boundaries, then freeze that snapshot before cancellation.
 - Reject result publications after freeze so cancellation-aware work cannot move the reported stage or append cancellation artifacts past the timeout boundary.
 - Test the two behaviors independently: a multi-response operation whose total runtime exceeds the timeout must complete, while a stalled operation must return completed prior results followed by the synthesized timeout failure.
-- Repeat focused tests under the race detector, then run the repository validation gate.
+- Repeat focused tests under the race detector.
