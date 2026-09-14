@@ -2411,10 +2411,10 @@ func TestBoardCardSurfacesWorkpadBlockerResolution(t *testing.T) {
 		refs     []telemetry.BlockedRef
 		wantRefs []string
 	}{
-		{name: "open ref renders live", refs: []telemetry.BlockedRef{openRef}, wantRefs: []string{"gopherguides/corp#492 (live)"}},
-		{name: "closed ref renders resolved", refs: []telemetry.BlockedRef{closedRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)"}},
-		{name: "closed workpad ref duplicated by native relation renders resolved", refs: []telemetry.BlockedRef{duplicateClosedRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)"}},
-		{name: "mixed refs retain operative hold", refs: []telemetry.BlockedRef{closedRef, openRef}, wantRefs: []string{"gopherguides/corp#491 (resolved)", "gopherguides/corp#492 (live)"}},
+		{name: "open ref renders live", refs: []telemetry.BlockedRef{openRef}, wantRefs: []string{"gopherguides/corp#492 [workpad] (live)"}},
+		{name: "closed ref renders resolved", refs: []telemetry.BlockedRef{closedRef}, wantRefs: []string{"gopherguides/corp#491 [workpad] (resolved)"}},
+		{name: "closed workpad ref duplicated by native relation renders resolved", refs: []telemetry.BlockedRef{duplicateClosedRef}, wantRefs: []string{"gopherguides/corp#491 [native] (resolved)"}},
+		{name: "mixed refs retain operative hold", refs: []telemetry.BlockedRef{closedRef, openRef}, wantRefs: []string{"gopherguides/corp#491 [workpad] (resolved)", "gopherguides/corp#492 [workpad] (live)"}},
 	}
 
 	for _, tt := range tests {

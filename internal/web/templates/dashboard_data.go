@@ -3189,6 +3189,7 @@ func projectKanbanLaneID(state string) string {
 
 func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue), state)
+	clearedBlockers = append(clearedBlockers, issue.DependencyNotes...)
 	card := projectKanbanCard{
 		IssueNumber:           projectKanbanIssueNumber(issue),
 		Identity:              boardCardIdentityToken(issue.Identifier, issue.ID, projectKanbanIssueNumber(issue)),
@@ -3392,6 +3393,9 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 		}
 		if label == "" {
 			continue
+		}
+		if source := strings.TrimSpace(ref.Source); source != "" {
+			label += " [" + source + "]"
 		}
 		if ref.HumanOwned {
 			if ref.HumanCompletionReady {

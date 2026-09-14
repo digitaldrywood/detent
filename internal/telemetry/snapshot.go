@@ -1111,6 +1111,7 @@ type Issue struct {
 	Labels                []string               `json:"labels,omitempty"`
 	Assignees             []string               `json:"assignees,omitempty"`
 	Comments              []IssueComment         `json:"comments,omitempty"`
+	DependencyNotes       []string               `json:"dependency_notes,omitempty"`
 	BlockedBy             []BlockedRef           `json:"blocked_by,omitempty"`
 	PullRequest           *PullRequest           `json:"pull_request,omitempty"`
 	Deliverable           *Deliverable           `json:"deliverable,omitempty"`

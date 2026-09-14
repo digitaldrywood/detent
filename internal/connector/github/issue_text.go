@@ -193,30 +193,7 @@ func parseBlockedByFromIssueText(issue githubIssueNode, repo string) []connector
 	if repo == "" {
 		repo = strings.TrimSpace(issue.Repository.NameWithOwner)
 	}
-	self := normalizedIssueIdentifier(buildIdentifier(repo, issue.Number))
-	blockers := []connector.BlockedRef{}
-	seen := map[string]struct{}{}
-	appendBlockers := func(refs []connector.BlockedRef) {
-		for _, ref := range refs {
-			key := normalizedIssueIdentifier(ref.Identifier)
-			if key == "" {
-				continue
-			}
-			if self != "" && key == self {
-				continue
-			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			blockers = append(blockers, ref)
-		}
-	}
-	appendBlockers(parseBlockedBy(issue.Body, repo))
-	for _, comment := range issue.Comments.Nodes {
-		appendBlockers(parseBlockedBy(comment.Body, repo))
-	}
-	return blockers
+	return dependencyBlockedRefsWithoutSelf(parseBlockedBy(issue.Body, repo), buildIdentifier(repo, issue.Number))
 }
 
 func markdownSectionText(body string, title string) string {

@@ -406,9 +406,6 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)
 			}
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			if err := c.resolveBlockedByProjectState(ctx, scan.Issues); err != nil {
-				return connector.IssueStateScan{}, err
-			}
 			return scan, nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)

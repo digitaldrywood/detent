@@ -1180,6 +1180,7 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		Labels:                append([]string(nil), issue.Labels...),
 		Assignees:             append([]string(nil), issue.Assignees...),
 		Comments:              telemetryIssueComments(issue.Comments),
+		DependencyNotes:       append([]string(nil), issue.DependencyNotes...),
 		BlockedBy:             telemetryBlockedRefs(issue.BlockedBy),
 		PullRequest:           telemetryPullRequest(issue, quietDuration, pollInterval),
 		Deliverable:           telemetryDeliverable(issue.Deliverable),

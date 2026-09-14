@@ -1196,3 +1196,28 @@ func TestAPIBoardCardFleetReadOnlyShowsCommentsWithoutWriteControls(t *testing.T
 		}
 	}
 }
+
+func TestAPIBoardCardDependencySources(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"native", "prose"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			note := "owner/repo#99: prose dependency ignored: native relation absent"
+			issue := telemetry.Issue{ID: "dependency-source", Identifier: "owner/repo#101", ProjectID: "detent", Title: "Dependency sources", State: "Todo", BlockedBy: []telemetry.BlockedRef{{Identifier: "owner/repo#100", Source: source, State: "Open"}}, DependencyNotes: []string{note}}
+			deps := testDeps(t)
+			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now(), BoardIssues: []telemetry.Issue{issue}}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=dependency-source", http.StatusOK)
+			for _, want := range []string{"owner/repo#100 [" + source + "]", note} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("board card missing %q", want)
+				}
+			}
+		})
+	}
+}

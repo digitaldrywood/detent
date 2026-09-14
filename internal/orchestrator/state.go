@@ -726,6 +726,7 @@ func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 }
 
 func cloneIssue(issue connector.Issue) connector.Issue {
+	issue.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
 	cloned := issue
 	if issue.Priority != nil {
 		priority := *issue.Priority

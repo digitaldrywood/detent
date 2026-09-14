@@ -28,11 +28,16 @@ func TestConnectorReconcileIssueFetchesOneLabelIssue(t *testing.T) {
 			t.Parallel()
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/digitaldrywood/detent/issues/1133/dependencies/blocked_by" {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
 				if r.URL.Path != "/repos/digitaldrywood/detent/issues/1133" {
 					t.Fatalf("path = %q, want targeted issue path", r.URL.Path)
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"number":1133,"node_id":"I_1133","title":"Board freshness","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1133","labels":` + tt.labels + `}`))
+				_, _ = w.Write([]byte(`{"number":1133,"node_id":"I_1133","title":"Board freshness","body":"Depends on: #100","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1133","labels":` + tt.labels + `}`))
 			}))
 			t.Cleanup(server.Close)
 
@@ -57,6 +62,9 @@ func TestConnectorReconcileIssueFetchesOneLabelIssue(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("ReconcileIssue() error = %v", err)
+			}
+			if result.Issue.DependencySource != connector.BlockedRefSourceNative || len(result.Issue.BlockedBy) != 0 || len(result.Issue.DependencyNotes) != 1 {
+				t.Fatalf("targeted refresh lost native authority: %+v", result.Issue)
 			}
 			if !result.Found || result.Issue.ID != "I_1133" || result.Issue.State != tt.wantState {
 				t.Fatalf("ReconcileIssue() = %#v, want found issue in %q", result, tt.wantState)

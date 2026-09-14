@@ -137,6 +137,7 @@ func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 		State:            "Todo",
 		URL:              "https://github.com/digitaldrywood/detent/issues/485",
 		BlockedBy:        []connector.BlockedRef{},
+		DependencySource: connector.BlockedRefSourceProse,
 		Labels:           []string{"detent:ready", "enhancement"},
 		Assignees:        []string{},
 		Fields:           map[string]string{"Status": "Ready"},

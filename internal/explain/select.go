@@ -413,6 +413,11 @@ func buildExplanation(observedAt time.Time, identity Identity, found bool, colle
 		ParkSummary:      parkSummaryModel(collected.parkSummary),
 		Sources:          append([]SourceStatus(nil), collected.sources...),
 	}
+	if len(collected.snapshotIssues) > 0 {
+		issue := collected.snapshotIssues[0].issue
+		explanation.Dependencies = append([]telemetry.BlockedRef(nil), issue.BlockedBy...)
+		explanation.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
+	}
 	explanation.Evidence = explanationEvidence(explanation, collected)
 	return explanation
 }

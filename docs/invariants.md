@@ -120,6 +120,15 @@ attempt cleanup even when completion-time pull-request hydration is unavailable
 the claim no longer acts as an implicit park while no worker is running, and cleanup
 is limited to the retained attempt claim so it cannot erase replacement ownership.
 
+GitHub dependency hydration uses native relations as the source of truth when
+available, removing the union with prose dependencies (#2575). Unsupported
+repositories fall back to issue-body lines; historical comments are diagnostic
+only. Public reads select the dependency source before resolving blockers, and
+tracker refreshes replace authoritative empty lists instead of restoring prior
+refs. This also removes the orchestrator's historical-comment union and prevents
+reparsing connector-owned dependencies. Ignored prose is explained without
+introducing another blocking mechanism.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

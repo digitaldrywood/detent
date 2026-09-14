@@ -130,22 +130,21 @@ func dependencyIssueRef(identifier string) (issueRef, bool) {
 	return issueRefFromURL(identifier)
 }
 
-func (c *Connector) hydrateBlockedByRefs(ctx context.Context, issues []connector.Issue) {
+func (c *Connector) hydrateBlockedByRefs(ctx context.Context, issues []connector.Issue) error {
 	for index := range issues {
-		c.hydrateIssueBlockedByRefs(ctx, &issues[index])
+		if err := c.hydrateIssueBlockedByRefs(ctx, &issues[index]); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connector.Issue) {
-	if err := c.hydrateIssueBlockedByRefsWithError(ctx, issue); err != nil {
-		return
-	}
-}
-
-func (c *Connector) hydrateIssueBlockedByRefsWithError(ctx context.Context, issue *connector.Issue) error {
+func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connector.Issue) error {
 	if c == nil || issue == nil {
 		return nil
 	}
+	issue.DependencyNotes = nil
+	issue.DependencySource = ""
 	ref, ok := issueRefFromIdentifier(issue.Identifier)
 	if !ok {
 		ref, ok = issueRefFromURL(issue.URL)
@@ -156,19 +155,21 @@ func (c *Connector) hydrateIssueBlockedByRefsWithError(ctx context.Context, issu
 	}
 
 	nativeRefs, nativeAvailable, err := c.fetchNativeBlockedByRefs(ctx, ref)
-	if !nativeAvailable {
-		markBlockedRefsSource(issue.BlockedBy, connector.BlockedRefSourceProse)
-		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+	if err != nil {
 		return err
 	}
-
-	if c.dependencySource == dependencySourceNativeOnly {
-		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(nativeRefs, issue.Identifier)
+	if !nativeAvailable {
+		issue.DependencySource = connector.BlockedRefSourceProse
+		issue.BlockedBy = parseBlockedBy(issue.Description, ref.Owner+"/"+ref.Name)
+		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 		return nil
 	}
 
-	issue.BlockedBy = mergeGitHubDependencyBlockedRefs(nativeRefs, issue.BlockedBy)
-	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+	// Native relations are authoritative, including an empty list. Historical
+	// prose is retained only as explanation evidence, never as scheduler input.
+	issue.DependencySource = connector.BlockedRefSourceNative
+	issue.DependencyNotes = ignoredProseDependencyNotes(*issue, ref.Owner+"/"+ref.Name, nativeRefs)
+	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(nativeRefs, issue.Identifier)
 	return nil
 }
 
@@ -349,37 +350,27 @@ func (c *Connector) logNativeDependencyFetchError(ctx context.Context, repo stri
 	c.logger.DebugContext(ctx, "github native dependency hydration skipped", "repository", repo, "error", err)
 }
 
-func mergeGitHubDependencyBlockedRefs(nativeRefs []connector.BlockedRef, proseRefs []connector.BlockedRef) []connector.BlockedRef {
-	if len(nativeRefs) == 0 && len(proseRefs) == 0 {
-		return nil
+func ignoredProseDependencyNotes(issue connector.Issue, repo string, nativeRefs []connector.BlockedRef) []string {
+	seen := map[string]struct{}{normalizedIssueIdentifier(issue.Identifier): {}}
+	for _, ref := range nativeRefs {
+		seen[normalizedIssueIdentifier(ref.Identifier)] = struct{}{}
 	}
-	merged := make([]connector.BlockedRef, 0, len(nativeRefs)+len(proseRefs))
-	seen := map[string]struct{}{}
-	appendRefs := func(refs []connector.BlockedRef, fallbackSource string) {
-		for _, ref := range refs {
+	var notes []string
+	appendNotes := func(body string) {
+		for _, ref := range parseBlockedBy(body, repo) {
 			key := normalizedIssueIdentifier(ref.Identifier)
-			if key == "" {
-				key = strings.ToLower(strings.TrimSpace(ref.ID))
-			}
-			if key == "" {
-				continue
-			}
 			if _, ok := seen[key]; ok {
 				continue
 			}
-			if strings.TrimSpace(ref.Source) == "" {
-				ref.Source = fallbackSource
-			}
 			seen[key] = struct{}{}
-			merged = append(merged, ref)
+			notes = append(notes, ref.Identifier+": prose dependency ignored: native relation absent")
 		}
 	}
-	appendRefs(nativeRefs, connector.BlockedRefSourceNative)
-	appendRefs(proseRefs, connector.BlockedRefSourceProse)
-	if len(merged) == 0 {
-		return nil
+	appendNotes(issue.Description)
+	for _, comment := range issue.Comments {
+		appendNotes(comment.Body)
 	}
-	return merged
+	return notes
 }
 
 func dependencyBlockedRefsWithoutSelf(refs []connector.BlockedRef, identifier string) []connector.BlockedRef {
