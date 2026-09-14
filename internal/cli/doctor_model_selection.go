@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 func checkDoctorModelSelection(id string, cfg workflowconfig.Config) doctorCheck {
@@ -56,4 +60,54 @@ func checkDoctorModelSelection(id string, cfg workflowconfig.Config) doctorCheck
 	details = append(details, "pricing: standard API USD estimates; subscription charges, credits, Fast mode, long context, and cache-write premiums can differ")
 	check.Detail = strings.Join(details, "; ")
 	return check
+}
+
+func checkDoctorBackendModelCatalogs(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) []doctorCheck {
+	backends := cfg.AgentBackendConfigs()
+	checks := make([]doctorCheck, 0, len(backends))
+	for _, backend := range backends {
+		name := fmt.Sprintf("Project %s backend %s model catalog", id, backend.ID)
+		if strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorOK,
+				Detail: fmt.Sprintf("backend %s (%s) does not advertise a model catalog; probe skipped", backend.ID, backend.Kind),
+			})
+			continue
+		}
+		connector.ReportProgress(ctx)
+		count, err := deps.modelCatalogProbe(ctx, backend)
+		if err != nil {
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("backend %s (%s) model catalog unavailable: %s", backend.ID, backend.Kind, runnerpkg.CatalogErrorDiagnostic(err)),
+				Hint:   "Fix the backend command, working directory, trust, authentication, or transport failure, then rerun detent doctor.",
+			})
+			continue
+		}
+		checks = append(checks, doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: fmt.Sprintf("listed %d model(s) from backend %s (%s)", count, backend.ID, backend.Kind),
+		})
+	}
+	return checks
+}
+
+func defaultDoctorBackendModelCatalogProbe(ctx context.Context, cfg workflowconfig.AgentBackend) (int, error) {
+	backend, err := buildAgentBackend(cfg)
+	if err != nil {
+		return 0, err
+	}
+	provider, ok := backend.(runnerpkg.AgentModelCatalogProvider)
+	if !ok {
+		return 0, errors.New("backend does not advertise a model catalog")
+	}
+	// Doctor is an explicit instance probe, outside an attempt workspace.
+	models, err := provider.ListModels(ctx, runnerpkg.AgentProcessRequest{})
+	if err != nil {
+		return 0, err
+	}
+	return len(models), nil
 }

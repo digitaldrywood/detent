@@ -5848,6 +5848,51 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	}
 }
 
+func TestRunnerAuditReturnsCatalogSelectionError(t *testing.T) {
+	t.Parallel()
+
+	catalogErr := errors.New("initialize codex app-server: unexpected EOF")
+	auditBackend := &fakeCodexClient{catalogErr: catalogErr}
+	unavailable := "fail"
+	runner, err := NewRunner(Dependencies{
+		ProjectID:         "detent",
+		SecurityAuditRoot: t.TempDir(),
+		Workflow: config.Workflow{Config: config.Config{
+			Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{Enabled: true}},
+			Agents: config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"}},
+				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}},
+				ModelSelection: config.ModelSelection{Preset: new("sol_first"), Unavailable: &unavailable},
+			},
+		}},
+		Workspace:     &fakeWorkspaceBackend{},
+		AgentBackends: map[string]AgentBackend{"codex": auditBackend},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Audit(t.Context(), SecurityAuditRequest{
+		Issue: connector.Issue{ID: "issue-2555", Identifier: "digitaldrywood/detent#2555"},
+		Snapshot: securityaudit.Snapshot{
+			ProjectID:  "detent",
+			IssueID:    "issue-2555",
+			Identifier: "digitaldrywood/detent#2555",
+			Repository: "digitaldrywood/detent",
+			PRNumber:   2559,
+			BaseSHA:    "base-1",
+			HeadSHA:    "head-1",
+			Diff:       "diff --git a/internal/runner/model_selection.go b/internal/runner/model_selection.go\n+surface catalog error",
+		},
+	})
+	if !errors.Is(err, catalogErr) || !strings.Contains(err.Error(), catalogErr.Error()) {
+		t.Fatalf("Audit() error = %v, want wrapping %v", err, catalogErr)
+	}
+	if auditBackend.calls != 0 || auditBackend.catalogCalls != 1 {
+		t.Fatalf("audit backend turn/catalog calls = %d/%d, want 0/1", auditBackend.calls, auditBackend.catalogCalls)
+	}
+}
+
 func TestRunnerAuditUsesEmptyReadOnlySubscriptionWorkspace(t *testing.T) {
 	t.Parallel()
 

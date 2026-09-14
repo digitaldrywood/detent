@@ -93,6 +93,7 @@ type Store interface {
 	RefreshAdmissionOutcomes(context.Context, admissionmodel.OutcomeRefresh) error
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
+	AdmissionCandidateHistory(context.Context, string) (map[string]admissionmodel.IssueRecord, error)
 	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult, int) (admissionmodel.MalformedResult, error)
 	BlockedAdmissionMalformedResult(context.Context, string, string) (admissionmodel.MalformedResult, bool, error)
 	ResolveAdmissionMalformedResults(context.Context, string, string, time.Time) error
@@ -135,6 +136,7 @@ type Result struct {
 	Skipped         map[string]int
 	Truncated       map[string]int
 	Malformed       []admissionmodel.MalformedEvidence
+	Issues          []admissionmodel.IssueRecord
 	DeferredReason  string
 	ResumeAt        time.Time
 	ProposalReason  string
@@ -364,14 +366,13 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		record.DeferredReason = result.DeferredReason
 		record.ResumeAt = result.ResumeAt
 		record.ProposalReason = result.ProposalReason
-		record.Issues = make([]admissionmodel.IssueRecord, 0, len(result.Proposals))
+		record.Issues = append([]admissionmodel.IssueRecord(nil), result.Issues...)
 		for _, proposal := range result.Proposals {
-			record.Issues = append(record.Issues, admissionmodel.IssueRecord{
-				ID:         proposal.IssueID,
-				Identifier: proposal.IssueIdentifier,
-				URL:        proposal.IssueURL,
-				ProposalID: proposal.ID,
-			})
+			for i := range record.Issues {
+				if record.Issues[i].ID == proposal.IssueID {
+					record.Issues[i].ProposalID = proposal.ID
+				}
+			}
 		}
 		record.Malformed = append([]admissionmodel.MalformedEvidence(nil), result.Malformed...)
 		if result.DeferredReason != "" {
@@ -464,7 +465,10 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		result.Skipped,
 		readerFiltered["author"] > 0,
 	)
-	sortCandidates(candidates, settings)
+	candidates, err = m.orderCandidateWindow(candidateCtx, settings, candidates, result.Skipped, startedAt)
+	if err != nil {
+		return result, err
+	}
 	var truncatedCandidates int
 	candidates, commentsRemaining, truncatedCandidates, err = m.unproposedCandidates(
 		candidateCtx,
@@ -523,6 +527,13 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 			result.DeferredReason = deferredReason
 			return result, nil
 		}
+		result.Issues = append(result.Issues, admissionmodel.IssueRecord{
+			ID:          candidate.ID,
+			Identifier:  candidate.Identifier,
+			URL:         candidate.URL,
+			Fingerprint: admissionEvaluationFingerprints(settings, candidate).proposal,
+			EvaluatedAt: startedAt,
+		})
 		if failure != nil {
 			evidence, err := m.recordMalformedResult(ctx, settings, candidate, *failure, startedAt)
 			if err != nil {
@@ -1048,7 +1059,7 @@ func (m *Manager) unproposedCandidates(
 	processed := 0
 	truncated := 0
 	for _, candidate := range candidates {
-		if len(admissionDependencyReferences(candidate)) > 0 {
+		if settings.dependencies[candidate.ID] == nil && len(admissionDependencyReferences(candidate)) > 0 {
 			settings.dependencies[candidate.ID] = resolveAdmissionDependencies(ctx, settings, candidate, at)
 		}
 		history, err := m.store.AdmissionProposalHistory(ctx, settings.ProjectID, candidate.ID)
@@ -1416,16 +1427,17 @@ func (m *Manager) executeEvaluations(
 	for _, original := range candidates {
 		issueID := strings.TrimSpace(original.ID)
 		evaluation := evaluationByID[issueID]
-		fresh, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{issueID})
+		current, dependencies, valid, err := revalidateAdmissionCandidate(ctx, settings, original, m.now().UTC())
 		if err != nil {
-			return result, fmt.Errorf("revalidate backlog admission candidate %s: %w", original.Identifier, err)
+			return result, err
 		}
-		current, currentFound := issueMap(fresh)[issueID]
-		originalFingerprint := issueFingerprint(original, settings.dependencies[issueID])
-		dependencies := resolveAdmissionDependencies(ctx, settings, current, m.now().UTC())
-		if !currentFound || originalFingerprint != issueFingerprint(current, dependencies) ||
-			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
+		if !valid {
 			result.Skipped["stale_or_ineligible"]++
+			for i := range result.Issues {
+				if result.Issues[i].ID == issueID {
+					result.Issues[i].SkipReason = "stale_or_ineligible"
+				}
+			}
 			continue
 		}
 		settings.dependencies[issueID] = dependencies

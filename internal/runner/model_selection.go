@@ -84,8 +84,7 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process A
 		}
 		models, err := provider.ListModels(ctx, process)
 		if err != nil {
-			result = result.reject("effort", result.Effort, "model catalog unavailable while validating changed resume effort")
-			result.Err = fmt.Errorf("%w: %w", result.Err, err)
+			result.Err = fmt.Errorf("changed resume effort validation: model catalog unavailable: %w", err)
 			return result
 		}
 		selected, ok := findAgentModel(models, model)
@@ -106,7 +105,8 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, process A
 	policy := cfg.EffectiveModelSelection()
 	projectEffort, field := cfg.Agent.Effort.Resolve(role)
 	if !policy.Active() || policy.BackendKinds == nil || !slices.Contains(*policy.BackendKinds, backendConfig.Kind) {
-		return agentSelection{resolvedAgentOverride: resolveAgentOverride(ctx, issue, process, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)}
+		resolved, err := resolveAgentOverride(ctx, issue, process, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)
+		return agentSelection{resolvedAgentOverride: resolved, Err: err}
 	}
 	result := configuredAutomaticSelection(issue, baseModel, role, cfg, backendConfig)
 	if result.Err != nil {
@@ -130,7 +130,7 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, process A
 	models, err := provider.ListModels(ctx, process)
 	if err != nil {
 		catalogErr := fmt.Errorf("automatic model selection: model catalog unavailable: %w", err)
-		result.CatalogError = catalogErrorDiagnostic(err)
+		result.CatalogError = CatalogErrorDiagnostic(err)
 		if !automaticModel || policy.Unavailable == nil || *policy.Unavailable != "fallback" || !normalModelFallbackConfigured(policy) {
 			result.Err = catalogErr
 			return result
@@ -243,7 +243,46 @@ func normalModelFallbackConfigured(policy config.ModelSelection) bool {
 	})
 }
 
-func catalogErrorDiagnostic(err error) string {
+// CatalogErrorDiagnostic returns a bounded operator-facing catalog error that
+// omits backend response bodies when the backend exposes a separate message.
+func CatalogErrorDiagnostic(err error) string {
+	const maxDiagnosticBytes = 512
+	parts := catalogErrorDiagnosticParts(err)
+	message := strings.Join(parts, "; ")
+	if len(message) <= maxDiagnosticBytes || len(parts) < 2 {
+		return boundCatalogErrorDiagnostic(message, maxDiagnosticBytes)
+	}
+
+	separatorBytes := 2 * (len(parts) - 1)
+	if separatorBytes >= maxDiagnosticBytes {
+		return boundCatalogErrorDiagnostic(message, maxDiagnosticBytes)
+	}
+	partBudget := (maxDiagnosticBytes - separatorBytes) / len(parts)
+	remainder := (maxDiagnosticBytes - separatorBytes) % len(parts)
+	for index := range parts {
+		budget := partBudget
+		if index < remainder {
+			budget++
+		}
+		parts[index] = boundCatalogErrorDiagnostic(parts[index], budget)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func catalogErrorDiagnosticParts(err error) []string {
+	type joinedError interface {
+		Unwrap() []error
+	}
+	if joined, ok := err.(joinedError); ok {
+		parts := make([]string, 0, len(joined.Unwrap()))
+		for _, cause := range joined.Unwrap() {
+			parts = append(parts, catalogErrorDiagnosticParts(cause)...)
+		}
+		if len(parts) > 0 {
+			return parts
+		}
+	}
+
 	type backendErrorMessage interface {
 		BackendErrorMessage() string
 	}
@@ -251,20 +290,27 @@ func catalogErrorDiagnostic(err error) string {
 	message := ""
 	if errors.As(err, &backendErr) {
 		message = backendErr.BackendErrorMessage()
-	}
-	if strings.TrimSpace(message) == "" {
+		if strings.TrimSpace(message) == "" {
+			message = "backend returned a model catalog error without diagnostic detail"
+		}
+	} else if err != nil {
 		message = err.Error()
 	}
-	message = strings.Join(strings.Fields(message), " ")
-	const maxDiagnosticBytes = 512
-	if len(message) > maxDiagnosticBytes {
-		end := maxDiagnosticBytes
-		for end > 0 && !utf8.RuneStart(message[end]) {
-			end--
-		}
-		message = message[:end] + "..."
+	return []string{strings.Join(strings.Fields(message), " ")}
+}
+
+func boundCatalogErrorDiagnostic(message string, maxBytes int) string {
+	if len(message) <= maxBytes {
+		return message
 	}
-	return message
+	if maxBytes <= 3 {
+		return strings.Repeat(".", maxBytes)
+	}
+	end := maxBytes - 3
+	for end > 0 && !utf8.RuneStart(message[end]) {
+		end--
+	}
+	return message[:end] + "..."
 }
 
 func (s agentSelection) reject(field, value, reason string) agentSelection {

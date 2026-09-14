@@ -29,7 +29,7 @@ func resolveAgentOverride(
 	role string,
 	projectEffort agentEffortCandidate,
 	backend AgentBackend,
-) resolvedAgentOverride {
+) (resolvedAgentOverride, error) {
 	baseModel = strings.TrimSpace(baseModel)
 	result := resolvedAgentOverride{Model: baseModel}
 	override, found, err := agentoverride.FromIssueBody(issue.Description)
@@ -43,16 +43,17 @@ func resolveAgentOverride(
 	override.Model, _ = override.ModelForRole(role)
 	efforts := agentEffortCandidates(override, role, projectEffort)
 	if override.Model == "" && len(efforts) == 0 {
-		return result
+		return result, nil
 	}
 
 	provider, ok := backend.(AgentModelCatalogProvider)
 	if !ok {
-		return resolveWithoutAgentCatalog(result, override.Model, efforts, "selected backend does not advertise a model catalog")
+		return resolveWithoutAgentCatalog(result, override.Model, efforts, "selected backend does not advertise a model catalog"), nil
 	}
 	models, err := provider.ListModels(ctx, process)
 	if err != nil {
-		return rejectUnavailableCatalog(result, override.Model, efforts, "model catalog unavailable: "+err.Error())
+		result.Rejections = nil
+		return result, fmt.Errorf("agent override validation: model catalog unavailable: %w", err)
 	}
 
 	var effectiveModel AgentModel
@@ -77,7 +78,7 @@ func resolveAgentOverride(
 	}
 
 	if len(efforts) == 0 {
-		return result
+		return result, nil
 	}
 	if !modelFound {
 		effectiveBaseModel := baseModel
@@ -85,26 +86,26 @@ func resolveAgentOverride(
 			defaultProvider, ok := backend.(AgentDefaultModelProvider)
 			if !ok {
 				rejectEffortCandidates(&result, efforts, "selected backend does not advertise its effective default model")
-				return result
+				return result, nil
 			}
 			effectiveBaseModel, err = defaultProvider.DefaultModel(ctx, process)
 			if err != nil {
 				rejectEffortCandidates(&result, efforts, "effective default model unavailable: "+err.Error())
-				return result
+				return result, nil
 			}
 		}
 		effectiveModel, modelFound = findAgentModel(models, effectiveBaseModel)
 	}
 	if !modelFound {
 		rejectEffortCandidates(&result, efforts, "effective model is not available in the selected backend catalog")
-		return result
+		return result, nil
 	}
 
 	model := canonicalAgentModel(effectiveModel, result.Model)
 	for _, candidate := range efforts {
 		if effort, ok := supportedAgentEffort(effectiveModel, candidate.Effort); ok {
 			result.Effort = effort
-			return result
+			return result, nil
 		}
 		result.Rejections = append(result.Rejections, AgentOverrideRejection{
 			Field:  candidate.Field,
@@ -112,7 +113,7 @@ func resolveAgentOverride(
 			Reason: fmt.Sprintf("effort is not supported by model %q", model),
 		})
 	}
-	return result
+	return result, nil
 }
 
 func agentEffortCandidates(override agentoverride.Override, role string, project agentEffortCandidate) []agentEffortCandidate {
@@ -150,18 +151,6 @@ func resolveWithoutAgentCatalog(result resolvedAgentOverride, model string, effo
 		result.Effort = strings.ToLower(strings.TrimSpace(effort.Effort))
 		return result
 	}
-	return result
-}
-
-func rejectUnavailableCatalog(result resolvedAgentOverride, model string, efforts []agentEffortCandidate, reason string) resolvedAgentOverride {
-	if model != "" {
-		result.Rejections = append(result.Rejections, AgentOverrideRejection{
-			Field:  "model",
-			Value:  model,
-			Reason: reason,
-		})
-	}
-	rejectEffortCandidates(&result, efforts, reason)
 	return result
 }
 

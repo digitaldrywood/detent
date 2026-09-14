@@ -67,7 +67,7 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 		now = o.clockNow()
 	}
 	key, existing, exists := githubRESTCapacityOutage(state.BackendOutages)
-	evidence, exceeded, observed := gitHubRESTCapacityObservation(state, o.cfg.GitHubRESTMinReserve, now)
+	evidence, exceeded, observed := gitHubRESTCapacityObservation(state, now)
 	if !observed {
 		return
 	}
@@ -92,30 +92,13 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 	o.setGitHubRESTCapacityOutage(state, evidence, now)
 }
 
-func gitHubRESTCapacityObservation(state *State, floor int64, now time.Time) (githubRESTBudgetEvidence, bool, bool) {
+func gitHubRESTCapacityObservation(state *State, now time.Time) (githubRESTBudgetEvidence, bool, bool) {
 	if state == nil || state.RateLimits == nil {
 		return githubRESTBudgetEvidence{}, false, false
 	}
 	selected := githubRESTBudgetEvidence{}
 	exceeded := false
 	observed := false
-	if bucket := state.RateLimits.GitHubREST; bucket != nil && bucket.Limit > 0 {
-		observed = true
-		if gitHubRESTCapacityExceeded(bucket, floor, now) {
-			candidate := githubRESTBudgetEvidence{
-				Consumer:  telemetry.RESTConsumerOrchestrator,
-				Remaining: bucket.Remaining,
-				Limit:     bucket.Limit,
-				Reserve:   floor,
-				ResetAt:   bucket.ResetAt.UTC(),
-			}
-			if bucket.ObservedAt != nil {
-				candidate.ObservedAt = bucket.ObservedAt.UTC()
-			}
-			selected = candidate
-			exceeded = true
-		}
-	}
 	for _, budget := range state.RateLimits.GitHubRESTBudgets {
 		consumer := strings.TrimSpace(budget.Consumer)
 		if consumer != telemetry.RESTConsumerWorker && consumer != telemetry.RESTConsumerSharedPool ||
@@ -201,10 +184,6 @@ func githubRESTCapacityReason(evidence githubRESTBudgetEvidence) string {
 		reason += " for credential " + credential
 	}
 	return reason
-}
-
-func gitHubRESTCapacityExceeded(bucket *telemetry.RateLimitBucket, floor int64, now time.Time) bool {
-	return bucket != nil && bucket.Limit > 0 && bucket.ResetAt != nil && bucket.ResetAt.After(now) && bucket.Remaining <= floor
 }
 
 func githubRESTCapacityOutage(outages map[string]BackendOutage) (string, BackendOutage, bool) {

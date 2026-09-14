@@ -178,6 +178,7 @@ func TestAutomaticModelSelection(t *testing.T) {
 func TestAutomaticModelSelectionFailures(t *testing.T) {
 	for _, tt := range []struct {
 		name, body, unavailable     string
+		wantErrorDetail             string
 		catalog                     []AgentModel
 		catalogErr                  error
 		fallbackReason              string
@@ -188,9 +189,9 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 		{name: "Astra retired", catalog: []AgentModel{selectionCatalog()[0], {ID: "gpt-6-astra", Upgrade: "replacement"}}, fallback: true},
 		{name: "neither available", failure: true},
 		{name: "catalog unavailable", catalogErr: errors.New("catalog transport details"), fallback: true, fallbackReason: "automatic model selection: model catalog unavailable: catalog transport details"},
-		{name: "catalog unavailable with fail configured", catalogErr: errors.New("catalog transport details"), unavailable: "fail", failure: true},
-		{name: "catalog unavailable with empty fallback order", catalogErr: errors.New("catalog transport details"), clearFallbackOrder: true, failure: true},
-		{name: "catalog unavailable with explicit model", catalogErr: errors.New("catalog transport details"), body: "model: gpt-6-astra", failure: true},
+		{name: "catalog unavailable with fail configured", catalogErr: errors.New("catalog transport details"), unavailable: "fail", failure: true, wantErrorDetail: "catalog transport details"},
+		{name: "catalog unavailable with empty fallback order", catalogErr: errors.New("catalog transport details"), clearFallbackOrder: true, failure: true, wantErrorDetail: "catalog transport details"},
+		{name: "catalog unavailable with explicit model", catalogErr: errors.New("catalog transport details"), body: "model: gpt-6-astra", failure: true, wantErrorDetail: "catalog transport details"},
 		{name: "fail configured", catalog: selectionCatalog()[:1], unavailable: "fail", failure: true},
 		{name: "invalid explicit model", catalog: selectionCatalog(), body: "model: absent", failure: true, rejected: true},
 		{name: "invalid explicit effort", catalog: selectionCatalog(), body: "effort: absent", failure: true, rejected: true},
@@ -224,6 +225,88 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 			if tt.fallback && (got.Model != "gpt-5.6-sol" || got.Selection.RequestedModel != "gpt-6-astra") {
 				t.Fatalf("fallback identity = %+v", got)
 			}
+			if tt.wantErrorDetail != "" && (got.Err == nil || !strings.Contains(got.Err.Error(), tt.wantErrorDetail)) {
+				t.Fatalf("selection error = %v, want containing %q", got.Err, tt.wantErrorDetail)
+			}
+		})
+	}
+}
+
+func TestModelSelectionCatalogErrorReachesAttemptAndLog(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name               string
+		message            string
+		automaticSelection bool
+	}{
+		{name: "automatic transport start", message: "start codex app-server transport: fork/exec codex: permission denied", automaticSelection: true},
+		{name: "automatic initialize", message: "initialize codex app-server: unexpected EOF", automaticSelection: true},
+		{name: "automatic model list response", message: "model/list response: invalid response id", automaticSelection: true},
+		{name: "override transport start", message: "start codex app-server transport: fork/exec codex: permission denied"},
+		{name: "override initialize", message: "initialize codex app-server: unexpected EOF"},
+		{name: "override model list response", message: "model/list response: invalid response id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
+			if tc.automaticSelection {
+				unavailable := "fail"
+				cfg.Agents.ModelSelection.Unavailable = &unavailable
+			} else {
+				cfg.Agents.ModelSelection.Enabled = new(false)
+			}
+			issue := connector.Issue{
+				ID:         "issue-catalog",
+				Identifier: "digitaldrywood/detent#2555",
+				State:      "In Progress",
+			}
+			if !tc.automaticSelection {
+				issue.Description = "```detent-agent\nschema: 1\nmodel: gpt-5.6-sol\n```"
+			}
+			catalogErr := errors.New(tc.message)
+			backend := &catalogAgentBackend{err: catalogErr}
+			run, err := NewRunner(Dependencies{
+				ProjectID:    "detent",
+				Workflow:     config.Workflow{Config: cfg, Prompt: "work"},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+				AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+			var logs bytes.Buffer
+			supervisor, err := NewSupervisor(run, SupervisorConfig{
+				Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+
+			var rejected []AgentOverrideRejection
+			completion := supervisor.Run(t.Context(), RunRequest{
+				ProjectID: "detent",
+				Issue:     issue,
+				Mode:      RunModeImplement,
+				OnOverrideRejected: func(got []AgentOverrideRejection) error {
+					rejected = append(rejected, got...)
+					return nil
+				},
+			})
+			if completion.Err == nil || !strings.Contains(completion.Err.Error(), tc.message) {
+				t.Fatalf("completion error = %v, want underlying catalog error %q", completion.Err, tc.message)
+			}
+			if !errors.Is(completion.Err, catalogErr) {
+				t.Fatalf("completion error = %v, want wrapping %v", completion.Err, catalogErr)
+			}
+			if got := logs.String(); !strings.Contains(got, tc.message) {
+				t.Fatalf("structured log missing underlying catalog error %q:\n%s", tc.message, got)
+			}
+			if len(rejected) != 0 {
+				t.Fatalf("issue override rejections = %#v, want none for instance-owned catalog failure", rejected)
+			}
 		})
 	}
 }
@@ -241,9 +324,44 @@ func TestCatalogErrorDiagnosticOmitsResponseBodyAndBoundsMessage(t *testing.T) {
 	t.Parallel()
 
 	secret := strings.Repeat("é", 300)
-	got := catalogErrorDiagnostic(&catalogResponseError{message: "models/list rejected " + secret, body: `{"token":"private"}`})
-	if strings.Contains(got, "private") || len(got) > 515 || !strings.HasSuffix(got, "...") || strings.ToValidUTF8(got, "") != got {
-		t.Fatalf("catalogErrorDiagnostic() = %q", got)
+	for _, tc := range []struct {
+		name         string
+		message      string
+		want         string
+		wantSuffix   string
+		wantMaxBytes int
+	}{
+		{name: "bounded backend message", message: "models/list rejected " + secret, want: "models/list rejected", wantSuffix: "...", wantMaxBytes: 515},
+		{name: "empty backend message", want: "backend returned a model catalog error without diagnostic detail"},
+		{name: "whitespace backend message", message: " \n\t ", want: "backend returned a model catalog error without diagnostic detail"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := CatalogErrorDiagnostic(&catalogResponseError{message: tc.message, body: `{"token":"private"}`})
+			if strings.Contains(got, "private") || !strings.Contains(got, tc.want) || !strings.HasSuffix(got, tc.wantSuffix) || strings.ToValidUTF8(got, "") != got {
+				t.Fatalf("CatalogErrorDiagnostic() = %q", got)
+			}
+			if tc.wantMaxBytes > 0 && len(got) > tc.wantMaxBytes {
+				t.Fatalf("CatalogErrorDiagnostic() bytes = %d, want <= %d", len(got), tc.wantMaxBytes)
+			}
+		})
+	}
+}
+
+func TestCatalogErrorDiagnosticPreservesJoinedCauses(t *testing.T) {
+	t.Parallel()
+
+	responseErr := &catalogResponseError{message: "model/list response: invalid response id", body: `{"token":"private"}`}
+	closeErr := errors.New("close codex app-server transport: context deadline exceeded")
+	got := CatalogErrorDiagnostic(errors.Join(responseErr, closeErr))
+	for _, want := range []string{responseErr.message, closeErr.Error()} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CatalogErrorDiagnostic() = %q, want containing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "private") {
+		t.Fatalf("CatalogErrorDiagnostic() = %q, want response body omitted", got)
 	}
 }
 
@@ -280,7 +398,7 @@ func TestConfiguredEffortCeiling(t *testing.T) {
 	}
 }
 
-func TestResumeCatalogFailureKeepsPublicRejectionGeneric(t *testing.T) {
+func TestResumeCatalogFailureDoesNotCreateIssueRejection(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
 	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
@@ -295,8 +413,8 @@ func TestResumeCatalogFailureKeepsPublicRejectionGeneric(t *testing.T) {
 	if got.Err == nil || !strings.Contains(got.Err.Error(), diagnostic.Error()) {
 		t.Fatalf("attempt error = %v, want diagnostic %q", got.Err, diagnostic)
 	}
-	if len(got.Rejections) != 1 || strings.Contains(got.Rejections[0].Reason, diagnostic.Error()) {
-		t.Fatalf("public rejections = %#v, want one sanitized reason", got.Rejections)
+	if len(got.Rejections) != 0 {
+		t.Fatalf("public rejections = %#v, want none for instance-owned catalog failure", got.Rejections)
 	}
 }
 
@@ -399,16 +517,18 @@ func TestUltracodeEffortCeiling(t *testing.T) {
 func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		mutate     func(*config.ModelSelection)
-		body       string
-		role       string
-		kind       string
-		catalog    []AgentModel
-		resume     bool
-		catalogErr error
-		want       string
-		wantError  bool
+		name            string
+		mutate          func(*config.ModelSelection)
+		body            string
+		role            string
+		kind            string
+		catalog         []AgentModel
+		resume          bool
+		catalogErr      error
+		wantDetail      string
+		wantNoRejection bool
+		want            string
+		wantError       bool
 	}{
 		{name: "policy permits xhigh", mutate: func(p *config.ModelSelection) {
 			p.Levels = map[string]config.ModelSelectionDefaults{"complex": {Effort: new("xhigh")}}
@@ -420,12 +540,13 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 			p.Stages = map[string]config.ModelSelectionStage{RoleMerge: {Effort: new("xhigh")}}
 		}, body: "effort: xhigh", want: "medium"},
 		{name: "disabled", mutate: func(p *config.ModelSelection) { p.Enabled = new(false) }, body: "model: gpt-6-astra\neffort: max", want: "max"},
+		{name: "disabled catalog unavailable", mutate: func(p *config.ModelSelection) { p.Enabled = new(false) }, body: "model: gpt-6-astra", catalogErr: errors.New("initialize failed without automatic selection"), wantDetail: "initialize failed without automatic selection", wantError: true, wantNoRejection: true},
 		{name: "excluded backend", kind: config.AgentBackendClaudeCode, body: "model: gpt-6-astra\neffort: xhigh", want: "xhigh"},
 		{name: "fallback stays bounded", catalog: selectionCatalog()[:1], body: "effort: xhigh", want: "medium"},
 		{name: "resume no issue override", resume: true, want: "medium"},
 		{name: "resume role override", resume: true, body: "code:\n  effort: low", want: "low"},
 		{name: "resume malformed override", resume: true, body: "effort: unknown", wantError: true},
-		{name: "resume changed effort catalog unavailable", resume: true, catalogErr: errors.New("unavailable"), wantError: true},
+		{name: "resume changed effort catalog unavailable", resume: true, catalogErr: errors.New("initialize failed during resume"), wantDetail: "initialize failed during resume", wantError: true, wantNoRejection: true},
 		{name: "resume changed effort unsupported", resume: true, catalog: []AgentModel{{ID: "gpt-6-astra", Model: "gpt-6-astra", SupportedReasoningEfforts: []string{"xhigh"}}}, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -458,6 +579,12 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", role, cfg, config.AgentBackend{Kind: kind}, backend)
 			if (got.Err != nil) != test.wantError || !test.wantError && got.Effort != test.want {
 				t.Fatalf("selection=%+v want effort=%s error=%v", got, test.want, test.wantError)
+			}
+			if test.wantDetail != "" && (got.Err == nil || !strings.Contains(got.Err.Error(), test.wantDetail)) {
+				t.Fatalf("selection error = %v, want containing %q", got.Err, test.wantDetail)
+			}
+			if test.wantNoRejection && len(got.Rejections) != 0 {
+				t.Fatalf("rejections = %#v, want no issue override rejection for catalog infrastructure failure", got.Rejections)
 			}
 		})
 	}
