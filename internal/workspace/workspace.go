@@ -1190,8 +1190,19 @@ func detachWorktreeHead(ctx context.Context, path string) error {
 		return fmt.Errorf("inspect quarantined worktree rebase: %w", err)
 	}
 	if rebasing {
-		if _, err := runGitAt(ctx, path, "rebase", "--quit"); err != nil {
-			return fmt.Errorf("quit quarantined worktree rebase: %w", withCommandOutput(err))
+		command := "rebase"
+		// git am shares rebase-apply, but requires its own quit command.
+		applying, err := gitPathFor(ctx, path, "rebase-apply/applying")
+		if err != nil {
+			return fmt.Errorf("inspect quarantined worktree am: %w", err)
+		}
+		if _, err := os.Stat(applying); err == nil {
+			command = "am"
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect quarantined worktree am: %w", err)
+		}
+		if _, err := runGitAt(ctx, path, command, "--quit"); err != nil {
+			return fmt.Errorf("quit quarantined worktree %s: %w", command, withCommandOutput(err))
 		}
 	}
 	for _, operation := range []struct{ marker, command string }{

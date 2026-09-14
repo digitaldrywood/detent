@@ -3071,7 +3071,7 @@ exit %d
 
 func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"checked-out", "rebase", "merge", "cherry-pick", "detached"} {
+	for _, operation := range []string{"checked-out", "rebase", "am", "merge", "cherry-pick", "detached"} {
 		t.Run(operation, func(t *testing.T) {
 			t.Parallel()
 			source := initSourceRepo(t)
@@ -3084,7 +3084,7 @@ func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if operation == "rebase" || operation == "merge" || operation == "cherry-pick" {
+			if operation == "rebase" || operation == "am" || operation == "merge" || operation == "cherry-pick" {
 				for _, dir := range []string{first.Path, source} {
 					if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(dir+"\n"), 0o600); err != nil {
 						t.Fatal(err)
@@ -3092,7 +3092,15 @@ func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 					runGit(t, dir, "add", "README.md")
 					runGit(t, dir, "commit", "-m", "conflicting change")
 				}
-				if _, err := runGitAt(context.Background(), first.Path, operation, "main"); err == nil {
+				args := []string{operation, "main"}
+				if operation == "am" {
+					patch := filepath.Join(t.TempDir(), "change.patch")
+					if err := os.WriteFile(patch, []byte(runGit(t, source, "format-patch", "-1", "--stdout")), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					args = []string{"am", "--3way", patch}
+				}
+				if _, err := runGitAt(context.Background(), first.Path, args...); err == nil {
 					t.Fatal("want operation conflict")
 				}
 			}
