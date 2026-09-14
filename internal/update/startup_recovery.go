@@ -106,9 +106,10 @@ func (r *StartupRecovery) MarkHealthy(ctx context.Context) error {
 		case strings.TrimSpace(pending.ToVersion):
 			targetCommit := strings.TrimSpace(pending.ToCommit)
 			if targetCommit == "" {
-				return errors.New("pending update does not include the tested target commit")
-			}
-			if !sameExactCommit(r.cfg.CurrentCommit, targetCommit) {
+				// Older updaters did not record a target commit. Complete their
+				// version-matched update through the normal healthy cleanup.
+				r.cfg.Logger.Info("accepting legacy pending update without target commit", "version", r.cfg.CurrentVersion)
+			} else if !sameExactCommit(r.cfg.CurrentCommit, targetCommit) {
 				return fmt.Errorf("running Detent commit %q does not match pending update commit %q", r.cfg.CurrentCommit, pending.ToCommit)
 			}
 			if err := r.removePreviousBinary(pending.PreviousBinaryPath); err != nil {
