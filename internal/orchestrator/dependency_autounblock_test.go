@@ -1772,3 +1772,36 @@ func (c *dependencyAutoUnblockConnector) SetAssignee(context.Context, string, st
 func (c *dependencyAutoUnblockConnector) SetField(context.Context, string, string, string) error {
 	return nil
 }
+
+func TestMarkdownBodyDependencyPreventsDispatch(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		"**Depends on:** #388",
+		"*Depends on:* digitaldrywood/detent#388",
+		"__Blocked by:__ https://github.com/digitaldrywood/detent/issues/388",
+		"- **Depends on:** #388 so the schema exists",
+		"`Depends on:` #388",
+		"+ `Blocked by`: #388",
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			state := newState(cfg)
+			issue := dependencyAutoUnblockIssue("issue-todo", "Todo")
+			issue.Description = body
+			issue = issueWithTextDependencyRefs(issue)
+			if len(issue.BlockedBy) != 1 || issue.BlockedBy[0].Identifier != "digitaldrywood/detent#388" {
+				t.Fatalf("body dependencies = %+v", issue.BlockedBy)
+			}
+			issue.BlockedBy[0].State = "In Progress"
+			planner := newDispatchPlanner(cfg)
+			if _, ok, _ := planner.dispatchAction(&state, issue, time.Now()); ok {
+				t.Fatal("dispatched issue with open body dependency")
+			}
+			blocked, ok := state.Blocked[issue.ID]
+			if !ok || blocked.Source != BlockedSourceDependency {
+				t.Fatalf("dependency wait missing: %+v", blocked)
+			}
+		})
+	}
+}
