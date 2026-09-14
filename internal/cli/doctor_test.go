@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -570,9 +571,12 @@ func TestRunDoctorAgentBinaryChecksFollowWorkflowBackends(t *testing.T) {
 func TestRunDoctorFailsRejectedPinnedRouteModelWithoutChangingModelChoice(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	workflowPath := filepath.Join(dir, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(`---
+	// This tests rejection diagnostics, not elapsed time. Keep suite scheduling
+	// and filesystem work from consuming the doctor inactivity timeout.
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		workflowPath := filepath.Join(dir, "WORKFLOW.md")
+		if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
   kind: memory
 workspace:
@@ -590,73 +594,74 @@ agents:
 ---
 Prompt
 `), 0o600); err != nil {
-		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
-	}
-	configPath := filepath.Join(dir, "global.yaml")
-	global := globalconfig.Config{
-		Path:       configPath,
-		APIVersion: globalconfig.APIVersion,
-		Kind:       globalconfig.Kind,
-		Global: globalconfig.Settings{
-			MaxConcurrentAgents: 1,
-			Scheduling:          globalconfig.SchedulingWeighted,
-		},
-		Projects: []globalconfig.Project{{
-			ID:       "pyroapex",
-			Workflow: workflowPath,
-			Workdir:  dir,
-			Weight:   1,
-		}},
-	}
-	deps := successfulDoctorDeps()
-	deps.loadWorkflow = workflowconfig.LoadWorkflow
-	deps.modelProbe = func(_ context.Context, req doctorRouteModelProbeRequest) error {
-		if req.ProjectID != "pyroapex" || req.RouteName != "default" || req.Model != "gpt-5-codex" {
-			t.Fatalf("probe request = %#v, want pyroapex default gpt-5-codex", req)
+			t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
 		}
-		return errors.New(`{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`)
-	}
-
-	report := runDoctor(context.Background(), doctorConfig{
-		ConfigPath:       configPath,
-		Output:           io.Discard,
-		CheckTimeout:     time.Second,
-		WorkflowDiff:     true,
-		AllowWriteProbes: false,
-		Flags: runtimeFlags{
-			Port: runtimeIntFlag{Value: 0, Set: true},
-		},
-	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
-
-	assertDoctorCheck(t, report, "Project pyroapex pinned route models", doctorFail, "gpt-5-codex")
-	check := doctorCheckByName(t, report, "Project pyroapex pinned route models")
-	for _, want := range []string{"pyroapex", "default", "gpt-5-codex", "model rejected"} {
-		if !strings.Contains(check.Detail, want) {
-			t.Fatalf("route model detail missing %q:\n%s", want, check.Detail)
+		configPath := filepath.Join(dir, "global.yaml")
+		global := globalconfig.Config{
+			Path:       configPath,
+			APIVersion: globalconfig.APIVersion,
+			Kind:       globalconfig.Kind,
+			Global: globalconfig.Settings{
+				MaxConcurrentAgents: 1,
+				Scheduling:          globalconfig.SchedulingWeighted,
+			},
+			Projects: []globalconfig.Project{{
+				ID:       "pyroapex",
+				Workflow: workflowPath,
+				Workdir:  dir,
+				Weight:   1,
+			}},
 		}
-	}
-	if strings.Contains(report.WorkflowOptimization.Diff, "model:") {
-		t.Fatalf("diff changed the project's model choice:\n%s", report.WorkflowOptimization.Diff)
-	}
-	proposal := doctorWorkflowProposalBySignal(t, report.WorkflowOptimization.Proposals, "doctor_finding", doctorWorkflowRulePinnedRouteModelRejected)
-	if !strings.Contains(proposal.SuggestedChange, "backend-supported pin") || !strings.Contains(proposal.SuggestedChange, "remove the pin") {
-		t.Fatalf("proposal is not model-choice neutral: %#v", proposal)
-	}
+		deps := successfulDoctorDeps()
+		deps.loadWorkflow = workflowconfig.LoadWorkflow
+		deps.modelProbe = func(_ context.Context, req doctorRouteModelProbeRequest) error {
+			if req.ProjectID != "pyroapex" || req.RouteName != "default" || req.Model != "gpt-5-codex" {
+				t.Fatalf("probe request = %#v, want pyroapex default gpt-5-codex", req)
+			}
+			return errors.New(`{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`)
+		}
 
-	written, err := writeDoctorWorkflowOptimizationPatches(report.WorkflowOptimization)
-	if err != nil {
-		t.Fatalf("writeDoctorWorkflowOptimizationPatches() error = %v", err)
-	}
-	if len(written) != 0 {
-		t.Fatalf("written = %#v, want no automatic model-choice change", written)
-	}
-	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
-	if err != nil {
-		t.Fatalf("LoadWorkflow() error = %v", err)
-	}
-	if got := workflow.Config.AgentRouteConfigs()[0].Model; got != "gpt-5-codex" {
-		t.Fatalf("route model after write = %q, want preserved pin", got)
-	}
+		report := runDoctor(context.Background(), doctorConfig{
+			ConfigPath:       configPath,
+			Output:           io.Discard,
+			CheckTimeout:     time.Second,
+			WorkflowDiff:     true,
+			AllowWriteProbes: false,
+			Flags: runtimeFlags{
+				Port: runtimeIntFlag{Value: 0, Set: true},
+			},
+		}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+
+		assertDoctorCheck(t, report, "Project pyroapex pinned route models", doctorFail, "gpt-5-codex")
+		check := doctorCheckByName(t, report, "Project pyroapex pinned route models")
+		for _, want := range []string{"pyroapex", "default", "gpt-5-codex", "model rejected"} {
+			if !strings.Contains(check.Detail, want) {
+				t.Fatalf("route model detail missing %q:\n%s", want, check.Detail)
+			}
+		}
+		if strings.Contains(report.WorkflowOptimization.Diff, "model:") {
+			t.Fatalf("diff changed the project's model choice:\n%s", report.WorkflowOptimization.Diff)
+		}
+		proposal := doctorWorkflowProposalBySignal(t, report.WorkflowOptimization.Proposals, "doctor_finding", doctorWorkflowRulePinnedRouteModelRejected)
+		if !strings.Contains(proposal.SuggestedChange, "backend-supported pin") || !strings.Contains(proposal.SuggestedChange, "remove the pin") {
+			t.Fatalf("proposal is not model-choice neutral: %#v", proposal)
+		}
+
+		written, err := writeDoctorWorkflowOptimizationPatches(report.WorkflowOptimization)
+		if err != nil {
+			t.Fatalf("writeDoctorWorkflowOptimizationPatches() error = %v", err)
+		}
+		if len(written) != 0 {
+			t.Fatalf("written = %#v, want no automatic model-choice change", written)
+		}
+		workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+		if err != nil {
+			t.Fatalf("LoadWorkflow() error = %v", err)
+		}
+		if got := workflow.Config.AgentRouteConfigs()[0].Model; got != "gpt-5-codex" {
+			t.Fatalf("route model after write = %q, want preserved pin", got)
+		}
+	})
 }
 
 func TestCheckDoctorRouteModelsFailsRejectedBackendCommandPin(t *testing.T) {
