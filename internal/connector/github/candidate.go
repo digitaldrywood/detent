@@ -34,7 +34,7 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 		issues, pagesRead, incomplete, err = c.readRepositoryLabelCandidates(ctx, request)
 	case connector.CandidateSelectorUntracked:
 		var drift connector.StatusDrift
-		drift, pagesRead, incomplete, err = c.readLabelStatusDrift(ctx, labelStatusDriftReadOptions{
+		drift, pagesRead, incomplete, err = c.readRepositoryStatusDrift(ctx, repositoryStatusDriftReadOptions{
 			PageSize:      request.EffectivePageSize(),
 			Limit:         request.ProbeLimit(),
 			Deterministic: true,

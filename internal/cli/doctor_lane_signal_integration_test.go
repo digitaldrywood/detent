@@ -30,6 +30,9 @@ func TestIgnoredLaneDiagnosticsReachEverySurface(t *testing.T) {
 		{name: "out of lane label", source: workflowconfig.GitHubStatusSourceProjectV2,
 			issue: connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Triage", Labels: []string{"detent:todo"}},
 			want:  []string{"ProjectV2 Status", "detent:todo", "set Status to Todo"}},
+		{name: "out of issue-field lane", source: workflowconfig.GitHubStatusSourceIssueField,
+			issue: connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Triage", Labels: []string{"detent:todo"}},
+			want:  []string{"issue field Status", "detent:todo", "set Status to Todo"}},
 		{name: "multiple project statuses", source: workflowconfig.GitHubStatusSourceLabel,
 			issue: connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Backlog", LaneSignalStatuses: []connector.LaneSignalStatus{
 				{Field: "Status", Value: "Todo", ProjectID: "PVT_1", ProjectTitle: "Delivery"},
@@ -41,6 +44,10 @@ func TestIgnoredLaneDiagnosticsReachEverySurface(t *testing.T) {
 			now := time.Now()
 			state := orchestrator.State{TrackerKind: workflowconfig.TrackerGitHub, TrackerStatusSource: tt.source,
 				LaneSignalStates: []string{"Backlog", "Todo"}, LaneSignalCandidates: []connector.Issue{tt.issue}}
+			if tt.source == workflowconfig.GitHubStatusSourceIssueField {
+				state.StatusDrift.LaneSignalCandidates = state.LaneSignalCandidates
+				state.LaneSignalCandidates = nil
+			}
 			snapshot := state.Snapshot(now)
 			snapshot.Project.ID = "detent"
 			service := explain.New(explain.Dependencies{Snapshots: laneDiagnosticSnapshot{snapshot: snapshot}})
