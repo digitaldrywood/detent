@@ -536,14 +536,23 @@ func configureWorkerGitHubEnvironment(request *AgentTurnRequest) error {
 
 func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest, policy workerGitHubPolicy) (AgentProcessRequest, func() error, error) {
 	tempDir, err := workspace.PrepareWorkerScratch(ctx, process.Workspace)
-	if err != nil {
-		return AgentProcessRequest{}, nil, fmt.Errorf("prepare agent preflight scratch: %w", err)
-	}
 	cleanup := func() error {
 		if err := workspace.CleanupWorkerScratch(process.Workspace, tempDir); err != nil {
 			return fmt.Errorf("cleanup agent preflight scratch: %w", err)
 		}
 		return nil
+	}
+	if workspace.IsMissingWorkspaceError(err) {
+		tempDir, err = os.MkdirTemp("", "detent-agent-preflight-")
+		cleanup = func() error {
+			if err := os.RemoveAll(tempDir); err != nil {
+				return fmt.Errorf("cleanup agent preflight temp directory: %w", err)
+			}
+			return nil
+		}
+	}
+	if err != nil {
+		return AgentProcessRequest{}, nil, fmt.Errorf("prepare agent preflight scratch: %w", err)
 	}
 	turn := AgentTurnRequest{
 		TempDir:      tempDir,
