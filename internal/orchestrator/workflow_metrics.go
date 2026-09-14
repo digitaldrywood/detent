@@ -548,6 +548,16 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 			if o.logger != nil {
 				o.logger.Warn("observe tracker lane failed", "issue_id", issue.ID, "error", err)
 			}
+			// Keep the last successful entry until the board can be observed.
+			// Retrying with a stale runtime copy would undo board precedence.
+			for priorKey, enteredAt := range state.laneEntries {
+				if strings.HasPrefix(priorKey, identity+"\x00") {
+					next[priorKey] = enteredAt
+					if origin, ok := state.laneProvenance[priorKey]; ok {
+						origins[priorKey] = origin
+					}
+				}
+			}
 			continue
 		}
 		next[key] = observation.EnteredAt

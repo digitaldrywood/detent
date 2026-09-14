@@ -141,7 +141,9 @@ precedence, so stale attempt or pipeline lanes cannot reset the ledger and
 replay an operator move on every refresh. This replaces lane-key deduplication
 with issue-identity deduplication in the existing refresh; it adds no recovery
 path or transition reason. `TestRefreshCurrentLaneEntriesOperatorMoveOnce`
-checks three unchanged passes and a later genuine return move.
+checks three unchanged passes and a later genuine return move. Failed observations
+preserve the prior cached entry and provenance without falling back to stale
+runtime snapshots; the next refresh retries the board observation.
 
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
