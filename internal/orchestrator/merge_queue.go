@@ -169,6 +169,16 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			applyNativeMergeQueueEntry(out, issueID, state.nativeMergeQueueEntries[issueID].Entry)
 			continue
 		}
+		var hydrated bool
+		candidate, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, candidate)
+		if !hydrated || candidate.PullRequest == nil || strings.TrimSpace(candidate.PullRequest.HeadSHA) != strings.TrimSpace(status.HeadSHA) {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			continue
+		}
+		if len(candidate.PullRequest.UnresolvedReviewThreads) > 0 {
+			o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
+			continue
+		}
 		if !nativeMergeQueueCandidate(candidate, o.cfg) {
 			o.logNativeMergeQueueExcluded(state, candidate)
 			continue
@@ -184,6 +194,10 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		entry, err := queue.EnqueuePullRequest(ctx, enqueueIssue)
 		if err != nil {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			if strings.Contains(strings.ToLower(err.Error()), "a conversation must be resolved before this pull request can be merged") {
+				o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
+				continue
+			}
 			o.logNativeMergeQueueFailure(candidate, "enqueue_failed", err)
 			continue
 		}
@@ -202,6 +216,25 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	return out
 }
 
+// reworkNativeMergeQueueReview uses the same review handoff as auto-promotion.
+func (o *Orchestrator) reworkNativeMergeQueueReview(ctx context.Context, state *State, issues []connector.Issue, issue connector.Issue, now time.Time) {
+	state.nativeMergeQueueDeferred[strings.TrimSpace(issue.ID)] = struct{}{}
+	summary := AutoPromoteSummaryFromIssue(issue)
+	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
+	target := normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
+	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, target, now) {
+		return
+	}
+	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+	o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, target)
+	for index := range issues {
+		if issues[index].ID == issue.ID {
+			issues[index] = cloneIssue(issue)
+			issues[index].State = target
+		}
+	}
+}
+
 func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
 		return false
@@ -216,7 +249,7 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if pullRequestHydrationBlocksProgress(pullRequest) {
 		return false
 	}
-	if gateRequiresPullRequest(cfg.AutoPromote.Gate) && len(pullRequest.UnresolvedReviewThreads) > 0 {
+	if len(pullRequest.UnresolvedReviewThreads) > 0 {
 		return false
 	}
 	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {

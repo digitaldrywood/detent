@@ -497,20 +497,23 @@ func nativeMergeQueueTestIssue(number int, ciStatus string) connector.Issue {
 
 type nativeMergeQueueConnector struct {
 	*autoPromoteTickMergeConnector
-	available      *bool
-	inspectErr     error
-	inspectedHead  string
-	admissionLimit *int
-	removedHeads   map[string]string
-	removalReason  string
-	removedAt      *time.Time
-	dequeueErr     error
-	statusErr      error
-	inspections    int
-	entries        map[string]connector.PullRequestMergeQueueEntry
-	enqueuedAt     *time.Time
-	enqueued       []string
-	dequeued       []connector.PullRequestMergeQueueEntry
+	available       *bool
+	inspectErr      error
+	enqueueErr      error
+	hydrationErr    error
+	hydratedThreads *[]connector.PullRequestReviewThread
+	inspectedHead   string
+	admissionLimit  *int
+	removedHeads    map[string]string
+	removalReason   string
+	removedAt       *time.Time
+	dequeueErr      error
+	statusErr       error
+	inspections     int
+	entries         map[string]connector.PullRequestMergeQueueEntry
+	enqueuedAt      *time.Time
+	enqueued        []string
+	dequeued        []connector.PullRequestMergeQueueEntry
 }
 
 func (c *nativeMergeQueueConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
@@ -549,8 +552,22 @@ func (c *nativeMergeQueueConnector) InspectPullRequestMergeQueue(_ context.Conte
 	return status, nil
 }
 
+func (c *nativeMergeQueueConnector) HydratePullRequestReviewThreads(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	if c.hydrationErr != nil {
+		return issue, c.hydrationErr
+	}
+	hydrated, err := c.autoPromoteTickConnector.HydratePullRequestReviewThreads(ctx, issue)
+	if c.hydratedThreads != nil {
+		hydrated.PullRequest.UnresolvedReviewThreads = *c.hydratedThreads
+	}
+	return hydrated, err
+}
+
 func (c *nativeMergeQueueConnector) EnqueuePullRequest(_ context.Context, issue connector.Issue) (connector.PullRequestMergeQueueEntry, error) {
 	c.enqueued = append(c.enqueued, issue.ID)
+	if c.enqueueErr != nil {
+		return connector.PullRequestMergeQueueEntry{}, c.enqueueErr
+	}
 	enqueuedAt := c.enqueuedAt
 	if enqueuedAt == nil {
 		enqueuedAt = timePointer(time.Now())
@@ -1243,6 +1260,61 @@ func TestNativeMergeQueueRemovalStorageFailure(t *testing.T) {
 			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, removed.Add(3*time.Minute))
 			if len(tracker.enqueued) != 1 || len(metrics.snapshot()) != 1 {
 				t.Fatalf("recovered storage: enqueues=%v events=%v", tracker.enqueued, metrics.snapshot())
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueReviewRework(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name            string
+		unresolved      bool
+		hydratedThreads *[]connector.PullRequestReviewThread
+		hydrationErr    error
+		updateErr       error
+		enqueueErr      error
+		wantEnqueues    int
+		wantRework      bool
+	}{
+		{name: "unresolved thread", unresolved: true, wantRework: true},
+		{name: "resolved thread", unresolved: true, hydratedThreads: &[]connector.PullRequestReviewThread{}, wantEnqueues: 1},
+		{name: "newly hydrated thread", hydratedThreads: &[]connector.PullRequestReviewThread{{Path: "merge.go", Line: 10}}, wantRework: true},
+		{name: "hydration unavailable", hydrationErr: errors.New("unavailable")},
+		{name: "transition unavailable", unresolved: true, updateErr: errors.New("unavailable")},
+		{name: "conversation rejected", enqueueErr: errors.New("enqueue github pull request: github graphql errors: Pull request A conversation must be resolved before this pull request can be merged"), wantEnqueues: 1, wantRework: true},
+		{name: "transient error", enqueueErr: errors.New("service unavailable"), wantEnqueues: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now()
+			issue := nativeMergeQueueTestIssue(2643, "success")
+			issue.PullRequest.MergeableState = "blocked"
+			if tt.unresolved {
+				issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "merge.go", Line: 10}}
+			}
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{updateErr: tt.updateErr}}, enqueueErr: tt.enqueueErr, hydrationErr: tt.hydrationErr, hydratedThreads: tt.hydratedThreads}
+			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging", "Rework"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			issues := orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{issue}, now)
+			issues = orch.delegateNativeMergeQueueIssues(context.Background(), &state, issues, now.Add(time.Minute))
+			if len(tracker.enqueued) != tt.wantEnqueues {
+				t.Fatalf("enqueues = %v, want %d", tracker.enqueued, tt.wantEnqueues)
+			}
+			if tt.wantRework {
+				if issues[0].State != "Rework" || len(tracker.updates) != 1 {
+					t.Fatalf("issues=%v updates=%v, want one Rework transition", issues, tracker.updates)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "unresolved_review_threads") {
+					t.Fatalf("comments=%v, want review handoff", tracker.comments)
+				}
+			} else if tt.updateErr != nil {
+				if issues[0].State != "Merging" || len(tracker.comments) != 0 {
+					t.Fatalf("failed transition changed issue or published handoff: %v %v", issues, tracker.comments)
+				}
+			} else if len(tracker.updates) != 0 {
+				t.Fatalf("unexpected updates: %v", tracker.updates)
 			}
 		})
 	}

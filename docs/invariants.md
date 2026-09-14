@@ -370,6 +370,12 @@ from missing evidence in wait telemetry; it is not a new lane-transition reason
 or recovery path. `TestMergingSecurityAuditVerdict` and
 `TestSecurityAuditPublicationRetry` cover the shared routing and publication.
 
+Native queue review failures reuse the auto-promote Rework transition, comment,
+and prior-attempt handoff (#2643). Hydrated unresolved threads and GitHub's
+conversation-resolution enqueue rejection use `unresolved_review_threads`;
+transient enqueue failures retain their existing handling. This consolidates
+review routing without adding a reason or retry mechanism.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

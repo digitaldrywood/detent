@@ -99,7 +99,7 @@ func TestNativeMergeQueueCandidateUnresolvedReviewThreads(t *testing.T) {
 		want bool
 	}{
 		{"command gate blocks on threads", gate.KindCommand, false},
-		{"artifact gate ignores threads", gate.KindArtifact, true},
+		{"artifact gate cannot bypass GitHub conversation resolution", gate.KindArtifact, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
