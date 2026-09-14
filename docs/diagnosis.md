@@ -122,6 +122,36 @@ external service failure retroactively. The notification deadline renewal and
 cleanup-error misclassification regressions reproduce independently; neither
 is claimed as the cause of these four silent waits.
 
+## Workspace scan deadlines (#2657)
+
+A `workspace scan command stage=wait` error means the command started but the
+scan did not complete before cancellation. A short `start_elapsed` measures
+`cmd.Start`, not completion of executable initialization. When cancellation
+returns before `cmd.Wait`, `output_bytes=unknown` means the waiter still owns
+the output buffer. Older builds reported `output_bytes=0` in that case even
+when a child had written output; do not infer silence or a startup stall from
+that historical value.
+
+The reported Go 1.27.1 darwin/arm64 failure reached its individual 30-second
+scan deadline during scratch verification. Bounded reproduction on the same
+platform passed three runs of `TestReapScratchProcessesOutsideWorkspace`
+(including all legacy cases). Three direct `lsof -O -w -d cwd -F pn` scans with
+file-backed output exited successfully in 1.21–2.28 seconds with 208–211 KB of
+output. This does not establish the cause of the historical timeout. A
+separate inherited-pipe regression reproduces the misleading zero-byte
+report deterministically; correcting that diagnostic preserves the existing
+deadline and cancellation behavior, without adding a recovery mechanism.
+
+For a recurrence, record the error and command PID, then take a bounded
+process sample while the affected command is still running. Keep draining
+stdout concurrently, or redirect an isolated probe to a temporary file:
+pausing a pipe reader while sampling can itself block `lsof` in
+`__write_nocancel`. Such probe-induced backpressure is not evidence of the
+original failure. Record completed output size, exit status, elapsed time,
+and relevant stack symbols, keeping process paths and raw samples private.
+Do not increase the lifecycle deadline or attribute an unproven host failure
+to the issue.
+
 ## Ready-to-paste SQLite queries
 
 These queries default to a rolling 24-hour window. Replace `'-24 hours'` or
