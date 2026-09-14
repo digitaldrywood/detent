@@ -5,11 +5,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
-// Policy bounds unused build artifacts. Recent entries are always retained.
+// Policy bounds build artifacts by age and total cache size.
 type Policy struct {
 	MaxAge   time.Duration `yaml:"max_age"`
 	MaxBytes int64         `yaml:"max_bytes"`
@@ -25,14 +26,19 @@ func (p Policy) Normalized() Policy {
 	return p
 }
 
-// Trim expires old entries. Recent entries can exceed MaxBytes: the age
-// protection takes precedence over the size target.
+// Trim expires old entries, then evicts oldest-first to enforce MaxBytes.
+// Metadata is counted toward the size but is never removed.
 func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64, error) {
 	policy = policy.Normalized()
 	if root == "" || root == "off" {
 		return 0, nil
 	}
-	var reclaimed int64
+	type candidate struct {
+		path string
+		info fs.FileInfo
+	}
+	var remaining []candidate
+	var reclaimed, total int64
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -43,7 +49,7 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 		if err != nil {
 			return err
 		}
-		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), "-a") && !strings.HasSuffix(entry.Name(), "-d") {
+		if !entry.Type().IsRegular() {
 			return nil
 		}
 		info, err := entry.Info()
@@ -53,7 +59,12 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 		if err != nil {
 			return err
 		}
+		total += info.Size()
+		if !strings.HasSuffix(entry.Name(), "-a") && !strings.HasSuffix(entry.Name(), "-d") {
+			return nil
+		}
 		if !info.ModTime().Before(now.Add(-policy.MaxAge)) {
+			remaining = append(remaining, candidate{path, info})
 			return nil
 		}
 		// Recheck immediately before removal in case a concurrent Go build touched it.
@@ -64,7 +75,11 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 		if err != nil {
 			return err
 		}
-		if !current.Mode().IsRegular() || !current.ModTime().Before(now.Add(-policy.MaxAge)) {
+		if !current.Mode().IsRegular() {
+			return nil
+		}
+		if !current.ModTime().Before(now.Add(-policy.MaxAge)) {
+			remaining = append(remaining, candidate{path, current})
 			return nil
 		}
 		if err := os.Remove(path); err != nil {
@@ -74,7 +89,34 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 			return err
 		}
 		reclaimed += current.Size()
+		total -= info.Size()
 		return nil
 	})
-	return reclaimed, err
+	if err != nil {
+		return reclaimed, err
+	}
+	slices.SortFunc(remaining, func(a, b candidate) int {
+		if order := a.info.ModTime().Compare(b.info.ModTime()); order != 0 {
+			return order
+		}
+		return strings.Compare(a.path, b.path)
+	})
+	for _, entry := range remaining {
+		if err := ctx.Err(); err != nil {
+			return reclaimed, err
+		}
+		if total <= policy.MaxBytes {
+			break
+		}
+		if err := os.Remove(entry.path); err != nil {
+			if os.IsNotExist(err) {
+				total -= entry.info.Size()
+				continue
+			}
+			return reclaimed, err
+		}
+		reclaimed += entry.info.Size()
+		total -= entry.info.Size()
+	}
+	return reclaimed, nil
 }

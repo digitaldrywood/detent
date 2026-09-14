@@ -34,8 +34,10 @@ global:
 ```
 
 The existing workspace reaper expires build-cache entries older than `max_age`.
-Recent entries are protected even above the size target. The module cache is
-reported and shared but is not trimmed.
+It then evicts remaining build entries oldest-first until the cache fits
+`max_bytes`; recent entries are retained only while the cap allows. Metadata
+(`trim.txt` and `README`) is never removed. The module cache is reported and
+shared but is not trimmed. Concurrent builds can grow the cache between sweeps.
 
 ## Issue session allowance
 

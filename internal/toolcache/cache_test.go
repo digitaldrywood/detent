@@ -18,7 +18,7 @@ func TestTrim(t *testing.T) {
 	}{
 		{"old data", 49 * time.Hour, "00/entry-d", true},
 		{"old action", 49 * time.Hour, "00/entry-a", true},
-		{"recent protected above size target", time.Hour, "00/entry-d", false},
+		{"recent below size cap", time.Hour, "00/entry-d", false},
 		{"boundary protected", 48 * time.Hour, "00/entry-a", false},
 		{"trim metadata", 72 * time.Hour, "trim.txt", false},
 		{"readme", 72 * time.Hour, "README", false},
@@ -36,7 +36,7 @@ func TestTrim(t *testing.T) {
 			if err := os.Chtimes(path, at, at); err != nil {
 				t.Fatal(err)
 			}
-			_, err := Trim(context.Background(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: 1}, now)
+			_, err := Trim(context.Background(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: 100}, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,6 +115,58 @@ func TestInspect(t *testing.T) {
 			got := Inspect(context.Background())
 			if got.Error != "" || got.BuildPath != build || got.ModulePath != modules || got.BuildBytes != int64(len(tt.build)) || got.ModuleBytes != int64(len(tt.modules)) {
 				t.Fatalf("report=%+v", got)
+			}
+		})
+	}
+}
+
+func TestTrimSizeCap(t *testing.T) {
+	now := time.Now()
+	for _, tt := range []struct {
+		name                   string
+		cap                    int64
+		keepRecent, keepNewest bool
+		reclaimed              int64
+	}{
+		{"age only below cap", 100, true, true, 10},
+		{"exact cap", 24, true, true, 10},
+		{"oldest recent evicted", 14, false, true, 20},
+		{"all entries evicted metadata retained", 1, false, false, 30},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, f := range []struct {
+				name string
+				age  time.Duration
+				data string
+			}{
+				{"old-d", 49 * time.Hour, "0123456789"},
+				{"z-recent-a", 2 * time.Hour, "0123456789"},
+				{"a-newest-d", time.Hour, "0123456789"},
+				{"README", 72 * time.Hour, "12"},
+				{"trim.txt", 72 * time.Hour, "12"},
+			} {
+				path := filepath.Join(root, f.name)
+				if err := os.WriteFile(path, []byte(f.data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				at := now.Add(-f.age)
+				if err := os.Chtimes(path, at, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reclaimed, err := Trim(context.Background(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reclaimed != tt.reclaimed {
+				t.Fatalf("reclaimed %d, want %d", reclaimed, tt.reclaimed)
+			}
+			for name, keep := range map[string]bool{"old-d": false, "z-recent-a": tt.keepRecent, "a-newest-d": tt.keepNewest, "README": true, "trim.txt": true} {
+				_, err := os.Stat(filepath.Join(root, name))
+				if keep && err != nil || !keep && !os.IsNotExist(err) {
+					t.Errorf("%s: stat=%v, keep=%t", name, err, keep)
+				}
 			}
 		})
 	}
