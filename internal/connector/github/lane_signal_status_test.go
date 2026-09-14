@@ -177,11 +177,7 @@ func TestFetchStatusDriftRetainsIssueFieldDiagnostics(t *testing.T) {
 				path: "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
 				body: fmt.Sprintf(`[{"node_id":"I_1","number":1,"state":"open","user":{"login":"alice"},"labels":[{"name":%q}]},{"node_id":"PR_2","number":2,"state":"open","pull_request":{},"labels":[{"name":"detent:todo"}]}]`, tt.label)}}
 			if tt.want {
-				responses = append(responses,
-					graphqlTestResponse{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
-						body: fmt.Sprintf(`[{"issue_field_id":10,"data_type":"single_select","single_select_option":{"id":1,"name":%q}}]`, tt.status)},
-					graphqlTestResponse{method: http.MethodGet, path: "/orgs/digitaldrywood/issue-fields?per_page=100",
-						body: `[{"id":10,"name":"Status","data_type":"single_select","options":[{"id":1,"name":"Todo"}]}]`})
+				responses = append(responses, graphqlTestResponse{body: fmt.Sprintf(`{"data":{"nodes":[{"__typename":"Issue","id":"I_1","issueFieldValues":{"nodes":[{"name":%q,"field":{"name":"Status"}}]}}]}}`, tt.status)})
 			}
 			server := newGraphQLTestServer(t, responses)
 			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceIssueField,
@@ -205,7 +201,7 @@ func TestFetchStatusDriftRetainsIssueFieldDiagnostics(t *testing.T) {
 				t.Fatalf("issue-field diagnostics became label drift: %#v", drift)
 			}
 			if got := len(server.requests()); got != len(responses) {
-				t.Fatalf("requests = %d, want %d read-only REST requests", got, len(responses))
+				t.Fatalf("requests = %d, want %d read-only requests", got, len(responses))
 			}
 		})
 	}
@@ -213,17 +209,15 @@ func TestFetchStatusDriftRetainsIssueFieldDiagnostics(t *testing.T) {
 
 func TestFetchStatusDriftIssueFieldPermissionErrors(t *testing.T) {
 	t.Parallel()
-	for _, denied := range []string{"repository", "values", "metadata"} {
+	for _, denied := range []string{"repository", "values"} {
 		t.Run(denied, func(t *testing.T) {
 			t.Parallel()
 			responses := []graphqlTestResponse{
 				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
 					body: `[{"node_id":"I_1","number":1,"state":"open","labels":[{"name":"detent:todo"}]}]`},
-				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
-					body: `[{"issue_field_id":10,"data_type":"single_select","single_select_option":{"id":1,"name":"Triage"}}]`},
-				{method: http.MethodGet, path: "/orgs/digitaldrywood/issue-fields?per_page=100"},
+				{},
 			}
-			index := map[string]int{"repository": 0, "values": 1, "metadata": 2}[denied]
+			index := map[string]int{"repository": 0, "values": 1}[denied]
 			responses = responses[:index+1]
 			responses[index].status = http.StatusForbidden
 			responses[index].body = `{"message":"Resource not accessible by integration"}`
@@ -268,6 +262,51 @@ func TestIssueFieldNormalReadsExcludeDiagnosticStates(t *testing.T) {
 			path := requests[1]["path"].(string)
 			if !strings.Contains(path, "field.Status%3ATodo") || !strings.Contains(path, "author%3Aalice") {
 				t.Fatalf("normal search lost state or authorization qualifier: %s", path)
+			}
+		})
+	}
+}
+
+func TestLaneSignalIssueFieldStatusPages(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		body    string
+		wantErr error
+		next    bool
+	}{
+		{name: "later status page", body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","issueFieldValues":{"nodes":[{}, {"name":"High","field":{"name":"Priority"}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}]}}`, next: true},
+		{name: "empty field connection", body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","issueFieldValues":{"nodes":[]}}]}}`},
+		{name: "missing node", body: `{"data":{"nodes":[]}}`, wantErr: ErrInvalidResponse},
+		{name: "null node", body: `{"data":{"nodes":[null]}}`, wantErr: ErrInvalidResponse},
+		{name: "unavailable fields", body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","issueFieldValues":null}]}}`, wantErr: ErrInvalidResponse},
+		{name: "wrong issue", body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_other","issueFieldValues":{"nodes":[]}}]}}`, wantErr: ErrInvalidResponse},
+		{name: "missing cursor", body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","issueFieldValues":{"nodes":[],"pageInfo":{"hasNextPage":true}}}]}}`, wantErr: ErrInvalidResponse},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			responses := []graphqlTestResponse{{body: tt.body}}
+			if tt.next {
+				responses = append(responses, graphqlTestResponse{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","issueFieldValues":{"nodes":[{"name":"Ready","field":{"name":"Workflow"}}],"pageInfo":{"hasNextPage":false}}}]}}`})
+			}
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceIssueField, Repository: "digitaldrywood/detent", StatusField: "Workflow", StateMap: map[string]string{"Todo": "Ready"}})
+			issues := []connector.Issue{{ID: "I_1", State: "Backlog"}}
+			err := c.hydrateLaneSignalIssueFieldStatuses(t.Context(), issues)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.next {
+				if issues[0].State != "Todo" || issues[0].Fields["Workflow"] != "Ready" || issues[0].PriorityName != "High" {
+					t.Fatalf("diagnostic = %#v", issues[0])
+				}
+				requests := server.requests()
+				variables := requests[1]["variables"].(map[string]any)
+				if variables["after"] != "next" {
+					t.Fatalf("page variables = %#v", variables)
+				}
+			} else if issues[0].State != "Backlog" {
+				t.Fatalf("missing field changed state: %#v", issues[0])
 			}
 		})
 	}

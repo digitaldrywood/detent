@@ -2,12 +2,109 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const laneSignalStatusBatchSize = 100
+
+const laneSignalIssueFieldStatusesQuery = `
+query DetentGitHubLaneSignalIssueFieldStatuses($issueIds: [ID!]!, $after: String) {
+  nodes(ids: $issueIds) {
+    __typename
+    ... on Issue {
+      id
+      issueFieldValues(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          ... on IssueFieldSingleSelectValue {
+            name
+            field { ... on IssueFieldCommon { name } }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+// Read authoritative diagnostic statuses in batches, like ProjectV2 lane
+// signals. Per-issue REST hydration here would spend the shared refresh budget
+// before the ordinary scheduling reads can run.
+func (c *Connector) hydrateLaneSignalIssueFieldStatuses(ctx context.Context, issues []connector.Issue) error {
+	byID := make(map[string]*connector.Issue, len(issues))
+	ids := make([]string, 0, len(issues))
+	for i := range issues {
+		byID[issues[i].ID] = &issues[i]
+		ids = append(ids, issues[i].ID)
+	}
+	for start := 0; start < len(ids); start += laneSignalStatusBatchSize {
+		if err := c.readLaneSignalIssueFieldStatuses(ctx, ids[start:min(start+laneSignalStatusBatchSize, len(ids))], nil, byID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Connector) readLaneSignalIssueFieldStatuses(ctx context.Context, ids []string, after *string, byID map[string]*connector.Issue) error {
+	var response struct {
+		Nodes []struct {
+			ID       string `json:"id"`
+			TypeName string `json:"__typename"`
+			Values   *struct {
+				PageInfo pageInfo `json:"pageInfo"`
+				Nodes    []struct {
+					Name  string `json:"name"`
+					Field struct {
+						Name string `json:"name"`
+					} `json:"field"`
+				} `json:"nodes"`
+			} `json:"issueFieldValues"`
+		} `json:"nodes"`
+	}
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryLaneSignalStatus, laneSignalIssueFieldStatusesQuery,
+		map[string]any{"issueIds": ids, "after": after}, &response); err != nil {
+		return fmt.Errorf("fetch github lane signal issue field values: %w", err)
+	}
+	if len(response.Nodes) != len(ids) {
+		return ErrInvalidResponse
+	}
+	for i, node := range response.Nodes {
+		issue := byID[node.ID]
+		if node.ID != ids[i] || node.TypeName != "Issue" || node.Values == nil || issue == nil {
+			return ErrInvalidResponse
+		}
+		if issue.Fields == nil {
+			issue.Fields = make(map[string]string)
+		}
+		for _, value := range node.Values.Nodes {
+			name, valueName := strings.TrimSpace(value.Field.Name), strings.TrimSpace(value.Name)
+			if name == "" || valueName == "" {
+				continue
+			}
+			issue.Fields[name] = valueName
+			if name == c.statusField {
+				issue.State = c.githubToDetentState(valueName)
+			}
+			if name == "Priority" {
+				issue.PriorityName = valueName
+				issue.Priority = c.priorityRank(valueName)
+			}
+		}
+		if node.Values.PageInfo.HasNextPage {
+			cursor := strings.TrimSpace(node.Values.PageInfo.EndCursor)
+			if cursor == "" || (after != nil && cursor == *after) {
+				return ErrInvalidResponse
+			}
+			if err := c.readLaneSignalIssueFieldStatuses(ctx, []string{node.ID}, &cursor, byID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 const laneSignalStatusesQuery = `
 query DetentGitHubLaneSignalStatuses($issueIds: [ID!]!, $first: Int!, $statusField: String!) {

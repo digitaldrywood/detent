@@ -413,6 +413,11 @@ func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift
 	if err != nil {
 		return connector.StatusDrift{}, err
 	}
+	if c.usesIssueFieldStatus() {
+		if err := c.hydrateLaneSignalIssueFieldStatuses(ctx, drift.LaneSignalCandidates); err != nil {
+			return connector.StatusDrift{}, err
+		}
+	}
 	drift.ClosedActive, err = c.readClosedActiveLabelIssues(ctx)
 	if err != nil {
 		return connector.StatusDrift{}, err
@@ -526,13 +531,9 @@ func (c *Connector) readRepositoryStatusDrift(
 				if !c.hasConfiguredStatusLabel(issue.Labels) {
 					continue
 				}
-				candidate, ok, err := c.fetchIssueFieldIssueFromNode(ctx, ref, issue)
-				if err != nil {
-					return connector.StatusDrift{}, 0, false, err
-				}
-				if ok {
-					drift.LaneSignalCandidates = append(drift.LaneSignalCandidates, candidate)
-				}
+				c.cacheIssueRef(issue)
+				drift.LaneSignalCandidates = append(drift.LaneSignalCandidates,
+					c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil, nil))
 				continue
 			}
 			c.cacheIssueRef(issue)
