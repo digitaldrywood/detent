@@ -3120,7 +3120,7 @@ func (s StalenessObservability) validate(problems *[]string) {
 	}
 	validatePositive("observability.staleness.repeated_window_hours", s.RepeatedWindowHours, problems)
 	for _, reason := range s.RepeatedDecisionBenignReasons {
-		if scheduler.IsEmittedDecisionReason(reason) {
+		if scheduler.IsEmittedDecisionReason(reason) || isHistoricalDecisionReason(reason) {
 			continue
 		}
 		*problems = append(*problems, fmt.Sprintf(

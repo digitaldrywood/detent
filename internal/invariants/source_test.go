@@ -202,10 +202,10 @@ func retiredSymbol(text string) bool {
 	return false
 }
 
-// Persisted decisions remain readable; only these historical readers may name
+// Persisted decisions and configuration remain readable; only these readers may name
 // retired scheduler reasons. Identifiers never receive this exception.
 func historicalPriorityReader(file string) bool {
-	return file == "internal/store/pool_contention.go" || file == "internal/store/capacity_constraints.go"
+	return file == "internal/store/pool_contention.go" || file == "internal/store/capacity_constraints.go" || file == "internal/config/historical_decision_reasons.go"
 }
 
 func retiredPrioritySymbol(text string) bool {

@@ -18,7 +18,10 @@
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
       "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
-      "TestMachineIssueTool"
+      "TestMachineIssueTool",
+      "TestRunDispatchesQueuedRequestsWithoutPolling",
+      "TestQueuedDispatchPreservesRetry",
+      "TestQueuedDispatchPreservesPullRequestEnrichment"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline"
@@ -59,7 +62,13 @@
     "./internal/scheduler": [
       "TestGlobalDispatchGatePriorityOnlyPicksNextJob",
       "TestGlobalDispatchGateReadyRequests",
-      "TestGlobalDispatchGateConcurrentReadyRequests"
+      "TestGlobalDispatchGateConcurrentReadyRequests",
+      "TestQueuedDispatchRanksIndependentRequests",
+      "TestQueuedDispatchPreservesProjectCeilings",
+      "TestQueuedDispatchSharedPoolRelease",
+      "TestQueuedDispatchCapacityChanges",
+      "TestQueuedDispatchRanksSynchronousAndQueuedCallersTogether",
+      "TestQueuedDispatchReleaseIncludesEnrolledCallers"
     ]
   }
 }

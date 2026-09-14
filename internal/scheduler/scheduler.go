@@ -51,11 +51,16 @@ type Config struct {
 }
 
 type SlotRequest struct {
-	State            string
-	Host             string
-	Weight           int
-	Priority         int
-	PressureCapacity int
+	// Project ceilings are supplied by the owner for queued acquisitions.
+	// Zero keeps synchronous callers' existing local admission behavior.
+	ProjectCapacity      int
+	ProjectStateCapacity int
+	ProjectHostCapacity  int
+	State                string
+	Host                 string
+	Weight               int
+	Priority             int
+	PressureCapacity     int
 }
 
 type Slot struct {

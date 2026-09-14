@@ -99,6 +99,7 @@ func (r *PoolRegistry) SetProjects(projects []ProjectCandidate) {
 	r.mu.Lock()
 	r.setProjectsLocked(projects)
 	r.mu.Unlock()
+	r.dispatchPendingLocked()
 }
 
 func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandidate) error {
@@ -165,6 +166,7 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 	r.setProjectsLocked(projects)
 	r.cleanupRetiredLocked()
 	r.mu.Unlock()
+	r.dispatchPendingLocked()
 	return nil
 }
 
@@ -191,6 +193,8 @@ func (r *PoolRegistry) PauseDispatch() func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			r.reconfigureMu.Lock()
+			defer r.reconfigureMu.Unlock()
 			r.mu.Lock()
 			pause, ok := r.pauses[pauseID]
 			if ok {
@@ -203,7 +207,10 @@ func (r *PoolRegistry) PauseDispatch() func() {
 			for _, release := range pause.releases {
 				release()
 			}
-			r.cleanupRetired()
+			r.dispatchPendingLocked()
+			r.mu.Lock()
+			r.cleanupRetiredLocked()
+			r.mu.Unlock()
 		})
 	}
 }
@@ -309,12 +316,21 @@ func (r *PoolRegistry) TryAcquireWithDecision(
 	now time.Time,
 ) (Slot, bool, DispatchGateDecision, error) {
 	call := &dispatchRequest{ctx: ctx, project: project, request: req, now: now}
+	return r.acquireRequest(call)
+}
+
+func (r *PoolRegistry) acquireRequest(call *dispatchRequest) (Slot, bool, DispatchGateDecision, error) {
 	r.requestMu.Lock()
 	r.pending = append(r.pending, call)
 	r.requestMu.Unlock()
 
 	r.reconfigureMu.Lock()
 	defer r.reconfigureMu.Unlock()
+	r.dispatchPendingLocked()
+	return call.slot, call.granted, call.decision, call.err
+}
+
+func (r *PoolRegistry) dispatchPendingLocked() {
 	r.requestMu.Lock()
 	pending := r.pending
 	r.pending = nil
@@ -329,13 +345,29 @@ func (r *PoolRegistry) TryAcquireWithDecision(
 		runtime := r.runtimeForCandidate(request.project)
 		if runtime == nil {
 			request.err = ErrNoCandidates
+			if request.result != nil {
+				request.result <- DispatchResult{Err: ErrNoCandidates}
+			}
 			continue
+		}
+		request.gate = runtime.gate
+		request.decorate = func(slot Slot) Slot {
+			slot.poolName = runtime.name
+			slot.poolGeneration = runtime.generation
+			return slot
 		}
 		if _, exists := byPool[runtime]; !exists {
 			runtimes = append(runtimes, runtime)
 		}
 		byPool[runtime] = append(byPool[runtime], request)
 	}
+	r.mu.RLock()
+	for _, runtime := range r.active {
+		if _, exists := byPool[runtime]; !exists {
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	r.mu.RUnlock()
 	for _, runtime := range runtimes {
 		runtime.gate.mu.Lock()
 		runtime.gate.dispatchLocked(byPool[runtime])
@@ -348,7 +380,6 @@ func (r *PoolRegistry) TryAcquireWithDecision(
 			}
 		}
 	}
-	return call.slot, call.granted, call.decision, call.err
 }
 
 func (r *PoolRegistry) Release(slot Slot) error {
@@ -359,9 +390,13 @@ func (r *PoolRegistry) Release(slot Slot) error {
 	if runtime == nil {
 		return ErrSlotNotHeld
 	}
-	if err := runtime.gate.Release(slot); err != nil {
+	runtime.gate.mu.Lock()
+	err := runtime.gate.releaseLocked(slot)
+	runtime.gate.mu.Unlock()
+	if err != nil {
 		return err
 	}
+	r.dispatchPendingLocked()
 	r.mu.Lock()
 	r.cleanupRetiredLocked()
 	r.mu.Unlock()
@@ -428,18 +463,6 @@ func (r *PoolRegistry) runtimeForSlot(slot Slot) *poolRuntime {
 	}
 	r.mu.RUnlock()
 	return runtime
-}
-
-func (r *PoolRegistry) cleanupRetired() {
-	if r == nil {
-		return
-	}
-	r.reconfigureMu.Lock()
-	defer r.reconfigureMu.Unlock()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cleanupRetiredLocked()
 }
 
 func (r *PoolRegistry) cleanupRetiredLocked() {

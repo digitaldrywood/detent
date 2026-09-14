@@ -90,9 +90,11 @@ Project weights are relative scheduling weights. Higher weights receive a
 larger dispatch share in weighted and fair-share scheduling modes. Project
 priority is a rank: `0` is highest and `4` is lowest.
 
-Priority picks the next job (INV-10). The gate collects currently calling ready
-requests, ranks them, and atomically acquires real capacity for each request
-that fits. Lifecycle-state priority leads in `weighted`, `fair_share`, and
+Priority picks the next job (INV-10). Eligible requests wait without owning
+capacity. The gate ranks pending and new requests together and acquires real
+capacity for each request that fits, including on slot release. Project event
+loops consume grants without waiting for another tracker poll, rechecking current
+candidate eligibility before starting work. Lifecycle-state priority leads in `weighted`, `fair_share`, and
 `round_robin` pools; `strict` orders project priority first, then lane priority.
 The configured project scheduler breaks ties. All modes share the same
 acquisition lifecycle. A request that cannot start owns nothing. A project

@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -2352,6 +2353,36 @@ func TestStalenessRepeatedDecisionBenignReasonsRejectUnknownSchedulerReason(t *t
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Validate() error = %q, want %q", err, want)
 		}
+	}
+}
+
+func TestStalenessRepeatedDecisionBenignReasonsAcceptHistoricalReasons(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{
+		"selected_project_waiting",
+		"reserved_for_higher_priority_state",
+		"reserved_for_higher_priority_project",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nobservability:\n  staleness:\n    repeated_decision_benign_reasons:\n      - " + reason + "\n---\nPrompt\n"))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() rejected historical reason: %v", err)
+			}
+			if err := workflow.Config.Validate(); err != nil {
+				t.Fatalf("Validate() rejected historical reason: %v", err)
+			}
+			if got := workflow.Config.Observability.Staleness.RepeatedDecisionBenignReasons; !slices.Equal(got, []string{reason}) {
+				t.Fatalf("configured reasons = %v, want [%s]", got, reason)
+			}
+			if scheduler.IsEmittedDecisionReason(reason) {
+				t.Fatal("historical reason is still classified as emitted")
+			}
+			if slices.Contains(Default().Observability.Staleness.RepeatedDecisionBenignReasons, reason) {
+				t.Fatal("historical reason is still a default")
+			}
+		})
 	}
 }
 

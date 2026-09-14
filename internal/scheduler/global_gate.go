@@ -81,6 +81,7 @@ type GlobalDispatchGate struct {
 	requestMu      sync.Mutex
 	pending        []*dispatchRequest
 	mu             sync.Mutex
+	waiting        []*dispatchRequest
 	ready          map[string]readyProjectSlot
 	running        map[uint64]runningProjectSlot
 	projects       map[string]ProjectCandidate
@@ -181,6 +182,21 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 	}
 	g.projects = next
 	g.pausedProjects = paused
+	waiting := g.waiting
+	g.waiting = nil
+	for _, call := range waiting {
+		project, exists := next[call.project.ID]
+		if !exists {
+			call.err = ErrNoCandidates
+			g.finishRequestLocked(call)
+			continue
+		}
+		call.project = project
+		g.waiting = append(g.waiting, call)
+	}
+	if g.admit == nil {
+		g.dispatchLocked(nil)
+	}
 }
 
 func (g *GlobalDispatchGate) PauseDispatch() func() {
@@ -199,6 +215,9 @@ func (g *GlobalDispatchGate) PauseDispatch() func() {
 			if g.dispatchPauses > 0 {
 				g.dispatchPauses--
 			}
+			if g.admit == nil {
+				g.dispatchLocked(nil)
+			}
 		})
 	}
 }
@@ -213,6 +232,9 @@ func (g *GlobalDispatchGate) Reconfigure(cfg Config) error {
 
 	if err := g.global.Reconfigure(cfg); err != nil {
 		return err
+	}
+	if g.admit == nil {
+		g.dispatchLocked(nil)
 	}
 	return nil
 }
@@ -298,6 +320,7 @@ func (g *GlobalDispatchGate) MarkIdle(project ProjectCandidate) {
 	defer g.mu.Unlock()
 
 	delete(g.ready, projectID)
+	g.discardProjectRequestsLocked(projectID)
 	if g.global != nil {
 		g.projectCycles[projectID] = projectCycleState{idle: true}
 	}
@@ -313,10 +336,10 @@ func (g *GlobalDispatchGate) TryAcquire(
 	return slot, ok, err
 }
 
-// dispatchRequest lives only for the duration of TryAcquireWithDecision. Its
-// caller is present to consume the result; a refused call retains no ownership.
+// dispatchRequest has either a synchronous caller or an event-loop consumer.
+// A queued request retains no capacity until its result transfers a real slot.
 type dispatchRequest struct {
-	ctx      context.Context //nolint:containedctx // A synchronous acquisition carries caller cancellation only until that call returns.
+	ctx      context.Context //nolint:containedctx // The request belongs to its consuming caller's lifecycle.
 	project  ProjectCandidate
 	request  SlotRequest
 	now      time.Time
@@ -324,6 +347,10 @@ type dispatchRequest struct {
 	granted  bool
 	decision DispatchGateDecision
 	err      error
+	result   chan DispatchResult
+	wake     chan<- struct{}
+	decorate func(Slot) Slot
+	gate     *GlobalDispatchGate
 }
 
 func (g *GlobalDispatchGate) TryAcquireWithDecision(ctx context.Context, project ProjectCandidate, req SlotRequest, now time.Time) (Slot, bool, DispatchGateDecision, error) {
@@ -331,26 +358,34 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(ctx context.Context, project
 		return Slot{}, true, DispatchGateDecision{PoolName: DefaultPoolName, Reason: DispatchGateReasonGranted}, nil
 	}
 	call := &dispatchRequest{ctx: ctx, project: project, request: req, now: now}
+	return g.acquireRequest(call)
+}
+
+func (g *GlobalDispatchGate) acquireRequest(call *dispatchRequest) (Slot, bool, DispatchGateDecision, error) {
 	g.requestMu.Lock()
 	g.pending = append(g.pending, call)
 	g.requestMu.Unlock()
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.requestMu.Lock()
-	pending := g.pending
-	g.pending = nil
-	g.requestMu.Unlock()
-	g.dispatchLocked(pending)
+	g.dispatchLocked(nil)
 	return call.slot, call.granted, call.decision, call.err
 }
 
-// dispatchLocked ranks the currently calling requests, then attempts real
+// dispatchLocked ranks queued and currently calling requests, then attempts real
 // acquisition for each. A lane/host/weight ceiling never excludes another
 // request from using the remaining capacity. There is no selected owner between
-// calls, and no acquisition waits for a future project cycle.
+// calls, and queued callers consume grants through their event loops.
 func (g *GlobalDispatchGate) dispatchLocked(pending []*dispatchRequest) {
-	pending = slices.Clone(pending)
+	g.requestMu.Lock()
+	pending = append(slices.Clone(pending), g.pending...)
+	g.pending = nil
+	g.requestMu.Unlock()
+	for _, call := range g.waiting {
+		call.now = time.Now()
+	}
+	pending = append(slices.Clone(g.waiting), pending...)
+	g.waiting = nil
 	for len(pending) > 0 {
 		index := 0
 		// Lane priority orders requests; strict project priority is an optional
@@ -386,11 +421,13 @@ func (g *GlobalDispatchGate) dispatchLocked(pending []*dispatchRequest) {
 			}
 		} else if !errors.Is(err, ErrNoSlots) && !errors.Is(err, ErrNoCandidates) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			best.err = err
+			g.finishRequestLocked(best)
 			pending = append(pending[:index], pending[index+1:]...)
 			continue
 		}
 		call := pending[index]
 		call.slot, call.granted, call.decision, call.err = g.acquireLocked(call.ctx, call.project, call.request, call.now)
+		g.finishRequestLocked(call)
 		pending = append(pending[:index], pending[index+1:]...)
 	}
 }
@@ -447,6 +484,28 @@ func (g *GlobalDispatchGate) acquireLocked(
 	g.observeProjectCycleDemandLocked(project.ID)
 	if g.dispatchPauses > 0 {
 		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPaused), nil
+	}
+	projectUsed, stateUsed, hostUsed := 0, 0, 0
+	for _, running := range g.running {
+		if running.ProjectID != project.ID {
+			continue
+		}
+		projectUsed++
+		if running.slot.State == req.State {
+			stateUsed++
+		}
+		if running.slot.Host == req.Host {
+			hostUsed++
+		}
+	}
+	if req.ProjectCapacity > 0 && projectUsed >= req.ProjectCapacity {
+		return Slot{}, false, g.decisionLocked(project.ID, req, DecisionReasonProjectCapacityFull), nil
+	}
+	if req.ProjectStateCapacity > 0 && stateUsed >= req.ProjectStateCapacity {
+		return Slot{}, false, g.decisionLocked(project.ID, req, DecisionReasonLocalSlotUnavailable), nil
+	}
+	if req.ProjectHostCapacity > 0 && hostUsed >= req.ProjectHostCapacity {
+		return Slot{}, false, g.decisionLocked(project.ID, req, DecisionReasonWorkerHostUnavailable), nil
 	}
 	currentUsed := g.capacitySnapshotLocked("").globalUsed
 	if req.PressureCapacity > 0 && currentUsed+req.Weight > req.PressureCapacity {
@@ -507,7 +566,14 @@ func (g *GlobalDispatchGate) Release(slot Slot) error {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if err := g.releaseLocked(slot); err != nil {
+		return err
+	}
+	g.dispatchLocked(nil)
+	return nil
+}
 
+func (g *GlobalDispatchGate) releaseLocked(slot Slot) error {
 	running, ok := g.running[slot.token]
 	if !ok {
 		return nil
@@ -571,11 +637,14 @@ func normalizeSlotRequest(req SlotRequest) (SlotRequest, error) {
 		return SlotRequest{}, err
 	}
 	return SlotRequest{
-		State:            slot.State,
-		Host:             slot.Host,
-		Weight:           slot.Weight,
-		Priority:         slot.Priority,
-		PressureCapacity: normalizedCapacity(req.PressureCapacity),
+		ProjectCapacity:      req.ProjectCapacity,
+		ProjectStateCapacity: req.ProjectStateCapacity,
+		ProjectHostCapacity:  req.ProjectHostCapacity,
+		State:                slot.State,
+		Host:                 slot.Host,
+		Weight:               slot.Weight,
+		Priority:             slot.Priority,
+		PressureCapacity:     normalizedCapacity(req.PressureCapacity),
 	}, nil
 }
 

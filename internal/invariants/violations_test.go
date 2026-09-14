@@ -38,6 +38,8 @@ func TestSourceViolations(t *testing.T) {
 		{"priority cancel cause", "internal/orchestrator/new.go", `const reason = "scheduler.global_dispatch_preemption"`, "INV-10"},
 		{"historical contention", "internal/store/pool_contention.go", `const reason = "selected_project_waiting"`, ""},
 		{"historical constraint", "internal/store/capacity_constraints.go", `const reason = "reserved_for_higher_priority_project"`, ""},
+		{"historical configuration", "internal/config/historical_decision_reasons.go", `func isHistoricalDecisionReason(reason string) bool { return reason == "reserved_for_higher_priority_project" }`, ""},
+		{"configuration cannot restore callback", "internal/config/historical_decision_reasons.go", `func SetPreempt() {}`, "INV-10"},
 		{"unreviewed reader", "internal/store/new.go", `const reason = "selected_project_waiting"`, "INV-10"},
 		{"reader cannot restore callback", "internal/store/pool_contention.go", `func SetPreempt() {}`, "INV-10"},
 		{"query", "internal/connector/github/new.go", "const document = `query { rateLimit { cost } }`", ""},
