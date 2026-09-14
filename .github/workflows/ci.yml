@@ -241,7 +241,7 @@ jobs:
 
       - name: Install visual build generators
         if: steps.visual-changes.outputs.run_visual == 'true'
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
       - name: Build Detent visual test binary
         if: steps.visual-changes.outputs.run_visual == 'true'
