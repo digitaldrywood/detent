@@ -7,6 +7,11 @@ mandatory check succeeds for the exact candidate commit. It creates an
 annotated semver tag containing that check evidence. Plain manually-created
 tags do not carry this provenance and the release workflow rejects them.
 
+General CI runs on the main push, not the release tag. Tag pushes run only the
+release workflow, so creating the tag does not supersede its recorded mandatory
+check IDs. An independent check rerun still invalidates older evidence even if
+the rerun succeeds; retrying the release workflow does not waive that check.
+
 Tags matching `v*` trigger the release workflow, which validates the annotated
 tag against the tagged full commit, runs GoReleaser, and
 publishes the GitHub Release archives, checksums, Homebrew formula, and Windows
@@ -65,6 +70,11 @@ or inconsistent. Before replacement it executes the staged binary and requires
 its version and full commit to match the signed provenance. After restart,
 startup recovery requires both identities from the running instance before it
 marks the update healthy or removes rollback material.
+If the previous version starts instead, recovery verifies that the binary at the
+recorded installation path has that same version and full commit. This confirms
+an unapplied replacement or completed rollback; rollback intent alone is not
+enough. An unexpected version, an unavailable installed identity, or a mismatched
+commit leaves pending state, failure records, and rollback material intact.
 
 ## Host-admin update boundaries
 

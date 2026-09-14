@@ -73,8 +73,13 @@ Updater provenance (#2419) uses the existing candidate verification and startup
 recovery paths to require the tested commit before accepting new updates. It
 retains the existing rollback and retry limits. Legacy pending updates keep their
 schema across failed startups until resolved, consolidating compatibility at the
-state writer without adding a recovery path. The existing verification mechanism
+state writer without adding a recovery path. Recovery verifies the recorded
+installation before accepting the previous build, and rejects unrelated restarted
+versions without changing pending or failure records. This consolidates prior-build
+acceptance into the existing binary identity verifier. The existing verification mechanism
 must remain to reject unverified artifacts before replacement.
+Startup, serving, and readiness workers share cancellation and are joined before
+identity-failure exits allow caller-owned resources to be cleaned up.
 
 Validator launch accounting uses the existing validator-run registry and shared
 worker progress publisher. Validators appear alongside implementation workers in
@@ -143,6 +148,12 @@ The worker convention is to finish local validation/review before marking ready;
 Rework can produce a new ready head. Workflow assertions cannot deduplicate
 manual reruns or repeated ready/reopened events. Other projects may opt into
 label gating or their own CI convention.
+
+CI push triggers are restricted to main: release tags run the release workflow
+without creating newer mandatory check IDs that invalidate their own provenance
+(#2419). `TestCoordinatorTagToSigningProvenance` exercises coordinator annotation,
+the repository's workflow triggers, and the signing input gate, including retries
+and rejection of missing, stale, cancelled, skipped, or failed evidence.
 
 `detent doctor` also reads every workflow under the project's source root and
 warns when a job runs on pull_request events: a job is exempt only when its

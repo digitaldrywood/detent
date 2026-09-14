@@ -19,6 +19,10 @@ const integrationCondition = "github.event_name == 'workflow_dispatch' || (githu
 func checkWorkflow(data []byte) error {
 	var workflow struct {
 		On struct {
+			Push struct {
+				Branches []string `yaml:"branches"`
+				Tags     []string `yaml:"tags"`
+			} `yaml:"push"`
 			PullRequest struct {
 				Types []string `yaml:"types"`
 			} `yaml:"pull_request"`
@@ -35,6 +39,9 @@ func checkWorkflow(data []byte) error {
 	}
 	if !slices.Contains(workflow.On.MergeGroup.Types, "checks_requested") {
 		return errors.New("INV-4 merge_group checks_requested missing")
+	}
+	if !slices.Equal(workflow.On.Push.Branches, []string{"main"}) || len(workflow.On.Push.Tags) != 0 {
+		return errors.New("INV-5 CI push must run only on main; tag checks invalidate release provenance")
 	}
 	events := workflow.On.PullRequest.Types
 	for _, event := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
@@ -96,6 +103,8 @@ func TestWorkflowViolations(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ name, old, replacement string }{
+		{"duplicate tag checks", "branches: [main]", "branches: [main]\n    tags: ['v*']"},
+		{"unfiltered push", "branches: [main]", "branches: []"},
 		{"real job on PR", "if: " + nonPRCondition, "if: true"},
 		{"pr bypass", "if: " + nonPRCondition, "if: " + nonPRCondition + " || true"},
 		{"placeholder everywhere", "if: " + placeholderCondition, "if: true"},

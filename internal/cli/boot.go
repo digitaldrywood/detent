@@ -894,20 +894,26 @@ func runStartupAndServe(
 		ctx = context.Background()
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		workers.Wait()
+	}()
 
-	results := make(chan startupServeResult, 2)
-	go func() {
+	// Every worker can publish even when an error exit has stopped consuming.
+	// Join before caller-owned stores, workspaces, and listeners are cleaned up.
+	results := make(chan startupServeResult, 3)
+	workers.Go(func() {
 		results <- startupServeResult{name: "startup", err: startup(runCtx)}
-	}()
-	go func() {
+	})
+	workers.Go(func() {
 		results <- startupServeResult{name: "serve", err: serveApp(runCtx)}
-	}()
+	})
 	serveReady := readiness.AwaitServe == nil
 	if readiness.AwaitServe != nil {
-		go func() {
+		workers.Go(func() {
 			results <- startupServeResult{name: "readiness", err: readiness.AwaitServe(runCtx)}
-		}()
+		})
 	}
 
 	startupDone := false
