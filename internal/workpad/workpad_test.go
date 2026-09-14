@@ -577,3 +577,29 @@ func TestSignalUnknownPredicateKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestMalformedRefPartialSignal(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, status, extra string
+		partial             bool
+	}{
+		{"refs only", "blocked", "", true},
+		{"invalid status", "human-review", "", false},
+		{"invalid owner", "blocked", "    owner: invalid\n", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := "```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers:\n  - ref: local:test\n    reason: local test\n" + tt.extra + "  - ref: '#42'\n    reason: dependency\nhuman_action: null\n```"
+			got, ok := SignalFromComment(body, "comment-url", "owner/repo")
+			if !ok || got.Invalid == nil || got.Invalid.BlockerRefsOnly != tt.partial {
+				t.Fatalf("signal = %#v, want partial %v", got, tt.partial)
+			}
+			if tt.partial && (len(got.Blockers) != 2 || got.Blockers[1].Identifier != "owner/repo#42") {
+				t.Fatalf("valid dependency lost: %#v", got.Blockers)
+			}
+			if !tt.partial && len(got.Blockers) != 0 {
+				t.Fatalf("invalid schema retained blockers: %#v", got.Blockers)
+			}
+		})
+	}
+}

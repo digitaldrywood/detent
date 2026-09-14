@@ -2929,7 +2929,11 @@ func (c Config) KanbanAllowedTransitionTargets(source string) []string {
 		return nil
 	}
 	if c.defaultKanbanTransitionRestricted(source) {
-		return filterKanbanTransitionTargets(source, defaultKanbanExceptionTargets(states), states)
+		targets := defaultKanbanExceptionTargets(states)
+		if sameKanbanPolicyState(source, "Rework") {
+			targets = append(targets, "Merging")
+		}
+		return filterKanbanTransitionTargets(source, targets, states)
 	}
 	return filterKanbanTransitionTargets(source, states, states)
 }

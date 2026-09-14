@@ -303,6 +303,13 @@ Reconciliation and reaping both receive that stage budget; EINVAL/EIO retries do
 not renew it, and expiration preserves the ownership error and verified partial
 results. This removes a competing timer without adding a recovery mechanism.
 
+Malformed Workpad blocker refs remain verbatim diagnostics, but do not reject a
+clean, green PR (#2640). Auto-promote evaluates valid blockers and the existing
+PR gate, including affected Rework cards, without another worker session.
+Other schema errors retain their routing behavior. The default Kanban policy
+allows operator Rework to Merging transitions; explicit project overrides remain
+authoritative. This consolidates promotion under INV-3 without a new mechanism.
+
 Structured Workpad status parsing ignores unknown YAML keys and records their paths
 on the signal (#2604), removing strict field rejection from the existing parser.
 Known predicate validation and completion authorization remain unchanged; no new

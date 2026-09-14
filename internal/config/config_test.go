@@ -4603,3 +4603,30 @@ func TestOperatorConfig(t *testing.T) {
 		t.Fatalf("problems = %v", problems)
 	}
 }
+
+func TestKanbanReworkToMerging(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		targets map[string][]string
+		want    bool
+	}{
+		{name: "default allows", want: true},
+		{name: "explicit override remains authoritative", targets: map[string][]string{"Rework": {"Blocked"}}, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{}
+			cfg.Tracker.ActiveStates = []string{"Rework", "Merging"}
+			cfg.Server.Kanban.AllowedTransitions = tt.targets
+			got := false
+			for _, target := range cfg.KanbanAllowedTransitionTargets("Rework") {
+				if target == "Merging" {
+					got = true
+				}
+			}
+			if got != tt.want {
+				t.Fatalf("Merging allowed = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

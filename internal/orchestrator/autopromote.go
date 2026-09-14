@@ -132,7 +132,7 @@ func EvaluateAutoPromote(
 	summary AutoPromoteSummary,
 	cfg AutoPromoteConfig,
 	now time.Time,
-) AutoPromoteDecision {
+) (decision AutoPromoteDecision) {
 	cfg = normalizeAutoPromoteConfig(cfg)
 
 	if !cfg.Enabled {
@@ -145,7 +145,12 @@ func EvaluateAutoPromote(
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonLabelNotAllowed)
 	}
 	workpad := autoPromoteWorkpadBlocker(issue, cfg)
-	if workpad.Invalid != nil {
+	if workpad.Invalid != nil && workpad.Invalid.BlockerRefsOnly {
+		defer func() {
+			autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
+		}()
+	}
+	if workpad.Invalid != nil && (!workpad.Invalid.BlockerRefsOnly || !summary.PullRequestPresent) {
 		decision := autoPromoteDecision(autoPromoteInvalidWorkpadAction(summary.CompletedFinalState), AutoPromoteReasonWorkpadStatusInvalid)
 		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 		return decision
@@ -201,7 +206,7 @@ func EvaluateAutoPromote(
 		QuietDuration:              cfg.QuietDuration,
 		AutomatedReviewWaitExpired: summary.AutomatedReviewWaitExpired,
 	})
-	decision := autoPromoteDecision(autoPromoteActionFromGate(gateDecision.Action), autoPromoteReasonFromGate(gateDecision.Reason))
+	decision = autoPromoteDecision(autoPromoteActionFromGate(gateDecision.Action), autoPromoteReasonFromGate(gateDecision.Reason))
 	decision.CIStatus = gateDecision.CIStatus
 	decision.QuietRemaining = gateDecision.QuietRemaining
 	decision.Findings = autoPromoteFindingsFromGate(gateDecision.Findings)
@@ -464,7 +469,18 @@ func autoPromoteWorkpadBlocker(issue connector.Issue, cfg AutoPromoteConfig) aut
 	}
 	if signal.Invalid != nil {
 		check.Invalid = signal.Invalid
-		return check
+		if !signal.Invalid.BlockerRefsOnly {
+			return check
+		}
+		signal = workpad.CloneSignal(signal)
+		blockers := signal.Blockers[:0]
+		for _, blocker := range signal.Blockers {
+			if blocker.Ref != "" && blocker.Identifier == "" {
+				continue
+			}
+			blockers = append(blockers, blocker)
+		}
+		signal.Blockers = blockers
 	}
 	if cfg.WorkpadStructuredOnly && signal.Source != workpad.SourceStructured {
 		check.ProseFallbackDisabled = true

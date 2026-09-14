@@ -272,7 +272,16 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 		if !autoPromoteSourceGateWaitEnabled(cfg) {
 			continue
 		}
-		if !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
+		malformedRework := false
+		running := false
+		if state != nil {
+			_, running = state.Running[issueID]
+		}
+		if !running && normalizeState(issue.State) == normalizeState(cfg.ReworkState) && issueHasOpenPullRequest(issue) {
+			signal, ok := autoPromoteIssueWorkpadSignal(issue)
+			malformedRework = ok && signal != nil && signal.Invalid != nil && signal.Invalid.BlockerRefsOnly
+		}
+		if !malformedRework && !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
 			continue
 		}
 		out = append(out, cloneIssue(issue))
@@ -917,7 +926,7 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
 	}
 	issue = o.hydrateAutoPromoteWorkpadBlockerRefs(ctx, issue, cfg)
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
-	if decision.Reason == AutoPromoteReasonWorkpadStatusInvalid && decision.Action != AutoPromoteActionRework {
+	if decision.WorkpadStatusInvalid != "" && decision.Action != AutoPromoteActionRework {
 		o.commentInvalidWorkpadStatus(ctx, issue, decision)
 	}
 	if decision.WorkpadProseFallbackDisabled && o.logger != nil {
@@ -984,7 +993,7 @@ func autoPromoteDecisionNeedsWorkpadHydration(decision AutoPromoteDecision) bool
 
 func autoPromoteWorkpadBlockerRefs(issue connector.Issue, structuredOnly bool) []connector.BlockedRef {
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
-	if !ok || signal == nil || signal.Invalid != nil {
+	if !ok || signal == nil || (signal.Invalid != nil && !signal.Invalid.BlockerRefsOnly) {
 		return nil
 	}
 	if structuredOnly && signal.Source != workpad.SourceStructured {
