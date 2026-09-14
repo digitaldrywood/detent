@@ -52,8 +52,10 @@ approval-denial classification through the existing instance-owned forge wait, w
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
 reports as write-path failures, and `TestCredentialForgeProbeRequiresSuccessfulWrite`
-keeps the named project pause active until its write canary succeeds. These execute
-through the invariant manifest. Runtime evidence is needed
+keeps the named project pause active until its write canary succeeds.
+`TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause` preserves migrated
+credential waits across restart even after they leave the bounded general history window.
+These execute through the invariant manifest. Runtime evidence is needed
 to classify a new failure correctly; do not infer issue fault merely from a failed attempt.
 
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when

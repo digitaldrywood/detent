@@ -3540,6 +3540,89 @@ func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, projectID strin
 	return items, nil
 }
 
+const listPendingForgeAvailabilityWaits = `-- name: ListPendingForgeAvailabilityWaits :many
+SELECT waiting.id, waiting.project_id, waiting.issue_id, waiting.identifier, waiting.issue_url, waiting.pr_number, waiting.repo, waiting.worker_type, waiting.worker_host, waiting.lane, waiting.attempt_number, waiting.status, waiting.started_at, waiting.lease_expires_at, waiting.heartbeat_at, waiting.completed_at, waiting.terminal_state, waiting.error_class, waiting.error_message, waiting.phase, waiting.status_message, waiting.current_step, waiting.total_steps, waiting.progress_percent, waiting.current_command, waiting.wait_reason, waiting.github_rate_snapshot_json, waiting.ci_state, waiting.capacity_snapshot_json, waiting.worker_metadata_json, waiting.metrics_json, waiting.next_action, waiting.detent_session_id, waiting.provider_session_id, waiting.runtime_identity_json
+FROM work_attempts AS waiting
+WHERE waiting.project_id = ?1
+  AND waiting.completed_at IS NOT NULL
+  AND waiting.status = 'terminal'
+  AND waiting.terminal_state = 'capacity'
+  AND waiting.error_class = 'forge_unavailable'
+  AND COALESCE(TRIM(waiting.issue_id), '') != ''
+  AND json_type(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.forge_wait') = 'object'
+  AND COALESCE(json_extract(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND NOT EXISTS (
+    SELECT 1
+    FROM work_attempts AS newer
+    WHERE newer.project_id = waiting.project_id
+      AND newer.issue_id = waiting.issue_id
+      AND newer.completed_at IS NOT NULL
+      AND newer.status = 'terminal'
+      AND COALESCE(json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+      AND (newer.completed_at > waiting.completed_at OR (newer.completed_at = waiting.completed_at AND newer.id > waiting.id))
+  )
+ORDER BY waiting.completed_at, waiting.id
+`
+
+func (q *Queries) ListPendingForgeAvailabilityWaits(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingForgeAvailabilityWaits, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingOperatorStops = `-- name: ListPendingOperatorStops :many
 SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 FROM work_attempts

@@ -196,6 +196,21 @@ func TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause(t *testin
 	if !strings.Contains(persisted.WorkerMetadataJSON, `"deliverable_evidence"`) {
 		t.Fatalf("persisted worker metadata = %s, want original deliverable evidence preserved", persisted.WorkerMetadataJSON)
 	}
+	for index := range maxRecentWorkAttemptSnapshots + 1 {
+		newerID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+			ProjectID: "detent", IssueID: fmt.Sprintf("newer-issue-%d", index), WorkerType: "agent",
+			StartedAt: now.Add(time.Duration(index+1) * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("StartWorkAttempt(newer %d) error = %v", index, err)
+		}
+		if err := runtimeStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{
+			AttemptID: newerID, CompletedAt: now.Add(time.Duration(index+2) * time.Minute),
+			TerminalState: store.WorkAttemptTerminalSuccess,
+		}); err != nil {
+			t.Fatalf("CompleteWorkAttempt(newer %d) error = %v", index, err)
+		}
+	}
 
 	tracker.updates = nil
 	restartedMigration := blockedCauseTestOrchestrator(tracker)
@@ -216,9 +231,9 @@ func TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause(t *testin
 	restartedTracker := &forgeWaitRecoveryConnector{issues: []connector.Issue{{
 		ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL, State: autoPromoteReworkState,
 	}}}
-	restarted := Orchestrator{cfg: orch.cfg, connector: restartedTracker}
+	restarted := Orchestrator{cfg: orch.cfg, connector: restartedTracker, workAttempts: runtimeStore}
 	restartedState := newState(orch.cfg)
-	restarted.recoverForgeAvailabilityWaits(t.Context(), &restartedState, []store.WorkAttempt{persisted}, now.Add(time.Second))
+	restarted.recoverDurableWorkAttempts(t.Context(), &restartedState, now.Add(2*time.Hour))
 	if _, ok := restartedState.ForgeUnavailable["github.com"]; !ok {
 		t.Fatalf("ForgeUnavailable after restart = %#v, want durable credential pause", restartedState.ForgeUnavailable)
 	}

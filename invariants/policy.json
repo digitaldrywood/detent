@@ -18,6 +18,7 @@
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
       "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
       "TestCredentialForgeProbeRequiresSuccessfulWrite",
+      "TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool"
     ],

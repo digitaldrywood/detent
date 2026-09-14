@@ -57,6 +57,7 @@ type Store interface {
 	ProvenanceStore
 	WorkAttemptStore
 	TerminalWorkAttemptStore
+	ForgeAvailabilityWaitStore
 	LaneLedgerStore
 	ProjectDispatchStatusStore
 	HealthNotificationStateStore
@@ -176,6 +177,10 @@ type WorkAttemptStore interface {
 
 type TerminalWorkAttemptStore interface {
 	UpdateTerminalWorkAttemptWait(context.Context, WorkAttemptTerminalWaitUpdate) error
+}
+
+type ForgeAvailabilityWaitStore interface {
+	ListPendingForgeAvailabilityWaits(context.Context, string) ([]WorkAttempt, error)
 }
 
 type ConcurrencyStore interface {

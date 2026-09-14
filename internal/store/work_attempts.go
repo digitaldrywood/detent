@@ -280,6 +280,18 @@ func (s *sqliteStore) ListRecentTerminalWorkAttempts(ctx context.Context, query 
 	return workAttemptsFromRows(rows)
 }
 
+func (s *sqliteStore) ListPendingForgeAvailabilityWaits(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	rows, err := s.queries.ListPendingForgeAvailabilityWaits(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending forge availability waits: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
 func (s *sqliteStore) ListPendingWorkAttemptCapacityReleases(ctx context.Context, projectID string) ([]WorkAttempt, error) {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
