@@ -1873,7 +1873,7 @@ func graphQLTrackerRead(queryType string, query string) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(queryType)) {
-	case graphQLQueryMergeQueue, graphQLQueryEnqueuePR:
+	case graphQLQueryMergeQueue, graphQLQueryEnqueuePR, graphQLQueryLaneSignalStatus:
 		return false
 	default:
 		return true

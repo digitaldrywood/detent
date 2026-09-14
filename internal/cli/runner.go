@@ -1045,6 +1045,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.FailureBreakers = append(current.FailureBreakers, next.FailureBreakers...)
 	current.DispatchLoops = append(current.DispatchLoops, next.DispatchLoops...)
 	current.DispatchRecoveries = append(current.DispatchRecoveries, next.DispatchRecoveries...)
+	current.LaneSignalWarnings = append(current.LaneSignalWarnings, next.LaneSignalWarnings...)
 	current.StalenessWarnings = append(current.StalenessWarnings, next.StalenessWarnings...)
 	current.StrandedActiveIssues = append(current.StrandedActiveIssues, next.StrandedActiveIssues...)
 	current.AgentPools = append(current.AgentPools, next.AgentPools...)
@@ -1557,6 +1558,11 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 			snapshot.StalenessWarnings[i].ProjectID = projectID
 		}
 	}
+	for i := range snapshot.LaneSignalWarnings {
+		if strings.TrimSpace(snapshot.LaneSignalWarnings[i].ProjectID) == "" {
+			snapshot.LaneSignalWarnings[i].ProjectID = projectID
+		}
+	}
 	for i := range snapshot.StrandedActiveIssues {
 		if strings.TrimSpace(snapshot.StrandedActiveIssues[i].ProjectID) == "" {
 			snapshot.StrandedActiveIssues[i].ProjectID = projectID
@@ -1733,6 +1739,7 @@ func composeLastKnownTrackerState(current, live telemetry.Snapshot, now time.Tim
 	live.Pipeline = appendCachedTrackerIssues(live.Pipeline, current.Pipeline, useCached, cachedFallbackProjectID)
 	live.TrackerDrift.UntrackedOpen = appendCachedTrackerIssues(live.TrackerDrift.UntrackedOpen, current.TrackerDrift.UntrackedOpen, useCached, cachedFallbackProjectID)
 	live.TrackerDrift.OpenTerminal = appendCachedTrackerIssues(live.TrackerDrift.OpenTerminal, current.TrackerDrift.OpenTerminal, useCached, cachedFallbackProjectID)
+	live.LaneSignalWarnings = appendCachedLaneSignalWarnings(live.LaneSignalWarnings, current.LaneSignalWarnings, useCached, cachedFallbackProjectID)
 	live.LastKnown = false
 	live.LastKnownUntil = current.LastKnownUntil
 	summarizeSnapshotSections(&live)
@@ -1774,6 +1781,24 @@ func appendCachedTrackerIssues(
 	for _, issue := range cached {
 		if _, ok := projectIDs[snapshotIssueProjectID(issue, fallbackProjectID)]; ok {
 			live = append(live, issue)
+		}
+	}
+	return live
+}
+
+func appendCachedLaneSignalWarnings(
+	live []telemetry.LaneSignalWarning,
+	cached []telemetry.LaneSignalWarning,
+	projectIDs map[string]struct{},
+	fallbackProjectID string,
+) []telemetry.LaneSignalWarning {
+	for _, warning := range cached {
+		projectID := strings.TrimSpace(warning.ProjectID)
+		if projectID == "" {
+			projectID = fallbackProjectID
+		}
+		if _, ok := projectIDs[projectID]; ok {
+			live = append(live, warning)
 		}
 	}
 	return live

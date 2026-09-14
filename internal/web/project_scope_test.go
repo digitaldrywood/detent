@@ -93,6 +93,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{ProjectID: "detent", CandidateCount: 2, Stalled: true, NeedsHumanAttention: true},
 			{ProjectID: "pyroapex", CandidateCount: 1, Stalled: true, NeedsHumanAttention: true},
 		},
+		LaneSignalWarnings: []telemetry.LaneSignalWarning{
+			{ProjectID: "detent", IssueID: "detent-lane-signal"},
+			{ProjectID: "pyroapex", IssueID: "pyro-lane-signal"},
+		},
 		StrandedActiveIssues: []telemetry.StrandedIssue{
 			{ProjectID: "detent", IssueID: "detent-stranded"},
 			{ProjectID: "pyroapex", IssueID: "pyro-stranded"},
@@ -162,6 +166,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.DispatchStalls) != 1 || got.DispatchStalls[0].ProjectID != "detent" || !got.Dispatch.NeedsHumanAttention {
 		t.Fatalf("Dispatch/DispatchStalls = %#v/%#v, want only detent stall", got.Dispatch, got.DispatchStalls)
+	}
+	if len(got.LaneSignalWarnings) != 1 || got.LaneSignalWarnings[0].IssueID != "detent-lane-signal" {
+		t.Fatalf("LaneSignalWarnings = %#v, want only detent row", got.LaneSignalWarnings)
 	}
 	if len(got.StrandedActiveIssues) != 1 || got.StrandedActiveIssues[0].IssueID != "detent-stranded" {
 		t.Fatalf("StrandedActiveIssues = %#v, want only detent row", got.StrandedActiveIssues)

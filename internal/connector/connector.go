@@ -287,10 +287,12 @@ type CandidateIssuesByStatesFetcher interface {
 }
 
 type RefreshIssueResult struct {
-	Candidates     []Issue
-	Statuses       []Issue
-	CandidateError error
-	StatusError    error
+	// LaneSignalCandidates retains diagnostic inputs outside configured lanes.
+	LaneSignalCandidates []Issue
+	Candidates           []Issue
+	Statuses             []Issue
+	CandidateError       error
+	StatusError          error
 }
 
 type RefreshIssueFetcher interface {
@@ -346,7 +348,8 @@ type IssueChildrenResolver interface {
 }
 
 type StatusDrift struct {
-	UntrackedOpen []Issue `json:"untracked_open,omitempty" yaml:"untracked_open,omitempty"`
-	OpenTerminal  []Issue `json:"open_terminal,omitempty" yaml:"open_terminal,omitempty"`
-	ClosedActive  []Issue `json:"closed_active,omitempty" yaml:"closed_active,omitempty"`
+	UntrackedOpen        []Issue `json:"untracked_open,omitempty" yaml:"untracked_open,omitempty"`
+	OpenTerminal         []Issue `json:"open_terminal,omitempty" yaml:"open_terminal,omitempty"`
+	ClosedActive         []Issue `json:"closed_active,omitempty" yaml:"closed_active,omitempty"`
+	LaneSignalCandidates []Issue `json:"-" yaml:"-"`
 }

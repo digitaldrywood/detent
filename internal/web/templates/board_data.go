@@ -50,11 +50,13 @@ const (
 	boardAlertKindDispatchRecovery       boardAlertKind = "dispatch-recovery-status"
 	boardAlertKindUpdatePending          boardAlertKind = "update-pending"
 	boardAlertKindStrandedActive         boardAlertKind = "stranded-active"
+	boardAlertKindLaneSignalIgnored      boardAlertKind = "lane-signal-ignored"
 	boardAlertDetailLimit                               = 5
 	boardAlertSeverityUpdatePending                     = 100
 	boardAlertSeverityDispatchRecovery                  = 200
 	boardAlertSeverityBackendCapacity                   = 300
 	boardAlertSeverityStaleness                         = 450
+	boardAlertSeverityLaneSignalIgnored                 = 425
 	boardAlertSeverityFailureBreaker                    = 500
 	boardAlertSeverityCIUnavailable                     = 550
 	boardAlertSeverityTrackerUnavailable                = 560
@@ -103,7 +105,7 @@ type boardStalenessDismissal struct {
 }
 
 func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
-	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+8)
+	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+9)
 	if alert, ok := boardLastKnownAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
@@ -126,6 +128,9 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		alerts = append(alerts, alert)
 	}
 	alerts = append(alerts, boardStalenessAlerts(snapshot.StalenessWarnings)...)
+	if alert, ok := boardLaneSignalAlert(snapshot.LaneSignalWarnings); ok {
+		alerts = append(alerts, alert)
+	}
 	if alert, ok := boardStrandedActiveAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
@@ -142,6 +147,35 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		return alerts[i].Severity > alerts[j].Severity
 	})
 	return alerts
+}
+
+func boardLaneSignalAlert(warnings []telemetry.LaneSignalWarning) (boardAlert, bool) {
+	if len(warnings) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(warnings))
+	for index, warning := range warnings {
+		label := boardFirstNonBlank(warning.Identifier, warning.IssueID, warning.ProjectID, "issue")
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-lane-signal-" + boardAlertRowSlug(label, index),
+			Label:   label,
+			Link:    strings.TrimSpace(warning.IssueURL),
+			Summary: "Reads lanes from " + strings.TrimSpace(warning.ConfiguredSource),
+			Detail:  strings.TrimSpace(warning.Reason),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{
+		ID:            "board-alert-lane-signal-ignored",
+		Kind:          boardAlertKindLaneSignalIgnored,
+		Severity:      boardAlertSeverityLaneSignalIgnored,
+		Tone:          primitives.KindWarn,
+		TerseSummary:  "Ignored lane signals (" + boardCountLabel(len(warnings), "signal", "signals") + ")",
+		DetailSummary: "These labels or Status values do not control their projects' configured lane source.",
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
 }
 
 func boardDispatchStallAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {

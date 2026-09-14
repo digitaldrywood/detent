@@ -86,9 +86,20 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			WorkpadStructuredOnly: cfg.Workpad.StructuredOnly,
 			Gate:                  gate.Effective(cfg.Gate),
 		}),
-		Plan:              gate.EffectivePlan(cfg.Plan),
-		DependencySource:  normalizeDependencySource(cfg.Dependencies.Source),
-		StatusLabelPrefix: blockedCauseStatusLabelPrefix(cfg),
+		Plan:                     gate.EffectivePlan(cfg.Plan),
+		DependencySource:         normalizeDependencySource(cfg.Dependencies.Source),
+		StatusLabelPrefix:        blockedCauseStatusLabelPrefix(cfg),
+		TrackerKind:              cfg.Tracker.Kind,
+		TrackerStatusSource:      cfg.Tracker.GitHubStatusSource,
+		TrackerStatusField:       cfg.Tracker.StatusField,
+		TrackerStatusLabelPrefix: cfg.Tracker.StatusLabelPrefix,
+		TrackerStateMap:          trackerLaneStateMap(cfg.Tracker.StateMap),
+		LaneSignalStates: appendStatusStates(
+			nil,
+			cfg.Tracker.ActiveStates,
+			cfg.Tracker.ObservedStates,
+			cfg.Tracker.TerminalStates,
+		),
 		DependencyAutoUnblock: normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
 			Enabled:      cfg.Tracker.DependencyAutoUnblock.Enabled,
 			SourceStates: append([]string(nil), cfg.Tracker.DependencyAutoUnblock.SourceStates...),
@@ -286,6 +297,12 @@ func normalizeConfig(cfg Config) Config {
 	cfg.Plan = gate.EffectivePlan(cfg.Plan)
 	cfg.DependencySource = normalizeDependencySource(cfg.DependencySource)
 	cfg.StatusLabelPrefix = strings.ToLower(strings.TrimSpace(cfg.StatusLabelPrefix))
+	cfg.TrackerKind = strings.ToLower(strings.TrimSpace(cfg.TrackerKind))
+	cfg.TrackerStatusSource = strings.ToLower(strings.TrimSpace(cfg.TrackerStatusSource))
+	cfg.TrackerStatusField = strings.TrimSpace(cfg.TrackerStatusField)
+	cfg.TrackerStatusLabelPrefix = strings.TrimSpace(cfg.TrackerStatusLabelPrefix)
+	cfg.TrackerStateMap = cloneStringMap(cfg.TrackerStateMap)
+	cfg.LaneSignalStates = normalizedStates(cfg.LaneSignalStates)
 	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
 	cfg.BlockedRecovery = normalizeBlockedRecoveryConfig(cfg.BlockedRecovery)
 	cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(cfg.BlockerAutoPromote, cfg.ActiveStates, cfg.DependencyAutoUnblock)
@@ -312,6 +329,47 @@ func blockedCauseStatusLabelPrefix(cfg workflowconfig.Config) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(cfg.Tracker.StatusLabelPrefix))
+}
+
+func trackerLaneStateMap(value workflowconfig.StringOrMap) map[string]string {
+	if !value.IsMap {
+		return nil
+	}
+	states := make(map[string]string, len(value.Map))
+	for lane, raw := range value.Map {
+		external, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		lane = strings.TrimSpace(lane)
+		external = strings.TrimSpace(external)
+		if lane != "" && external != "" {
+			states[lane] = external
+		}
+	}
+	return states
+}
+
+func appendStatusStates(out []string, groups ...[]string) []string {
+	seen := make(map[string]struct{}, len(out))
+	for _, state := range out {
+		seen[strings.ToLower(strings.TrimSpace(state))] = struct{}{}
+	}
+	for _, group := range groups {
+		for _, state := range group {
+			state = strings.TrimSpace(state)
+			key := strings.ToLower(state)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, state)
+		}
+	}
+	return out
 }
 
 func stopRunPriorityNames(value workflowconfig.StringOrMap) map[int]string {

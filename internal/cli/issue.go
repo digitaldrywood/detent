@@ -183,6 +183,12 @@ func writeIssueExplanationPretty(writer io.Writer, result explain.IssueExplanati
 	if result.ParkSummary.AcknowledgedParkSequence > 0 {
 		lines = append(lines, fmt.Sprintf("Acknowledged park sequence: %d", result.ParkSummary.AcknowledgedParkSequence))
 	}
+	for _, reason := range result.Reasons {
+		lines = append(lines, "Reason "+reason.Code+": "+reason.Detail)
+		if action := strings.TrimSpace(reason.Action); action != "" {
+			lines = append(lines, "Action: "+action)
+		}
+	}
 	for _, source := range result.Sources {
 		value := string(source.State)
 		if source.Code != "" {

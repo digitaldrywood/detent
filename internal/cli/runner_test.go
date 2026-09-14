@@ -123,6 +123,9 @@ func TestStampSnapshotProjectIDPreservesDegradedFreshness(t *testing.T) {
 	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
 	snapshot := stampSnapshotProjectID(telemetry.Snapshot{
 		Project: telemetry.Project{ID: "docs"},
+		LaneSignalWarnings: []telemetry.LaneSignalWarning{{
+			Identifier: "digitaldrywood/docs#2",
+		}},
 		StrandedActiveIssues: []telemetry.StrandedIssue{{
 			Identifier: "digitaldrywood/docs#1",
 		}},
@@ -135,6 +138,9 @@ func TestStampSnapshotProjectIDPreservesDegradedFreshness(t *testing.T) {
 
 	if len(snapshot.Refresh.Sources) != 1 {
 		t.Fatalf("Refresh.Sources = %#v, want one project source", snapshot.Refresh.Sources)
+	}
+	if len(snapshot.LaneSignalWarnings) != 1 || snapshot.LaneSignalWarnings[0].ProjectID != "docs" {
+		t.Fatalf("LaneSignalWarnings = %#v, want docs project ID", snapshot.LaneSignalWarnings)
 	}
 	source := snapshot.Refresh.Sources[0]
 	if source.ProjectID != "docs" || source.Name != telemetry.RefreshSourceProject || !source.Degraded {

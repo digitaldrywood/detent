@@ -53,6 +53,7 @@ type Snapshot struct {
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
 	DispatchLoops           []DispatchLoop      `json:"dispatch_loops,omitempty"`
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
+	LaneSignalWarnings      []LaneSignalWarning `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings       []StalenessWarning  `json:"staleness_warnings,omitempty"`
 	StrandedActiveIssues    []StrandedIssue     `json:"stranded_active_issues,omitempty"`
 	CleanupFaults           []CleanupFault      `json:"workspace_cleanup_failures,omitempty"`
@@ -407,6 +408,24 @@ type StalenessWarning struct {
 	DeliveryAttempts      int                 `json:"delivery_attempts,omitempty"`
 	LastDeliveryAttemptAt *time.Time          `json:"last_delivery_attempt_at,omitempty"`
 	DeliveryError         string              `json:"delivery_error,omitempty"`
+}
+
+const LaneSignalIgnoredReasonCode = "lane_signal_ignored"
+
+// LaneSignalWarning reports tracker state that resembles a configured lane but
+// is ignored because the project reads lanes from a different source.
+type LaneSignalWarning struct {
+	ReasonCode       string `json:"reason_code"`
+	ProjectID        string `json:"project_id,omitempty"`
+	IssueID          string `json:"issue_id,omitempty"`
+	Identifier       string `json:"identifier,omitempty"`
+	IssueURL         string `json:"issue_url,omitempty"`
+	ConfiguredSource string `json:"configured_source"`
+	SignalKind       string `json:"signal_kind"`
+	Signal           string `json:"signal"`
+	Lane             string `json:"lane"`
+	Reason           string `json:"reason"`
+	Action           string `json:"action"`
 }
 
 type StrandedIssue struct {

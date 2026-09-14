@@ -78,6 +78,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.DispatchLoops = scopedDispatchLoops(snapshot.DispatchLoops, selectedProjectID, fallbackProjectID)
 	out.DispatchRecoveries = scopedDispatchRecoveries(snapshot.DispatchRecoveries, selectedProjectID, fallbackProjectID)
 	out.DispatchStalls = scopedDispatchStatuses(snapshot.DispatchStalls, selectedProjectID, fallbackProjectID)
+	out.LaneSignalWarnings = scopedLaneSignalWarnings(snapshot.LaneSignalWarnings, selectedProjectID, fallbackProjectID)
 	out.StalenessWarnings = scopedStalenessWarnings(snapshot.StalenessWarnings, selectedProjectID, fallbackProjectID)
 	out.StrandedActiveIssues = scopedStrandedActiveIssues(snapshot.StrandedActiveIssues, selectedProjectID, fallbackProjectID)
 	out.AdmissionProposals = scopedAdmissionProposals(snapshot.AdmissionProposals, selectedProjectID)
@@ -207,6 +208,20 @@ func scopedStrandedActiveIssues(issues []telemetry.StrandedIssue, selectedProjec
 
 func scopedStalenessWarnings(warnings []telemetry.StalenessWarning, selectedProjectID string, fallbackProjectID string) []telemetry.StalenessWarning {
 	out := make([]telemetry.StalenessWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		projectID := strings.TrimSpace(warning.ProjectID)
+		if projectID == "" {
+			projectID = fallbackProjectID
+		}
+		if projectID == selectedProjectID {
+			out = append(out, warning)
+		}
+	}
+	return out
+}
+
+func scopedLaneSignalWarnings(warnings []telemetry.LaneSignalWarning, selectedProjectID string, fallbackProjectID string) []telemetry.LaneSignalWarning {
+	out := make([]telemetry.LaneSignalWarning, 0, len(warnings))
 	for _, warning := range warnings {
 		projectID := strings.TrimSpace(warning.ProjectID)
 		if projectID == "" {

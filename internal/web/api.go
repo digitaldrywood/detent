@@ -689,6 +689,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		DispatchRecoveries: append([]telemetry.DispatchRecovery(nil), snapshot.DispatchRecoveries...),
 		Dispatch:           snapshot.Dispatch,
 		DispatchStalls:     append([]telemetry.DispatchStatus(nil), snapshot.DispatchStalls...),
+		LaneSignalWarnings: append([]telemetry.LaneSignalWarning(nil), snapshot.LaneSignalWarnings...),
 		StalenessWarnings:  append([]telemetry.StalenessWarning(nil), snapshot.StalenessWarnings...),
 		CleanupFaults:      append([]telemetry.CleanupFault(nil), snapshot.CleanupFaults...),
 		Budget:             budgetResponse(snapshot.Budget),
@@ -1626,45 +1627,46 @@ func snapshotErrorResponse(generatedAt time.Time, code string, message string) s
 }
 
 type stateAPIResponse struct {
-	GeneratedAt        time.Time                    `json:"generated_at"`
-	SnapshotAgeSeconds int64                        `json:"snapshot_age_seconds"`
-	Enrichment         stateEnrichmentAPIResponse   `json:"enrichment"`
-	Status             string                       `json:"status"`
-	Shutdown           shutdownAPIResponse          `json:"shutdown"`
-	Update             telemetry.Update             `json:"update,omitzero"`
-	Instance           instanceAPIResponse          `json:"instance"`
-	Projects           []telemetry.ProjectSnapshot  `json:"projects,omitempty"`
-	Refresh            telemetry.Refresh            `json:"refresh"`
-	Events             []recentEventAPIResponse     `json:"events"`
-	Counts             countsAPIResponse            `json:"counts"`
-	TrackerDrift       telemetry.TrackerDrift       `json:"tracker_drift"`
-	Running            []runningAPIResponse         `json:"running"`
-	WorkAttempts       []workAttemptAPIResponse     `json:"work_attempts,omitempty"`
-	Retrying           []retryAPIResponse           `json:"retrying"`
-	Blocked            []blockedAPIResponse         `json:"blocked"`
-	Stats              statsAPIResponse             `json:"stats"`
-	Board              boardAPIResponse             `json:"board"`
-	TokenTotals        tokenTotalsAPIResponse       `json:"codex_totals"`
-	Throughput         throughputAPIResponse        `json:"throughput"`
-	LifetimeTotals     lifetimeTotalsResponse       `json:"lifetime_totals"`
-	MemoryPressure     telemetry.MemoryPressure     `json:"memory_pressure"`
-	IOPressure         telemetry.IOPressure         `json:"io_pressure"`
-	CPUPressure        telemetry.CPUPressure        `json:"cpu_pressure"`
-	WorkflowMetrics    telemetry.WorkflowMetrics    `json:"workflow_metrics"`
-	RecentSessions     []recentSessionAPIResponse   `json:"recent_sessions"`
-	RateLimits         *telemetry.RateLimits        `json:"rate_limits"`
-	TrackerUnavailable []telemetry.TrackerCondition `json:"tracker_unavailable,omitempty"`
-	ForgeUnavailable   []telemetry.ForgeCondition   `json:"forge_unavailable,omitempty"`
-	CIUnavailable      []telemetry.CICondition      `json:"ci_unavailable,omitempty"`
-	BackendOutages     []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
-	FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
-	DispatchLoops      []telemetry.DispatchLoop     `json:"dispatch_loops,omitempty"`
-	DispatchRecoveries []telemetry.DispatchRecovery `json:"dispatch_recoveries,omitempty"`
-	Dispatch           telemetry.DispatchStatus     `json:"dispatch"`
-	DispatchStalls     []telemetry.DispatchStatus   `json:"dispatch_stalls,omitempty"`
-	StalenessWarnings  []telemetry.StalenessWarning `json:"staleness_warnings,omitempty"`
-	CleanupFaults      []telemetry.CleanupFault     `json:"workspace_cleanup_failures,omitempty"`
-	Budget             budgetAPIResponse            `json:"budget"`
+	GeneratedAt        time.Time                     `json:"generated_at"`
+	SnapshotAgeSeconds int64                         `json:"snapshot_age_seconds"`
+	Enrichment         stateEnrichmentAPIResponse    `json:"enrichment"`
+	Status             string                        `json:"status"`
+	Shutdown           shutdownAPIResponse           `json:"shutdown"`
+	Update             telemetry.Update              `json:"update,omitzero"`
+	Instance           instanceAPIResponse           `json:"instance"`
+	Projects           []telemetry.ProjectSnapshot   `json:"projects,omitempty"`
+	Refresh            telemetry.Refresh             `json:"refresh"`
+	Events             []recentEventAPIResponse      `json:"events"`
+	Counts             countsAPIResponse             `json:"counts"`
+	TrackerDrift       telemetry.TrackerDrift        `json:"tracker_drift"`
+	Running            []runningAPIResponse          `json:"running"`
+	WorkAttempts       []workAttemptAPIResponse      `json:"work_attempts,omitempty"`
+	Retrying           []retryAPIResponse            `json:"retrying"`
+	Blocked            []blockedAPIResponse          `json:"blocked"`
+	Stats              statsAPIResponse              `json:"stats"`
+	Board              boardAPIResponse              `json:"board"`
+	TokenTotals        tokenTotalsAPIResponse        `json:"codex_totals"`
+	Throughput         throughputAPIResponse         `json:"throughput"`
+	LifetimeTotals     lifetimeTotalsResponse        `json:"lifetime_totals"`
+	MemoryPressure     telemetry.MemoryPressure      `json:"memory_pressure"`
+	IOPressure         telemetry.IOPressure          `json:"io_pressure"`
+	CPUPressure        telemetry.CPUPressure         `json:"cpu_pressure"`
+	WorkflowMetrics    telemetry.WorkflowMetrics     `json:"workflow_metrics"`
+	RecentSessions     []recentSessionAPIResponse    `json:"recent_sessions"`
+	RateLimits         *telemetry.RateLimits         `json:"rate_limits"`
+	TrackerUnavailable []telemetry.TrackerCondition  `json:"tracker_unavailable,omitempty"`
+	ForgeUnavailable   []telemetry.ForgeCondition    `json:"forge_unavailable,omitempty"`
+	CIUnavailable      []telemetry.CICondition       `json:"ci_unavailable,omitempty"`
+	BackendOutages     []telemetry.BackendOutage     `json:"backend_outages,omitempty"`
+	FailureBreakers    []telemetry.FailureBreaker    `json:"failure_breakers,omitempty"`
+	DispatchLoops      []telemetry.DispatchLoop      `json:"dispatch_loops,omitempty"`
+	DispatchRecoveries []telemetry.DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
+	Dispatch           telemetry.DispatchStatus      `json:"dispatch"`
+	DispatchStalls     []telemetry.DispatchStatus    `json:"dispatch_stalls,omitempty"`
+	LaneSignalWarnings []telemetry.LaneSignalWarning `json:"lane_signal_warnings,omitempty"`
+	StalenessWarnings  []telemetry.StalenessWarning  `json:"staleness_warnings,omitempty"`
+	CleanupFaults      []telemetry.CleanupFault      `json:"workspace_cleanup_failures,omitempty"`
+	Budget             budgetAPIResponse             `json:"budget"`
 }
 
 type stateEnrichmentAPIResponse struct {

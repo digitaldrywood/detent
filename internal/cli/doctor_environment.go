@@ -857,6 +857,7 @@ type doctorHealthResponse struct {
 	Environment                doctorHealthEnvironment          `json:"environment"`
 	Budgets                    []doctorHealthBudget             `json:"budgets"`
 	Workflows                  []doctorHealthWorkflow           `json:"workflows"`
+	LaneSignalWarnings         []telemetry.LaneSignalWarning    `json:"lane_signal_warnings"`
 	StalenessWarnings          []telemetry.StalenessWarning     `json:"staleness_warnings"`
 	StrandedIssues             []telemetry.StrandedIssue        `json:"stranded_active_issues"`
 	Dispatch                   telemetry.DispatchStatus         `json:"dispatch"`

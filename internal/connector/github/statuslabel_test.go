@@ -140,7 +140,7 @@ func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 		DependencySource: connector.BlockedRefSourceProse,
 		Labels:           []string{"detent:ready", "enhancement"},
 		Assignees:        []string{},
-		Fields:           map[string]string{"Status": "Ready"},
+		Fields:           map[string]string{},
 		AssignedToWorker: true,
 	}
 	if !reflect.DeepEqual(got[0], want) {
@@ -210,6 +210,9 @@ func TestConnectorFetchStatusDriftReportsTrackerStateMismatches(t *testing.T) {
 			body:   `{"total_count":1,"items":[{"node_id":"I_584","number":584,"title":"Closed but active","body":"","state":"closed","state_reason":"completed","html_url":"https://github.com/digitaldrywood/detent/issues/584","assignees":[],"labels":[{"name":"detent:todo"}]}]}`,
 		},
 		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_771","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_board"},"statusValue":{"name":"Todo"}}]}},{"__typename":"Issue","id":"I_770","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_board"},"statusValue":{"name":"Todo"}}]}},{"__typename":"Issue","id":"I_583","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}`,
+		},
+		{
 			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_583","closedByPullRequestsReferences":{"nodes":[{"number":582,"url":"https://github.com/digitaldrywood/detent/pull/582","state":"MERGED","updatedAt":"2026-08-18T12:00:00Z","repository":{"nameWithOwner":"digitaldrywood/detent"}},{"number":585,"url":"https://github.com/digitaldrywood/detent/pull/585","state":"OPEN","updatedAt":"2026-08-19T12:00:00Z","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}]}}`,
 		},
 	})
@@ -231,6 +234,22 @@ func TestConnectorFetchStatusDriftReportsTrackerStateMismatches(t *testing.T) {
 	if got.UntrackedOpen[0].Identifier != "digitaldrywood/detent#771" || got.UntrackedOpen[0].State != "" {
 		t.Fatalf("UntrackedOpen[0] = %#v, want unlabeled #771 with blank state", got.UntrackedOpen[0])
 	}
+	if len(got.LaneSignalCandidates) != 3 {
+		t.Fatalf("LaneSignalCandidates = %#v, want every open issue", got.LaneSignalCandidates)
+	}
+	for _, id := range []string{"I_771", "I_770"} {
+		var status string
+		for _, issue := range got.LaneSignalCandidates {
+			if issue.ID == id {
+				if len(issue.LaneSignalStatuses) == 1 {
+					status = issue.LaneSignalStatuses[0].Value
+				}
+			}
+		}
+		if status != "Todo" {
+			t.Fatalf("LaneSignalCandidates status for %s = %q, want Todo", id, status)
+		}
+	}
 	if len(got.OpenTerminal) != 1 {
 		t.Fatalf("OpenTerminal = %#v, want one issue", got.OpenTerminal)
 	}
@@ -243,8 +262,8 @@ func TestConnectorFetchStatusDriftReportsTrackerStateMismatches(t *testing.T) {
 	if len(got.ClosedActive) != 1 || got.ClosedActive[0].Identifier != "digitaldrywood/detent#584" || got.ClosedActive[0].State != "Todo" {
 		t.Fatalf("ClosedActive = %#v, want closed active #584 Todo", got.ClosedActive)
 	}
-	if len(server.requests()) != 3 {
-		t.Fatalf("request count = %d, want open scan, closed active scan, and merged PR hydration", len(server.requests()))
+	if len(server.requests()) != 4 {
+		t.Fatalf("request count = %d, want open scan, closed active scan, optional Status hydration, and merged PR hydration", len(server.requests()))
 	}
 }
 

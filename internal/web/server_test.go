@@ -7774,6 +7774,47 @@ func TestHealthReportsStrandedActiveIssues(t *testing.T) {
 	}
 }
 
+func TestStateAndHealthReportIgnoredLaneSignals(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	warning := telemetry.LaneSignalWarning{
+		ReasonCode:       telemetry.LaneSignalIgnoredReasonCode,
+		ProjectID:        "detent",
+		IssueID:          "issue-2567",
+		Identifier:       "digitaldrywood/detent#2567",
+		ConfiguredSource: "ProjectV2 Status",
+		SignalKind:       "label",
+		Signal:           "detent:todo",
+		Lane:             "Todo",
+		Reason:           "this project reads lanes from ProjectV2 Status; label detent:todo has no effect; set Status to Todo",
+		Action:           "set Status to Todo",
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{LaneSignalWarnings: []telemetry.LaneSignalWarning{warning}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	for _, path := range []string{"/api/v1/state", "/health"} {
+		payload := requestJSON(t, server, http.MethodGet, path, http.StatusOK)
+		warnings, ok := payload["lane_signal_warnings"].([]any)
+		if !ok || len(warnings) != 1 {
+			t.Fatalf("%s lane_signal_warnings = %#v, want one warning", path, payload["lane_signal_warnings"])
+		}
+		got := warnings[0].(map[string]any)
+		if got["identifier"] != warning.Identifier || got["configured_source"] != warning.ConfiguredSource || got["action"] != warning.Action {
+			t.Fatalf("%s lane_signal_warnings[0] = %#v", path, got)
+		}
+	}
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if health["status"] != "needs_attention" {
+		t.Fatalf("health status = %#v, want needs_attention", health["status"])
+	}
+}
+
 func TestHealthReportsActiveDispatchLoops(t *testing.T) {
 	t.Parallel()
 

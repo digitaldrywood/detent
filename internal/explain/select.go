@@ -21,7 +21,8 @@ type snapshotIssue struct {
 }
 
 type SnapshotIssueScope struct {
-	IncludeCompleted bool
+	IncludeCompleted    bool
+	IncludeTrackerDrift bool
 }
 
 type SnapshotIssueSelection struct {
@@ -58,7 +59,7 @@ func normalizeSnapshotObservation(observation SnapshotObservation, now time.Time
 }
 
 func matchingSnapshotIssues(snapshot telemetry.Snapshot, query Query) []snapshotIssue {
-	return matchingSnapshotIssuesInScope(snapshot, query, SnapshotIssueScope{IncludeCompleted: true})
+	return matchingSnapshotIssuesInScope(snapshot, query, SnapshotIssueScope{IncludeCompleted: true, IncludeTrackerDrift: true})
 }
 
 func ResolveSnapshotIssue(snapshot telemetry.Snapshot, query Query, scope SnapshotIssueScope) (SnapshotIssueSelection, error) {
@@ -126,6 +127,9 @@ func resolveSnapshotProject(query Query, matches []snapshotIssue) ([]snapshotIss
 
 func matchingSnapshotIssuesInScope(snapshot telemetry.Snapshot, query Query, scope SnapshotIssueScope) []snapshotIssue {
 	capacity := len(snapshot.BoardIssues) + len(snapshot.Pipeline) + len(snapshot.Running) + len(snapshot.Queue) + len(snapshot.Blocked)
+	if scope.IncludeTrackerDrift {
+		capacity += len(snapshot.TrackerDrift.UntrackedOpen) + len(snapshot.TrackerDrift.OpenTerminal) + len(snapshot.TrackerDrift.ClosedActive)
+	}
 	if scope.IncludeCompleted {
 		capacity += len(snapshot.Completed)
 	}
@@ -136,18 +140,37 @@ func matchingSnapshotIssuesInScope(snapshot telemetry.Snapshot, query Query, sco
 	for _, issue := range snapshot.Pipeline {
 		candidates = append(candidates, snapshotIssue{issue: issue, rank: 1, source: "pipeline"})
 	}
+	if scope.IncludeTrackerDrift {
+		for _, issue := range snapshot.TrackerDrift.UntrackedOpen {
+			candidates = append(candidates, snapshotIssue{issue: issue, rank: 2, source: "tracker_drift"})
+		}
+		for _, issue := range snapshot.TrackerDrift.OpenTerminal {
+			candidates = append(candidates, snapshotIssue{issue: issue, rank: 2, source: "tracker_drift"})
+		}
+		for _, issue := range snapshot.TrackerDrift.ClosedActive {
+			candidates = append(candidates, snapshotIssue{issue: issue, rank: 2, source: "tracker_drift"})
+		}
+		// Warnings can identify open issues outside every configured lane.
+		// Prefer any actual lane observation over this identity-only fallback.
+		for _, warning := range snapshot.LaneSignalWarnings {
+			candidates = append(candidates, snapshotIssue{
+				issue: telemetry.Issue{ID: warning.IssueID, Identifier: warning.Identifier, URL: warning.IssueURL, ProjectID: warning.ProjectID},
+				rank:  7, source: "tracker_drift",
+			})
+		}
+	}
 	for _, issue := range snapshot.Running {
-		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 2, source: "running"})
+		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 3, source: "running"})
 	}
 	for _, issue := range snapshot.Queue {
-		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 3, source: "queue"})
+		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 4, source: "queue"})
 	}
 	for _, issue := range snapshot.Blocked {
-		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 4, source: "blocked"})
+		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 5, source: "blocked"})
 	}
 	if scope.IncludeCompleted {
 		for _, issue := range snapshot.Completed {
-			candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 5, source: "completed"})
+			candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 6, source: "completed"})
 		}
 	}
 
@@ -411,6 +434,7 @@ func buildExplanation(observedAt time.Time, identity Identity, found bool, colle
 		PullRequest:      pullRequest,
 		RequiredGate:     gate,
 		ParkSummary:      parkSummaryModel(collected.parkSummary),
+		Reasons:          explanationReasons(identity, collected.snapshot.Snapshot),
 		Sources:          append([]SourceStatus(nil), collected.sources...),
 	}
 	if len(collected.snapshotIssues) > 0 {
@@ -420,6 +444,38 @@ func buildExplanation(observedAt time.Time, identity Identity, found bool, colle
 	}
 	explanation.Evidence = explanationEvidence(explanation, collected)
 	return explanation
+}
+
+func explanationReasons(identity Identity, snapshot telemetry.Snapshot) []Reason {
+	reasons := []Reason{}
+	for _, warning := range snapshot.LaneSignalWarnings {
+		projectID := strings.TrimSpace(warning.ProjectID)
+		if projectID == "" {
+			projectID = strings.TrimSpace(snapshot.Project.ID)
+		}
+		if projectID != identity.ProjectID || !laneSignalWarningMatchesIdentity(warning, identity) {
+			continue
+		}
+		reasons = append(reasons, Reason{
+			Code:   strings.TrimSpace(warning.ReasonCode),
+			Detail: strings.TrimSpace(warning.Reason),
+			Action: strings.TrimSpace(warning.Action),
+		})
+	}
+	return reasons
+}
+
+func laneSignalWarningMatchesIdentity(warning telemetry.LaneSignalWarning, identity Identity) bool {
+	for _, pair := range [][2]string{
+		{warning.IssueID, identity.IssueID},
+		{warning.Identifier, identity.Identifier},
+		{warning.IssueURL, identity.IssueURL},
+	} {
+		if left, right := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1]); left != "" && right != "" && left == right {
+			return true
+		}
+	}
+	return false
 }
 
 func parkSummaryModel(summary store.ParkSummary) ParkSummary {

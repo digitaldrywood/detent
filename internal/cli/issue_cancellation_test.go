@@ -36,3 +36,24 @@ func TestIssueExplanationIncludesAttemptDetail(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueExplanationIncludesReasons(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	result := explain.IssueExplanation{Reasons: []explain.Reason{{
+		Code:   "lane_signal_ignored",
+		Detail: "this project reads lanes from ProjectV2 Status; label detent:todo has no effect",
+		Action: "set Status to Todo",
+	}}}
+	if err := writeIssueExplanationPretty(&output, result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Reason lane_signal_ignored: this project reads lanes from ProjectV2 Status; label detent:todo has no effect",
+		"Action: set Status to Todo",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %s, want %s", output.String(), want)
+		}
+	}
+}

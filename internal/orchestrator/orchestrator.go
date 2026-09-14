@@ -113,6 +113,12 @@ type Config struct {
 	Plan                          gate.PlanConfig
 	DependencySource              string
 	StatusLabelPrefix             string
+	TrackerKind                   string
+	TrackerStatusSource           string
+	TrackerStatusField            string
+	TrackerStatusLabelPrefix      string
+	TrackerStateMap               map[string]string
+	LaneSignalStates              []string
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	BlockedRecovery               BlockedRecoveryConfig
 	Operator                      OperatorConfig

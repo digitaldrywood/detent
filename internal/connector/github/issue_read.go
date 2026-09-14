@@ -524,14 +524,9 @@ func (c *Connector) fetchProjectRefreshIssues(
 	observedStates = normalizeStateList(observedStates, nil)
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
 	wantedStates := normalizedStateSet(allStates)
-	if len(wantedStates) == 0 {
-		return connector.RefreshIssueResult{Candidates: []connector.Issue{}, Statuses: []connector.Issue{}}
-	}
-
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
 	issues, err := c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
-		_, ok := wantedStates[normalizeStateName(issue.State)]
-		return ok
+		return true
 	}, 0, repairBlankStatuses)
 	if err != nil {
 		return connector.RefreshIssueResult{CandidateError: err}
@@ -548,8 +543,9 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 
 	result := connector.RefreshIssueResult{
-		Candidates: issuesInStates(issues, candidateStates),
-		Statuses:   issuesInStates(issues, observedStates),
+		Candidates:           issuesInStates(issues, candidateStates),
+		Statuses:             issuesInStates(issues, observedStates),
+		LaneSignalCandidates: issues,
 	}
 	if err := c.attachPullRequests(ctx, result.Candidates); err != nil {
 		result.Candidates = nil

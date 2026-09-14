@@ -417,6 +417,7 @@ func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift
 	if err != nil {
 		return connector.StatusDrift{}, err
 	}
+	c.hydrateIgnoredProjectStatuses(ctx, drift.LaneSignalCandidates)
 	if err := c.attachLabelIssuePullRequestReferencesWithState(ctx, drift.OpenTerminal, true); err != nil {
 		return connector.StatusDrift{}, fmt.Errorf("hydrate open terminal issue pull requests: %w", err)
 	}
@@ -518,6 +519,7 @@ func (c *Connector) readLabelStatusDrift(
 				continue
 			}
 			c.cacheIssueRef(issue)
+			drift.LaneSignalCandidates = append(drift.LaneSignalCandidates, c.buildLabelIssue(issue, ""))
 			if !c.hasConfiguredStatusLabel(issue.Labels) {
 				drift.UntrackedOpen = append(drift.UntrackedOpen, c.buildLabelIssue(issue, ""))
 			}
@@ -858,11 +860,11 @@ func (c *Connector) buildLabelIssue(issue githubIssueNode, fallbackStatus string
 	if statusName == "" {
 		statusName = strings.TrimSpace(fallbackStatus)
 	}
-	return c.buildIssue(issue, statusName, "", nil, map[string]string{c.statusField: statusName})
+	return c.buildIssue(issue, statusName, "", nil, nil)
 }
 
 func (c *Connector) buildStatusLabelConflictIssue(issue githubIssueNode, labels []string) connector.Issue {
-	out := c.buildIssue(issue, labelStatusConflictState, "", nil, map[string]string{c.statusField: labelStatusConflictState})
+	out := c.buildIssue(issue, labelStatusConflictState, "", nil, nil)
 	out.BlockerReason = labelStatusConflictReason(labels)
 	return out
 }
