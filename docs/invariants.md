@@ -686,3 +686,10 @@ fixtures available to explain violations. Source vocabulary and workflow checks
 complement behavioral tests; they do not prove every natural-language rule,
 protect themselves against edits, or enforce live settings. See the
 [runner contract](../invariants/README.md) for the same limitations.
+
+Draft-ready credential and connector-policy failures (#2688) reuse the instance
+forge condition and existing worker write canary (INV-2/INV-3). The auto-promote
+writer waits for that recovery instead of resetting the probe on every tick;
+transient ready failures retain normal tick retries.
+`TestReworkLiveDraftPromotion` verifies this attribution without issue failure
+strikes or lane changes.

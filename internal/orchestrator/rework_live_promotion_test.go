@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
@@ -59,13 +60,17 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
 		draft       bool
-		failReady   bool
+		readyErr    error
+		wantForge   bool
 		changeLive  func(*connector.Issue)
 		wantReady   int
 		wantPromote bool
 	}{
 		{name: "draft marked ready then promotes", draft: true, wantReady: 1, wantPromote: true},
-		{name: "ready mutation fails", draft: true, failReady: true, wantReady: 2},
+		{name: "ready mutation fails", draft: true, readyErr: errors.New("ready unavailable"), wantReady: 2},
+		{name: "credential denied", draft: true, readyErr: errors.New("Bad credentials"), wantReady: 1, wantForge: true},
+		{name: "write permission denied", draft: true, readyErr: errors.New("Resource not accessible by integration"), wantReady: 1, wantForge: true},
+		{name: "connector policy denied", draft: true, readyErr: errors.New("MCP tool call requires approval, but approval policy is never"), wantReady: 1, wantForge: true},
 		{name: "draft with thread stays", draft: true, changeLive: func(i *connector.Issue) {
 			i.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{}}
 		}},
@@ -84,7 +89,7 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 			if tt.changeLive != nil {
 				tt.changeLive(&live)
 			}
-			tracker := &liveReworkConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}, live: live, failReady: tt.failReady}
+			tracker := &liveReworkConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}, live: live, readyErr: tt.readyErr}
 			o := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
 			for tick := range 2 {
@@ -92,6 +97,13 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 				if tick == 0 && tt.draft && len(result.transitioned) != 0 {
 					t.Fatal("draft promoted before ready state was re-read")
 				}
+			}
+			condition, waiting := forgeCondition(&state, "github.com")
+			if waiting != tt.wantForge || waiting && condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+				t.Fatalf("forge condition = %#v, waiting=%v, want %v", condition, waiting, tt.wantForge)
+			}
+			if len(state.Blocked) != 0 || len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 {
+				t.Fatal("draft-ready failure attributed to issue")
 			}
 			promoted := len(tracker.updates) > 0
 			if promoted != tt.wantPromote || tracker.readyCalls != tt.wantReady {
@@ -104,7 +116,7 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 type liveReworkConnector struct {
 	*autoPromoteTickConnector
 	live       connector.Issue
-	failReady  bool
+	readyErr   error
 	readyCalls int
 }
 
@@ -116,8 +128,8 @@ func (c *liveReworkConnector) HydratePullRequest(context.Context, connector.Issu
 
 func (c *liveReworkConnector) MarkPullRequestReady(context.Context, connector.Issue) error {
 	c.readyCalls++
-	if c.failReady {
-		return errors.New("ready unavailable")
+	if c.readyErr != nil {
+		return c.readyErr
 	}
 	c.live.PullRequest.Draft = false
 	return nil

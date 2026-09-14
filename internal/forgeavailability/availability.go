@@ -146,6 +146,8 @@ func WorkerGitHubCredentialUnavailable(detail string) bool {
 		"not logged into any github hosts",
 		"no credentials provided",
 		"bad credentials",
+		"resource not accessible by integration",
+		"resource not accessible by personal access token",
 		"authentication failed",
 		"authentication required",
 		"http 401",

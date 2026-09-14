@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -211,9 +212,27 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 			if draft {
+				host := forgeHostForIssue(issue, o.cfg.ForgeHost)
+				if condition, active := forgeCondition(state, host); active && condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+					// The existing worker write canary owns credential recovery.
+					continue
+				}
 				if marker, ok := o.connector.(connector.PullRequestReadyMarker); ok {
-					if err := marker.MarkPullRequestReady(ctx, issue); err != nil && o.logger != nil {
-						o.logger.Warn("mark rework pull request ready", "issue_id", issueID, "error", err)
+					if err := marker.MarkPullRequestReady(ctx, issue); err != nil {
+						const operation = "gh pr ready"
+						availabilityErr, unavailable := forgeavailability.As(err)
+						if !unavailable {
+							if class, classified := forgeavailability.Classify(operation, err.Error()); classified && class == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+								availabilityErr = forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+								unavailable = true
+							}
+						}
+						if unavailable {
+							o.registerForgeUnavailable(state, availabilityErr, Running{Issue: issue}, now)
+						}
+						if o.logger != nil {
+							o.logger.Warn("mark rework pull request ready", "issue_id", issueID, "error", err)
+						}
 					}
 				}
 				// Read the ready head and its checks again on the next tick.
