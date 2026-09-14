@@ -743,6 +743,31 @@ that remains queued without a `started_at` timestamp appears as unstarted. The
 can legitimately take several minutes to pick up a job; setting the threshold
 too low would turn ordinary queueing into an operator-facing signal.
 
+## Codex approval policy
+
+`codex.approval_policy` (and the same key under `agents.backends[].options`)
+takes either a word or a mapping. Detent's own vocabulary is older than the
+Codex app-server's, so Detent translates the value when it builds the
+`thread/start`, `thread/resume` and `turn/start` parameters. Codex 0.154
+accepts exactly four variants and rejects the request outright otherwise:
+
+```
+thread/start: Invalid request: unknown variant `reject`, expected one of
+`untrusted`, `on-request`, `granular`, `never`
+```
+
+| Configured value | Sent to Codex | Why |
+| --- | --- | --- |
+| `reject` | `never` | Detent's `reject` means "refuse every approval request this worker cannot answer unattended", which is exactly what Codex `never` does. |
+| `{reject: {sandbox_approval: ..., rules: ..., mcp_elicitations: ...}}` | `never` | The default Detent installs. Codex `never` carries no payload, so the request classes are dropped rather than forwarded under a key Codex would reject. |
+| `never`, `untrusted`, `on-request`, `granular` | unchanged | Already Codex vocabulary. |
+| anything else | unchanged | A newer Codex variant reaches the app-server without a Detent release. |
+
+The comparison ignores case and treats `_` and `-` alike, so `on_request` and
+`on-request` both reach Codex as `on-request`. The translation happens on the
+wire only: an existing config file stays valid, and `codex.approval_policy`
+still reads back the value the operator wrote.
+
 ## Codex deliverable elicitation
 
 `codex.deliverable_elicitation_allowlist` declares exact MCP mutation tuples
@@ -1298,6 +1323,12 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].blocked_by[].state` | `string` | `none` | No | None |
 | `tracker.issues[].blocker_reason` | `string` | `none` | No | None |
 | `tracker.issues[].branch_name` | `string` | `none` | No | None |
+| `tracker.issues[].change_review` | `object` | `none` | No | None |
+| `tracker.issues[].change_review.change_at_current_revision` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].change_review.change_revision` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].change_review.provider` | `string` | `none` | No | None |
+| `tracker.issues[].change_review.pull_requests_available` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].change_review.revision` | `integer` | `0 when configured` | No | None |
 | `tracker.issues[].child_issues` | `list<object>` | `[]` | No | None |
 | `tracker.issues[].child_issues[].human_completion_ready` | `boolean` | `false when configured` | No | None |
 | `tracker.issues[].child_issues[].human_owned` | `boolean` | `false when configured` | No | None |

@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -14,6 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacerunner"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.SchedulingSource, error) {
@@ -69,8 +73,19 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	}
 	var providerReports func() ([]providercapacity.Report, error)
 	if clientConfig.ProviderCapacityFile != "" {
+		// The collector's file names the models; the backends this runner
+		// dispatches on know what each model can do. The catalogue read is
+		// cached and runs off the claim path, so a report is published on
+		// time whether or not the catalogue has been read yet.
+		catalog := newProviderModelCatalog(func(ctx context.Context) (map[string]backendModelCatalog, error) {
+			return configuredBackendModelCatalogs(ctx, cfg)
+		}, slog.Default())
 		providerReports = func() ([]providercapacity.Report, error) {
-			return providercapacity.Load(clientConfig.ProviderCapacityFile)
+			reports, err := providercapacity.Load(clientConfig.ProviderCapacityFile)
+			if err != nil {
+				return nil, err
+			}
+			return catalog.decorate(reports), nil
 		}
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
@@ -79,6 +94,18 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
+			// What this runner can serve for a workspace session (decisions
+			// section 18.1). The hub's claim gate reads it from the row it
+			// stamps the heartbeat on, so a runner that never reports it is
+			// never offered a workspace item, and the lane below is started
+			// under exactly the same condition. Isolation is `user` because
+			// every channel this runner serves -- files, exec, git and now the
+			// terminal -- runs as the runner's own account: this repository
+			// ships no container runtime hook, and section 18.3 says a runner
+			// that cannot provide container reports user and lets the card stay
+			// disabled for organizations that require the other level.
+			WorkspaceCapabilities: workspacerunner.Capabilities(workspacerunner.DefaultSupport()),
+			WorkspaceIsolation:    workspacesession.IsolationUser,
 		},
 		HeartbeatInterval: clientConfig.HeartbeatInterval(),
 		LeaseTTL:          clientConfig.LeaseTTL(),

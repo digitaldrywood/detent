@@ -238,7 +238,7 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := completedActiveReviewTargetState(
+			got, _ := completedActiveReviewTargetState(
 				tt.issue,
 				tt.finalState,
 				tt.completionKind,

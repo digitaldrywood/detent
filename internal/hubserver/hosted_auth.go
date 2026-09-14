@@ -206,9 +206,10 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		return s.requireHostedProject(ctx, tx, scope, true)
 	}
 	if scope.credential.ManageRunners {
-		var projects, granted int
-		err := tx.QueryRowContext(ctx, `SELECT count(*), COALESCE(sum(EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.project_id = p.id AND g.user_id = ? AND g.manage_runner = 1)),0) FROM projects p WHERE p.organization_id = ?`, identity.Subject, scope.organization).Scan(&projects, &granted)
-		if err != nil || projects == 0 || projects != granted {
+		// The same weaker question the boundary asks: the grant somewhere in
+		// the organization, not on every project. createRunnerEnrollment
+		// re-checks it against the projects the enrollment names.
+		if !hostedRunnerGrants(ctx, tx, string(scope.organization), identity.Subject, nil) {
 			return auth.ErrHostedIdentity
 		}
 		return nil

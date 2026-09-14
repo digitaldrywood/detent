@@ -804,12 +804,36 @@ accounts through the existing agent routing configuration.
     "account_alias": "local-work",
     "shared_account_alias": "team-subscription-a",
     "models": ["gpt-5.6-sol", "gpt-6-astra"],
+    "model_details": [
+      {
+        "id": "gpt-6-astra",
+        "label": "GPT-6-Astra",
+        "provider": "openai",
+        "default": true,
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "low"
+      },
+      { "id": "gpt-5.6-sol", "legacy": true, "reasoning_efforts": ["low", "high"] }
+    ],
     "max_concurrent": 2,
     "availability": "unknown",
     "observed_at": "2026-09-05T12:00:00Z"
   }
 ]
 ```
+
+`model_details` is optional and advisory: it describes models `models` already
+advertises and never widens what capacity matches. A runner fills it from its
+own agent backends' model catalogues at startup and every thirty minutes — the
+read runs off the claim path, so a report is published on time whether or not
+the catalogue has been read — and a collector may write it by hand instead.
+Each entry describes one reported model once, with at most 16 distinct
+reasoning efforts ordered least to most, a `default_reasoning_effort` drawn
+from that list, a label of at most 128 characters, and `legacy` set when the
+provider has named a successor. The hub republishes it on
+`GET /app/bootstrap` as `preferences.models[]`, which is how the composer's
+effort picker knows what one model supports and the model picker knows what to
+shelve (decisions section 14).
 
 Only these fields and optional `reset_at` are accepted. Files are bounded to
 256 KiB, 32 backends and 128 model identifiers per backend. Aliases are opaque

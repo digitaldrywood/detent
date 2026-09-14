@@ -590,6 +590,8 @@ func normalizeRunMode(mode string) string {
 		return RunModeMerge
 	case RunModeRoutine:
 		return RunModeRoutine
+	case RunModeCoordinator:
+		return RunModeCoordinator
 	default:
 		return RunModeImplement
 	}
@@ -625,6 +627,8 @@ func runRole(mode string, issue connector.Issue) string {
 		return RolePlan
 	case RunModeRoutine:
 		return RoleRoutine
+	case RunModeCoordinator:
+		return RoleCoordinator
 	}
 	switch strings.ToLower(strings.TrimSpace(issue.State)) {
 	case RoleRework:
@@ -633,6 +637,59 @@ func runRole(mode string, issue connector.Issue) string {
 		return RoleMerge
 	default:
 		return RoleCode
+	}
+}
+
+// afterRunExecution ends a run's workspace lifecycle. A coordinator run owns
+// only a temporary directory, so it has no recovery state to record and
+// nothing to preserve: the directory is removed and the run is done.
+func (r *Runner) afterRunExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue) error {
+	if normalizeRunMode(req.Mode) != RunModeCoordinator {
+		return r.afterExecution(ctx, req, backend, info, issue)
+	}
+	afterCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	defer cancel()
+	backend.AfterRun(afterCtx, info, issue)
+	return nil
+}
+
+// coordinatorHubReader returns the hub read surface a coordinator run was
+// dispatched with, or nil when the scheduling source offered none.
+func coordinatorHubReader(req RunRequest) CoordinatorHubReader {
+	if req.Coordinator == nil {
+		return nil
+	}
+	return req.Coordinator.Reader
+}
+
+// coordinatorProjectID is the project id the coordinator tools report and
+// accept: the hub project the run's reader is scoped to, falling back to the
+// run's workflow project key when the dispatcher named none.
+func coordinatorProjectID(req RunRequest) string {
+	if req.Coordinator != nil {
+		if id := strings.TrimSpace(req.Coordinator.ProjectID); id != "" {
+			return id
+		}
+	}
+	return req.ProjectID
+}
+
+// attachCoordinatorTools adds the coordinator tools to the request. Any
+// handler another producer already installed stays reachable: the dispatching
+// handler routes by tool name rather than replacing what is there.
+func attachCoordinatorTools(req *RunRequest, toolset *CoordinatorToolset) {
+	tools := toolset.Tools()
+	owned := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		owned[tool.Name] = struct{}{}
+	}
+	existing := req.AgentToolHandler
+	req.AgentTools = append(req.AgentTools, tools...)
+	req.AgentToolHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		if _, ok := owned[call.Name]; !ok && existing != nil {
+			return existing(ctx, call)
+		}
+		return toolset.Handle(ctx, call)
 	}
 }
 
@@ -1124,7 +1181,9 @@ func (r *Runner) runAgentTurn(
 	}
 	turnStarted := false
 	workerProcessObserved := false
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
+	conversation := conversationRunFromContext(ctx)
+	turnRequest = conversation.prepareTurn(turnRequest)
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -1185,7 +1244,8 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		return nil
-	}, r.turnLimit)
+	}), r.turnLimit)
+	conversation.finishTurn(ctx, turnResult, turnErr)
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		ctx,
 		detentSessionID,
@@ -1239,6 +1299,9 @@ func (r *Runner) runAgentTurn(
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
 	result.TurnStarted = turnStarted
+	// What the turn spent goes to the execution, which accumulates the
+	// attempt total for the hub's usage report (decisions section 17.5).
+	reportTurnUsage(ctx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
 	return agentTurnExecution{
 		turnResult:  turnResult,
 		result:      result,
@@ -1396,7 +1459,7 @@ func verifyAgentResume(ctx context.Context, backend AgentBackend, resume AgentRe
 	return verifier.VerifyResume(ctx, resume)
 }
 
-func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
+func (r *Runner) run(ctx context.Context, req RunRequest) (finalResult RunResult, finalErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1433,7 +1496,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	req.workerGitHubActor = workerGitHub.Principal
 
 	runWorkspace := r.workspace
-	if req.Admission != nil {
+	// Backlog admission and coordinator runs never touch a repository: both
+	// run in a temporary directory that is removed with the run.
+	if req.Admission != nil || mode == RunModeCoordinator {
 		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
@@ -1471,7 +1536,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+			if err := r.afterRunExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
 				r.logger.Warn("native execution epilogue deferred", "issue_id", req.Issue.ID, "error", err)
 			}
 		}
@@ -1494,7 +1559,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 			mergePrecheck = mergePrecheckFromWorkspace(precheck)
 			if handled {
 				afterRunPending = false
-				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+				if err := r.afterRunExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
 					return precheckResult, err
 				}
 				r.logWorkerEvent(req.Issue, "worker_after_run_finished",
@@ -1509,7 +1574,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	attempt := req.Attempt
 	var availableSkills []skills.Skill
-	if req.Admission == nil {
+	if req.Admission == nil && mode != RunModeCoordinator {
 		availableSkills, err = r.availableSkills(workflow, info.Path)
 		if err != nil {
 			return RunResult{}, err
@@ -1548,7 +1613,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		RecoveryState:        recoveryState,
 	}
 	var prompt string
-	if mode == RunModeRoutine && req.Admission != nil {
+	if mode == RunModeCoordinator {
+		prompt, err = BuildCoordinatorPrompt(req.Issue, promptOptions)
+	} else if mode == RunModeRoutine && req.Admission != nil {
 		prompt, err = BuildAdmissionPrompt(req.Issue, *req.Admission, promptOptions)
 	} else if mode == RunModeRoutine && req.Routine != nil {
 		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
@@ -1565,11 +1632,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	role := runRole(req.Mode, req.Issue)
-	recoveryPrompt, err := nativeRecoveryPrompt(req.Execution)
-	if err != nil {
-		return RunResult{}, err
+	// A coordinator run has no workspace and no deliverable, so it has no
+	// recovery decision to explain.
+	if mode != RunModeCoordinator {
+		recoveryPrompt, err := nativeRecoveryPrompt(req.Execution)
+		if err != nil {
+			return RunResult{}, err
+		}
+		prompt += recoveryPrompt
 	}
-	prompt += recoveryPrompt
 	routeRole := agentRuntime.effectiveRunRole(role)
 	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
@@ -1638,21 +1709,32 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	resumeState := store.AgentResumeState{}
-	if mode != RunModeRoutine {
+	if mode != RunModeRoutine && mode != RunModeCoordinator {
 		resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 		if err != nil {
 			return RunResult{}, err
 		}
+		resumeState, err = r.nativeResume(ctx, req, backend, recoveryState, resumeState, executionIdentity)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
-	resumeState, err = r.nativeResume(ctx, req, backend, recoveryState, resumeState, executionIdentity)
-	if err != nil {
-		return RunResult{}, err
-	}
+	var conversation *conversationRun
 	if req.Execution != nil {
+		// The stored attempt diff rides every checkpoint and the finish
+		// (decisions section 18.5). A coordinator run has no repository, so it
+		// has nothing to describe.
+		if diffs, ok := req.Execution.(DiffExecution); ok && mode != RunModeCoordinator {
+			diffs.SetDiffSource(r.attemptDiffSource(info, workspaceIssue))
+		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
 		}
-		if artifacts, ok := req.Execution.(ArtifactExecution); ok {
+		if conversation = r.bindConversation(ctx, req, backend); conversation != nil {
+			ctx = conversation.attach(ctx)
+			defer func() { conversation.close(ctx, finalResult, finalErr) }()
+		}
+		if artifacts, ok := req.Execution.(ArtifactExecution); ok && mode != RunModeCoordinator {
 			if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
 				return RunResult{}, err
 			}
@@ -1662,6 +1744,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if mode == RunModeCoordinator {
+		attachCoordinatorTools(&req, NewCoordinatorToolset(coordinatorHubReader(req), coordinatorProjectID(req), conversation.statusPoster(), r.logger))
 	}
 	orphanRecovery := resumeState.Orphaned
 	orphanRecoveryOutcome := ""
@@ -1768,14 +1853,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	var extraWritableRoots []string
-	if req.Admission == nil {
+	if req.Admission == nil && mode != RunModeCoordinator {
 		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger)
 	}
 	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
 	turnRequest := AgentTurnRequest{
 		Workspace:             info.Path,
 		Prompt:                turnPrompt,
-		ReadOnly:              mode == RunModeRoutine,
+		ReadOnly:              mode == RunModeRoutine || mode == RunModeCoordinator,
 		SupplementalTools:     len(req.AgentTools) > 0,
 		Model:                 selectedModel,
 		ModelProvider:         modelProvider,
@@ -1798,11 +1883,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if mergeFallback && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
 		turnRequest.MaxDuration = sessionDuration
 	}
-	if mode == RunModeRoutine {
+	switch {
+	case mode == RunModeCoordinator:
+		turnRequest.ToolInstructions = coordinatorToolInstructions
+	case mode == RunModeRoutine && req.Admission != nil:
+		turnRequest.ToolInstructions = admissionToolInstructions
+	case mode == RunModeRoutine:
 		turnRequest.ToolInstructions = routineToolInstructions
-		if req.Admission != nil {
-			turnRequest.ToolInstructions = admissionToolInstructions
-		}
 	}
 	runWithCheckpoint := func(request AgentTurnRequest, runReq RunRequest, identity agentidentity.Identity, costOffsetUSD float64) agentTurnExecution {
 		return r.runCheckpointedTurn(ctx, sessionCtx, checkpoint, workflow.Config.Agent, backend, request, runReq, func(turnCtx context.Context, request AgentTurnRequest, runReq RunRequest) agentTurnExecution {
@@ -2004,7 +2091,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (RunResult, error) {
 			"error", turnErr,
 		)
 	} else {
-		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+		if err := r.afterRunExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
 			return result, errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",

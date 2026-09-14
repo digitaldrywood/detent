@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,8 +23,16 @@ type nativeExecution struct {
 	claim     nativeClaim
 	mu        sync.Mutex
 	data      tracker.NativeRunData
-	pending   *tracker.NativeRunEvent
-	cancel    context.CancelCauseFunc
+	// reported is the usage total the last event carried, so a checkpoint
+	// that repeats itself still reports usage the runner has added since
+	// (decisions section 17.5).
+	reported []tracker.NativeUsage
+	pending  *tracker.NativeRunEvent
+	cancel   context.CancelCauseFunc
+	// diffSource computes the stored attempt diff the execution posts before
+	// every checkpoint and before the finish (decisions section 18.5). It is
+	// nil for a run with no worktree to describe.
+	diffSource runner.AttemptDiffSource
 }
 
 type nativeMutationAuthorityKey struct{}
@@ -190,7 +200,7 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	if err != nil {
 		return err
 	}
-	if string(previous) == string(current) {
+	if string(previous) == string(current) && slices.Equal(e.data.Usage, e.reported) {
 		return nil
 	}
 	return e.append(ctx, "run.checkpointed", "", &checkpoint)
@@ -208,6 +218,42 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	return e.append(ctx, "run.finished", outcome, nil)
 }
 
+// SetDiffSource installs the source the execution calls before every run event
+// that references a stored diff (decisions section 18.5).
+func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.diffSource = source
+}
+
+// postDiff stores the worktree's diff for the event about to be appended. The
+// producer tuple is this execution's own lease, because the attempt is still
+// running and its lease is therefore the producer; the generation is the run
+// event sequence the diff belongs to, which is why the post happens before the
+// event and not after it.
+//
+// It is best-effort in both directions: a source that has nothing posts
+// nothing, and a hub that refuses the diff is logged and ignored, so a run is
+// never lost over a diff. e.mu is held by the caller.
+func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) {
+	if e.diffSource == nil || e.claim.source == nil {
+		return
+	}
+	request, ok := e.diffSource(ctx)
+	if !ok {
+		return
+	}
+	request.Producer = tracker.DiffProducer{
+		Kind: tracker.DiffSourceAttempt, ID: e.data.AttemptID,
+		LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
+	}
+	request.Generation = tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: sequence}
+	if _, err := e.claim.source.client.PostAttemptDiff(ctx, e.data.AttemptID, request); err != nil {
+		slog.Default().Warn("attempt diff not stored",
+			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", sequence, "error", err)
+	}
+}
+
 func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint) error {
 	if err := e.flush(ctx); err != nil {
 		return err
@@ -215,6 +261,9 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	data := e.data
 	data.Sequence++
 	data.Outcome = outcome
+	if kind == "run.checkpointed" || kind == "run.finished" {
+		e.postDiff(ctx, data.Sequence)
+	}
 	data.Handoff = checkpoint
 	e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
 	return e.flush(ctx)
@@ -231,6 +280,7 @@ func (e *nativeExecution) flush(ctx context.Context) error {
 		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 	}
 	e.data = e.pending.Data
+	e.reported = e.pending.Data.Usage
 	e.pending = nil
 	return nil
 }

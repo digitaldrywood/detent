@@ -36,10 +36,23 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
-			if credential.HostedRole == "viewer" || !s.hostedAllRunnerGrants(c.Request().Context(), credential) {
+			// The runner grant stays a permission of its own, separate from
+			// the role: every member, owner included, needs it somewhere in
+			// the organization. What changed is "somewhere" — it used to mean
+			// every project. createRunnerEnrollment then re-checks it against
+			// the projects the enrollment actually names.
+			if credential.HostedRole == "viewer" || !s.hostedRunnerGrants(c.Request().Context(), credential, nil) {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			credential.ManageRunners = true
+		case c.Path() == nativeBase+"/policy" && (c.Request().Method == http.MethodGet || c.Request().Method == http.MethodPut):
+			// A hosted owner or admin reads and approves the project policy
+			// descriptor here. Before this the only approval path a hosted
+			// session had was the Templ-era /onboarding/policy route, so a
+			// hosted owner could not clear `policy_mismatch` from the client.
+			if !hostedAdministrationRole(credential) {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
 		default:
 			return s.nativeAPIError(c, nativeNotFound())
 		}
@@ -51,38 +64,46 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 	}
 }
 
-func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
-	var projects, granted int
-	err := s.database.db.QueryRowContext(ctx, `SELECT count(*), COALESCE(sum(EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.project_id = p.id AND g.user_id = ? AND g.manage_runner = 1)),0) FROM projects p WHERE p.organization_id = ?`, credential.Hosted.Subject, s.config.Hosted.OrganizationID).Scan(&projects, &granted)
-	return err == nil && projects > 0 && projects == granted
+// hostedAdministrationRole reports whether the member administers the whole
+// organization. An owner or an admin enrolls a runner for any project.
+func hostedAdministrationRole(credential apiCredential) bool {
+	return credential.HostedRole == "owner" || credential.HostedRole == "admin"
 }
 
-func (s *Service) inviteHostedMember(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
-	role := c.FormValue("role")
-	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
-		return s.hostedError(c, http.StatusForbidden, "You cannot invite a member with this role")
+// hostedRunnerGrants reports whether the member may administer runners for the
+// projects named. Enrollment used to demand the runner grant on *every*
+// project in the organization, so a member granted exactly the projects an
+// enrollment names was refused; the grant is per project, so the requirement
+// is per project too.
+//
+// Naming no project asks the weaker question every runner route asks at the
+// boundary: does this member hold the grant anywhere. An enrollment must name
+// at least one project, because a runner grant authorizes nothing on its own
+// and an empty list must never read as "every project".
+func (s *Service) hostedRunnerGrants(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) bool {
+	if credential.Hosted == nil {
+		return false
 	}
-	email := strings.ToLower(strings.TrimSpace(c.FormValue("email")))
-	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
-	}
-	if err := s.reserveHostedInvitation(c.Request().Context(), email); err != nil {
-		var limit *hostedLimitError
-		if errors.As(err, &limit) {
-			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
+	return hostedRunnerGrants(ctx, s.database.db, s.config.Hosted.OrganizationID, credential.Hosted.Subject, projects)
+}
+
+func hostedRunnerGrants(ctx context.Context, query nativeQueryer, organization, user string, projects []tracker.ProjectID) bool {
+	const anyProject = `SELECT count(*) FROM hosted_project_grants g JOIN projects p ON p.id = g.project_id
+WHERE g.user_id = ? AND g.manage_runner = 1 AND p.organization_id = ?`
+	if len(projects) == 0 {
+		var granted int
+		if err := query.QueryRowContext(ctx, anyProject, user, organization).Scan(&granted); err != nil {
+			return false
 		}
-		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
+		return granted > 0
 	}
-	invitation, err := s.config.Hosted.Provider.Invite(c.Request().Context(), credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
-	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		return s.hostedInvitationFailure(c, email, err)
+	for _, project := range projects {
+		var granted int
+		if err := query.QueryRowContext(ctx, anyProject+" AND p.id = ?", user, organization, project).Scan(&granted); err != nil || granted == 0 {
+			return false
+		}
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, formatHubTime(s.config.now()))
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
-	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return true
 }
 
 func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, removingOwner bool) (auth.Membership, error) {
@@ -107,24 +128,6 @@ func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, 
 		return auth.Membership{}, auth.ErrHostedIdentity
 	}
 	return selected, nil
-}
-
-func (s *Service) revokeHostedMember(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "You cannot remove organization members")
-	}
-	member, err := s.hostedManagedMember(c, credential, true)
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This member cannot be removed; the organization must retain an owner")
-	}
-	if err := s.revokeHostedMemberLocally(c.Request().Context(), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Membership removal is temporarily unavailable")
-	}
-	if err := s.config.Hosted.Provider.RevokeMembership(c.Request().Context(), member.ID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
-	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
 }
 
 func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (resultErr error) {
@@ -152,41 +155,6 @@ func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (r
 		}
 	}
 	return tx.Commit()
-}
-
-func (s *Service) changeHostedRole(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
-	role := c.FormValue("role")
-	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
-		return s.hostedError(c, http.StatusForbidden, "You cannot assign this organization role")
-	}
-	member, err := s.hostedManagedMember(c, credential, role != "owner")
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This role cannot be changed; the organization must retain an owner")
-	}
-	if err := s.config.Hosted.Provider.SetMembershipRole(c.Request().Context(), member.ID, role); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be changed")
-	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_members SET role = ?,updated_at = ? WHERE user_id = ?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be recorded")
-	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
-}
-
-func (s *Service) changeHostedGrant(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "You cannot manage project grants")
-	}
-	user, project := c.FormValue("user"), c.FormValue("project")
-	if !hostedSafeID(user) || !hostedSafeID(project) {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Select a member and project")
-	}
-	err = s.hostedGrant(c.Request().Context(), credential, user, project, hostedFormTrue(c, "write"), hostedFormTrue(c, "runner"), hostedFormTrue(c, "revoke"))
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "The project grant could not be changed")
-	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
 }
 
 func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, user, project string, write, runner, revoke bool) (resultErr error) {
@@ -224,26 +192,6 @@ func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, use
 		}
 	}
 	return tx.Commit()
-}
-
-func (s *Service) createHostedProject(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "You cannot create projects")
-	}
-	name := strings.TrimSpace(c.FormValue("name"))
-	if name == "" || len(name) > 120 || !hostedFormTrue(c, "grant_access") {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
-	}
-	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name)
-	if err != nil {
-		var limit *hostedLimitError
-		if errors.As(err, &limit) {
-			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
-		}
-		return s.hostedError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
-	}
-	return c.Redirect(http.StatusSeeOther, "/projects/"+project)
 }
 
 func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string) (project string, resultErr error) {

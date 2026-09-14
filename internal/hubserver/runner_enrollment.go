@@ -124,6 +124,14 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	if !ok {
 		return s.nativeAPIError(c, runnerUnauthorized())
 	}
+	// A hosted member who is not an owner or an admin enrols only for the
+	// projects they hold the runner grant on. The refusal stays the opaque
+	// 404 the hosted boundary rewrites every administration error into: it
+	// must not tell the caller which projects exist or which grants they are
+	// missing. Section 8 of docs/conversation/operations.md says what to grant.
+	if credential.Hosted != nil && !hostedAdministrationRole(credential) && !s.hostedRunnerGrants(c.Request().Context(), credential, request.ProjectIDs) {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	return s.runnerTransaction(c, http.StatusCreated, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		for i, project := range request.ProjectIDs {
 			var count int

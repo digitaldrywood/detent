@@ -28,7 +28,19 @@ func (s *Service) hostedBillingOwner(c echo.Context) (apiCredential, error) {
 	return credential, nil
 }
 
+// hostedBillingCheckout answers POST /billing/checkout with the Stripe
+// checkout URL the client opens (decisions section 12).
 func (s *Service) hostedBillingCheckout(c echo.Context) error {
+	var request struct {
+		hostedIdempotent
+		Price string `json:"price"`
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := request.validate(true); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	if _, err := s.hostedBillingOwner(c); err != nil {
 		return s.hostedError(c, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
 	}
@@ -43,10 +55,9 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		return s.hostedError(c, http.StatusForbidden, "Organization ownership changed; sign in again")
 	}
 	cfg := s.config.Hosted.Billing
-	priceID := c.FormValue("price")
 	approved := false
 	for _, price := range cfg.Prices {
-		approved = approved || price.PriceID == priceID
+		approved = approved || price.PriceID == request.Price
 	}
 	if !approved {
 		return s.hostedError(c, http.StatusBadRequest, "Choose an approved subscription plan")
@@ -63,7 +74,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	if state.Snapshot.SubscriptionID != "" || state.Status == "multiple_subscriptions" {
 		return s.hostedError(c, http.StatusConflict, "An existing subscription must be managed through the billing portal")
 	}
-	checkout, err := s.prepareHostedCheckout(ctx, credential.Hosted.Subject, priceID)
+	checkout, err := s.prepareHostedCheckout(ctx, credential.Hosted.Subject, request.Price)
 	if err != nil {
 		return s.hostedError(c, http.StatusConflict, "A checkout is already pending. Retry the same plan or wait for that checkout to expire.")
 	}
@@ -77,7 +88,12 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	return c.Redirect(http.StatusSeeOther, checkout.Session.URL)
+	return c.JSON(http.StatusOK, hostedBillingLocation{URL: checkout.Session.URL})
+}
+
+// hostedBillingLocation is the destination a billing action hands back.
+type hostedBillingLocation struct {
+	URL string `json:"url"`
 }
 
 func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string) (hostedCheckout, error) {
@@ -126,7 +142,17 @@ func (s *Service) saveHostedCheckout(ctx context.Context, actor string, checkout
 	return tx.Commit()
 }
 
+// hostedBillingPortal answers POST /billing/portal with the Stripe portal URL.
 func (s *Service) hostedBillingPortal(c echo.Context) error {
+	var request hostedIdempotent
+	if c.Request().ContentLength > 0 {
+		if err := decodeAPIJSON(c, &request); err != nil {
+			return invalidAPIRequest(c, err)
+		}
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	credential, err := s.hostedBillingOwner(c)
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
@@ -135,7 +161,7 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	if cfg == nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The subscription portal is not enabled for this organization")
 	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "billing_portal_requested", "/organization/billing/portal", "", http.StatusOK); err != nil {
+	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "billing_portal_requested", "POST "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if err := s.recordBillingAction(c.Request().Context(), credential.Hosted.Subject, "portal_requested"); err != nil {
@@ -147,7 +173,7 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The billing portal is temporarily unavailable. Existing data and exports remain available.")
 	}
-	return c.Redirect(http.StatusSeeOther, session.URL)
+	return c.JSON(http.StatusOK, hostedBillingLocation{URL: session.URL})
 }
 
 func (s *Service) recordBillingAction(ctx context.Context, actor, action string) error {

@@ -244,3 +244,57 @@ func TestPolicyClaimChecksUseDatabaseTime(t *testing.T) {
 		})
 	}
 }
+
+// A workspace session lease is not an attempt lease (decisions section 18.1):
+// the runner holds it to keep a worktree alive for a person reading files, a
+// diff or a preview, and no policy decides any of that -- there is no model, no
+// gate and no command under it. It also renews for as long as the workspace is
+// open, so counting it towards "active leases retain their approved policy"
+// meant an open Files panel blocked every policy change in the project with no
+// wait that ended, which is what the sixth dogfood run hit.
+func TestProjectPolicyApprovalCountsOnlyExecutingLeases(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		attempt bool
+		want    int
+	}{
+		{"workspace session only", false, http.StatusOK},
+		{"running attempt", true, http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			// The fixture leaves one open workspace holding an unexpired,
+			// policy-pinned lease on the project.
+			f := newRelayFixture(t)
+			current := hubTestPolicy()
+			var pinned int
+			if err := f.service.database.db.QueryRowContext(t.Context(),
+				`SELECT count(*) FROM lease_policies p JOIN leases l ON l.lease_id = p.lease_id
+WHERE p.lease_id = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)`,
+				f.lease.ID, formatHubTime(f.at())).Scan(&pinned); err != nil {
+				t.Fatal(err)
+			}
+			if pinned != 1 {
+				// Without this the passing case would prove nothing: an
+				// expired or unpinned workspace lease is one the old check
+				// would have ignored anyway.
+				t.Fatalf("workspace leases pinned and unexpired = %d, want 1", pinned)
+			}
+			if test.attempt {
+				// An ordinary execution claim: the lease a model actually runs
+				// under, and the one the approval must still refuse to move
+				// out from beneath.
+				issue := f.create(t, "work")
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims",
+					f.runner.redemption.Credential, providerClaim(f.runner, issue, "attempt-session"))
+				requireNativeStatus(t, response, http.StatusOK)
+			}
+			changed := current
+			changed.Gates.AutoPromote = true
+			changed = changed.WithID()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken,
+				policy.Change{ExpectedID: current.ID, Policy: changed}), test.want)
+		})
+	}
+}

@@ -33,6 +33,28 @@ func (c *NativeConnector) Capabilities() connector.Capabilities {
 	return connector.Capabilities{UpdateIssueState: true, SetAssignee: true, SetField: true, CreateComment: true, CreateWorkItems: true, UpdateComments: true}
 }
 
+// ListWorkflowStates reports the project's own lanes in workflow order, so a
+// caller can tell whether a configured lane exists at all before it tries to
+// move work into one. The hub already carries terminal and dispatchable on
+// every state; this is the only path that hands them to the orchestrator,
+// because issueFromNative flattens a state to its name.
+func (c *NativeConnector) ListWorkflowStates(ctx context.Context) ([]connector.WorkflowState, error) {
+	project, err := c.client.Project(ctx)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]connector.WorkflowState, 0, len(project.States))
+	for _, state := range project.States {
+		states = append(states, connector.WorkflowState{
+			Name:         state.Name,
+			Terminal:     state.Terminal,
+			Dispatchable: state.Dispatchable,
+			OperatorOnly: state.OperatorOnly,
+		})
+	}
+	return states, nil
+}
+
 func (c *NativeConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
 	project, err := c.client.Project(ctx)
 	if err != nil {
@@ -154,7 +176,7 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 		if err != nil {
 			return err
 		}
-		request.Priority = &priority
+		request.Priority = tracker.SetPriority(&priority)
 	default:
 		return connector.ErrNotImplemented
 	}
@@ -295,5 +317,73 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	if native.Provenance != nil {
 		issue.AuthorID = strings.TrimSpace(native.Provenance.AuthorID)
 	}
+	applyNativeChangeReview(&issue, native)
 	return issue
+}
+
+// applyNativeChangeReview carries the hub's change review surface onto the
+// issue: the change request as a pull request, and the two facts a promotion
+// needs that a pull request alone cannot state.
+//
+// A hub-native item has no pull request of its own -- that is what stopped
+// every native promotion until the seventh dogfood run found it -- so the
+// change request is what the issue's PullRequest reports, with the connector's
+// projection over it whenever one mirrors the change. The surface is present
+// only on a resource the caller asked for it with, so an issue read the
+// ordinary way is exactly what it always was.
+func applyNativeChangeReview(issue *connector.Issue, native tracker.NativeIssue) {
+	if native.Change == nil {
+		return
+	}
+	change := *native.Change
+	issue.ChangeReview = &connector.ChangeReview{
+		Provider:                changeReviewProvider(change.Connector),
+		PullRequestsAvailable:   change.Connector != tracker.NativeChangeConnectorNone,
+		ChangeAtCurrentRevision: change.Revision > 0 && change.Revision >= native.Revision,
+		ChangeRevision:          int64(change.Revision),
+		Revision:                int64(native.Revision),
+	}
+	if strings.TrimSpace(change.ChangeID) == "" {
+		return
+	}
+	issue.PullRequest = &connector.PullRequest{
+		Number: change.Number, URL: change.URL, State: change.State,
+		Draft: change.Draft, HeadSHA: change.HeadSHA,
+	}
+	if change.Number > 0 {
+		number := change.Number
+		issue.PRNumber = &number
+	}
+}
+
+// changeReviewProvider names the connector that can mirror a change, and
+// nothing at all when the project has none.
+func changeReviewProvider(value string) string {
+	if value == tracker.NativeChangeConnectorNone {
+		return ""
+	}
+	return value
+}
+
+// HydrateChangeReview reads the item's change review surface and reports it on
+// the issue. The orchestrator calls it for an item it is about to promote,
+// because the issue it holds was read when the attempt was dispatched and the
+// change the attempt produced did not exist yet.
+//
+// Only the change facts are carried over: the item's lane, title and labels
+// stay as the caller read them, because those are what the caller's own
+// decisions were made on.
+func (c *NativeConnector) HydrateChangeReview(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	id := strings.TrimSpace(issue.ID)
+	if id == "" {
+		return issue, nil
+	}
+	native, err := c.client.IssueWithChange(ctx, tracker.NativeWorkItemID(id))
+	if err != nil {
+		return issue, err
+	}
+	hydrated := issue
+	hydrated.ChangeReview, hydrated.PullRequest, hydrated.PRNumber = nil, nil, nil
+	applyNativeChangeReview(&hydrated, native)
+	return hydrated, nil
 }

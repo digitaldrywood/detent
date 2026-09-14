@@ -320,6 +320,8 @@ type Orchestrator struct {
 	deliverableRecoveryWait func(context.Context, time.Duration) bool
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
+	promotionFallbackLogged map[string]string
+	promotionNotReadyLogged map[string]string
 	hydrationWarned         bool
 	ownershipStartupLogged  bool
 	dispatchStartMu         sync.Mutex

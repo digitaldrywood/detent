@@ -38,6 +38,10 @@ func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) 
 	}, nil
 }
 
+// SupportsLiveControl reports that the Codex backend can multiplex live
+// conversation controls into an active turn (runner.AgentLiveBackend).
+func (b *AgentBackend) SupportsLiveControl() bool { return true }
+
 func (b *AgentBackend) RunTurn(
 	ctx context.Context,
 	req runner.AgentTurnRequest,
@@ -87,8 +91,12 @@ func (b *AgentBackend) runTurn(
 		instructionTools = nil
 	}
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
+		ConversationControl:     req.ConversationControl,
+		CollaborationMode:       req.CollaborationMode,
 		Workspace:               req.Workspace,
 		Prompt:                  req.Prompt,
+		Attachments:             req.Attachments,
+		TempDir:                 req.TempDir,
 		ResumeThreadID:          req.Resume.ThreadID,
 		DeveloperInstructions:   toolTurnInstructions(instructionTools, req.ToolInstructions),
 		ApprovalPolicy:          approvalPolicy(b.options.ApprovalPolicy, restricted),

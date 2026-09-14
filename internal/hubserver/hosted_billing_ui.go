@@ -5,27 +5,43 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
-
-	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
+// HostedBillingAudit is one recorded billing action. It moved here when the
+// hosted Templ pages were removed (decisions section 12).
+type HostedBillingAudit struct {
+	Actor   string `json:"actor"`
+	Action  string `json:"action"`
+	Summary string `json:"summary"`
+	At      string `json:"at"`
+}
+
+type hostedBillingPriceView struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 type hostedBillingReport struct {
-	OrganizationID string                         `json:"organization_id"`
-	State          hostedBillingState             `json:"state"`
-	Entitlement    HostedEntitlement              `json:"entitlement"`
-	ReconciledAt   string                         `json:"reconciled_at"`
-	PendingEvents  int64                          `json:"pending_events"`
-	Audit          []templates.HostedBillingAudit `json:"recent_audit"`
+	OrganizationID string                   `json:"organization_id"`
+	State          hostedBillingState       `json:"state"`
+	Status         string                   `json:"status"`
+	Message        string                   `json:"message"`
+	Entitlement    HostedEntitlement        `json:"entitlement"`
+	ReconciledAt   string                   `json:"reconciled_at"`
+	PendingEvents  int64                    `json:"pending_events"`
+	Enabled        bool                     `json:"enabled"`
+	CanCheckout    bool                     `json:"can_checkout"`
+	Prices         []hostedBillingPriceView `json:"prices"`
+	Audit          []HostedBillingAudit     `json:"recent_audit"`
 }
 
 func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport, error) {
-	report := hostedBillingReport{OrganizationID: s.config.Hosted.OrganizationID, Audit: []templates.HostedBillingAudit{}}
+	report := hostedBillingReport{OrganizationID: s.config.Hosted.OrganizationID, Audit: []HostedBillingAudit{}, Prices: []hostedBillingPriceView{}}
 	var err error
 	report.State, err = s.database.readHostedBilling(ctx)
 	if err != nil {
@@ -50,7 +66,7 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var entry templates.HostedBillingAudit
+		var entry HostedBillingAudit
 		var raw string
 		if err := rows.Scan(&entry.Actor, &entry.Action, &raw, &entry.At); err != nil {
 			return report, err
@@ -65,7 +81,34 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 		entry.Summary = strings.TrimSpace(summary.Status + " " + summary.PriceID)
 		report.Audit = append(report.Audit, entry)
 	}
-	return report, rows.Err()
+	if err := rows.Err(); err != nil {
+		return report, err
+	}
+	report.Status, report.Message = hostedBillingMessage(report.State, s.config.now())
+	if cfg := s.config.Hosted.Billing; cfg != nil {
+		report.Enabled = true
+		report.CanCheckout = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
+		for _, price := range cfg.Prices {
+			report.Prices = append(report.Prices, hostedBillingPriceView{ID: price.PriceID, Label: price.Label})
+		}
+	}
+	return report, nil
+}
+
+// hostedBillingReportJSON answers GET /billing for the organization owner.
+func (s *Service) hostedBillingReportJSON(c echo.Context) error {
+	credential, err := s.hostedBillingOwner(c)
+	if err != nil {
+		return s.hostedError(c, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
+	}
+	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "billing_viewed", "GET "+c.Path(), "", http.StatusOK); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	report, err := s.hostedBillingReport(c.Request().Context())
+	if err != nil {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Billing information is temporarily unavailable")
+	}
+	return c.JSON(http.StatusOK, report)
 }
 
 func (s *Service) hostedBillingExport(c echo.Context) error {
@@ -81,49 +124,6 @@ func (s *Service) hostedBillingExport(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, report)
-}
-
-func (s *Service) hostedBillingPage(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
-	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "billing_viewed", c.Path(), "", http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	report, err := s.hostedBillingReport(c.Request().Context())
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Billing information is temporarily unavailable")
-	}
-	now := s.config.now()
-	data := templates.HostedPageData{Mode: "billing", Title: "Organization billing", CanManage: true, CanManageOwnership: true}
-	data.PlanName = fmt.Sprintf("%s · version %d", report.Entitlement.EffectiveBase.ID, report.Entitlement.EffectiveBase.Version)
-	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
-	data.BillingAudit = report.Audit
-	data.BillingCheckedAt = report.ReconciledAt
-	if report.PendingEvents > 0 {
-		data.Notice = "A billing update is awaiting verification. Current access follows the last verified subscription deadline."
-	}
-	if c.QueryParam("checkout") != "" {
-		data.Notice = "Checkout returned. Paid access starts only after Stripe confirms the subscription; this page does not activate a purchase."
-	}
-	for _, grant := range report.Entitlement.Grants {
-		if grant.RevokedAt == nil && !grant.StartsAt.After(now) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(now)) {
-			message := "Complimentary access: " + strings.Join(grant.Scope, ", ")
-			if grant.ExpiresAt != nil {
-				message += " · expires " + grant.ExpiresAt.UTC().Format(time.RFC3339)
-			}
-			data.PlanGrants = append(data.PlanGrants, message)
-		}
-	}
-	if cfg := s.config.Hosted.Billing; cfg != nil {
-		data.BillingEnabled = true
-		data.BillingCanPurchase = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
-		for _, price := range cfg.Prices {
-			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: price.Label})
-		}
-	}
-	return s.renderHosted(c, http.StatusOK, data)
 }
 
 func hostedBillingMessage(state hostedBillingState, now time.Time) (string, string) {

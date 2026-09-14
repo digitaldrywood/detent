@@ -2,6 +2,7 @@ package runner
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -52,5 +53,62 @@ func TestDispatchCapacityMissingRoute(t *testing.T) {
 	r := &Runner{}
 	if _, err := r.DispatchCapacity(t.Context(), RunRequest{}); !errors.Is(err, ErrMissingAgentRoutes) {
 		t.Fatal(err)
+	}
+}
+
+// TestProviderModelDetails covers the projection of a backend's own model
+// catalogue onto the per-model detail a provider capacity report carries
+// (decisions section 14): only reported models are described, the canonical
+// identifier is the one dispatch uses, a model with a named successor is
+// legacy, and the runner's configured effort becomes the model's default only
+// when the model supports it.
+func TestProviderModelDetails(t *testing.T) {
+	t.Parallel()
+	catalog := []AgentModel{
+		{ID: "astra-id", Model: "astra", Default: true, SupportedReasoningEfforts: []string{"Low", " medium ", "high", "medium"}},
+		{ID: "sol", SupportedReasoningEfforts: []string{"high", "xhigh"}},
+		{ID: "retired", Model: "retired", Upgrade: "astra", SupportedReasoningEfforts: []string{"low"}},
+		{ID: "unreported", Model: "unreported"},
+		{ID: "", Model: "  "},
+		{ID: "astra-id", Model: "astra"},
+	}
+	details := ProviderModelDetails("openai", []string{"astra", "sol", "retired"}, " MEDIUM ", catalog)
+	if len(details) != 3 {
+		t.Fatalf("details = %#v, want one per reported model", details)
+	}
+	for _, test := range []struct {
+		name, id, defaultEffort string
+		index                   int
+		efforts                 []string
+		isDefault, legacy       bool
+	}{
+		{
+			name: "catalogue model name wins over its id", index: 0, id: "astra",
+			efforts: []string{"low", "medium", "high"}, defaultEffort: "medium", isDefault: true,
+		},
+		{name: "id stands in when there is no model name", index: 1, id: "sol", efforts: []string{"high", "xhigh"}},
+		{name: "a named successor makes a model legacy", index: 2, id: "retired", efforts: []string{"low"}, legacy: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			detail := details[test.index]
+			if detail.ID != test.id || detail.Label != test.id || detail.Provider != "openai" {
+				t.Fatalf("detail = %#v, want %q from openai", detail, test.id)
+			}
+			if detail.Default != test.isDefault || detail.Legacy != test.legacy {
+				t.Fatalf("detail = %#v, want default %t and legacy %t", detail, test.isDefault, test.legacy)
+			}
+			if detail.DefaultReasoningEffort != test.defaultEffort || !slices.Equal(detail.ReasoningEfforts, test.efforts) {
+				t.Fatalf("detail = %#v, want efforts %v defaulting to %q", detail, test.efforts, test.defaultEffort)
+			}
+		})
+	}
+}
+
+// TestProviderModelDetailsWithoutACatalog proves a backend that answers with
+// no models leaves the report exactly as the collector wrote it.
+func TestProviderModelDetailsWithoutACatalog(t *testing.T) {
+	t.Parallel()
+	if details := ProviderModelDetails("openai", []string{"sol"}, "high", nil); len(details) != 0 {
+		t.Fatalf("details = %#v, want none", details)
 	}
 }

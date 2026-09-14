@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -330,7 +331,26 @@ func buildCodexCommand(ctx context.Context, cfg workflowconfig.Config) *exec.Cmd
 }
 
 func buildCodexCommandFromConfig(ctx context.Context, command string, shell string) *exec.Cmd {
-	return commandshell.Command(ctx, strings.TrimSpace(command), shell)
+	return commandshell.Command(ctx, withCodexQuestionFeature(strings.TrimSpace(command)), shell)
+}
+
+// codexQuestionFeature is the Codex feature that lists request_user_input
+// among the tools of an ordinary turn. Codex 0.154 offers the tool in its
+// default collaboration mode only behind this flag, and a model that is told
+// to ask a question without the tool answers "I'll wait for your answer"
+// instead; the conversation product's questions (decisions section 5) need
+// it on every runner.
+const codexQuestionFeature = "default_mode_request_user_input"
+
+// withCodexQuestionFeature appends the feature to an app-server command that
+// does not already name it. Other commands and commands that already set the
+// feature are returned unchanged.
+func withCodexQuestionFeature(command string) string {
+	fields := strings.Fields(command)
+	if !slices.Contains(fields, "app-server") || strings.Contains(command, codexQuestionFeature) {
+		return command
+	}
+	return command + " --enable " + codexQuestionFeature
 }
 
 func buildClaudeCommandFromConfig(ctx context.Context, command string, shell string, args []string) *exec.Cmd {

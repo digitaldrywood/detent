@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -25,6 +26,58 @@ func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bo
 		return nil, false
 	}
 	return source, true
+}
+
+// CoordinatorReader returns the hub read surface a coordinator run of this
+// work item may use. It is nil when the item is not claimed here, so a
+// coordinator run without hub access reports that through its tools rather
+// than failing the turn.
+func (s *Scheduler) CoordinatorReader(issueID string) runner.CoordinatorHubReader {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	claim, ok := s.nativeClaims[issueID]
+	if !ok || claim.source == nil || claim.source.client == nil {
+		return nil
+	}
+	return claim.source.client
+}
+
+// CoordinatorProject is the hub project a coordinator run of this work item
+// reads through. It is empty when the item is not claimed here.
+func (s *Scheduler) CoordinatorProject(issueID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	claim, ok := s.nativeClaims[issueID]
+	if !ok || claim.source == nil || claim.source.client == nil {
+		return ""
+	}
+	return string(claim.source.client.project)
+}
+
+// NativeClient returns the hub client the scheduler built for a configured
+// native project. The workspace lane claims through the same client the issue
+// lane does, so the two share one connection pool and one registered machine
+// rather than the runner opening a second identity for the same hub.
+func (s *Scheduler) NativeClient(project string) (*NativeClient, bool) {
+	if s == nil {
+		return nil, false
+	}
+	source, ok := s.nativeProjects[project]
+	if !ok || source == nil || source.client == nil {
+		return nil, false
+	}
+	return source.client, true
+}
+
+// MachineID is the machine identity this scheduler registers and claims under.
+// The workspace lane claims under the same one: decisions section 18.1 keys a
+// workspace's owner tuple on the machine, and a retained worktree may only be
+// served by the machine that produced it.
+func (s *Scheduler) MachineID() tracker.MachineID {
+	if s == nil {
+		return ""
+	}
+	return s.machine.ID
 }
 
 func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConnector) error {

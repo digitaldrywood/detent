@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -47,6 +48,13 @@ type claimCandidateQuery struct {
 	LabelInclude       []string
 	LabelExclude       []string
 	Scope              string
+	// WorkspaceLane reports that the claim came from a runner's workspace
+	// lane, which asked for workspace items by declaring the workspace
+	// capability. Every other claim, and the provider candidate preview, is
+	// an ordinary issue claim and never sees a workspace item: a workspace
+	// is its own work item kind and not project work (decisions section
+	// 18.1).
+	WorkspaceLane bool
 }
 
 type renewLeaseAPIRequest struct {
@@ -356,9 +364,41 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err != nil {
 		return tracker.Lease{}, err
 	}
+	// Coordinator items are dispatched only to a runner that can take a live
+	// coordinator turn (decisions section 9.2). The capability is a property
+	// of the claiming credential, so it is resolved once per claim.
+	liveControl := false
+	if query.NativeScope != nil {
+		if liveControl, err = runnerSupportsLiveControl(ctx, tx, query.NativeScope.credential.Runner.RunnerID, now); err != nil {
+			return tracker.Lease{}, err
+		}
+	}
+	coordinatorItems := map[tracker.WorkItemID]struct{}{}
+	if !liveControl {
+		if coordinatorItems, err = openCoordinatorIssues(ctx, tx); err != nil {
+			return tracker.Lease{}, err
+		}
+	}
+	// Workspace items are gated per candidate rather than per credential
+	// (decisions section 18.1): eligibility depends on the surfaces the
+	// workspace requires and on whether its attempt's worktree is still
+	// retained on one particular runner, so the answer differs between two
+	// workspaces the same runner is looking at.
+	workspaceGate, err := gateWorkspaceClaim(ctx, tx, query.NativeScope, query.WorkspaceLane, d.workspaceRetainAfterRun, now)
+	if err != nil {
+		return tracker.Lease{}, err
+	}
 	var providerWait error
 	for _, id := range ids {
 		if request.WorkItemID > 0 && id != request.WorkItemID {
+			continue
+		}
+		if _, coordinator := coordinatorItems[id]; coordinator {
+			// A skipped coordinator item must not consume the claim: the
+			// next candidate is still considered.
+			continue
+		}
+		if _, ineligible := workspaceGate.skip[id]; ineligible {
 			continue
 		}
 		current, found, err := readUnreleasedLease(ctx, tx, id)
@@ -371,16 +411,24 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 			continue
 		}
-		reservation, reserved, err := selectProviderCapacity(ctx, tx, query, id, now)
-		if err != nil {
-			if errors.Is(err, ErrNoClaimableWork) {
-				continue
+		// A workspace claim reserves one slot of the runner's capacity and
+		// nothing else (decisions section 18.1): the session serves files
+		// over the relay and runs no model, so it never goes through provider
+		// requirement matching and never carries a provider reservation.
+		var reservation providercapacity.Reservation
+		reserved := false
+		if !workspaceGate.skipsProviderReservation(id) {
+			reservation, reserved, err = selectProviderCapacity(ctx, tx, query, id, now)
+			if err != nil {
+				if errors.Is(err, ErrNoClaimableWork) {
+					continue
+				}
+				if isProviderWait(err) {
+					providerWait = err
+					continue
+				}
+				return tracker.Lease{}, err
 			}
-			if isProviderWait(err) {
-				providerWait = err
-				continue
-			}
-			return tracker.Lease{}, err
 		}
 		request.WorkItemID = id
 		lease, err = d.claimInTransaction(ctx, tx, request, now)
@@ -455,6 +503,74 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 	return capacity - active, nil
 }
 
+// notAlreadyAnsweredClause excludes an item whose most recent attempt already
+// succeeded against the item as it stands, for an issue query that aliases the
+// issues table as i.
+//
+// The claim predicate used to be a function of the item's lane alone, so a
+// successful attempt that left the item in a dispatchable lane was offered
+// again on the next poll, and again, forever: operations.md section 7, "An
+// item in an active state is re-dispatched forever". The orchestrator is what
+// moves a finished item, and a project whose workflow has no lane for the
+// configured review state never moved it.
+//
+// The item is offered again whenever any of the three is true, so the only
+// case this suppresses is the loop itself:
+//
+//   - the latest attempt did not succeed -- a failure, a cancellation or an
+//     interruption is retried exactly as before;
+//   - the item has moved on since that attempt -- an edit, a comment or a
+//     workflow move all run through persistNativeIssue and bump
+//     issues.revision, so a manual move back to a dispatchable lane, a gate
+//     rework and a plan-to-implement handover all re-offer the item;
+//   - somebody asked for another attempt -- issues.dispatch_generation is
+//     ahead of the generation the attempt started under, which is how a
+//     conversation continuation, which bumps no revision, is honored.
+//
+// The latest attempt is the one with the highest fencing token, which is the
+// order the hub already pages attempts in and the order the lease service
+// issues them in; it is not a timestamp comparison.
+//
+// It applies to native projects only, and that is a correctness requirement
+// rather than a scoping convenience. On a github_compatible project the
+// tracker is GitHub and the issues row is a projection of it: the webhook and
+// reconcile paths write title, labels and workflow_state_id without touching
+// revision, because revision fences *native* edits. An item whose lane moved
+// on GitHub would therefore keep the revision its attempt recorded, and this
+// clause would strand it forever -- the opposite failure, and a worse one.
+// Nothing on the projection path needs the clause either: the re-dispatch loop
+// is a hub-scheduling loop on a native project whose promotion had no lane to
+// reach.
+const notAlreadyAnsweredClause = `(p.profile <> 'native' OR NOT EXISTS (SELECT 1 FROM native_attempts answered
+ WHERE answered.organization_id = i.organization_id
+   AND answered.project_id = i.project_id
+   AND answered.work_item_id = i.native_id
+   AND answered.status = 'succeeded'
+   AND answered.work_item_revision >= i.revision
+   AND answered.dispatch_generation >= i.dispatch_generation
+   AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
+     WHERE latest.organization_id = i.organization_id
+       AND latest.project_id = i.project_id
+       AND latest.work_item_id = i.native_id)))`
+
+// claimWorkspaceExclusionArg binds the candidate query's workspace exclusion.
+// A workspace session's dispatch issue is not project work and never becomes
+// project work: closing the workspace closes the association, it does not hand
+// the issue to the issue lane (decisions section 18.1). Only a claim that
+// declared the workspace capability is offered one, and the exclusion lives in
+// the candidate query rather than in a skip set so that the provider candidate
+// preview, which shares this query, does not offer one either.
+//
+// It is a bound argument over a constant clause rather than a clause spliced
+// into the statement, so the query the driver prepares stays one constant
+// string.
+func claimWorkspaceExclusionArg(query claimCandidateQuery) int {
+	if query.WorkspaceLane {
+		return 1
+	}
+	return 0
+}
+
 func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	scope := query.Scope
 	organization, project := "", ""
@@ -496,6 +612,8 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
   AND ws.terminal = 0
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
+  AND (? = 1 OR `+notWorkspaceItemClause+`)
+  AND `+notAlreadyAnsweredClause+`
   AND (? = '' OR q.id IS NOT NULL)
   AND (p.require_dependencies = 0 OR NOT EXISTS (
     SELECT 1
@@ -508,7 +626,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 ORDER BY
   CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, organization, organization, project, scope)
+  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, organization, organization, project, claimWorkspaceExclusionArg(query), scope)
 	if err != nil {
 		return nil, fmt.Errorf("query hub claim candidates: %w", err)
 	}

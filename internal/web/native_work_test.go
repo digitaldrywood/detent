@@ -49,6 +49,10 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 		defer fixture.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		base := "/api/v2/organizations/org_example/projects/prj_example"
+		if r.URL.Path == "/" && r.Header.Get("Authorization") == "" {
+			w.WriteHeader(404)
+			return
+		}
 		if !strings.HasPrefix(r.URL.Path, base) {
 			t.Errorf("unexpected external request %s", r.URL)
 			w.WriteHeader(404)

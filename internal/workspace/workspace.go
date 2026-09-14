@@ -48,6 +48,26 @@ var (
 
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
+// autoBranchPrefix is the namespace every branch this backend creates lives
+// in, and the only namespace cleanup ever deletes a branch from.
+const autoBranchPrefix = "detent/"
+
+// workspaceSessionBranchPrefix names the auto-branch of a workspace session
+// worktree (decisions 18.1, `worktree: "fresh"`). Such a worktree serves a
+// read-only checkout of a `head_sha` somebody asked to look at; it produces no
+// commits of its own, so cleanup removes its branch rather than retaining it
+// the way it retains an attempt's branch. Keys never contain "/"
+// (unsafeKeyPattern), so this namespace cannot collide with an attempt branch.
+const workspaceSessionBranchPrefix = autoBranchPrefix + "workspace/"
+
+func workspaceSessionBranchName(key string) string {
+	return workspaceSessionBranchPrefix + strings.ToLower(key)
+}
+
+func isWorkspaceSessionBranch(branch string) bool {
+	return strings.HasPrefix(strings.TrimSpace(branch), workspaceSessionBranchPrefix)
+}
+
 var sourceOperationLocks = struct {
 	sync.Mutex
 	bySource map[string]*sourceOperationLock
@@ -207,6 +227,11 @@ type Issue struct {
 	BaseRef            string
 	ProgressBaseRef    string
 	PullRequestHeadSHA string
+	// WorkspaceSession marks a workspace session checkout (decisions 18.1
+	// `worktree: "fresh"`): a worktree opened so a person can look at a
+	// commit, not one an attempt commits into. It takes its own branch
+	// namespace so cleanup can tell the two apart.
+	WorkspaceSession bool
 }
 
 type Info struct {
@@ -561,7 +586,7 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 
 func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue) (CleanupResult, error) {
 	result := CleanupResult{Path: info.Path}
-	if err := l.checkWorkspaceCleanup(ctx, info); err != nil {
+	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err
 	}
 	exists, isDir, err := pathExists(info.Path)
@@ -714,10 +739,15 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if !l.autoBranch {
 		return ""
 	}
+	if issue.WorkspaceSession {
+		// The session's ref names what to look at, never a branch to commit
+		// onto, so it does not become the worktree's branch.
+		return workspaceSessionBranchName(key)
+	}
 	if strings.TrimSpace(issue.BranchName) != "" {
 		return strings.TrimSpace(issue.BranchName)
 	}
-	return "detent/" + strings.ToLower(key)
+	return autoBranchPrefix + strings.ToLower(key)
 }
 
 func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string) (bool, error) {
@@ -1436,7 +1466,7 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error
 	if !exists {
 		return false, nil
 	}
-	if err := l.checkCleanupBranch(ctx, branch); err != nil {
+	if err := l.checkCleanupBranch(ctx, branch, isWorkspaceSessionBranch(branch)); err != nil {
 		return false, err
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)

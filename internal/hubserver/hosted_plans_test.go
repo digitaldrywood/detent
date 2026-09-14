@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -59,16 +58,22 @@ func TestHostedProjectRetryAfterDowngrade(t *testing.T) {
 				t.Fatal(err)
 			}
 			var group sync.WaitGroup
-			for range 8 {
+			for i := range 8 {
 				group.Go(func() {
-					response := f.form(t, "owner", "/projects", url.Values{"name": {"Resumable allowance project"}, "grant_access": {"true"}})
-					if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/projects/"+project {
-						t.Errorf("project retry = %d %s", response.Code, response.Body.String())
+					response := f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects", map[string]any{
+						"idempotency_key": fmt.Sprintf("retry-%d", i), "name": "Resumable allowance project", "grant_access": true,
+					}, http.StatusCreated)
+					var record tracker.NativeProject
+					browserHostedDecode(t, response, &record)
+					if string(record.ID) != project {
+						t.Errorf("project retry created %q, want the existing %q", record.ID, project)
 					}
 				})
 			}
 			group.Wait()
-			requireNativeStatus(t, f.form(t, "owner", "/projects", url.Values{"name": {"Excess project"}, "grant_access": {"true"}}), http.StatusTooManyRequests)
+			f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects", map[string]any{
+				"idempotency_key": "excess", "name": "Excess project", "grant_access": true,
+			}, http.StatusTooManyRequests)
 			after, err := f.service.database.hostedPlanUsage(t.Context(), now)
 			if err != nil {
 				t.Fatal(err)
@@ -84,8 +89,13 @@ func TestHostedProjectRetryAfterDowngrade(t *testing.T) {
 					t.Fatalf("rejected allocation left %s records: %d %v", table, orphans, err)
 				}
 			}
-			for _, path := range []string{"/projects/" + project, "/api/v2/organizations/org_browser_preview/projects/" + project + "/onboarding", "/organization/plan", "/api/cloud/billing"} {
-				requireNativeStatus(t, f.page(t, "owner", path), http.StatusOK)
+			for _, path := range []string{
+				browserHostedOrganizationBase + "/projects",
+				browserHostedOrganizationBase + "/projects/" + project + "/onboarding",
+				browserHostedOrganizationBase + "/plan",
+				"/api/cloud/billing",
+			} {
+				f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK)
 			}
 		})
 	}
@@ -494,8 +504,7 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 						return
 					}
 					response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{
-						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i),
-						"states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}},
+						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i), "grant_access": true,
 					})
 					results <- response.Code
 				})
@@ -503,9 +512,13 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 			close(start)
 			group.Wait()
 			close(results)
+			success := http.StatusOK
+			if kind == "project" {
+				success = http.StatusCreated
+			}
 			winners := 0
 			for status := range results {
-				if status == http.StatusOK {
+				if status == success {
 					winners++
 				} else if status != http.StatusTooManyRequests {
 					t.Errorf("allocation status = %d", status)
@@ -576,7 +589,9 @@ func TestHostedRunnerAdmission(t *testing.T) {
 	}
 }
 
-func TestHostedPlanPages(t *testing.T) {
+// TestHostedPlanReport covers GET /plan: owners and admins read the
+// entitlement report, everybody else is refused (decisions section 12).
+func TestHostedPlanReport(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	hostedTestPlans(t, f.service, map[string]int64{"projects": 0})
@@ -591,14 +606,15 @@ func TestHostedPlanPages(t *testing.T) {
 		{"viewer cannot inspect organization allowances", viewer, http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := f.request(t, test.user, http.MethodGet, "/organization/plan", nil)
+			response := f.request(t, test.user, http.MethodGet, "/api/v2/organizations/org_security/plan", nil)
 			requireNativeStatus(t, response, test.want)
-			if test.want == http.StatusOK {
-				for _, expected := range []string{"Above allowance", "Maximum:", "separate from charges by your model providers", "Billing usage export"} {
-					if !strings.Contains(response.Body.String(), expected) {
-						t.Errorf("plan page omitted %q", expected)
-					}
-				}
+			if test.want != http.StatusOK {
+				return
+			}
+			var report HostedEntitlement
+			decodeHubResponse(t, response, &report)
+			if report.Allowances["projects"] != 0 || report.Usage["projects"] == 0 || report.WindowEndsAt.IsZero() {
+				t.Fatalf("plan report = %#v", report)
 			}
 		})
 	}

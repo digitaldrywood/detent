@@ -438,6 +438,18 @@
 #           enqueued_at: null
 #           # tracker.issues[].pull_request.merge_queue_entry.url | type: string | default: none | required: No | validation: None
 #           url: null
+#       # tracker.issues[].change_review | type: object | default: none | required: No | validation: None
+#       change_review:
+#         # tracker.issues[].change_review.provider | type: string | default: none | required: No | validation: None
+#         provider: null
+#         # tracker.issues[].change_review.pull_requests_available | type: boolean | default: false when configured | required: No | validation: None
+#         pull_requests_available: false
+#         # tracker.issues[].change_review.change_at_current_revision | type: boolean | default: false when configured | required: No | validation: None
+#         change_at_current_revision: false
+#         # tracker.issues[].change_review.change_revision | type: integer | default: 0 when configured | required: No | validation: None
+#         change_revision: 0
+#         # tracker.issues[].change_review.revision | type: integer | default: 0 when configured | required: No | validation: None
+#         revision: 0
 #       # tracker.issues[].author_id | type: string | default: none | required: No | validation: None
 #       author_id: null
 #       # tracker.issues[].author_association | type: string | default: none | required: No | validation: None

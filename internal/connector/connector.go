@@ -95,6 +95,43 @@ type IssueFilterHint struct {
 	LabelExclude []string
 }
 
+// WorkflowState is one lane of a project's workflow, with the two properties
+// the tracker itself asserts about it: whether work that reaches the lane is
+// finished, and whether a runner may claim work from it. Configuration names
+// lanes; only the tracker knows what a lane means, and a Detent deployment
+// cannot assume a project has the lanes its configuration names.
+type WorkflowState struct {
+	Name string
+	// Terminal reports that work in this lane is done: it is never
+	// dispatched again and never counted as active.
+	Terminal bool
+	// Dispatchable reports that a runner may claim work from this lane.
+	Dispatchable bool
+	// OperatorOnly reports that only an operator may move work into this
+	// lane, so an automated transition into it is refused.
+	OperatorOnly bool
+}
+
+// WorkflowStateLister is implemented by a connector whose tracker can report
+// the project's own lanes. It is optional: a connector that cannot answer
+// leaves every caller with the configured state names alone, which is the
+// behavior every connector had before this interface existed.
+type WorkflowStateLister interface {
+	ListWorkflowStates(context.Context) ([]WorkflowState, error)
+}
+
+// ChangeReviewHydrator is implemented by a connector whose tracker reviews
+// changes of its own and can report the issue's change review surface. It is
+// optional and it is read at most once per issue, for an issue a caller is
+// about to promote, because the answer costs the tracker extra reads.
+//
+// A connector that does not implement it leaves the issue's pull request as
+// the only evidence a completed issue can offer, which is what every
+// connector did before this interface existed.
+type ChangeReviewHydrator interface {
+	HydrateChangeReview(context.Context, Issue) (Issue, error)
+}
+
 type CandidateIssuesFilterFetcher interface {
 	FetchCandidateIssuesByStatesWithFilter(context.Context, []string, IssueFilterHint) ([]Issue, error)
 }

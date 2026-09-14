@@ -28,7 +28,14 @@ type hostedFileConfig struct {
 	StorageQuotaBytes        int64                         `yaml:"storage_quota_bytes"`
 	EventQuota               int64                         `yaml:"event_quota"`
 	Directory                []hubserver.HostedDestination `yaml:"directory"`
-	WorkOS                   struct {
+	Conversation             *hostedConversationFileConfig `yaml:"conversation"`
+	// Workspaces enables workspace sessions and the relay that carries the
+	// right panel's surfaces (decisions section 18.1).
+	Workspaces *hostedWorkspaceFileConfig `yaml:"workspaces"`
+	// Usage is the hub's per-model price table for the usage report
+	// (decisions section 17.5).
+	Usage  *hostedUsageFileConfig `yaml:"usage"`
+	WorkOS struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
 		APIURL    string `yaml:"api_url"`

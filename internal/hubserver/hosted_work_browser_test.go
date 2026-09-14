@@ -30,7 +30,7 @@ func hostedWorkBrowserData(t *testing.T, f *browserHostedFixture) {
 	for _, statement := range []string{
 		"INSERT INTO machines(id,organization_id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES ('offline-machine','org_browser_preview','offline',1,'fixture',?,?,?)",
 		"INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT 'offline-lease',id,'offline-machine','offline-session',?,?,?,? ,?,? FROM issues WHERE native_id = ?",
-		"INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) SELECT 'offline-attempt',organization_id,project_id,native_id,'offline-lease',1,'offline-run',1,'succeeded',?, ?,? FROM issues WHERE native_id = ?",
+		"INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) SELECT 'offline-attempt',organization_id,project_id,native_id,'offline-lease',(SELECT fencing_token FROM leases WHERE lease_id = 'offline-lease'),'offline-run',1,'succeeded',?, ?,? FROM issues WHERE native_id = ?",
 	} {
 		var args []any
 		switch {

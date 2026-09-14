@@ -261,7 +261,7 @@ func submitNativeForm(c echo.Context, client *hubclient.NativeClient, data templ
 		issue, err := client.CreateIssue(ctx, tracker.CreateIssue{Mutation: mutation, Title: data.Title, Body: data.Body, State: data.State, Priority: priority})
 		return templates.NativeIssuePath(data.Dashboard.ProjectID, issue.WorkItemID), err
 	case "edit":
-		_, err = client.UpdateIssue(ctx, id, tracker.UpdateIssue{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), Title: &data.Title, Body: &data.Body, Priority: priority})
+		_, err = client.UpdateIssue(ctx, id, tracker.UpdateIssue{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), Title: &data.Title, Body: &data.Body, Priority: tracker.SetPriority(priority)})
 	case "transition":
 		_, err = client.Transition(ctx, id, tracker.Transition{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), State: data.State, Reason: "user_requested"})
 	case "dependency":

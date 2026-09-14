@@ -1,0 +1,110 @@
+{
+  "items": [
+    {
+      "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+      "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+      "work_item_id": "wi_3363aa10bb4f4c2d8e7f6a5b4c3d2e1f",
+      "number": 3363,
+      "revision": "4",
+      "profile": "native",
+      "title": "Checkout lock renewal waits on a healthy handoff",
+      "body": "The renewal path returns before the handoff completes, so a runner that lost its lease still believes it holds one.\n\n## Acceptance\n\n- The renewal blocks until the handoff is acknowledged.\n- A lost lease is reported as lost within one tick.",
+      "state": "In Progress",
+      "terminal": false,
+      "priority": 1,
+      "labels": [
+        "bug",
+        "goal:reliability"
+      ],
+      "assignees": [
+        "michaelhvisser"
+      ],
+      "actor": {
+        "kind": "human",
+        "principal_id": "tok_7b21"
+      },
+      "created_at": "2026-09-07T18:04:00Z",
+      "updated_at": "2026-09-09T10:02:44Z",
+      "dependencies": [
+        "wi_3401c2d3e4f5a6b7c8d9e0f1a2b3c4d5"
+      ],
+      "blockers": [
+        {
+          "work_item_id": "wi_3401c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
+          "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+          "state": "Todo",
+          "terminal": false
+        }
+      ],
+      "external_references": []
+    },
+    {
+      "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+      "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+      "work_item_id": "wi_3371cc20dd5f4e3a9b8c7d6e5f4a3b2c",
+      "number": 3371,
+      "revision": "2",
+      "profile": "native",
+      "title": "Board shows scheduler dispatch waits",
+      "body": "The lane header says nothing while the scheduler is holding a slot.",
+      "state": "Todo",
+      "terminal": false,
+      "priority": 2,
+      "labels": [
+        "chore"
+      ],
+      "assignees": [],
+      "actor": {
+        "kind": "human",
+        "principal_id": "tok_7b21"
+      },
+      "created_at": "2026-09-08T09:12:00Z",
+      "updated_at": "2026-09-09T08:40:10Z",
+      "dependencies": [],
+      "blockers": [],
+      "external_references": []
+    },
+    {
+      "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+      "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+      "work_item_id": "wi_3388ee40ff6a4b5c0d1e2f3a4b5c6d7e",
+      "number": 3388,
+      "revision": "9",
+      "profile": "native",
+      "title": "Mirror the Mailchimp address health check",
+      "body": "Imported from GitHub.",
+      "state": "Done",
+      "terminal": true,
+      "priority": 3,
+      "labels": [],
+      "assignees": [
+        "octocat"
+      ],
+      "actor": {
+        "kind": "runner",
+        "principal_id": "tok_runner_1"
+      },
+      "created_at": "2026-08-01T12:00:00Z",
+      "updated_at": "2026-09-09T07:22:00Z",
+      "dependencies": [],
+      "blockers": [],
+      "external_references": [
+        {
+          "provider": "github",
+          "kind": "issue",
+          "id": "I_kwDOABCD1234"
+        }
+      ],
+      "provenance": {
+        "provider": "github",
+        "external_id": "I_kwDOABCD1234",
+        "author_id": "octocat",
+        "author_display_name": "The Octocat",
+        "created_at": "2026-08-01T12:00:00Z",
+        "updated_at": "2026-09-01T12:00:00Z",
+        "observed_at": "2026-09-09T09:00:00Z"
+      }
+    }
+  ],
+  "next_cursor": "eyJ2IjoyLCJzY29wZSI6InRva183YjIxIC9hcGkvdjIiLCJhZnRlciI6IjMzODgiLCJleHBpcmVzIjoxNzg4OTk5OTk5fQ.q2VvY29uZHNpZ25hdHVyZXBsYWNlaG9sZGVy"
+}

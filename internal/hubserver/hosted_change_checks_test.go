@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +25,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base := "/api/v2/organizations/org_browser_preview/projects/" + test.project
-			requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {test.project}, "write": {"true"}}), http.StatusSeeOther)
+			f.grant(t, "owner", "user_browser_owner", test.project, true, false, false)
 			descriptor := hubTestPolicy()
 			descriptor.ConfigDigest = policy.Digest([]byte(test.project))
 			descriptor.Gates.Kind = "command"

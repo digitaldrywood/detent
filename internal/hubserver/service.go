@@ -41,6 +41,13 @@ type Service struct {
 	reconcileStopOnce sync.Once
 	closeOnce         sync.Once
 	closeErr          error
+	conversations     *conversationService
+	workspaces        *workspaceService
+	pullRequests      *pullRequestCache
+	// clientBuild identifies the client bundle this process serves. The
+	// embedded filesystem cannot change while the process runs, so it is
+	// hashed once here rather than on every bootstrap or version poll.
+	clientBuild appClientBuild
 }
 
 type healthResponse struct {
@@ -96,6 +103,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		workerDone:      make(chan struct{}),
 		reconcileCancel: reconcileCancel,
 		reconcileDone:   make(chan struct{}),
+		pullRequests:    newPullRequestCache(),
+		clientBuild:     conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
@@ -103,6 +112,27 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.Hosted != nil {
 		service.hostedSessions, err = auth.NewSessionService(auth.SessionConfig{SessionTTL: 30 * 24 * time.Hour, PublicURL: cfg.Hosted.PublicURL}, service)
 		if err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
+		service.conversations = newConversationService(service, cfg.Conversation.normalized())
+		if err := service.conversations.start(ctx); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if cfg.Workspace != nil && cfg.Workspace.Enabled && !cfg.CredentialMaintenance {
+		if err := cfg.Workspace.validate(); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+		service.workspaces = newWorkspaceService(service, *cfg.Workspace)
+		if err := service.workspaces.start(ctx); err != nil {
 			workerCancel()
 			reconcileCancel()
 			return nil, errors.Join(err, database.Close())
@@ -278,6 +308,12 @@ func (s *Service) Close() error {
 		s.stopHostedBilling()
 		if s.outbox != nil {
 			s.outbox.stop()
+		}
+		if s.conversations != nil {
+			s.conversations.stop()
+		}
+		if s.workspaces != nil {
+			s.workspaces.Stop()
 		}
 		s.closeErr = errors.Join(httpErr, webhookErr, reconcileErr, s.database.Close())
 	})

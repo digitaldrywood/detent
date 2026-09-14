@@ -184,20 +184,7 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	}
 
 	expiresAt := now.Add(request.TTL)
-	result, err := tx.ExecContext(ctx, `
-UPDATE leases
-SET expires_at = ?, renewed_at = ?, updated_at = ?
-WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
-		formatHubTime(expiresAt),
-		formatHubTime(now),
-		formatHubTime(now),
-		request.LeaseID,
-		request.FencingToken,
-	)
-	if err != nil {
-		return tracker.Lease{}, fmt.Errorf("renew hub lease: %w", err)
-	}
-	if err := requireOneLeaseMutation(result, request.LeaseID); err != nil {
+	if err := renewLeaseRow(ctx, tx, request.LeaseID, request.FencingToken, expiresAt, now); err != nil {
 		return tracker.Lease{}, err
 	}
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
@@ -241,34 +228,7 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 		return err
 	}
 
-	payload := map[string]any{}
-	if request.Reason != "" {
-		payload["reason"] = request.Reason
-	}
-	if err := insertWorkEvent(ctx, tx, tracker.WorkEvent{
-		WorkItemID:   record.issueID,
-		FencingToken: request.FencingToken,
-		MachineID:    record.session.Machine.ID,
-		SessionID:    record.session.SessionID,
-		Kind:         "lease_released",
-		Payload:      payload,
-		OccurredAt:   now,
-	}, now); err != nil {
-		return err
-	}
-	result, err := tx.ExecContext(ctx, `
-UPDATE leases
-SET released_at = ?, updated_at = ?
-WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
-		formatHubTime(now),
-		formatHubTime(now),
-		request.LeaseID,
-		request.FencingToken,
-	)
-	if err != nil {
-		return fmt.Errorf("release hub lease: %w", err)
-	}
-	if err := requireOneLeaseMutation(result, request.LeaseID); err != nil {
+	if err := releaseLeaseRow(ctx, tx, record, request.Reason, now); err != nil {
 		return err
 	}
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
@@ -566,6 +526,65 @@ LIMIT 1`, token).Scan(
 		return tracker.WorkEvent{}, false, fmt.Errorf("decode latest hub work event timestamp: %w", err)
 	}
 	return event, true, nil
+}
+
+// renewLeaseRow moves a lease's expiry forward inside the caller's
+// transaction. It is separate from Renew so a caller that has already proved
+// the tuple current, and that must renew atomically with something else it is
+// writing, does not have to open a second transaction the first could not see.
+// The released_at guard stays on the statement rather than being left to the
+// caller's earlier read: between the two a sweep may have released the row, and
+// silently resurrecting a released lease is the one outcome the fencing token
+// exists to prevent.
+func renewLeaseRow(ctx context.Context, tx *sql.Tx, leaseID tracker.LeaseID, token tracker.FencingToken, expiresAt, now time.Time) error {
+	result, err := tx.ExecContext(ctx, `
+UPDATE leases
+SET expires_at = ?, renewed_at = ?, updated_at = ?
+WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
+		formatHubTime(expiresAt),
+		formatHubTime(now),
+		formatHubTime(now),
+		leaseID,
+		token,
+	)
+	if err != nil {
+		return fmt.Errorf("renew hub lease: %w", err)
+	}
+	return requireOneLeaseMutation(result, leaseID)
+}
+
+// releaseLeaseRow ends a lease inside the caller's transaction, appending the
+// lease_released work event the release endpoint appends, so a lease released
+// by the hub itself leaves the same trail as one the runner gave back.
+func releaseLeaseRow(ctx context.Context, tx *sql.Tx, record leaseRecord, reason string, now time.Time) error {
+	payload := map[string]any{}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	if err := insertWorkEvent(ctx, tx, tracker.WorkEvent{
+		WorkItemID:   record.issueID,
+		FencingToken: record.session.FencingToken,
+		MachineID:    record.session.Machine.ID,
+		SessionID:    record.session.SessionID,
+		Kind:         "lease_released",
+		Payload:      payload,
+		OccurredAt:   now,
+	}, now); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE leases
+SET released_at = ?, updated_at = ?
+WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
+		formatHubTime(now),
+		formatHubTime(now),
+		record.session.ID,
+		record.session.FencingToken,
+	)
+	if err != nil {
+		return fmt.Errorf("release hub lease: %w", err)
+	}
+	return requireOneLeaseMutation(result, record.session.ID)
 }
 
 func expireLease(ctx context.Context, tx *sql.Tx, record leaseRecord, now time.Time) error {

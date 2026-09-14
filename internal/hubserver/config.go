@@ -40,8 +40,15 @@ var (
 )
 
 type Config struct {
-	CredentialMaintenance      bool
-	Hosted                     *HostedConfig
+	CredentialMaintenance bool
+	Hosted                *HostedConfig
+	Conversation          *ConversationConfig
+	// Workspace enables workspace sessions and the relay (decisions section
+	// 18.1). Nil means the surfaces stay disabled with their reason.
+	Workspace *WorkspaceConfig
+	// Usage is the hub's per-model price table for the usage report
+	// (decisions section 17.5). Nil means the hub prices nothing itself.
+	Usage                      *UsageConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
 	GitHubDisabled             bool
 	ImportBackend              ImportBackend
@@ -78,6 +85,14 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.Usage != nil {
+		normalized := c.Usage.normalized()
+		c.Usage = &normalized
+	}
+	if c.Workspace != nil {
+		normalized := c.Workspace.normalized()
+		c.Workspace = &normalized
+	}
 	if c.CredentialMaintenance {
 		c.GitHubDisabled = true
 	}

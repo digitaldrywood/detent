@@ -22,6 +22,11 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 	}
 
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	// The project's own lanes are read at most once per tick, and only once
+	// an item has actually reached the promotion: the configured lane is the
+	// target until the workflow says the project does not have it.
+	workflow := o.tickWorkflowStates(ctx)
+	o.forgetPromotionFallbackLogs(state)
 	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
 	for _, issue := range issues {
 		issueID := strings.TrimSpace(issue.ID)
@@ -36,6 +41,11 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			continue
 		}
 		if gateRequiresPullRequest(cfg.Gate) {
+			// The issue in hand was read when the attempt was dispatched, so
+			// the change the attempt produced is newer than it. A tracker
+			// that reviews changes of its own is asked now, for this item
+			// only, because that answer is what a native item is judged on.
+			issue = o.hydrateCompletedChangeReview(ctx, issue)
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
@@ -47,7 +57,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			normalizeState(completed.Issue.State) != normalizeState(issue.State) {
 			continue
 		}
-		targetState := completedActiveReviewTargetState(
+		targetState, missing := completedActiveReviewTargetState(
 			issue,
 			completed.FinalState,
 			completed.CompletionKind,
@@ -56,6 +66,11 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			cfg,
 		)
 		if targetState == "" {
+			// A completed item that is not ready for review used to be
+			// skipped in silence, which is what hid the whole native
+			// promotion for seven dogfood runs. The fact that is missing is
+			// named once per item.
+			o.logCompletedActiveReviewNotReady(issue, missing)
 			if transitioned, promoted := o.transitionTimedOutCompletedActiveGateWait(ctx, state, issue, completed, cfg, now); transitioned {
 				result.transitioned[issueID] = struct{}{}
 				if mergeWorkerIssue(promoted) {
@@ -67,20 +82,35 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			continue
 		}
 
+		states, known := workflow()
+		targetState, substituted := o.resolveCompletedActiveReviewTarget(states, known, issue, targetState)
+		if targetState == "" {
+			// The project offers nowhere to promote into. The item is left
+			// where it is, which is what happened before the fallback
+			// existed, and the reason is in the log once.
+			continue
+		}
+
 		result.transitioned[issueID] = struct{}{}
-		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
-			if completedActiveReviewThreadsKeepParked(issue, promoted.State, cfg) {
+		// Auto-promote speaks the configured review, pass and rework
+		// vocabulary. A project that does not have the configured review
+		// lane does not have the rest of it either, so a substituted target
+		// is applied as a plain transition instead.
+		if !substituted {
+			if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
+				if completedActiveReviewThreadsKeepParked(issue, promoted.State, cfg) {
+					continue
+				}
+				if normalizeState(issue.State) == normalizeState(promoted.State) {
+					result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+				} else if mergeWorkerIssue(promoted) {
+					o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
+					result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+					o.logMergeWorkerPickup(promoted, "completed_active_auto_promote")
+				}
+				o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
 				continue
 			}
-			if normalizeState(issue.State) == normalizeState(promoted.State) {
-				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
-			} else if mergeWorkerIssue(promoted) {
-				o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
-				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
-				o.logMergeWorkerPickup(promoted, "completed_active_auto_promote")
-			}
-			o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
-			continue
 		}
 
 		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "completed_active_review_transition", laneMutationAcceptCompletion); err != nil {
@@ -296,6 +326,10 @@ func (o *Orchestrator) logCompletedActiveAutoPromoteSameState(
 	)
 }
 
+// completedActiveReviewTargetState reports the lane a completed item is
+// promoted into, and the readiness fact that is missing when it reports none.
+// The second result is empty for every other reason the target is empty, so a
+// caller can tell "not ready" from "nothing to do here".
 func completedActiveReviewTargetState(
 	issue connector.Issue,
 	finalState string,
@@ -303,30 +337,38 @@ func completedActiveReviewTargetState(
 	activeStates []string,
 	terminalStates []string,
 	cfg AutoPromoteConfig,
-) string {
+) (string, string) {
 	cfg = normalizeAutoPromoteConfig(cfg)
 	if !stateIn(issue.State, activeStates) || stateIn(issue.State, terminalStates) {
-		return ""
+		return "", ""
 	}
 	reviewState := cfg.SourceState
 	switch normalizeState(issue.State) {
 	case normalizeState(reviewState), normalizeState(autoPromoteMergingState):
-		return ""
+		return "", ""
 	}
 	operationalCompletionAccepted := completedOperationalCompletionAccepted(issue, completionKind)
-	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate), operationalCompletionAccepted) {
-		return ""
+	if ready, missing := completedActiveIssueReadyForReview(
+		issue,
+		gateRequiresPullRequest(cfg.Gate),
+		operationalCompletionAccepted,
+	); !ready {
+		return "", missing
 	}
 	if !completedActiveFinalStateReviewEligible(finalState, reviewState) {
-		return ""
+		return "", ""
 	}
-	if !operationalCompletionAccepted && gateRequiresPullRequest(cfg.Gate) && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
-		return reviewState
+	// A native item reaches here with no pull request at all, because its
+	// change is reviewed on the tracker's own change request instead, so the
+	// thread check has to tolerate the absence rather than assume it away.
+	if !operationalCompletionAccepted && gateRequiresPullRequest(cfg.Gate) &&
+		issue.PullRequest != nil && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+		return reviewState, ""
 	}
 	if !completedActiveShouldEnterReview(issue, cfg, operationalCompletionAccepted) {
-		return ""
+		return "", ""
 	}
-	return reviewState
+	return reviewState, ""
 }
 
 func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig, operationalCompletionAccepted bool) bool {
@@ -374,17 +416,97 @@ func completedActiveFinalStateReviewEligible(finalState string, reviewState stri
 	}
 }
 
-func completedActiveIssueReadyForReview(issue connector.Issue, requirePullRequest bool, operationalCompletionAccepted bool) bool {
+// Readiness facts a completed item can be missing. They are the log's
+// vocabulary as well as the predicate's, so a skipped promotion names the
+// thing that was not there.
+const (
+	// completedReviewMissingPullRequest is a gate that wants a pull request
+	// on an issue that has none, on a tracker that reviews no change of its
+	// own: the pull request is the only evidence such a tracker can offer.
+	completedReviewMissingPullRequest = "pull_request"
+	// completedReviewMissingOpenPullRequest is a pull request that was opened
+	// for the item and is no longer open.
+	completedReviewMissingOpenPullRequest = "open_pull_request"
+	// completedReviewMissingChange is a tracker that reviews changes of its
+	// own and holds none for the item as it stands.
+	completedReviewMissingChange = "change_request"
+)
+
+// completedActiveIssueReadyForReview reports whether a completed item may be
+// promoted out of its active lane, and the fact that is missing when it may
+// not.
+//
+// The rule used to be a pull request and nothing else: every gate kind but
+// artifact required issue.PullRequest to be open. That is right for a tracker
+// whose changes are reviewed on pull requests and wrong for one whose are not.
+// A hub-native item has no pull request and can have none when its project has
+// no GitHub connector (decisions section 18.6, "projects without a GitHub
+// connector show the change request alone"), so every completed native item
+// failed the rule, the promotion was skipped, and the item stayed in its
+// active lane looking like outstanding work -- operations.md section 8, the
+// seventh dogfood run.
+//
+// The first fix asked whether the project has a connector, and promoted on the
+// tracker's own change only when it has none. The eighth dogfood run found the
+// half that leaves: a hosted project that does have a GitHub connector, whose
+// conversation-driven attempt posts its diff and opens no pull request,
+// because on the hosted flow opening one is a separate explicit action
+// (section 18.6, POST {nativeBase}/work-items/:id/pull-requests/actions
+// {action: open}) that the merge lane executes and the model has no credential
+// for. The rule demanded a pull request that would never exist on its own and
+// the item sat In Progress forever -- operations.md section 8, the eighth
+// dogfood run.
+//
+// So the question is not whether the project has a connector, it is whether
+// this item's own tracker holds an answer for it:
+//
+//   - a tracker that reviews changes of its own is asked for its change: a
+//     change request or an attempt diff (section 18.5) recorded for the item at
+//     the revision it stands at now, which is the same "as it stands" the claim
+//     brake of section 9.2.1 uses. Whether a connector could mirror it decides
+//     nothing, because nothing in the hosted flow opens the pull request.
+//   - a pull request that was opened for the item is still judged exactly as
+//     before: it must be open, so a merged or closed one is not ready.
+//   - a tracker that reports no change review surface at all -- every non-hub
+//     connector, and the github_compatible issueFromWorkItem path, where the
+//     runner itself opens the pull request -- leaves the pull request as the
+//     only authority, which is what every connector had before.
+func completedActiveIssueReadyForReview(
+	issue connector.Issue,
+	requirePullRequest bool,
+	operationalCompletionAccepted bool,
+) (bool, string) {
 	if operationalCompletionAccepted {
-		return true
+		return true, ""
 	}
 	if !requirePullRequest {
-		return true
+		return true, ""
+	}
+	if review := issue.ChangeReview; review != nil {
+		return completedActiveChangeReadyForReview(issue, *review)
 	}
 	if issue.PullRequest == nil {
-		return false
+		return false, completedReviewMissingPullRequest
 	}
-	return normalizePullRequestState(issue.PullRequest.State) == "open"
+	if normalizePullRequestState(issue.PullRequest.State) != "open" {
+		return false, completedReviewMissingOpenPullRequest
+	}
+	return true, ""
+}
+
+// completedActiveChangeReadyForReview is the rule for an item whose tracker
+// reviews changes of its own: the change has to cover the item as it stands,
+// and a pull request that exists has to be open. An item with no pull request
+// is ready on its change alone, whether or not its project has a connector,
+// because opening one is an explicit action nothing in the attempt takes.
+func completedActiveChangeReadyForReview(issue connector.Issue, review connector.ChangeReview) (bool, string) {
+	if !review.ChangeAtCurrentRevision {
+		return false, completedReviewMissingChange
+	}
+	if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) != "open" {
+		return false, completedReviewMissingOpenPullRequest
+	}
+	return true, ""
 }
 
 func completedOperationalCompletionAccepted(issue connector.Issue, completionKind string) bool {

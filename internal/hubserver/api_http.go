@@ -13,9 +13,35 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 const maxAPIRequestBodyBytes = 1 << 20
+
+// maxAttemptDiffRequestBytes bounds the one endpoint whose body is legitimately
+// larger than every other: a stored attempt diff carries the patches
+// themselves, and decisions section 18.5 bounds those at tracker.MaxDiffBytes.
+// The allowance is that bound with room for the JSON framing and the escaping
+// a patch full of quotes and newlines costs, so a diff the contract accepts is
+// never refused by the transport instead.
+const maxAttemptDiffRequestBytes = 2*tracker.MaxDiffBytes + (1 << 20)
+
+// maxActionRunReportBytes bounds the action run report for the same reason,
+// one contract later: a report carries the run's whole output, and decisions
+// section 18.12 bounds that at workspacesession.MaxExecOutputBytes. The generic
+// limit is exactly that cap, so a run that produced the most output the
+// contract allows would be refused by the transport rather than stored.
+//
+// The factor is six because that is the worst case of JSON string escaping, not
+// a guess with headroom: a byte the encoder cannot write literally becomes
+// \uXXXX, six bytes for one. ESC (0x1b) is the byte that makes this real rather
+// than theoretical -- every ANSI colour sequence is full of them, coloured build
+// output is exactly what a project action produces, and ESC is valid UTF-8 so it
+// travels as text rather than base64. At any smaller factor an escape-dense run
+// that finished would have its report refused, and the run that finished would
+// never be recorded: it would sit running, which is the one outcome section
+// 18.12 exists to prevent. Do not reduce it.
+const maxActionRunReportBytes = 6*workspacesession.MaxExecOutputBytes + (1 << 20)
 
 func (s *Service) registerRoutes(e *echo.Echo) {
 	if s.config.CredentialMaintenance {
@@ -28,6 +54,7 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 	}
 	s.registerNativeRoutes(e)
 	s.registerRunnerRoutes(e)
+	s.registerConversationRoutes(e)
 	read := s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin)
 	worker := s.requireAPIScope(apiScopeWorker)
 	operator := s.requireAPIScope(apiScopeOperator)
@@ -62,7 +89,7 @@ func decodeAPIJSON(c echo.Context, target any) error {
 		return errors.New("request is required")
 	}
 	request := c.Request()
-	request.Body = http.MaxBytesReader(c.Response(), request.Body, maxAPIRequestBodyBytes)
+	request.Body = http.MaxBytesReader(c.Response(), request.Body, apiRequestBodyLimit(c))
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -76,6 +103,17 @@ func decodeAPIJSON(c echo.Context, target any) error {
 		return err
 	}
 	return nil
+}
+
+// apiRequestBodyLimit is how many bytes this route's body may carry.
+func apiRequestBodyLimit(c echo.Context) int64 {
+	if c.Path() == nativeBase+"/attempts/:attempt/diff" {
+		return maxAttemptDiffRequestBytes
+	}
+	if c.Path() == nativeBase+"/workspaces/:workspace/worker/action-runs" {
+		return maxActionRunReportBytes
+	}
+	return maxAPIRequestBodyBytes
 }
 
 func invalidAPIRequest(c echo.Context, err error) error {

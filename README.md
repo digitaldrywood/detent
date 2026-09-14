@@ -190,6 +190,7 @@ at hand.
 - [Webhook freshness](docs/webhook-freshness.md) and [scheduled operations](docs/scheduled-routines.md), including `backlog_admission`.
 - [Admission criteria](docs/admission.md) and [efficiency retrospection](docs/retrospection.md).
 - [Dashboard and APIs](docs/dashboard-api.md).
+- [Conversation product operations](docs/conversation/operations.md) — hosted `conversation:` configuration, migrations, local run, and rollback.
 
 ### Reference and contribute
 

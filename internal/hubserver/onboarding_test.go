@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,12 +160,24 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	for range 2 {
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding", request), http.StatusOK)
 	}
-	response := f.page(t, "owner", "/projects/"+first)
-	requireNativeStatus(t, response, http.StatusOK)
-	for _, text := range []string{"Project setup", "existing", "No matching runner", "Missing artifact gateway", "Create your first native issue", "Repository review and merge policy"} {
-		if !strings.Contains(response.Body.String(), text) {
-			t.Errorf("missing %q", text)
+	// The client reads readiness from the JSON list (decisions section 12).
+	var projects []hostedProjectView
+	decodeHubResponse(t, f.api(t, "owner", http.MethodGet, "/api/v2/organizations/org_browser_preview/projects", nil, http.StatusOK), &projects)
+	var setup *hostedProjectView
+	for index := range projects {
+		if projects[index].ID == first {
+			setup = &projects[index]
 		}
+	}
+	if setup == nil || setup.Onboarding.Ready || len(setup.Onboarding.Steps) != 4 {
+		t.Fatalf("project readiness = %#v", setup)
+	}
+	blocked := map[string]string{}
+	for _, step := range setup.Onboarding.Steps {
+		blocked[step.Name] = step.State
+	}
+	if blocked["Repository configuration"] != "action_required" || blocked["Local validation"] != "ready" || blocked["Execution runner"] != "action_required" {
+		t.Fatalf("onboarding steps = %#v", setup.Onboarding.Steps)
 	}
 	issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-issue"}, Title: "First native issue", Body: "No GitHub issue required", State: "Todo"}
 	for range 2 {
@@ -179,7 +190,7 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("issues=%d", count)
 	}
-	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {first}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
+	f.grant(t, "owner", "user_browser_owner", first, true, true, false)
 }
 
 func TestOnboardingCustomerBindingValidation(t *testing.T) {
@@ -207,7 +218,7 @@ func seedOnboardingBrowserJourney(t *testing.T) *browserHostedFixture {
 	f := newBrowserHostedFixture(t, true)
 	organization := "/api/v2/organizations/org_browser_preview"
 	for _, project := range []string{f.project, f.privateProject} {
-		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
+		f.grant(t, "owner", "user_browser_owner", project, true, true, false)
 	}
 	base := organization + "/projects/" + f.project
 	descriptor := hubTestPolicy()
@@ -253,15 +264,27 @@ func seedOnboardingBrowserJourney(t *testing.T) *browserHostedFixture {
 func TestHostedOnboardingFirstRun(t *testing.T) {
 	t.Parallel()
 	f := seedOnboardingBrowserJourney(t)
-	for _, tt := range []struct{ project, contains string }{
-		{f.project, "Latest execution: succeeded"},
-		{f.privateProject, "gpu"},
+	for _, tt := range []struct{ project, run, tag string }{
+		{project: f.project, run: "succeeded"},
+		{project: f.privateProject, tag: "gpu"},
 	} {
 		t.Run(tt.project, func(t *testing.T) {
-			response := f.page(t, "owner", "/projects/"+tt.project)
-			requireNativeStatus(t, response, http.StatusOK)
-			if !strings.Contains(response.Body.String(), tt.contains) {
-				t.Fatalf("missing %q", tt.contains)
+			var setup onboarding.Project
+			decodeHubResponse(t, f.api(t, "owner", http.MethodGet, "/api/v2/organizations/org_browser_preview/projects/"+tt.project+"/onboarding", nil, http.StatusOK), &setup)
+			if tt.run != "" && setup.LatestRun != tt.run {
+				t.Fatalf("latest run = %q, want %q", setup.LatestRun, tt.run)
+			}
+			if tt.tag == "" {
+				return
+			}
+			found := false
+			for _, runner := range setup.Runners {
+				for _, exclusion := range runner.Exclusions {
+					found = found || strings.Contains(exclusion.Message, tt.tag)
+				}
+			}
+			if !found {
+				t.Fatalf("onboarding runners did not report %q: %#v", tt.tag, setup.Runners)
 			}
 		})
 	}
@@ -273,7 +296,7 @@ func TestOnboardingBrowserPreview(t *testing.T) {
 	}
 	f := seedOnboardingBrowserJourney(t)
 	interrupted := f.createProject(t, "Interrupted setup")
-	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {interrupted}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
+	f.grant(t, "owner", "user_browser_owner", interrupted, true, true, false)
 	info := map[string]string{"owner": f.server.URL + "/__preview/account/owner", "success": f.server.URL + "/projects/" + f.project, "auto_merge": f.server.URL + "/projects/" + f.privateProject, "interrupted": f.server.URL + "/projects/" + interrupted, "stop": f.server.URL + "/__preview/stop"}
 	raw, err := json.Marshal(info)
 	if err != nil {

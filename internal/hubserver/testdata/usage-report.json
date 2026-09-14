@@ -1,0 +1,83 @@
+{
+  "range": {
+    "from": "2026-09-09T13:00:00.000Z",
+    "to": "2026-09-10T13:00:00.000Z"
+  },
+  "total": {
+    "cost": 2.14,
+    "tokens": 4141159,
+    "sessions": 5
+  },
+  "providers": [
+    {
+      "id": "codex",
+      "label": "Codex",
+      "sessions": 3,
+      "cost": 0.83,
+      "share": 0.3871,
+      "tokens": 2581421
+    }
+  ],
+  "daily": [
+    {
+      "day": "2026-09-09T13:00:00.000Z",
+      "cost": 0.07,
+      "tokens": 137061,
+      "by_provider": {
+        "codex": 0.03,
+        "claude": 0.04
+      }
+    }
+  ],
+  "totals": {
+    "processed": 4141159,
+    "cached_input": 3869016,
+    "uncached_input": 177057,
+    "output": 95086,
+    "cache_savings": 6.56
+  },
+  "breakdown": {
+    "by_model": [
+      {
+        "model": "claude-opus-5",
+        "provider": "claude",
+        "cost": 0.79,
+        "share": 0.3679,
+        "tokens": 625988
+      }
+    ],
+    "by_day": [
+      {
+        "day": "2026-09-09T13:00:00.000Z",
+        "cost": 0.07,
+        "tokens": 137061,
+        "by_provider": {
+          "codex": 0.03,
+          "claude": 0.04
+        }
+      }
+    ]
+  },
+  "limits": {
+    "members": {
+      "used": 3,
+      "limit": 10
+    },
+    "projects": {
+      "used": 3,
+      "limit": 10
+    }
+  },
+  "runners": [
+    {
+      "id": "rnr_mock",
+      "display_name": "Mock MacBook Pro",
+      "sessions": 4,
+      "tokens": 2981634,
+      "cost": 1.54,
+      "busy_seconds": 19284,
+      "capacity_used": 0.45
+    }
+  ],
+  "currency": "USD"
+}

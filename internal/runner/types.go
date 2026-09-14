@@ -42,6 +42,9 @@ const (
 	RunModePlan      = "plan"
 	RunModeMerge     = "merge"
 	RunModeRoutine   = "routine"
+	// RunModeCoordinator answers a conversation from the runner: no
+	// repository workspace, no deliverable, read-only tools only.
+	RunModeCoordinator = "coordinator"
 
 	RunOutputMergeFastPathClean       = "merge_fast_path_clean"
 	RunOutputMergeFastPathCheckedHead = "merge_fast_path_checked_head"
@@ -357,9 +360,19 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
-	Workspace               string
-	TempDir                 string
-	Prompt                  string
+	// ConversationControl, when set, connects a live conversation to the turn on
+	// backends that implement AgentLiveBackend.
+	ConversationControl *AgentConversationControl
+	// CollaborationMode selects the provider collaboration mode ("" or "plan").
+	// It is explicit and never implied by ConversationControl.
+	CollaborationMode string
+	Workspace         string
+	TempDir           string
+	Prompt            string
+	// Attachments are the files the user attached to the message that starts
+	// this turn (decisions section 17.1). Images become provider image input;
+	// text files are appended to Prompt as a delimited data block.
+	Attachments             []AgentAttachment
 	ToolInstructions        string
 	SupplementalTools       bool
 	ReadOnly                bool
@@ -597,6 +610,7 @@ type RunRequest struct {
 	CheckpointValidate        func(context.Context) error
 	Routine                   *RoutineRequest
 	Admission                 *AdmissionRequest
+	Coordinator               *CoordinatorRequest
 	AgentTools                []AgentTool
 	AgentToolHandler          AgentToolHandler
 	AcquireModelPermit        ModelPermitAcquirer

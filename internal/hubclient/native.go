@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type NativeClient struct {
@@ -80,6 +81,22 @@ func (c *NativeClient) Issue(ctx context.Context, id tracker.NativeWorkItemID) (
 		return result, err
 	}
 	err = c.client.request(ctx, http.MethodGet, c.base()+path, nil, &result)
+	return result, err
+}
+
+// IssueWithChange reads one work item together with its change review
+// surface: the project's connector binding, the item's change request and the
+// revision an attempt last recorded a change for (decisions sections 18.5 and
+// 18.6). It is a separate call because the surface costs the hub three reads
+// the rest of the resource does not need, and only a promotion decision wants
+// it.
+func (c *NativeClient) IssueWithChange(ctx context.Context, id tracker.NativeWorkItemID) (tracker.NativeIssue, error) {
+	var result tracker.NativeIssue
+	path, err := nativeItemPath(id)
+	if err != nil {
+		return result, err
+	}
+	err = c.client.request(ctx, http.MethodGet, c.base()+path+"?include=change", nil, &result)
 	return result, err
 }
 
@@ -182,6 +199,7 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 }
 
 func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) error {
+	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
 		ID              tracker.MachineID         `json:"id"`
@@ -191,7 +209,13 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 		Version         string                    `json:"version"`
 		OS              string                    `json:"os"`
 		Architecture    string                    `json:"architecture"`
-	}{machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
+		// Registration carries the same workspace report the heartbeat does
+		// (decisions section 18.1). Without it the first heartbeat interval
+		// after a restart would leave the runner ineligible for a workspace it
+		// is perfectly able to serve.
+		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+	}{machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
 }
 

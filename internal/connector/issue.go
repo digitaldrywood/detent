@@ -57,6 +57,7 @@ type Issue struct {
 	PRSource          string               `json:"pr_association_source,omitempty" yaml:"pr_association_source,omitempty"`
 	PRVerifiedAt      time.Time            `json:"pr_association_checked_at,omitzero" yaml:"pr_association_checked_at,omitempty"`
 	PullRequest       *PullRequest         `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
+	ChangeReview      *ChangeReview        `json:"change_review,omitempty" yaml:"change_review,omitempty"`
 	AuthorID          string               `json:"author_id,omitempty" yaml:"author_id,omitempty"`
 	AuthorAssociation AuthorAssociation    `json:"author_association,omitempty" yaml:"author_association,omitempty"`
 	AssigneeID        string               `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
@@ -106,6 +107,34 @@ type DependencyCapability struct {
 
 type DependencyCapabilityReporter interface {
 	DependencyCapabilities() []DependencyCapability
+}
+
+// ChangeReview is what a tracker that reviews changes of its own reports
+// about one issue: whether a pull request can ever mirror the issue's change,
+// and whether the tracker holds a change for the issue as it stands.
+//
+// It exists because "this issue has no pull request" and "no pull request can
+// ever exist for this issue" are different facts that a promotion decides
+// differently, and only the tracker can tell them apart. A connector that
+// cannot leaves it nil, and the pull request stays the only authority, which
+// is the behavior every connector had before this type existed.
+type ChangeReview struct {
+	// Provider names the connector that mirrors the change as a pull
+	// request, and is empty when the project has none.
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	// PullRequestsAvailable is the stated fact, not an absence: false means
+	// no pull request can ever mirror this issue's change, so a gate's
+	// pull-request requirement cannot be satisfied and does not apply.
+	PullRequestsAvailable bool `json:"pull_requests_available" yaml:"pull_requests_available"`
+	// ChangeAtCurrentRevision reports that the tracker holds a change for
+	// the issue at the revision it stands at now: a change request or a
+	// stored attempt diff produced by an attempt that succeeded against this
+	// version of the issue.
+	ChangeAtCurrentRevision bool `json:"change_at_current_revision,omitempty" yaml:"change_at_current_revision,omitempty"`
+	// ChangeRevision and Revision are the two numbers the comparison was
+	// made on, carried so a skipped promotion can name them.
+	ChangeRevision int64 `json:"change_revision,omitempty" yaml:"change_revision,omitempty"`
+	Revision       int64 `json:"revision,omitempty" yaml:"revision,omitempty"`
 }
 
 type PullRequest struct {

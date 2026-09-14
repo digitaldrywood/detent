@@ -47,10 +47,14 @@ type Runner struct {
 	Used             int                    `json:"used"`
 	OS               string                 `json:"os"`
 	Architecture     string                 `json:"architecture"`
-	Health           string                 `json:"health"`
-	LastHeartbeatAt  time.Time              `json:"last_heartbeat_at"`
-	Operations       []string               `json:"operations"`
-	Leases           []RunnerLease          `json:"leases"`
+	// Version is the Detent build running on the host, as its heartbeat
+	// reported it. It is the machine's, not the runner identity's: two runners
+	// enrolled from one host are one binary.
+	Version         string        `json:"version"`
+	Health          string        `json:"health"`
+	LastHeartbeatAt time.Time     `json:"last_heartbeat_at"`
+	Operations      []string      `json:"operations"`
+	Leases          []RunnerLease `json:"leases"`
 }
 
 type RunnerLease struct {

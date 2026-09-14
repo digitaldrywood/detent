@@ -856,7 +856,7 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 		MergeRefreshHeadSHA: reservation.RefreshHeadSHA,
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
-	o.attachHumanQuestionTool(&request)
+	o.attachDispatchTools(&request, runMode)
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		request.Execution = source.RunExecution(issue.ID)
 	}
@@ -933,7 +933,60 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 	return ""
 }
 
+// coordinatorDispatchLabel marks a hub-created coordinator work item: an
+// issue that exists only to give a conversation turn a runner.
+const coordinatorDispatchLabel = "detent:coordinator"
+
+// coordinatorReaderSource is the optional scheduling-source extension that
+// hands a coordinator run its bounded hub reads.
+type coordinatorReaderSource interface {
+	CoordinatorReader(string) runpkg.CoordinatorHubReader
+}
+
+// coordinatorProjectSource optionally names the hub project a coordinator
+// run's reads are scoped to, so its tools report the id the hub itself uses.
+type coordinatorProjectSource interface {
+	CoordinatorProject(string) string
+}
+
+// issueIsCoordinatorItem reports whether the claimed issue is a coordinator
+// work item. The label is authoritative and matched case-insensitively.
+func issueIsCoordinatorItem(issue connector.Issue) bool {
+	for _, label := range issue.Labels {
+		if strings.EqualFold(strings.TrimSpace(label), coordinatorDispatchLabel) {
+			return true
+		}
+	}
+	return false
+}
+
+// attachDispatchTools installs the agent tools a dispatched run may use. A
+// coordinator run answers a conversation and must not reach the tools that
+// write: it gets bounded hub reads instead of the human-question tool, and
+// the checkpoint selection tool is already implement-only.
+func (o *Orchestrator) attachDispatchTools(request *RunRequest, mode string) {
+	if mode != runpkg.RunModeCoordinator {
+		o.attachHumanQuestionTool(request)
+		return
+	}
+	source, ok := o.scheduling.(coordinatorReaderSource)
+	if !ok {
+		return
+	}
+	reader := source.CoordinatorReader(request.Issue.ID)
+	if reader == nil {
+		return
+	}
+	request.Coordinator = &runpkg.CoordinatorRequest{Reader: reader}
+	if projects, ok := o.scheduling.(coordinatorProjectSource); ok {
+		request.Coordinator.ProjectID = projects.CoordinatorProject(request.Issue.ID)
+	}
+}
+
 func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
+	if issueIsCoordinatorItem(issue) {
+		return runpkg.RunModeCoordinator
+	}
 	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && o.cfg.MergeFastPathEnabled {
 		return runpkg.RunModeMerge
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func authorizeClaimScope(ctx context.Context, tx *sql.Tx, request tracker.ClaimRequest, scope *nativeScope) error {
@@ -69,7 +70,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid("Native protocol and required collaboration capabilities must be negotiated"))
 	}
 	for _, capability := range request.Capabilities {
-		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, capability) {
+		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeWorkspaceCapability}, capability) {
 			return s.nativeAPIError(c, nativeInvalid("Unknown required capability"))
 		}
 	}
@@ -91,6 +92,9 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	lease, err := s.database.claimNext(c.Request().Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
 		PolicyID: request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
+		// Only a lane that declares the workspace capability is offered
+		// workspace items (decisions section 18.1).
+		WorkspaceLane: slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability),
 	}, s.config.ReconcileInterval)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -156,6 +160,9 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 	if err := s.database.Release(c.Request().Context(), tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if s.conversations != nil {
+		s.conversations.leaseReleased(c.Request().Context(), tracker.LeaseID(c.Param("lease")))
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -169,6 +176,12 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		OS              string                    `json:"os,omitempty"`
 		Architecture    string                    `json:"architecture,omitempty"`
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
+		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
+		// can serve for a workspace session, reported beside the provider
+		// reports (decisions section 18.10). A runner that never reports them
+		// serves no surface and is never handed a workspace item.
+		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -181,13 +194,22 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	if scope.credential.Runner.RunnerID != "" && request.ID != scope.credential.Runner.MachineID {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
+	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
+		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be user or container"))
+	}
 	if scope.credential.Runner.RunnerID != "" {
 		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
+			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
+				return nil, err
+			}
 			return request, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
 		})
+	}
+	if request.WorkspaceCapabilities != nil {
+		return s.nativeAPIError(c, nativeInvalid("Workspace capabilities require an enrolled runner"))
 	}
 	if len(request.ProviderReports) != 0 {
 		return s.nativeAPIError(c, nativeInvalid("Provider reports require an enrolled runner"))

@@ -5,11 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -183,7 +183,7 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_events").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("events=%d %v", count, err)
 	}
-	requireNativeStatus(t, f.page(t, "owner", "/organization/billing?checkout=success&customer=cus_other"), http.StatusOK)
+	f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/billing", nil, http.StatusOK)
 	entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
 	if err != nil || entitlement.Source != "base" {
 		t.Fatal("browser or event granted access")
@@ -266,7 +266,7 @@ func TestHostedBillingAuthorizationAndCheckout(t *testing.T) {
 	for _, account := range []string{"owner", "viewer", "staff", "support-viewer", "wrong-organization", "revoked", "expired", "missing"} {
 		t.Run(account, func(t *testing.T) {
 			calls, checkouts, portals := p.calls, len(p.checkouts), len(p.portals)
-			for _, path := range []string{"/organization/billing", "/api/cloud/billing/subscription"} {
+			for _, path := range []string{browserHostedOrganizationBase + "/billing", "/api/cloud/billing/subscription"} {
 				response := f.page(t, account, path)
 				if (response.Code == http.StatusOK) != (account == "owner") {
 					t.Fatalf("%s response=%d", path, response.Code)
@@ -275,10 +275,20 @@ func TestHostedBillingAuthorizationAndCheckout(t *testing.T) {
 			if account == "missing" {
 				return
 			}
-			for _, path := range []string{"/organization/billing/checkout", "/organization/billing/portal"} {
-				response := f.form(t, account, path, url.Values{"price": {"price_fixture"}, "customer": {"cus_attacker"}, "organization": {"org_attacker"}})
-				if (response.Code == http.StatusSeeOther) != (account == "owner") {
-					t.Fatalf("%s response=%d %s", path, response.Code, response.Body.String())
+			for _, action := range []struct {
+				path    string
+				payload map[string]any
+			}{
+				{path: "/billing/checkout", payload: map[string]any{"idempotency_key": "checkout-" + account, "price": "price_fixture", "customer": "cus_attacker"}},
+				{path: "/billing/portal", payload: map[string]any{"idempotency_key": "portal-" + account}},
+			} {
+				// A client-supplied customer is not part of the contract, so
+				// the attacker value never reaches the request body.
+				payload := action.payload
+				delete(payload, "customer")
+				response := f.billing(t, account, action.path, payload)
+				if (response.Code == http.StatusOK) != (account == "owner") {
+					t.Fatalf("%s response=%d %s", action.path, response.Code, response.Body.String())
 				}
 			}
 			if account != "owner" && (p.calls != calls || len(p.checkouts) != checkouts || len(p.portals) != portals) {
@@ -290,24 +300,51 @@ func TestHostedBillingAuthorizationAndCheckout(t *testing.T) {
 		})
 	}
 	f, p = newHostedBillingFixture(t)
+	checkout := map[string]any{"idempotency_key": "checkout", "price": "price_fixture"}
 	p.checkoutFail = true
-	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusServiceUnavailable)
+	requireNativeStatus(t, f.billing(t, "owner", "/billing/checkout", checkout), http.StatusServiceUnavailable)
 	p.checkoutFail = false
-	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusSeeOther)
+	var location hostedBillingLocation
+	response := f.billing(t, "owner", "/billing/checkout", checkout)
+	requireNativeStatus(t, response, http.StatusOK)
+	browserHostedDecode(t, response, &location)
+	if location.URL == "" {
+		t.Fatal("checkout returned no destination")
+	}
 	if len(p.checkouts) != 2 || p.checkouts[0].IdempotencyKey != p.checkouts[1].IdempotencyKey || !p.checkouts[0].ExpiresAt.Equal(p.checkouts[1].ExpiresAt) {
 		t.Fatal("uncertain checkout retry changed operation identity")
 	}
-	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusSeeOther)
+	requireNativeStatus(t, f.billing(t, "owner", "/billing/checkout", checkout), http.StatusOK)
 	if len(p.checkouts) != 2 {
 		t.Fatal("duplicate checkout created a new session")
 	}
-	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_attacker"}}), http.StatusBadRequest)
-	r := httptest.NewRequest(http.MethodPost, "/organization/billing/checkout", strings.NewReader("price=price_fixture"))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	requireNativeStatus(t, f.billing(t, "owner", "/billing/checkout", map[string]any{"idempotency_key": "attack", "price": "price_attacker"}), http.StatusBadRequest)
+	requireNativeStatus(t, f.billing(t, "owner", "/billing/checkout", map[string]any{"price": "price_fixture"}), http.StatusUnprocessableEntity)
+	// A cookie call without the CSRF header is refused before the handler.
+	r := httptest.NewRequest(http.MethodPost, browserHostedOrganizationBase+"/billing/checkout", strings.NewReader(`{"idempotency_key":"csrf","price":"price_fixture"}`))
+	r.Header.Set("Content-Type", "application/json")
 	r.AddCookie(f.cookies["owner"])
 	w := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(w, r)
 	requireNativeStatus(t, w, http.StatusForbidden)
 	p.snapshot = activeBillingSnapshot(time.Now())
-	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusConflict)
+	requireNativeStatus(t, f.billing(t, "owner", "/billing/checkout", checkout), http.StatusConflict)
+}
+
+// billing posts one section 12 billing action as account.
+func (f *browserHostedFixture) billing(t *testing.T, account, path string, payload any) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, browserHostedOrganizationBase+path, strings.NewReader(string(encoded)))
+	request.Header.Set("Content-Type", "application/json")
+	if cookie := f.cookies[account]; cookie != nil {
+		request.AddCookie(cookie)
+		request.Header.Set("X-CSRF-Token", hostedCSRF(cookie.Value))
+	}
+	response := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(response, request)
+	return response
 }

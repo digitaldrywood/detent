@@ -457,6 +457,13 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	resourceWorkers.Go(func() {
 		persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
 	})
+	// The workspace lane claims detent:workspace items beside dispatch
+	// (decisions section 18.1). It is waited on with the other long-lived
+	// components: a runner that exited without unbinding would leave every
+	// workspace it held to time out unreachable.
+	for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, logger) {
+		resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
+	}
 	startupLifecycle := web.NewStartupLifecycle()
 	var fleetSource web.RunnerFleet
 	if cfg.Global.Client.Configured() && cfg.Global.Client.OrganizationID != "" {

@@ -77,7 +77,7 @@ func (w *Writer) updateWorkflowLabel(ctx context.Context, item hubserver.OutboxI
 	}
 	desired.Label = strings.TrimSpace(desired.Label)
 	desired.ManagedPrefix = strings.TrimSpace(desired.ManagedPrefix)
-	if desired.Label == "" || desired.ManagedPrefix == "" {
+	if desired.ManagedPrefix == "" || (desired.Label == "" && !desired.Clear) {
 		return hubserver.Permanent(errors.New("workflow label mutation is incomplete"))
 	}
 
@@ -94,7 +94,10 @@ func (w *Writer) updateWorkflowLabel(ctx context.Context, item hubserver.OutboxI
 		}
 		labels = append(labels, name)
 	}
-	labels = append(labels, desired.Label)
+	// A clear takes the managed prefix off and puts nothing back.
+	if !desired.Clear {
+		labels = append(labels, desired.Label)
+	}
 	labels = normalizedLabels(labels)
 	if err := w.client.REST(ctx, http.MethodPut, path+"/labels", map[string]any{"labels": labels}, nil); err != nil {
 		return fmt.Errorf("replace github workflow label: %w", err)

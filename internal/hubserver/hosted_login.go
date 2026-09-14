@@ -13,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 const hostedTransactionCookie = "detent_hosted_login"
@@ -146,7 +145,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 	if transaction.InvitationToken != "" {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, "/work")
 }
 
 func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Identity) error {
@@ -175,10 +174,25 @@ func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Ident
 	return s.storeHostedMember(ctx, identity, membership, providerOrganization.Name)
 }
 
+// startHostedSupport answers POST /support/start. It opens the ten-minute
+// window in which an authorized staff account impersonates the customer
+// through the provider dashboard (decisions section 12).
+// startHostedSupport answers POST /support/start. It opens the ten-minute
+// window in which an authorized staff account impersonates the customer
+// through the provider dashboard (decisions section 12).
 func (s *Service) startHostedSupport(c echo.Context) error {
 	session, _, err := s.hostedSession(c)
 	if err != nil || session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.SupportActors, session.Email) {
 		return s.hostedError(c, http.StatusForbidden, "This account cannot start support access")
+	}
+	var request hostedIdempotent
+	if c.Request().ContentLength > 0 && strings.HasPrefix(c.Request().Header.Get(echo.HeaderContentType), echo.MIMEApplicationJSON) {
+		if err := decodeAPIJSON(c, &request); err != nil {
+			return invalidAPIRequest(c, err)
+		}
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	organization, err := s.hostedProviderOrganization(c.Request().Context())
 	if err != nil || organization == "" {
@@ -187,7 +201,9 @@ func (s *Service) startHostedSupport(c echo.Context) error {
 	if _, err := s.newHostedTransaction(c, organization, session.Email, session.Identity.SessionID); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable")
 	}
-	return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "support", CanSupport: true, Title: "Start temporary support access", Email: session.Email, Notice: "Open the selected organization in the WorkOS dashboard and impersonate the customer using reason customer-request, account-recovery, or troubleshooting. Return in this browser within ten minutes."})
+	return c.JSON(http.StatusOK, struct {
+		Support appBootstrapSupport `json:"support"`
+	}{appBootstrapSupport{Actor: session.Email, ExpiresAt: s.config.now().Add(10 * time.Minute).UTC().Format(time.RFC3339)}})
 }
 
 func (s *Service) logoutHosted(c echo.Context) error {
@@ -208,83 +224,27 @@ func (s *Service) logoutHosted(c echo.Context) error {
 	s.hostedSetCookie(c, hostedCookie, "", "/", time.Unix(1, 0))
 	s.hostedSetCookie(c, hostedTransactionCookie, "", "/auth/oidc", time.Unix(1, 0))
 	if sessionErr == nil {
+		// The session is revoked, so every relay connection it opened closes
+		// with revoked (decisions section 18.2). Waiting for the periodic
+		// re-check would leave a signed-out tab reading a worktree.
+		s.authorityChanged(c.Request().Context(), session.Identity.Subject)
 		auditErr := s.hostedAudit(c.Request().Context(), session.Identity, "session_ended", "/logout", "", http.StatusOK)
 		providerErr := s.config.Hosted.Provider.RevokeSession(c.Request().Context(), session.Identity.SessionID)
 		if auditErr != nil || providerErr != nil {
 			return s.hostedError(c, http.StatusServiceUnavailable, "You are signed out of this Hub. Provider sign-out could not be confirmed; close the support dashboard and retry provider sign-out.")
 		}
 	}
+	if hostedJSONCaller(c) {
+		return c.NoContent(http.StatusNoContent)
+	}
 	return c.Redirect(http.StatusSeeOther, "/login")
 }
 
-func (s *Service) createHostedOrganization(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" || session.Identity.Subject != s.config.Hosted.BootstrapSubject || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return s.hostedError(c, http.StatusForbidden, "This Hub is reserved for a different organization creator")
-	}
-	var existingMembers int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM hosted_members").Scan(&existingMembers); err != nil || existingMembers != 0 {
-		return s.hostedError(c, http.StatusForbidden, "This organization has already been created")
-	}
-	name := strings.TrimSpace(c.FormValue("name"))
-	if name == "" || len(name) > 120 {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter an organization name of at most 120 characters")
-	}
-	providerID, err := s.hostedProviderOrganization(c.Request().Context())
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
-	}
-	if providerID == "" {
-		organization, err := s.config.Hosted.Provider.CreateOrganization(c.Request().Context(), s.config.Hosted.OrganizationID, name)
-		if err != nil || organization.ExternalID != s.config.Hosted.OrganizationID || !hostedSafeID(organization.ID) {
-			return s.hostedError(c, http.StatusServiceUnavailable, "Organization creation could not be confirmed; retry to recover the same organization")
-		}
-		providerID = organization.ID
-		if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_tenant SET provider_id = ? WHERE singleton = 1 AND provider_id = ''", providerID); err != nil {
-			return s.hostedError(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
-		}
-	}
-	membership, err := s.config.Hosted.Provider.CreateMembership(c.Request().Context(), session.Identity.Subject, providerID, "owner")
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Organization membership could not be confirmed; retry setup")
-	}
-	if err := s.storeHostedMember(c.Request().Context(), auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true}, membership, name); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Organization setup is temporarily unavailable")
-	}
-	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
-}
-
-func (s *Service) switchHostedOrganization(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" {
-		return s.hostedError(c, http.StatusForbidden, "Exit support access before switching organizations")
-	}
-	for _, destination := range s.config.Hosted.Directory {
-		if destination.OrganizationID != c.FormValue("organization") {
-			continue
-		}
-		memberships, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), session.Identity.Subject, destination.WorkOSOrganizationID)
-		if err != nil {
-			break
-		}
-		for _, membership := range memberships {
-			if membership.Status == "active" && membership.UserID == session.Identity.Subject && membership.OrganizationID == destination.WorkOSOrganizationID {
-				return c.Redirect(http.StatusSeeOther, destination.PublicURL+"/auth/oidc/start")
-			}
-		}
-	}
-	return s.hostedError(c, http.StatusForbidden, "The selected organization is unavailable to this account")
-}
-
-func (s *Service) acceptHostedInvitation(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return s.hostedError(c, http.StatusForbidden, "Sign in with the invited account to join this organization")
-	}
-	if err := s.acceptHostedInvitationFor(c.Request().Context(), auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, c.FormValue("token")); err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This invitation is expired, already used, or intended for another account or organization")
-	}
-	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
+// hostedJSONCaller reports whether the caller speaks JSON: the React client
+// sends the CSRF header, a form posts the token in its body (decisions
+// section 12).
+func hostedJSONCaller(c echo.Context) bool {
+	return c.Request().Header.Get("X-CSRF-Token") != "" || strings.Contains(c.Request().Header.Get(echo.HeaderAccept), echo.MIMEApplicationJSON)
 }
 
 func (s *Service) acceptHostedInvitationFor(ctx context.Context, identity auth.Identity, token string) error {
@@ -350,12 +310,4 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
 	}
 	return c.Redirect(http.StatusSeeOther, s.config.Hosted.Provider.AuthorizationURL(transaction.State, transaction.State, transaction.Verifier))
-}
-
-func (s *Service) hostedSupportPage(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
-	if err != nil {
-		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?staff=1")
-	}
-	return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), SupportActor: session.Identity.SupportActor, SupportReason: session.Identity.SupportReason, SupportExpiry: session.Identity.ExpiresAt.UTC().Format(time.RFC3339)})
 }

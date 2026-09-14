@@ -99,11 +99,45 @@ ORDER BY i.native_id`, internalID, scope.organization, scope.credential.Scope ==
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
-	issue, _, err := readNativeIssue(c.Request().Context(), s.database.db, nativeRequestScope(c), c.Param("item"))
+	ctx := c.Request().Context()
+	scope := nativeRequestScope(c)
+	issue, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	// The change review surface is absent unless the caller asked for it, so
+	// the default resource is byte-for-byte what it was and only a caller
+	// that needs it pays for the extra reads. Today that caller is the
+	// orchestrator's promotion, which judges a native item on the hub's own
+	// change facts rather than on a pull request it can never have.
+	included, err := nativeIssueChangeIncluded(c.QueryParam("include"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if included {
+		if issue.Change, err = readNativeIssueChange(ctx, s.database.db, scope, string(issue.WorkItemID)); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	return c.JSON(http.StatusOK, issue)
+}
+
+// nativeIssueChangeIncluded reads the work item resource's include query. The
+// resource supports one member, and an unknown one is refused rather than
+// ignored so a client typo is visible, which is what the list resource's
+// includes already do.
+func nativeIssueChangeIncluded(value string) (bool, error) {
+	included := false
+	for name := range strings.SplitSeq(value, ",") {
+		switch name = strings.TrimSpace(name); name {
+		case "":
+		case "change":
+			included = true
+		default:
+			return false, nativeInvalid("include supports change")
+		}
+	}
+	return included, nil
 }
 
 func validateNativeContent(title, body string, labels, assignees []string, priority *int) error {
@@ -154,6 +188,9 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 
 func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (any, error) {
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
+		return nil, err
+	}
+	if err := requireUnreservedLabels(ctx, request.Labels); err != nil {
 		return nil, err
 	}
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
@@ -347,6 +384,9 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 			fields = append(fields, "body")
 		}
 		if request.Labels != nil {
+			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
+				return nil, err
+			}
 			issue.Labels = *request.Labels
 			fields = append(fields, "labels")
 		}
@@ -354,8 +394,10 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 			issue.Assignees = *request.Assignees
 			fields = append(fields, "assignees")
 		}
-		if request.Priority != nil {
-			issue.Priority = request.Priority
+		// A present patch either sets the level or clears it; an absent one
+		// leaves whatever the issue has (tracker.PriorityPatch).
+		if request.Priority.Present() {
+			issue.Priority = request.Priority.Level()
 			fields = append(fields, "priority")
 		}
 		if len(fields) == 0 {

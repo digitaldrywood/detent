@@ -3,7 +3,9 @@ package hubserver
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +19,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 )
+
+// hostedLoginOrganizationBase is the section 12 API base of the login fixture.
+const hostedLoginOrganizationBase = "/api/v2/organizations/org_local_login"
 
 func TestHostedLoginCallbackProtection(t *testing.T) {
 	t.Parallel()
@@ -136,7 +141,7 @@ func TestHostedLoginSupportBrowserBinding(t *testing.T) {
 			s := openTestService(t, hostedLoginConfig(t, p, true))
 			staff := hostedLoginIdentity("user_staff", "support@example.test", "")
 			staffToken := hostedLoginSession(t, s, p, staff)
-			start := hostedLoginRequest(s, http.MethodPost, "/support/start", staffToken, nil, true)
+			start := hostedLoginJSON(t, s, http.MethodPost, hostedLoginOrganizationBase+"/support/start", staffToken, nil, true)
 			if start.Code != http.StatusOK {
 				t.Fatalf("support start status = %d: %s", start.Code, start.Body.String())
 			}
@@ -209,7 +214,7 @@ func TestHostedLoginSupportStartRequiresAuthorizationAndCSRF(t *testing.T) {
 			if tt.csrf {
 				form.Set("csrf", hostedCSRF(token))
 			}
-			request := httptest.NewRequest(http.MethodPost, "/support/start", strings.NewReader(form.Encode()))
+			request := httptest.NewRequest(http.MethodPost, hostedLoginOrganizationBase+"/support/start", strings.NewReader(form.Encode()))
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			request.Header.Set("Authorization", tt.authorization)
 			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: token})
@@ -229,10 +234,10 @@ func TestHostedLoginInvitationIntentAndReplay(t *testing.T) {
 		wantStatus int
 		acceptCall bool
 	}{
-		{name: "valid", wantStatus: http.StatusSeeOther, acceptCall: true},
+		{name: "valid", wantStatus: http.StatusOK, acceptCall: true},
 		{name: "wrong recipient", wantStatus: http.StatusForbidden},
 		{name: "wrong organization", wantStatus: http.StatusForbidden},
-		{name: "provider acceptance recovery", wantStatus: http.StatusSeeOther},
+		{name: "provider acceptance recovery", wantStatus: http.StatusOK},
 		{name: "accepted by another user", wantStatus: http.StatusForbidden},
 		{name: "expired invitation", wantStatus: http.StatusForbidden},
 		{name: "unissued invitation", wantStatus: http.StatusForbidden},
@@ -250,7 +255,7 @@ func TestHostedLoginInvitationIntentAndReplay(t *testing.T) {
 			membership := hostedLoginMembership(identity.Subject, "org_provider_login", "member")
 			p.memberships = append(p.memberships, membership)
 			hostedLoginExec(t, s, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", p.invitation.ID, identity.Email, "org_local_login", "member", formatHubTime(time.Now()))
-			form := url.Values{"token": {"invitation_secret"}}
+			payload := map[string]any{"token": "invitation_secret"}
 			switch tt.name {
 			case "wrong recipient":
 				p.invitation.Email = "other@example.test"
@@ -271,9 +276,9 @@ func TestHostedLoginInvitationIntentAndReplay(t *testing.T) {
 			case "provider acceptance failure":
 				p.acceptErr = auth.ErrHostedIdentity
 			case "missing token":
-				form.Del("token")
+				delete(payload, "token")
 			}
-			recorder := hostedLoginRequest(s, http.MethodPost, "/organization/join", token, form, true)
+			recorder := hostedLoginJSON(t, s, http.MethodPost, hostedLoginOrganizationBase+"/invitations/accept", token, payload, true)
 			if recorder.Code != tt.wantStatus || (p.accepted != 0) != tt.acceptCall {
 				t.Fatalf("join status = %d, acceptance calls = %d: %s", recorder.Code, p.accepted, recorder.Body.String())
 			}
@@ -281,11 +286,15 @@ func TestHostedLoginInvitationIntentAndReplay(t *testing.T) {
 			if err := s.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = ? AND active = 1", identity.Subject).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
-			if tt.wantStatus == http.StatusSeeOther {
-				if count != 1 || recorder.Header().Get("Location") != "/auth/oidc/start" {
+			if tt.wantStatus == http.StatusOK {
+				var next struct {
+					Next string `json:"next"`
+				}
+				decodeHubResponse(t, recorder, &next)
+				if count != 1 || next.Next != "/auth/oidc/start" {
 					t.Fatal("accepted invitation did not establish membership and restart scoped login")
 				}
-				replay := hostedLoginRequest(s, http.MethodPost, "/organization/join", token, form, true)
+				replay := hostedLoginJSON(t, s, http.MethodPost, hostedLoginOrganizationBase+"/invitations/accept", token, payload, true)
 				if replay.Code != http.StatusForbidden || (p.accepted != 0) != tt.acceptCall {
 					t.Fatal("used invitation was accepted twice")
 				}
@@ -376,7 +385,7 @@ func TestHostedLoginOrganizationCreation(t *testing.T) {
 		name       string
 		wantStatus int
 	}{
-		{name: "reserved creator", wantStatus: http.StatusSeeOther},
+		{name: "reserved creator", wantStatus: http.StatusCreated},
 		{name: "another creator", wantStatus: http.StatusForbidden},
 		{name: "staff creator", wantStatus: http.StatusForbidden},
 		{name: "empty name", wantStatus: http.StatusUnprocessableEntity},
@@ -386,23 +395,23 @@ func TestHostedLoginOrganizationCreation(t *testing.T) {
 			p := newHostedLoginProvider()
 			s := openTestService(t, hostedLoginConfig(t, p, false))
 			identity := hostedLoginIdentity("user_customer", "customer@example.test", "")
-			form := url.Values{"name": {"Customer organization"}}
+			payload := map[string]any{"idempotency_key": "create-" + tt.name, "name": "Customer organization"}
 			switch tt.name {
 			case "another creator":
 				identity.Subject, identity.Hosted.Subject = "user_other", "user_other"
 			case "staff creator":
 				identity.Email = "staff@example.test"
 			case "empty name":
-				form.Set("name", "  ")
+				payload["name"] = "  "
 			case "wrong stable identity":
 				p.organization.ExternalID = "org_another_local"
 			}
 			token := hostedLoginSession(t, s, p, identity)
-			recorder := hostedLoginRequest(s, http.MethodPost, "/organization/create", token, form, true)
+			recorder := hostedLoginJSON(t, s, http.MethodPost, "/api/v2/organizations", token, payload, true)
 			if recorder.Code != tt.wantStatus {
 				t.Fatalf("organization create status = %d, want %d: %s", recorder.Code, tt.wantStatus, recorder.Body.String())
 			}
-			if recorder.Code == http.StatusSeeOther {
+			if recorder.Code == http.StatusCreated {
 				providerID, err := s.hostedProviderOrganization(t.Context())
 				if err != nil || providerID != "org_provider_login" || p.createdOrganization != "org_local_login" || p.createdRole != "owner" {
 					t.Fatalf("organization binding = %q, error = %v, external = %q, role = %q", providerID, err, p.createdOrganization, p.createdRole)
@@ -475,8 +484,8 @@ func TestHostedLoginOrganizationSetupRecovery(t *testing.T) {
 			} else {
 				hostedLoginExec(t, service, "CREATE TRIGGER reject_hosted_name BEFORE UPDATE OF name ON organizations BEGIN SELECT RAISE(ABORT, 'fixture'); END")
 			}
-			form := url.Values{"name": {"Recovered organization"}}
-			response := hostedLoginRequest(service, http.MethodPost, "/organization/create", token, form, true)
+			payload := map[string]any{"idempotency_key": "recover", "name": "Recovered organization"}
+			response := hostedLoginJSON(t, service, http.MethodPost, "/api/v2/organizations", token, payload, true)
 			if response.Code != http.StatusServiceUnavailable {
 				t.Fatalf("interrupted setup status = %d", response.Code)
 			}
@@ -488,25 +497,24 @@ func TestHostedLoginOrganizationSetupRecovery(t *testing.T) {
 			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members").Scan(&members); err != nil || members != 0 {
 				t.Fatalf("incomplete local setup persisted members = %d, error = %v", members, err)
 			}
-			page := hostedLoginRequest(service, http.MethodGet, "/organization", token, nil, false)
-			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `action="/organization/create"`) {
-				t.Fatal("interrupted setup lost the organization creation form")
+			if bootstrap := hostedLoginRequest(service, http.MethodGet, "/app/bootstrap", token, nil, false); bootstrap.Code != http.StatusForbidden {
+				t.Fatalf("interrupted setup produced a bootstrap: %d", bootstrap.Code)
 			}
 			provider.createMembershipErr = nil
 			if !tt.membershipFailed {
 				hostedLoginExec(t, service, "DROP TRIGGER reject_hosted_name")
 			}
-			response = hostedLoginRequest(service, http.MethodPost, "/organization/create", token, form, true)
-			if response.Code != http.StatusSeeOther {
+			response = hostedLoginJSON(t, service, http.MethodPost, "/api/v2/organizations", token, payload, true)
+			if response.Code != http.StatusCreated {
 				t.Fatalf("recovered setup status = %d: %s", response.Code, response.Body.String())
 			}
 			var name string
 			if err := service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id = ?", service.config.Hosted.OrganizationID).Scan(&name); err != nil || name != "Recovered organization" {
 				t.Fatalf("recovered organization name = %q, error = %v", name, err)
 			}
-			page = hostedLoginRequest(service, http.MethodGet, "/organization", token, nil, false)
-			if page.Code != http.StatusOK || strings.Contains(page.Body.String(), `action="/organization/create"`) {
-				t.Fatal("completed setup still offers organization creation")
+			replay := hostedLoginJSON(t, service, http.MethodPost, "/api/v2/organizations", token, payload, true)
+			if replay.Code != http.StatusConflict {
+				t.Fatalf("completed setup still offers organization creation: %d", replay.Code)
 			}
 		})
 	}
@@ -560,7 +568,7 @@ func TestHostedLoginOrganizationSwitching(t *testing.T) {
 		name       string
 		wantStatus int
 	}{
-		{name: "trusted target", wantStatus: http.StatusSeeOther},
+		{name: "trusted target", wantStatus: http.StatusOK},
 		{name: "untrusted target", wantStatus: http.StatusForbidden},
 		{name: "no membership", wantStatus: http.StatusForbidden},
 		{name: "inactive membership", wantStatus: http.StatusForbidden},
@@ -570,11 +578,11 @@ func TestHostedLoginOrganizationSwitching(t *testing.T) {
 			p := newHostedLoginProvider()
 			s := openTestService(t, hostedLoginConfig(t, p, true))
 			identity := p.identity
-			form := url.Values{"organization": {"org_destination"}, "url": {"https://attacker.example.test"}}
+			payload := map[string]any{"organization": "org_destination"}
 			p.memberships = append(p.memberships, hostedLoginMembership(identity.Subject, "org_provider_destination", "member"))
 			switch tt.name {
 			case "untrusted target":
-				form.Set("organization", "https://attacker.example.test")
+				payload["organization"] = "https://attacker.example.test"
 			case "no membership":
 				p.memberships = nil
 			case "inactive membership":
@@ -583,12 +591,18 @@ func TestHostedLoginOrganizationSwitching(t *testing.T) {
 				identity.Hosted.SupportActor, identity.Hosted.SupportReason = "support@example.test", "troubleshooting"
 			}
 			token := hostedLoginSession(t, s, p, identity)
-			recorder := hostedLoginRequest(s, http.MethodPost, "/organization/switch", token, form, true)
+			recorder := hostedLoginJSON(t, s, http.MethodPost, hostedLoginOrganizationBase+"/switch", token, payload, true)
 			if recorder.Code != tt.wantStatus {
 				t.Fatalf("switch status = %d, want %d", recorder.Code, tt.wantStatus)
 			}
-			if recorder.Code == http.StatusSeeOther && recorder.Header().Get("Location") != "https://destination.example.test/auth/oidc/start" {
-				t.Fatalf("untrusted redirect %q", recorder.Header().Get("Location"))
+			if recorder.Code == http.StatusOK {
+				var next struct {
+					Next string `json:"next"`
+				}
+				decodeHubResponse(t, recorder, &next)
+				if next.Next != "https://destination.example.test/auth/oidc/start" {
+					t.Fatalf("untrusted destination %q", next.Next)
+				}
 			}
 		})
 	}
@@ -733,6 +747,34 @@ func hostedLoginRequest(s *Service, method, target, token string, values url.Val
 	}
 	request := httptest.NewRequest(method, target, strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if token != "" {
+		request.AddCookie(&http.Cookie{Name: hostedCookie, Value: token})
+	}
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+	recorder := httptest.NewRecorder()
+	s.echo.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// hostedLoginJSON calls one of the section 12 JSON endpoints the way the
+// React client does: a JSON body and the CSRF header.
+func hostedLoginJSON(t *testing.T, s *Service, method, target, token string, payload any, csrf bool, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = strings.NewReader(string(encoded))
+	}
+	request := httptest.NewRequest(method, target, body)
+	request.Header.Set("Content-Type", "application/json")
+	if csrf {
+		request.Header.Set("X-CSRF-Token", hostedCSRF(token))
+	}
 	if token != "" {
 		request.AddCookie(&http.Cookie{Name: hostedCookie, Value: token})
 	}

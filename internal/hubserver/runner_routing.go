@@ -21,11 +21,11 @@ func readRunner(ctx context.Context, db nativeQueryer, organization tracker.Orga
 	var revoked sql.NullString
 	err := db.QueryRowContext(ctx, `SELECT r.id, r.organization_id, r.machine_id, r.token_id, r.display_name, r.tags_json, r.state, r.capacity_limit,
 r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json,
-m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at
+m.hostname, m.display_name, m.capacity, m.routing_revision, m.version, t.created_at, t.expires_at, t.revoked_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
 WHERE r.organization_id = ? AND r.id = ?`, organization, id).Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked)
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &r.Version, &created, &expires, &revoked)
 	if err != nil {
 		return r, err
 	}

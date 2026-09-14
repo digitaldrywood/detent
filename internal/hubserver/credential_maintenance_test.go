@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -65,7 +64,7 @@ func TestCredentialMaintenanceAccess(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
 	for _, project := range []string{f.project, f.privateProject} {
-		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
+		f.grant(t, "owner", "user_browser_owner", project, true, true, false)
 	}
 	binding := runnerauth.NewBinding()
 	path := "/api/v2/organizations/org_browser_preview/runner-enrollments"

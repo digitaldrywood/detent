@@ -209,6 +209,9 @@ func hostedTestDatabasePath(t *testing.T) string {
 	return path
 }
 
+// hostedSecurityOrganizationBase is the section 12 API base of this fixture.
+const hostedSecurityOrganizationBase = "/api/v2/organizations/org_security"
+
 func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 	t.Parallel()
 	for _, organization := range []string{"org_first", "org_second", "org_third"} {
@@ -419,7 +422,7 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 		{name: "reporting bearer", path: "/api/cloud/metadata", bearer: testHubAdminToken, want: http.StatusOK},
 		{name: "customer report", path: "/api/cloud/metadata", user: customer, want: http.StatusForbidden},
 		{name: "staff native content", path: f.base + "/work-items", user: staff, want: http.StatusForbidden},
-		{name: "staff project page", path: "/projects/" + string(f.project), user: staff, want: http.StatusForbidden},
+		{name: "staff bootstrap", path: "/app/bootstrap", user: staff, want: http.StatusForbidden},
 		{name: "bootstrap native content", path: f.base + "/work-items", bearer: testHubAdminToken, want: http.StatusNotFound},
 		{name: "staff legacy content", path: "/api/v1/work-items", user: staff, want: http.StatusNotFound},
 		{name: "legacy health", path: "/health", bearer: testHubAdminToken, want: http.StatusNotFound},
@@ -446,7 +449,7 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 			}
 		})
 	}
-	requireNativeStatus(t, f.request(t, staff, http.MethodPost, "/support/start", url.Values{}), http.StatusForbidden)
+	requireNativeStatus(t, f.request(t, staff, http.MethodPost, hostedSecurityOrganizationBase+"/support/start", url.Values{}), http.StatusForbidden)
 }
 
 func TestHostedSecurityRunnerPermissionsAreSeparate(t *testing.T) {
@@ -597,20 +600,35 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	}
 }
 
+// TestHostedSecurityCookieMutationsRequireCSRF proves a cookie mutation is
+// refused without the CSRF token, and that adding an Authorization header
+// does not turn it into an accepted call: the bearer path is an instance
+// administration path a hosted session never satisfies.
 func TestHostedSecurityCookieMutationsRequireCSRF(t *testing.T) {
 	t.Parallel()
-	for _, authorization := range []string{"", "Bearer invalid"} {
+	for _, test := range []struct {
+		authorization string
+		want          int
+	}{
+		{authorization: "", want: http.StatusForbidden},
+		{authorization: "Bearer invalid", want: http.StatusNotFound},
+	} {
+		authorization, want := test.authorization, test.want
 		t.Run(authorization, func(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
 			user := f.user(t, "owner", "owner", "owner@example.test", "", "")
-			request := httptest.NewRequest(http.MethodPost, "/projects", strings.NewReader(url.Values{"name": {"Rejected"}, "grant_access": {"true"}}.Encode()))
+			request := httptest.NewRequest(http.MethodPost, hostedSecurityOrganizationBase+"/projects", strings.NewReader(url.Values{"name": {"Rejected"}, "grant_access": {"true"}}.Encode()))
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			request.Header.Set("Authorization", authorization)
 			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request)
-			requireNativeStatus(t, response, http.StatusForbidden)
+			requireNativeStatus(t, response, want)
+			var projects int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&projects); err != nil || projects != 1 {
+				t.Fatalf("refused mutation changed projects: %d %v", projects, err)
+			}
 		})
 	}
 }
@@ -896,7 +914,7 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	staff := f.user(t, "support", "owner", "support@example.test", "", "")
 	customer := f.user(t, "customer", "viewer", "customer@example.test", "read", "support@example.test")
-	start := f.request(t, staff, http.MethodPost, "/support/start", url.Values{})
+	start := f.request(t, staff, http.MethodPost, hostedSecurityOrganizationBase+"/support/start", url.Values{})
 	requireNativeStatus(t, start, http.StatusOK)
 	var transaction *http.Cookie
 	for _, cookie := range start.Result().Cookies() {
@@ -926,12 +944,15 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 		t.Fatal("support session cookie was not set")
 	}
 	support := hostedSecurityUser{identity: customer.identity, token: sessionCookie.Value}
-	page := f.request(t, support, http.MethodGet, "/projects/"+string(f.project), nil)
-	requireNativeStatus(t, page, http.StatusOK)
-	if !strings.Contains(page.Body.String(), "support@example.test") || !strings.Contains(page.Body.String(), "/logout") {
-		t.Fatal("support indicator or exit flow is missing")
+	bootstrap := f.request(t, support, http.MethodGet, "/app/bootstrap", nil)
+	requireNativeStatus(t, bootstrap, http.StatusOK)
+	var payload appBootstrap
+	decodeHubResponse(t, bootstrap, &payload)
+	if payload.Support == nil || payload.Support.Actor != "support@example.test" || payload.Support.Reason == "" {
+		t.Fatalf("support indicator is missing: %#v", payload.Support)
 	}
-	requireNativeStatus(t, f.request(t, support, http.MethodPost, "/logout", url.Values{}), http.StatusSeeOther)
+	// The fixture sends the CSRF header, so it signs out as a JSON caller.
+	requireNativeStatus(t, f.request(t, support, http.MethodPost, "/logout", url.Values{}), http.StatusNoContent)
 	requireNativeStatus(t, f.request(t, support, http.MethodGet, f.base, nil), http.StatusUnauthorized)
 	if _, err := f.provider.CurrentSession(t.Context(), *customer.identity.Hosted); !errors.Is(err, auth.ErrHostedIdentity) {
 		t.Fatalf("provider support session was not revoked: %v", err)

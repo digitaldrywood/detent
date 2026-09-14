@@ -1,12 +1,17 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -95,7 +100,11 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 }
 
 func (s *Service) listNativeIssues(c echo.Context) error {
-	if err := validateNativeQuery(c.QueryParams(), "state", "label", "assignee", "priority"); err != nil {
+	if err := validateNativeQuery(c.QueryParams(), "state", "label", "assignee", "priority", "include"); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	include, err := parseNativeIssueIncludes(c.QueryParam("include"))
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	limit, cursor, key, err := s.nativePage(c)
@@ -106,6 +115,18 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGER)`
 	args := []any{scope.organization, scope.project, cursor.After}
+	if !include["coordinator"] {
+		// Coordinator items carry conversation turns, not project work
+		// (decisions section 9.2). They stay in history and keep attempts.
+		query += " AND " + notCoordinatorItemClause
+	}
+	if !include["workspace"] {
+		// Workspace items hold a worktree open for a person's surfaces, not
+		// project work (decisions section 18.1). They are excluded for the
+		// same reason and on the same terms as coordinator items: the board
+		// would otherwise fill with one card per opened Files panel.
+		query += " AND " + notWorkspaceItemClause
+	}
 	var clauses []string
 	for _, filter := range []struct{ name, clause string }{
 		{"state", "ws.detent_state = ?"},
@@ -127,7 +148,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	page := tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}
+	page := tracker.Page[nativeIssueListItem]{Items: []nativeIssueListItem{}}
 	hasMore := len(ids) > limit
 	if hasMore {
 		ids = ids[:limit]
@@ -137,7 +158,11 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		page.Items = append(page.Items, issue)
+		item := nativeIssueListItem{NativeIssue: issue}
+		if err := s.enrichNativeIssueItem(c, scope, &item, include); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		page.Items = append(page.Items, item)
 		cursor.After = strconv.Itoa(issue.Number)
 	}
 	if hasMore {
@@ -147,6 +172,121 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 		}
 	}
 	return c.JSON(http.StatusOK, page)
+}
+
+// nativeIssueListItem is one work item with the card data section 12 asks the
+// list for. Each addition is absent unless the caller included it, so the
+// default response is byte-for-byte what it was, and present whenever it was
+// included: latest_attempt is null when nothing has run, changes is an empty
+// array when there are none. The raw attempt is what keeps a null from being
+// dropped as an empty value.
+type nativeIssueListItem struct {
+	tracker.NativeIssue
+	LatestAttempt json.RawMessage     `json:"latest_attempt,omitempty"`
+	Changes       *[]nativeListChange `json:"changes,omitempty"`
+}
+
+type nativeListAttempt struct {
+	Status    string                           `json:"status"`
+	Identity  *tracker.NativeExecutionIdentity `json:"identity"`
+	StartedAt time.Time                        `json:"started_at"`
+	UpdatedAt time.Time                        `json:"updated_at"`
+}
+
+type nativeListChange struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+	URL   string `json:"url"`
+}
+
+// parseNativeIssueIncludes reads the include query. Unknown members are
+// refused rather than ignored so a client typo is visible.
+func parseNativeIssueIncludes(value string) (map[string]bool, error) {
+	include := map[string]bool{}
+	if value == "" {
+		return include, nil
+	}
+	for _, name := range strings.Split(value, ",") {
+		name = strings.TrimSpace(name)
+		if !slices.Contains([]string{"coordinator", "workspace", "attempts", "changes"}, name) {
+			return nil, nativeInvalid("include supports coordinator, workspace, attempts and changes")
+		}
+		include[name] = true
+	}
+	return include, nil
+}
+
+// enrichNativeIssueItem adds the requested card data for one item. The work is
+// bounded to the page the caller already asked for.
+func (s *Service) enrichNativeIssueItem(c echo.Context, scope nativeScope, item *nativeIssueListItem, include map[string]bool) error {
+	ctx := c.Request().Context()
+	if include["attempts"] {
+		attempt, found, err := readLatestNativeAttempt(ctx, s.database.db, scope, string(item.WorkItemID))
+		if err != nil {
+			return err
+		}
+		item.LatestAttempt = json.RawMessage("null")
+		if found {
+			encoded, err := json.Marshal(attempt)
+			if err != nil {
+				return fmt.Errorf("encode latest attempt: %w", err)
+			}
+			item.LatestAttempt = encoded
+		}
+	}
+	if !include["changes"] {
+		return nil
+	}
+	changes, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item.WorkItemID)
+	if err != nil {
+		return err
+	}
+	summaries := []nativeListChange{}
+	item.Changes = &summaries
+	for _, change := range changes {
+		detail, err := readChangeDetail(ctx, s.database.db, scope, string(item.WorkItemID), change.ID, s.config.now())
+		if err != nil {
+			return err
+		}
+		summary := nativeListChange{ID: change.ID, Title: change.Title, State: detail.Summary.Status}
+		for _, version := range detail.Versions {
+			if version.ID == change.CurrentVersion && version.External != nil {
+				summary.URL = version.External.URL
+			}
+		}
+		summaries = append(summaries, summary)
+	}
+	item.Changes = &summaries
+	return nil
+}
+
+// readLatestNativeAttempt returns the newest attempt on a work item. The bool
+// reports whether anything has run yet.
+func readLatestNativeAttempt(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (nativeListAttempt, bool, error) {
+	var attempt nativeListAttempt
+	var data, started, updated string
+	err := query.QueryRowContext(ctx, `SELECT data_json, status, started_at, updated_at FROM native_attempts
+WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&data, &attempt.Status, &started, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return attempt, false, nil
+	}
+	if err != nil {
+		return attempt, false, fmt.Errorf("read latest attempt: %w", err)
+	}
+	var run tracker.NativeRunData
+	if err := json.Unmarshal([]byte(data), &run); err != nil {
+		return attempt, false, fmt.Errorf("decode latest attempt: %w", err)
+	}
+	attempt.Identity = run.Identity
+	if attempt.StartedAt, err = parseTimeValue(started); err != nil {
+		return attempt, false, err
+	}
+	if attempt.UpdatedAt, err = parseTimeValue(updated); err != nil {
+		return attempt, false, err
+	}
+	return attempt, true, nil
 }
 
 func nativePageIDs(c echo.Context, query nativeQueryer, statement string, args ...any) ([]string, error) {

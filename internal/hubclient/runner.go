@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type runnerCredentialSource struct {
@@ -207,6 +208,7 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 }
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
+	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
 		DisplayName     string                    `json:"display_name"`
@@ -214,6 +216,12 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 		Version         string                    `json:"version"`
 		OS              string                    `json:"os"`
 		Architecture    string                    `json:"architecture"`
-	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
+		// The workspace claim gate matches these against the workspace's
+		// requires set and asks whether the heartbeat that carried them is
+		// still fresh (decisions section 18.1), so they ride the beat rather
+		// than a registration the runner sends once.
+		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 }

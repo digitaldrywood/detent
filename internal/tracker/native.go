@@ -1,6 +1,9 @@
 package tracker
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -9,6 +12,14 @@ import (
 const NativeProtocolMajor = 2
 
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
+
+// NativeWorkspaceCapability is declared by a runner's workspace lane on its
+// claim. It is what separates the lane that holds a workspace session open
+// from the lane that runs issues: a workspace is its own work item kind and
+// the ordinary claim never sees one (decisions section 18.1). The signal is a
+// declared capability rather than a label filter, because a label filter is a
+// preference an operator can set on any lane and this is an authority.
+const NativeWorkspaceCapability = "workspace_sessions"
 
 type OrganizationID string
 type ProjectID string
@@ -56,6 +67,57 @@ type NativeIssue struct {
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
 	ExternalReferences []ExternalReference `json:"external_references"`
+	// Change is the item's change review surface, present only on a resource
+	// the caller asked for it with (include=change). It is null everywhere
+	// else, so the default work item resource is what it always was.
+	Change *NativeIssueChange `json:"change,omitempty"`
+}
+
+// Change review connectors. The value is stated on every change review
+// surface, because "no pull request" and "no connector that could ever
+// produce one" are different facts and they decide differently.
+const (
+	// NativeChangeConnectorNone is a project with no GitHub connector, which
+	// is decisions section 18.6's "projects without a GitHub connector show
+	// the change request alone". No pull request can ever mirror its changes.
+	NativeChangeConnectorNone = "none"
+	// NativeChangeConnectorGitHub is a project with a GitHub repository bound
+	// and enabled, whose changes a pull request can mirror even when none
+	// does yet.
+	NativeChangeConnectorGitHub = "github"
+)
+
+// NativeIssueChange is a work item's change review surface: what the hub
+// itself holds for the item, and whether a pull request can ever mirror it.
+//
+// Decisions section 18.6 joins the hub's own change request with the GitHub
+// connector's projection of its pull request, and a project without a
+// connector shows the change request alone. A promotion decision needs the
+// same two halves: whether the item's change is reviewed on a pull request at
+// all, and whether an attempt has recorded a change for the item as it stands.
+type NativeIssueChange struct {
+	// Connector is NativeChangeConnectorGitHub or NativeChangeConnectorNone.
+	// It is the stated fact the promotion rule turns on, not the absence of a
+	// pull request: a project that has no connector can never produce one,
+	// while a project that has one may simply not have opened it yet.
+	Connector string `json:"connector"`
+	// ChangeID names the item's latest change request, empty when it has none.
+	ChangeID string `json:"change_id,omitempty"`
+	// Number, State, Draft and URL are the change as a pull request: the
+	// connector's projection when it mirrors one, and the hub's own change
+	// request otherwise, which is open until the change merges. Number is
+	// zero when nothing mirrors the change.
+	Number int    `json:"number,omitempty"`
+	State  string `json:"state,omitempty"`
+	Draft  bool   `json:"draft,omitempty"`
+	URL    string `json:"url,omitempty"`
+	// HeadSHA is the head the change currently names.
+	HeadSHA string `json:"head_sha,omitempty"`
+	// Revision is the work item revision the recorded change covers: the
+	// revision the succeeded attempt that produced it was dispatched for
+	// (decisions section 9.2.1's native_attempts.work_item_revision). Zero
+	// means no attempt has recorded a change or an attempt diff for the item.
+	Revision Revision `json:"revision,string"`
 }
 
 type ExternalReference struct {
@@ -103,14 +165,97 @@ type CreateIssue struct {
 	Provenance *Provenance `json:"provenance,omitempty"`
 }
 
+// PriorityPatch is the priority member of UpdateIssue.
+//
+// A patch has three things to say about a priority and a plain `*int` can
+// only say two of them: an omitted member means "leave it alone", so there
+// was no way to ask for the priority to be removed. This type carries the
+// third. On the wire an absent member still leaves the priority alone, a
+// number sets it, and either `null` or the word `"none"` clears it — the word
+// because a JSON `null` is easy for a client to send by accident and hard for
+// a reader of a request log to tell apart from an omission.
+type PriorityPatch struct {
+	present bool
+	level   *int
+}
+
+// LeavePriority is the zero patch: the priority is not part of this edit.
+func LeavePriority() PriorityPatch { return PriorityPatch{} }
+
+// ClearPriority removes whatever priority the issue has.
+func ClearPriority() PriorityPatch { return PriorityPatch{present: true} }
+
+// SetPriority sets the level. A nil level leaves the priority alone, which is
+// what a caller with nothing to say about it passes.
+func SetPriority(level *int) PriorityPatch {
+	if level == nil {
+		return PriorityPatch{}
+	}
+	value := *level
+	return PriorityPatch{present: true, level: &value}
+}
+
+// Present reports whether the patch says anything about the priority at all.
+func (p PriorityPatch) Present() bool { return p.present }
+
+// Level is the level the patch asks for, or nil where it asks for a clear.
+func (p PriorityPatch) Level() *int {
+	if p.level == nil {
+		return nil
+	}
+	value := *p.level
+	return &value
+}
+
+// ErrInvalidPriorityPatch is returned for a priority member that is neither a
+// number, nor null, nor the word "none".
+var ErrInvalidPriorityPatch = errors.New(`priority must be a number, null, or "none"`)
+
+func (p *PriorityPatch) UnmarshalJSON(data []byte) error {
+	p.present = true
+	p.level = nil
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var word string
+		if err := json.Unmarshal(trimmed, &word); err != nil {
+			return err
+		}
+		if word != "none" {
+			return ErrInvalidPriorityPatch
+		}
+		return nil
+	}
+	var level int
+	if err := json.Unmarshal(trimmed, &level); err != nil {
+		return ErrInvalidPriorityPatch
+	}
+	p.level = &level
+	return nil
+}
+
+// MarshalJSON writes the level, or null for both the absent and the cleared
+// patch. The idempotency fingerprint is taken over this encoding, so the two
+// only have to be encoded consistently, not distinguishably; a request that
+// clears a priority and one that omits it carry different keys in practice
+// because they are different intents.
+func (p PriorityPatch) MarshalJSON() ([]byte, error) {
+	if p.level == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(*p.level)
+}
+
 type UpdateIssue struct {
 	Mutation
-	ExpectedRevision Revision  `json:"expected_revision,string"`
-	Title            *string   `json:"title,omitempty"`
-	Body             *string   `json:"body,omitempty"`
-	Priority         *int      `json:"priority,omitempty"`
-	Labels           *[]string `json:"labels,omitempty"`
-	Assignees        *[]string `json:"assignees,omitempty"`
+	ExpectedRevision Revision      `json:"expected_revision,string"`
+	Title            *string       `json:"title,omitempty"`
+	Body             *string       `json:"body,omitempty"`
+	Priority         PriorityPatch `json:"priority,omitempty"`
+	Labels           *[]string     `json:"labels,omitempty"`
+	Assignees        *[]string     `json:"assignees,omitempty"`
 }
 
 type CreateComment struct {
@@ -254,6 +399,10 @@ type NativeRunData struct {
 	PolicyID     string                   `json:"policy_id"`
 	Outcome      string                   `json:"outcome,omitempty"`
 	ArtifactIDs  []string                 `json:"artifact_ids,omitempty"`
+	// Usage is what the attempt has spent so far, one entry per provider and
+	// model (decisions section 17.5). A runner that reports none leaves the
+	// field out, so the event is byte-identical to what it was before.
+	Usage []NativeUsage `json:"usage,omitempty"`
 }
 
 type NativeRunEvent struct {

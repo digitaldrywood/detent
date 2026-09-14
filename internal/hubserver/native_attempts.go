@@ -22,6 +22,25 @@ func nativeExecutionConflict(message string) error {
 	return &nativeError{Code: "run_sequence_conflict", Message: message, status: http.StatusConflict}
 }
 
+// nativeStaleExecution is section 5's stale_execution: the expected owner
+// generation is no longer the current one. It lives here rather than beside
+// one of its callers because every path that is fenced by an ownership
+// generation -- conversations, stored attempt diffs, and workspaces next --
+// has to report the same code for the same reason.
+func nativeStaleExecution(message string) error {
+	return &nativeError{Code: "stale_execution", Message: message, status: http.StatusConflict}
+}
+
+// nativeStaleLease maps a tracker fencing failure onto that vocabulary, so a
+// lease that is no longer current reads as stale_execution rather than as the
+// tracker's own error.
+func nativeStaleLease(err error, message string) error {
+	if errors.Is(err, tracker.ErrStaleFencingToken) {
+		return nativeStaleExecution(message)
+	}
+	return err
+}
+
 func requireNativeMutationLease(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, mutation tracker.Mutation, now time.Time) error {
 	var ordered int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item).Scan(&ordered); err != nil {
@@ -150,8 +169,19 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 		if conflicts != 0 {
 			return false, nativeExecutionConflict("Lease or run is already bound to another attempt or issue")
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, encoded, formatHubTime(now), formatHubTime(now))
+		// The attempt records which version of the item it was dispatched
+		// for: the item's revision, and the dispatch generation that asked
+		// for it. Both are read inside this transaction, so an edit or a
+		// continuation racing the start is either before this attempt or
+		// after it, never half of each. claimCandidateIDs compares them
+		// back to decide whether a succeeded attempt has already answered
+		// the item as it stands.
+		dispatch, err := readNativeDispatchState(ctx, tx, scope, string(item))
+		if err != nil {
+			return false, err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, encoded, formatHubTime(now), formatHubTime(now), dispatch.revision, dispatch.generation)
 		if err != nil {
 			return false, err
 		}

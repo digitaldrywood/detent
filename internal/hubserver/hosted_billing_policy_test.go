@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -48,17 +47,28 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 			if err := f.service.billing.reconcile(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			response := f.form(t, "owner", "/projects", url.Values{"name": {"New excess project"}, "grant_access": {"true"}})
 			want := http.StatusTooManyRequests
 			if test.grant {
-				want = http.StatusSeeOther
+				want = http.StatusCreated
 			}
-			requireNativeStatus(t, response, want)
-			for _, path := range []string{"/projects/" + project, "/organization/plan", "/organization/billing", "/api/cloud/billing", "/api/cloud/billing/subscription"} {
+			f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects", map[string]any{
+				"idempotency_key": "excess-" + test.name, "name": "New excess project", "grant_access": true,
+			}, want)
+			for _, path := range []string{
+				browserHostedOrganizationBase + "/projects/" + project + "/onboarding",
+				browserHostedOrganizationBase + "/plan",
+				browserHostedOrganizationBase + "/billing",
+				"/api/cloud/billing", "/api/cloud/billing/subscription",
+			} {
 				requireNativeStatus(t, f.page(t, "owner", path), http.StatusOK)
 			}
-			page := f.page(t, "owner", "/organization/billing").Body.String()
-			if test.grant && !strings.Contains(page, "Complimentary access") {
+			var report hostedBillingReport
+			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/billing", nil, http.StatusOK), &report)
+			active := false
+			for _, grant := range report.Entitlement.Grants {
+				active = active || grant.RevokedAt == nil
+			}
+			if test.grant && !active {
 				t.Fatal("billing hid the independent grant")
 			}
 			var projects int
@@ -234,7 +244,7 @@ func TestHostedBillingWorkerShutdown(t *testing.T) {
 func TestHostedBillingPageStates(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct{ name, status, invoice, want string }{
-		{"free", "free", "", "Free access requires no card"},
+		{"free", "free", "", "Free"},
 		{"subscribed", "active", "paid", "Subscribed"},
 		{"canceled", "canceled", "", "Canceled"},
 		{"failed", "past_due", "open", "Payment failed"},
@@ -257,18 +267,17 @@ func TestHostedBillingPageStates(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := p.calls
-			response := f.page(t, "owner", "/organization/billing")
-			requireNativeStatus(t, response, http.StatusOK)
-			for _, want := range []string{test.want, "model provider accounts", `aria-label="Billing audit trail"`, `name="csrf"`, "Export billing status"} {
-				if !strings.Contains(response.Body.String(), want) {
-					t.Errorf("billing page missing %q", want)
-				}
+			response := f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/billing", nil, http.StatusOK)
+			var report hostedBillingReport
+			browserHostedDecode(t, response, &report)
+			if report.Status != test.want || report.Message == "" || report.Audit == nil || report.Prices == nil || !report.Enabled {
+				t.Errorf("billing report = %#v", report)
 			}
 			if p.calls != calls {
-				t.Fatal("page read called Stripe")
+				t.Fatal("report read called Stripe")
 			}
 			if strings.Contains(response.Body.String(), "card-sentinel") {
-				t.Fatal("webhook private data reached the page")
+				t.Fatal("webhook private data reached the report")
 			}
 		})
 	}
@@ -329,10 +338,9 @@ func TestHostedBillingRejectsAdminAndSupportOwner(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			requireNativeStatus(t, f.page(t, "owner", "/organization/billing"), http.StatusForbidden)
-			for _, path := range []string{"/organization/billing/checkout", "/organization/billing/portal"} {
-				requireNativeStatus(t, f.form(t, "owner", path, url.Values{"price": {"price_fixture"}}), http.StatusForbidden)
-			}
+			requireNativeStatus(t, f.page(t, "owner", browserHostedOrganizationBase+"/billing"), http.StatusForbidden)
+			requireNativeStatus(t, f.billing(t, "owner", "/billing/checkout", map[string]any{"idempotency_key": "denied", "price": "price_fixture"}), http.StatusForbidden)
+			requireNativeStatus(t, f.billing(t, "owner", "/billing/portal", map[string]any{"idempotency_key": "denied"}), http.StatusForbidden)
 			if p.calls != 0 || len(p.checkouts) != 0 || len(p.portals) != 0 {
 				t.Fatal("admin or support owner reached Stripe")
 			}

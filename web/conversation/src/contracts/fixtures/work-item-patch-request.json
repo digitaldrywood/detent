@@ -1,0 +1,13 @@
+{
+  "idempotency_key": "cmd_01j8z0v6c4a1",
+  "expected_revision": "4",
+  "title": "Checkout lock renewal must wait on a healthy handoff",
+  "priority": 0,
+  "labels": [
+    "bug",
+    "goal:reliability"
+  ],
+  "assignees": [
+    "michaelhvisser"
+  ]
+}

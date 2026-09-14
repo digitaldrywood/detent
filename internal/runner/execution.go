@@ -30,6 +30,48 @@ type ArtifactExecution interface {
 	FinalizeArtifacts(context.Context, string) error
 }
 
+// AttemptDiffSource computes the worktree's diff for the stored attempt diff
+// (decisions section 18.5). It fills the base, the head and the files; the
+// execution owns the producer tuple and the generation, because only the
+// execution knows the lease it is fenced by and the event sequence the diff
+// belongs to. It reports false when there is nothing to post.
+type AttemptDiffSource func(context.Context) (tracker.AttemptDiffRequest, bool)
+
+// DiffExecution is an Execution that also stores the attempt's diff before
+// every run event that references it. The runner installs the source once it
+// has a worktree; the execution decides when to call it, so the diff is always
+// posted before the event and always under the lease that fences it.
+type DiffExecution interface {
+	SetDiffSource(AttemptDiffSource)
+}
+
+// attemptDiffSource returns the source for one run's worktree. A diff is
+// best-effort: a failure is logged and reported as "nothing to post", so a
+// worktree the runner cannot read never fails the run it is describing.
+func (r *Runner) attemptDiffSource(info workspace.Info, issue workspace.Issue) AttemptDiffSource {
+	return func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+		diffs, err := workspace.GitFileDiffs(ctx, info.Path, issue.BaseRef, tracker.MaxDiffBytes)
+		if err != nil {
+			r.logger.Warn("attempt diff unavailable", "issue_id", issue.ID, "workspace_path", info.Path, "error", err)
+			return tracker.AttemptDiffRequest{}, false
+		}
+		request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
+		for _, file := range diffs.Files {
+			request.Files = append(request.Files, tracker.AttemptDiffFile{
+				Path: file.Path, OldPath: file.OldPath, Status: file.Status,
+				Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
+			})
+		}
+		if diffs.Truncated {
+			// The whole patch output exceeded the bound, so the counts are
+			// posted without patches rather than with a patch set that stops
+			// partway through the change.
+			request.Files = tracker.StripDiffPatches(request.Files)
+		}
+		return request, true
+	}
+}
+
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if req.Execution == nil {
 		return r.run(ctx, req)

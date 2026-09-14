@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -60,7 +59,7 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 	for _, project := range []string{f.project, f.privateProject} {
 		t.Run(project, func(t *testing.T) {
 			base := "/api/v2/organizations/org_browser_preview/projects/" + project
-			requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
+			f.grant(t, "owner", "user_browser_owner", project, true, true, false)
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding", map[string]any{"idempotency_key": "setup", "progress": onboarding.Progress{Repository: "existing"}}), http.StatusOK)
 			descriptor := hubTestPolicy()
 			descriptor.ConfigDigest = policy.Digest([]byte(project))
@@ -153,7 +152,7 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var secondPolicy tracker.ChangeReviewPolicy
 	decodeHubResponse(t, response, &secondPolicy)
-	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {f.project}, "revoke": {"true"}}), http.StatusSeeOther)
+	f.grant(t, "owner", "user_browser_owner", f.project, false, false, true)
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
 		t.Run("revoked project/"+method, func(t *testing.T) {
 			requireNativeStatus(t, f.setupRequest(t, "owner", method, first+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "cross-project"}, Policy: secondPolicy}), http.StatusNotFound)
@@ -222,7 +221,10 @@ func TestHostedChangePolicyBoundaries(t *testing.T) {
 		{"bearer with cookie", f.base + "/change-review-policy", "", "admin-bearer", http.StatusNotFound},
 		{"unrelated organization", strings.Replace(f.base, "org_security", "org_unrelated", 1) + "/change-review-policy", hostedCSRF(owner.token), "", http.StatusNotFound},
 		{"unknown project", strings.Replace(f.base, string(f.project), "prj_unknown", 1) + "/change-review-policy", hostedCSRF(owner.token), "", http.StatusNotFound},
-		{"generic policy administration", f.base + "/policy", hostedCSRF(owner.token), "", http.StatusNotFound},
+		// The generic policy route is hosted administration now, so an owner
+		// reaches the handler and the empty body is refused on its merits
+		// rather than hidden behind a 404 (section 8 of the operations doc).
+		{"generic policy administration", f.base + "/policy", hostedCSRF(owner.token), "", http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPut, test.path, strings.NewReader(`{}`))

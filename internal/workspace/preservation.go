@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -77,7 +78,8 @@ func (l *LocalGit) PreserveIssue(ctx context.Context, issue Issue) (Preservation
 	return result, nil
 }
 
-func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
+func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue Issue) error {
+	session := issue.WorkspaceSession || isWorkspaceSessionBranch(info.Branch)
 	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
 	record, err := l.readOwnershipRecord(recordPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -86,7 +88,10 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
 	if err == nil && !l.validOwnershipRecord(ctx, recordPath, record) {
 		return fmt.Errorf("%w: invalid workspace retention record: %s", ErrWorkspacePreserved, info.Path)
 	}
-	if err := l.checkCleanupBranch(ctx, info.Branch); err != nil {
+	if err == nil && isWorkspaceSessionBranch(record.Branch) {
+		session = true
+	}
+	if err := l.checkCleanupBranch(ctx, info.Branch, session); err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
 	exists, isDir, err := pathExists(info.Path)
@@ -106,6 +111,20 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
+	if session {
+		// A workspace session checks out a commit somebody else already
+		// owns, on a detached HEAD, and commits nothing. Measuring its HEAD
+		// against the remotes therefore says nothing about work at risk — it
+		// only reports how far the checked-out commit is ahead of the remote,
+		// which in a repository with no remote at all is the whole history.
+		// What the session could have produced is checked instead: edits on
+		// disk, commits on its own branch (checkCleanupBranch), and commits
+		// past the head_sha it was opened on.
+		if changed {
+			return fmt.Errorf("%w at %s: uncommitted files remain in the workspace session", ErrWorkspacePreserved, info.Path)
+		}
+		return l.checkWorkspaceSessionCommits(ctx, info.Path, issue.PullRequestHeadSHA)
+	}
 	unpushed, err := retainedGitCommitCount(ctx, info.Path)
 	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
@@ -116,15 +135,61 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info) error {
 	return nil
 }
 
-func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string) error {
-	if !l.autoBranch || !strings.HasPrefix(branch, "detent/") {
+// checkWorkspaceSessionCommits retains a session worktree that has committed
+// past the commit it was opened on. It needs the head_sha to say that, which
+// only the session's own close carries; the residual reconciler arrives long
+// after the session is gone and has nothing but the worktree, so it removes an
+// abandoned one rather than retrying it forever.
+func (l *LocalGit) checkWorkspaceSessionCommits(ctx context.Context, path string, headSHA string) error {
+	headSHA = strings.TrimSpace(headSHA)
+	if headSHA == "" {
+		return nil
+	}
+	output, err := runGitAt(ctx, path, "rev-list", "--count", "HEAD", "--not", headSHA)
+	if err != nil {
+		// An unknown head_sha is not evidence of work; the commit checks that
+		// do not depend on it have already run.
+		l.logger.Warn(
+			"workspace session head comparison failed",
+			slog.String("path", path),
+			slog.String("head_sha", headSHA),
+			slog.Any("error", err),
+		)
+		return nil
+	}
+	if strings.TrimSpace(output) != "0" {
+		return fmt.Errorf("%w at %s: the workspace session committed past %s", ErrWorkspacePreserved, path, headSHA)
+	}
+	return nil
+}
+
+func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, session bool) error {
+	if !l.autoBranch || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return nil
 	}
 	exists, err := l.branchExists(ctx, branch)
 	if err != nil || !exists {
 		return err
 	}
-	output, err := l.runGit(ctx, "rev-list", "--count", "refs/heads/"+branch, "--not", "--remotes")
+	ref := "refs/heads/" + branch
+	if session {
+		// The preservation rule protects an attempt's unpushed work. A
+		// workspace session branch is a parking spot for a read-only
+		// checkout, so it is removable as long as it holds no commit that
+		// lives on no other ref.
+		// --single-worktree keeps --all from counting the session worktree's
+		// own detached HEAD as another ref holding the commit, which would
+		// make the branch look empty right up until the worktree is gone.
+		output, err := l.runGit(ctx, "rev-list", "--count", "--single-worktree", ref, "--not", "--exclude="+ref, "--all")
+		if err != nil {
+			return fmt.Errorf("inspect workspace session branch: %w", err)
+		}
+		if strings.TrimSpace(output) != "0" {
+			return fmt.Errorf("%w: workspace session branch %s contains commits held by no other ref", ErrWorkspacePreserved, branch)
+		}
+		return nil
+	}
+	output, err := l.runGit(ctx, "rev-list", "--count", ref, "--not", "--remotes")
 	if err != nil {
 		return fmt.Errorf("inspect cleanup branch: %w", err)
 	}
@@ -135,7 +200,7 @@ func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string) error 
 }
 
 func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue Issue, isDir bool) error {
-	if err := l.checkWorkspaceCleanup(ctx, info); err != nil {
+	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return err
 	}
 	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
