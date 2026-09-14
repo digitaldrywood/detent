@@ -49,6 +49,48 @@ func TestBoardRuntimePrecedesTrackerSnapshot(t *testing.T) {
 	}
 }
 
+func TestBoardDeferredCompletionIsNotRunning(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 9, 14, 15, 35, 33, 0, time.UTC)
+	for _, tt := range []struct {
+		name, phase string
+		session     bool
+		wantRunning bool
+	}{
+		{name: "starting worker", phase: "starting", wantRunning: true},
+		{name: "executing worker", phase: "running", wantRunning: true},
+		{name: "deferred receipt", phase: "completion_deferred"},
+		{name: "live session overrides deferred receipt", phase: "completion_deferred", session: true, wantRunning: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := boardTestData()
+			issue := telemetry.Issue{ID: "2610", Identifier: "digitaldrywood/detent#2610", ProjectID: "detent", State: "In Progress", Title: "Deferred completion"}
+			data.Snapshot = telemetry.Snapshot{
+				GeneratedAt: at,
+				Project:     telemetry.Project{ID: issue.ProjectID},
+				BoardIssues: []telemetry.Issue{issue},
+				Tracker:     telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, ObservedAt: at, Complete: true},
+				Runtime:     telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, ObservedAt: at, Complete: true},
+				// Deferred receipts stay active without completion or lease expiry.
+				WorkAttempts: []telemetry.WorkAttempt{{ProjectID: issue.ProjectID, IssueID: issue.ID, Status: "active", Phase: tt.phase, WaitReason: "tracker_unavailable", StartedAt: at.Add(-time.Minute)}},
+				Queue:        []telemetry.Queued{{Issue: issue, QueueState: telemetry.QueueStateWaitingOnTracker, Error: "waiting on tracker lane fence"}},
+			}
+			if tt.session {
+				data.Snapshot.Running = []telemetry.Running{{Issue: issue, StartedAt: at}}
+			}
+			card := projectKanbanCard{ProjectID: issue.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, Title: issue.Title, Stage: issue.State}
+			view := boardCardViewFromCard(data, projectKanbanLane{Title: issue.State}, card, false, "fleet", "")
+			html := renderBoardComponent(t, boardCardView2(view))
+			if view.Running != tt.wantRunning || strings.Contains(html, ">Running<") != tt.wantRunning {
+				t.Errorf("running = %v, want %v; signals=%+v", view.Running, tt.wantRunning, view.Signals)
+			}
+			if !tt.wantRunning && (!view.Retrying || !strings.Contains(html, ">Awaiting retry<")) {
+				t.Errorf("deferred receipt hides tracker wait: retrying=%v signals=%+v", view.Retrying, view.Signals)
+			}
+		})
+	}
+}
+
 func TestBoardDataCurrentUsesNewestProjectObservation(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 9, 14, 15, 35, 33, 0, time.UTC)

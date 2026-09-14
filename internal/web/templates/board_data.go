@@ -2016,6 +2016,10 @@ func boardCardIsRunning(snapshot telemetry.Snapshot, card projectKanbanCard) boo
 		}
 	}
 	for _, attempt := range snapshot.WorkAttempts {
+		// Deferred completion retains an active receipt after the worker exits.
+		if attempt.Phase == "completion_deferred" {
+			continue
+		}
 		issue := telemetry.Issue{ID: attempt.IssueID, Identifier: attempt.Identifier, ProjectID: attempt.ProjectID}
 		if attempt.Status == "active" && !attempt.Stale && attempt.CompletedAt == nil && boardCardMatchesIssue(issue, card) {
 			return true
