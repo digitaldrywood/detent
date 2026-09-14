@@ -2292,7 +2292,17 @@ func IsWorkerGitHubCredentialQuestion(detail string) bool {
 	if !githubScoped {
 		return false
 	}
-	for _, marker := range []string{"credential", "authentication", "write access", "enable write", "allow write", "approval policy", "open manually", "open the pull request", "open the pr"} {
+	// Use the same access-failure evidence as worker outcomes. Credential and
+	// authentication terminology alone also occurs in ordinary design questions.
+	if githubCredentialFailureDetail(detail) {
+		return true
+	}
+	if strings.Contains(detail, "write access") &&
+		(strings.Contains(detail, "could you enable") || strings.Contains(detail, "can you enable") ||
+			strings.Contains(detail, "could you grant") || strings.Contains(detail, "can you grant")) {
+		return true
+	}
+	for _, marker := range []string{"enable write", "allow write", "open manually", "open the pull request manually", "open the pr manually"} {
 		if strings.Contains(detail, marker) {
 			return true
 		}

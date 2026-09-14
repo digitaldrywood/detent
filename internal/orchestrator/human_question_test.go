@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -159,21 +160,54 @@ func TestHumanQuestionRejectedPostCanRetry(t *testing.T) {
 func TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite(t *testing.T) {
 	t.Parallel()
 
-	db := openWorkAttemptRecoveryStore(t, t.Context())
-	tracker := &questionTracker{Connector: memory.New(memory.Config{})}
-	o := &Orchestrator{connector: tracker, workAttempts: db}
-	request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#2548"}}
-	o.attachHumanQuestionTool(&request)
-	result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{
-		Name:      "ask_human_question",
-		Arguments: json.RawMessage(`{"key":"delivery","question":"Could you enable GitHub connector write access or open the PR manually?"}`),
-	})
-	if err != nil || result.Success || tracker.posts != 0 {
-		t.Fatalf("credential question = %+v, err %v, posts %d; want rejected without issue comment", result, err, tracker.posts)
+	tests := []struct {
+		name     string
+		question string
+		rejected bool
+	}{
+		{name: "budget scheduler", question: "Should we replace project timers with a credential-scoped scheduler using GitHub's rate-budget reset window?"},
+		{name: "credential design", question: "Should GitHub authentication use one credential per project?"},
+		{name: "github write enablement", question: "Could you enable GitHub write access?", rejected: true},
+		{name: "connector write grant", question: "Can you grant the GitHub connector write access?", rejected: true},
+		{name: "write enablement", question: "Could you enable GitHub connector write access?", rejected: true},
+		{name: "pull request design", question: "Should we open the PR as a draft?"},
+		{name: "write access design", question: "Should GitHub credentials have write access?"},
+		{name: "write support", question: "Could you enable GitHub connector write access or open the PR manually?", rejected: true},
+		{name: "missing credentials", question: "GitHub credentials are unavailable; can you restore worker access?", rejected: true},
+		{name: "authentication failure", question: "GitHub authentication failed; can you repair it?", rejected: true},
+		{name: "connector policy failure", question: "GitHub MCP tool call requires approval, but approval policy is never; can you fix this?", rejected: true},
 	}
-	records, err := db.(store.HumanQuestionStore).HumanQuestions(t.Context(), "", "issue")
-	if err != nil || len(records) != 0 {
-		t.Fatalf("credential question records = %+v, err %v; want none", records, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			tracker := &questionTracker{Connector: memory.New(memory.Config{})}
+			o := &Orchestrator{connector: tracker, workAttempts: db}
+			request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#2616"}}
+			o.attachHumanQuestionTool(&request)
+			args, err := json.Marshal(map[string]string{"key": "delivery", "question": tt.question})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "ask_human_question", Arguments: args})
+			wantCount := 1
+			if tt.rejected {
+				wantCount = 0
+			}
+			if err != nil || result.Success == tt.rejected || tracker.posts != wantCount {
+				t.Fatalf("question = %+v, err %v, posts %d; want rejected %t, posts %d", result, err, tracker.posts, tt.rejected, wantCount)
+			}
+			records, err := db.(store.HumanQuestionStore).HumanQuestions(t.Context(), "", "issue")
+			if err != nil || len(records) != wantCount {
+				t.Fatalf("question records = %+v, err %v; want %d", records, err, wantCount)
+			}
+			if !tt.rejected && records[0].Body != tt.question {
+				t.Fatalf("recorded body = %q, want %q", records[0].Body, tt.question)
+			}
+			if tt.rejected && !strings.Contains(result.Content, "instance conditions") {
+				t.Fatalf("rejection = %q, want instance-owned failure", result.Content)
+			}
+		})
 	}
 }
 
