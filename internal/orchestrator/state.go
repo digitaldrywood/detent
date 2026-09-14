@@ -764,6 +764,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 			entry := clonePullRequestMergeQueueEntry(*issue.PullRequest.MergeQueueEntry)
 			pullRequest.MergeQueueEntry = &entry
 		}
+		if issue.PullRequest.MergedAt != nil {
+			mergedAt := *issue.PullRequest.MergedAt
+			pullRequest.MergedAt = &mergedAt
+		}
 		if issue.PullRequest.ActivityAt != nil {
 			activityAt := *issue.PullRequest.ActivityAt
 			pullRequest.ActivityAt = &activityAt

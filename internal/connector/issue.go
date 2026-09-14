@@ -124,6 +124,7 @@ type DependencyCapabilityReporter interface {
 }
 
 type PullRequest struct {
+	MergedAt                     *time.Time                  `json:"merged_at,omitempty" yaml:"merged_at,omitempty"`
 	NodeID                       string                      `json:"node_id,omitempty" yaml:"node_id,omitempty"`
 	Number                       int                         `json:"number,omitempty" yaml:"number,omitempty"`
 	URL                          string                      `json:"url,omitempty" yaml:"url,omitempty"`

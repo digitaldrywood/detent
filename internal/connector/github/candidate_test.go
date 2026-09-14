@@ -40,13 +40,20 @@ func TestConnectorReadProjectCandidatesStopsAtBoundAndSorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCandidates() error = %v", err)
 	}
+	if got.NextCursor == "" || len(got.Issues) != 1 || got.Issues[0].ID != "I_1" {
+		t.Fatalf("first page = %#v", got)
+	}
+	got, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: 1, PageSize: 1, Cursor: got.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_2"}) {
 		t.Fatalf("candidate IDs = %#v, want [I_2]", ids)
 	}
 	if got.Issues[0].AuthorAssociation != connector.AuthorAssociationCollaborator {
 		t.Fatalf("AuthorAssociation = %q, want COLLABORATOR", got.Issues[0].AuthorAssociation)
 	}
-	if !got.Truncated || got.PagesRead != 2 {
+	if !got.Truncated || got.PagesRead != 1 {
 		t.Fatalf("result = %#v, want bounded two-page truncation", got)
 	}
 	requests := server.requests()
@@ -98,7 +105,7 @@ func TestConnectorReadProjectCandidatesBoundsMatchingCandidates(t *testing.T) {
 			wantPagesRead: 2,
 		},
 		{
-			name: "probe limit counts only eligible candidates",
+			name: "limit counts only eligible candidates",
 			responses: []graphqlTestResponse{
 				{
 					body: projectItemsPageResponseWithTotal(4, true, "cursor-1", []string{
@@ -114,8 +121,8 @@ func TestConnectorReadProjectCandidatesBoundsMatchingCandidates(t *testing.T) {
 				},
 			},
 			wantIDs:       []string{"I_2"},
-			wantItemsRead: 4,
-			wantPagesRead: 2,
+			wantItemsRead: 2,
+			wantPagesRead: 1,
 			wantTruncated: true,
 		},
 	}
@@ -265,10 +272,17 @@ func TestConnectorReadUntrackedCandidatesBoundsDeterministicPaging(t *testing.T)
 	if err != nil {
 		t.Fatalf("ReadCandidates() error = %v", err)
 	}
+	if got.NextCursor == "" || len(got.Issues) != 1 || got.Issues[0].ID != "I_2" {
+		t.Fatalf("first page = %#v", got)
+	}
+	got, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorUntracked, Limit: 1, PageSize: 1, Cursor: got.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1"}) {
 		t.Fatalf("candidate IDs = %#v, want [I_1]", ids)
 	}
-	if !got.Truncated || got.PagesRead != 2 {
+	if !got.Truncated || got.PagesRead != 1 {
 		t.Fatalf("result = %#v, want bounded two-page truncation", got)
 	}
 	for index, request := range server.requests() {
@@ -315,13 +329,20 @@ func TestConnectorReadLabelCandidatesKeepsNumericPageSizeAtBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCandidates() error = %v", err)
 	}
-	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1", "I_2"}) {
-		t.Fatalf("candidate IDs = %#v, want [I_1 I_2]", ids)
+	if got.NextCursor == "" || !reflect.DeepEqual(githubIssueIDs(got.Issues), []string{"I_2", "I_3"}) {
+		t.Fatalf("first page = %#v", got)
+	}
+	got, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 2, PageSize: 2, Cursor: got.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1", "I_4"}) {
+		t.Fatalf("candidate IDs = %#v, want [I_1 I_4]", ids)
 	}
 	if got.Issues[0].AuthorAssociation != connector.AuthorAssociationOwner {
 		t.Fatalf("AuthorAssociation = %q, want OWNER", got.Issues[0].AuthorAssociation)
 	}
-	if !got.Truncated || got.PagesRead != 2 {
+	if !got.Truncated || got.PagesRead != 1 {
 		t.Fatalf("result = %#v, want bounded two-page truncation", got)
 	}
 	requests := server.requests()
@@ -360,16 +381,23 @@ func TestConnectorReadLabelCandidatesSharesBoundAcrossStates(t *testing.T) {
 	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
 		Selector: connector.CandidateSelectorStates,
 		States:   []string{"Todo", "Backlog"},
-		Limit:    1,
-		PageSize: 2,
+		Limit:    2,
+		PageSize: 3,
 	})
 	if err != nil {
 		t.Fatalf("ReadCandidates() error = %v", err)
 	}
+	if got.NextCursor == "" || !reflect.DeepEqual(githubIssueIDs(got.Issues), []string{"I_2", "I_3"}) {
+		t.Fatalf("first source = %#v", got)
+	}
+	got, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo", "Backlog"}, Limit: 2, PageSize: 3, Cursor: got.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1"}) {
 		t.Fatalf("candidate IDs = %#v, want [I_1]", ids)
 	}
-	if !got.Truncated || got.PagesRead != 2 {
+	if got.Truncated || got.PagesRead != 1 {
 		t.Fatalf("result = %#v, want bounded reads from both states", got)
 	}
 	requests := server.requests()

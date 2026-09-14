@@ -190,11 +190,15 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	case connector.CandidateSelectorLabels:
 		labels = request.Labels
 	}
-	issues, err := c.fetchIssuesWithOrder(ctx, states, labels, request.ProbeLimit(), true)
+	offset, err := connector.CandidateOffset(request.Cursor)
 	if err != nil {
 		return connector.CandidateResult{}, err
 	}
-	return connector.NewCandidateResult(issues, request, 1, false), nil
+	issues, err := c.fetchIssuesWithOrder(ctx, states, labels, request.ProbeLimit(), true, offset)
+	if err != nil {
+		return connector.CandidateResult{}, err
+	}
+	return connector.CandidateOffsetResult(issues, request, offset), nil
 }
 
 func (c *Connector) Close() error {
@@ -1007,7 +1011,7 @@ on conflict(project_id, id) do nothing`,
 }
 
 func (c *Connector) fetchIssues(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
-	return c.fetchIssuesWithOrder(ctx, states, nil, limit, false)
+	return c.fetchIssuesWithOrder(ctx, states, nil, limit, false, 0)
 }
 
 func (c *Connector) fetchIssuesWithOrder(
@@ -1016,6 +1020,7 @@ func (c *Connector) fetchIssuesWithOrder(
 	labels []string,
 	limit int,
 	candidateOrder bool,
+	offset int,
 ) ([]connector.Issue, error) {
 	query := `select project_id, id, identifier, number, title, description, priority, state, url,
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
@@ -1061,6 +1066,10 @@ where project_id = ?`
 	if limit > 0 {
 		query += " limit ?"
 		args = append(args, limit)
+	}
+	if offset > 0 {
+		query += " offset ?"
+		args = append(args, offset)
 	}
 	rows, err := c.db.QueryContext(ctx, query, args...)
 	if err != nil {

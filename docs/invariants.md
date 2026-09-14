@@ -44,6 +44,14 @@ innocent issues and left the operator to return them to work.
 **Enforcement:** `TestPreTurnFailuresDrainInstance` and
 `TestObservedLanePreTurnFailureRemainsInstanceOwned` exercise instance attribution
 and preserve issue ownership even after an observed lane change.
+`TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
+completion handlers to triage workspace, startup, transport, protocol, and capacity
+failures. These failures publish no triage comment and do not consume the triage
+pass; recovered admission uses the same durable allowance. The shared Codex
+capacity classifier also sends typed in-turn transport/JSON-RPC failures through
+that existing instance wait; model-parameter rejection and operator cancellation
+retain their prior classification. `TestClassifyCapacityErrorTransportAndProtocol`
+and `TestRunnerTriageClassifiesProviderFailure` cover the provider/runner boundary.
 `TestIssueSpendSinceExcludesInstanceInfrastructureAttempts` excludes established
 workspace, backend-startup, deliverable-authorization, forge, and tracker failure
 classes from issue progress spend. `TestAgentRunProgressClassifiesPullRequestApprovalDecline`
@@ -196,12 +204,49 @@ dispatch refresh (#2509). Closed tracker state releases ordinary dependencies
 without requiring a terminal lane observation; human completion evidence remains
 required. This consolidates dependency readiness without adding a recovery loop.
 
-An explicit operator acknowledgement resets that issue's dispatch-loop history at
-the acknowledgement timestamp (#2517). Kanban moves out of Blocked and `detent issue
---acknowledge-parks` share the existing recovery-park acknowledgement path, including
-when the CLI acknowledgement leaves the issue in Blocked; automatic unparks and
-unrelated issue history remain untouched. This consolidates operator retry intent
-instead of adding another breaker or recovery loop.
+Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
+attempt accounting into one fixed allowance: three code/rework sessions started
+since the last merged PR. The durable attempt log owns the count; lane changes,
+new commits, new PR heads, CI signatures, and operator acknowledgements do not
+reset it. Instance-attributed startup, transport, workspace and restart failures
+are excluded. Immutable PR merge times and merge observations in the durable lane timeline
+reset prior work; subsequent activity on a merged PR is not a reset.
+
+The fourth code dispatch becomes one read-only triage turn using the existing
+code/rework role. Its durable attempt identity prevents another triage turn after
+restart, excluding instance-attributed failures. Triage uses the shared native
+reservation-aware selection and execution-start contract, plus metered budget
+admission and in-turn projection enforcement. The runner has no mutation tools,
+no resume state, no writable worktree,
+and no workspace or publication hooks. It returns one fixed-format explanation;
+the orchestrator persists that result, publishes one issue comment, and moves the
+issue to Human Review with `attempt_allowance_exhausted`. Publication checks the
+existing attempt marker before retrying; interrupted triage yields an explicit
+incomplete-diagnosis note, never another worker turn. Automatic promotion also
+honors exhaustion and existing running-worker ownership. Triage retains an
+operator lane change observed at completion, including across publication retries.
+Historical reason strings and progress records remain readable.
+`TestImplementProgressBlockComment` preserves historical clean-workspace and
+fingerprint-only evidence formatting without restoring dispatch-loop producers.
+Triage resolves the same selected session duration and token limits as workers,
+while retaining its single-turn, two-minute upper bound.
+`TestRunnerSelectedSessionLimits` covers inherited and level-specific limits,
+duration expiry, token usage, and configuration changes during triage.
+
+This is the issue-authorized replacement reason and consolidation, not an
+additional breaker, configuration key, or recovery loop. Non-PR artifact and
+explicit operational completion workflows retain their own deliverable rules.
+`TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
+`TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
+`TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
+`TestAttemptAllowancePreservesOperatorCompletionLane`, and
+`TestPullRequestMergeTimeSurvivesLaterActivity` enforce the allowance and restricted publication
+contract. `TestRunnerTriageNativeAdmission` and `TestRunnerTriageBudget` verify
+reservation identity, capacity loss, issue/daily budget refusal, and metered
+projection enforcement without launching an unauthorized backend turn.
+`TestRunnerTriageReportsTurnStart` preserves observed primary-turn evidence before
+usage arrives; `TestAttemptAllowanceTriageFallbackCompletion` keeps budget refusal,
+invalid output, tool refusal, and interrupted turns to one fallback comment.
 
 Scheduled routine occurrences advance from their durable `scheduled_for` identity
 regardless of success or failure. A selected occurrence whose existing ownership
@@ -223,6 +268,13 @@ Deliverable recovery opens a draft pull request when a worker already pushed an
 exact-head branch but failed before creating the PR, and returns a missing remote
 branch to Rework (#2528). This retires the human-owned no-PR park by consolidating
 the repair into the existing deliverable-recovery and operator-routine paths.
+
+Deliverable-park retirement transitions also acknowledge that retired park during
+durable timeline replay (#2603), including the merged-PR failed-CI transition
+from Blocked to Rework. This consolidates automatic retirement with the
+existing park acknowledgement path, so a return to Rework cannot resurrect the
+retired block. Independent human parks and later parks remain protected. Covered
+by `TestDeliverableRecoveryRetirementAcknowledgement`.
 
 Successful persisted attempts release dispatch ownership through the same completed
 attempt cleanup even when completion-time pull-request hydration is unavailable
@@ -247,6 +299,15 @@ Structured Workpad status parsing ignores unknown YAML keys and records their pa
 on the signal (#2604), removing strict field rejection from the existing parser.
 Known predicate validation and completion authorization remain unchanged; no new
 reason code, gate, or recovery mechanism is introduced.
+
+Admission candidate scans consolidate REST label, repository, and issue-field
+pagination into one reader, retaining page/item continuation in the existing
+admission run ledger (#2574). Completed hydrated candidates remain usable when
+the existing fanout budget ends a read; no retry routine, reason, or configuration
+is added. Exhausting a source resets its continuation for the next scan.
+If that budget also prevents a saved stale snapshot's early recheck, its
+eligibility check consolidates into the mandatory final revalidation; other
+completed candidates can still use the evaluation window.
 
 ## INV-4 — Native merge queue
 

@@ -98,6 +98,26 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 			}, true
 		}
 	}
+	// Transport and JSON-RPC failures belong to the same instance-owned wait as
+	// provider outages, even when the backend has already emitted turn usage.
+	var responseErr *ResponseError
+	protocolFailure := false
+	if errors.As(startupCause, &responseErr) && responseErr != nil {
+		switch responseErr.Code {
+		case -32700, -32600, -32601, -32603:
+			protocolFailure = true
+		}
+	}
+	// Invalid parameters (-32602), such as an invalid model, remain a rejected
+	// request. An unrelated cleanup timeout must not reclassify that rejection.
+	if errors.Is(startupCause, io.EOF) || errors.Is(startupCause, io.ErrUnexpectedEOF) || errors.Is(startupCause, io.ErrClosedPipe) ||
+		errors.Is(startupCause, ErrTransportClose) || errors.Is(startupCause, ErrInvalidFrame) || protocolFailure {
+		return backendcapacity.Details{
+			Type:    backendcapacity.ErrorTypeTransientOverload,
+			Reason:  "backend transport or protocol unavailable",
+			Trigger: boundedCapacityTrigger(text),
+		}, true
+	}
 	evidence, ok := codexProviderCapacityEvidence(err)
 	if !ok {
 		return backendcapacity.Details{}, false

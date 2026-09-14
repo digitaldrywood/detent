@@ -22,7 +22,7 @@ func (b *sessionLimitsBackend) RunTurn(_ context.Context, req AgentTurnRequest, 
 }
 
 func TestRunnerSelectedSessionLimits(t *testing.T) {
-	for _, mode := range []string{"worker", "validator"} {
+	for _, mode := range []string{"worker", "validator", "triage"} {
 		for _, stop := range []string{"duration", "tokens"} {
 			for _, explicit := range []bool{false, true} {
 				name := mode + "/" + stop + "/inherit"
@@ -45,12 +45,16 @@ func TestRunnerSelectedSessionLimits(t *testing.T) {
 					duration := &controlledDurationLimit{}
 					backend := &sessionLimitsBackend{fakeCodexClient: fakeCodexClient{models: selectionCatalog()}}
 					sessions := &fakeSessionStore{sessionID: 2597}
-					runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Store: sessions, sessionLimit: duration.Context})
+					runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Store: sessions, sessionLimit: duration.Context, SecurityAuditRoot: t.TempDir()})
 					if err != nil {
 						t.Fatal(err)
 					}
 					backend.duringTurn = func(req AgentTurnRequest, update AgentUpdateHandler) error {
-						if req.MaxDuration != 30*time.Second || req.MaxTurns != 7 {
+						wantTurnDuration, wantTurns := 30*time.Second, 7
+						if mode == "triage" {
+							wantTurnDuration, wantTurns = 2*time.Minute, 1
+						}
+						if req.MaxDuration != wantTurnDuration || req.MaxTurns != wantTurns {
 							t.Fatalf("turn guards changed: %+v", req)
 						}
 						if duration.duration != time.Duration(wantDuration)*time.Millisecond {
@@ -76,8 +80,12 @@ func TestRunnerSelectedSessionLimits(t *testing.T) {
 						}
 						return update(AgentUpdate{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{TotalTokens: wantTokens + 1}})
 					}
-					if mode == "worker" {
-						_, err = runner.Run(t.Context(), RunRequest{Issue: issue, Attempt: 4, WorkAttemptID: 5602})
+					if mode != "validator" {
+						runMode := RunModeImplement
+						if mode == "triage" {
+							runMode = RunModeTriage
+						}
+						_, err = runner.Run(t.Context(), RunRequest{Issue: issue, Mode: runMode, Attempt: 4, WorkAttemptID: 5602})
 						if sessions.started.WorkAttemptID != 5602 {
 							t.Fatalf("attempt changed: %+v", sessions.started)
 						}

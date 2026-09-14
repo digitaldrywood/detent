@@ -2223,17 +2223,6 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 			wantDetails: []string{"tracker.active_states", "Merging"},
 		},
 		{
-			name: "missing blocked state with rework limit",
-			cfg: func() workflowconfig.Config {
-				cfg := validDoctorAutoPromoteWorkflow()
-				cfg.Agent.AutoPromote.ReworkLimit = 1
-				cfg.Tracker.ObservedStates = []string{"Human Review"}
-				return cfg
-			}(),
-			want:        doctorFail,
-			wantDetails: []string{"agent.auto_promote.rework_limit", "Blocked", "tracker.observed_states"},
-		},
-		{
 			name: "status option verification fails",
 			cfg:  validDoctorAutoPromoteWorkflow(),
 			connector: &fakeDoctorAutoPromoteConnector{
@@ -2373,28 +2362,6 @@ func TestCheckDoctorAutoPromoteWarnsOnInvalidWorkpadStatus(t *testing.T) {
 	}
 	if len(got.AutoPromoteCandidates) != 1 || !strings.Contains(got.AutoPromoteCandidates[0].WorkpadStatusInvalid, `"human-review"`) {
 		t.Fatalf("AutoPromoteCandidates = %#v, want invalid status diagnostic", got.AutoPromoteCandidates)
-	}
-}
-
-func TestCheckDoctorAutoPromoteVerifiesBlockedStatusWhenReworkLimitEnabled(t *testing.T) {
-	t.Parallel()
-
-	cfg := validDoctorAutoPromoteWorkflow()
-	cfg.Agent.AutoPromote.ReworkLimit = 1
-	fake := &fakeDoctorAutoPromoteConnector{}
-	got := checkDoctorAutoPromote(context.Background(), "alpha", cfg, doctorDeps{
-		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-			return fake, nil
-		},
-	}, time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC))
-
-	if got.Status != doctorOK {
-		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
-	}
-	for _, want := range []string{"Human Review", "Merging", "Rework", "Blocked"} {
-		if !stringSliceContains(fake.verifyStates, want) {
-			t.Fatalf("VerifyStatusOptions states = %#v, want %q", fake.verifyStates, want)
-		}
 	}
 }
 
@@ -3536,7 +3503,6 @@ func TestRunDoctorUsesReadOnlyWriteChecksByDefaultForExistingConfiguredProject(t
 	workflow.Tracker.ObservedStates = []string{"Human Review", "Blocked"}
 	workflow.Tracker.TerminalStates = []string{"Done"}
 	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
-	workflow.Agent.AutoPromote.NoProgressLimit = 0
 	workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
 
 	configPath := filepath.Join(t.TempDir(), "global.yaml")

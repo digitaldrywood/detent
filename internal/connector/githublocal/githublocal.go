@@ -333,12 +333,32 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	if err != nil {
 		return connector.CandidateResult{}, err
 	}
-	issues, err := c.hydrateLocalIssues(ctx, result.Issues)
+	offset, err := connector.CandidateOffset(request.Cursor)
 	if err != nil {
 		return connector.CandidateResult{}, err
 	}
-	hydrated := connector.NewCandidateResult(issues, request, result.PagesRead, result.Truncated)
-	hydrated.ItemsRead = result.ItemsRead
+	hydrated := result
+	hydrated.Issues = nil
+	if len(result.Issues) == 0 {
+		return hydrated, nil
+	}
+	repoInfo, err := c.github.FetchRepositoryInfo(ctx, c.repository)
+	if err != nil {
+		return connector.CandidateResult{}, err
+	}
+	for index, issue := range result.Issues {
+		upstream, err := c.github.FetchIssueStatesByIdentifiers(ctx, []string{issue.Identifier})
+		var issues []connector.Issue
+		if err == nil {
+			issues, err = c.storeHydratedLocalIssues(ctx, []connector.Issue{issue}, upstream, repoInfo)
+		}
+		if err != nil {
+			hydrated.NextCursor = strconv.Itoa(offset + index)
+			hydrated.Truncated = true
+			return hydrated, err
+		}
+		hydrated.Issues = append(hydrated.Issues, issues...)
+	}
 	return hydrated, nil
 }
 
@@ -755,6 +775,10 @@ func (c *Connector) hydrateLocalIssues(ctx context.Context, issues []connector.I
 	if err != nil {
 		return nil, err
 	}
+	return c.storeHydratedLocalIssues(ctx, issues, upstream, repoInfo)
+}
+
+func (c *Connector) storeHydratedLocalIssues(ctx context.Context, issues, upstream []connector.Issue, repoInfo githubconnector.RepositoryInfo) ([]connector.Issue, error) {
 	upstreamByIdentifier := issuesByIdentifier(upstream)
 	out := make([]connector.Issue, 0, len(issues))
 	changed := make([]connector.Issue, 0, len(issues))

@@ -35,11 +35,18 @@
       "TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling",
       "TestQueuedDispatchPreservesRetry",
       "TestStandingDispatchSurvivesProjectRefresh",
-      "TestQueuedDispatchPreservesPullRequestEnrichment"
+      "TestQueuedDispatchPreservesPullRequestEnrichment",
+      "TestAttemptAllowanceCountsIssueJourney",
+      "TestAttemptAllowanceDispatchAndRestart",
+      "TestAttemptAllowanceTriagePublication",
+      "TestAttemptAllowanceNoteFormat",
+      "TestAttemptAllowanceMergeTimeAndRunningOwnership",
+      "TestAttemptAllowancePreservesOperatorCompletionLane"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
-      "TestWorkerCredentialBlockerError"
+      "TestWorkerCredentialBlockerError",
+      "TestRunnerTriageIsReadOnly"
     ],
     "./internal/store": [
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
@@ -78,7 +85,8 @@
     "./internal/connector/github": [
       "TestMachineIssueDuplicate",
       "TestMachineIssueSeparateConnectors",
-      "TestMachineOriginSurvivesBodyUpdates"
+      "TestMachineOriginSurvivesBodyUpdates",
+      "TestPullRequestMergeTimeSurvivesLaterActivity"
     ],
     "./internal/scheduler": [
       "TestGlobalDispatchGatePriorityOnlyPicksNextJob",

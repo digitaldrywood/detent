@@ -303,6 +303,7 @@ func attachMatchingPullRequestMergeStates(
 				BranchName: branchName,
 				State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
 				ActivityAt: cloneGitHubTime(pullRequest.ActivityAt),
+				MergedAt:   cloneGitHubTime(pullRequest.MergedAt),
 			}
 			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
 				number := pullRequest.Number
@@ -988,6 +989,7 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 		Draft:          pullRequest.Draft,
 		Labels:         labelNames(nodeConnection[label]{Nodes: pullRequest.Labels}),
 		ActivityAt:     cloneGitHubTime(pullRequest.UpdatedAt),
+		MergedAt:       parseGitHubTime(pullRequest.MergedAt),
 		HeadRefName:    pullRequest.Head.Ref,
 		BaseRefName:    pullRequest.Base.Ref,
 		HeadSHA:        pullRequest.Head.SHA,
@@ -1007,6 +1009,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		Draft:                        pullRequest.Draft,
 		Labels:                       append([]string{}, pullRequest.Labels...),
 		ActivityAt:                   cloneGitHubTime(pullRequest.ActivityAt),
+		MergedAt:                     cloneGitHubTime(pullRequest.MergedAt),
 		HeadSHA:                      strings.TrimSpace(pullRequest.HeadSHA),
 		BaseSHA:                      strings.TrimSpace(pullRequest.BaseSHA),
 		HydrationUnavailableReason:   strings.TrimSpace(pullRequest.HydrationUnavailableReason),

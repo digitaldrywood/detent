@@ -42,6 +42,7 @@ const (
 	RunModePlan      = "plan"
 	RunModeMerge     = "merge"
 	RunModeRoutine   = "routine"
+	RunModeTriage    = "triage"
 
 	RunOutputMergeFastPathClean       = "merge_fast_path_clean"
 	RunOutputMergeFastPathCheckedHead = "merge_fast_path_checked_head"
@@ -581,6 +582,8 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
+	TriageContext string
+
 	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
 	ProviderReports           []providercapacity.Report
 	Execution                 Execution

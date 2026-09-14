@@ -1397,8 +1397,7 @@ func doctorWorkflowOptimizationFindings(
 			patches...,
 		))
 	}
-	if metrics.MaxReworkLapsPerIssue > doctorWorkflowReworkLapThreshold && (cfg.Agent.AutoPromote.ReworkLimit == 0 || metrics.MaxReworkLapsPerIssue > int64(cfg.Agent.AutoPromote.ReworkLimit)) {
-		value := int(math.Max(1, math.Min(float64(metrics.MaxReworkLapsPerIssue-1), 2)))
+	if metrics.MaxReworkLapsPerIssue > doctorWorkflowReworkLapThreshold {
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleReworkLaps,
 			"Repeated rework laps",
 			fmt.Sprintf("issue %s entered rework %d times", metrics.MaxReworkLapsIssue, metrics.MaxReworkLapsPerIssue),
@@ -1406,9 +1405,7 @@ func doctorWorkflowOptimizationFindings(
 			map[string]any{
 				"max_rework_laps_per_issue": metrics.MaxReworkLapsPerIssue,
 				"max_rework_laps_issue":     metrics.MaxReworkLapsIssue,
-				"configured_rework_limit":   cfg.Agent.AutoPromote.ReworkLimit,
 			},
-			doctorWorkflowOptimizationPatch{Path: "agent.auto_promote.rework_limit", Value: value},
 		))
 	}
 	if cfg.Gate.Validator.Enabled && strings.TrimSpace(cfg.Gate.Validator.Model) == "" {

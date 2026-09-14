@@ -344,6 +344,13 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		StartedAt:    startedAt,
 		Outcome:      "completed",
 	}
+	// Do not overwrite durable reader progress when its lookup itself fails.
+	latest, _, err := m.store.LatestAdmissionRun(ctx, settings.ProjectID)
+	if err != nil {
+		return result, err
+	}
+	record.CandidateProgress = latest.CandidateProgress
+
 	defer func() {
 		if deferral, ok := connector.ErrorLocalDeferral(runErr); ok {
 			result.DeferredReason = deferral.Reason
@@ -435,7 +442,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	}
 
 	candidateCtx := connector.WithRESTFanoutBudget(ctx, admissionRESTFanoutScope+"_candidates")
-	candidates, readerTruncations, itemsRead, readerFiltered, err := readAdmissionCandidates(candidateCtx, settings.Issues, settings.Config)
+	candidates, readerTruncations, itemsRead, readerFiltered, err := readAdmissionCandidates(candidateCtx, settings.Issues, settings.Config, &record.CandidateProgress)
 	if err != nil {
 		return result, fmt.Errorf("fetch backlog admission candidates: %w", err)
 	}
@@ -699,6 +706,7 @@ func readAdmissionCandidates(
 	ctx context.Context,
 	issues IssueStore,
 	cfg config.BacklogAdmission,
+	progress *admissionmodel.CandidateProgress,
 ) ([]connector.Issue, int, int, map[string]int, error) {
 	requests := make([]connector.CandidateRequest, 0, 3)
 	if len(cfg.Sources.States) > 0 {
@@ -719,8 +727,19 @@ func readAdmissionCandidates(
 		})
 	}
 
+	if progress.Cursors == nil {
+		progress.Cursors = map[string]string{}
+	}
+	cursors := progress.Cursors
+	if len(requests) > 0 {
+		start := progress.NextSelector % len(requests)
+		requests = append(requests[start:], requests[:start]...)
+		progress.NextSelector = (start + 1) % len(requests)
+	}
 	limit := candidateReadLimit(cfg.MaxCandidatesPerRun)
 	candidates := []connector.Issue{}
+	activeCursors := map[string]bool{}
+	var readErr error
 	seen := map[string]struct{}{}
 	truncations := 0
 	itemsRead := 0
@@ -733,9 +752,24 @@ func readAdmissionCandidates(
 			issues.CandidateCapabilities().SupportsPushdown(connector.CandidateFilterAuthorHandle) {
 			request.Authors = append([]string(nil), cfg.Authors.Allow...)
 		}
-		result, err := issues.ReadCandidates(ctx, request)
+		requestJSON, err := json.Marshal(request)
 		if err != nil {
+			return nil, 0, 0, nil, err
+		}
+		key := stableAdmissionFingerprint(string(requestJSON))
+		activeCursors[key] = true
+		request.Cursor = cursors[key]
+		result, err := issues.ReadCandidates(ctx, request)
+		// A fanout cap ends this bounded read, while completed items remain useful.
+		deferral, deferred := connector.ErrorLocalDeferral(err)
+		if err != nil && (!deferred || deferral.Reason != connector.LocalDeferralReasonRESTFanoutCap) {
 			return nil, 0, 0, nil, fmt.Errorf("read %s selector: %w", request.Selector, err)
+		}
+		if err != nil {
+			readErr = err
+		}
+		if err == nil || result.NextCursor != "" {
+			cursors[key] = result.NextCursor
 		}
 		itemsRead += result.ItemsRead
 		if result.Truncated {
@@ -752,6 +786,14 @@ func readAdmissionCandidates(
 			seen[key] = struct{}{}
 			candidates = append(candidates, issue)
 		}
+	}
+	for key := range cursors {
+		if !activeCursors[key] {
+			delete(cursors, key)
+		}
+	}
+	if len(candidates) == 0 && readErr != nil {
+		return nil, truncations, itemsRead, filtered, readErr
 	}
 	return candidates, truncations, itemsRead, filtered, nil
 }
