@@ -331,6 +331,59 @@ reflection, generated runtime documents, and semantic equivalents require review
 PR before changing retired-symbol or mutation rules; removal from a list alone
 is not an authorized resurrection.
 
+## INV-10 — Priority only picks the next job
+
+**Statement:** Priority picks the next job. Nothing else.
+
+- If a task can be started, start one. Always. Free capacity is never held,
+  reserved, or kept idle for any project, lane, or priority.
+- When a slot frees, dispatch the highest-ranked READY request; if none of the
+  higher-ranked projects has anything ready, dispatch whatever is ready.
+- The system never cancels, stops, or preempts running work. Only a user cancels work.
+
+**Why:** Priority cancellation discarded running attempts, while selected-slot
+reservations refused ready work even with real global capacity available.
+
+**Enforcement:** The global gate queues eligible requests with a consuming event
+loop and ranks them together with new acquisitions. Submission, release, and
+capacity changes use the same real-slot acquisition operation. Pending requests
+own no capacity; project, lane, and host ceilings apply atomically to grants.
+Queued host assignment uses current real grants, including grants not yet
+consumed by an owner. Eligible hosts remain alternatives until acquisition;
+retry host preference cannot strand capacity on another available host.
+Owners consume grants in acquisition order and revalidate current candidates;
+refresh and shutdown discard pending requests and release unused grants.
+All modes use the same lifecycle; strict priority is
+only an ordering rule. Authorization, dependencies, retry readiness, and local
+lane ceilings are checked by the callers before acquisition. Admission reads
+and filters candidates before acquiring local or global capacity for evaluation.
+`TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
+`TestGlobalDispatchGateReadyRequests`, `TestGlobalDispatchGateConcurrentReadyRequests`,
+`TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
+`TestRunDispatchesQueuedRequestsWithoutPolling`,
+`TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
+`TestQueuedDispatchChoosesAvailableHost`, and
+`TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
+manifest. The existing boundary fuzz seeds retain free-capacity and release
+failure coverage. `TestRepositorySources` rejects retired selection, rescue,
+reservation, and preemption symbols and reason strings, including assembled
+constants. Only the two enumerated historical store readers and the dedicated
+configuration compatibility reader may retain old reason strings; negative
+fixtures cover that boundary. Previously valid staleness benign-reason overrides
+remain accepted on startup and reload, but retired reasons are neither emitted
+nor included in defaults.
+
+This change also enforces INV-3 by deleting preemption callbacks, speculative
+selection, reservation weights, lane rescue counters, and the separate strict
+lifecycle. Elastic pools also drop reclaim targets and borrower queues that
+held shared capacity for callers no longer acquiring. Pool and burst ceilings
+still apply. Queued acquisitions consolidate overlapping-call ordering and
+retained demand into executable requests; they introduce no selected-slot
+reservation, configuration, or recovery mechanism.
+
+**Change:** Edit INV-10 and its tests in the same PR before changing priority or
+capacity semantics. New names or indirect equivalents remain a review boundary.
+
 ## Check boundaries
 
 The source walk covers non-test Go packages under `internal`, `cmd`, and `tools`

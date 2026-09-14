@@ -297,6 +297,8 @@ type Orchestrator struct {
 	reaper                  WorkspaceReaper
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
+	globalDispatchReady     chan struct{}
+	globalDispatchPending   map[string]pendingGlobalDispatch
 	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
 	readIOPressure          func(context.Context) (hostpressure.Sample, error)
 	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
@@ -760,6 +762,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	o.globalDispatchReady = make(chan struct{}, 1)
+	o.globalDispatchPending = make(map[string]pendingGlobalDispatch)
+	defer o.cancelPendingGlobalDispatches()
 	defer func() {
 		o.capacityClearMu.Lock()
 		defer o.capacityClearMu.Unlock()
@@ -877,6 +882,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case request := <-o.modelPermitRequests:
 			state.syncWorkerProgress()
 			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
+		case <-o.globalDispatchReady:
+			state.syncWorkerProgress()
+			o.dispatchGrantedRequests(ctx, &state, o.clockNow())
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
 			o.startCompletion(&state)
@@ -897,6 +905,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			state.syncWorkerProgress()
 			o.handleValidatorCapacityEvent(&state, event)
 		case request := <-o.drainRequests:
+			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.startDrain(&state, request.at)
 			request.reply <- struct{}{}
@@ -920,9 +929,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				resetTicker(ticker, time.Millisecond)
 			}
 		case request := <-o.operatorMoves:
+			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			request.reply <- o.applyOperatorMove(ctx, &state, request.request, request.at)
 		case update := <-o.configUpdates:
+			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.applyRuntimeUpdate(&state, update.update, ticker)
 			o.finishTick(&state)

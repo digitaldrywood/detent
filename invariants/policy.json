@@ -28,7 +28,11 @@
       "TestObservedLaneCredentialCanaryCompletion",
       "TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
-      "TestMachineIssueTool"
+      "TestMachineIssueTool",
+      "TestRunDispatchesQueuedRequestsWithoutPolling",
+      "TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling",
+      "TestQueuedDispatchPreservesRetry",
+      "TestQueuedDispatchPreservesPullRequestEnrichment"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
@@ -54,7 +58,8 @@
       "TestMutationDocuments"
     ],
     "./internal/admission": [
-      "TestAdmissionRequiresLedgerWriter"
+      "TestAdmissionRequiresLedgerWriter",
+      "TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity"
     ],
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
@@ -65,6 +70,18 @@
       "TestMachineIssueDuplicate",
       "TestMachineIssueSeparateConnectors",
       "TestMachineOriginSurvivesBodyUpdates"
+    ],
+    "./internal/scheduler": [
+      "TestGlobalDispatchGatePriorityOnlyPicksNextJob",
+      "TestGlobalDispatchGateReadyRequests",
+      "TestGlobalDispatchGateConcurrentReadyRequests",
+      "TestQueuedDispatchRanksIndependentRequests",
+      "TestQueuedDispatchPreservesProjectCeilings",
+      "TestQueuedDispatchChoosesAvailableHost",
+      "TestQueuedDispatchSharedPoolRelease",
+      "TestQueuedDispatchCapacityChanges",
+      "TestQueuedDispatchRanksSynchronousAndQueuedCallersTogether",
+      "TestQueuedDispatchReleaseIncludesEnrolledCallers"
     ]
   }
 }

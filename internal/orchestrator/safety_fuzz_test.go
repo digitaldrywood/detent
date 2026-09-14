@@ -260,11 +260,11 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			t.Fatalf("ranking depends on input order: forward=%#v reverse=%#v", rankingIssueIDs(forward), rankingIssueIDs(reverse))
 		}
 
-		assertDemandDrivenPriorityReservation(t, gateScenario%4, now)
+		assertPriorityOnlyCapacity(t, gateScenario%4, now)
 	})
 }
 
-func assertDemandDrivenPriorityReservation(t *testing.T, scenario uint8, now time.Time) {
+func assertPriorityOnlyCapacity(t *testing.T, scenario uint8, now time.Time) {
 	t.Helper()
 
 	higher := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
@@ -306,7 +306,7 @@ func assertDemandDrivenPriorityReservation(t *testing.T, scenario uint8, now tim
 
 		gate.BeginProjectCycle(higher)
 		slot := requireSafetyGateGranted(t, gate, higher, now.Add(4*time.Second))
-		requireSafetyGateReserved(t, gate, lower, now.Add(5*time.Second))
+		requireSafetyGateFull(t, gate, lower, now.Add(5*time.Second))
 		gate.EndProjectCycle(higher.ID)
 		if err := gate.Release(slot); err != nil {
 			t.Fatalf("release higher-priority candidate: %v", err)
@@ -326,7 +326,7 @@ func assertDemandDrivenPriorityReservation(t *testing.T, scenario uint8, now tim
 		if err := gate.Release(slot); !errors.Is(err, releaseErr) {
 			t.Fatalf("release dynamic candidate: %v, want %v", err, releaseErr)
 		}
-		requireSafetyGateReserved(t, gate, lower, now.Add(time.Second))
+		requireSafetyGateFull(t, gate, lower, now.Add(time.Second))
 	}
 }
 
@@ -366,7 +366,7 @@ func requireSafetyGateGranted(
 	return slot
 }
 
-func requireSafetyGateReserved(
+func requireSafetyGateFull(
 	t *testing.T,
 	gate *scheduler.GlobalDispatchGate,
 	project scheduler.ProjectCandidate,
@@ -382,7 +382,7 @@ func requireSafetyGateReserved(
 	if err != nil {
 		t.Fatalf("TryAcquireWithDecision(%s): %v", project.ID, err)
 	}
-	if granted || decision.Reason != scheduler.DispatchGateReasonReservedForHigherPriorityProject {
-		t.Fatalf("TryAcquireWithDecision(%s) decision = %#v, want priority reservation", project.ID, decision)
+	if granted || decision.Reason != scheduler.DispatchGateReasonGlobalCapacityFull {
+		t.Fatalf("TryAcquireWithDecision(%s) decision = %#v, want global capacity full", project.ID, decision)
 	}
 }

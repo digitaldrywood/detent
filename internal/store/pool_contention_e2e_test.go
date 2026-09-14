@@ -119,10 +119,10 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 	}
 	refusal, ok := schedulerDecisionWithReason(
 		decisions,
-		scheduler.DispatchGateReasonReservedForHigherPriorityProject,
+		scheduler.DispatchGateReasonGlobalCapacityFull,
 	)
 	if !ok {
-		t.Fatalf("scheduler decision %q not found; decisions = %#v", scheduler.DispatchGateReasonReservedForHigherPriorityProject, decisions)
+		t.Fatalf("scheduler decision %q not found; decisions = %#v", scheduler.DispatchGateReasonGlobalCapacityFull, decisions)
 	}
 	cancel()
 	select {

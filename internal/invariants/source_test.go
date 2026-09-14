@@ -106,6 +106,9 @@ func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []str
 					report(n.Pos(), "INV-1 tracker lane method reference outside lane ledger/adapters")
 				}
 			case *ast.Ident:
+				if retiredPrioritySymbol(n.Name) {
+					report(n.Pos(), "INV-10 retired priority symbol "+n.Name)
+				}
 				if retiredSymbol(n.Name) {
 					report(n.Pos(), "INV-9 retired symbol "+n.Name)
 				}
@@ -113,6 +116,9 @@ func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []str
 				value := pkg.TypesInfo.Types[n].Value
 				if value != nil && value.Kind() == constant.String {
 					text := constant.StringVal(value)
+					if retiredPrioritySymbol(text) && !historicalPriorityReader(name) {
+						report(n.Pos(), "INV-10 retired priority mechanism string")
+					}
 					if retiredSymbol(text) && !retiredDetectorAllowed(name) {
 						report(n.Pos(), "INV-9 retired mechanism string")
 					}
@@ -189,6 +195,28 @@ func laneReasonArgument(name string) (int, bool) {
 func retiredSymbol(text string) bool {
 	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(text))
 	for _, forbidden := range []string{"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate"} {
+		if strings.Contains(normalized, forbidden) {
+			return true
+		}
+	}
+	return false
+}
+
+// Persisted decisions and configuration remain readable; only these readers may name
+// retired scheduler reasons. Identifiers never receive this exception.
+func historicalPriorityReader(file string) bool {
+	return file == "internal/store/pool_contention.go" || file == "internal/store/capacity_constraints.go" || file == "internal/config/historical_decision_reasons.go"
+}
+
+func retiredPrioritySymbol(text string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "", ".", "").Replace(text))
+	for _, forbidden := range []string{
+		"setpreempt", "preemptions", "preemptablerunningproject", "preemptionweightlocked", "preemptprojectslocked", "preemptprojectlocked",
+		"selectedprojectslot", "fillselectionslocked", "reconcileselectionslocked", "runningprojectswithselectionslocked", "unreservedcapacitylocked", "selectedreservationweightlocked", "strictfreecapacity", "beststrictreadyprojectranklocked", "readyprojectsforselectionlocked",
+		"elasticpoolstate", "reclaimtargets", "hasreclaimdemand", "hasguaranteedreadydemand", "cleanupelasticwaiters",
+		"prioritybypasses", "maxprioritylanebypasses", "recordprioritylanedispatchlocked", "haspriorityrescuereadylocked", "hasunselectedpriorityrescuereadylocked",
+		"selectedprojectwaiting", "reservedforhigherprioritystate", "reservedforhigherpriorityproject", "dispatchgatereasonreservedforhigherpriority", "schedulerglobaldispatchpreemption",
+	} {
 		if strings.Contains(normalized, forbidden) {
 			return true
 		}

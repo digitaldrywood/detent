@@ -721,6 +721,4 @@ func (g *countingProjectDispatchGate) TryAcquire(
 	return scheduler.Slot{}, true, nil
 }
 
-func (*countingProjectDispatchGate) SetPreempt(scheduler.Slot, func()) {}
-
 func (*countingProjectDispatchGate) Release(scheduler.Slot) error { return nil }

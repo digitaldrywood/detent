@@ -186,6 +186,10 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return !mergeWorkerIssue(issue) || lastDispatchFailure != dispatchIssueFailureGlobalSlotUnavailable
 		},
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
+			if _, pending := o.globalDispatchPending[issue.ID]; pending {
+				state.Retry[issue.ID] = retry
+				return
+			}
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
@@ -492,6 +496,24 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 	allowMergeControl bool,
 	retryState *Retry,
 ) dispatchIssueOutcome {
+	return o.dispatchIssueWithGlobalGrant(ctx, state, issue, attempt, now, preferredWorkerHost, modelPermitRequired, allowMergeControl, retryState, nil)
+}
+
+func (o *Orchestrator) dispatchIssueWithGlobalGrant(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+	allowMergeControl bool,
+	retryState *Retry,
+	grant *scheduler.DispatchResult,
+) dispatchIssueOutcome {
+	if grant != nil {
+		defer func() { o.releaseGlobalDispatchSlot(grant.Slot) }()
+	}
 	if mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "waiting for native merge queue"}
 	}
@@ -599,7 +621,21 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 	if pressureConstrained {
 		pressureCapacity = pressureConstraint.capacity
 	}
-	globalSlot, ok, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now, pressureCapacity)
+	var globalSlot scheduler.Slot
+	var decision scheduler.DispatchGateDecision
+	if grant != nil {
+		if normalizeState(grant.Slot.State) != normalizeState(slotIssue.State) || grant.Slot.Host != workerHost {
+			return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
+		}
+		globalSlot, decision, ok = grant.Slot, grant.Decision, grant.Err == nil
+		grant.Slot = scheduler.Slot{}
+	} else {
+		action := dispatchAction{issue: issue, attempt: attempt, workerHost: preferredWorkerHost, modelPermitRequired: modelPermitRequired, allowMergeControl: allowMergeControl, retryState: retryState}
+		globalSlot, ok, decision = o.acquireOrQueueGlobalDispatchSlot(ctx, state, action, slotIssue, workerHost, now, pressureCapacity, mergeControlEligible)
+		if ok && globalSlot != (scheduler.Slot{}) {
+			workerHost = globalSlot.Host
+		}
+	}
 	if !ok && mergeControlEligible && decision.Reason == scheduler.DispatchGateReasonGlobalCapacityFull {
 		mergeControl = true
 		ok = true
@@ -864,9 +900,6 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 		cancel:                 cancel,
 		stop:                   cancelCause,
 	}
-	o.setGlobalDispatchPreempt(globalSlot, func() {
-		cancelCause(runpkg.NewCancellationCause(context.Canceled, "scheduler.global_dispatch_preemption"))
-	})
 	state.Claimed[issue.ID] = claim
 	delete(state.Retry, issue.ID)
 	delete(state.Blocked, issue.ID)
@@ -1023,6 +1056,7 @@ type projectCycleDispatchGate interface {
 }
 
 func (o *Orchestrator) beginGlobalProjectCycle() {
+	o.cancelPendingGlobalDispatches()
 	if gate, ok := o.globalDispatchGate.(projectCycleDispatchGate); ok {
 		gate.BeginProjectCycle(o.cfg.Project)
 		return
@@ -1156,13 +1190,6 @@ func (o *Orchestrator) releaseGlobalDispatchSlot(slot scheduler.Slot) {
 	if err := o.globalDispatchGate.Release(slot); err != nil && o.logger != nil {
 		o.logger.Warn("release global dispatch slot failed", "project_id", o.cfg.Project.ID, "error", err)
 	}
-}
-
-func (o *Orchestrator) setGlobalDispatchPreempt(slot scheduler.Slot, preempt func()) {
-	if o.globalDispatchGate == nil || slot == (scheduler.Slot{}) {
-		return
-	}
-	o.globalDispatchGate.SetPreempt(slot, preempt)
 }
 
 func (o *Orchestrator) selectorContext() selector.Context {

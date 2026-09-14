@@ -36,7 +36,7 @@ audit work into feature implementation.
 | TUI backoff queue | All queued retries sorted by due time | Covered | None | Covered by `internal/tui/status_dashboard_parity_test.go`. |
 | TUI project links | Project, dashboard URL, next refresh | Covered | Closed: digitaldrywood/detent#150 | Go TUI renders project URL, dashboard URL, generated time, and next refresh. |
 | Dispatch order | Elixir candidate filtering, priorities, state caps, blocked dependencies | Covered | None | Covered by `internal/orchestrator/dispatch_parity_test.go` and related orchestrator tests. |
-| Scheduler fairness | Weighted, strict priority, round-robin, fair-share project selection | Covered | None | Covered by `internal/scheduler/global_test.go` and project manager scheduler tests. |
+| Scheduler ordering (INV-10) | Weighted, strict priority, round-robin, fair-share ranking of ready requests; real capacity acquisition without reservations or preemption | Covered | None | Covered by scheduler selection, concurrent gate acquisition, and admission eligibility tests in the invariant manifest. |
 | Merge train serialization | `Merging` state intentionally capped to one active agent | Covered | None | Documented in `README.md` and generated onboarding workflow defaults. |
 | Workspace hooks | after_create, before_run, after_run, before_remove | Covered | None | Covered by `internal/workspace/workspace_test.go` and wired through project runner construction. |
 | Codex app-server transcript | Elixir transcript byte-level JSON-RPC compatibility | Covered | None | Covered by `internal/codex/appserver_parity_test.go`. |

@@ -55,6 +55,8 @@ type poolPause struct {
 
 type PoolRegistry struct {
 	reconfigureMu sync.Mutex
+	requestMu     sync.Mutex
+	pending       []*dispatchRequest
 
 	mu             sync.RWMutex
 	active         map[string]*poolRuntime
@@ -63,7 +65,6 @@ type PoolRegistry struct {
 	pauses         map[uint64]poolPause
 	nextGeneration uint64
 	nextPause      uint64
-	elastic        elasticPoolState
 }
 
 var _ ProjectDispatchGate = (*PoolRegistry)(nil)
@@ -74,7 +75,6 @@ func NewPoolRegistry(pools []PoolConfig, projects []ProjectCandidate) (*PoolRegi
 		byGeneration: map[uint64]*poolRuntime{},
 		projectPools: map[string]string{},
 		pauses:       map[uint64]poolPause{},
-		elastic:      newElasticPoolState(),
 	}
 	if err := registry.Reconfigure(pools, projects); err != nil {
 		return nil, err
@@ -99,7 +99,7 @@ func (r *PoolRegistry) SetProjects(projects []ProjectCandidate) {
 	r.mu.Lock()
 	r.setProjectsLocked(projects)
 	r.mu.Unlock()
-	r.cleanupElasticWaiters()
+	r.dispatchPendingLocked()
 }
 
 func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandidate) error {
@@ -146,7 +146,6 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 		runtime.retired = true
 		runtime.gate.SetProjects(nil)
 		_ = runtime.gate.PauseDispatch()
-		r.elastic.remove(runtime.generation)
 	}
 	for _, runtime := range next {
 		if runtime.generation != 0 {
@@ -167,7 +166,7 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 	r.setProjectsLocked(projects)
 	r.cleanupRetiredLocked()
 	r.mu.Unlock()
-	r.cleanupElasticWaiters()
+	r.dispatchPendingLocked()
 	return nil
 }
 
@@ -194,6 +193,8 @@ func (r *PoolRegistry) PauseDispatch() func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			r.reconfigureMu.Lock()
+			defer r.reconfigureMu.Unlock()
 			r.mu.Lock()
 			pause, ok := r.pauses[pauseID]
 			if ok {
@@ -206,7 +207,10 @@ func (r *PoolRegistry) PauseDispatch() func() {
 			for _, release := range pause.releases {
 				release()
 			}
-			r.cleanupRetired()
+			r.dispatchPendingLocked()
+			r.mu.Lock()
+			r.cleanupRetiredLocked()
+			r.mu.Unlock()
 		})
 	}
 }
@@ -272,9 +276,6 @@ func (r *PoolRegistry) MarkIdle(project ProjectCandidate) {
 	runtime := r.runtimeForCandidate(project)
 	if runtime != nil {
 		runtime.gate.MarkIdle(project)
-		if !runtime.gate.hasReadyProjects() {
-			r.elastic.remove(runtime.generation)
-		}
 	}
 }
 
@@ -314,27 +315,70 @@ func (r *PoolRegistry) TryAcquireWithDecision(
 	req SlotRequest,
 	now time.Time,
 ) (Slot, bool, DispatchGateDecision, error) {
-	r.reconfigureMu.Lock()
-	defer r.reconfigureMu.Unlock()
-
-	runtime := r.runtimeForCandidate(project)
-	if runtime == nil {
-		return Slot{}, false, DispatchGateDecision{}, ErrNoCandidates
-	}
-	slot, ok, decision, err := runtime.gate.TryAcquireWithDecision(ctx, project, req, now)
-	decision = r.elasticDecision(runtime, decision)
-	if !ok || err != nil {
-		return slot, ok, decision, err
-	}
-	slot.poolName = runtime.name
-	slot.poolGeneration = runtime.generation
-	return slot, true, decision, nil
+	call := &dispatchRequest{ctx: ctx, project: project, request: req, now: now}
+	return r.acquireRequest(call)
 }
 
-func (r *PoolRegistry) SetPreempt(slot Slot, preempt func()) {
-	runtime := r.runtimeForSlot(slot)
-	if runtime != nil {
-		runtime.gate.SetPreempt(slot, preempt)
+func (r *PoolRegistry) acquireRequest(call *dispatchRequest) (Slot, bool, DispatchGateDecision, error) {
+	r.requestMu.Lock()
+	r.pending = append(r.pending, call)
+	r.requestMu.Unlock()
+
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+	r.dispatchPendingLocked()
+	return call.slot, call.granted, call.decision, call.err
+}
+
+func (r *PoolRegistry) dispatchPendingLocked() {
+	r.requestMu.Lock()
+	pending := r.pending
+	r.pending = nil
+	r.requestMu.Unlock()
+
+	// Keep routing and elastic pool accounting serialized while collecting
+	// concurrent callers before taking that lock. Each pool ranks its ready
+	// requests and acquires real slots in one operation.
+	var runtimes []*poolRuntime
+	byPool := make(map[*poolRuntime][]*dispatchRequest)
+	for _, request := range pending {
+		runtime := r.runtimeForCandidate(request.project)
+		if runtime == nil {
+			request.err = ErrNoCandidates
+			if request.result != nil {
+				request.result <- DispatchResult{Err: ErrNoCandidates}
+			}
+			continue
+		}
+		request.gate = runtime.gate
+		request.decorate = func(slot Slot) Slot {
+			slot.poolName = runtime.name
+			slot.poolGeneration = runtime.generation
+			return slot
+		}
+		if _, exists := byPool[runtime]; !exists {
+			runtimes = append(runtimes, runtime)
+		}
+		byPool[runtime] = append(byPool[runtime], request)
+	}
+	r.mu.RLock()
+	for _, runtime := range r.active {
+		if _, exists := byPool[runtime]; !exists {
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	r.mu.RUnlock()
+	for _, runtime := range runtimes {
+		runtime.gate.mu.Lock()
+		runtime.gate.dispatchLocked(byPool[runtime])
+		runtime.gate.mu.Unlock()
+		for _, request := range byPool[runtime] {
+			request.decision = r.elasticDecision(runtime, request.decision)
+			if request.granted && request.err == nil {
+				request.slot.poolName = runtime.name
+				request.slot.poolGeneration = runtime.generation
+			}
+		}
 	}
 }
 
@@ -346,10 +390,13 @@ func (r *PoolRegistry) Release(slot Slot) error {
 	if runtime == nil {
 		return ErrSlotNotHeld
 	}
-	if err := runtime.gate.Release(slot); err != nil {
+	runtime.gate.mu.Lock()
+	err := runtime.gate.releaseLocked(slot)
+	runtime.gate.mu.Unlock()
+	if err != nil {
 		return err
 	}
-	r.cleanupElasticWaiters()
+	r.dispatchPendingLocked()
 	r.mu.Lock()
 	r.cleanupRetiredLocked()
 	r.mu.Unlock()
@@ -416,18 +463,6 @@ func (r *PoolRegistry) runtimeForSlot(slot Slot) *poolRuntime {
 	}
 	r.mu.RUnlock()
 	return runtime
-}
-
-func (r *PoolRegistry) cleanupRetired() {
-	if r == nil {
-		return
-	}
-	r.reconfigureMu.Lock()
-	defer r.reconfigureMu.Unlock()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cleanupRetiredLocked()
 }
 
 func (r *PoolRegistry) cleanupRetiredLocked() {
@@ -537,10 +572,6 @@ func (g *projectPoolGate) TryAcquireWithDecision(
 ) (Slot, bool, DispatchGateDecision, error) {
 	project.ID = g.projectID
 	return g.registry.TryAcquireWithDecision(ctx, project, req, now)
-}
-
-func (g *projectPoolGate) SetPreempt(slot Slot, preempt func()) {
-	g.registry.SetPreempt(slot, preempt)
 }
 
 func (g *projectPoolGate) Release(slot Slot) error {
