@@ -3068,3 +3068,69 @@ exit %d
 		})
 	}
 }
+
+func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"checked-out", "rebase", "merge", "cherry-pick", "detached"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "quarantine-release"}
+			first, err := backend.Create(context.Background(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if operation == "rebase" || operation == "merge" || operation == "cherry-pick" {
+				for _, dir := range []string{first.Path, source} {
+					if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(dir+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, dir, "add", "README.md")
+					runGit(t, dir, "commit", "-m", "conflicting change")
+				}
+				if _, err := runGitAt(context.Background(), first.Path, operation, "main"); err == nil {
+					t.Fatal("want operation conflict")
+				}
+			}
+			if operation == "detached" {
+				runGit(t, first.Path, "switch", "--detach")
+			}
+			if err := os.WriteFile(filepath.Join(first.Path, "forensics.txt"), []byte("preserved\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			status := runGit(t, first.Path, "status", "--porcelain")
+			readme := readFile(t, filepath.Join(first.Path, "README.md"))
+			branchHead := strings.TrimSpace(runGit(t, source, "rev-parse", first.Branch))
+			quarantined, err := backend.quarantineWorktree(context.Background(), first.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := readFile(t, filepath.Join(quarantined, "forensics.txt")); got != "preserved\n" {
+				t.Fatalf("forensics = %q", got)
+			}
+			if got := strings.TrimSpace(runGit(t, source, "rev-parse", first.Branch)); got != branchHead {
+				t.Fatalf("branch moved: %s != %s", got, branchHead)
+			}
+			if got := runGit(t, quarantined, "status", "--porcelain"); got != status {
+				t.Fatalf("quarantine changed index: %q != %q", got, status)
+			}
+			if got := readFile(t, filepath.Join(quarantined, "README.md")); got != readme {
+				t.Fatal("quarantine changed tracked file")
+			}
+			fresh := filepath.Join(t.TempDir(), "fresh")
+			runGit(t, source, "worktree", "add", fresh, first.Branch)
+			runGit(t, source, "worktree", "remove", fresh)
+			retry, err := backend.Create(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("retry Create: %v", err)
+			}
+			if !retry.Created {
+				t.Fatal("retry did not create workspace")
+			}
+		})
+	}
+}
