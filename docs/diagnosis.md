@@ -51,7 +51,10 @@ usage, equivalent to `workflow_phase_events` filtered to
 `phase_type = 'agent_session'` in the 2026-09-07..14 audit. Do not add those two
 sources together. Complete here means recorded session usage: restart-abandoned
 sessions can lack a phase/usage row. `work_attempts.metrics_json` is not an
-alternative authority: some rows retain only the last turn. For attempt outcome
+alternative authority: rows written before the #2710 fix may retain only the
+last checkpoint/recovery segment, including on `session_duration_exceeded`.
+Terminal writes now use cumulative session usage and the session turn count;
+historical rows are not backfilled. For attempt outcome
 dimensions, use `coalesce(phase_event.total_tokens, metrics_json.total_tokens, 0)`
 and report the fallback coverage. Preserve validator/routine sessions that have
 no attempt when computing all-project spend. Missing metrics mean unknown

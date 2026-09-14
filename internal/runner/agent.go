@@ -1957,6 +1957,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	turnErr := execution.err
 	cleanupErr := execution.cleanupErr
 	result := execution.result
+	result.TurnCount = execution.turnCount
 	result.WorkspaceBranch = strings.TrimSpace(info.Branch)
 	if mergeFallback && turnErr == nil {
 		targetBranch := ""

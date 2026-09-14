@@ -89,6 +89,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	// The final result includes checkpoint and recovery segments; live progress
+	// can still describe only the last segment. Use the session totals for every
+	// completion path, retaining progress when a runner has no final usage.
+	if event.Result.Tokens != (TokenTotals{}) {
+		running.Tokens = event.Result.Tokens
+	}
+	if event.Result.TurnCount > 0 {
+		running.TurnCount = event.Result.TurnCount
+	}
+	state.Running[event.IssueID] = running
 	if errors.As(event.Err, &running.Cancellation) {
 		state.Running[event.IssueID] = running
 	}
