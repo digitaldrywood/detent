@@ -191,7 +191,7 @@ func (o *Orchestrator) retainUnacknowledgedRecoveryParks(ctx context.Context, st
 				}
 				continue
 			}
-			if park != nil && recoveryParkAcknowledged(event, metadata, *park) {
+			if park != nil && o.recoveryParkAcknowledged(event, metadata, *park) {
 				acknowledgedPark = park
 				parkReleasedAt = workflowLaneTransitionAt(event)
 				if operatorAcknowledgesRecoveryPark(event, metadata) {
@@ -263,7 +263,7 @@ func recoveryParkEventMatchesIssue(event store.WorkflowPhaseEvent, issue connect
 	return event.IssueURL != "" && event.IssueURL == issue.URL
 }
 
-func recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata) bool {
+func (o *Orchestrator) recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata) bool {
 	if operatorAcknowledgesRecoveryPark(event, metadata) {
 		return true
 	}
@@ -276,6 +276,8 @@ func recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowL
 	switch event.Reason {
 	case workflowActionCauseBlockedRecovery:
 		return park.Owner == blockedRecoveryOwnerOrchestrator || deliverableRecoveryPark(park)
+	case string(AutoPromoteReasonCINotGreen):
+		return deliverableRecoveryPark(park) && normalizeState(event.PreviousPhaseName) == normalizeState(blockedStatusState) && normalizeState(event.PhaseName) == normalizeState(staleMergedPullRequestTargetState(AutoPromoteDecision{Reason: AutoPromoteReasonCINotGreen}, o.cfg.AutoPromote, o.cfg.TerminalStates))
 	case workflowActionBlockedReadyPRReconciliation:
 		return blockedReadyPullRequestRecoverableCause(park)
 	case "obsolete_artifact_spend_recovery":

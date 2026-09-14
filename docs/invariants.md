@@ -221,7 +221,8 @@ branch to Rework (#2528). This retires the human-owned no-PR park by consolidati
 the repair into the existing deliverable-recovery and operator-routine paths.
 
 Deliverable-park retirement transitions also acknowledge that retired park during
-durable timeline replay (#2603). This consolidates automatic retirement with the
+durable timeline replay (#2603), including the merged-PR failed-CI transition
+from Blocked to Rework. This consolidates automatic retirement with the
 existing park acknowledgement path, so a return to Rework cannot resurrect the
 retired block. Independent human parks and later parks remain protected. Covered
 by `TestDeliverableRecoveryRetirementAcknowledgement`.
