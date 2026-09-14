@@ -452,6 +452,10 @@ func boardForgeUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 			Target:  "#board-alert-forge-unavailable",
 			Confirm: "Clear the forge availability condition and allow write delivery to resume?",
 		}
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			alert.Action.Label = "Retry write canary"
+			alert.Action.Confirm = "Retry the GitHub write canary now? Project dispatch stays paused until a write succeeds."
+		}
 	}
 	return alert, true
 }

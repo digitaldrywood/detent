@@ -833,6 +833,7 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 			dispatchProgress = o.implementProgressDispatchArtifactSnapshot(runCtx, issue)
 		}
 	}
+	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	generation := o.workerGeneration.Add(1)
 	state.Running[issue.ID] = Running{
 		Issue:                  issue,

@@ -3930,3 +3930,46 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		issue    string
+		metadata string
+		wantWait bool
+	}{
+		{name: "inconclusive same issue", issue: "waiting", metadata: `{}`, wantWait: true},
+		{name: "other host proof", issue: "waiting", metadata: `{"forge_write_completed_host":"other.example"}`, wantWait: true},
+		{name: "same issue proof", issue: "waiting", metadata: `{"forge_write_completed_host":"github.com"}`},
+		{name: "other issue canary proof", issue: "other", metadata: `{"forge_write_completed_host":"github.com"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := openTestStore(t, t.Context())
+			now := time.Date(2026, 9, 14, 1, 0, 0, 0, time.UTC)
+			for index, issue := range []string{"waiting", tt.issue} {
+				id, err := backend.StartWorkAttempt(t.Context(), WorkAttemptStart{ProjectID: "detent", IssueID: issue, WorkerType: "agent", StartedAt: now})
+				if err != nil {
+					t.Fatal(err)
+				}
+				completion := WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(time.Duration(index) * time.Minute), TerminalState: WorkAttemptTerminalSuccess, WorkerMetadataJSON: tt.metadata}
+				if index == 0 {
+					completion.TerminalState = WorkAttemptTerminalCapacity
+					completion.ErrorClass = "forge_unavailable"
+					completion.WorkerMetadataJSON = `{"forge_wait":{"host":"github.com","operation":"git push","error_class":"worker_github_credential_unavailable"}}`
+				}
+				if err := backend.CompleteWorkAttempt(t.Context(), completion); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pending, err := backend.ListPendingForgeAvailabilityWaits(t.Context(), "detent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(pending) == 1) != tt.wantWait {
+				t.Fatalf("pending = %#v, want wait %v", pending, tt.wantWait)
+			}
+		})
+	}
+}

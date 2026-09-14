@@ -14,6 +14,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -148,13 +149,27 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	running.ArtifactEvidence = event.Result.ArtifactEvidence
+	running.ForgeWriteCompleted = event.Result.ForgeWriteCompleted
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
 	if running.CompletionLane != "" {
+		event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
+		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
+			return
+		}
+		o.finishForgeAvailabilityProbe(state, event, running)
 		o.finishObservedLaneRun(ctx, state, running, event)
 		return
+	}
+	if running.ForgeProbeHost != "" && !event.Result.ForgeWriteCompleted {
+		if condition, active := forgeCondition(state, running.ForgeProbeHost); active &&
+			condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable &&
+			o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+			return
+		}
 	}
 	if issueConfigurationFailure(event.Err, "", "") {
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "issue_configuration", event.Err.Error(), "blocked", "correct the issue agent override before recovery")

@@ -53,6 +53,16 @@ approval-denial classification through the existing instance-owned forge wait, w
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
 reports as write-path failures, and `TestCredentialForgeProbeRequiresSuccessfulWrite`
 keeps the named project pause active until its write canary succeeds.
+`TestCredentialWaitSurvivesOverlappingFailures` preserves credential precedence
+when same-host failures overlap. `TestCredentialCanaryDurableRecovery` preserves
+inconclusive probes as durable waits and records successful write proof so restart
+recovery cannot resurrect a resolved pause.
+`TestCredentialConditionOutlivesOriginatingIssue` separates project health from
+issue eligibility, and `TestCredentialClearSchedulesCanaryWithoutUnpausing`
+consolidates the operator clear action onto that same write canary.
+`TestObservedLaneCredentialCanaryCompletion` preserves instance recovery when
+a canary observes a lane transition. When a condition outlives its original
+issue, the existing dispatch reservation selects one replacement canary.
 `TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause` preserves migrated
 credential waits across restart even after they leave the bounded general history window.
 These execute through the invariant manifest. Runtime evidence is needed

@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -109,7 +110,9 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 				o.logger.Warn("forge availability wait recovery failed", "project_id", projectID, "error", waitErr)
 			}
 		} else {
-			forgeRecoveryAttempts = append(forgeRecoveryAttempts, pending...)
+			// This read owns pending-wait selection, including durable write proof.
+			// General history must not reintroduce a resolved wait or hide an old one.
+			forgeRecoveryAttempts = pending
 		}
 	}
 	o.recoverForgeAvailabilityWaits(ctx, state, forgeRecoveryAttempts, now)
@@ -1075,6 +1078,9 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 		"run_mode":            strings.TrimSpace(running.Mode),
 		"issue_title":         strings.TrimSpace(running.Issue.Title),
 		"work_product_pushed": running.WorkProductPushed,
+	}
+	if running.ForgeWriteCompleted && strings.TrimSpace(running.ForgeProbeHost) != "" {
+		out["forge_write_completed_host"] = forgeavailability.NormalizeHost(running.ForgeProbeHost)
 	}
 	if running.Cancellation != nil {
 		out["cancellation"] = running.Cancellation

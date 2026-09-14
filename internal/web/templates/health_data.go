@@ -727,10 +727,12 @@ func healthNaturalList(values []string) string {
 }
 
 func forgeUnavailableHealthDetail(conditions []telemetry.ForgeCondition) string {
-	if len(conditions) == 1 {
-		if conditions[0].ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
-			return "Worker GitHub credential is unavailable; project dispatch is paused until a successful write canary proves recovery. Restore it with gh auth login or GH_TOKEN."
+	for _, condition := range conditions {
+		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+			return "Worker GitHub credential is unavailable; project dispatch is paused until a successful write canary proves recovery. Restore authentication with gh auth login or GH_TOKEN and ensure the worker is permitted to use its GitHub write path, including connector write approval and credential injection."
 		}
+	}
+	if len(conditions) == 1 {
 		host := strings.TrimSpace(conditions[0].Host)
 		if host == "" {
 			host = "The configured forge"

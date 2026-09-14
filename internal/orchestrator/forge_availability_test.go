@@ -625,3 +625,187 @@ type forgeWaitRecoveryConnector struct {
 func (c *forgeWaitRecoveryConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
 	return append([]connector.Issue(nil), c.issues...), c.err
 }
+
+func TestCredentialWaitSurvivesOverlappingFailures(t *testing.T) {
+	t.Parallel()
+	for _, order := range [][]string{
+		{forgeavailability.ClassWorkerGitHubCredentialUnavailable, forgeavailability.ClassTransport},
+		{forgeavailability.ClassTransport, forgeavailability.ClassWorkerGitHubCredentialUnavailable},
+	} {
+		t.Run(order[0], func(t *testing.T) {
+			now := time.Date(2026, 9, 14, 1, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ForgeHost: "github.com"})
+			orch := Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			restarted := newState(cfg)
+			for index, class := range order {
+				issue := dispatchTestIssue(class, "In Progress")
+				condition := orch.registerForgeUnavailable(&state, forgeavailability.NewError(
+					forgeavailability.Scope{Host: "github.com", Operation: "git push"}, class, errors.New(class)), Running{Issue: issue}, now.Add(time.Duration(index)*time.Second))
+				orch.restoreForgeAvailabilityWait(&restarted, issue, store.WorkAttempt{CompletedAt: now}, forgeWaitMetadata{
+					Host: "github.com", Operation: "git push", ErrorClass: class, DetectedAt: now,
+				}, now)
+				if index == 1 && condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+					t.Fatalf("overlapping failure downgraded credential pause: %#v", condition)
+				}
+			}
+			other := dispatchTestIssue("other", "In Progress")
+			other.URL = "https://linear.app/team/issue/other"
+			for _, candidate := range []*State{&state, &restarted} {
+				if !forgeAvailabilityBlocks(candidate, other, Retry{}, "github.com", now) {
+					t.Fatal("ordinary cross-host work escaped credential pause")
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialCanaryDurableRecovery(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name           string
+		err            error
+		writeCompleted bool
+	}{
+		{name: "inconclusive error", err: errors.New("worker stopped before writing")},
+		{name: "inconclusive success"},
+		{name: "token resolution", err: &runpkg.WorkerGitHubTokenResolutionError{}},
+		{name: "budget monitor", err: &runpkg.WorkerGitHubBudgetMonitorError{}},
+		{name: "successful write", writeCompleted: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 14, 1, 0, 0, 0, time.UTC)
+			backend := openWorkAttemptRecoveryStore(t, t.Context())
+			issue := dispatchTestIssue("credential-probe", "In Progress")
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ForgeHost: "github.com", ActiveStates: []string{"In Progress"}, MaxConcurrentAgents: 1})
+			orch := Orchestrator{cfg: cfg, workAttempts: backend, connector: &forgeWaitRecoveryConnector{issues: []connector.Issue{issue}}, now: func() time.Time { return now }}
+			state := newState(cfg)
+			for index := range 2 {
+				id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, WorkerType: "agent", Lane: issue.State, StartedAt: now.Add(time.Duration(index) * time.Minute)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				running := Running{Issue: issue, WorkAttemptID: id, Attempt: index + 1, StartedAt: now}
+				if index == 0 {
+					orch.handleForgeUnavailableCompletion(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now,
+						Err: forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "git push"}, forgeavailability.ClassWorkerGitHubCredentialUnavailable, errors.New("gh auth login")),
+					}, running)
+					continue
+				}
+				running.ForgeProbeHost = "github.com"
+				condition := state.ForgeUnavailable["github.com"]
+				condition.ProbeIssueID = issue.ID
+				state.ForgeUnavailable["github.com"] = condition
+				state.Running[issue.ID] = running
+				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID,
+					Request: runpkg.RunRequest{Issue: issue, Attempt: index + 1}, CompletedAt: now.Add(time.Minute), Err: tt.err,
+					Result: runpkg.RunResult{TurnStarted: true, FinalState: FinalStateCompleted, ForgeWriteCompleted: tt.writeCompleted},
+				})
+			}
+			for _, candidate := range []*State{&state, nil} {
+				if candidate == nil {
+					restarted := newState(cfg)
+					orch.recoverDurableWorkAttempts(t.Context(), &restarted, now.Add(2*time.Minute))
+					candidate = &restarted
+				}
+				_, paused := candidate.ForgeUnavailable["github.com"]
+				if paused == tt.writeCompleted {
+					t.Fatalf("paused = %v, write completed = %v", paused, tt.writeCompleted)
+				}
+				if !tt.writeCompleted && !candidate.Retry[issue.ID].ForgeUnavailable {
+					t.Fatal("credential canary retry lost")
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialConditionOutlivesOriginatingIssue(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"Done", "Blocked", "missing"} {
+		t.Run(lane, func(t *testing.T) {
+			now := time.Date(2026, 9, 14, 1, 0, 0, 0, time.UTC)
+			issue := dispatchTestIssue("origin", lane)
+			tracker := &forgeWaitRecoveryConnector{issues: []connector.Issue{issue}}
+			if lane == "missing" {
+				tracker.issues = nil
+			}
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			orch := Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			orch.recoverForgeAvailabilityWaits(t.Context(), &state, []store.WorkAttempt{{
+				ID: 1, IssueID: issue.ID, Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity,
+				CompletedAt: now, ErrorClass: forgeUnavailableErrorClass,
+				WorkerMetadataJSON: `{"forge_wait":{"host":"github.com","operation":"git push","error_class":"worker_github_credential_unavailable"}}`,
+			}}, now)
+			if _, ok := state.ForgeUnavailable["github.com"]; !ok {
+				t.Fatal("issue state erased project credential condition")
+			}
+			if len(state.Retry) != 0 {
+				t.Fatalf("inactive issue must not be retried: %#v", state.Retry)
+			}
+			replacement := dispatchTestIssue("replacement", "In Progress")
+			planner := newDispatchPlanner(cfg)
+			action, dispatchable, reason := planner.dispatchAction(&state, replacement, now)
+			if !dispatchable {
+				t.Fatalf("replacement canary refused: %s", reason)
+			}
+			planner.markDispatched(&state, action, now)
+			if state.Running[replacement.ID].ForgeProbeHost != "github.com" {
+				t.Fatal("replacement did not reserve existing canary")
+			}
+			if !forgeAvailabilityBlocks(&state, dispatchTestIssue("other", "In Progress"), Retry{}, "github.com", now) {
+				t.Fatal("multiple ordinary workers admitted as canary")
+			}
+
+		})
+	}
+}
+
+func TestCredentialClearSchedulesCanaryWithoutUnpausing(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 14, 1, 0, 0, 0, time.UTC)
+	orch := Orchestrator{cfg: normalizeConfig(Config{})}
+	state := newState(orch.cfg)
+	issue := dispatchTestIssue("probe", "In Progress")
+	state.ForgeUnavailable["github.com"] = ForgeCondition{Host: "github.com", ErrorClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable, NextProbeAt: now.Add(time.Hour)}
+	state.Retry[issue.ID] = Retry{Issue: issue, ForgeUnavailable: true, ForgeHost: "github.com", DueAt: now.Add(time.Hour)}
+	if cleared := orch.clearForgeAvailability(&state, "github.com", now); len(cleared) != 0 {
+		t.Fatalf("cleared = %#v without write proof", cleared)
+	}
+	condition, ok := state.ForgeUnavailable["github.com"]
+	if !ok || !condition.NextProbeAt.Equal(now) || !state.Retry[issue.ID].DueAt.Equal(now) {
+		t.Fatal("clear did not retain condition and schedule canary now")
+	}
+	if forgeAvailabilityBlocks(&state, issue, state.Retry[issue.ID], "github.com", now) {
+		t.Fatal("due canary blocked")
+	}
+	if !forgeAvailabilityBlocks(&state, dispatchTestIssue("other", "In Progress"), Retry{}, "github.com", now) {
+		t.Fatal("ordinary dispatch unpaused without write proof")
+	}
+}
+
+func TestObservedLaneCredentialCanaryCompletion(t *testing.T) {
+	t.Parallel()
+	for _, writeCompleted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "inconclusive", true: "successful write"}[writeCompleted], func(t *testing.T) {
+			now := time.Date(2026, 9, 14, 1, 0, 0, 0, time.UTC)
+			issue := dispatchTestIssue("probe", "Done")
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			tracker := &backendCapacityTestConnector{}
+			orch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: &recordingWorkAttemptStore{}}
+			state := newState(cfg)
+			state.ForgeUnavailable["github.com"] = ForgeCondition{Host: "github.com", Operation: "git push", ErrorClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable, ProbeIssueID: issue.ID}
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 1, CompletionLane: "Done", ForgeProbeHost: "github.com"}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{ForgeWriteCompleted: writeCompleted, FinalState: FinalStateCompleted, TurnStarted: true}})
+			condition, paused := state.ForgeUnavailable["github.com"]
+			if paused == writeCompleted || condition.ProbeIssueID != "" {
+				t.Fatalf("condition = %#v, paused = %v, write completed = %v", condition, paused, writeCompleted)
+			}
+			if len(tracker.updates) != 0 || len(state.Retry) != 0 {
+				t.Fatalf("observed lane changed or retried: updates=%#v retries=%#v", tracker.updates, state.Retry)
+			}
+		})
+	}
+}

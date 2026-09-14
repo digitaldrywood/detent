@@ -860,10 +860,15 @@ func TestHealthSurfacesWorkerGitHubCredentialPauseAndResolution(t *testing.T) {
 	if len(rows) != 1 || !strings.Contains(rows[0].Detail, "worker_github_credential_unavailable") || rows[0].Resets != "on successful write canary" {
 		t.Fatalf("credential health rows = %#v, want named condition and resolving action", rows)
 	}
-	detail := forgeUnavailableHealthDetail([]telemetry.ForgeCondition{condition})
-	for _, want := range []string{"project dispatch is paused", "successful write canary", "gh auth login", "GH_TOKEN"} {
-		if !strings.Contains(detail, want) {
-			t.Fatalf("credential health detail = %q, want %q", detail, want)
+	for _, conditions := range [][]telemetry.ForgeCondition{
+		{condition},
+		{{Host: "other.example", ErrorClass: "transport"}, condition},
+	} {
+		detail := forgeUnavailableHealthDetail(conditions)
+		for _, want := range []string{"project dispatch is paused", "successful write canary", "gh auth login", "GH_TOKEN", "connector write approval", "credential injection"} {
+			if !strings.Contains(detail, want) {
+				t.Fatalf("credential health detail = %q, want %q", detail, want)
+			}
 		}
 	}
 }

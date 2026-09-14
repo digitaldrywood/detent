@@ -18,6 +18,11 @@
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
       "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
       "TestCredentialForgeProbeRequiresSuccessfulWrite",
+      "TestCredentialWaitSurvivesOverlappingFailures",
+      "TestCredentialCanaryDurableRecovery",
+      "TestCredentialConditionOutlivesOriginatingIssue",
+      "TestCredentialClearSchedulesCanaryWithoutUnpausing",
+      "TestObservedLaneCredentialCanaryCompletion",
       "TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool"

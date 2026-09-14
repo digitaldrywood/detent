@@ -3220,6 +3220,9 @@ func TestBoardAlertsNameWorkerGitHubCredentialProjectPause(t *testing.T) {
 	if len(alerts) != 1 {
 		t.Fatalf("boardAlerts() = %#v, want one project pause", alerts)
 	}
+	if alerts[0].Action == nil || alerts[0].Action.Label != "Retry write canary" || !strings.Contains(alerts[0].Action.Confirm, "stays paused") {
+		t.Fatalf("credential action = %#v, want write canary without unpausing", alerts[0].Action)
+	}
 	combined := alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Detail
 	for _, want := range []string{"Project dispatch is paused", "successful write canary", "worker_github_credential_unavailable"} {
 		if !strings.Contains(combined, want) {
