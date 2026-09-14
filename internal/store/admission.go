@@ -1059,6 +1059,39 @@ INSERT INTO backlog_admission_runs (
 	return nil
 }
 
+// AdmissionCandidateHistory returns the most recent evaluation of each issue.
+// Old proposal-only run records have no evaluation fingerprint and are ignored.
+// Reading the existing issues JSON keeps selection and operator evidence together.
+func (s *sqliteStore) AdmissionCandidateHistory(ctx context.Context, projectID string) (map[string]admissionmodel.IssueRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT value FROM (
+  SELECT issue.value,
+         ROW_NUMBER() OVER (
+           PARTITION BY json_extract(issue.value, '$.id')
+           ORDER BY run.id DESC
+         ) AS position
+  FROM backlog_admission_runs AS run, json_each(run.issues_json) AS issue
+  WHERE run.project_id = ? AND COALESCE(json_extract(issue.value, '$.fingerprint'), '') != ''
+) WHERE position = 1`, strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("read backlog admission candidate history: %w", err)
+	}
+	defer rows.Close()
+	history := make(map[string]admissionmodel.IssueRecord)
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var issue admissionmodel.IssueRecord
+		if err := json.Unmarshal([]byte(raw), &issue); err != nil {
+			return nil, fmt.Errorf("decode backlog admission candidate history: %w", err)
+		}
+		history[issue.ID] = issue
+	}
+	return history, rows.Err()
+}
+
 func (s *sqliteStore) LatestAdmissionRun(ctx context.Context, projectID string) (admissionmodel.RunRecord, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT project_id, scheduled_for, started_at, completed_at, outcome,

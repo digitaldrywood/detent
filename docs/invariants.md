@@ -109,6 +109,16 @@ context is already canceled is consumed without starting an agent. This removes 
 implicit same-slot retry and relies on the existing schedule-ownership context rather
 than adding a retry, backoff, or lease mechanism (#2526).
 
+Backlog admission selection uses the existing run issue records for evaluation
+identity, fingerprints, and stale verdicts. Unchanged stale candidates join the
+existing epic and malformed-result exclusions before the window is capped;
+remaining candidates rotate by last evaluation time. This replaces the fixed
+evaluation window with selection from run/skip bookkeeping, without a
+new routine, reason code, or suppression table (#2568).
+Saved stale verdicts and new evaluations share the same point-lookup revalidation;
+a candidate returning to its original eligible snapshot can re-enter the window.
+This removes unconditional historical suppression across eligibility cycles.
+
 Deliverable recovery opens a draft pull request when a worker already pushed an
 exact-head branch but failed before creating the PR, and returns a missing remote
 branch to Rework (#2528). This retires the human-owned no-PR park by consolidating
