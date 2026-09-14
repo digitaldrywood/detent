@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
@@ -115,8 +116,11 @@ func TestCandidateHydrationResumesPartialLocalBatch(t *testing.T) {
 		t.Run(fmt.Sprintf("budget=%d", limit), func(t *testing.T) {
 			t.Parallel()
 			issues := make([]connector.Issue, 103)
+			// Variable fractional precision sorts differently as SQLite text and Go time.
+			base := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 			for i := range issues {
-				issues[i] = connector.Issue{ID: fmt.Sprintf("issue-%03d", i), Identifier: fmt.Sprintf("digitaldrywood/detent#%03d", i+1), State: "Backlog"}
+				createdAt := base.Add(time.Duration(i) * time.Nanosecond)
+				issues[i] = connector.Issue{CreatedAt: &createdAt, ID: fmt.Sprintf("issue-%03d", i), Identifier: fmt.Sprintf("digitaldrywood/detent#%03d", i+1), State: "Backlog"}
 			}
 			backend, err := local.New(local.Config{Path: filepath.Join(t.TempDir(), "issues.db"), ProjectID: "detent", Issues: issues})
 			if err != nil {
@@ -129,7 +133,7 @@ func TestCandidateHydrationResumesPartialLocalBatch(t *testing.T) {
 			})
 			request := connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: 100}
 			seen := map[string]bool{}
-			for range 400 {
+			for range (len(issues) + limit - 1) / limit {
 				upstream := &partialCandidateBackend{remaining: limit}
 				c := &Connector{local: backend, github: upstream, repository: "digitaldrywood/detent"}
 				result, err := c.ReadCandidates(t.Context(), request)
