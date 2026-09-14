@@ -50,7 +50,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		return out
 	}
 	pruneNativeMergeQueueEntries(state, out)
-	stickyIssueID := stickyMergingIssueID(state, out, now, o.cfg.MergeFairnessAge)
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
 		if ctx.Err() != nil {
@@ -66,9 +65,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		}
 		if cached, ok := state.nativeMergeQueueEntries[issueID]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueEntryRefresh && cached.HeadSHA == strings.TrimSpace(candidate.PullRequest.HeadSHA) {
 			applyNativeMergeQueueEntry(out, issueID, cached.Entry)
-			continue
-		}
-		if mergeFairnessBlocks(state, stickyIssueID, candidate, now) {
 			continue
 		}
 
@@ -217,7 +213,7 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 func nativeMergeQueueRepositoryKey(issue connector.Issue) string {
 	baseRef := ""
 	if issue.PullRequest != nil {
-		baseRef = strings.ToLower(strings.TrimSpace(issue.PullRequest.BaseRef))
+		baseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
 	}
 	return mergeWorkerRepositoryKey(issue) + "@" + baseRef
 }

@@ -104,7 +104,7 @@ func TestReadyMergeCapacitySafety(t *testing.T) {
 		{name: "base refresh required", setup: func(s *State, i connector.Issue) {
 			r := reserveMergeCandidate(s, i, time.Date(2026, 9, 9, 2, 19, 35, 0, time.UTC))
 			r.RefreshHeadSHA = i.PullRequest.HeadSHA
-			s.mergeReservations[r.Repository] = r
+			s.mergeReservations[r.IssueID] = r
 		}},
 	}
 	for _, tt := range tests {
@@ -165,7 +165,6 @@ func TestReadyMergeCapacityOrdering(t *testing.T) {
 			first, second := oldest, newer
 			if reserved {
 				reserveMergeCandidate(&state, newer, now)
-				first, second = newer, oldest
 			}
 			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{newer, oldest}}}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}

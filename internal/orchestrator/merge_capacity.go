@@ -15,7 +15,7 @@ func (p dispatchPlanner) readyMergeControlCandidate(state *State, issue connecto
 	if retry, ok := state.Retry[issue.ID]; ok && retry.MergePrecheck != nil {
 		return false
 	}
-	return state.mergeReservations[mergeWorkerRepositoryKey(issue)].RefreshHeadSHA != issue.PullRequest.HeadSHA
+	return state.mergeReservations[issue.ID].RefreshHeadSHA != issue.PullRequest.HeadSHA
 }
 
 func sameMergeControlRevision(checked, current connector.Issue) bool {

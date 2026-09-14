@@ -32,7 +32,6 @@ const (
 	DecisionReasonInvalidCandidate                 = "invalid_candidate"
 	DecisionReasonLifetimeLimit                    = "lifetime_limit"
 	DecisionReasonLocalSlotUnavailable             = "local_slot_unavailable"
-	DecisionReasonMergeFairnessHeadReserved        = "merge_fairness_head_reserved"
 	DecisionReasonMergeWorkerCurrentHeadCIExceeded = "merge_worker_current_head_ci_wait_exceeded"
 	DecisionReasonMergedPullRequestPending         = "merged_pull_request_reconciliation_pending"
 	DecisionReasonOwnershipAssigneeRequired        = "ownership_assignee_required"
@@ -77,7 +76,6 @@ var emittedDecisionReasons = []string{
 	DecisionReasonInvalidCandidate,
 	DecisionReasonLifetimeLimit,
 	DecisionReasonLocalSlotUnavailable,
-	DecisionReasonMergeFairnessHeadReserved,
 	DecisionReasonMergeWorkerCurrentHeadCIExceeded,
 	DecisionReasonMergedPullRequestPending,
 	DecisionReasonOwnershipAssigneeRequired,

@@ -2363,6 +2363,7 @@ func TestStalenessRepeatedDecisionBenignReasonsAcceptHistoricalReasons(t *testin
 		"selected_project_waiting",
 		"reserved_for_higher_priority_state",
 		"reserved_for_higher_priority_project",
+		"merge_fairness_head_reserved",
 	} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()

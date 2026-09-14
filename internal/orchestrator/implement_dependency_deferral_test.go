@@ -24,11 +24,11 @@ func TestCompletedDependencyWaitReleasesOwnedMergeReservation(t *testing.T) {
 		name          string
 		foreignOwner  bool
 		completionErr error
-		wantBlocked   bool
+		wantRetained  bool
 	}{
 		{name: "saved wait releases repository"},
-		{name: "another issue retains reservation", foreignOwner: true, wantBlocked: true},
-		{name: "failed persistence retains reservation", completionErr: errors.New("attempt store unavailable"), wantBlocked: true},
+		{name: "another issue retains reservation", foreignOwner: true, wantRetained: true},
+		{name: "failed persistence retains reservation", completionErr: errors.New("attempt store unavailable"), wantRetained: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -57,11 +57,15 @@ func TestCompletedDependencyWaitReleasesOwnedMergeReservation(t *testing.T) {
 			next := nativeMergeQueueTestIssue(2282, "success")
 			later := now.Add(time.Minute)
 			reconcileMergeReservations(&state, []connector.Issue{next}, cfg, later)
-			reservation, blocked := mergeReservationBlocks(&state, next, later)
-			if blocked != tt.wantBlocked {
-				t.Fatalf("next merge blocked = %v, want %v; reservation = %+v", blocked, tt.wantBlocked, reservation)
+			_, blocked := mergeReservationBlocks(&state, next, later)
+			if blocked {
+				t.Fatal("retained CI metadata blocks next merge")
 			}
-			if tt.wantBlocked {
+			reservation, retained := state.mergeReservations[owner.ID]
+			if retained != tt.wantRetained {
+				t.Fatalf("metadata retained = %t, want %t", retained, tt.wantRetained)
+			}
+			if tt.wantRetained {
 				if reservation != original {
 					t.Fatalf("unreleased reservation changed: %+v, want %+v", reservation, original)
 				}

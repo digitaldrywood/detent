@@ -381,6 +381,26 @@ still apply. Queued acquisitions consolidate overlapping-call ordering and
 retained demand into executable requests; they introduce no selected-slot
 reservation, configuration, or recovery mechanism.
 
+Merge scheduling serializes only running merges against the same repository/base
+(#2572). CI waits, retries, claims without running work, and unready heads do not
+exclude ready competitors. Aged heads retain ordering preference when ready.
+`TestMergeIdleHeadDoesNotReserveSlot` checks planner dispatch, fresh candidates,
+and native queue admission, including independent base branches. The existing
+`merge_ci_reservation` reason now denotes only a running merge; its detail names
+the running issue. `merge_fairness_head_reserved` is retired from producers and
+covered by the source scanner; historical configuration remains readable.
+CI wait metadata remains compatible on disk but is keyed by issue in memory so
+concurrent waits preserve separate deadlines and refresh state across restart
+(`TestMergeWaitMetadataRemainsIndependent`). This enforces INV-3 by removing the
+fairness exclusion and idle repository ownership, without adding a mechanism.
+Released idle wait metadata is removed from the active map during reconciliation;
+release reasons remain diagnostic and historical. Redispatch therefore starts
+with a fresh CI deadline and no stale refresh marker, while active waits retain
+their deadlines (`TestMergeReleasedWaitStartsFreshOnRedispatch`). This removes
+retained released state instead of adding separate admission exclusions.
+Running workers retain their original metadata through completion; the same
+idle reconciliation then handles its release.
+
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.
 
