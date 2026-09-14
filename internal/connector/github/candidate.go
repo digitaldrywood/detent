@@ -212,6 +212,11 @@ func (c *Connector) readProjectCandidates(ctx context.Context, request connector
 	result := connector.CandidateResult{Filtered: map[string]int{}}
 	wantedStates := normalizedStateSet(request.States)
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
+	var blankStatusItemIDs []string
+	defer func() {
+		// Keep one worker pool for the read, including completed partial pages.
+		c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
+	}()
 	for {
 		var response struct {
 			Node *struct {
@@ -239,7 +244,7 @@ func (c *Connector) readProjectCandidates(ctx context.Context, request connector
 			}
 			if ok {
 				if blankStatusItemID != "" && repairBlankStatuses {
-					c.defaultBlankProjectItemStatuses(ctx, []string{blankStatusItemID})
+					blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
 				}
 				if _, wanted := wantedStates[normalizeStateName(issue.State)]; wanted {
 					hydrated := []connector.Issue{issue}

@@ -4,15 +4,96 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
+
+func TestProjectCandidateRepairsRemainBatched(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		limit        int
+		failNextPage bool
+	}{
+		{name: "complete scan", limit: 100},
+		{name: "candidate limit", limit: 6},
+		{name: "partial scan error", limit: 100, failNextPage: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				const total = 9
+				release := make(chan struct{})
+				var started, completed atomic.Int64
+				items := make([]string, total)
+				for i := range items {
+					items[i] = fmt.Sprintf(`{"id":"PVTI_%d","content":{"__typename":"Issue","id":"I_%d","number":%d,"title":"Candidate","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":null}`, i, i, i+1)
+				}
+				c, err := NewConnector(Config{
+					Endpoint: "https://candidate-repairs.test/graphql", APIKey: "token", ProjectSlug: "PVT_1",
+					HTTPClient: recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
+						body := `[]`
+						if r.Method == http.MethodPost {
+							var request struct {
+								Query     string         `json:"query"`
+								Variables map[string]any `json:"variables"`
+							}
+							if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+								return nil, err
+							}
+							switch {
+							case strings.Contains(request.Query, "mutation"):
+								started.Add(1)
+								<-release
+								completed.Add(1)
+								body = `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"repaired"}}}}`
+							case strings.Contains(request.Query, "items("):
+								if request.Variables["after"] != nil {
+									return nil, errors.New("page unavailable")
+								}
+								body = projectItemsPageResponseWithTotal(total, test.failNextPage, "next", items)
+							default:
+								body = `{"data":{"node":{"field":{"id":"STATUS","options":[{"id":"BACKLOG","name":"Backlog"}]}}}}`
+							}
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+					}),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: test.limit})
+				if (err != nil) != test.failNextPage {
+					t.Fatalf("ReadCandidates error = %v", err)
+				}
+				want := min(total, test.limit)
+				if len(result.Issues) != want {
+					t.Fatalf("candidates = %d, want %d", len(result.Issues), want)
+				}
+				if (result.NextCursor != "") != (test.failNextPage || test.limit < total) {
+					t.Fatalf("cursor = %q", result.NextCursor)
+				}
+				synctest.Wait()
+				if got := started.Load(); got != defaultProjectItemStatusWriteParallelism {
+					t.Errorf("concurrent repair writes = %d, want %d", got, defaultProjectItemStatusWriteParallelism)
+				}
+				close(release)
+				synctest.Wait()
+				if got := completed.Load(); got != int64(want) {
+					t.Errorf("completed repairs = %d, want %d", got, want)
+				}
+			})
+		})
+	}
+}
 
 func TestCandidateProgressUnderRESTBudget(t *testing.T) {
 	t.Parallel()
@@ -37,6 +118,8 @@ func TestCandidateProgressUnderRESTBudget(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				switch {
+				case strings.Contains(r.URL.Path, "/dependencies/blocked_by"):
+					fmt.Fprint(w, `[]`)
 				case strings.HasPrefix(r.URL.Path, "/orgs/"):
 					fmt.Fprint(w, `[{"id":10,"name":"Status","data_type":"single_select","options":[{"id":1,"name":"Backlog"}]}]`)
 				case strings.Contains(r.URL.Path, "issue-field-values"):
@@ -91,7 +174,9 @@ func TestCandidateProgressUnderRESTBudget(t *testing.T) {
 			request.PageSize = 20
 			seen := map[string]bool{}
 			deferred := false
-			for range 250 {
+			// Cold field and native-dependency hydration can leave one completed
+			// item per run; the union visits both label sources before exhaustion.
+			for range 3 * total {
 				if test.restart {
 					c = makeConnector()
 				}
@@ -111,6 +196,9 @@ func TestCandidateProgressUnderRESTBudget(t *testing.T) {
 					t.Fatalf("unbounded results: %d", len(result.Issues))
 				}
 				for _, issue := range result.Issues {
+					if issue.DependencySource != connector.BlockedRefSourceNative {
+						t.Fatalf("candidate %s lost native dependency hydration", issue.ID)
+					}
 					seen[issue.ID] = true
 				}
 				request.Cursor = result.NextCursor
