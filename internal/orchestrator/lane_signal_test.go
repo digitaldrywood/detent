@@ -1,12 +1,16 @@
 package orchestrator
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -114,4 +118,118 @@ func TestLaneSignalWarningsIgnoreUnrelatedAndClosedSignals(t *testing.T) {
 	if warnings := laneSignalWarnings(state, issues); len(warnings) != 0 {
 		t.Fatalf("laneSignalWarnings() = %#v, want no warnings", warnings)
 	}
+}
+
+func TestLaneSignalDiagnosticsSurviveRefreshAndSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		source      string
+		issue       connector.Issue
+		wantSignals []string
+	}{
+		{name: "unconfigured ProjectV2 lane", source: workflowconfig.GitHubStatusSourceProjectV2,
+			issue:       connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Triage", Labels: []string{"detent:todo"}},
+			wantSignals: []string{"detent:todo"}},
+		{name: "distinct project statuses", source: workflowconfig.GitHubStatusSourceLabel,
+			issue: connector.Issue{ID: "I_1", Identifier: "owner/repo#1", State: "Backlog", LaneSignalStatuses: []connector.LaneSignalStatus{
+				{Field: "Status", Value: "Todo", ProjectID: "PVT_1", ProjectTitle: "Delivery"},
+				{Field: "Status", Value: "Backlog", ProjectID: "PVT_2", ProjectTitle: "Intake"},
+			}}, wantSignals: []string{"Status Backlog (project Intake; PVT_2)", "Status Todo (project Delivery; PVT_1)"}},
+		{name: "same status in distinct projects", source: workflowconfig.GitHubStatusSourceLabel,
+			issue: connector.Issue{ID: "I_1", Identifier: "owner/repo#1", LaneSignalStatuses: []connector.LaneSignalStatus{
+				{Field: "Status", Value: "Todo", ProjectID: "PVT_1"},
+				{Field: "Status", Value: "Todo", ProjectID: "PVT_2"},
+			}}, wantSignals: []string{"Status Todo (project PVT_1)", "Status Todo (project PVT_2)"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now()
+			cfg := normalizeConfig(Config{TrackerKind: workflowconfig.TrackerGitHub, TrackerStatusSource: tt.source, LaneSignalStates: []string{"Backlog", "Todo"}})
+			state := newState(cfg)
+			candidates := []connector.Issue{tt.issue}
+			if tt.source == workflowconfig.GitHubStatusSourceProjectV2 {
+				o := &Orchestrator{cfg: cfg}
+				fetched, ok := o.fetchCombinedTickIssues(t.Context(), &state, now, nil, laneSignalRefreshFixture{issues: candidates})
+				if !ok || len(fetched.candidates) != 0 || len(fetched.status) != 0 {
+					t.Fatalf("diagnostic entered scheduling: %#v, %v", fetched, ok)
+				}
+			} else {
+				state.StatusDrift.LaneSignalCandidates = candidates
+			}
+			snapshot := state.clone().Snapshot(now)
+			var signals []string
+			for _, warning := range snapshot.LaneSignalWarnings {
+				signals = append(signals, warning.Signal)
+				if warning.IssueID != "I_1" || warning.ReasonCode != telemetry.LaneSignalIgnoredReasonCode || warning.ConfiguredSource == "" || warning.Action == "" {
+					t.Fatalf("incomplete warning: %#v", warning)
+				}
+			}
+			if !reflect.DeepEqual(signals, tt.wantSignals) {
+				t.Fatalf("signals = %v, want %v", signals, tt.wantSignals)
+			}
+			if len(snapshot.BoardIssues) != 0 || len(snapshot.Pipeline) != 0 {
+				t.Fatal("diagnostics added board or pipeline issues")
+			}
+			state.Authorization = selector.Selector{AuthorIn: []string{"allowed"}}
+			if got := state.Snapshot(now).LaneSignalWarnings; len(got) != 0 {
+				t.Fatalf("unauthorized diagnostics: %#v", got)
+			}
+		})
+	}
+}
+
+type laneSignalRefreshFixture struct{ issues []connector.Issue }
+
+func (laneSignalRefreshFixture) CombinedRefreshEnabled() bool { return true }
+func (f laneSignalRefreshFixture) FetchRefreshIssues(context.Context, []string, []string, connector.IssueFilterHint) connector.RefreshIssueResult {
+	return connector.RefreshIssueResult{LaneSignalCandidates: f.issues}
+}
+
+func TestHubSchedulingRetainsOutOfLaneDiagnostics(t *testing.T) {
+	t.Parallel()
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("active=%t", active), func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{TrackerKind: workflowconfig.TrackerGitHub, TrackerStatusSource: workflowconfig.GitHubStatusSourceProjectV2,
+				LaneSignalStates: []string{"Todo", "Backlog"}, SchedulingRepository: "acme/widgets"})
+			scheduling := &hubSchedulingSource{issue: connector.Issue{ID: "hub", State: "Todo"}}
+			if !active {
+				scheduling.issue = connector.Issue{}
+			}
+			tracker := &laneSignalHubConnector{diagnostic: connector.Issue{ID: "triage", State: "Triage", Labels: []string{"detent:todo"}}}
+			o, err := New(cfg, Dependencies{Connector: tracker, Scheduling: scheduling})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := newState(cfg)
+			fetched, ok := o.fetchTickIssues(t.Context(), &state, time.Now(), githubBudgetReserveDecision{})
+			if !ok {
+				t.Fatal("fetch failed")
+			}
+			for _, issue := range fetched.candidates {
+				if issue.ID == "triage" {
+					t.Fatal("diagnostic became a Hub candidate")
+				}
+			}
+			if scheduling.fetches != 1 || tracker.candidateReads.Load() != 0 {
+				t.Fatal("Hub candidate ownership changed")
+			}
+			if got := state.Snapshot(time.Now()).LaneSignalWarnings; len(got) != 1 || got[0].IssueID != "triage" {
+				t.Fatalf("warnings = %#v, want out-of-lane diagnostic", got)
+			}
+		})
+	}
+}
+
+type laneSignalHubConnector struct {
+	hubSchedulingConnector
+	diagnostic connector.Issue
+}
+
+func (c *laneSignalHubConnector) FetchRefreshIssues(_ context.Context, candidates, _ []string, _ connector.IssueFilterHint) connector.RefreshIssueResult {
+	if len(candidates) > 0 {
+		c.candidateReads.Add(1)
+	}
+	return connector.RefreshIssueResult{LaneSignalCandidates: []connector.Issue{c.diagnostic}}
 }

@@ -120,21 +120,43 @@ func ignoredLabelWarnings(state State, issue connector.Issue, states map[string]
 }
 
 func ignoredStatusWarnings(state State, issue connector.Issue, states map[string]laneSignalState) []telemetry.LaneSignalWarning {
-	field := laneSignalStatusField(state)
-	value := laneSignalFieldValue(issue.Fields, field)
-	matched, ok := states[strings.ToLower(value)]
-	if !ok || value == "" {
-		return nil
+	statuses := issue.LaneSignalStatuses
+	if len(statuses) == 0 {
+		field := laneSignalStatusField(state)
+		statuses = []connector.LaneSignalStatus{{Field: field, Value: laneSignalFieldValue(issue.Fields, field)}}
 	}
 	prefix := strings.TrimSpace(state.TrackerStatusLabelPrefix)
 	if prefix == "" {
 		prefix = "detent:"
 	}
-	label := prefix + laneSignalSlug(matched.external)
-	action := "apply label " + label
-	signal := field + " " + value
-	reason := "this project reads lanes from " + laneSignalSourceDescription(state) + "; " + signal + " has no effect; " + action
-	return []telemetry.LaneSignalWarning{newLaneSignalWarning(state, issue, "status", signal, matched.lane, reason, action)}
+	var warnings []telemetry.LaneSignalWarning
+	for _, status := range statuses {
+		value := strings.TrimSpace(status.Value)
+		matched, ok := states[strings.ToLower(value)]
+		if !ok || value == "" {
+			continue
+		}
+		action := "apply label " + prefix + laneSignalSlug(matched.external)
+		signal := status.Field + " " + value
+		project := strings.TrimSpace(status.ProjectTitle)
+		if url := strings.TrimSpace(status.ProjectURL); url != "" {
+			if project != "" {
+				project += "; "
+			}
+			project += url
+		} else if id := strings.TrimSpace(status.ProjectID); id != "" {
+			if project != "" {
+				project += "; "
+			}
+			project += id
+		}
+		if project != "" {
+			signal += " (project " + project + ")"
+		}
+		reason := "this project reads lanes from " + laneSignalSourceDescription(state) + "; " + signal + " has no effect; " + action
+		warnings = append(warnings, newLaneSignalWarning(state, issue, "status", signal, matched.lane, reason, action))
+	}
+	return warnings
 }
 
 func newLaneSignalWarning(

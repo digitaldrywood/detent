@@ -426,7 +426,9 @@ func (o *Orchestrator) fetchTickIssues(
 	reserve githubBudgetReserveDecision,
 ) (tickFetchedIssues, bool) {
 	observedStates := o.observedStatusFetchStatesForTick(state)
-	if fetcher, ok := o.connector.(connector.RefreshIssueFetcher); o.scheduling == nil && ok && fetcher.CombinedRefreshEnabled() && !reserve.degraded {
+	fetcher, canRefresh := o.connector.(connector.RefreshIssueFetcher)
+	canRefresh = canRefresh && fetcher.CombinedRefreshEnabled()
+	if o.scheduling == nil && canRefresh && !reserve.degraded {
 		return o.fetchCombinedTickIssues(ctx, state, now, observedStates, fetcher)
 	}
 
@@ -448,7 +450,7 @@ func (o *Orchestrator) fetchTickIssues(
 	fetched := tickFetchedIssues{
 		candidates: cloneIssues(candidateIssues),
 	}
-	if len(observedStates) == 0 {
+	if len(observedStates) == 0 && !canRefresh {
 		fetched.statusOK = true
 		clearRefreshError(state)
 		return fetched, true
@@ -462,7 +464,7 @@ func (o *Orchestrator) fetchTickIssues(
 		)
 		return fetched, true
 	}
-	if !tickHasActiveWork(state, candidateIssues) {
+	if !canRefresh && !tickHasActiveWork(state, candidateIssues) {
 		exists, probeErr := o.observedWorkExists(ctx, observedStates)
 		if probeErr != nil {
 			o.logger.Warn("fetch observed status probe failed", "error", probeErr)
@@ -480,7 +482,20 @@ func (o *Orchestrator) fetchTickIssues(
 		}
 	}
 
-	statusIssues, statusErr := o.fetchObservedIssuesByStates(ctx, observedStates)
+	var statusIssues []connector.Issue
+	var statusErr error
+	if canRefresh {
+		// Hub owns candidate claims; reuse the project read for observed lanes
+		// and diagnostics, including when no configured lane has active work.
+		result := fetcher.FetchRefreshIssues(ctx, nil, observedStates, o.authorizationFilterHint())
+		statusErr = result.CandidateError
+		if statusErr == nil {
+			state.LaneSignalCandidates = cloneIssues(result.LaneSignalCandidates)
+			statusIssues, statusErr = result.Statuses, result.StatusError
+		}
+	} else {
+		statusIssues, statusErr = o.fetchObservedIssuesByStates(ctx, observedStates)
+	}
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, statusErr, now)
@@ -526,6 +541,7 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	recordRefreshSourceSuccess(state, telemetry.RefreshSourceCandidates, now)
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceCandidates, now)
 
+	state.LaneSignalCandidates = cloneIssues(result.LaneSignalCandidates)
 	fetched := tickFetchedIssues{candidates: cloneIssues(result.Candidates)}
 	if len(observedStates) == 0 {
 		fetched.statusOK = true

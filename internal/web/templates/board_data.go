@@ -170,7 +170,7 @@ func boardLaneSignalAlert(warnings []telemetry.LaneSignalWarning) (boardAlert, b
 		Kind:          boardAlertKindLaneSignalIgnored,
 		Severity:      boardAlertSeverityLaneSignalIgnored,
 		Tone:          primitives.KindWarn,
-		TerseSummary:  "Ignored lane signals (" + boardCountLabel(len(warnings), "issue", "issues") + ")",
+		TerseSummary:  "Ignored lane signals (" + boardCountLabel(len(warnings), "signal", "signals") + ")",
 		DetailSummary: "These labels or Status values do not control their projects' configured lane source.",
 		DetailRows:    rows,
 		Overflow:      overflow,

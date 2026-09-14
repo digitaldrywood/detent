@@ -150,6 +150,14 @@ func matchingSnapshotIssuesInScope(snapshot telemetry.Snapshot, query Query, sco
 		for _, issue := range snapshot.TrackerDrift.ClosedActive {
 			candidates = append(candidates, snapshotIssue{issue: issue, rank: 2, source: "tracker_drift"})
 		}
+		// Warnings can identify open issues outside every configured lane.
+		// Prefer any actual lane observation over this identity-only fallback.
+		for _, warning := range snapshot.LaneSignalWarnings {
+			candidates = append(candidates, snapshotIssue{
+				issue: telemetry.Issue{ID: warning.IssueID, Identifier: warning.Identifier, URL: warning.IssueURL, ProjectID: warning.ProjectID},
+				rank:  7, source: "tracker_drift",
+			})
+		}
 	}
 	for _, issue := range snapshot.Running {
 		candidates = append(candidates, snapshotIssue{issue: issue.Issue, rank: 3, source: "running"})

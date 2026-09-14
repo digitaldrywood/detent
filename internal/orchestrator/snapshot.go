@@ -137,6 +137,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			boardIssues,
 			pipeline,
 			statusDrift.LaneSignalCandidates,
+			authorizedSnapshotIssues(s.LaneSignalCandidates, s.Authorization, s.SelectorContext),
 			statusDrift.UntrackedOpen,
 			statusDrift.OpenTerminal,
 			statusDrift.ClosedActive,

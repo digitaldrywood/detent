@@ -135,7 +135,7 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	if len(snapshot.LaneSignalWarnings) > 0 {
 		view.Kind = primitives.KindWarn
 		view.Verdict = "Lane signals are being ignored."
-		view.Detail = boardCountLabel(len(snapshot.LaneSignalWarnings), "Issue has", "Issues have") + " a lane label or Status value that does not control its configured lane source."
+		view.Detail = boardCountLabel(len(snapshot.LaneSignalWarnings), "lane signal does", "lane signals do") + " not control the configured lane source."
 		return view
 	}
 	if !diagnosticsSnapshotHasLoadedData(snapshot) {

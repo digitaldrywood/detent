@@ -76,6 +76,7 @@ type State struct {
 	RecentEvents             []telemetry.ActivityEvent
 	Auth                     connector.AuthHealth
 	StatusDrift              connector.StatusDrift
+	LaneSignalCandidates     []connector.Issue
 	BoardIssues              []connector.Issue
 	Pipeline                 []connector.Issue
 	AutoPromoteDecisions     map[string]AutoPromoteDecision
@@ -506,6 +507,7 @@ func (s State) clone() State {
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),
 		Auth:                     s.Auth,
 		StatusDrift:              cloneStatusDrift(s.StatusDrift),
+		LaneSignalCandidates:     cloneIssues(s.LaneSignalCandidates),
 		BoardIssues:              cloneIssues(s.BoardIssues),
 		Pipeline:                 cloneIssues(s.Pipeline),
 		AutoPromoteDecisions:     cloneAutoPromoteDecisions(s.AutoPromoteDecisions),
@@ -811,6 +813,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	cloned.ChildIssues = append([]connector.BlockedRef(nil), issue.ChildIssues...)
 	cloned.WorkpadSignal = workpad.CloneSignal(issue.WorkpadSignal)
 	cloned.Labels = cloneStringSlice(issue.Labels)
+	cloned.LaneSignalStatuses = append([]connector.LaneSignalStatus(nil), issue.LaneSignalStatuses...)
 	cloned.Comments = cloneIssueComments(issue.Comments)
 	cloned.Assignees = cloneStringSlice(issue.Assignees)
 	cloned.Fields = cloneStringMap(issue.Fields)

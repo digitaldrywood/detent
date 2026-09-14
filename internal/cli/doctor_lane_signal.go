@@ -33,6 +33,7 @@ func checkDoctorLaneSignals(ctx context.Context, boot BootConfig, projectID stri
 	check.Status = doctorWarn
 	check.LaneSignalWarnings = warnings
 	details := make([]string, 0, len(warnings))
+	issues := map[string]struct{}{}
 	for _, warning := range warnings {
 		target := strings.TrimSpace(warning.Identifier)
 		if target == "" {
@@ -41,9 +42,14 @@ func checkDoctorLaneSignals(ctx context.Context, boot BootConfig, projectID stri
 		if target == "" {
 			target = strings.TrimSpace(warning.IssueURL)
 		}
-		details = append(details, target+" reads lanes from "+strings.TrimSpace(warning.ConfiguredSource)+"; "+strings.TrimSpace(warning.Action))
+		issues[warning.ProjectID+"\x00"+target] = struct{}{}
+		detail := target + " reads lanes from " + strings.TrimSpace(warning.ConfiguredSource) + "; " + strings.TrimSpace(warning.Action)
+		if signal := strings.TrimSpace(warning.Signal); signal != "" {
+			detail += "; ignored " + signal
+		}
+		details = append(details, detail)
 	}
-	check.Detail = fmt.Sprintf("%d open issue(s) have ignored lane signals: %s", len(warnings), strings.Join(details, "; "))
+	check.Detail = fmt.Sprintf("%d open issue(s) have ignored lane signals: %s", len(issues), strings.Join(details, "; "))
 	check.Hint = "Use each project's configured lane source, then rerun detent doctor."
 	return check
 }

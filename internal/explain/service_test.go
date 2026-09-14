@@ -640,13 +640,14 @@ func TestServiceExplainsIgnoredLaneSignals(t *testing.T) {
 	now := time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name       string
-		issue      telemetry.Issue
-		warning    telemetry.LaneSignalWarning
-		driftOnly  bool
-		wantDetail string
-		wantAction string
-		wantLane   string
+		name        string
+		issue       telemetry.Issue
+		warning     telemetry.LaneSignalWarning
+		driftOnly   bool
+		warningOnly bool
+		wantDetail  string
+		wantAction  string
+		wantLane    string
 	}{
 		{
 			name:       "ignored label on status source",
@@ -655,6 +656,13 @@ func TestServiceExplainsIgnoredLaneSignals(t *testing.T) {
 			wantDetail: "label detent:todo has no effect",
 			wantAction: "set Status to Todo",
 			wantLane:   "Backlog",
+		},
+		{
+			name:        "ignored label outside all lane lists",
+			issue:       telemetry.Issue{ID: "triage", ProjectID: "detent"},
+			warning:     telemetry.LaneSignalWarning{ReasonCode: telemetry.LaneSignalIgnoredReasonCode, ProjectID: "detent", IssueID: "triage", ConfiguredSource: "ProjectV2 Status", Reason: "label detent:todo has no effect", Action: "set Status to Todo"},
+			warningOnly: true,
+			wantDetail:  "label detent:todo has no effect", wantAction: "set Status to Todo",
 		},
 		{
 			name:       "ignored status on label source from drift scan",
@@ -672,7 +680,7 @@ func TestServiceExplainsIgnoredLaneSignals(t *testing.T) {
 			snapshot := telemetry.Snapshot{GeneratedAt: now, LaneSignalWarnings: []telemetry.LaneSignalWarning{tt.warning}}
 			if tt.driftOnly {
 				snapshot.TrackerDrift.UntrackedOpen = []telemetry.Issue{tt.issue}
-			} else {
+			} else if !tt.warningOnly {
 				snapshot.BoardIssues = []telemetry.Issue{tt.issue}
 			}
 			reader := &evidenceReader{observation: SnapshotObservation{State: SourceLive, Snapshot: snapshot}}

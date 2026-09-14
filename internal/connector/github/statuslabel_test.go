@@ -241,7 +241,9 @@ func TestConnectorFetchStatusDriftReportsTrackerStateMismatches(t *testing.T) {
 		var status string
 		for _, issue := range got.LaneSignalCandidates {
 			if issue.ID == id {
-				status = issue.Fields["Status"]
+				if len(issue.LaneSignalStatuses) == 1 {
+					status = issue.LaneSignalStatuses[0].Value
+				}
 			}
 		}
 		if status != "Todo" {

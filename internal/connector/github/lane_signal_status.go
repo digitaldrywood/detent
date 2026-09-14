@@ -18,7 +18,7 @@ query DetentGitHubLaneSignalStatuses($issueIds: [ID!]!, $first: Int!, $statusFie
       projectItems(first: $first) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          project { id }
+          project { id title url }
           statusValue: fieldValueByName(name: $statusField) {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
@@ -38,7 +38,7 @@ query DetentGitHubLaneSignalStatusesPage($issueId: ID!, $first: Int!, $after: St
       projectItems(first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          project { id }
+          project { id title url }
           statusValue: fieldValueByName(name: $statusField) {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
@@ -124,19 +124,9 @@ func (c *Connector) completeLaneSignalProjectItems(ctx context.Context, issueID 
 }
 
 func (c *Connector) attachIgnoredProjectStatus(issue *connector.Issue, items *projectItemsConnection) {
-	status := c.ignoredProjectStatus(items)
-	if status == "" {
-		return
-	}
-	if issue.Fields == nil {
-		issue.Fields = map[string]string{}
-	}
-	issue.Fields[c.statusField] = status
-}
-
-func (c *Connector) ignoredProjectStatus(items *projectItemsConnection) string {
+	issue.LaneSignalStatuses = nil
 	if items == nil {
-		return ""
+		return
 	}
 	wanted := make(map[string]string)
 	for _, state := range c.configuredStatusStates() {
@@ -145,7 +135,6 @@ func (c *Connector) ignoredProjectStatus(items *projectItemsConnection) string {
 			wanted[normalizeStateName(external)] = external
 		}
 	}
-	matches := map[string]string{}
 	for _, item := range items.Nodes {
 		if c.projectID != "" && (item.Project == nil || item.Project.ID != c.projectID) {
 			continue
@@ -155,13 +144,12 @@ func (c *Connector) ignoredProjectStatus(items *projectItemsConnection) string {
 		if !ok {
 			continue
 		}
-		matches[normalizeStateName(configured)] = configured
+		signal := connector.LaneSignalStatus{Field: c.statusField, Value: configured}
+		if item.Project != nil {
+			signal.ProjectID = strings.TrimSpace(item.Project.ID)
+			signal.ProjectTitle = strings.TrimSpace(item.Project.Title)
+			signal.ProjectURL = strings.TrimSpace(item.Project.URL)
+		}
+		issue.LaneSignalStatuses = append(issue.LaneSignalStatuses, signal)
 	}
-	if len(matches) != 1 {
-		return ""
-	}
-	for _, status := range matches {
-		return status
-	}
-	return ""
 }
