@@ -97,9 +97,6 @@ var emittedDecisionReasons = []string{
 	DispatchGateReasonPaused,
 	DispatchGateReasonGlobalCapacityFull,
 	DispatchGateReasonOutsideActiveWindow,
-	DispatchGateReasonReservedForHigherPriority,
-	DispatchGateReasonReservedForHigherPriorityProject,
-	DispatchGateReasonSelectedProjectWaiting,
 }
 
 var emittedDecisionReasonExamples = []string{
@@ -111,7 +108,6 @@ var emittedDecisionReasonExamples = []string{
 	DecisionReasonGlobalCapacityFull,
 	DispatchGateReasonOutsideActiveWindow,
 	DecisionReasonProviderRateWindowBackpressure,
-	DispatchGateReasonReservedForHigherPriorityProject,
 }
 
 func EmittedDecisionReasons() []string {

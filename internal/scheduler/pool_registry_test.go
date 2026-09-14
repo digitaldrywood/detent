@@ -171,7 +171,7 @@ func TestPoolRegistryWithoutBurstRemainsRigid(t *testing.T) {
 	}
 }
 
-func TestPoolRegistryBorrowsIdleGuaranteesAndReclaimsByAttrition(t *testing.T) {
+func TestPoolRegistryBorrowsIdleCapacityUntilReleased(t *testing.T) {
 	t.Parallel()
 
 	projects := []scheduler.ProjectCandidate{
@@ -210,14 +210,10 @@ func TestPoolRegistryBorrowsIdleGuaranteesAndReclaimsByAttrition(t *testing.T) {
 		t.Fatalf("TryAcquireWithDecision(video-d) decision = %#v, want elastic capacity telemetry", decision)
 	}
 	assertPoolUnavailable(t, registry, projects[0])
-	if snapshot := registry.PoolSnapshotFor("video-a"); !snapshot.Reclaiming {
-		t.Fatalf("PoolSnapshotFor(video-a) = %#v, want reclaiming", snapshot)
-	}
 
 	if err := registry.Release(videoSlots[0]); err != nil {
 		t.Fatalf("Release(video-a) error = %v", err)
 	}
-	assertPoolUnavailable(t, registry, projects[5])
 	codeSlots := acquirePoolSlots(t, registry, time.Time{}, projects[0])
 	assertPoolUnavailable(t, registry, projects[1])
 	if err := registry.Release(videoSlots[1]); err != nil {
@@ -231,7 +227,7 @@ func TestPoolRegistryBorrowsIdleGuaranteesAndReclaimsByAttrition(t *testing.T) {
 	releasePoolSlots(t, registry, append(codeSlots, videoSlots[2]))
 }
 
-func TestPoolRegistryReservesGuaranteeForReadyLender(t *testing.T) {
+func TestPoolRegistryReadyLenderNeverHoldsIdleCapacity(t *testing.T) {
 	t.Parallel()
 
 	code := scheduler.ProjectCandidate{ID: "code"}
@@ -246,15 +242,19 @@ func TestPoolRegistryReservesGuaranteeForReadyLender(t *testing.T) {
 	)
 	videoSlot := acquirePoolSlots(t, registry, time.Time{}, videoA)[0]
 	registry.MarkReady(code)
-	assertPoolUnavailable(t, registry, videoB)
-	codeSlot := acquirePoolSlots(t, registry, time.Time{}, code)[0]
-	if snapshot := registry.PoolSnapshotFor("video-a"); snapshot.Borrowed != 0 {
-		t.Fatalf("PoolSnapshotFor(video-a) = %#v, want no borrowed slot", snapshot)
+	borrowed := acquirePoolSlots(t, registry, time.Time{}, videoB)[0]
+	assertPoolUnavailable(t, registry, code)
+	if snapshot := registry.PoolSnapshotFor("video-a"); snapshot.Borrowed != 1 || snapshot.Used != 2 {
+		t.Fatalf("borrower = %+v", snapshot)
 	}
+	if err := registry.Release(borrowed); err != nil {
+		t.Fatal(err)
+	}
+	codeSlot := acquirePoolSlots(t, registry, time.Time{}, code)[0]
 	releasePoolSlots(t, registry, []scheduler.Slot{videoSlot, codeSlot})
 }
 
-func TestPoolRegistryBorrowerContentionIsFirstCome(t *testing.T) {
+func TestPoolRegistryPriorRefusalNeverHoldsBorrowedCapacity(t *testing.T) {
 	t.Parallel()
 
 	projects := []scheduler.ProjectCandidate{
@@ -278,13 +278,13 @@ func TestPoolRegistryBorrowerContentionIsFirstCome(t *testing.T) {
 	if err := registry.Release(slots[0]); err != nil {
 		t.Fatalf("Release(lender) error = %v", err)
 	}
-	assertPoolUnavailable(t, registry, projects[4])
-	alphaBorrowed := acquirePoolSlots(t, registry, time.Time{}, projects[2])[0]
-	if err := registry.Release(alphaBorrowed); err != nil {
-		t.Fatalf("Release(alpha borrowed) error = %v", err)
-	}
 	betaBorrowed := acquirePoolSlots(t, registry, time.Time{}, projects[4])[0]
-	releasePoolSlots(t, registry, []scheduler.Slot{slots[1], slots[2], betaBorrowed})
+	assertPoolUnavailable(t, registry, projects[2])
+	if err := registry.Release(betaBorrowed); err != nil {
+		t.Fatal(err)
+	}
+	alphaBorrowed := acquirePoolSlots(t, registry, time.Time{}, projects[2])[0]
+	releasePoolSlots(t, registry, []scheduler.Slot{slots[1], slots[2], alphaBorrowed})
 }
 
 func TestPoolRegistryReloadDropsBorrowerAtBurstCeiling(t *testing.T) {
@@ -333,7 +333,7 @@ func TestPoolRegistryReloadDropsBorrowerAtBurstCeiling(t *testing.T) {
 	releasePoolSlots(t, registry, append(slots[:3], betaBorrowed))
 }
 
-func TestPoolRegistryElasticStrictPreemptionDoesNotCrossPools(t *testing.T) {
+func TestPoolRegistryElasticStrictPriorityPreservesRunningSlots(t *testing.T) {
 	t.Parallel()
 
 	projects := []scheduler.ProjectCandidate{
@@ -350,21 +350,11 @@ func TestPoolRegistryElasticStrictPreemptionDoesNotCrossPools(t *testing.T) {
 	)
 	registry.MarkIdle(scheduler.ProjectCandidate{ID: "code-urgent"})
 	videoSlots := acquirePoolSlots(t, registry, time.Time{}, projects[1], projects[2])
-	videoPreemptions := 0
-	for _, slot := range videoSlots {
-		registry.SetPreempt(slot, func() { videoPreemptions++ })
-	}
 	assertPoolUnavailable(t, registry, projects[0])
-	if videoPreemptions != 0 {
-		t.Fatalf("video preemptions = %d, want 0", videoPreemptions)
-	}
 	if err := registry.Release(videoSlots[0]); err != nil {
 		t.Fatalf("Release(video-a) error = %v", err)
 	}
 	codeSlot := acquirePoolSlots(t, registry, time.Time{}, projects[0])[0]
-	if videoPreemptions != 0 {
-		t.Fatalf("video preemptions after code grant = %d, want 0", videoPreemptions)
-	}
 	releasePoolSlots(t, registry, []scheduler.Slot{videoSlots[1], codeSlot})
 }
 
@@ -452,7 +442,7 @@ func TestPoolRegistryScopesSchedulingState(t *testing.T) {
 	}
 }
 
-func TestPoolRegistryStrictPreemptionDoesNotCrossPools(t *testing.T) {
+func TestPoolRegistryStrictPriorityPreservesRunningSlots(t *testing.T) {
 	t.Parallel()
 
 	registry := newPoolRegistry(t,
@@ -469,16 +459,10 @@ func TestPoolRegistryStrictPreemptionDoesNotCrossPools(t *testing.T) {
 	registry.MarkIdle(scheduler.ProjectCandidate{ID: "code-urgent"})
 	codeSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "code-low", Priority: 4})[0]
 	videoSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "video-low", Priority: 4})[0]
-	codePreemptions := 0
-	videoPreemptions := 0
-	registry.SetPreempt(codeSlot, func() { codePreemptions++ })
-	registry.SetPreempt(videoSlot, func() { videoPreemptions++ })
-
+	assertPoolUnavailable(t, registry, scheduler.ProjectCandidate{ID: "code-urgent", Priority: 0})
+	releasePoolSlots(t, registry, []scheduler.Slot{codeSlot, videoSlot})
 	urgentSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "code-urgent", Priority: 0})[0]
-	if codePreemptions != 1 || videoPreemptions != 0 {
-		t.Fatalf("preemptions code/video = %d/%d, want 1/0", codePreemptions, videoPreemptions)
-	}
-	releasePoolSlots(t, registry, []scheduler.Slot{urgentSlot, videoSlot})
+	releasePoolSlots(t, registry, []scheduler.Slot{urgentSlot})
 }
 
 func TestPoolRegistryFairShareIgnoresOtherPoolHistory(t *testing.T) {
@@ -711,7 +695,6 @@ func TestProjectPoolGateRoutesLifecycleToCurrentPool(t *testing.T) {
 	if snapshot := snapshotter.PoolSnapshot(); !slices.Equal(snapshot.Holders, []string{"video"}) {
 		t.Fatalf("PoolSnapshot().Holders = %#v, want video", snapshot.Holders)
 	}
-	gate.SetPreempt(slot, func() {})
 	if err := gate.Release(slot); err != nil {
 		t.Fatalf("Release() error = %v", err)
 	}

@@ -863,9 +863,6 @@ func (o *Orchestrator) dispatchIssueWithMergeControl(
 		cancel:                 cancel,
 		stop:                   cancelCause,
 	}
-	o.setGlobalDispatchPreempt(globalSlot, func() {
-		cancelCause(runpkg.NewCancellationCause(context.Canceled, "scheduler.global_dispatch_preemption"))
-	})
 	state.Claimed[issue.ID] = claim
 	delete(state.Retry, issue.ID)
 	delete(state.Blocked, issue.ID)
@@ -1155,13 +1152,6 @@ func (o *Orchestrator) releaseGlobalDispatchSlot(slot scheduler.Slot) {
 	if err := o.globalDispatchGate.Release(slot); err != nil && o.logger != nil {
 		o.logger.Warn("release global dispatch slot failed", "project_id", o.cfg.Project.ID, "error", err)
 	}
-}
-
-func (o *Orchestrator) setGlobalDispatchPreempt(slot scheduler.Slot, preempt func()) {
-	if o.globalDispatchGate == nil || slot == (scheduler.Slot{}) {
-		return
-	}
-	o.globalDispatchGate.SetPreempt(slot, preempt)
 }
 
 func (o *Orchestrator) selectorContext() selector.Context {

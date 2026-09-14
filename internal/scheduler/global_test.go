@@ -72,7 +72,7 @@ func TestWeightedFairAppliesDecay(t *testing.T) {
 	}
 }
 
-func TestStrictPriorityReportsPreemption(t *testing.T) {
+func TestStrictPriorityFullCapacityKeepsRunningWork(t *testing.T) {
 	t.Parallel()
 
 	global := newGlobalScheduler(t, scheduler.Config{Kind: "strict", Capacity: 1})
@@ -85,19 +85,13 @@ func TestStrictPriorityReportsPreemption(t *testing.T) {
 		},
 	}
 
-	selection, err := global.SelectProject(context.Background(), request)
-	if err != nil {
-		t.Fatalf("SelectProject() error = %v", err)
-	}
-	if selection.Project.ID != "urgent" {
-		t.Fatalf("selected project = %q, want urgent", selection.Project.ID)
-	}
-	if len(selection.Preemptions) != 1 || selection.Preemptions[0].ProjectID != "background" {
-		t.Fatalf("preemptions = %#v, want background", selection.Preemptions)
+	_, err := global.SelectProject(context.Background(), request)
+	if !errors.Is(err, scheduler.ErrNoSlots) {
+		t.Fatalf("SelectProject() error = %v, want ErrNoSlots", err)
 	}
 }
 
-func TestStrictPriorityRejectsCandidateThatCannotPreempt(t *testing.T) {
+func TestStrictPriorityFullCapacityRejectsLowerRank(t *testing.T) {
 	t.Parallel()
 
 	global := newGlobalScheduler(t, scheduler.Config{Kind: "strict", Capacity: 1})

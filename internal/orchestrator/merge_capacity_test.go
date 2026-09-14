@@ -271,7 +271,7 @@ func TestCapacityWaitReasonsMatchDispatchStatus(t *testing.T) {
 	}
 }
 
-func TestReadyMergeReconcilesGlobalDemand(t *testing.T) {
+func TestReadyMergeNeverReservesFreedCapacity(t *testing.T) {
 	t.Parallel()
 	for _, remaining := range []bool{false, true} {
 		t.Run(fmt.Sprintf("remaining_%t", remaining), func(t *testing.T) {
@@ -298,9 +298,12 @@ func TestReadyMergeReconcilesGlobalDemand(t *testing.T) {
 			if err := global.Release(slot); err != nil {
 				t.Fatal(err)
 			}
-			_, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "In Progress"}, now)
-			if err != nil || acquired == remaining {
+			otherSlot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "In Progress"}, now)
+			if err != nil || !acquired {
 				t.Fatalf("other acquired=%t decision=%+v err=%v, remaining=%t", acquired, decision, err, remaining)
+			}
+			if err := global.Release(otherSlot); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

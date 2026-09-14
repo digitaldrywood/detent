@@ -43,7 +43,8 @@
       "TestMutationDocuments"
     ],
     "./internal/admission": [
-      "TestAdmissionRequiresLedgerWriter"
+      "TestAdmissionRequiresLedgerWriter",
+      "TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity"
     ],
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
@@ -54,6 +55,11 @@
       "TestMachineIssueDuplicate",
       "TestMachineIssueSeparateConnectors",
       "TestMachineOriginSurvivesBodyUpdates"
+    ],
+    "./internal/scheduler": [
+      "TestGlobalDispatchGatePriorityOnlyPicksNextJob",
+      "TestGlobalDispatchGateReadyRequests",
+      "TestGlobalDispatchGateConcurrentReadyRequests"
     ]
   }
 }

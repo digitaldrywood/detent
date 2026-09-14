@@ -28,6 +28,18 @@ func TestSourceViolations(t *testing.T) {
 		{"split revocation", "internal/runner/new.go", `const reason = "worker_lane_"+"revocation"`, "INV-9"},
 		{"lane stop", "internal/runner/new.go", `func stopIndeterminateLane() {}`, "INV-9"},
 		{"mutation", "internal/connector/github/new.go", "const document = `mutation { updateIssue { id } rateLimit { cost } }`", "INV-9"},
+		{"preemption callback", "internal/scheduler/new.go", `func SetPreempt() {}`, "INV-10"},
+		{"selection persistence", "internal/scheduler/new.go", `type selectedProjectSlot struct{}`, "INV-10"},
+		{"reservation weight", "internal/scheduler/new.go", `func selectedReservationWeightLocked() {}`, "INV-10"},
+		{"bypass counter", "internal/scheduler/new.go", `var priorityBypasses int`, "INV-10"},
+		{"reservation reason", "internal/config/new.go", `const reason = "selected_project_waiting"`, "INV-10"},
+		{"split priority reason", "internal/runner/new.go", `const reason = "reserved_for_higher_"+"priority_state"`, "INV-10"},
+		{"project reservation reason", "internal/runner/new.go", `const reason = "reserved_for_higher_priority_project"`, "INV-10"},
+		{"priority cancel cause", "internal/orchestrator/new.go", `const reason = "scheduler.global_dispatch_preemption"`, "INV-10"},
+		{"historical contention", "internal/store/pool_contention.go", `const reason = "selected_project_waiting"`, ""},
+		{"historical constraint", "internal/store/capacity_constraints.go", `const reason = "reserved_for_higher_priority_project"`, ""},
+		{"unreviewed reader", "internal/store/new.go", `const reason = "selected_project_waiting"`, "INV-10"},
+		{"reader cannot restore callback", "internal/store/pool_contention.go", `func SetPreempt() {}`, "INV-10"},
 		{"query", "internal/connector/github/new.go", "const document = `query { rateLimit { cost } }`", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

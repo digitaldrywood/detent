@@ -21,11 +21,9 @@ func TestDispatchCancellationLogsFirstCause(t *testing.T) {
 		name    string
 		source  string
 		cleanup bool
-		preempt bool
 	}{
 		{name: "requested stop", source: "test.first"},
 		{name: "completion cleanup", source: "orchestrator.completion_cleanup", cleanup: true},
-		{name: "global preemption", source: "scheduler.global_dispatch_preemption", preempt: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -41,13 +39,7 @@ func TestDispatchCancellationLogsFirstCause(t *testing.T) {
 			}
 			receiveWorkerHostRunRequest(t, backend.started)
 			running := state.Running[issue.ID]
-			if tt.preempt {
-				if dispatchGate.preempt == nil {
-					t.Fatal("preemption callback missing")
-				}
-				dispatchGate.preempt()
-				running.cancel()
-			} else if tt.cleanup {
+			if tt.cleanup {
 				running.cancel()
 			} else {
 				running.stop(runpkg.NewCancellationCause(context.Canceled, "test.first"))
@@ -70,7 +62,7 @@ func TestDispatchCancellationLogsFirstCause(t *testing.T) {
 
 func TestCancellationCompletionPreservesAttributionAndRetry(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"orchestrator.cancel_running", "orchestrator.parent_context", "runner.agent_backend", "runner.dispatch_pacer", "scheduler.global_dispatch_preemption"} {
+	for _, source := range []string{"orchestrator.cancel_running", "orchestrator.parent_context", "runner.agent_backend", "runner.dispatch_pacer"} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
@@ -137,13 +129,8 @@ func TestCancelRunningPreservesFirstInitiator(t *testing.T) {
 
 type cancellationDispatchGate struct {
 	countingProjectDispatchGate
-	preempt func()
 }
 
 func (*cancellationDispatchGate) TryAcquire(context.Context, scheduler.ProjectCandidate, scheduler.SlotRequest, time.Time) (scheduler.Slot, bool, error) {
 	return scheduler.Slot{Weight: 1}, true, nil
-}
-
-func (g *cancellationDispatchGate) SetPreempt(_ scheduler.Slot, preempt func()) {
-	g.preempt = preempt
 }

@@ -56,8 +56,7 @@ type ProjectSelectionRequest struct {
 }
 
 type ProjectSelection struct {
-	Project     ProjectCandidate
-	Preemptions []RunningProject
+	Project ProjectCandidate
 }
 
 type ProjectDispatch struct {
@@ -169,26 +168,17 @@ func (s *globalScheduler) SelectProject(ctx context.Context, req ProjectSelectio
 	mode := s.mode
 	s.mu.Unlock()
 
+	if s.capacitySnapshot("").draining || !s.projectSlotAvailable(req.Running) {
+		return ProjectSelection{}, ErrNoSlots
+	}
 	switch mode {
 	case ModeStrictPriority:
-		if s.capacitySnapshot("").draining {
-			return ProjectSelection{}, ErrNoSlots
-		}
-		return s.selectStrictPriority(candidates, req.Running)
+		return s.selectStrictPriority(candidates), nil
 	case ModeRoundRobin:
-		if !s.projectSlotAvailable(req.Running) {
-			return ProjectSelection{}, ErrNoSlots
-		}
 		return s.selectRoundRobin(candidates), nil
 	case ModeFairShare:
-		if !s.projectSlotAvailable(req.Running) {
-			return ProjectSelection{}, ErrNoSlots
-		}
 		return s.selectFairShare(ctx, candidates)
 	default:
-		if !s.projectSlotAvailable(req.Running) {
-			return ProjectSelection{}, ErrNoSlots
-		}
 		return s.selectWeightedFair(candidates, req.Now), nil
 	}
 }
@@ -275,7 +265,7 @@ func (s *globalScheduler) applyWeightedDecayLocked(now time.Time) {
 	}
 }
 
-func (s *globalScheduler) selectStrictPriority(candidates []ProjectCandidate, running []RunningProject) (ProjectSelection, error) {
+func (s *globalScheduler) selectStrictPriority(candidates []ProjectCandidate) ProjectSelection {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := priorityRank(candidates[i].Priority)
 		right := priorityRank(candidates[j].Priority)
@@ -285,39 +275,7 @@ func (s *globalScheduler) selectStrictPriority(candidates []ProjectCandidate, ru
 		return candidates[i].ID < candidates[j].ID
 	})
 
-	selected := candidates[0]
-	if s.projectSlotAvailable(running) {
-		return ProjectSelection{Project: selected}, nil
-	}
-
-	preempt, ok := preemptableRunningProject(selected.Priority, running)
-	if !ok {
-		return ProjectSelection{}, ErrNoSlots
-	}
-
-	return ProjectSelection{
-		Project:     selected,
-		Preemptions: []RunningProject{preempt},
-	}, nil
-}
-
-func preemptableRunningProject(priority int, running []RunningProject) (RunningProject, bool) {
-	selectedRank := priorityRank(priority)
-	var preempt RunningProject
-	found := false
-	worstRank := 0
-	for _, candidate := range running {
-		rank := priorityRank(candidate.Priority)
-		if rank <= selectedRank {
-			continue
-		}
-		if !found || rank > worstRank {
-			preempt = candidate
-			worstRank = rank
-			found = true
-		}
-	}
-	return preempt, found
+	return ProjectSelection{Project: candidates[0]}
 }
 
 func (s *globalScheduler) selectRoundRobin(candidates []ProjectCandidate) ProjectSelection {

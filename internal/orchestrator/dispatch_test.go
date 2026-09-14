@@ -2891,14 +2891,12 @@ func TestDispatchReadyIssuesRecordsNonMergeSlotWaitTelemetry(t *testing.T) {
 	}
 }
 
-func TestRecordDispatchGateRefusalPersistsPoolArbitrationReasons(t *testing.T) {
+func TestRecordDispatchGateRefusalPersistsCapacityReasons(t *testing.T) {
 	t.Parallel()
 
 	reasons := []string{
 		scheduler.DispatchGateReasonGlobalCapacityFull,
-		scheduler.DispatchGateReasonReservedForHigherPriorityProject,
-		scheduler.DispatchGateReasonReservedForHigherPriority,
-		scheduler.DispatchGateReasonSelectedProjectWaiting,
+		scheduler.DispatchGateReasonPressureCapacityFull,
 	}
 	for _, reason := range reasons {
 		t.Run(reason, func(t *testing.T) {

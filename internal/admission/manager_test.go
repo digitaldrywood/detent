@@ -2211,8 +2211,8 @@ func TestAcquireCapacityReleaseErrorPreservesDerivedAdmissionDemand(t *testing.T
 	if err != nil {
 		t.Fatalf("lower TryAcquireWithDecision() error = %v", err)
 	}
-	if granted || decision.Reason != scheduler.DispatchGateReasonReservedForHigherPriorityProject {
-		t.Fatalf("lower TryAcquireWithDecision() decision = %#v, want priority reservation", decision)
+	if granted || decision.Reason != scheduler.DispatchGateReasonGlobalCapacityFull {
+		t.Fatalf("lower TryAcquireWithDecision() decision = %#v, want global capacity full", decision)
 	}
 }
 
@@ -2589,6 +2589,7 @@ func TestManagerRunOnceBoundaryErrors(t *testing.T) {
 			name: "capacity request",
 			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
 				settings.Scheduler = &capacityScheduler{requestErr: errBoundary}
+				settings.Issues = memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)}})
 				return settings, backend
 			},
 		},
@@ -3920,12 +3921,14 @@ func (r *recoveringAdmissionRunner) Run(_ context.Context, request runner.RunReq
 }
 
 type capacityScheduler struct {
+	requests   int
 	requestErr error
 	releaseErr error
 	releases   int
 }
 
 func (s *capacityScheduler) RequestSlot(context.Context, scheduler.SlotRequest) (scheduler.Slot, error) {
+	s.requests++
 	return scheduler.Slot{}, s.requestErr
 }
 
@@ -3939,6 +3942,7 @@ func (*capacityScheduler) Mode() scheduler.Mode {
 }
 
 type capacityGate struct {
+	requests   int
 	acquired   bool
 	tryErr     error
 	releaseErr error
@@ -3958,10 +3962,9 @@ func (g *capacityGate) TryAcquire(
 	scheduler.SlotRequest,
 	time.Time,
 ) (scheduler.Slot, bool, error) {
+	g.requests++
 	return scheduler.Slot{}, g.acquired, g.tryErr
 }
-
-func (*capacityGate) SetPreempt(scheduler.Slot, func()) {}
 
 func (g *capacityGate) Release(scheduler.Slot) error {
 	g.releases++
@@ -4642,6 +4645,35 @@ func TestAdmissionRequiresLedgerWriter(t *testing.T) {
 			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
 			if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
 				t.Fatalf("tracker mutated without ledger: %v, %v", issues, err)
+			}
+		})
+	}
+}
+
+func TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity(t *testing.T) {
+	for _, state := range []string{"", "Done", "Todo"} {
+		t.Run("candidate state "+state, func(t *testing.T) {
+			now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+			var issues []connector.Issue
+			if state != "" {
+				issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+				issue.State = state
+				issues = append(issues, issue)
+			}
+			tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+			settings := admissionTestSettings(tracker, agent)
+			local := &capacityScheduler{}
+			global := &capacityGate{acquired: true}
+			settings.Scheduler = local
+			settings.GlobalDispatchGate = global
+			manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+			result, err := manager.RunOnce(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Candidates != 0 || agent.calls != 0 || local.requests != 0 || global.requests != 0 {
+				t.Fatalf("result=%+v evaluations=%d capacity calls=%d/%d", result, agent.calls, local.requests, global.requests)
 			}
 		})
 	}

@@ -90,18 +90,16 @@ Project weights are relative scheduling weights. Higher weights receive a
 larger dispatch share in weighted and fair-share scheduling modes. Project
 priority is a rank: `0` is highest and `4` is lowest.
 
-Lifecycle-state priority is preferred within each pool. In `weighted`,
-`fair_share`, and `round_robin` pools, a ready project bypassed by one
-higher-priority lane dispatch becomes rescue-eligible. Rescue-eligible projects
-receive reservations before another priority-only reservation, while the
-pool's configured project scheduler chooses among equally eligible projects.
-With `R` continuously ready projects, a project receives a reservation within
-at most `R` dispatch opportunities after its first higher-lane bypass. The
-`strict` scheduler does not apply this bound and can intentionally starve lower
-project or lifecycle priorities.
+Priority picks the next job (INV-10). The gate collects currently calling ready
+requests, ranks them, and atomically acquires real capacity for each request
+that fits. Lifecycle-state priority leads in `weighted`, `fair_share`, and
+`round_robin` pools; `strict` orders project priority first, then lane priority.
+The configured project scheduler breaks ties. All modes share the same
+acquisition lifecycle. A request that cannot start owns nothing. A project
+scanning candidates or having no eligible work cannot hold idle capacity.
+Running work is never cancelled or displaced by priority.
 
-Readiness remains eligible for bypass accounting while a project scans its
-current candidates and is cleared when that scan finds no demand. Dispatch
+Dispatch
 stall age survives restarts and refusal-reason changes by using the later of
 the project's last successful selection and its oldest current candidate's
 lane-entry time. A newly ready project therefore does not inherit idle time
@@ -123,12 +121,9 @@ the configured ceiling. Omitting `burst_to`, or setting it equal to
 `max_concurrent_agents`, keeps the pool rigid.
 
 The sum of active pool guarantees is the shared capacity available for
-borrowing. A borrower never displaces a running agent. When a lender has ready
-work below its guarantee, new borrowed dispatches stop until natural
-completion returns enough capacity; dispatch is not preempted across pool
-boundaries. Contending borrowers are served in first-request order, one
-admission at a time. Project selection, scheduling history, and strict-mode
-preemption remain local to each pool. A configuration without `agent_pools` or
+borrowing. A borrower never displaces a running agent. Borrowing uses actual free
+shared capacity up to the pool's burst ceiling. A prior refusal or a project
+marked ready does not retain a claim on that capacity. Project selection and scheduling history remain local to each pool. A configuration without `agent_pools` or
 project `pool` fields retains the previous single-pool behavior.
 
 `detent doctor` reports the last seven days of capacity waits for each project,

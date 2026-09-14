@@ -2270,7 +2270,6 @@ func TestDefaultStalenessObservability(t *testing.T) {
 		"project_capacity_full",
 		"provider_rate_window_backpressure",
 		"ready_merge_control_limit",
-		"reserved_for_higher_priority_project",
 	}
 	if got := cfg.Observability.Staleness.RepeatedDecisionBenignReasons; !slices.Equal(got, wantReasons) {
 		t.Fatalf("RepeatedDecisionBenignReasons = %#v, want %#v", got, wantReasons)

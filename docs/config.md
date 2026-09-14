@@ -13,6 +13,12 @@ configuration is documented below after the host-wide settings.
 For instance backend/route inheritance and the opt-in `sol_first` model-selection
 preset, see [Instance agent defaults](multi-project.md#instance-agent-defaults-and-sol-first-selection).
 
+Priority settings order ready work (INV-10). Project priority and
+`dispatch_priority_by_state`, `dispatch_priority_by_label`, and
+`prioritize_unblockers` choose the next eligible request. They never reserve
+idle slots or cancel running workers. `max_concurrent_agents` and
+`max_concurrent_agents_by_state` remain independent capacity ceilings.
+
 ## Terminal attempt recovery
 
 Set `recovery.terminal_attempt_retry_limit` in `detent.yaml` or
@@ -1151,7 +1157,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `observability.staleness.lanes[].threshold_hours` | `integer` | `72` | No | must be greater than 0 |
 | `observability.staleness.no_completion_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.no_merge_hours` | `integer` | `12` | No | must be greater than 0 |
-| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","project_capacity_full","provider_rate_window_backpressure","ready_merge_control_limit","reserved_for_higher_priority_project"]` | No | contains "__invalid__", which does not match a scheduler-emitted reason; emitted reasons include ["already_running" "authorization_selector_declined" "blocked_by_dependency" "github_rest_capacity_paused" "github_rest_recovery" "global_capacity_full" "outside_active_window" "provider_rate_window_backpressure" "reserved_for_higher_priority_project"]<br>contains "todo", which does not match a scheduler-emitted reason; emitted reasons include ["already_running" "authorization_selector_declined" "blocked_by_dependency" "github_rest_capacity_paused" "github_rest_recovery" "global_capacity_full" "outside_active_window" "provider_rate_window_backpressure" "reserved_for_higher_priority_project"] |
+| `observability.staleness.repeated_decision_benign_reasons` | `list<string>` | `["already_running","blocked_by_dependency","github_rest_capacity_paused","github_rest_recovery","global_capacity_full","outside_active_window","project_capacity_full","provider_rate_window_backpressure","ready_merge_control_limit"]` | No | contains "__invalid__", which does not match a scheduler-emitted reason; emitted reasons include ["already_running" "authorization_selector_declined" "blocked_by_dependency" "github_rest_capacity_paused" "github_rest_recovery" "global_capacity_full" "outside_active_window" "provider_rate_window_backpressure"]<br>contains "todo", which does not match a scheduler-emitted reason; emitted reasons include ["already_running" "authorization_selector_declined" "blocked_by_dependency" "github_rest_capacity_paused" "github_rest_recovery" "global_capacity_full" "outside_active_window" "provider_rate_window_backpressure"] |
 | `observability.staleness.repeated_decision_count` | `integer` | `20` | No | must be greater than 0 |
 | `observability.staleness.repeated_window_hours` | `integer` | `24` | No | must be greater than 0 |
 | `observability.staleness.webhook` | `object` | `see child fields` | No | None |

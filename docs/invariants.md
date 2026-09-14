@@ -238,6 +238,43 @@ reflection, generated runtime documents, and semantic equivalents require review
 PR before changing retired-symbol or mutation rules; removal from a list alone
 is not an authorized resurrection.
 
+## INV-10 — Priority only picks the next job
+
+**Statement:** Priority picks the next job. Nothing else.
+
+- If a task can be started, start one. Always. Free capacity is never held,
+  reserved, or kept idle for any project, lane, or priority.
+- When a slot frees, dispatch the highest-ranked READY request; if none of the
+  higher-ranked projects has anything ready, dispatch whatever is ready.
+- The system never cancels, stops, or preempts running work. Only a user cancels work.
+
+**Why:** Priority cancellation discarded running attempts, while selected-slot
+reservations refused ready work even with real global capacity available.
+
+**Enforcement:** The global gate collects currently calling requests and ranks
+and acquires real slots in one operation. A request that cannot start retains
+no selected ownership. All modes use the same lifecycle; strict priority is
+only an ordering rule. Authorization, dependencies, retry readiness, and local
+lane ceilings are checked by the callers before acquisition. Admission reads
+and filters candidates before acquiring local or global capacity for evaluation.
+`TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
+`TestGlobalDispatchGateReadyRequests`, `TestGlobalDispatchGateConcurrentReadyRequests`,
+and `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
+manifest. The existing boundary fuzz seeds retain free-capacity and release
+failure coverage. `TestRepositorySources` rejects retired selection, rescue,
+reservation, and preemption symbols and reason strings, including assembled
+constants. Only the two enumerated historical store readers may retain old
+reason strings; negative fixtures cover that boundary.
+
+This change also enforces INV-3 by deleting preemption callbacks, speculative
+selection, reservation weights, lane rescue counters, and the separate strict
+lifecycle. Elastic pools also drop reclaim targets and borrower queues that
+held shared capacity for callers no longer acquiring. Pool and burst ceilings
+still apply. It adds no configuration or recovery mechanism.
+
+**Change:** Edit INV-10 and its tests in the same PR before changing priority or
+capacity semantics. New names or indirect equivalents remain a review boundary.
+
 ## Check boundaries
 
 The source walk covers non-test Go packages under `internal`, `cmd`, and `tools`

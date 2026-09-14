@@ -432,17 +432,6 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		result.DeferredReason = reason
 		return result, nil
 	}
-	release, acquired, reason, err := acquireCapacity(ctx, settings, startedAt)
-	if err != nil {
-		return result, err
-	}
-	if !acquired {
-		result.DeferredReason = reason
-		return result, nil
-	}
-	defer func() {
-		cleanupErr = release()
-	}()
 
 	candidateCtx := connector.WithRESTFanoutBudget(ctx, admissionRESTFanoutScope+"_candidates")
 	candidates, readerTruncations, itemsRead, readerFiltered, err := readAdmissionCandidates(candidateCtx, settings.Issues, settings.Config)
@@ -507,6 +496,18 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	if len(candidates) == 0 {
 		return result, nil
 	}
+
+	release, acquired, reason, err := acquireCapacity(ctx, settings, startedAt)
+	if err != nil {
+		return result, err
+	}
+	if !acquired {
+		result.DeferredReason = reason
+		return result, nil
+	}
+	defer func() {
+		cleanupErr = release()
+	}()
 
 	validCandidates := make([]connector.Issue, 0, len(candidates))
 	evaluations := make([]AgentEvaluation, 0, len(candidates))
