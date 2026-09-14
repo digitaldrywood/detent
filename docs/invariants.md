@@ -151,6 +151,17 @@ checks three unchanged passes and a later genuine return move. Failed observatio
 preserve the prior cached entry and provenance without falling back to stale
 runtime snapshots; the next refresh retries the board observation.
 
+Allowance triage publication reuses the auto-promote gate against freshly hydrated
+PR checks and review threads before moving an exhausted issue (#2685). A ready
+head enters the configured promotion lane without publishing the historical
+triage explanation; the persisted triage attempt still consumes its single pass.
+If the issue still needs triage, the note includes the observed head, check-run
+IDs, states, and UTC observation timestamps. Unavailable PR evidence leaves
+publication pending. A merge discovered during hydration uses the existing merged-PR
+lifecycle; missing or running audit and validator stages leave publication pending
+while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
+no new lane reason, allowance reset, or recovery mechanism is introduced.
+
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
 Unknown constants, including concatenations, fail. Existing dynamic forwarding
