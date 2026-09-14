@@ -195,3 +195,31 @@ func TestCheckDoctorProjectReportsBackendModelCatalogError(t *testing.T) {
 		t.Fatalf("catalog check = %#v, want failed check with ListModels error", check)
 	}
 }
+
+func TestDoctorModelSelectionSessionLimits(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "enabled", false: "disabled"}[enabled], func(t *testing.T) {
+			cfg := workflowconfig.Default()
+			cfg.Agent.MaxSessionDurationMS, cfg.Agent.MaxSessionTokens = 100, 200
+			cfg.Agents.ModelSelection = workflowconfig.ModelSelection{Preset: new("sol_first"), Enabled: &enabled, Levels: map[string]workflowconfig.ModelSelectionDefaults{
+				"complex":      {MaxSessionDurationMS: new(500), MaxSessionTokens: new(int64(600))},
+				"very_complex": {MaxSessionDurationMS: new(0)},
+			}}
+			got := checkDoctorModelSelection("alpha", cfg)
+			wants := []string{"level normal effective limits: max_session_duration_ms=100, max_session_tokens=200", "flat limits (selection disabled or backend ineligible): max_session_duration_ms=100, max_session_tokens=200"}
+			if enabled {
+				wants = append(wants, "level complex effective limits: max_session_duration_ms=500, max_session_tokens=600", "level very_complex effective limits: max_session_duration_ms=0, max_session_tokens=200")
+			} else {
+				wants = append(wants, "level complex effective limits: max_session_duration_ms=100, max_session_tokens=200")
+			}
+			if got.Status != doctorOK {
+				t.Fatalf("doctor = %+v", got)
+			}
+			for _, want := range wants {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("missing %q in %s", want, got.Detail)
+				}
+			}
+		})
+	}
+}

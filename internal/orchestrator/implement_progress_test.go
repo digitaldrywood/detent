@@ -1861,6 +1861,29 @@ func TestImplementProgressBlockComment(t *testing.T) {
 			wantAbsent: []string{"workspace_diffstat", "(changed)"},
 		},
 		{
+			name: "historical dispatch loop clean workspace",
+			decision: implementCompletionProgressDecision{
+				BlockReason:           dispatchLoopDetectedReason,
+				ConsecutiveNoProgress: 3,
+				WorkspaceDiffStats:    DiffStats{Status: "clean", HeadSHA: "workspace-head"},
+			},
+			wantContains: []string{"workspace unchanged across 3 attempts", "head `workspace-head`", "identical since attempt 1"},
+			wantAbsent:   []string{"carried stale work", "diff fingerprint", "workspace evidence: unavailable"},
+		},
+		{
+			name: "historical dispatch loop fingerprint without head",
+			decision: implementCompletionProgressDecision{
+				BlockReason:           dispatchLoopDetectedReason,
+				ConsecutiveNoProgress: 3,
+				WorkspaceDiffStats: DiffStats{
+					FilesChanged: 2, AddedLines: 5, RemovedLines: 3, UnpushedCommits: 1,
+					Fingerprint: "historical-diff", Status: "changed",
+				},
+			},
+			wantContains: []string{"diff fingerprint `historical-diff`", "carrying 2 changed files (+5/-3), 1 unpushed commit, unchanged since attempt 1"},
+			wantAbsent:   []string{"head `", "workspace_diffstat", "workspace evidence: unavailable"},
+		},
+		{
 			name: "dispatch loop unavailable workspace evidence",
 			decision: implementCompletionProgressDecision{
 				BlockReason:           dispatchLoopDetectedReason,

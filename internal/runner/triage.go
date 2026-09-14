@@ -66,6 +66,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	if err := r.agentPreflightError(resolved.Err, cleanup()); err != nil {
 		return result, err
 	}
+	workflow.Config.Agent = workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, resolved.Selection.Level)
 	model = effectiveModel("", resolved.Model, runtime.defaultModelForRole(role))
 	identity := configuredRuntimeIdentity(selection, backendConfig, role, model, startedAt)
 	identity.Selection = resolved.Selection
@@ -93,6 +94,8 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	if err != nil {
 		return result, err
 	}
+	sessionCtx, cancelSession := r.sessionLimit(ctx, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS), ErrSessionDurationExceeded)
+	defer cancelSession()
 	result = RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: identity, budgetProjection: budgetProjection}
 	provider, tier, effort := agentTurnIdentityOptions(backendConfig)
 	if resolved.Effort != "" {
@@ -101,7 +104,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	var output strings.Builder
 	turnCount := 0
 	removeWorkspace = false
-	turn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, AgentTurnRequest{
+	turn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace: path, Prompt: triageInstructions + "\n\nEvidence:\n" + req.TriageContext,
 		ToolInstructions: triageInstructions, ReadOnly: true, Model: model, ModelProvider: provider,
 		ServiceTier: tier, ReasoningEffort: effort, MaxTurns: 1, TurnTimeout: 2 * time.Minute, MaxDuration: 2 * time.Minute,
@@ -130,9 +133,15 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 				return err
 			}
 		}
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, path, update, r.now().UTC()); err != nil {
+			return err
+		}
 		observedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, model)
 		return r.enforceSessionBudgetProjection(budgetProjection, 0, observedModel, backendConfig.Kind, update)
 	}, r.turnLimit)
+	if cause := context.Cause(sessionCtx); durationLimitError(cause) {
+		turnErr = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
+	}
 	reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
 	removeWorkspace = reapErr == nil
 	turnErr = errors.Join(turnErr, reapErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))

@@ -33,6 +33,43 @@ Remove them from existing configuration. There is no replacement tuning key.
 See [INV-3](invariants.md#inv-3--mechanism-moratorium) for the consolidation and
 historical-reader compatibility contract.
 
+## Session limits by complexity level
+
+Each `agents.model_selection.levels.<name>` entry may set
+`max_session_duration_ms` and `max_session_tokens` alongside model and effort.
+The existing selected level (stage override, matching rule, then default) supplies
+these limits once at session start. An omitted limit inherits `agent`'s flat
+value; explicit `0` disables that limit. Values must be non-negative. Selection
+disabled or an ineligible backend uses the flat values. No preset limit changes
+unless configured. For example, extend an inherited enabled selection policy:
+
+```yaml
+agents:
+  model_selection:
+    levels:
+      normal:
+        max_session_duration_ms: 1800000
+      complex:
+        max_session_duration_ms: 7200000
+      very_complex:
+        max_session_duration_ms: 14400000
+        max_session_tokens: 2000000
+```
+
+The running session keeps its resolved values across turns, checkpoints, and
+fallbacks. Later label or configuration changes do not change its limits or reset
+attempt counts or lifetime usage. Turn inactivity, no-progress limits, context
+multipliers, and token exemption settings retain their existing behavior.
+`detent doctor` reports each level's effective limits for the project, plus the
+flat limits used by ineligible backends.
+
+For projects using backlog admission, set `backlog_admission.require_effort: true`
+and configure `effort_file` and `effort_section` to the project's existing effort
+rubric. Admission then writes the recommended effort before Todo when no override
+exists. Existing effort-to-level rules remain authoritative; this feature adds no
+new mapping. An issue filed directly to Todo without sizing uses the default
+level (subject to existing stage and role rules).
+
 ## Terminal attempt recovery
 
 Set `recovery.terminal_attempt_retry_limit` in `detent.yaml` or
@@ -988,6 +1025,8 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agents.model_selection.levels` | `mapping<string, mapping>` | `{}` | No | None |
 | `agents.model_selection.levels.<name>` | `object` | `backend-dependent` | No | None |
 | `agents.model_selection.levels.<name>.effort` | `string` | `none for Claude Code` | No | None |
+| `agents.model_selection.levels.<name>.max_session_duration_ms` | `integer` | `backend-dependent` | No | None |
+| `agents.model_selection.levels.<name>.max_session_tokens` | `integer` | `backend-dependent` | No | None |
 | `agents.model_selection.levels.<name>.model` | `string` | `backend-dependent` | No | None |
 | `agents.model_selection.normal_model` | `string` | `none` | Conditional | is required when enabled |
 | `agents.model_selection.preset` | `string` | `none` | No | must be sol_first or empty |

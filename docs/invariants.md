@@ -113,6 +113,15 @@ still run in the prepared workspace, where startup failures have attempt context
 mechanisms as the main source of incidents; adding another conditional guard
 perpetuates that failure mode.
 
+Session duration and absolute token guards resolve once per session from the
+existing model-selection level (#2597), inheriting omitted limits from the flat
+project values. This consolidates limit resolution into the existing selection
+and guard paths; it adds no guard or escalation mechanism. Running sessions keep
+the resolved limits across turns, checkpoints, and fallbacks; label/configuration
+changes do not reset attempts or lifetime usage. Turn inactivity and no-progress
+behavior remain unchanged. Covered by `TestModelSelectionSessionLimits`,
+`TestRunnerSelectedSessionLimits`, and `TestResumedSelectionKeepsSessionLevel`.
+
 Worker GitHub credential unavailability and connector write-policy denials reuse
 the forge-availability pause and write canary (#2548). They do not park an issue or
 create a human prerequisite, and the named project condition clears after a
@@ -211,7 +220,14 @@ issue to Human Review with `attempt_allowance_exhausted`. Publication checks the
 existing attempt marker before retrying; interrupted triage yields an explicit
 incomplete-diagnosis note, never another worker turn. Automatic promotion also
 honors exhaustion and existing running-worker ownership. Triage retains an
-operator lane change observed at completion, including across publication retries. Historical reason strings and progress records remain readable.
+operator lane change observed at completion, including across publication retries.
+Historical reason strings and progress records remain readable.
+`TestImplementProgressBlockComment` preserves historical clean-workspace and
+fingerprint-only evidence formatting without restoring dispatch-loop producers.
+Triage resolves the same selected session duration and token limits as workers,
+while retaining its single-turn, two-minute upper bound.
+`TestRunnerSelectedSessionLimits` covers inherited and level-specific limits,
+duration expiry, token usage, and configuration changes during triage.
 
 This is the issue-authorized replacement reason and consolidation, not an
 additional breaker, configuration key, or recovery loop. Non-PR artifact and

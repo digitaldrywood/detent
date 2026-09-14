@@ -1621,6 +1621,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if resolvedOverride.Err != nil {
 		return RunResult{}, resolvedOverride.Err
 	}
+	workflow.Config.Agent = workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, resolvedOverride.Selection.Level)
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
 	executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel}
 	if executionIdentity.Model == "" {
@@ -1817,7 +1818,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		workerGitHub:          workerGitHub,
 		processRSS:            r.processRSS,
 	}
-	if mergeFallback && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
+	if mergeFallback && sessionDuration > 0 && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
 		turnRequest.MaxDuration = sessionDuration
 	}
 	if mode == RunModeRoutine {
@@ -2950,6 +2951,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	workflow.Config.Agent = workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, resolvedSelection.Selection.Level)
 	selectedModel = resolvedSelection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
 

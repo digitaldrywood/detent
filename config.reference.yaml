@@ -924,6 +924,10 @@
 #         model: null
 #         # agents.model_selection.levels.<name>.effort | type: string | default: none for Claude Code | required: No | validation: None
 #         effort: null
+#         # agents.model_selection.levels.<name>.max_session_duration_ms | type: integer | default: backend-dependent | required: No | validation: None
+#         max_session_duration_ms: null
+#         # agents.model_selection.levels.<name>.max_session_tokens | type: integer | default: backend-dependent | required: No | validation: None
+#         max_session_tokens: null
 #     # agents.model_selection.stages | type: mapping<string, mapping> | default: {} | required: No | validation: None
 #     stages:
 #       # agents.model_selection.stages.<name> | type: object | default: backend-dependent | required: No | validation: None
