@@ -678,6 +678,9 @@ func refreshProjectWorkflow(existing string, generated string, cfg workflowconfi
 	}
 	for _, heading := range []string{"## Validation", "## Browser verification", "## Required Execution Flow", "## Blocked handoff"} {
 		section, _ := projectRefreshMarkdownSection(generated, heading)
+		if section == "" {
+			continue
+		}
 		if _, found := onboardingMarkdownSection(refreshed, heading); !found && section != "" {
 			refreshed = strings.TrimRight(refreshed, "\n") + "\n\n" + section
 		} else {

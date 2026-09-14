@@ -3600,10 +3600,12 @@ The workflow references the Detent-appended handoff contract instead of copying 
 Template lane instructions use `### State:` headings. The builder stores their
 bodies in `agent.instructions_by_state`; the runner appends only the current lane. Shared validation and delivery rules remain visible.
 
-The configured `GATE_RUN` command (default `make check`) appears once as a
-requirement, immediately before push. Use targeted tests while editing; after a
-green gate, rerun only if files changed. The generated Bash pipeline uses
-`pipefail` and `tail -40` to preserve failure status while bounding output.
+The configured `GATE_RUN` command (default `make check`) is supplied by the
+Detent-appended Validation gate block, which owns full-versus-focused selection
+including the Merging optimization. Generated workflows reference that authority
+and require the selected validation once immediately before push. Use targeted
+tests while editing; after green, rerun only if files changed. Bound output with
+a summary target or Bash `pipefail` and `tail -40`, preserving failure status.
 UI files (`.html`, `.htm`, `.templ`, `.jsx`, `.tsx`, `.vue`, `.svelte`) cause the
 probe to include browser / e2e guidance, conditional on the diff touching the
 detected UI surface, including supporting routes and responses. Backend-only

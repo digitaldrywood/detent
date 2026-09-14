@@ -3,11 +3,11 @@ package cli
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -66,6 +66,14 @@ func TestOnboardingInstructionBudget(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					if preset != "non_code_artifact" {
+						if strings.Count(prompt, "## Validation gate") != 1 || strings.Contains(prompt, "bash -o pipefail -c") {
+							t.Fatal("runtime gate must be the sole command execution authority")
+						}
+						if !strings.Contains(prompt, "In Merging, run a focused rebase/smoke gate") {
+							t.Fatal("runtime merging optimization lost")
+						}
+					}
 					// The appended runtime contract can mention states, but only the current
 					// workflow lane heading should survive template rendering.
 					if strings.Count(prompt, "### State:") != 1 || !strings.Contains(prompt, "### State: "+state) {
@@ -75,18 +83,8 @@ func TestOnboardingInstructionBudget(t *testing.T) {
 				if preset == "non_code_artifact" {
 					return
 				}
-				if strings.Count(result.Workflow, "bash -o pipefail -c") != 1 {
-					t.Fatal("gate must appear exactly once")
-				}
-				start := strings.Index(result.Workflow, "`bash -o pipefail -c") + 1
-				end := strings.Index(result.Workflow[start:], "`") + start
-				bash, err := exec.LookPath("bash")
-				if err != nil {
-					t.Skip("gate shell execution requires bash; structural assertions passed")
-				}
-				output, err := exec.CommandContext(context.Background(), bash, "-c", result.Workflow[start:end]).CombinedOutput()
-				if err == nil || string(output) != "gate" {
-					t.Fatalf("gate failure/quoting lost: output=%q error=%v", output, err)
+				if strings.Contains(result.Workflow, workflow.Config.Gate.Run) {
+					t.Fatal("workflow duplicates the runtime gate command")
 				}
 			})
 		}
@@ -156,7 +154,7 @@ func TestRefreshProjectInstructionTrims(t *testing.T) {
 					t.Fatalf("retained %q", bad)
 				}
 			}
-			if strings.Count(workflow, "bash -o pipefail -c") != 1 || strings.Contains(workflow, "browser / e2e") != ui {
+			if strings.Count(workflow, "Validation gate block is authoritative") != 1 || strings.Contains(workflow, "browser / e2e") != ui {
 				t.Fatalf("incorrect refreshed instructions:\n%s", workflow)
 			}
 			agents := string(projectRefreshTestChange(t, plan, fixture.agentsPath).after)
@@ -250,6 +248,19 @@ func TestRefreshRecognizesLegacyLocalLaneWording(t *testing.T) {
 				if line != "" && !strings.HasPrefix(line, "#") {
 					t.Fatalf("retained legacy generated instruction: %s", line)
 				}
+			}
+		})
+	}
+}
+
+func TestRefreshPreservesUnreplacedCustomSections(t *testing.T) {
+	t.Parallel()
+	for _, heading := range []string{"## Browser verification", "## Blocked handoff"} {
+		t.Run(heading, func(t *testing.T) {
+			existing := heading + "\n\nKeep this custom policy.\n\n## Other\n\nOther policy.\n"
+			got := refreshProjectWorkflow(existing, "## Validation\n\nGenerated validation.\n", workflowconfig.Config{})
+			if !strings.Contains(got, existing) {
+				t.Fatalf("custom section structure changed:\n%s", got)
 			}
 		})
 	}

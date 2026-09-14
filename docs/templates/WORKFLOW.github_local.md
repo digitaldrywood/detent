@@ -18,11 +18,13 @@ or `detent doctor` to infer required stages or inspect CI configuration.
 
 ## Validation
 
-During implementation, run targeted tests for touched packages. Immediately
-before push, run the configured gate exactly once using
-`bash -o pipefail -c '(make check) 2>&1 | tail -40'`.
-Do not rerun after green unless files changed. Preserve failure status, fix
-failures, and summarize the result; inspect the full output only when needed.
+During implementation, run targeted tests for touched packages. The Detent-appended
+Validation gate block is authoritative for the command and full-versus-focused
+selection, including Merging. Perform that required validation exactly once,
+immediately before push; do not rerun after green unless files changed.
+Use a summary target when configured, otherwise pipe output through
+`tail -40` with Bash `pipefail` enabled to preserve failure status.
+Fix failures and summarize the result; inspect full output only when needed.
 
 ## Required Execution Flow
 

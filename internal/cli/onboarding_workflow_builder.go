@@ -349,8 +349,6 @@ func renderOnboardingWorkflow(
 	renderedPrompt = onboardingWorkflowStateInstructions(root, renderedPrompt)
 
 	if preset.Name != "non_code_artifact" {
-		gateRun := onboardingYAMLScalarValue(onboardingYAMLMappingValue(root, "gate"), "run")
-		renderedPrompt = strings.ReplaceAll(renderedPrompt, "make check", strings.ReplaceAll(gateRun, "'", "'\"'\"'"))
 		if len(probe.UISurfacePaths) > 0 {
 			browser := "## Browser verification\n\nOnly when the diff touches the detected UI surface (" + strings.Join(probe.UISurfacePaths, ", ") + "), including supporting routes and responses, run relevant browser / e2e checks for the affected journeys.\n\n"
 			renderedPrompt = strings.Replace(renderedPrompt, "## Required Execution Flow", browser+"## Required Execution Flow", 1)
