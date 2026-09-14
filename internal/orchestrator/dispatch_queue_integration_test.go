@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
@@ -21,8 +22,36 @@ func (g *observedQueueGate) Submit(ctx context.Context, project scheduler.Projec
 	return result, cancel, decision
 }
 
+// terminalRefreshConnector injects tracker latency only after the candidate has
+// become terminal, so initial queue submission is unaffected.
+type terminalRefreshConnector struct {
+	*fakeConnector
+	delay time.Duration
+	t     *testing.T
+}
+
+func (c *terminalRefreshConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	issues, err := c.fakeConnector.FetchIssueStatesByIDs(ctx, ids)
+	if err == nil && len(issues) == 1 && issues[0].State == "Done" {
+		c.t.Log("granted higher candidate refreshed as terminal")
+		if c.delay > 0 {
+			// Deliberately exceed the old one-second runner observation deadline.
+			// This models a slow refresh, not a sleep used to synchronize the test.
+			timer := time.NewTimer(c.delay)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		c.t.Log("terminal refresh returned; dispatch must yield capacity")
+	}
+	return issues, err
+}
+
 func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
-	for _, scenario := range []string{"priority", "candidate became terminal", "owner shutdown"} {
+	for _, scenario := range []string{"priority", "candidate became terminal", "slow terminal refresh", "owner shutdown"} {
 		t.Run(scenario, func(t *testing.T) {
 			registry, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "strict", Capacity: 1}}}, nil)
 			if err != nil {
@@ -37,7 +66,7 @@ func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
 			lowerIssue := testIssue("lower", "digitaldrywood/detent#11", "Todo")
 			higherTracker, lowerTracker := newFakeConnector(higherIssue), newFakeConnector(lowerIssue)
 			higherRunner, lowerRunner := newBlockingRunner(), newBlockingRunner()
-			start := func(id string, priority int, tracker *fakeConnector, runner *blockingRunner) (*orchestrator.Orchestrator, func()) {
+			start := func(id string, priority int, tracker connector.Connector, runner *blockingRunner) (*orchestrator.Orchestrator, func()) {
 				t.Helper()
 				o, err := orchestrator.New(orchestrator.Config{
 					Project:      scheduler.ProjectCandidate{ID: id, Priority: priority},
@@ -59,7 +88,11 @@ func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
 				return o, stop
 			}
 			// Separate submissions and no forced mutex overlap reproduce independent polls.
-			higher, stopHigher := start("higher", 1, higherTracker, higherRunner)
+			higherConnector := &terminalRefreshConnector{fakeConnector: higherTracker, t: t}
+			if scenario == "slow terminal refresh" {
+				higherConnector.delay = 1100 * time.Millisecond
+			}
+			higher, stopHigher := start("higher", 1, higherConnector, higherRunner)
 			defer stopHigher()
 			lower, stopLower := start("lower", 4, lowerTracker, lowerRunner)
 			defer stopLower()
@@ -71,7 +104,7 @@ func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
 					t.Fatalf("pending acquisition blocked owner state requests: %v", err)
 				}
 			}
-			if scenario == "candidate became terminal" {
+			if scenario == "candidate became terminal" || scenario == "slow terminal refresh" {
 				if err := higherTracker.UpdateIssueState(t.Context(), higherIssue.ID, "Done"); err != nil {
 					t.Fatal(err)
 				}
@@ -82,8 +115,9 @@ func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
 			if err := gate.Release(held); err != nil {
 				t.Fatal(err)
 			}
+			t.Log("occupied slot released")
 			if scenario == "priority" {
-				request := receiveRunRequest(t, higherRunner.started)
+				request := receiveRunRequestWithin(t, higherRunner.started, slowCIIntegrationWaitTimeout)
 				if request.Issue.ID != higherIssue.ID {
 					t.Fatalf("first dispatched = %s", request.Issue.ID)
 				}
@@ -94,7 +128,9 @@ func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
 				}
 				close(higherRunner.release)
 			}
-			request := receiveRunRequest(t, lowerRunner.started)
+			// Queue handoff includes tracker refreshes and goroutine scheduling; use
+			// the same deadlock budget as submission, not a dispatch latency limit.
+			request := receiveRunRequestWithin(t, lowerRunner.started, slowCIIntegrationWaitTimeout)
 			if request.Issue.ID != lowerIssue.ID {
 				t.Fatalf("next dispatched = %s", request.Issue.ID)
 			}
@@ -156,7 +192,7 @@ func TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling(t *testing.T) {
 			hosts := make(map[string]bool)
 			issues := make(map[string]bool)
 			for range 2 {
-				request := receiveRunRequest(t, runner.started)
+				request := receiveRunRequestWithin(t, runner.started, slowCIIntegrationWaitTimeout)
 				hosts[request.WorkerHost] = true
 				issues[request.Issue.ID] = true
 			}
