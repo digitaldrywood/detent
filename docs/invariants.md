@@ -573,6 +573,15 @@ retained released state instead of adding separate admission exclusions.
 Running workers retain their original metadata through completion; the same
 idle reconciliation then handles its release.
 
+Rework candidates reuse the merge worker's current-head CI status and pending-check
+view before acquiring capacity (#2639, operator-approved). Queued or running CI
+returns the existing `current_head_ci_wait` decision; the lane and retry attempt
+remain unchanged, with no new timer or reservation. Terminal CI or no PR retains
+normal eligibility. `TestReworkCurrentHeadCIDispatch` covers fresh and retry
+candidates, immediate dispatch of the next eligible candidate, and release after
+terminal CI. `TestReworkCurrentHeadCIConfiguredLane` preserves configured lane
+selection. This consolidates CI classification with the merge worker (INV-3).
+
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.
 

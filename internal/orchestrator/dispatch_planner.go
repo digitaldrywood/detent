@@ -350,6 +350,10 @@ func (p dispatchPlanner) retryAction(
 		if workerGitHubMonitorProbeReserved {
 			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", decision.reason, now)
 		}
+		if decision.reason == dispatchSkipCurrentHeadCIWait {
+			state.Retry[retry.Issue.ID] = retry
+			return dispatchAction{}, false, decision.reason
+		}
 		if decision.reason == dispatchSkipProjectFailureBreaker {
 			if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
 				retry.DueAt = state.FailureBreaker.ResumeAt
@@ -752,6 +756,10 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
+	}
+	if normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) && issue.PullRequest != nil &&
+		(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue)) > 0) {
+		return dispatchableDecision{reason: dispatchSkipCurrentHeadCIWait}
 	}
 	if artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) {
 		return dispatchableDecision{reason: dispatchSkipArtifactGateWaitStatus}
