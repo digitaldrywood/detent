@@ -124,3 +124,41 @@ func TestQueuedDispatchPreservesRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestQueuedDispatchConsumesImmediateHostAssignment(t *testing.T) {
+	for _, hostCapacity := range []int{0, 1} {
+		t.Run(map[int]string{0: "uncapped", 1: "host ceiling"}[hostCapacity], func(t *testing.T) {
+			now := time.Now()
+			cfg := normalizeConfig(Config{
+				Project: scheduler.ProjectCandidate{ID: "project"}, MaxConcurrentAgents: 2,
+				WorkerHosts: []string{"a", "b"}, MaxConcurrentAgentsPerHost: hostCapacity,
+				ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"},
+			})
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
+			// A real grant can precede publication in the owner's running state.
+			held, ok, err := gate.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "Todo", Host: "a"}, now)
+			if err != nil || !ok {
+				t.Fatalf("initial grant = %t %v", ok, err)
+			}
+			defer func() {
+				if err := gate.Release(held); err != nil {
+					t.Error(err)
+				}
+			}()
+			issue := retryTestIssue("next", "digitaldrywood/detent#30")
+			o := Orchestrator{
+				cfg: cfg, connector: hydratingDispatchConnector{issue: issue}, globalDispatchGate: gate,
+				globalDispatchReady: make(chan struct{}, 1), globalDispatchPending: make(map[string]pendingGlobalDispatch),
+				supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1),
+			}
+			state := newState(cfg)
+			defer o.releaseRunningSlots(&state)
+			defer o.cancelPendingGlobalDispatches()
+			o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			running, started := state.Running[issue.ID]
+			if !started || running.WorkerHost != "b" || running.globalSlot.Host != "b" {
+				t.Fatalf("immediate grant host lost: started %t, worker %q, slot %q", started, running.WorkerHost, running.globalSlot.Host)
+			}
+		})
+	}
+}

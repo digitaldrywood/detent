@@ -1,10 +1,58 @@
 package scheduler
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"time"
 )
+
+// Host selection and acquisition share the gate lock, so each request sees
+// earlier real grants even before their owners have started the workers.
+func (g *GlobalDispatchGate) acquireRequestHostLocked(call *dispatchRequest) (Slot, bool, DispatchGateDecision, error) {
+	if call.ctx != nil && call.ctx.Err() != nil {
+		return Slot{}, false, DispatchGateDecision{}, call.ctx.Err()
+	}
+	if len(call.request.HostCandidates) == 0 {
+		return g.acquireLocked(call.ctx, call.project, call.request, call.now)
+	}
+	hosts := slices.Clone(call.request.HostCandidates)
+	used := make(map[string]int, len(hosts))
+	for _, host := range hosts {
+		used[host.Host] = host.Used
+	}
+	for _, running := range g.running {
+		if running.ProjectID == call.project.ID {
+			used[running.slot.Host]++
+		}
+	}
+	slices.SortStableFunc(hosts, func(a, b HostCandidate) int {
+		if a.Host == call.request.Host && b.Host != call.request.Host {
+			return -1
+		}
+		if b.Host == call.request.Host && a.Host != call.request.Host {
+			return 1
+		}
+		return cmp.Compare(used[a.Host], used[b.Host])
+	})
+	decision := g.decisionLocked(call.project.ID, call.request, DecisionReasonWorkerHostUnavailable)
+	for _, host := range hosts {
+		req := call.request
+		req.Host = host.Host
+		if req.ProjectHostCapacity > 0 {
+			if used[host.Host] >= req.ProjectHostCapacity {
+				continue
+			}
+			req.ProjectHostCapacity -= host.Used
+		}
+		slot, granted, attemptDecision, err := g.acquireLocked(call.ctx, call.project, req, call.now)
+		if granted || err != nil {
+			return slot, granted, attemptDecision, err
+		}
+		decision = attemptDecision
+	}
+	return Slot{}, false, decision, nil
+}
 
 // DispatchResult transfers a real slot to the request's consuming event loop.
 type DispatchResult struct {

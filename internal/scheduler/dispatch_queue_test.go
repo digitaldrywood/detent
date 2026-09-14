@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
@@ -404,6 +405,92 @@ func TestQueuedDispatchCapacityChanges(t *testing.T) {
 				}
 			default:
 				t.Fatal("pending owner was not notified")
+			}
+		})
+	}
+}
+
+func TestQueuedDispatchChoosesAvailableHost(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		preferred      string
+		projectCeiling int
+		poolCeiling    int
+		otherProject   bool
+		outsideUsed    int
+		cancelled      bool
+		wantHost       string
+	}{
+		{name: "balance real grants", wantHost: "b"},
+		{name: "retry prefers occupied host with capacity", preferred: "a", wantHost: "a"},
+		{name: "retry preferred host ceiling", preferred: "a", projectCeiling: 1, wantHost: "b"},
+		{name: "retry prefers second host", preferred: "b", wantHost: "b"},
+		{name: "pool host ceiling", preferred: "a", poolCeiling: 1, otherProject: true, wantHost: "b"},
+		{name: "outside occupancy", projectCeiling: 1, outsideUsed: 1, otherProject: true, wantHost: "b"},
+		{name: "both hosts full", projectCeiling: 1, outsideUsed: 1},
+		{name: "cancelled with full hosts", projectCeiling: 1, outsideUsed: 1, cancelled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			gate := NewGlobalDispatchGate(NewStrictPriority(Config{Capacity: 3, CapacityPerHost: tt.poolCeiling}))
+			project := ProjectCandidate{ID: "project"}
+			holder := project
+			if tt.otherProject {
+				holder.ID = "other"
+			}
+			held, ok, err := gate.TryAcquire(t.Context(), holder, SlotRequest{State: "Todo", Host: "a"}, time.Now())
+			if err != nil || !ok {
+				t.Fatalf("initial grant = %t %v", ok, err)
+			}
+			defer func() {
+				if err := gate.Release(held); err != nil {
+					t.Error(err)
+				}
+			}()
+			hosts := []HostCandidate{{Host: "a"}, {Host: "b"}}
+			if tt.otherProject {
+				hosts[0].Used = tt.outsideUsed
+			} else {
+				hosts[1].Used = tt.outsideUsed
+			}
+			ctx, cancelContext := context.WithCancel(t.Context())
+			defer cancelContext()
+			if tt.cancelled {
+				cancelContext()
+			}
+			result, cancel, decision := gate.Submit(ctx, project, SlotRequest{
+				State: "Todo", Host: tt.preferred, HostCandidates: hosts, ProjectHostCapacity: tt.projectCeiling,
+			}, time.Now(), nil)
+			defer cancel()
+			if tt.wantHost == "" && !tt.cancelled {
+				if decision.Reason != DecisionReasonWorkerHostUnavailable {
+					t.Fatalf("decision = %q", decision.Reason)
+				}
+				select {
+				case grant := <-result:
+					t.Fatalf("full hosts granted: %+v", grant)
+				default:
+				}
+				if got := gate.PoolSnapshot().Used; got != 1 {
+					t.Fatalf("waiting request owns capacity: %d", got)
+				}
+				return
+			}
+			select {
+			case grant := <-result:
+				if tt.cancelled {
+					if !errors.Is(grant.Err, context.Canceled) || grant.Slot != (Slot{}) {
+						t.Fatalf("cancelled grant = %+v", grant)
+					}
+					return
+				}
+				if grant.Err != nil || grant.Slot.Host != tt.wantHost {
+					t.Fatalf("grant = %+v, want host %s", grant, tt.wantHost)
+				}
+				if err := gate.Release(grant.Slot); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				t.Fatal("request received no result")
 			}
 		})
 	}

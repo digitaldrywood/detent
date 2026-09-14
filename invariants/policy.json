@@ -20,6 +20,7 @@
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool",
       "TestRunDispatchesQueuedRequestsWithoutPolling",
+      "TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling",
       "TestQueuedDispatchPreservesRetry",
       "TestQueuedDispatchPreservesPullRequestEnrichment"
     ],
@@ -65,6 +66,7 @@
       "TestGlobalDispatchGateConcurrentReadyRequests",
       "TestQueuedDispatchRanksIndependentRequests",
       "TestQueuedDispatchPreservesProjectCeilings",
+      "TestQueuedDispatchChoosesAvailableHost",
       "TestQueuedDispatchSharedPoolRelease",
       "TestQueuedDispatchCapacityChanges",
       "TestQueuedDispatchRanksSynchronousAndQueuedCallersTogether",

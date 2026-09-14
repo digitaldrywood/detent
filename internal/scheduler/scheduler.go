@@ -56,11 +56,20 @@ type SlotRequest struct {
 	ProjectCapacity      int
 	ProjectStateCapacity int
 	ProjectHostCapacity  int
-	State                string
-	Host                 string
-	Weight               int
-	Priority             int
-	PressureCapacity     int
+	// HostCandidates defers queued host assignment until real acquisition.
+	// Host is an optional retry preference when candidates are supplied.
+	HostCandidates   []HostCandidate
+	State            string
+	Host             string
+	Weight           int
+	Priority         int
+	PressureCapacity int
+}
+
+// HostCandidate carries only occupancy not already tracked by the global gate.
+type HostCandidate struct {
+	Host string
+	Used int
 }
 
 type Slot struct {

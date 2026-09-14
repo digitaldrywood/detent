@@ -112,3 +112,61 @@ func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
 		})
 	}
 }
+
+func TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling(t *testing.T) {
+	for _, hostCapacity := range []int{1, 0} {
+		t.Run(map[int]string{1: "per-host ceiling", 0: "uncapped hosts"}[hostCapacity], func(t *testing.T) {
+			registry, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "strict", Capacity: 2}}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate := &observedQueueGate{ProjectDispatchGate: registry, submitted: make(chan string, 4)}
+			var held []scheduler.Slot
+			for range 2 {
+				slot, ok, err := gate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: "holder"}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+				if err != nil || !ok {
+					t.Fatalf("initial slot = %t, %v", ok, err)
+				}
+				held = append(held, slot)
+			}
+			tracker := newFakeConnector(testIssue("first", "digitaldrywood/detent#10", "Todo"), testIssue("second", "digitaldrywood/detent#11", "Todo"))
+			runner := newBlockingRunner()
+			o, err := orchestrator.New(orchestrator.Config{
+				Project: scheduler.ProjectCandidate{ID: "project"}, PollInterval: time.Hour,
+				MaxConcurrentAgents: 2, MaxConcurrentAgentsPerHost: hostCapacity,
+				WorkerHosts:  []string{"host-a", "host-b"},
+				ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"},
+			}, orchestrator.Dependencies{Connector: tracker, Runner: runner, GlobalDispatchGate: gate})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runOrchestrator(t, o)()
+			for range 2 {
+				select {
+				case <-gate.submitted:
+				case <-time.After(slowCIIntegrationWaitTimeout):
+					t.Fatal("candidate did not queue")
+				}
+			}
+			for _, slot := range held {
+				if err := gate.Release(slot); err != nil {
+					t.Fatal(err)
+				}
+			}
+			hosts := make(map[string]bool)
+			issues := make(map[string]bool)
+			for range 2 {
+				request := receiveRunRequest(t, runner.started)
+				hosts[request.WorkerHost] = true
+				issues[request.Issue.ID] = true
+			}
+			if !hosts["host-a"] || !hosts["host-b"] || !issues["first"] || !issues["second"] {
+				t.Fatalf("dispatches = hosts %v, issues %v; want both hosts and candidates", hosts, issues)
+			}
+			if got := tracker.fetchCandidateCalls(); got != 1 {
+				t.Fatalf("dispatch required another poll: %d", got)
+			}
+			close(runner.release)
+		})
+	}
+}

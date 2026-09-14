@@ -426,7 +426,7 @@ func (g *GlobalDispatchGate) dispatchLocked(pending []*dispatchRequest) {
 			continue
 		}
 		call := pending[index]
-		call.slot, call.granted, call.decision, call.err = g.acquireLocked(call.ctx, call.project, call.request, call.now)
+		call.slot, call.granted, call.decision, call.err = g.acquireRequestHostLocked(call)
 		g.finishRequestLocked(call)
 		pending = append(pending[:index], pending[index+1:]...)
 	}

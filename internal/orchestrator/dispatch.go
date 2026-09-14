@@ -632,6 +632,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	} else {
 		action := dispatchAction{issue: issue, attempt: attempt, workerHost: preferredWorkerHost, modelPermitRequired: modelPermitRequired, allowMergeControl: allowMergeControl, retryState: retryState}
 		globalSlot, ok, decision = o.acquireOrQueueGlobalDispatchSlot(ctx, state, action, slotIssue, workerHost, now, pressureCapacity, mergeControlEligible)
+		if ok && globalSlot != (scheduler.Slot{}) {
+			workerHost = globalSlot.Host
+		}
 	}
 	if !ok && mergeControlEligible && decision.Reason == scheduler.DispatchGateReasonGlobalCapacityFull {
 		mergeControl = true

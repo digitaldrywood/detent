@@ -255,6 +255,9 @@ reservations refused ready work even with real global capacity available.
 loop and ranks them together with new acquisitions. Submission, release, and
 capacity changes use the same real-slot acquisition operation. Pending requests
 own no capacity; project, lane, and host ceilings apply atomically to grants.
+Queued host assignment uses current real grants, including grants not yet
+consumed by an owner. Eligible hosts remain alternatives until acquisition;
+retry host preference cannot strand capacity on another available host.
 Owners consume grants in acquisition order and revalidate current candidates;
 refresh and shutdown discard pending requests and release unused grants.
 All modes use the same lifecycle; strict priority is
@@ -264,7 +267,9 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
 `TestGlobalDispatchGateReadyRequests`, `TestGlobalDispatchGateConcurrentReadyRequests`,
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
-`TestRunDispatchesQueuedRequestsWithoutPolling`, and
+`TestRunDispatchesQueuedRequestsWithoutPolling`,
+`TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
+`TestQueuedDispatchChoosesAvailableHost`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
 manifest. The existing boundary fuzz seeds retain free-capacity and release
 failure coverage. `TestRepositorySources` rejects retired selection, rescue,

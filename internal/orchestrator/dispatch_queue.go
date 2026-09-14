@@ -32,6 +32,10 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 	}
 	stateCapacity := o.projectStateSlotStats(slotIssue, state).capacity
 	hostCapacity := o.cfg.MaxConcurrentAgentsPerHost
+	hosts := make([]scheduler.HostCandidate, 0, len(o.cfg.WorkerHosts))
+	for _, host := range o.cfg.WorkerHosts {
+		hosts = append(hosts, scheduler.HostCandidate{Host: host})
+	}
 	for _, running := range state.Running {
 		if running.globalSlot != (scheduler.Slot{}) {
 			continue
@@ -40,16 +44,28 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 		if normalizeState(running.Issue.State) == normalizeState(slotIssue.State) {
 			stateCapacity--
 		}
-		if running.WorkerHost == workerHost && hostCapacity > 0 {
+		for i := range hosts {
+			if running.WorkerHost == hosts[i].Host {
+				hosts[i].Used++
+			}
+		}
+		if len(hosts) == 0 && running.WorkerHost == workerHost && hostCapacity > 0 {
 			hostCapacity--
 		}
 	}
 	if projectCapacity <= 0 || stateCapacity <= 0 || (o.cfg.MaxConcurrentAgentsPerHost > 0 && hostCapacity <= 0) {
 		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DecisionReasonProjectCapacityFull}
 	}
+	if len(hosts) > 0 {
+		// A poll-time choice is not affinity. Only a retry has a preferred host.
+		workerHost = ""
+		if action.retryState != nil {
+			workerHost = action.retryState.WorkerHost
+		}
+	}
 	result, cancel, decision := gate.Submit(ctx, o.cfg.Project, scheduler.SlotRequest{
 		ProjectCapacity: projectCapacity, ProjectStateCapacity: stateCapacity, ProjectHostCapacity: hostCapacity,
-		State: slotIssue.State, Host: workerHost,
+		State: slotIssue.State, Host: workerHost, HostCandidates: hosts,
 		Priority: o.dispatchStatePriority(slotIssue.State), PressureCapacity: pressureCapacity,
 	}, now, o.globalDispatchReady)
 	select {
@@ -139,6 +155,7 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 		}
 	}
 	action.issue = o.hydrateDispatchDependencies(ctx, fresh, make(map[string]dependencyBlocker))
+	action.workerHost = grant.Slot.Host
 	retry, retryQueued := state.Retry[action.issue.ID]
 	if retryQueued {
 		if action.retryState == nil || retry.DueAt.After(now) {
