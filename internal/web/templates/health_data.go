@@ -87,12 +87,6 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = strandedActiveHealthDetail(snapshot.StrandedActiveIssues)
 		return view
 	}
-	if len(snapshot.LaneSignalWarnings) > 0 {
-		view.Kind = primitives.KindWarn
-		view.Verdict = "Lane signals are being ignored."
-		view.Detail = boardCountLabel(len(snapshot.LaneSignalWarnings), "Issue has", "Issues have") + " a lane label or Status value that does not control its configured lane source."
-		return view
-	}
 	if len(recoveryFaults) > 0 {
 		view.Kind = primitives.KindErr
 		view.Verdict = "Dispatch recovery is overdue."
@@ -136,6 +130,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Kind = primitives.KindErr
 		view.Verdict = summary.Title + "."
 		view.Detail = "Dispatch resumes through a canary after the configured cooldown."
+		return view
+	}
+	if len(snapshot.LaneSignalWarnings) > 0 {
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Lane signals are being ignored."
+		view.Detail = boardCountLabel(len(snapshot.LaneSignalWarnings), "Issue has", "Issues have") + " a lane label or Status value that does not control its configured lane source."
 		return view
 	}
 	if !diagnosticsSnapshotHasLoadedData(snapshot) {

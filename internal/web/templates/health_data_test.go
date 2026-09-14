@@ -189,6 +189,35 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "Project failure breaker active — 1 project.",
 		},
 		{
+			name: "overdue recovery requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				DispatchRecoveries: []telemetry.DispatchRecovery{{
+					ProjectID: "detent", Kind: "github_rest", Status: "waiting", ResumeAt: now.Add(-2 * time.Minute),
+				}},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Dispatch recovery is overdue.",
+		},
+		{
+			name: "failed refresh requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Refresh:     telemetry.Refresh{LastError: "tracker read failed"},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Tracker refresh failed.",
+		},
+		{
+			name: "failed update requires attention",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Update:      telemetry.Update{LastError: "download failed"},
+			},
+			wantKind:    primitives.KindErr,
+			wantVerdict: "Automatic update failed.",
+		},
+		{
 			name: "waiting recovery stays diagnostic",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -224,6 +253,26 @@ func TestHealthViewVerdicts(t *testing.T) {
 			}
 			if !view.CheckedAt.Equal(now) {
 				t.Fatalf("checked at = %s", view.CheckedAt)
+			}
+			if tt.wantKind == primitives.KindErr {
+				t.Run("with ignored lane signal", func(t *testing.T) {
+					snapshot := tt.snapshot
+					warning := telemetry.LaneSignalWarning{
+						IssueID: "issue-1", Identifier: "owner/repo#1", ConfiguredSource: "ProjectV2 Status",
+						Reason: "label detent:todo has no effect", Action: "set Status to Todo",
+					}
+					snapshot.LaneSignalWarnings = []telemetry.LaneSignalWarning{warning}
+					view := healthViewFromDashboard(DashboardData{Snapshot: snapshot})
+					if view.Kind != tt.wantKind || view.Verdict != tt.wantVerdict {
+						t.Fatalf("health verdict = %q (%q), want %q (%q)", view.Verdict, view.Kind, tt.wantVerdict, tt.wantKind)
+					}
+					for _, row := range view.Rows {
+						if row.Kind == primitives.KindWarn && strings.Contains(row.Detail, warning.Reason) && row.Resets == warning.Action {
+							return
+						}
+					}
+					t.Fatal("error verdict must retain lane warning detail and corrective action")
+				})
 			}
 		})
 	}

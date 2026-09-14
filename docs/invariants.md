@@ -148,6 +148,13 @@ no recovery path or orphan-suppression guard (#2505).
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.
 
+Issue #2567 explicitly authorizes the read-only `lane_signal_ignored` explanation
+reason as a narrow exception to the reason-code moratorium. It reports ignored
+tracker inputs through the existing explanation, board health, and doctor
+surfaces. It does not enter the lane-transition vocabulary or affect dispatch,
+recovery, or tracker writes; the lane-transition allowlist is unchanged. This
+exception does not authorize any other reason code or lane mechanism.
+
 Lifetime-limit parks remove the cooldown timer, timed recovery transition, and
 signature permit (#2486). The vocabulary consolidates onto the existing
 `lifetime_limit_recovered` reason, emitted only when an override is present or
