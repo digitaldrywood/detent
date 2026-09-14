@@ -114,6 +114,12 @@ exact-head branch but failed before creating the PR, and returns a missing remot
 branch to Rework (#2528). This retires the human-owned no-PR park by consolidating
 the repair into the existing deliverable-recovery and operator-routine paths.
 
+Successful persisted attempts release dispatch ownership through the same completed
+attempt cleanup even when completion-time pull-request hydration is unavailable
+(#2553). Completion evidence and the existing hydration gate remain authoritative;
+the claim no longer acts as an implicit park while no worker is running, and cleanup
+is limited to the retained attempt claim so it cannot erase replacement ownership.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.

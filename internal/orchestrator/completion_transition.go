@@ -40,6 +40,11 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
 				result.transitioned[issueID] = struct{}{}
+				if completed.successfulAttemptPersisted {
+					if _, claimed := state.Claimed[issueID]; claimed {
+						o.releaseCompletedAttemptClaim(ctx, state, issue)
+					}
+				}
 				continue
 			}
 		}
