@@ -1090,6 +1090,9 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 		}
 		return "", fmt.Errorf("release quarantined worktree admin name: %w", err)
 	}
+	if err := detachWorktreeHead(ctx, quarantinePath); err != nil {
+		return quarantinePath, err
+	}
 	return quarantinePath, nil
 }
 
@@ -1158,13 +1161,7 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 	}
 	if isDir && linkedWorktree {
 		quarantinePath, err := l.quarantineWorktree(ctx, path)
-		if err != nil {
-			return "", false, err
-		}
-		if err := detachWorktreeHead(ctx, quarantinePath); err != nil {
-			return quarantinePath, true, err
-		}
-		return quarantinePath, true, nil
+		return quarantinePath, quarantinePath != "", err
 	}
 
 	path, err = validateWorkspacePath(l.root, path)
@@ -1185,6 +1182,47 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 }
 
 func detachWorktreeHead(ctx context.Context, path string) error {
+	// Quit operations rather than aborting them: quarantine must retain the
+	// working files and conflicted index, but rebase metadata holds the branch
+	// even when HEAD is detached.
+	rebasing, err := rebaseInProgress(ctx, path)
+	if err != nil {
+		return fmt.Errorf("inspect quarantined worktree rebase: %w", err)
+	}
+	if rebasing {
+		command := "rebase"
+		// git am shares rebase-apply, but requires its own quit command.
+		applying, err := gitPathFor(ctx, path, "rebase-apply/applying")
+		if err != nil {
+			return fmt.Errorf("inspect quarantined worktree am: %w", err)
+		}
+		if _, err := os.Stat(applying); err == nil {
+			command = "am"
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect quarantined worktree am: %w", err)
+		}
+		if _, err := runGitAt(ctx, path, command, "--quit"); err != nil {
+			return fmt.Errorf("quit quarantined worktree %s: %w", command, withCommandOutput(err))
+		}
+	}
+	for _, operation := range []struct{ marker, command string }{
+		{"MERGE_HEAD", "merge"},
+		{"CHERRY_PICK_HEAD", "cherry-pick"},
+	} {
+		marker, err := gitPathFor(ctx, path, operation.marker)
+		if err != nil {
+			return fmt.Errorf("inspect quarantined worktree operation: %w", err)
+		}
+		if _, err := os.Stat(marker); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("inspect quarantined worktree operation: %w", err)
+		}
+		if _, err := runGitAt(ctx, path, operation.command, "--quit"); err != nil {
+			return fmt.Errorf("quit quarantined worktree %s: %w", operation.command, withCommandOutput(err))
+		}
+	}
+
 	output, err := runGitAt(ctx, path, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve quarantined worktree HEAD: %w", withCommandOutput(err))
