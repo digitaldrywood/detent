@@ -9,7 +9,7 @@ templ hostedSetupInput(id string, name string, label string) {
 }
 
 templ hostedSetupButton(label string) {
- <button type="submit" class="min-h-11 rounded-card border border-line bg-elev px-4 text-sm font-medium focus-visible:ring-2 focus-visible:ring-accent">{ label }</button>
+ <button type="submit" disabled class="min-h-11 rounded-card border border-line bg-elev px-4 text-sm font-medium focus-visible:ring-2 focus-visible:ring-accent">{ label }</button>
  <p role="status" aria-live="polite" class="break-words text-sm" data-setup-result></p>
 }
 

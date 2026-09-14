@@ -98,4 +98,8 @@
       result.textContent = error instanceof SyntaxError ? 'Action required: paste a valid policy descriptor JSON object.' : error instanceof TypeError ? 'Infrastructure unavailable. Retry here without recreating the project or host identity.' : error.message;
     } finally { button.disabled = false; }
   });
+  // These forms require the submit handler; never POST to the document URL.
+  for (const button of root.querySelectorAll('[data-setup-action] button[type="submit"]')) {
+    button.disabled = false;
+  }
 })();
