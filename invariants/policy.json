@@ -73,6 +73,10 @@
     ],
     "./internal/scheduler": [
       "TestGlobalDispatchGatePriorityOnlyPicksNextJob",
+      "TestPoolRegistryRanksBorrowersAcrossPools",
+      "TestPoolRegistryQueuedBorrowersUseFreedCapacity",
+      "TestPoolRegistryReadyLenderNeverHoldsIdleCapacity",
+      "TestPoolRegistryPriorRefusalNeverHoldsBorrowedCapacity",
       "TestGlobalDispatchGateReadyRequests",
       "TestGlobalDispatchGateConcurrentReadyRequests",
       "TestQueuedDispatchRanksIndependentRequests",

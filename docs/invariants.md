@@ -376,7 +376,13 @@ nor included in defaults.
 This change also enforces INV-3 by deleting preemption callbacks, speculative
 selection, reservation weights, lane rescue counters, and the separate strict
 lifecycle. Elastic pools also drop reclaim targets and borrower queues that
-held shared capacity for callers no longer acquiring. Pool and burst ceilings
+held shared capacity for callers no longer acquiring. Registry dispatch ranks
+executable requests across all active pools before acquiring shared capacity
+(#2571), using the same request selector as standalone gates. A request that
+cannot fit does not exclude another pool; release dispatches the next request
+without polling. `TestPoolRegistryRanksBorrowersAcrossPools`,
+`TestPoolRegistryQueuedBorrowersUseFreedCapacity`, and the idle-lender and
+prior-refusal regressions run through the invariant manifest. Pool and burst ceilings
 still apply. Queued acquisitions consolidate overlapping-call ordering and
 retained demand into executable requests; they introduce no selected-slot
 reservation, configuration, or recovery mechanism.

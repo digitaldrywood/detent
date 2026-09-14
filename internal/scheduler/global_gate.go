@@ -349,7 +349,7 @@ type dispatchRequest struct {
 	err      error
 	result   chan DispatchResult
 	wake     chan<- struct{}
-	decorate func(Slot) Slot
+	decorate func(Slot, DispatchGateDecision) (Slot, DispatchGateDecision)
 	gate     *GlobalDispatchGate
 }
 
@@ -372,6 +372,46 @@ func (g *GlobalDispatchGate) acquireRequest(call *dispatchRequest) (Slot, bool, 
 	return call.slot, call.granted, call.decision, call.err
 }
 
+// selectDispatchRequest shares ordering between standalone gates and elastic
+// pools. Strict pools use project rank as a leading key; other modes have no
+// project-rank preference. Lane rank follows, and a pool's scheduler breaks ties
+// among its own requests. Selection never acquires or reserves capacity.
+func selectDispatchRequest(pending []*dispatchRequest) (int, error) {
+	index := 0
+	for i := 1; i < len(pending); i++ {
+		left, right := pending[i], pending[index]
+		leftRank, rightRank := dispatchProjectRank(left), dispatchProjectRank(right)
+		if leftRank < rightRank || (leftRank == rightRank && left.request.Priority < right.request.Priority) {
+			index = i
+		}
+	}
+	best := pending[index]
+	projects := make([]ProjectCandidate, 0, len(pending))
+	for _, call := range pending {
+		if call.gate == best.gate && call.request.Priority == best.request.Priority && dispatchProjectRank(call) == dispatchProjectRank(best) {
+			projects = append(projects, call.project)
+		}
+	}
+	selection, err := best.gate.global.SelectProject(best.ctx, ProjectSelectionRequest{Projects: projects, Now: best.now})
+	if err == nil {
+		for i, call := range pending {
+			if call.gate == best.gate && call.project.ID == selection.Project.ID && call.request.Priority == best.request.Priority {
+				return i, nil
+			}
+		}
+	} else if !errors.Is(err, ErrNoSlots) && !errors.Is(err, ErrNoCandidates) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return index, err
+	}
+	return index, nil
+}
+
+func dispatchProjectRank(call *dispatchRequest) int {
+	if call.gate.global.Mode() == ModeStrictPriority {
+		return priorityRank(call.project.Priority)
+	}
+	return 0
+}
+
 // dispatchLocked ranks queued and currently calling requests, then attempts real
 // acquisition for each. A lane/host/weight ceiling never excludes another
 // request from using the remaining capacity. There is no selected owner between
@@ -386,47 +426,17 @@ func (g *GlobalDispatchGate) dispatchLocked(pending []*dispatchRequest) {
 	}
 	pending = append(slices.Clone(g.waiting), pending...)
 	g.waiting = nil
+	for _, call := range pending {
+		call.gate = g
+	}
 	for len(pending) > 0 {
-		index := 0
-		// Lane priority orders requests; strict project priority is an optional
-		// leading sort key, sharing the same acquisition lifecycle as all modes.
-		for i := 1; i < len(pending); i++ {
-			left, right := pending[i], pending[index]
-			if g.global.Mode() == ModeStrictPriority && priorityRank(left.project.Priority) != priorityRank(right.project.Priority) {
-				if priorityRank(left.project.Priority) < priorityRank(right.project.Priority) {
-					index = i
-				}
-				continue
-			}
-			if left.request.Priority < right.request.Priority {
-				index = i
-			}
-		}
-		best := pending[index]
-		projects := make([]ProjectCandidate, 0, len(pending))
-		for _, call := range pending {
-			if call.request.Priority == best.request.Priority && (g.global.Mode() != ModeStrictPriority || priorityRank(call.project.Priority) == priorityRank(best.project.Priority)) {
-				projects = append(projects, call.project)
-			}
-		}
-		// Selection is only an ordering decision. Capacity belongs exclusively
-		// to RequestSlot below, including when the semaphore is draining.
-		selection, err := g.global.SelectProject(best.ctx, ProjectSelectionRequest{Projects: projects, Now: best.now})
-		if err == nil {
-			for i, call := range pending {
-				if call.project.ID == selection.Project.ID && call.request.Priority == best.request.Priority {
-					index = i
-					break
-				}
-			}
-		} else if !errors.Is(err, ErrNoSlots) && !errors.Is(err, ErrNoCandidates) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			best.err = err
-			g.finishRequestLocked(best)
-			pending = append(pending[:index], pending[index+1:]...)
-			continue
-		}
+		index, err := selectDispatchRequest(pending)
 		call := pending[index]
-		call.slot, call.granted, call.decision, call.err = g.acquireRequestHostLocked(call)
+		if err != nil {
+			call.err = err
+		} else {
+			call.slot, call.granted, call.decision, call.err = g.acquireRequestHostLocked(call)
+		}
 		g.finishRequestLocked(call)
 		pending = append(pending[:index], pending[index+1:]...)
 	}

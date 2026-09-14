@@ -125,7 +125,12 @@ the configured ceiling. Omitting `burst_to`, or setting it equal to
 The sum of active pool guarantees is the shared capacity available for
 borrowing. A borrower never displaces a running agent. Borrowing uses actual free
 shared capacity up to the pool's burst ceiling. A prior refusal or a project
-marked ready does not retain a claim on that capacity. Project selection and scheduling history remain local to each pool. A configuration without `agent_pools` or
+marked ready does not retain a claim on that capacity. Executable requests from
+all pools compete in one acquisition operation: strict pools contribute project
+priority as a leading rank (other modes contribute rank zero), followed by lane
+priority. Each pool breaks ties among its own requests with its configured
+scheduler and local history. A request that cannot fit yields to the next
+request; releases dispatch queued requests without another poll. A configuration without `agent_pools` or
 project `pool` fields retains the previous single-pool behavior.
 
 `detent doctor` reports the last seven days of capacity waits for each project,
