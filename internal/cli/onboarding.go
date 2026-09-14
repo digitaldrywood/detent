@@ -1459,7 +1459,7 @@ func validateOnboardingAnswers(ctx context.Context, opts options, answers onboar
 }
 
 func validateOnboardingGuidanceAnswers(answers onboardingAnswers) []string {
-	problems := requireOnboardingAnswers(answers, onboardingGuidanceKeys(onboardingEffortGuidanceFields())...)
+	var problems []string
 	if strings.EqualFold(strings.TrimSpace(answers.Values["BACKLOG_ADMISSION_ENABLED"]), "true") {
 		problems = append(problems, requireOnboardingAnswers(answers, onboardingGuidanceKeys(onboardingAdmissionGuidanceFields())...)...)
 	}

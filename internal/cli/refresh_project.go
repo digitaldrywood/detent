@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	workflowtemplates "github.com/digitaldrywood/detent/docs/templates"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
@@ -275,7 +276,17 @@ func planProjectRefresh(ctx context.Context, cfg projectRefreshConfig) (projectR
 		DefaultUpdates:    []projectRefreshSetting{},
 	}
 	result.OptInFeatures = projectRefreshFeatures(existingRoot, desiredRoot)
+	sharedWorkflow, migratedStates := migrateProjectRefreshStateInstructions(string(workflowRaw), existingRoot, desiredRoot)
 	configChanged := mergeProjectRefreshYAML(existingRoot, desiredRoot, nil, decisionByPath, &result)
+	configChanged = configChanged || migratedStates
+	if existingConfig.BacklogAdmission.RequireEffort && existingConfig.BacklogAdmission.EffortSection == onboardingEffortRubricHeading {
+		setOnboardingYAMLPath(existingRoot, []string{"backlog_admission", "require_effort"}, false)
+		deleteOnboardingYAMLPath(existingRoot, []string{"backlog_admission", "effort_section"})
+		deleteOnboardingYAMLPath(existingRoot, []string{"backlog_admission", "effort_file"})
+		existingConfig.BacklogAdmission.RequireEffort = false
+		configChanged = true
+	}
+
 	refreshedConfig := configRaw
 	if configChanged {
 		refreshedConfig, err = marshalProjectRefreshYAML(existingRoot, configRaw)
@@ -283,7 +294,7 @@ func planProjectRefresh(ctx context.Context, cfg projectRefreshConfig) (projectR
 			return projectRefreshPlan{}, err
 		}
 	}
-	refreshedWorkflow := refreshProjectWorkflow(string(workflowRaw), generatedWorkflow, existingConfig)
+	refreshedWorkflow := refreshProjectWorkflow(sharedWorkflow, generatedWorkflow, existingConfig)
 	refreshedAgents, err := renderProjectRefreshAgentGuidance(string(agentsRaw), answers)
 	if err != nil {
 		return projectRefreshPlan{}, err
@@ -459,38 +470,12 @@ func projectRefreshGuidanceAnswers(values map[string]string, workflow string) {
 		}
 		values[field.Key] = value
 	}
-	effortFallbacks := map[string]string{
-		"medium": "Small, mechanical, tightly specified work with complete acceptance criteria.",
-		"high":   "A standard feature or fix with some ambiguity or cross-cutting impact.",
-		"xhigh":  "A new subsystem or tricky state, concurrency, restart, recovery, or interaction work.",
-		"max":    "Exceptional operator-designated work; never select this effort automatically.",
-	}
-	for _, field := range onboardingEffortGuidanceFields() {
-		values[field.Key] = effortFallbacks[field.Heading]
-	}
+
 }
 
 func renderProjectRefreshAgentGuidance(existing string, answers onboardingAnswers) (string, error) {
-	if hasProjectRefreshEffortGuidance(existing) {
-		return existing, nil
-	}
-	return renderOnboardingAgentGuidance(existing, answers)
-}
 
-func hasProjectRefreshEffortGuidance(text string) bool {
-	heading := "## " + onboardingEffortRubricHeading
-	remaining := text
-	for {
-		index := strings.Index(remaining, heading)
-		if index < 0 {
-			return false
-		}
-		candidate := remaining[index:]
-		if hasOnboardingEffortGuidance(candidate) {
-			return true
-		}
-		remaining = candidate[len(heading):]
-	}
+	return renderOnboardingAgentGuidance(existing, answers)
 }
 
 func projectRefreshMarkdownSubsection(markdown string, heading string) string {
@@ -687,22 +672,39 @@ func projectRefreshFeatures(existing *yaml.Node, desired *yaml.Node) []projectRe
 }
 
 func refreshProjectWorkflow(existing string, generated string, cfg workflowconfig.Config) string {
-	refreshed := existing
+	refreshed := trimProjectRefreshHandoff(existing)
+	if !strings.Contains(refreshed, "Detent-appended Blocked handoff") {
+		refreshed = "Use the Detent-appended Blocked handoff block for the Workpad, dependencies, human questions, completion, and tracker ownership contract.\n\n" + refreshed
+	}
+	for _, heading := range []string{"## Validation", "## Browser verification", "## Required Execution Flow", "## Blocked handoff"} {
+		section, _ := projectRefreshMarkdownSection(generated, heading)
+		if _, found := onboardingMarkdownSection(refreshed, heading); !found && section != "" {
+			refreshed = strings.TrimRight(refreshed, "\n") + "\n\n" + section
+		} else {
+			old, _ := projectRefreshMarkdownSection(refreshed, heading)
+			if strings.TrimSpace(old) != strings.TrimSpace(section) {
+				var custom []string
+				for _, paragraph := range strings.Split(strings.TrimSpace(old), "\n\n") {
+					if strings.TrimSpace(paragraph) == heading || strings.Contains(section, strings.TrimSpace(paragraph)) {
+						continue
+					}
+					custom = append(custom, paragraph)
+				}
+				if len(custom) > 0 {
+					section = strings.TrimRight(section, "\n") + "\n\n" + strings.Join(custom, "\n\n") + "\n"
+				}
+			}
+			refreshed = replaceProjectRefreshMarkdownSection(refreshed, heading, section)
+		}
+	}
 	if projectRefreshYAMLTextSectionRequired(cfg.BacklogAdmission.Enabled, cfg.BacklogAdmission.CriteriaSection) {
 		refreshed = appendProjectRefreshMarkdownSection(refreshed, generated, cfg.BacklogAdmission.CriteriaSection)
 	}
-	if cfg.BacklogAdmission.RequireEffort &&
-		cfg.BacklogAdmission.EffortFile != workflowconfig.BacklogAdmissionEffortFileAgents &&
-		strings.TrimSpace(cfg.BacklogAdmission.EffortSection) != "" {
-		section := strings.TrimSpace(cfg.BacklogAdmission.EffortSection)
-		if _, found := onboardingMarkdownSection(refreshed, "## "+section); !found {
-			refreshed = strings.TrimRight(refreshed, "\n") + "\n\n" + projectRefreshEffortSection(section)
-		}
-	}
+
 	if !strings.HasSuffix(refreshed, "\n") {
 		refreshed += "\n"
 	}
-	return refreshed
+	return strings.TrimRight(refreshed, "\n") + "\n"
 }
 
 func projectRefreshYAMLTextSectionRequired(configured bool, section string) bool {
@@ -776,17 +778,6 @@ func projectRefreshMarkdownSection(markdown string, heading string) (string, boo
 		return "", false
 	}
 	return strings.TrimRight(strings.Join(lines[start:], "\n"), "\n") + "\n", true
-}
-
-func projectRefreshEffortSection(section string) string {
-	return markdownLines(
-		"## "+section,
-		"",
-		"- `medium` — Small, mechanical, tightly specified work with complete acceptance criteria.",
-		"- `high` — A standard feature or fix with some ambiguity or cross-cutting impact.",
-		"- `xhigh` — A new subsystem or tricky state, concurrency, restart, recovery, or interaction work.",
-		"- `max` — Exceptional operator-designated work; never select this effort automatically.",
-	)
 }
 
 func validateProjectRefreshCandidate(workflowPath string, workflow []byte, configPath string, config []byte, agentsPath string, agents []byte) error {
@@ -1364,4 +1355,59 @@ func projectRefreshDiffOperations(left []string, right []string) []projectRefres
 		}
 	}
 	return ops
+}
+
+// trimProjectRefreshHandoff removes the unheaded contract emitted by older
+// onboarding templates. The proposal remains a diff requiring --yes.
+func trimProjectRefreshHandoff(existing string) string {
+	raw, err := workflowtemplates.FS.ReadFile("onboarding-legacy-paragraphs.md")
+	if err != nil {
+		return existing
+	}
+	known := map[string]bool{}
+	localWording := strings.NewReplacer("local issues", "issues", "local issue", "issue")
+	normalize := func(paragraph string) string {
+		return localWording.Replace(strings.Join(strings.Fields(paragraph), " "))
+	}
+	for _, paragraph := range strings.Split(string(raw), "\n\n") {
+		known[normalize(paragraph)] = true
+	}
+	var kept []string
+	for _, paragraph := range strings.Split(strings.ReplaceAll(existing, "\r\n", "\n"), "\n\n") {
+		if strings.HasPrefix(paragraph, "### For ") || !known[normalize(paragraph)] {
+			kept = append(kept, paragraph)
+		}
+	}
+	return strings.Join(kept, "\n\n")
+}
+
+// Keep custom lane additions scoped when retiring the old generated lane text.
+func migrateProjectRefreshStateInstructions(existing string, root *yaml.Node, desired *yaml.Node) (string, bool) {
+	trimmed := trimProjectRefreshHandoff(existing)
+	trimmed = strings.ReplaceAll(trimmed, "### For ", "### State: ")
+	extracted := &yaml.Node{Kind: yaml.MappingNode}
+	shared := onboardingWorkflowStateInstructions(extracted, trimmed)
+	states := projectRefreshYAMLPathNode(extracted, "agent.instructions_by_state")
+	changed := false
+	for index := 0; index+1 < len(states.Content); index += 2 {
+		state, body := states.Content[index].Value, states.Content[index+1].Value
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		path := "agent.instructions_by_state." + state
+		current := projectRefreshYAMLPathNode(root, path)
+		if current == nil {
+			current = projectRefreshYAMLPathNode(desired, path)
+		}
+		combined := body
+		if current != nil {
+			if strings.Contains(current.Value, body) {
+				continue
+			}
+			combined = strings.TrimRight(current.Value, "\n") + "\n\n" + body
+		}
+		setOnboardingYAMLPath(root, []string{"agent", "instructions_by_state", state}, combined)
+		changed = true
+	}
+	return shared, changed
 }

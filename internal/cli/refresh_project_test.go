@@ -65,7 +65,7 @@ func TestRefreshProjectCommand(t *testing.T) {
 					t.Fatalf("new defaults are not marked for later refreshes:\n%s", candidate)
 				}
 				agents := projectRefreshTestChange(t, plan, fixture.agentsPath).after
-				for _, want := range []string{"# Project-owned agent guidance", "## Issue effort selection", "```detent-agent", "`medium`", "`high`", "`xhigh`", "`max`"} {
+				for _, want := range []string{"# Project-owned agent guidance", "## Agent guidance", "Detent instance"} {
 					if !bytes.Contains(agents, []byte(want)) {
 						t.Fatalf("refreshed AGENTS.md missing %q:\n%s", want, agents)
 					}
@@ -97,7 +97,7 @@ func TestRefreshProjectCommand(t *testing.T) {
 					t.Fatal("BacklogAdmission.Enabled = true, want explicit disabled setting preserved")
 				}
 				agents := readProjectRefreshTestFile(t, fixture.agentsPath)
-				if !strings.Contains(agents, "# Project-owned agent guidance") || !strings.Contains(agents, "## Issue effort selection") {
+				if !strings.Contains(agents, "# Project-owned agent guidance") || !strings.Contains(agents, "## Agent guidance") {
 					t.Fatalf("refreshed AGENTS.md did not preserve project guidance and add the effort rubric:\n%s", agents)
 				}
 			},

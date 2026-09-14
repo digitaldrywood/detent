@@ -16,7 +16,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	workflowtemplates "github.com/digitaldrywood/detent/docs/templates"
-	"github.com/digitaldrywood/detent/internal/agentoverride"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -344,6 +343,20 @@ func renderOnboardingWorkflow(
 		return "", "", nil, err
 	}
 	renderedPrompt := renderOnboardingWorkflowPrompt(preset.Name, preset.PromptRaw, reviewFlow)
+	if preset.Name == "non_code_artifact" && reviewFlow == onboardingWorkflowReviewGateFlow {
+		renderedPrompt = strings.Replace(renderedPrompt, "set `render_status` to `valid`", "set `render_status` to `pending_review`", 1)
+	}
+	renderedPrompt = onboardingWorkflowStateInstructions(root, renderedPrompt)
+
+	if preset.Name != "non_code_artifact" {
+		gateRun := onboardingYAMLScalarValue(onboardingYAMLMappingValue(root, "gate"), "run")
+		renderedPrompt = strings.ReplaceAll(renderedPrompt, "make check", strings.ReplaceAll(gateRun, "'", "'\"'\"'"))
+		if len(probe.UISurfacePaths) > 0 {
+			browser := "## Browser verification\n\nOnly when the diff touches the detected UI surface (" + strings.Join(probe.UISurfacePaths, ", ") + "), including supporting routes and responses, run relevant browser / e2e checks for the affected journeys.\n\n"
+			renderedPrompt = strings.Replace(renderedPrompt, "## Required Execution Flow", browser+"## Required Execution Flow", 1)
+		}
+	}
+
 	renderedPrompt, err = renderOnboardingWorkflowAdmissionCriteria(renderedPrompt, root, answers)
 	if err != nil {
 		return "", "", nil, err
@@ -806,9 +819,7 @@ func applyOnboardingWorkflowAdmissionDecisions(root *yaml.Node, answers onboardi
 	decisions.set(root, "backlog_admission.sources.states", []string{sourceState}, sourceProvenance, sourceWhy)
 	decisions.set(root, "backlog_admission.target_state", targetState, targetProvenance, targetWhy)
 	decisions.set(root, "backlog_admission.criteria_section", criteriaSection, criteriaProvenance, criteriaWhy)
-	decisions.set(root, "backlog_admission.require_effort", true, "preset", "admitted issues require an explicit project-owned effort recommendation")
-	decisions.set(root, "backlog_admission.effort_file", workflowconfig.BacklogAdmissionEffortFileAgents, "preset", "onboarding writes the project effort rubric to AGENTS.md")
-	decisions.set(root, "backlog_admission.effort_section", onboardingEffortRubricHeading, "preset", "generated project-owned effort rubric heading")
+	decisions.set(root, "backlog_admission.require_effort", false, "preset", "effort is configured by the Detent instance")
 	decisions.set(root, "backlog_admission.max_candidates_per_run", maxCandidates, maxCandidatesProvenance, maxCandidatesWhy)
 	decisions.set(root, "backlog_admission.max_proposals_per_run", maxProposals, maxProposalsProvenance, maxProposalsWhy)
 	decisions.set(root, "backlog_admission.max_open_proposals", maxOpenProposals, maxOpenProposalsProvenance, maxOpenProposalsWhy)
@@ -1098,45 +1109,13 @@ func readOnboardingAgentsFile(path string) (string, error) {
 	return "", fmt.Errorf("read agent guidance %s: %w", path, err)
 }
 
-func renderOnboardingAgentGuidance(existing string, answers onboardingAnswers) (string, error) {
-	if hasOnboardingEffortGuidance(existing) {
-		return existing, nil
+func renderOnboardingAgentGuidance(existing string, _ onboardingAnswers) (string, error) {
+	existing = replaceProjectRefreshMarkdownSection(existing, "## "+onboardingEffortRubricHeading, "")
+	guidance := "## Agent guidance\n\nKeep changes scoped to the assigned issue and follow repository conventions.\nModel and reasoning effort are configured by the Detent instance.\nUse the available [project skills](.detent/skills/) for reference material; read only skills relevant to the task.\n"
+	if _, found := onboardingMarkdownSection(existing, "## Agent guidance"); !found {
+		return strings.TrimSpace(strings.TrimSpace(existing)+"\n\n"+guidance) + "\n", nil
 	}
-	fields := onboardingEffortGuidanceFields()
-	missing := missingOnboardingGuidanceAnswers(answers, fields)
-	if len(missing) > 0 {
-		return "", NewValidationError(
-			strings.Join(missing, ", ")+" required to generate AGENTS.md effort guidance",
-			"Record project-specific medium, high, xhigh, and max effort criteria in answers.env.",
-			nil,
-		)
-	}
-	lines := []string{
-		"## " + onboardingEffortRubricHeading,
-		"",
-		"Every issue created for this repository must include an explicit reasoning effort override:",
-		"",
-		"```detent-agent",
-		"schema: 1",
-		"effort: high",
-		"```",
-		"",
-		"Choose the effort from this project-specific rubric:",
-		"",
-	}
-	for _, field := range fields {
-		lines = append(lines, "- `"+field.Heading+"` — "+strings.TrimSpace(answers.Values[field.Key]))
-	}
-	lines = append(lines, "", "Leave `model` unset so the issue inherits the fleet-standard model.")
-	rubric := markdownLines(lines...)
-	if strings.TrimSpace(existing) == "" {
-		return rubric, nil
-	}
-	heading := "## " + onboardingEffortRubricHeading
-	if _, found := onboardingMarkdownSection(existing, heading); found {
-		return replaceProjectRefreshMarkdownSection(existing, heading, rubric), nil
-	}
-	return strings.TrimRight(existing, "\n") + "\n\n" + rubric, nil
+	return existing, nil
 }
 
 func onboardingAdmissionGuidanceFields() []onboardingGuidanceField {
@@ -1148,15 +1127,6 @@ func onboardingAdmissionGuidanceFields() []onboardingGuidanceField {
 	}
 }
 
-func onboardingEffortGuidanceFields() []onboardingGuidanceField {
-	return []onboardingGuidanceField{
-		{Key: "EFFORT_MEDIUM_CRITERIA", Heading: "medium"},
-		{Key: "EFFORT_HIGH_CRITERIA", Heading: "high"},
-		{Key: "EFFORT_XHIGH_CRITERIA", Heading: "xhigh"},
-		{Key: "EFFORT_MAX_CRITERIA", Heading: "max"},
-	}
-}
-
 func missingOnboardingGuidanceAnswers(answers onboardingAnswers, fields []onboardingGuidanceField) []string {
 	var missing []string
 	for _, field := range fields {
@@ -1165,23 +1135,6 @@ func missingOnboardingGuidanceAnswers(answers onboardingAnswers, fields []onboar
 		}
 	}
 	return missing
-}
-
-func hasOnboardingEffortGuidance(text string) bool {
-	section, found := onboardingMarkdownSection(text, "## "+onboardingEffortRubricHeading)
-	if !found {
-		return false
-	}
-	override, found, err := agentoverride.FromIssueBody(section)
-	if err != nil || !found || override.Effort == "" || override.Model != "" {
-		return false
-	}
-	for _, field := range onboardingEffortGuidanceFields() {
-		if !strings.Contains(section, "`"+field.Heading+"`") {
-			return false
-		}
-	}
-	return true
 }
 
 func onboardingMarkdownSection(text string, heading string) (string, bool) {
@@ -1225,243 +1178,13 @@ func replaceOnboardingWorkflowSection(text string, heading string, replacement s
 	return strings.TrimRight(text[:index], "\n") + "\n\n" + replacement
 }
 
-func onboardingWorkflowExecutionFlow(preset string, flow onboardingWorkflowReviewFlow) string {
-	switch preset {
-	case "github_local":
-		return onboardingWorkflowGitHubLocalExecutionFlow(flow)
-	case "non_code_artifact":
-		return onboardingWorkflowArtifactExecutionFlow(flow)
-	default:
-		return onboardingWorkflowGitHubExecutionFlow(flow)
+func onboardingWorkflowExecutionFlow(preset string, _ onboardingWorkflowReviewFlow) string {
+	raw, err := fs.ReadFile(workflowtemplates.FS, "WORKFLOW."+preset+".md")
+	if err != nil {
+		return ""
 	}
-}
-
-func onboardingWorkflowGitHubExecutionFlow(flow onboardingWorkflowReviewFlow) string {
-	if flow == onboardingWorkflowAutopilotFlow {
-		return markdownLines(
-			"## Required Execution Flow",
-			"",
-			"This workflow uses the autopilot handoff: `agent.auto_promote.enabled: true`,",
-			"`quiet_seconds: 0`, and `gate_wait_state: source`. Completed agents leave",
-			"issues in the active lane, set the Workpad `detent-status` block to",
-			"`status: complete`, and let Detent promote eligible issues to `Merging`",
-			"when the PR gate is green. Do not self-move issues to `Human Review`.",
-			"",
-			"Use the current Detent state as the source of truth for which section applies.",
-			"",
-			"### For Todo",
-			"",
-			"1. Move the issue to `In Progress`.",
-			"2. Create or update the persistent `## Codex Workpad` comment with the plan,",
-			"   acceptance criteria, validation plan, and the `in_progress`",
-			"   `detent-status` block shown above.",
-			"3. Fetch current `origin/main`, confirm this worktree is based on it, and",
-			"   confirm every native dependency relation, `detent-status` blocker, and",
-			"   issue-body `Depends on:` reference is merged or otherwise terminal before",
-			"   coding.",
-			"4. Reproduce or confirm the reported behavior before changing code when the",
-			"   issue is a bug.",
-			"5. Implement the smallest complete change that satisfies the issue.",
-			"6. Run focused tests for touched packages, then run the configured validation",
-			"   gate.",
-			"7. Commit and push the branch.",
-			"8. Open or update a pull request that references the issue.",
-			"9. Re-check pull request comments, inline review comments, and CI after the",
-			"   latest push.",
-			"10. If the PR is open, not a draft, references the issue, validation is green,",
-			"    and no actionable review comments remain, leave the issue in `In Progress`,",
-			"    update the Workpad block to `status: complete` with `blockers: []` and",
-			"    `human_action: null`, and do not move the issue to `Human Review`.",
-			"",
-			"### For In Progress",
-			"",
-			"1. Re-read the issue, pull request, comments, and `## Codex Workpad`, including",
-			"   the `detent-status` block.",
-			"2. Continue from the current repository and tracker state.",
-			"3. If implementation is complete, run the full pre-review gate, update the",
-			"   Workpad block to `status: complete` with `blockers: []` and",
-			"   `human_action: null`, leave the issue in `In Progress`, and do not move the",
-			"   issue to `Human Review`.",
-			"",
-			"### For Rework",
-			"",
-			"1. Re-read all human and bot feedback.",
-			"2. Move the issue to `In Progress`.",
-			"3. Fix the requested changes.",
-			"4. Push updates to the pull request.",
-			"5. Run the full pre-review gate again.",
-			"6. When the gate passes, leave the issue in `In Progress`, update the Workpad",
-			"   block to `status: complete`, and do not move the issue to `Human Review`.",
-			"",
-			"### For Merging",
-			"",
-			"1. Confirm `$go-workflow:ship` is available in the Codex environment. If it is",
-			"   unavailable, keep the issue in `Merging` and record the missing ship workflow",
-			"   as `human_action` in the `detent-status` block.",
-			"2. Invoke and follow `$go-workflow:ship`.",
-			"3. Do not call `gh pr merge` directly outside the ship workflow.",
-			"4. End with exactly one terminal outcome:",
-			"   - pull request merged and issue moved to `Done`;",
-			"   - issue moved to `Rework` with an actionable defect;",
-			"   - issue remains in `Merging` with a concrete external blocker recorded in",
-			"     the `detent-status` block and described in the `## Codex Workpad`.",
-			"5. Move the issue to `Done` only after the pull request is merged.",
-		)
-	}
-
-	return markdownLines(
-		"## Required Execution Flow",
-		"",
-		"This workflow uses the review-gate handoff: completed agents move issues to",
-		"`Human Review` after the PR gate is ready, and a human or quiet-period",
-		"auto-promote advances eligible issues to `Merging`.",
-		"",
-		"Use the current Detent state as the source of truth for which section applies.",
-		"",
-		"### For Todo",
-		"",
-		"1. Move the issue to `In Progress`.",
-		"2. Create or update the persistent `## Codex Workpad` comment with the plan,",
-		"   acceptance criteria, validation plan, and the `in_progress`",
-		"   `detent-status` block shown above.",
-		"3. Fetch current `origin/main`, confirm this worktree is based on it, and",
-		"   confirm every native dependency relation, `detent-status` blocker, and",
-		"   issue-body `Depends on:` reference is merged or otherwise terminal before",
-		"   coding.",
-		"4. Reproduce or confirm the reported behavior before changing code when the",
-		"   issue is a bug.",
-		"5. Implement the smallest complete change that satisfies the issue.",
-		"6. Run focused tests for touched packages, then run the configured validation",
-		"   gate.",
-		"7. Commit and push the branch.",
-		"8. Open or update a pull request that references the issue.",
-		"9. Re-check pull request comments, inline review comments, and CI after the",
-		"   latest push.",
-		"10. Move the issue to `Human Review` only after the pull request is open, not a",
-		"    draft, references the issue, validation is green, and no actionable review",
-		"    comments remain.",
-		"",
-		"### For In Progress",
-		"",
-		"1. Re-read the issue, pull request, comments, and `## Codex Workpad`, including",
-		"   the `detent-status` block.",
-		"2. Continue from the current repository and tracker state.",
-		"3. If implementation is complete, run the full pre-review gate, update the",
-		"   Workpad block to `status: complete` with `blockers: []` and",
-		"   `human_action: null`, and move the issue to `Human Review` only when the",
-		"   gate passes.",
-		"",
-		"### For Rework",
-		"",
-		"1. Re-read all human and bot feedback.",
-		"2. Move the issue to `In Progress`.",
-		"3. Fix the requested changes.",
-		"4. Push updates to the pull request.",
-		"5. Run the full pre-review gate again.",
-		"6. Move the issue back to `Human Review` only when the gate passes.",
-		"",
-		"### For Merging",
-		"",
-		"1. Confirm `$go-workflow:ship` is available in the Codex environment. If it is",
-		"   unavailable, keep the issue in `Merging` and record the missing ship workflow",
-		"   as `human_action` in the `detent-status` block.",
-		"2. Invoke and follow `$go-workflow:ship`.",
-		"3. Do not call `gh pr merge` directly outside the ship workflow.",
-		"4. End with exactly one terminal outcome:",
-		"   - pull request merged and issue moved to `Done`;",
-		"   - issue moved to `Rework` with an actionable defect;",
-		"   - issue remains in `Merging` with a concrete external blocker recorded in",
-		"     the `detent-status` block and described in the `## Codex Workpad`.",
-		"5. Move the issue to `Done` only after the pull request is merged.",
-	)
-}
-
-func onboardingWorkflowGitHubLocalExecutionFlow(flow onboardingWorkflowReviewFlow) string {
-	return strings.NewReplacer(
-		"issues", "local issues",
-		"issue", "local issue",
-		"pull request", "pull request",
-	).Replace(onboardingWorkflowGitHubExecutionFlow(flow))
-}
-
-func onboardingWorkflowArtifactExecutionFlow(flow onboardingWorkflowReviewFlow) string {
-	if flow == onboardingWorkflowAutopilotFlow {
-		return markdownLines(
-			"## Required Execution Flow",
-			"",
-			"This workflow uses the artifact autopilot handoff: `agent.auto_promote.enabled:",
-			"true`, `quiet_seconds: 0`, and `gate_wait_state: source`. Completed agents keep",
-			"the work item in `Production`, set the Workpad `detent-status` block to",
-			"`status: complete`, set `render_status` to `valid` when the artifact gate is",
-			"satisfied, and let Detent promote the item to `Ready for Pickup`. Do not",
-			"self-move work items to `Review`.",
-			"",
-			"### For Todo",
-			"",
-			"1. Move the work item to `Production`.",
-			"2. Read the work item title, description, fields, metadata, and deliverable",
-			"   data.",
-			"3. Produce the artifact manifest under the configured output directory.",
-			"4. When the artifact is ready and local validation passes, set `render_status`",
-			"   to `valid`, update the Workpad block to `status: complete` with",
-			"   `blockers: []` and `human_action: null`, leave the work item in",
-			"   `Production`, and do not move it to `Review`.",
-			"",
-			"### For Production",
-			"",
-			"Continue production from the current filesystem state. When the artifact is",
-			"ready and local validation passes, set `render_status` to `valid`, set the",
-			"Workpad block to `status: complete`, and leave the work item in `Production`.",
-			"",
-			"### For Rework",
-			"",
-			"Move the work item to `Production`, address the requested changes, rerun the",
-			"artifact validation gate, set `render_status` to `valid`, set the Workpad block",
-			"to `status: complete`, and do not move the work item to `Review`.",
-			"",
-			"### For Review",
-			"",
-			"Review is reserved for explicit human opt-out or gate-wait timeout. Re-read the",
-			"feedback, update the artifact, then follow the Rework flow.",
-		)
-	}
-
-	return markdownLines(
-		"## Required Execution Flow",
-		"",
-		"This workflow uses the review-gate handoff: completed artifact work moves to",
-		"`Review`, and a human or external renderer marks the artifact `approved` or",
-		"`valid` before Detent promotes it to `Ready for Pickup`.",
-		"",
-		"### For Todo",
-		"",
-		"1. Move the work item to `Production`.",
-		"2. Read the work item title, description, fields, metadata, and deliverable",
-		"   data.",
-		"3. Produce the artifact manifest under the configured output directory.",
-		"4. When the artifact is ready for review, set `render_status` to",
-		"   `pending_review`, update the Workpad block to `status: complete` with",
-		"   `blockers: []` and `human_action: null`, and move the work item to",
-		"   `Review`.",
-		"",
-		"### For Production",
-		"",
-		"Continue production from the current filesystem state. When the artifact is",
-		"ready for review, set `render_status` to `pending_review`, set the Workpad",
-		"block to `status: complete`, and move the work item to `Review`.",
-		"",
-		"### For Rework",
-		"",
-		"Move the work item to `Production`, address the requested changes, rerun the",
-		"artifact validation gate, set `render_status` to `pending_review`, set the",
-		"Workpad block to `status: complete`, and move the work item back to `Review`.",
-		"",
-		"### For Review",
-		"",
-		"Do not continue production unless feedback asks for changes. When a human or",
-		"external renderer marks `render_status` as `approved` or `valid`, Detent can",
-		"promote the item to `Ready for Pickup`.",
-	)
+	section, _ := projectRefreshMarkdownSection(string(raw), "## Required Execution Flow")
+	return section
 }
 
 func markdownLines(lines ...string) string {
@@ -1643,4 +1366,31 @@ func writeOnboardingBuildWorkflowPretty(w io.Writer, result onboardingBuildWorkf
 	}
 	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
 	return err
+}
+
+// State instructions use the runner's existing per-state selection. Template
+// headings are authoring input, never repeated in the shared worker prompt.
+func onboardingWorkflowStateInstructions(root *yaml.Node, prompt string) string {
+	var shared []string
+	states := map[string]string{}
+	state := ""
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.HasPrefix(line, "### State: ") {
+			state = strings.TrimSpace(strings.TrimPrefix(line, "### State: "))
+			continue
+		}
+		if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "# ") {
+			state = ""
+		}
+		if state == "" {
+			shared = append(shared, line)
+		} else {
+			states[state] += line + "\n"
+		}
+	}
+	for state, body := range states {
+		states[state] = strings.TrimSpace(body)
+	}
+	setOnboardingYAMLPath(root, []string{"agent", "instructions_by_state"}, states)
+	return strings.TrimSpace(strings.Join(shared, "\n")) + "\n"
 }

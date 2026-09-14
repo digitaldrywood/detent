@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -16,6 +17,7 @@ import (
 var onboardingMakeTargetPattern = regexp.MustCompile(`^([A-Za-z0-9_.-]+)\s*:(?:\s|$)`)
 
 type onboardingRepoProbe struct {
+	UISurfacePaths          []string `json:"ui_surface_paths,omitempty"`
 	SourceRoot              string   `json:"source_root"`
 	Languages               []string `json:"languages"`
 	Toolchains              []string `json:"toolchains"`
@@ -86,6 +88,13 @@ func probeOnboardingRepository(sourceRoot string) (onboardingRepoProbe, error) {
 		dir := filepath.ToSlash(filepath.Dir(rel))
 		if dir == "." {
 			dir = ""
+		}
+		switch strings.ToLower(filepath.Ext(rel)) {
+		case ".html", ".htm", ".templ", ".jsx", ".tsx", ".vue", ".svelte":
+			surface := filepath.ToSlash(filepath.Dir(rel))
+			if !slices.Contains(probe.UISurfacePaths, surface) {
+				probe.UISurfacePaths = append(probe.UISurfacePaths, surface)
+			}
 		}
 		probeOnboardingManifest(path, rel, dir, &probe, manifestDirs)
 		probeOnboardingCIWorkflow(rel, &probe)

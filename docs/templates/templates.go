@@ -2,7 +2,7 @@ package templates
 
 import "embed"
 
-//go:embed WORKFLOW.*.md detent.*.yaml
+//go:embed WORKFLOW.*.md detent.*.yaml onboarding-legacy-paragraphs.md
 var FS embed.FS
 
 // BlockedHandoff is the canonical worker status contract. The runner replaces
