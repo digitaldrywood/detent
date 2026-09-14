@@ -126,3 +126,36 @@ func TestResumedSelectionKeepsSessionLevel(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeSelectedSessionDurationPreservesTurnLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name                      string
+		sessionMS, turnMS, wantMS int
+	}{
+		{"disabled session preserves turn", 0, 30000, 30000},
+		{"shorter session caps turn", 10000, 30000, 10000},
+		{"longer session preserves turn", 60000, 30000, 30000},
+		{"session caps unlimited turn", 60000, 0, 60000},
+		{"both unlimited", 0, 0, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Config{Agent: config.Agent{MaxSessionDurationMS: 90000, MaxTurnDurationMS: tt.turnMS}, Agents: config.Agents{ModelSelection: config.ModelSelection{
+				Preset: new("sol_first"),
+				Levels: map[string]config.ModelSelectionDefaults{"complex": {MaxSessionDurationMS: new(tt.sessionMS)}},
+				Stages: map[string]config.ModelSelectionStage{RoleMerge: {Level: new("complex")}},
+			}}}
+			backend := &fakeCodexClient{models: selectionCatalog()}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &fakeMergeWorkspaceBackend{fakeWorkspaceBackend: fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict}}, AgentBackend: backend})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "merge-limits", Identifier: "detent#2597", State: "Merging"}, Mode: RunModeMerge})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if backend.calls != 1 || backend.request.MaxDuration != time.Duration(tt.wantMS)*time.Millisecond {
+				t.Fatalf("calls=%d turn limit=%s, want %dms", backend.calls, backend.request.MaxDuration, tt.wantMS)
+			}
+		})
+	}
+}

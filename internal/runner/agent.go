@@ -1813,7 +1813,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		workerGitHub:          workerGitHub,
 		processRSS:            r.processRSS,
 	}
-	if mergeFallback && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
+	if mergeFallback && sessionDuration > 0 && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
 		turnRequest.MaxDuration = sessionDuration
 	}
 	if mode == RunModeRoutine {
