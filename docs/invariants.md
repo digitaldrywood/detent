@@ -120,6 +120,13 @@ attempt cleanup even when completion-time pull-request hydration is unavailable
 the claim no longer acts as an implicit park while no worker is running, and cleanup
 is limited to the retained attempt claim so it cannot erase replacement ownership.
 
+GitHub REST reserve and lookup decisions use credential-and-endpoint-family
+snapshots instead of the last response labeled `core`. Ambiguous orchestrator
+aggregate telemetry no longer creates the fleet-wide REST capacity outage;
+explicit provider backoffs and worker/shared-pool reserve evidence retain their
+existing handling (#2547). This consolidates the blanket dispatch pause into the
+request-family gates that own the observed budget window.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.
