@@ -3349,15 +3349,9 @@ func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connect
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workflow, _, _, _ := r.runtimeSnapshot()
-	cache := workspace.TrimSharedCache(ctx, workflow.Config.Workspace.Root, r.projectID, time.Duration(workflow.Config.Workspace.CleanupIdleTTLMS)*time.Millisecond, true)
-	var cacheErr error
-	if cache.Error != "" {
-		cacheErr = fmt.Errorf("shared cache cleanup: %s", cache.Error)
-	}
 	reconciler, ok := r.workspace.(workspace.ResidualReconciler)
 	if !ok {
-		return WorkspaceReconcileResult{Cache: cache}, cacheErr
+		return WorkspaceReconcileResult{}, nil
 	}
 	active := make([]workspace.Issue, 0, len(activeIssues))
 	for _, issue := range activeIssues {
@@ -3369,7 +3363,6 @@ func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connect
 		failures = append(failures, WorkspaceCleanupFailure{Path: failure.Path, Error: failure.Error})
 	}
 	return WorkspaceReconcileResult{
-		Cache:             cache,
 		Removed:           result.Removed,
 		ActiveSkipped:     result.ActiveSkipped,
 		PreservedSkipped:  result.PreservedSkipped,
@@ -3377,7 +3370,7 @@ func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connect
 		UnownedSkipped:    result.UnownedSkipped,
 		CompletedPaths:    result.CompletedPaths,
 		Failures:          failures,
-	}, errors.Join(err, cacheErr)
+	}, err
 }
 
 func (r *Runner) runtimeSnapshot() (config.Workflow, agentRuntime, BudgetChecker, DispatchEstimator) {
