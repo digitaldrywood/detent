@@ -127,14 +127,16 @@ and tracker-unavailable dispatch reason; they never become issue dependency evid
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
 
-Shared worker cache retention (#2691) uses the existing workspace sweep and,
-for stopped paused projects, the existing fleet refresh at that same configured
-interval. Both call the same cleanup implementation; no new loop or config key
-is introduced. Rebuildable build data retains a fixed 20 GiB budget. Expired
+Shared worker cache retention (#2691, #2722) uses the existing fleet refresh
+for every project at the configured workspace sweep interval. This consolidates
+the runner and paused-project trims so individual workspace cleanup cannot
+postpone cache maintenance. Each sweep has a five-minute deadline, logs measured,
+retained and removed bytes plus errors, and publishes its usage even on failure.
+A single scan retains partial measurements; no new loop or config key is introduced. Rebuildable build data retains a fixed 20 GiB budget. Expired
 build/linter files use the existing idle TTL; full inactive cache cleanup keeps
 concurrent new files and rejects symlink aliases. Doctor and state expose measured
 component bytes. `TestTrimSharedCache`, `TestInspectSharedCache`,
-`TestSweepPausedSharedCache`, and `TestDoctorSharedCache` cover this behavior.
+`TestSweepSharedCache`, and `TestDoctorSharedCache` cover this behavior.
 
 **Why:** The September 10 audit identified interactions among self-protection
 mechanisms as the main source of incidents; adding another conditional guard

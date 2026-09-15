@@ -50,6 +50,9 @@ func TestTrimSharedCache(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := trimSharedCache(t.Context(), root, "project", 24*time.Hour, tt.active, tt.budget, now)
+			if got.RemovedBytes != 12-tt.wantBuild-tt.wantMod || got.TotalBytes != tt.wantBuild+tt.wantMod {
+				t.Fatalf("removal accounting = %+v", got)
+			}
 			if got.Error != "" || got.BuildBytes != tt.wantBuild || got.ModuleBytes != tt.wantMod {
 				t.Fatalf("usage = %+v", got)
 			}

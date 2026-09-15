@@ -19,16 +19,17 @@ const SharedBuildCacheBudget int64 = 20 << 30
 
 // CacheUsage describes logical file sizes measured during a cleanup or doctor run.
 type CacheUsage struct {
-	ProjectID   string    `json:"project_id"`
-	Path        string    `json:"path"`
-	BuildBytes  int64     `json:"go_build_bytes"`
-	ModuleBytes int64     `json:"go_mod_bytes"`
-	BinBytes    int64     `json:"go_bin_bytes"`
-	LintBytes   int64     `json:"golangci_lint_bytes"`
-	TotalBytes  int64     `json:"total_bytes"`
-	BudgetBytes int64     `json:"go_build_budget_bytes"`
-	ObservedAt  time.Time `json:"observed_at"`
-	Error       string    `json:"error,omitempty"`
+	ProjectID    string    `json:"project_id"`
+	Path         string    `json:"path"`
+	BuildBytes   int64     `json:"go_build_bytes"`
+	ModuleBytes  int64     `json:"go_mod_bytes"`
+	BinBytes     int64     `json:"go_bin_bytes"`
+	LintBytes    int64     `json:"golangci_lint_bytes"`
+	RemovedBytes int64     `json:"removed_bytes"`
+	TotalBytes   int64     `json:"total_bytes"`
+	BudgetBytes  int64     `json:"go_build_budget_bytes"`
+	ObservedAt   time.Time `json:"observed_at"`
+	Error        string    `json:"error,omitempty"`
 }
 
 func SharedCacheRoot(root, projectID string) string {
@@ -214,12 +215,23 @@ func trimSharedCache(ctx context.Context, root, projectID string, idleTTL time.D
 		err = cache.Remove(file.path)
 		if errors.Is(err, fs.ErrNotExist) {
 			err = nil
+			continue
 		}
 		if err != nil {
 			break
 		}
-		if component == "go-build" {
+		usage.RemovedBytes += file.size
+		usage.TotalBytes -= file.size
+		switch component {
+		case "go-build":
 			buildBytes -= file.size
+			usage.BuildBytes -= file.size
+		case "go-mod":
+			usage.ModuleBytes -= file.size
+		case "go-bin":
+			usage.BinBytes -= file.size
+		case "golangci-lint":
+			usage.LintBytes -= file.size
 		}
 	}
 	// Remove only empty directories: a concurrent worker may have populated the
@@ -227,6 +239,9 @@ func trimSharedCache(ctx context.Context, root, projectID string, idleTTL time.D
 	if err == nil && removeAll {
 		var dirs []string
 		err = fs.WalkDir(cache.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if walkErr != nil {
 				return walkErr
 			}
@@ -250,7 +265,8 @@ func trimSharedCache(ctx context.Context, root, projectID string, idleTTL time.D
 			}
 		}
 	}
-	result = InspectSharedCache(ctx, root, projectID)
+	// Retain the single scan measurement, less successful removals, even on cancellation.
+	result = usage
 	if err != nil {
 		result.Error = err.Error()
 	}

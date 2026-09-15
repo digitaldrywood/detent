@@ -171,7 +171,8 @@ type Dependencies struct {
 }
 
 type Project struct {
-	pausedCache               workspace.CacheUsage
+	cacheMu                   sync.Mutex
+	sharedCache               workspace.CacheUsage
 	id                        ID
 	cfg                       globalconfig.Project
 	workflow                  workflowconfig.Workflow
