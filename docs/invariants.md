@@ -480,6 +480,8 @@ review routing without adding a reason or retry mechanism.
 
 ## INV-4 — Native merge queue
 
+Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
+
 **Statement:** Merges go through the repository's merge queue when one exists.
 
 **Why:** Competing speculative merge work and repeated head invalidations

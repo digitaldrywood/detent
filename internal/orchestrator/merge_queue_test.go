@@ -1368,3 +1368,43 @@ func TestNativeMergeQueueHeadBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeMergeQueueCachedHeadChange(t *testing.T) {
+	t.Parallel()
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed=%t", changed), func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(2738, "success")
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}})
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			now := time.Now()
+			queued := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			issue = queued[0]
+			if changed {
+				oldHead := issue.PullRequest.HeadSHA
+				issue.PullRequest.HeadSHA = "repaired-head"
+				removed := now.Add(time.Second)
+				tracker.removedHeads = map[string]string{issue.ID: oldHead}
+				tracker.removedAt = &removed
+			}
+			tracker.enqueuedAt = timePointer(now.Add(nativeMergeQueueEntryRefresh))
+			for pass := 1; pass <= 2; pass++ {
+				orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Duration(pass)*nativeMergeQueueEntryRefresh))
+			}
+			want := 1
+			if changed {
+				want = 2
+			}
+			if len(tracker.enqueued) != want {
+				t.Fatalf("enqueues=%d, want %d", len(tracker.enqueued), want)
+			}
+			if state.nativeMergeQueueEntries[issue.ID].HeadSHA != issue.PullRequest.HeadSHA {
+				t.Fatal("cached ownership retained old head")
+			}
+			if len(state.nativeMergeQueueRemovals[nativeMergeQueueRemovalKey(issue)]) != 0 {
+				t.Fatal("old removal charged to current head")
+			}
+		})
+	}
+}

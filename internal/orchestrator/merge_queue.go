@@ -104,13 +104,20 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.logNativeMergeQueueDelegated(candidate, *status.Entry, "observed")
 			continue
 		}
+		if previouslyQueued && previous.HeadSHA != "" && previous.HeadSHA != strings.TrimSpace(status.HeadSHA) {
+			// Cached ownership belongs to the old head, not its replacement.
+			delete(state.nativeMergeQueueEntries, issueID)
+			clearNativeMergeQueueEntry(out, issueID)
+			candidate.PullRequest.MergeQueueEntry = nil
+			previouslyQueued = false
+		}
 		if err := o.restoreNativeMergeQueueRemovals(ctx, state, candidate); err != nil {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			o.logNativeMergeQueueFailure(candidate, "inspection_failed", err)
 			continue
 		}
 		removalApplies := status.RemovalObserved && (strings.TrimSpace(status.RemovedHeadSHA) == "" || strings.TrimSpace(status.RemovedHeadSHA) == strings.TrimSpace(status.HeadSHA))
-		if previouslyQueued && previous.Entry.EnqueuedAt != nil && (previous.HeadSHA == "" || previous.HeadSHA == strings.TrimSpace(candidate.PullRequest.HeadSHA)) {
+		if previouslyQueued && previous.Entry.EnqueuedAt != nil {
 			// beforeCommit can identify a merge-group commit rather than the PR head.
 			// A known enqueue time identifies which queue attempt the removal ended.
 			removalApplies = status.RemovalObserved && status.RemovedAt != nil && status.RemovedAt.After(*previous.Entry.EnqueuedAt)
