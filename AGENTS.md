@@ -64,13 +64,15 @@ with `pipefail` so truncation cannot hide a failing exit status:
 
 ```bash
 bash -o pipefail -c '
-  log=$(mktemp "${TMPDIR:-${TMP:-${TEMP:?temporary directory required}}}/detent-check.XXXXXX") || exit
+  log=$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/detent-check.XXXXXX") || exit
   echo "Gate log: $log"
   make check 2>&1 | tee "$log" | tail -40
 '
 ```
 
-The command retains full output under the Detent-provided temporary directory.
+Detent workers must use their provided `TMPDIR`, `TMP`, or `TEMP`; never
+fall back to host scratch space in a worker. For standalone contributors without
+these variables, the example uses `/tmp`. The command retains the full log.
 On failure, inspect only the failing package or tool diagnostics from that log;
 do not rerun the gate just to recover output. A green result needs only the
 success status in the handoff, not the log. See CLAUDE.md for safety-critical

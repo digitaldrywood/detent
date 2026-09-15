@@ -64,11 +64,8 @@ After global config lookup fails, startup may fall back to a valid `WORKFLOW.md`
 
 ## Validation
 
-Run the full local gate before every commit and pull request:
-
-```sh
-make check
-```
+Follow the [validation rule in AGENTS.md](AGENTS.md#validation) for focused
+tests during edits, gate timing, and compact output.
 
 `make check` runs:
 
@@ -79,7 +76,6 @@ make check
 - `go test -race ./...`.
 - Coverage with a 70% minimum, excluding generated Templ output and sqlc output.
 
-Run focused package tests while iterating, then finish with `make check`.
 
 ## Generated Assets
 
