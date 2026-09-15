@@ -84,8 +84,16 @@ func size(ctx context.Context, root string) (int64, error) {
 	if root == "" || root == "off" {
 		return 0, nil
 	}
+	return walkSize(ctx, func(visit fs.WalkDirFunc) error { return filepath.WalkDir(root, visit) })
+}
+
+func sizeFS(ctx context.Context, filesystem fs.FS, root string) (int64, error) {
+	return walkSize(ctx, func(visit fs.WalkDirFunc) error { return fs.WalkDir(filesystem, root, visit) })
+}
+
+func walkSize(ctx context.Context, walk func(fs.WalkDirFunc) error) (int64, error) {
 	var size int64
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err := walk(func(path string, entry fs.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -112,7 +120,7 @@ func size(ctx context.Context, root string) (int64, error) {
 
 // RemoveLegacy removes only the former Detent-owned cache root and returns
 // reclaimed bytes and the absolute, home-expanded workspace root.
-func RemoveLegacy(workspaceRoot string) (int64, string, error) {
+func RemoveLegacy(workspaceRoot string) (reclaimed int64, resolvedRoot string, err error) {
 	if strings.TrimSpace(workspaceRoot) == "" {
 		return 0, "", nil
 	}
@@ -127,12 +135,24 @@ func RemoveLegacy(workspaceRoot string) (int64, string, error) {
 	if err != nil {
 		return 0, "", fmt.Errorf("resolve workspace root: %w", err)
 	}
-	root := filepath.Join(resolved, ".detent", "cache")
-	size, err := Size(root)
+	// Keep both traversal and deletion beneath the workspace, even when an
+	// intermediate component is a symlink or is replaced during cleanup.
+	workspace, err := os.OpenRoot(resolved)
+	if os.IsNotExist(err) {
+		return 0, resolved, nil
+	}
 	if err != nil {
 		return 0, resolved, err
 	}
-	if err := os.RemoveAll(root); err != nil {
+	defer func() {
+		err = errors.Join(err, workspace.Close())
+	}()
+	const root = ".detent/cache"
+	size, err := sizeFS(context.Background(), workspace.FS(), root)
+	if err != nil {
+		return 0, resolved, err
+	}
+	if err := workspace.RemoveAll(root); err != nil {
 		return 0, resolved, err
 	}
 	return size, resolved, nil
