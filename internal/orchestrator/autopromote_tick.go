@@ -207,7 +207,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
-		if rework && decision.Action == AutoPromoteActionPromote {
+		if rework && (decision.Action == AutoPromoteActionPromote || decision.Reason == AutoPromoteReasonCodexReviewMissing) {
 			if !autoPromoteReworkHeadReady(issue) {
 				continue
 			}
@@ -238,6 +238,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				// Read the ready head and its checks again on the next tick.
 				continue
 			}
+		}
+		if decision.Reason == AutoPromoteReasonCodexReviewMissing {
+			o.requestAutomatedReview(ctx, issue)
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
@@ -2197,6 +2200,7 @@ func staleMergedPullRequestSummaryFromIssue(issue connector.Issue) AutoPromoteSu
 	summary.MergeableState = strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
 	summary.CIStatus = strings.TrimSpace(pullRequest.CIStatus)
 	summary.ReviewState = pullRequest.CodexReviewState
+	summary.ReviewPending = pullRequest.AutomatedReviewPending()
 	summary.FailedChecks = autoPromoteFailedChecksFromPullRequest(pullRequest)
 	summary.P1Findings = autoPromoteFindingsFromPullRequest(pullRequest)
 	return summary
@@ -3020,6 +3024,7 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	summary.MergeableState = strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
 	summary.CIStatus = pullRequest.CIStatus
 	summary.ReviewState = pullRequest.CodexReviewState
+	summary.ReviewPending = pullRequest.AutomatedReviewPending()
 	summary.FailedChecks = autoPromoteFailedChecksFromPullRequest(pullRequest)
 	summary.UnresolvedReviewThreads = append([]connector.PullRequestReviewThread(nil), pullRequest.UnresolvedReviewThreads...)
 	summary.P1Findings = autoPromoteFindingsFromPullRequest(pullRequest)

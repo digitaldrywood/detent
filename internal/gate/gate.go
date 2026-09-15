@@ -93,6 +93,7 @@ type Summary struct {
 	PullRequestURL     string
 	CIStatus           string
 	ReviewState        string
+	ReviewPending      bool
 	P1Findings         []Finding
 	Validator          ValidatorResult
 	SecurityAudit      securityaudit.Evaluation
@@ -534,7 +535,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
-	if automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState) && !opts.AutomatedReviewWaitExpired {
+	if summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState) && !opts.AutomatedReviewWaitExpired) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {

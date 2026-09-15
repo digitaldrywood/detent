@@ -1469,9 +1469,15 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 	if err != nil {
 		return pullRequestCodexReviews{}, fmt.Errorf("fetch github pull request review summary comments: %w", err)
 	}
+	if review, ok := latestCodexSummaryEvidence(comments); ok && len(reviews.Latest) == 0 {
+		reviews.Latest = []pullRequestReview{review}
+	} else if _, ok := latestTrustedCodexSummaryComment(comments); ok && len(reviews.Latest) == 0 {
+		// An edited in-progress summary is still a review cycle, not an opt-out.
+		reviews.Latest = []pullRequestReview{{State: "PENDING", Source: connector.PullRequestReviewSourceSummaryComment}}
+	}
 	if review, ok := latestCodexSummaryReview(comments, response, headSHA); ok {
 		reviews.CurrentHead = []pullRequestReview{review}
-		if len(reviews.Latest) == 0 {
+		if len(reviews.Latest) == 0 || reviews.Latest[0].Source == connector.PullRequestReviewSourceSummaryComment {
 			reviews.Latest = []pullRequestReview{review}
 		}
 	}
@@ -1622,12 +1628,21 @@ type codexReviewSummary struct {
 }
 
 func latestCodexSummaryReview(comments []restComment, formalReviews []restReview, headSHA string) (pullRequestReview, bool) {
+	review, ok := latestCodexSummaryEvidence(comments)
+	if !ok || !codexReviewSummaryMatchesHead(review.CommitID, headSHA, formalReviews) {
+		return pullRequestReview{}, false
+	}
+	review.CommitID = strings.ToLower(strings.TrimSpace(headSHA))
+	return review, true
+}
+
+func latestCodexSummaryEvidence(comments []restComment) (pullRequestReview, bool) {
 	comment, ok := latestTrustedCodexSummaryComment(comments)
 	if !ok {
 		return pullRequestReview{}, false
 	}
 	summary, ok := parseCodexReviewSummary(comment.Body)
-	if !ok || !codexReviewSummaryMatchesHead(summary.commitPrefix, headSHA, formalReviews) {
+	if !ok {
 		return pullRequestReview{}, false
 	}
 	if comment.CreatedAt != nil && summary.completedAt.Before(*comment.CreatedAt) {
@@ -1643,7 +1658,7 @@ func latestCodexSummaryReview(comments []restComment, formalReviews []restReview
 		State:       "COMMENTED",
 		Source:      connector.PullRequestReviewSourceSummaryComment,
 		Author:      comment.User,
-		CommitID:    strings.ToLower(strings.TrimSpace(headSHA)),
+		CommitID:    summary.commitPrefix,
 		SubmittedAt: &completedAt,
 	}, true
 }

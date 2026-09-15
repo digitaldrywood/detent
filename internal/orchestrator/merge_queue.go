@@ -188,6 +188,12 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
 			continue
 		}
+		if candidate.PullRequest.AutomatedReviewPending() {
+			o.requestAutomatedReview(ctx, candidate)
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			recordAutoPromoteSnapshotDecision(state, issueID, autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonCodexReviewMissing))
+			continue
+		}
 		if !nativeMergeQueueCandidate(candidate, o.cfg) {
 			o.logNativeMergeQueueExcluded(state, candidate)
 			continue
@@ -258,7 +264,7 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if pullRequestHydrationBlocksProgress(pullRequest) {
 		return false
 	}
-	if len(pullRequest.UnresolvedReviewThreads) > 0 {
+	if len(pullRequest.UnresolvedReviewThreads) > 0 || pullRequest.AutomatedReviewPending() {
 		return false
 	}
 	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {

@@ -36,6 +36,7 @@ type AutoPromoteSummary struct {
 	MergeableState                        string
 	CIStatus                              string
 	ReviewState                           string
+	ReviewPending                         bool
 	FailedChecks                          []string
 	UnresolvedReviewThreads               []connector.PullRequestReviewThread
 	P1Findings                            []AutoPromoteFinding
@@ -417,6 +418,7 @@ func gateSummary(summary AutoPromoteSummary) gate.Summary {
 		PullRequestURL:     summary.PullRequestURL,
 		CIStatus:           summary.CIStatus,
 		ReviewState:        summary.ReviewState,
+		ReviewPending:      summary.ReviewPending,
 		P1Findings:         gateFindings(summary.P1Findings),
 		Validator:          summary.Validator,
 		SecurityAudit:      summary.SecurityAudit,
@@ -1053,5 +1055,7 @@ func autoPromoteReworkHeadReady(issue connector.Issue) bool {
 		return false
 	}
 	issue.PullRequest.Draft = false
-	return mergeWorkerProgrammaticMergeReady(issue) && len(issue.PullRequest.UnresolvedReviewThreads) == 0
+	return mergeWorkerCheckedPullRequest(issue) &&
+		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean") &&
+		len(issue.PullRequest.UnresolvedReviewThreads) == 0
 }

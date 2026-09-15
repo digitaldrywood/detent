@@ -67,6 +67,10 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 		wantPromote bool
 	}{
 		{name: "draft marked ready then promotes", draft: true, wantReady: 1, wantPromote: true},
+		{name: "stale review draft marked ready but waits", draft: true, wantReady: 1, changeLive: func(i *connector.Issue) {
+			i.PullRequest.LatestCodexReviewState = "COMMENTED"
+			i.PullRequest.LatestCodexReviewCommitSHA = "previous-head"
+		}},
 		{name: "ready mutation fails", draft: true, readyErr: errors.New("ready unavailable"), wantReady: 2},
 		{name: "credential denied", draft: true, readyErr: errors.New("Bad credentials"), wantReady: 1, wantForge: true},
 		{name: "write permission denied", draft: true, readyErr: errors.New("Resource not accessible by integration"), wantReady: 1, wantForge: true},
