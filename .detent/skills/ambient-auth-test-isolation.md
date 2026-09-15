@@ -12,4 +12,4 @@ when_to_use: Use when local HTTP tests fail only inside an authenticated agent o
 - Remember that `t.Fatalf` in an HTTP handler exits that handler goroutine before it writes a response, which can surface to the client as EOF.
 - Preserve production environment defaults. Inject an empty lookup for a targeted test, or clear the ambient credential once in package `TestMain` when the package broadly assumes unauthenticated defaults.
 - Do not mutate environment variables from parallel tests. Keep a separate explicit test proving that the production environment override still wins when configured.
-- Validate with the original ambient credential present: repeat the focused test under `-race`, run the explicit authentication contract tests, repeat affected packages under `-race`, and run the repository gate.
+- Validate with the original ambient credential present: repeat the focused test under `-race`, run the explicit authentication contract tests, repeat affected packages under `-race`.

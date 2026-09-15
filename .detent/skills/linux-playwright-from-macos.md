@@ -16,4 +16,4 @@ Run the failing case first, followed by the complete serial file or full browser
 
 For tooltip failures around viewport changes, inspect focus and scroll ownership. A scroll handler may intentionally close a tooltip while leaving its trigger focused; calling `focus()` again is then a no-op. Model a fresh focus gesture after scrolling settles instead of repeatedly polling a reveal that no event will reopen. Confirm this event sequence independently before changing the test.
 
-Record the container image, architecture, focused result, and full-suite result in the Workpad. Run the repository's normal validation gate as well; the browser container validates Linux browser behavior, not the entire Go/tooling contract.
+Record the container image, architecture, focused result, and full-suite result in the Workpad. The browser container validates Linux browser behavior, not the entire Go/tooling contract.

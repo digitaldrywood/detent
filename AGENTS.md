@@ -49,4 +49,31 @@ source of incidents.
 
 Follow [docs/invariants.md](docs/invariants.md). Changes to an invariant or its
 enforcement must update that document in the same PR and identify the invariant
-in the PR template. Run `make check`, including the existing invariant gate.
+in the PR template.
+
+## Validation
+
+During the edit loop, run `go test ./<touched-package>/...` and `go vet` on
+those same packages; use focused regressions while iterating. After all edits
+and review fixes, run the full `make check` exactly once immediately before
+pushing, including the existing invariant gate. Never repeat a green gate unless
+files changed; after a failure, fix the cause before retrying.
+
+Keep gate output out of the conversation except for a short summary. Use Bash
+with `pipefail` so truncation cannot hide a failing exit status:
+
+```bash
+bash -o pipefail -c '
+  log=$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/detent-check.XXXXXX") || exit
+  echo "Gate log: $log"
+  make check 2>&1 | tee "$log" | tail -40
+'
+```
+
+Detent workers must use their provided `TMPDIR`, `TMP`, or `TEMP`; never
+fall back to host scratch space in a worker. For standalone contributors without
+these variables, the example uses `/tmp`. The command retains the full log.
+On failure, inspect only the failing package or tool diagnostics from that log;
+do not rerun the gate just to recover output. A green result needs only the
+success status in the handoff, not the log. See CLAUDE.md for safety-critical
+coverage and fuzz requirements.

@@ -6,8 +6,9 @@ mechanisms interacting to stop progress. Of the last 40 merged PRs, every PR
 was force-pushed, 27 received review-bot threads, and each fix or rebase repeated
 a 22-minute Verify job; median open-to-merge time was 2.7 hours.
 
-Run `make check` (or `make check-invariants` for the invariant subset). The
-existing [runner](../tools/invariantcheck/main.go) executes exact tests listed in
+Follow the [validation rule](../AGENTS.md#validation); `make check-invariants`
+runs only the invariant subset during focused iteration. The existing
+[runner](../tools/invariantcheck/main.go) executes exact tests listed in
 [the manifest](../invariants/policy.json), rejecting missing, skipped, or failed
 test evidence. These are repository-local checks, not a server-side trust
 boundary. An invariant or enforcement change requires an edit to its entry here

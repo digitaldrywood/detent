@@ -12,4 +12,4 @@ when_to_use: Use when lower-priority work reports a priority reservation despite
 4. Clear idle state at the earliest project-owned demand signal so a newly ready higher-priority project reclaims precedence immediately.
 5. Use a table-driven regression with four cases: an idle higher-priority project stays idle across another project's acquire and release; its own slot release invalidates idle state; pending higher-priority demand reserves capacity; and an idle-to-ready transition restores the reservation.
 6. Assert both admission and diagnostics. A free idle fleet must grant the lower request instead of emitting a priority reservation, while genuine contention must retain the priority reservation reason.
-7. Run the focused test before and after the fix, then run the scheduler race tests and the repository validation gate.
+7. Run the focused test before and after the fix, then run the scheduler race tests.

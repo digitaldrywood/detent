@@ -12,4 +12,4 @@ when_to_use: Use when a test sleeps for a timeout, expects a timer to fire withi
 - Test progress propagation separately when the timer loop consumes the same progress channel; do not make the assertion compete with production for one signal.
 - Preserve deadline metadata when callers inspect `Context.Deadline`, but trigger cancellation explicitly with the configured cause.
 - Keep real time only as a generous deadlock guard around explicit synchronization or OS integration, and document that it is not a behavioral margin.
-- Run focused cases repeatedly under `-race`, then run the affected packages with `-race -count=10` and the repository validation gate.
+- Run focused cases repeatedly under `-race`, then run the affected packages with `-race`.

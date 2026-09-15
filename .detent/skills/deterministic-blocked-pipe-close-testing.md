@@ -13,4 +13,4 @@ when_to_use: Use when a transport or subprocess test hangs because one direction
 - Start close with a generous context deadline and assert that both the blocked operation and close return. Keep the deadline as a deadlock guard, not a performance assertion.
 - Add failure-only recovery that releases publication backpressure, terminates the test subprocess through `internal/procgroup`, and boundedly joins started goroutines before failing. A broken regression must not hold the package until its global timeout.
 - Prove the regression red against the old shutdown ordering, then make shutdown release consumers or drainers before closing a resource that may wait for their I/O.
-- Repeat the focused test normally and under `-race`, cross-compile the test package for the affected platform, run the repository validation gate, and require real affected-platform CI before completion.
+- Repeat the focused test normally and under `-race`, cross-compile the test package for the affected platform, and require real affected-platform CI before completion.
