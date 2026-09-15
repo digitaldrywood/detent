@@ -27,8 +27,11 @@ func TestStopRecordedRun(t *testing.T) {
 		change  func(*StopRunRequest, *recordedStopStore)
 		wantErr error
 		pending bool
+		target  string
 	}{
 		{name: "processless"},
+		{name: "configured default", target: "Paused", pending: true},
+		{name: "configured explicit", target: "Paused", pending: true, change: func(r *StopRunRequest, _ *recordedStopStore) { r.Destination = "Paused" }},
 		{name: "pending route", pending: true, change: func(r *StopRunRequest, _ *recordedStopStore) { r.Destination = "Backlog" }},
 		{name: "missing identity", wantErr: ErrStopRunInvalidIdentity, change: func(r *StopRunRequest, _ *recordedStopStore) { r.WorkAttemptID = 0 }},
 		{name: "wrong project", wantErr: ErrStopRunStale, change: func(r *StopRunRequest, _ *recordedStopStore) { r.ProjectID = "other" }},
@@ -60,7 +63,7 @@ func TestStopRecordedRun(t *testing.T) {
 			if tt.change != nil {
 				tt.change(&request, backend)
 			}
-			result, err := StopRecordedRun(t.Context(), backend, backend, request)
+			result, err := StopRecordedRun(t.Context(), backend, backend, request, Config{StopRunTargetState: tt.target})
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
@@ -73,9 +76,12 @@ func TestStopRecordedRun(t *testing.T) {
 			if backend.completion.TerminalState != store.WorkAttemptTerminalOperatorStopped || backend.completion.MetricsJSON != backend.attempt.MetricsJSON {
 				t.Fatalf("completion = %+v", backend.completion)
 			}
+			if tt.target != "" && result.Destination != tt.target {
+				t.Fatalf("destination = %q, want %q", result.Destination, tt.target)
+			}
 			if tt.pending {
 				metadata, ok := operatorStopMetadataFromAttempt(store.WorkAttempt{WorkerMetadataJSON: backend.completion.WorkerMetadataJSON})
-				if !ok || metadata.Destination != "Backlog" || result.Outcome != "pending" {
+				if !ok || metadata.Destination != result.Destination || result.Outcome != "pending" {
 					t.Fatalf("pending stop = %+v, metadata = %+v", result, metadata)
 				}
 			} else if result.Outcome != "stopped" {

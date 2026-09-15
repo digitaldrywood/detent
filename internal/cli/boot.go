@@ -1993,7 +1993,17 @@ func (r registryRefresher) StopRun(ctx context.Context, request orchestrator.Sto
 		if r.attempts == nil || r.processes == nil {
 			return orchestrator.StopRunResult{}, err
 		}
-		return orchestrator.StopRecordedRun(ctx, r.attempts, r.processes, request)
+		cfg := orchestrator.Config{}
+		if tracked, ok := r.registry.Get(project.ID(request.ProjectID)); ok {
+			cfg = orchestrator.ConfigFromWorkflow(tracked.Workflow().Config)
+		} else if pending, ok := r.registry.Pending(project.ID(request.ProjectID)); ok && pending.Project.Workflow != "" {
+			workflow, loadErr := project.LoadWorkflowContext(ctx, pending.Project)
+			if loadErr != nil {
+				return orchestrator.StopRunResult{}, loadErr
+			}
+			cfg = orchestrator.ConfigFromWorkflow(workflow.Config)
+		}
+		return orchestrator.StopRecordedRun(ctx, r.attempts, r.processes, request, cfg)
 	}
 	return orch.StopRun(ctx, request)
 }

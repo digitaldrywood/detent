@@ -4602,17 +4602,19 @@ func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLast
 
 const updateCodexSessionFinalStateByWorkAttempt = `-- name: UpdateCodexSessionFinalStateByWorkAttempt :exec
 UPDATE codex_sessions
-SET final_state = ?1
-WHERE work_attempt_id = ?2
+SET final_state = ?1,
+    completed_at = COALESCE(completed_at, ?2)
+WHERE work_attempt_id = ?3
 `
 
 type UpdateCodexSessionFinalStateByWorkAttemptParams struct {
 	FinalState    sql.NullString `json:"final_state"`
+	CompletedAt   sql.NullString `json:"completed_at"`
 	WorkAttemptID sql.NullInt64  `json:"work_attempt_id"`
 }
 
 func (q *Queries) UpdateCodexSessionFinalStateByWorkAttempt(ctx context.Context, arg UpdateCodexSessionFinalStateByWorkAttemptParams) error {
-	_, err := q.db.ExecContext(ctx, updateCodexSessionFinalStateByWorkAttempt, arg.FinalState, arg.WorkAttemptID)
+	_, err := q.db.ExecContext(ctx, updateCodexSessionFinalStateByWorkAttempt, arg.FinalState, arg.CompletedAt, arg.WorkAttemptID)
 	return err
 }
 

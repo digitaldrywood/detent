@@ -155,7 +155,10 @@ Project-local reclaim remains necessary for project restarts without an instance
 restart. Deferred completions retain their existing exclusion, and restart-abandoned
 attempts retain orphan-session resume eligibility. Recorded processless stops use
 the existing completion and pending operator-stop records without requiring a
-running project; live workers still require the orchestrator. Covered by
+running project; live workers still require the orchestrator. Live and recorded
+stops share route normalization, validation, and completion construction. Configured
+default/custom destinations survive project initialization; linked session completion
+is atomic with attempt completion and preserves an existing finish timestamp. Covered by
 `TestStartupReclaimsProcesslessWorkAttempts`, `TestStopRecordedRunBeforeProjectStartup`,
 `TestStopRecordedRun`, and `TestReapWorkerProcessesPreservesInterruptedSession`.
 

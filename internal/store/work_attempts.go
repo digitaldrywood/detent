@@ -195,6 +195,7 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 	}
 	if err := queries.UpdateCodexSessionFinalStateByWorkAttempt(ctx, sqlc.UpdateCodexSessionFinalStateByWorkAttemptParams{
 		FinalState:    nullString(attrs.SessionFinalState),
+		CompletedAt:   sql.NullString{String: completedAt, Valid: true},
 		WorkAttemptID: nullPositiveInt64(attrs.AttemptID),
 	}); err != nil {
 		return fmt.Errorf("updating work attempt session final state: %w", err)

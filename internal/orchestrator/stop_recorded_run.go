@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -16,27 +16,20 @@ import (
 // StopRecordedRun stops a processless durable attempt when its project runtime
 // is unavailable. Explicit lane moves use the existing pending-stop recovery;
 // without a destination this operation only terminates the recorded attempt.
-func StopRecordedRun(ctx context.Context, attempts store.WorkAttemptStore, processes WorkerProcessStore, request StopRunRequest) (StopRunResult, error) {
+func StopRecordedRun(ctx context.Context, attempts store.WorkAttemptStore, processes WorkerProcessStore, request StopRunRequest, cfg Config) (StopRunResult, error) {
 	if attempts == nil || processes == nil {
 		return StopRunResult{}, ErrStopped
 	}
 	if strings.TrimSpace(request.ProjectID) == "" || strings.TrimSpace(request.IssueID) == "" || request.WorkAttemptID <= 0 || request.Attempt < 0 {
 		return StopRunResult{}, ErrStopRunInvalidIdentity
 	}
-	request.Reason = strings.TrimSpace(request.Reason)
-	request.Destination = strings.TrimSpace(request.Destination)
-	if utf8.RuneCountInString(request.Reason) > StopRunReasonMaxLength {
+	request = normalizeStopRunRequest(cfg, request)
+	route := request
+	if route.Destination == "" {
+		route.Destination = StopRunDestinationBlocked
+	}
+	if !validStopRunRoute(cfg, route) {
 		return StopRunResult{}, ErrStopRunInvalidRoute
-	}
-	if request.Destination != "" {
-		destination, ok := canonicalStopRunDestination(request.Destination)
-		if !ok || destination == StopRunDestinationTodo && (request.Priority < 1 || request.Priority > 4) {
-			return StopRunResult{}, ErrStopRunInvalidRoute
-		}
-		request.Destination = destination
-	}
-	if request.Destination != StopRunDestinationTodo {
-		request.Priority = 0
 	}
 	attempt, err := attempts.WorkAttempt(ctx, request.WorkAttemptID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -67,6 +60,9 @@ func StopRecordedRun(ctx context.Context, attempts store.WorkAttemptStore, proce
 			return StopRunResult{}, ErrStopped
 		}
 	}
+	if request.Destination == StopRunDestinationTodo && stopRunPriorityName(nil, cfg.StopRunPriorityNames, request.Priority) == "" {
+		return StopRunResult{}, ErrStopRunInvalidRoute
+	}
 	now := time.Now().UTC()
 	result := StopRunResult{
 		ProjectID:         attempt.ProjectID,
@@ -78,6 +74,7 @@ func StopRecordedRun(ctx context.Context, attempts store.WorkAttemptStore, proce
 		ProviderSessionID: attempt.ProviderSessionID,
 		Destination:       request.Destination,
 		Priority:          request.Priority,
+		PriorityName:      stopRunPriorityName(nil, cfg.StopRunPriorityNames, request.Priority),
 		Reason:            request.Reason,
 		Outcome:           "stopped",
 		RequestedAt:       now,
@@ -102,25 +99,17 @@ func StopRecordedRun(ctx context.Context, attempts store.WorkAttemptStore, proce
 		}
 		metadata = string(encoded)
 	}
-	err = attempts.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{
-		AttemptID:              attempt.ID,
-		CompletedAt:            now,
-		TerminalState:          store.WorkAttemptTerminalOperatorStopped,
-		SessionFinalState:      string(store.WorkAttemptTerminalOperatorStopped),
-		ErrorClass:             string(store.WorkAttemptTerminalOperatorStopped),
-		ErrorMessage:           "operator requested run stop",
-		Phase:                  phase,
-		StatusMessage:          message,
-		WorkerMetadataJSON:     metadata,
-		MetricsJSON:            attempt.MetricsJSON,
-		GitHubRateSnapshotJSON: attempt.GitHubRateSnapshotJSON,
-		CIState:                attempt.CIState,
-		CapacitySnapshotJSON:   attempt.CapacitySnapshotJSON,
-		NextAction:             nextAction,
-		DetentSessionID:        attempt.DetentSessionID,
-		ProviderSessionID:      attempt.ProviderSessionID,
-		RuntimeIdentity:        attempt.RuntimeIdentity,
-	})
+	completion := operatorStopAttemptCompletion(runningFromStopResult(connector.Issue{ID: attempt.IssueID}, result), result)
+	completion.CompletedAt = now
+	completion.SessionFinalState = string(store.WorkAttemptTerminalOperatorStopped)
+	completion.Phase, completion.StatusMessage, completion.NextAction = phase, message, nextAction
+	completion.WorkerMetadataJSON = metadata
+	completion.MetricsJSON = attempt.MetricsJSON
+	completion.GitHubRateSnapshotJSON = attempt.GitHubRateSnapshotJSON
+	completion.CIState = attempt.CIState
+	completion.CapacitySnapshotJSON = attempt.CapacitySnapshotJSON
+	completion.RuntimeIdentity = attempt.RuntimeIdentity
+	err = attempts.CompleteWorkAttempt(ctx, completion)
 	if err != nil {
 		return StopRunResult{}, err
 	}

@@ -107,7 +107,8 @@ WHERE id = sqlc.arg(id);
 
 -- name: UpdateCodexSessionFinalStateByWorkAttempt :exec
 UPDATE codex_sessions
-SET final_state = sqlc.arg(final_state)
+SET final_state = sqlc.arg(final_state),
+    completed_at = COALESCE(completed_at, sqlc.arg(completed_at))
 WHERE work_attempt_id = sqlc.arg(work_attempt_id);
 
 -- name: UpdateCodexSessionIdentity :execrows

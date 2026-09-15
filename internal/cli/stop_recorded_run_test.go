@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,9 +26,11 @@ func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		pending, stale bool
+		target         string
 	}{
 		{name: "initializing", pending: true},
 		{name: "removed"},
+		{name: "initializing custom target", pending: true, target: "Paused"},
 		{name: "stale identity", stale: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -42,7 +45,22 @@ func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
 			}
 			registry := project.NewRegistry()
 			if tc.pending {
-				if err := registry.SetPending(globalconfig.Project{ID: "project"}, project.RuntimeError{}); err != nil {
+				cfg := globalconfig.Project{ID: "project"}
+				if tc.target != "" {
+					cfg.Workflow = filepath.Join(t.TempDir(), "WORKFLOW.md")
+					if err := os.WriteFile(cfg.Workflow, []byte(`---
+tracker:
+  kind: memory
+  observed_states: [Blocked, Paused]
+agent:
+  stop_run:
+    target_state: Paused
+---
+Work`), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := registry.SetPending(cfg, project.RuntimeError{}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -73,7 +91,14 @@ func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 					t.Fatal(err)
 				}
-				if result.Outcome != "stopped" {
+				wantOutcome := "stopped"
+				if tc.target != "" {
+					wantOutcome = "pending"
+				}
+				if result.Destination != tc.target {
+					t.Fatalf("destination = %q, want %q", result.Destination, tc.target)
+				}
+				if result.Outcome != wantOutcome {
 					t.Fatalf("outcome = %q", result.Outcome)
 				}
 			}
