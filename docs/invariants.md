@@ -250,7 +250,9 @@ Unsupported repositories use the same body parser. Historical comments remain
 diagnostic only, and refresh replaces the previous list rather than restoring
 removed declarations. Public reads select dependencies before resolving blocker
 state; the orchestrator consumes that list through its existing dependency gate.
-Degraded native reads still propagate errors. Workpad issue-state predicates
+Degraded native reads and unresolved blocker-state lookups propagate errors,
+preventing candidates with unknown blocker state from dispatching. Both parsers
+share fence-aware declaration scanning; fenced examples never add blockers. Workpad issue-state predicates
 absent from the current combined list are explained and cleared as before;
 explicit human actions and non-dependency predicates retain their meaning.
 `TestDependencyAuthority` reproduces text-only hydration, including bold labels;
