@@ -203,6 +203,13 @@ func EvaluateAutoPromote(
 	} else if strings.TrimSpace(summary.ArtifactStatus) == "" {
 		summary.ArtifactStatus = artifactStatusFromIssue(issue, cfg.Gate.Artifact.StatusField)
 	}
+	// Merging owns audits that have not run yet. A known failing or running
+	// audit still holds Rework through the normal gate evaluation.
+	if normalizeState(issue.State) == normalizeState(cfg.ReworkState) && normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState) && autoPromoteReworkHeadReady(issue) {
+		if audit, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, summary.SecurityAudit); pending && audit.Reason == gate.ReasonSecurityAuditMissing {
+			cfg.Gate.SecurityAudit.Enabled = false
+		}
+	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
 		QuietDuration:              cfg.QuietDuration,
 		AutomatedReviewWaitExpired: summary.AutomatedReviewWaitExpired,
@@ -1036,4 +1043,15 @@ func autoPromoteReasonFromGate(reason gate.Reason) AutoPromoteReason {
 	default:
 		return AutoPromoteReasonDisabled
 	}
+}
+
+// autoPromoteReworkHeadReady shares the merge worker readiness check. Drafts
+// qualify for ready marking, but cannot promote until a later live read.
+func autoPromoteReworkHeadReady(issue connector.Issue) bool {
+	issue = cloneIssue(issue)
+	if issue.PullRequest == nil {
+		return false
+	}
+	issue.PullRequest.Draft = false
+	return mergeWorkerProgrammaticMergeReady(issue) && len(issue.PullRequest.UnresolvedReviewThreads) == 0
 }

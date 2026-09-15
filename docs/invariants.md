@@ -161,6 +161,12 @@ publication pending. A merge discovered during hydration uses the existing merge
 lifecycle; missing or running audit and validator stages leave publication pending
 while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
+Idle Rework PRs enter the existing promotion evaluation without a worker completion
+record (#2688). Promotion reuses the merge worker readiness predicate and live PR
+hydration; unresolved threads and known audit failures still prevent promotion.
+Missing audits run in Merging. `TestReworkLivePullRequestPromotion`,
+`TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
+consolidation; no new transition reason or recovery loop is introduced.
 
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
@@ -462,7 +468,10 @@ the Invariant Gate), and restricts portability, Windows core, installer, and
 snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;
-Rework can produce a new ready head. Workflow assertions cannot deduplicate
+Rework can produce a new ready head. Detent also marks an idle Rework draft ready
+when its other promotion gates pass (#2688), then re-reads its ready state and
+current-head checks on a later tick before promotion. `TestReworkLiveDraftPromotion`
+covers ready marking, failure, and rechecking live evidence. Workflow assertions cannot deduplicate
 manual reruns or repeated ready/reopened events. Other projects may opt into
 label gating or their own CI convention.
 
@@ -703,3 +712,10 @@ fixtures available to explain violations. Source vocabulary and workflow checks
 complement behavioral tests; they do not prove every natural-language rule,
 protect themselves against edits, or enforce live settings. See the
 [runner contract](../invariants/README.md) for the same limitations.
+
+Draft-ready credential and connector-policy failures (#2688) reuse the instance
+forge condition and existing worker write canary (INV-2/INV-3). The auto-promote
+writer waits for that recovery instead of resetting the probe on every tick;
+transient ready failures retain normal tick retries.
+`TestReworkLiveDraftPromotion` verifies this attribution without issue failure
+strikes or lane changes.

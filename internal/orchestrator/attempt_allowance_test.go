@@ -443,7 +443,7 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 func TestAttemptAllowanceLiveHead(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, ci, mergeable, want                       string
+		name, ci, mergeable, want, passState            string
 		newHead, disabled, preserve                     bool
 		threads                                         []connector.PullRequestReviewThread
 		unavailable                                     string
@@ -452,7 +452,8 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 	}{
 		{name: "merge discovered during hydration", merged: true, ci: "green", mergeable: "clean", want: "Done"},
 		{name: "validator pending", validator: true, pending: true, ci: "green", mergeable: "clean"},
-		{name: "audit missing", audit: true, pending: true, ci: "green", mergeable: "clean"},
+		{name: "audit missing defers to merging", audit: true, ci: "green", mergeable: "clean", want: "Merging"},
+		{name: "audit missing for non-merging destination", audit: true, pending: true, ci: "green", mergeable: "clean", passState: "Done"},
 		{name: "audit running", audit: true, auditRunning: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "green replacement head promotes", newHead: true, ci: "green", mergeable: "clean", want: "Merging"},
 		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Human Review"},
@@ -478,6 +479,9 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: live}}
 			cfg := laneMutationTestConfig()
 			cfg.AutoPromote.Enabled = !tt.disabled
+			if tt.passState != "" {
+				cfg.AutoPromote.PassState = tt.passState
+			}
 			cfg.AutoPromote.Gate.Validator.Enabled = tt.validator
 			cfg.AutoPromote.Gate.SecurityAudit.Enabled = tt.audit
 			cfg.ServiceIdentity = "test-service"

@@ -1084,3 +1084,7 @@ func writeGitHubLocalJSON(t *testing.T, w http.ResponseWriter, value any) {
 		t.Fatalf("encode response: %v", err)
 	}
 }
+
+func (b *recordingGitHubBackend) MarkPullRequestReady(context.Context, connector.Issue) error {
+	panic("unexpected github MarkPullRequestReady")
+}
