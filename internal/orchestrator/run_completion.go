@@ -169,6 +169,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
 			return
 		}
+		if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
+			return
+		}
 		o.finishForgeAvailabilityProbe(state, event, running)
 		o.finishObservedLaneRun(ctx, state, running, event)
 		return

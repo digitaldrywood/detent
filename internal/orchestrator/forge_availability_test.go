@@ -1034,8 +1034,12 @@ func TestCredentialCanaryExcludesMergeWorker(t *testing.T) {
 
 func TestCompoundPushCLIAuthCompletion(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"git push", "post-push command"} {
-		t.Run(operation, func(t *testing.T) {
+	for _, tt := range []struct{ operation, completionLane string }{
+		{"git push", ""},
+		{"post-push command", ""},
+		{"git push", "Rework"},
+	} {
+		t.Run(tt.operation+"/"+tt.completionLane, func(t *testing.T) {
 			now := time.Date(2026, 9, 15, 5, 58, 15, 0, time.UTC)
 			cfg := normalizeConfig(Config{ForgeHost: "github.com"})
 			issue := dispatchTestIssue("2731", "In Progress")
@@ -1043,10 +1047,10 @@ func TestCompoundPushCLIAuthCompletion(t *testing.T) {
 			attempts := &implementProgressAttemptStore{}
 			orch := Orchestrator{cfg: cfg, connector: &implementProgressConnector{}, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			state := newState(cfg)
-			state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 2731, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute)}
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 2731, CompletionLane: tt.completionLane, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute)}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now,
 				Result: runpkg.RunResult{PullRequestHeadPushed: true, ForgeWriteCompleted: true, TurnStarted: true},
-				Err:    &runpkg.DeliverableCommandError{OperationClass: "push", Operation: operation, Message: "32bbf98..9773c9e HEAD -> detent/example\nlist pull request labels: exit status 4: To get started with GitHub CLI, please run: gh auth login"},
+				Err:    &runpkg.DeliverableCommandError{OperationClass: "push", Operation: tt.operation, Message: "32bbf98..9773c9e HEAD -> detent/example\nlist pull request labels: exit status 4: To get started with GitHub CLI, please run: gh auth login"},
 			})
 			if len(state.ForgeUnavailable) != 0 || len(state.Blocked) != 0 {
 				t.Fatalf("unexpected pause or park: %#v / %#v", state.ForgeUnavailable, state.Blocked)
@@ -1056,6 +1060,18 @@ func TestCompoundPushCLIAuthCompletion(t *testing.T) {
 			}
 			if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workerGitHubTokenResolutionErrorClass {
 				t.Fatalf("completion = %#v", attempts.completions)
+			}
+			completed := attempts.completions[0]
+			restored := newState(cfg)
+			orch.connector = &rateLimitConnector{issuesByID: []connector.Issue{issue}}
+			orch.recoverWorkerGitHubTokenResolutionWaits(t.Context(), &restored, []store.WorkAttempt{{
+				IssueID: issue.ID, Identifier: issue.Identifier, Lane: issue.State, AttemptNumber: 4, Status: store.WorkAttemptStatusTerminal,
+				TerminalState: completed.TerminalState, ErrorClass: completed.ErrorClass,
+				WorkerMetadataJSON: completed.WorkerMetadataJSON,
+			}}, now.Add(time.Second))
+			retry, ok := restored.Retry[issue.ID]
+			if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(state.Retry[issue.ID].DueAt) || !retry.DueAt.After(now.Add(time.Second)) {
+				t.Fatalf("restored retry = %#v, want original durable wait %#v", retry, state.Retry[issue.ID])
 			}
 		})
 	}

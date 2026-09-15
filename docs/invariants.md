@@ -74,7 +74,11 @@ credential or authentication terminology alone is not failure evidence (#2616).
 Compound push commands whose follow-up GitHub CLI read cannot log in reuse the
 instance token-resolution wait (`worker_github_cli_auth` in the diagnostic), not
 the project forge outage. `TestCompoundPushCLIAuth` preserves this distinction
-from rejected Git writes. `TestCredentialCanaryExcludesMergeWorker` keeps merge
+from rejected Git writes. `TestCompoundPushCLIAuthCompletion` verifies that
+these instance waits survive restart using their persisted retry deadline, including
+when a tracker lane change is observed before worker completion. Diagnostic
+resolution timeouts are not required to restore a wait.
+`TestCredentialCanaryExcludesMergeWorker` keeps merge
 workers out of credential write-canary admission; retained merge retries do not
 prevent a write-capable replacement. Configured forge host provenance takes
 precedence over unrelated URLs in command output (#2731).

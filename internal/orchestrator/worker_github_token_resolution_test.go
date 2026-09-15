@@ -179,7 +179,7 @@ func TestWorkerGitHubTokenResolutionWaitMetadataValidation(t *testing.T) {
 		{name: "malformed", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalCapacity, ErrorClass: workerGitHubTokenResolutionErrorClass, WorkerMetadataJSON: `{`}},
 		{name: "ordinary failure", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: workerGitHubTokenResolutionErrorClass, WorkerMetadataJSON: attempt(valid).WorkerMetadataJSON}},
 		{name: "missing attempts", attempt: attempt(workerGitHubTokenResolutionWaitMetadata{TimeoutMS: valid.TimeoutMS, DetectedAt: valid.DetectedAt, NextRetryAt: valid.NextRetryAt})},
-		{name: "missing timeout", attempt: attempt(workerGitHubTokenResolutionWaitMetadata{Attempts: valid.Attempts, DetectedAt: valid.DetectedAt, NextRetryAt: valid.NextRetryAt})},
+		{name: "CLI failure without timeout", attempt: attempt(workerGitHubTokenResolutionWaitMetadata{Attempts: valid.Attempts, DetectedAt: valid.DetectedAt, NextRetryAt: valid.NextRetryAt}), want: true},
 		{name: "missing retry deadline", attempt: attempt(workerGitHubTokenResolutionWaitMetadata{Attempts: valid.Attempts, TimeoutMS: valid.TimeoutMS, DetectedAt: valid.DetectedAt})},
 	}
 	for _, tt := range tests {
