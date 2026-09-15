@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -695,6 +696,13 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	}
 	evidence := o.evaluateRecordedBlockers(ctx, state, issue, nil, event.CompletedAt)
 	running.Issue = issue
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+		o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
+	}
+	o.recordCompletionUsage(ctx, state, event, issue)
 	detail := workpad.Reason(signal)
 	if o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, map[string]any{"blocker_evidence": evidence.Evidence}) {
 		o.releaseCompletedAttemptClaim(ctx, state, issue)

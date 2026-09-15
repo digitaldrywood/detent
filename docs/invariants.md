@@ -150,7 +150,8 @@ instance-owned, unverifiable evidence. Successful workers reporting them release
 their claim without issue no-progress strikes or lane changes. Existing live
 Workpad evaluation holds dispatch and promotion until the report clears;
 `TestSymbolicBlockerCompletion` and `TestSymbolicBlockerPromotion` cover attribution,
-retained diagnostic detail, and promotion after clearance. This replaces symbolic
+retained diagnostic detail, final usage/diff accounting, CI scheduling after a pushed head,
+and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
