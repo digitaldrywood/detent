@@ -1368,6 +1368,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].child_issues[].source` | `string` | `none` | No | None |
 | `tracker.issues[].child_issues[].state` | `string` | `none` | No | None |
 | `tracker.issues[].closed` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].closed_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].closed_reason` | `string` | `none` | No | None |
 | `tracker.issues[].comments` | `list<object>` | `[]` | No | None |
 | `tracker.issues[].comments[].author_authorized` | `boolean` | `false when configured` | No | None |

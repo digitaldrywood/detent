@@ -53,6 +53,7 @@ func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state 
 	if !state.LastWorkspaceCleanupAt.IsZero() && now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
 		return
 	}
+	o.sweepRetention(ctx, state, now)
 	states := cleanupFetchStates(o.cfg)
 	swept := len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)
 	reconciled := o.reconcileResidualWorkspaces(ctx, state, now)

@@ -145,6 +145,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),
 		StrandedActiveIssues:    strandedActiveIssues,
 		CleanupFaults:           workspaceCleanupFailureSnapshots(s),
+		WorkspaceRetention:      s.WorkspaceRetention,
 		OverloadRetriesLastHour: overloadRetriesLastHour(s.WorkAttempts, now),
 		Tokens:                  tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{

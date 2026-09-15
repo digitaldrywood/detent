@@ -35,6 +35,7 @@ query DetentGitHubProjectItems(
               title
               state
               stateReason
+ closedAt
               url
               author { login }
               comments { totalCount }
@@ -78,6 +79,7 @@ query DetentGitHubProjectItems(
               title
               state
               stateReason
+ closedAt
               url
               author { login }
               comments { totalCount }
@@ -141,6 +143,7 @@ query DetentGitHubObservedStatusProjectItems(
               title
               state
               stateReason
+ closedAt
               url
               createdAt
               author { login }

@@ -1023,6 +1023,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Dispatch = mergeFleetDispatchStatus(current.Dispatch, next.Dispatch, next.GeneratedAt)
 	current.DispatchStalls = append(current.DispatchStalls, next.DispatchStalls...)
 	current.CleanupFaults = append(current.CleanupFaults, next.CleanupFaults...)
+	current.WorkspaceRetention = append(current.WorkspaceRetention, next.WorkspaceRetention...)
 	if !next.Release.IsZero() {
 		current.Releases = append(current.Releases, next.Release)
 		if current.Release.IsZero() {

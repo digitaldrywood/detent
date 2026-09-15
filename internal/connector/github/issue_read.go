@@ -223,6 +223,7 @@ fragment DetentGitHubIssueParent on Issue {
   body
   state
   stateReason
+ closedAt
   url
   createdAt
   updatedAt
@@ -387,6 +388,7 @@ fragment DetentGitHubIssueParentLabel on Issue {
   body
   state
   stateReason
+ closedAt
   url
   createdAt
   updatedAt
@@ -1519,6 +1521,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		URL:               issue.URL,
 		Closed:            githubIssueClosed(issue.State),
 		ClosedReason:      issue.StateReason,
+		ClosedAt:          parseGitHubTime(issue.ClosedAt),
 		PRNumber:          pullRequestNumber,
 		PRRepository:      pullRequestRepository,
 		PRSource:          pullRequestAssociationSource,

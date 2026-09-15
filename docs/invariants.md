@@ -227,14 +227,32 @@ worker remains active through finalization, including terminal lane updates.
 Legacy `preserve` JSON fields no
 longer exempt a workspace; checkpoint journals and filesystem retention remain.
 `TestLocalGitReconcileRechecksPreservation` covers restart, legacy records,
-published and merged work, and continued retention of unsafe candidates. No
-merge inference, expiration mechanism, or configuration is added. Expected
+published and merged work, and continued retention of unsafe candidates. That
+change added no merge inference, expiration mechanism, or configuration. Expected
 retention keeps path evidence without failing the sweep, so the existing sweep
 interval advances even when local work remains.
 `TestCleanupVerifiesLiveRemoteCommits` covers stale refs and remote failures in
 residual, direct, and branch cleanup;
 `TestResidualCleanupProtectsFinalizingTerminalWorkers` covers terminal worker
 ownership until its completion event.
+
+The operator-approved September 14 retention scope (#2681, INV-11 approval
+recorded in the issue) extends this same reaper sweep: completed workspaces
+expire after seven days in a configured terminal lane or after issue closure,
+quarantine after three days or beyond the newest five entries, hook logs after
+fourteen days, and unregistered attempt scratch after one hour. Terminal attempt
+scratch and ownership records for missing paths are removed in that sweep too.
+This consolidates artifact cleanup into the existing invocation, with no new
+loop, configuration, or lane writer. Ordinary preservation remains necessary
+for nonterminal work and unverified completion times; the approved expiry first
+archives a verified Git bundle, staged and working-tree diffs, and all working
+files. Active issues and live processes remain protected. Content-addressed
+archives prevent identical recovery copies from accumulating after removal
+failures while preserving earlier snapshots after partial deletion.
+`TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
+`TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
+lossless expiry, and repeated removal failures. See
+[workspace retention](workspace-retention.md) for limits and recovery instructions.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the

@@ -239,6 +239,7 @@ func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
 		URL:               issue.HTMLURL,
 		CreatedAt:         restTimeString(issue.CreatedAt),
 		UpdatedAt:         restTimeString(issue.UpdatedAt),
+		ClosedAt:          restTimeString(issue.ClosedAt),
 		Author:            issue.User,
 		AuthorAssociation: issue.AuthorAssociation,
 		Assignees:         restAssigneesConnection(issue.Assignees),
