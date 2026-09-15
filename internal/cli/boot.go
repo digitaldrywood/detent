@@ -274,6 +274,27 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 		logger.Warn("prior-instance worker artifact cleanup failed; continuing startup", "error", err)
 	}
+	retentionHomes := map[string]bool{}
+	for _, projectConfig := range cfg.Global.Projects {
+		workflow, err := project.LoadWorkflow(projectConfig)
+		if err != nil {
+			continue
+		} // Project loading reports its own errors below.
+		homes, err := codexRetentionHomes(workflow.Config, os.LookupEnv)
+		if err != nil {
+			logger.Warn("resolve Codex retention homes", "error", err)
+			continue
+		}
+		for _, home := range homes {
+			if retentionHomes[home] {
+				continue
+			}
+			retentionHomes[home] = true
+			if err := pruneCodexLogs(runCtx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
+				logger.Warn("Codex log retention failed", "home", home, "error", err)
+			}
+		}
+	}
 	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
 		if err := demofixtures.SeedUsageEvents(runCtx, runtimeStore); err != nil {
 			return err

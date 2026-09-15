@@ -1,5 +1,8 @@
 # Agent-Executable Project Onboarding
 
+For concise agent instructions, use the [instruction-cost guide](instruction-cost.md)
+when writing `WORKFLOW.md`, `AGENTS.md`, and skills.
+
 This runbook takes a target repository from zero Detent setup to one dispatched
 issue, or adds a new project to an existing Detent install. It starts with an
 identity gate so a reference repository, example setup, current shell directory,

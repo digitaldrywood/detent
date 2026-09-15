@@ -380,9 +380,13 @@ func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 		done <- result{output: output.Bytes(), err: err}
 	}()
 	var completed result
+	outputBytes := "unknown"
 	select {
 	case completed = <-done:
+		outputBytes = strconv.Itoa(len(completed.output))
 	case <-ctx.Done():
+		// Wait still owns the buffer; no output count is available yet.
+		// An empty result here does not mean the child emitted no output.
 		completed.err = ctx.Err()
 	}
 	err := completed.err
@@ -390,8 +394,8 @@ func workspaceScanOutput(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 		err = errors.Join(err, ctx.Err())
 	}
 	if err != nil {
-		return completed.output, fmt.Errorf("workspace scan command stage=wait pid=%d start_elapsed=%s wait_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v output_bytes=%d: %w",
-			cmd.Process.Pid, startElapsed, time.Since(waiting), hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), len(completed.output), err)
+		return completed.output, fmt.Errorf("workspace scan command stage=wait pid=%d start_elapsed=%s wait_elapsed=%s deadline_set=%t deadline_remaining=%s context_at_start=%v context_error=%v output_bytes=%s: %w",
+			cmd.Process.Pid, startElapsed, time.Since(waiting), hasDeadline, remaining, contextAtStart, fmt.Sprint(ctx.Err()), outputBytes, err)
 	}
 	return completed.output, nil
 }

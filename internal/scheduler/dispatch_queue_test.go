@@ -495,3 +495,59 @@ func TestQueuedDispatchChoosesAvailableHost(t *testing.T) {
 		})
 	}
 }
+
+func TestStandingDispatchRequestUpdates(t *testing.T) {
+	for _, kind := range []string{"gate", "registry", "project pool"} {
+		t.Run(kind, func(t *testing.T) {
+			var gate ProjectDispatchGate = NewGlobalDispatchGate(NewStrictPriority(Config{Capacity: 1}))
+			if kind != "gate" {
+				registry, err := NewPoolRegistry([]PoolConfig{{Name: DefaultPoolName, Scheduler: Config{Kind: "strict", Capacity: 1}}}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gate = registry
+				if kind == "project pool" {
+					gate = registry.GateFor("project")
+				}
+			}
+			project := ProjectCandidate{ID: "project"}
+			now := time.Now()
+			held, ok, err := gate.TryAcquire(t.Context(), project, SlotRequest{State: "Todo"}, now)
+			if err != nil || !ok {
+				t.Fatalf("initial grant = %t %v", ok, err)
+			}
+			queue := gate.(QueuedProjectDispatchGate)
+			first, cancelFirst, _ := queue.Submit(t.Context(), project, SlotRequest{State: "Todo", Priority: 3}, now, nil)
+			defer cancelFirst()
+			second, cancelSecond, _ := queue.Submit(t.Context(), project, SlotRequest{State: "Todo", Priority: 2}, now, nil)
+			defer cancelSecond()
+			queue.Update(first, SlotRequest{State: "Rework", Priority: 0, HostCandidates: []HostCandidate{{Host: "updated-host"}}}, now.Add(time.Minute))
+			if err := gate.Release(held); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case grant := <-first:
+				if grant.Err != nil || grant.Slot.State != "rework" || grant.Slot.Host != "updated-host" {
+					t.Fatalf("updated grant = %+v", grant)
+				}
+				queue.Update(first, SlotRequest{State: "Done"}, now)
+				select {
+				case unexpected := <-first:
+					t.Fatalf("grant redelivered: %+v", unexpected)
+				default:
+				}
+				select {
+				case unexpected := <-second:
+					t.Fatalf("lower grant = %+v", unexpected)
+				default:
+				}
+				cancelSecond()
+				if err := gate.Release(grant.Slot); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				t.Fatal("updated request did not win capacity")
+			}
+		})
+	}
+}

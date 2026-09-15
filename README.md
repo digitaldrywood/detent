@@ -184,6 +184,11 @@ at hand.
 
 ### Operate Detent
 
+The operator health metric is tokens per merged PR per project per day across
+both hosts, computed from recorded history rather than the dashboard. See
+[Token spend diagnosis](docs/diagnosis.md#token-spend) for authoritative sources,
+join keys, rollout inspection, and runnable audit queries.
+
 - [Concepts](docs/concepts.md) — connectors, board states, cancellation, review gates, and Kanban modes.
 - [Dependency workflows](docs/dependency-workflows.md) and [merge train](docs/merge-train.md).
 - [Multi-project operation](docs/multi-project.md) and [machine-local workflow overlays](docs/workflow-overlays.md).

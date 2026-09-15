@@ -145,6 +145,30 @@ Structured command objects:
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 | `detent fix worker-processes --dry-run` / `--yes` | The orphaned process groups reported by the live service, including session identity, PID, PGID, RSS, and the reap outcome when applied. |
 
+### Doctor token diagnostics
+
+`detent doctor` includes these read-only project checks:
+
+| Check | Evidence and thresholds |
+| --- | --- |
+| `workflow_source_drift` | Warns when `workdir` is on a different branch from the GitHub tracker default branch with no `workflow_ref`, or when the pinned WORKFLOW.md differs from the working copy. Reports both byte sizes; missing refs or metadata warn. |
+| `instruction_budget` | Estimates the repository AGENTS chain (root to workdir, override-file precedence, **32 KiB aggregate cap**), effective WORKFLOW prompt, and literal file paths (filenames with extensions, `Makefile`, or backtick-quoted paths) on read/follow/consult/load/review directive lines in every loaded instruction file, including transitive references (deduplicated). Lists files and bytes; **warns above 24 KiB, fails above 48 KiB**. Missing evidence warns. |
+| `gate_instruction_conflict` | Warns when `gate.run` is required in multiple instruction files or both required and forbidden/conditional. Uses the same instruction inventory and line-based requirement/prohibition heuristics. When configured for `make check-fast`, also audits conflicting full `make check` instructions. |
+| `model_policy` | Prints each effective level's model, effort, and configuration sources. Warns when **more than 10%** of project `codex_sessions` started in the last 24 hours have `issue.effort` (including role-specific `issue.<role>.effort` sources) above the current level default, or provenance cannot be compared. |
+| `token_accounting` | Compares project `usage_events.total_tokens` with `work_attempts.metrics_json.total_tokens` over the last 24 hours; warns when the absolute difference is **more than 5% of usage_events**. Zero usage with nonzero attempt totals also warns. |
+| `ci_trigger_shape` | For GitHub trackers, reads default-branch workflow files in one GraphQL query. Warns when a configured required-check job runs on an explicit `labeled` activity without a workflow/job concurrency group containing `github.event.pull_request.head.sha`. Missing or unreadable required workflows warn. |
+
+Instruction analysis is a static estimate, not a full natural-language or Codex
+configuration interpreter. It excludes dynamic template expansions, dynamic file
+paths, custom Codex fallback filenames, and instructions below the configured
+workdir; isolated workers exclude user-home instructions. Referenced files are
+read from the checkout, while the workflow prompt uses the configured source.
+Model history is compared against today's effective policy, not historical config.
+Accounting uses usage finish times and attempt completion times (start time for
+unfinished attempts); window-crossing sessions can produce differences. Use
+`usage_events` as the reconciled reporting source. Unavailable database evidence
+warns; these diagnostics do not change policy, tracker lanes, or runtime state.
+
 ### Project refresh proposals
 
 `detent refresh-project <project-id>` reads the registered project's split

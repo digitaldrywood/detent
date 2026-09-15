@@ -119,9 +119,21 @@ context and subsequent updates retry through the existing write path.
 `TestProviderIdentityFailureDoesNotCancelTurn` covers cancelled and timed-out store
 writes followed by successful persistence and normal turn completion.
 
+Dispatch Workpad comment-read failures use the existing tracker availability observer
+and tracker-unavailable dispatch reason; they never become issue dependency evidence.
+
 ## INV-3 — Mechanism moratorium
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
+
+Shared worker cache retention (#2691) uses the existing workspace sweep and,
+for stopped paused projects, the existing fleet refresh at that same configured
+interval. Both call the same cleanup implementation; no new loop or config key
+is introduced. Rebuildable build data retains a fixed 20 GiB budget. Expired
+build/linter files use the existing idle TTL; full inactive cache cleanup keeps
+concurrent new files and rejects symlink aliases. Doctor and state expose measured
+component bytes. `TestTrimSharedCache`, `TestInspectSharedCache`,
+`TestSweepPausedSharedCache`, and `TestDoctorSharedCache` cover this behavior.
 
 **Why:** The September 10 audit identified interactions among self-protection
 mechanisms as the main source of incidents; adding another conditional guard
@@ -140,6 +152,33 @@ Worker GitHub credential unavailability and connector write-policy denials reuse
 the forge-availability pause and write canary (#2548). They do not park an issue or
 create a human prerequisite, and the named project condition clears after a
 successful write proves recovery.
+
+Lane-entry refresh consolidates overlapping board and retained runtime snapshots
+into one observation per issue (#2649). Freshly fetched board issues take
+precedence, so stale attempt or pipeline lanes cannot reset the ledger and
+replay an operator move on every refresh. This replaces lane-key deduplication
+with issue-identity deduplication in the existing refresh; it adds no recovery
+path or transition reason. `TestRefreshCurrentLaneEntriesOperatorMoveOnce`
+checks three unchanged passes and a later genuine return move. Failed observations
+preserve the prior cached entry and provenance without falling back to stale
+runtime snapshots; the next refresh retries the board observation.
+
+Allowance triage publication reuses the auto-promote gate against freshly hydrated
+PR checks and review threads before moving an exhausted issue (#2685). A ready
+head enters the configured promotion lane without publishing the historical
+triage explanation; the persisted triage attempt still consumes its single pass.
+If the issue still needs triage, the note includes the observed head, check-run
+IDs, states, and UTC observation timestamps. Unavailable PR evidence leaves
+publication pending. A merge discovered during hydration uses the existing merged-PR
+lifecycle; missing or running audit and validator stages leave publication pending
+while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
+no new lane reason, allowance reset, or recovery mechanism is introduced.
+Idle Rework PRs enter the existing promotion evaluation without a worker completion
+record (#2688). Promotion reuses the merge worker readiness predicate and live PR
+hydration; unresolved threads and known audit failures still prevent promotion.
+Missing audits run in Merging. `TestReworkLivePullRequestPromotion`,
+`TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
+consolidation; no new transition reason or recovery loop is introduced.
 
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
@@ -196,6 +235,10 @@ runtime snapshots, including during startup and completion, and leave the regist
 on exit. This consolidates observability with existing lifecycle ownership; it adds
 no recovery path or orphan-suppression guard (#2505).
 
+Standing capacity requests (#2611) remove request teardown at project-pass
+boundaries and consolidate refresh updates into the existing request set.
+INV-10 below documents the retained request identity and grant lifecycle.
+
 Git workspace cleanup removes the durable `preserve` latch and the residual
 sweep's registration-only exemption (#2612). Recorded and discovered worktrees
 share the existing checks for ownership, active issues/processes, uncommitted
@@ -206,14 +249,32 @@ worker remains active through finalization, including terminal lane updates.
 Legacy `preserve` JSON fields no
 longer exempt a workspace; checkpoint journals and filesystem retention remain.
 `TestLocalGitReconcileRechecksPreservation` covers restart, legacy records,
-published and merged work, and continued retention of unsafe candidates. No
-merge inference, expiration mechanism, or configuration is added. Expected
+published and merged work, and continued retention of unsafe candidates. That
+change added no merge inference, expiration mechanism, or configuration. Expected
 retention keeps path evidence without failing the sweep, so the existing sweep
 interval advances even when local work remains.
 `TestCleanupVerifiesLiveRemoteCommits` covers stale refs and remote failures in
 residual, direct, and branch cleanup;
 `TestResidualCleanupProtectsFinalizingTerminalWorkers` covers terminal worker
 ownership until its completion event.
+
+The operator-approved September 14 retention scope (#2681, INV-11 approval
+recorded in the issue) extends this same reaper sweep: completed workspaces
+expire after seven days in a configured terminal lane or after issue closure,
+quarantine after three days or beyond the newest five entries, hook logs after
+fourteen days, and unregistered attempt scratch after one hour. Terminal attempt
+scratch and ownership records for missing paths are removed in that sweep too.
+This consolidates artifact cleanup into the existing invocation, with no new
+loop, configuration, or lane writer. Ordinary preservation remains necessary
+for nonterminal work and unverified completion times; the approved expiry first
+archives a verified Git bundle, staged and working-tree diffs, and all working
+files. Active issues and live processes remain protected. Content-addressed
+archives prevent identical recovery copies from accumulating after removal
+failures while preserving earlier snapshots after partial deletion.
+`TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
+`TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
+lossless expiry, and repeated removal failures. See
+[workspace retention](workspace-retention.md) for limits and recovery instructions.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
@@ -231,17 +292,37 @@ signature permit (#2486). The vocabulary consolidates onto the existing
 `lifetime_limit_recovered` reason, emitted only when an override is present or
 the configured limits no longer apply. Elapsed time cannot release the park.
 
-Todo dispatch resolves non-terminal dependency refs through the existing dependency
+Every dispatch, including In Progress retries and stranded re-dispatches, resolves
+non-terminal dependency refs through the existing dependency
 auto-unblock resolver and readiness predicate, sharing blocker reads within each
 dispatch refresh (#2509). Closed tracker state releases ordinary dependencies
 without requiring a terminal lane observation; human completion evidence remains
-required. This consolidates dependency readiness without adding a recovery loop.
+required. Current structured Workpad blockers in `in_progress` or `blocked` with
+an open `issue_state` predicate join body fallback dependencies; native relations
+remain authoritative. Unresolved Workpad evidence preserves the dependency wait;
+explicit open predicates use tracker closure, even in terminal lanes. A dependency
+wait preserves retry attempt and resume state.
+`TestDispatchDependencyRetry` covers open-to-closed transitions for native, body,
+and Workpad sources (#2699). This consolidates dependency readiness without
+adding a recovery loop.
+
+Dispatch also consults the existing recorded-blocker evaluator for structured
+Workpad predicates, including direct PR references (#2645). Normal dispatch,
+due retries, and queued grants wait while evidence holds or is unverifiable;
+cleared predicates release dispatch without a new park or recovery loop. Native
+relations remain authoritative for issue-state dependencies.
 
 Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
 attempt accounting into one fixed allowance: three code/rework sessions started
-since the last merged PR. The durable attempt log owns the count; lane changes,
-new commits, new PR heads, CI signatures, and operator acknowledgements do not
-reset it. Instance-attributed startup, transport, workspace and restart failures
+since the last merged PR or operator move out of Human Review (#2692). The
+durable attempt log owns the count, with the window derived from existing lane
+history. Human-origin moves, and moves not initiated by the Detent instance,
+reset the window for any destination; Detent-instance moves do not. Sessions
+started at the operator-move timestamp count in the renewed window because lane
+observation precedes dispatch in the same tick; merge boundaries remain exclusive. New commits,
+new PR heads, CI signatures, ordinary lane changes, and acknowledgements alone
+do not reset it. The existing triage comment receives a timestamped reset line
+when comment updates are supported; publication failure does not undo the move. Instance-attributed startup, transport, workspace and restart failures
 are excluded. Immutable PR merge times and merge observations in the durable lane timeline
 reset prior work; subsequent activity on a merged PR is not a reset.
 
@@ -272,7 +353,9 @@ explicit operational completion workflows retain their own deliverable rules.
 `TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
 `TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
 `TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
-`TestAttemptAllowancePreservesOperatorCompletionLane`, and
+`TestAttemptAllowancePreservesOperatorCompletionLane`,
+`TestAttemptAllowanceOperatorMove`, `TestAllowanceOperatorMoveBoundary`,
+`TestAllowanceResetAnnotation`, and
 `TestPullRequestMergeTimeSurvivesLaterActivity` enforce the allowance and restricted publication
 contract. `TestRunnerTriageNativeAdmission` and `TestRunnerTriageBudget` verify
 reservation identity, capacity loss, issue/daily budget refusal, and metered
@@ -360,6 +443,12 @@ from missing evidence in wait telemetry; it is not a new lane-transition reason
 or recovery path. `TestMergingSecurityAuditVerdict` and
 `TestSecurityAuditPublicationRetry` cover the shared routing and publication.
 
+Native queue review failures reuse the auto-promote Rework transition, comment,
+and prior-attempt handoff (#2643). Hydrated unresolved threads and GitHub's
+conversation-resolution enqueue rejection use `unresolved_review_threads`;
+transient enqueue failures retain their existing handling. This consolidates
+review routing without adding a reason or retry mechanism.
+
 ## INV-4 — Native merge queue
 
 **Statement:** Merges go through the repository's merge queue when one exists.
@@ -409,7 +498,10 @@ the Invariant Gate), and restricts portability, Windows core, installer, and
 snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;
-Rework can produce a new ready head. Workflow assertions cannot deduplicate
+Rework can produce a new ready head. Detent also marks an idle Rework draft ready
+when its other promotion gates pass (#2688), then re-reads its ready state and
+current-head checks on a later tick before promotion. `TestReworkLiveDraftPromotion`
+covers ready marking, failure, and rechecking live evidence. Workflow assertions cannot deduplicate
 manual reruns or repeated ready/reopened events. Other projects may opt into
 label gating or their own CI convention.
 
@@ -518,7 +610,9 @@ Queued host assignment uses current real grants, including grants not yet
 consumed by an owner. Eligible hosts remain alternatives until acquisition;
 retry host preference cannot strand capacity on another available host.
 Owners consume grants in acquisition order and revalidate current candidates;
-refresh and shutdown discard pending requests and release unused grants.
+refreshes retain standing requests and update their actions and slot requirements
+in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
+explicit pause/configuration invalidation discard requests and release unused grants.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
@@ -528,7 +622,8 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
-`TestQueuedDispatchChoosesAvailableHost`, and
+`TestQueuedDispatchChoosesAvailableHost`,
+`TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
 manifest. The existing boundary fuzz seeds retain free-capacity and release
 failure coverage. `TestRepositorySources` rejects retired selection, rescue,
@@ -538,6 +633,14 @@ configuration compatibility reader may retain old reason strings; negative
 fixtures cover that boundary. Previously valid staleness benign-reason overrides
 remain accepted on startup and reload, but retired reasons are neither emitted
 nor included in defaults.
+
+Project refresh boundaries no longer cancel and resubmit pending requests (#2611).
+The existing request set is reconciled from dispatch decisions, retaining result
+identity and applying updated lane, host, and capacity requirements under the
+existing gate locks. This consolidates the per-pass lifecycle without adding a
+reservation or recovery mechanism. Grants delivered during a synchronous refresh
+are consumed when the project event loop returns, with existing fresh-candidate
+validation before launch.
 
 This change also enforces INV-3 by deleting preemption callbacks, speculative
 selection, reservation weights, lane rescue counters, and the separate strict
@@ -650,3 +753,10 @@ fixtures available to explain violations. Source vocabulary and workflow checks
 complement behavioral tests; they do not prove every natural-language rule,
 protect themselves against edits, or enforce live settings. See the
 [runner contract](../invariants/README.md) for the same limitations.
+
+Draft-ready credential and connector-policy failures (#2688) reuse the instance
+forge condition and existing worker write canary (INV-2/INV-3). The auto-promote
+writer waits for that recovery instead of resetting the probe on every tick;
+transient ready failures retain normal tick retries.
+`TestReworkLiveDraftPromotion` verifies this attribution without issue failure
+strikes or lane changes.

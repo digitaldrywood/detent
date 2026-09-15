@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -106,11 +107,20 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
-		if gateRequiresPullRequest(cfg.Gate) {
-			var hydrated bool
-			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
-			if !hydrated {
+		rework := gateRequiresPullRequest(cfg.Gate) && normalizeState(issue.State) == normalizeState(cfg.ReworkState)
+		if rework {
+			if _, running := state.Running[issueID]; running {
 				continue
+			}
+			if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok && !gate.Effective(cfg.Gate).SecurityAudit.Enabled {
+				hydrated, err := hydrator.HydratePullRequest(ctx, issue)
+				if err != nil {
+					if o.logger != nil {
+						o.logger.Warn("hydrate rework pull request", "issue_id", issueID, "error", err)
+					}
+					continue
+				}
+				issue = hydrated
 			}
 		}
 
@@ -133,6 +143,18 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 
 		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
+		if gateRequiresPullRequest(cfg.Gate) {
+			var hydrated bool
+			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+			if !hydrated {
+				continue
+			}
+		}
+		draft := rework && issue.PullRequest != nil && issue.PullRequest.Draft && autoPromoteReworkHeadReady(issue)
+		if draft {
+			issue = cloneIssue(issue)
+			issue.PullRequest.Draft = false
+		}
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
 		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
@@ -182,6 +204,38 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			if !validatorReady {
 				recordAutoPromoteSnapshotDecision(state, issueID, decision)
 				o.logAutoPromoteDecision(issue, decision, "")
+				continue
+			}
+		}
+		if rework && decision.Action == AutoPromoteActionPromote {
+			if !autoPromoteReworkHeadReady(issue) {
+				continue
+			}
+			if draft {
+				host := forgeHostForIssue(issue, o.cfg.ForgeHost)
+				if condition, active := forgeCondition(state, host); active && condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+					// The existing worker write canary owns credential recovery.
+					continue
+				}
+				if marker, ok := o.connector.(connector.PullRequestReadyMarker); ok {
+					if err := marker.MarkPullRequestReady(ctx, issue); err != nil {
+						const operation = "gh pr ready"
+						availabilityErr, unavailable := forgeavailability.As(err)
+						if !unavailable {
+							if class, classified := forgeavailability.Classify(operation, err.Error()); classified && class == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
+								availabilityErr = forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+								unavailable = true
+							}
+						}
+						if unavailable {
+							o.registerForgeUnavailable(state, availabilityErr, Running{Issue: issue}, now)
+						}
+						if o.logger != nil {
+							o.logger.Warn("mark rework pull request ready", "issue_id", issueID, "error", err)
+						}
+					}
+				}
+				// Read the ready head and its checks again on the next tick.
 				continue
 			}
 		}
@@ -288,19 +342,12 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 		if _, ok := seen[issueID]; ok {
 			continue
 		}
-		if !autoPromoteSourceGateWaitEnabled(cfg) {
-			continue
-		}
-		malformedRework := false
 		running := false
 		if state != nil {
 			_, running = state.Running[issueID]
 		}
-		if !running && normalizeState(issue.State) == normalizeState(cfg.ReworkState) && issueHasOpenPullRequest(issue) {
-			signal, ok := autoPromoteIssueWorkpadSignal(issue)
-			malformedRework = ok && signal != nil && signal.Invalid != nil && signal.Invalid.BlockerRefsOnly
-		}
-		if !malformedRework && !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
+		liveRework := gateRequiresPullRequest(cfg.Gate) && !running && normalizeState(issue.State) == normalizeState(cfg.ReworkState) && issueHasOpenPullRequest(issue)
+		if !liveRework && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
 			continue
 		}
 		out = append(out, cloneIssue(issue))

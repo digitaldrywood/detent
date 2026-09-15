@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -27,12 +28,17 @@ type attemptAllowance struct {
 func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
 
 // Unlike progress accounting, every started code/rework attempt consumes the same
-// issue allowance. A changed head, lane, diff, or operator acknowledgement is not
-// a merge and cannot replenish it.
-func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt time.Time) attemptAllowance {
+// issue allowance. The window starts at the last merge or operator move out of
+// Human Review; ordinary head, lane, and diff changes do not replenish it.
+func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
 	var result attemptAllowance
 	for _, attempt := range attempts {
 		if !mergedAt.IsZero() && !attempt.StartedAt.After(mergedAt) {
+			continue
+		}
+		// Operator moves are observed before dispatch in the same tick, so a
+		// session at resetAt belongs to the renewed window. Merges stay exclusive.
+		if !resetAt.IsZero() && attempt.StartedAt.Before(resetAt) {
 			continue
 		}
 		if allowanceInfrastructureAttempt(attempt) {
@@ -98,6 +104,7 @@ func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connecto
 		}
 		mergeEvents = timeline.Events
 	}
+	resetAt := lastAllowanceOperatorMoveAt(mergeEvents)
 	mergedAt := lastAllowanceMergeAt(issue, mergeEvents)
 	// No recent-history cap: excluded infrastructure attempts must never hide the
 	// three chargeable sessions, even after a prolonged instance outage.
@@ -116,7 +123,57 @@ func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connecto
 			attempts = append(attempts, attempt)
 		}
 	}
-	return countSessionsWithoutMerge(attempts, mergedAt), nil
+	if !resetAt.IsZero() {
+		prior := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{})
+		if prior.Triage != nil && !prior.Triage.StartedAt.After(resetAt) {
+			if err := o.annotateAllowanceReset(ctx, issue, prior.Triage.ID, resetAt); err != nil && o.logger != nil {
+				o.logger.Warn("annotate operator allowance reset", "issue_id", issue.ID, "error", err)
+			}
+		}
+	}
+	return countSessionsWithoutMerge(attempts, mergedAt, resetAt), nil
+}
+
+// Use the existing durable lane history so the operator's decision survives restart.
+func lastAllowanceOperatorMoveAt(events []store.WorkflowPhaseEvent) time.Time {
+	var latest time.Time
+	for _, event := range events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(event.Status, "entered") ||
+			normalizeState(event.PreviousPhaseName) != normalizeState(autoPromoteSourceState) ||
+			normalizeState(event.PhaseName) == normalizeState(autoPromoteSourceState) || strings.TrimSpace(event.PhaseName) == "" {
+			continue
+		}
+		metadata, _ := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		attribution := provenance.Prepare(metadata.Provenance)
+		if attribution.Origin != provenance.OriginHuman && (metadata.Provenance.Initiator == provenance.InitiatorDetentInstance || attribution.Initiator == provenance.InitiatorDetentInstance) {
+			continue
+		}
+		latest = laterDispatchLoopTime(latest, workflowLaneTransitionAt(event))
+	}
+	return latest
+}
+
+func (o *Orchestrator) annotateAllowanceReset(ctx context.Context, issue connector.Issue, triageID int64, at time.Time) error {
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		return nil
+	}
+	updater, ok := o.connector.(connector.IssueCommentUpdater)
+	if !ok {
+		return nil
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		return err
+	}
+	marker := fmt.Sprintf("<!-- detent-attempt-triage:%d -->", triageID)
+	line := "allowance reset by operator move at " + at.UTC().Format(time.RFC3339Nano)
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, marker) && !strings.Contains(comment.Body, line) {
+			return updater.UpdateIssueComment(ctx, issue.ID, comment.ID, comment.Body+"\n\n"+line)
+		}
+	}
+	return nil
 }
 
 func lastAllowanceMergeAt(issue connector.Issue, events []store.WorkflowPhaseEvent) time.Time {
@@ -247,11 +304,67 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 	if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil {
 		metadata.Note = ""
 	}
+	// The durable triage consumes the single pass, but its explanation is only
+	// historical evidence. Reuse promotion policy against the current PR before
+	// publishing it or moving the issue, including publication retries.
+	issue.Comments = comments
+	if issue.PullRequest != nil || issue.PRNumber != nil {
+		hydrator, ok := o.connector.(connector.PullRequestHydrator)
+		if !ok {
+			return errors.New("triage publication requires live pull request hydration")
+		}
+		issue, err = hydrator.HydratePullRequest(ctx, issue)
+		if err != nil {
+			return err
+		}
+		if issue.PullRequest == nil || pullRequestHydrationUnavailableReason(issue.PullRequest) != "" || issue.PullRequest.HydrationDegradedReason != "" {
+			return errors.New("triage pull request evidence unavailable")
+		}
+		if autoPromotePullRequestMerged(issue.PullRequest) {
+			if !metadata.PreserveLane {
+				o.reconcileStaleLinkedPullRequestIssues(ctx, state, []connector.Issue{issue}, now)
+			}
+			return nil
+		}
+		var hydrated bool
+		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+		if !hydrated {
+			return errors.New("triage review thread evidence unavailable")
+		}
+		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+		summary := AutoPromoteSummaryFromIssue(issue)
+		summary.SecurityAudit = o.securityAuditEvaluation(ctx, issue)
+		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issue.ID)
+		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
+		issue, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
+			o.startSecurityAuditStage(ctx, issue, now)
+			return nil
+		}
+		if decision.Reason == AutoPromoteReasonSecurityAuditWait {
+			return nil
+		}
+		var validatorReady bool
+		decision, validatorReady = o.applyValidatorStage(ctx, state, issue, &summary, decision, cfg, now)
+		if !validatorReady {
+			return nil
+		}
+		if !metadata.PreserveLane && decision.Action == AutoPromoteActionPromote {
+			target := autoPromoteTargetState(decision.Action, cfg)
+			if normalizeState(issue.State) != normalizeState(target) {
+				if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, target, now) {
+					return errors.New("triage live pull request promotion failed")
+				}
+			}
+			o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+			return nil
+		}
+	}
 	if !posted {
 		if !validAttemptTriageNote(metadata.Note) {
 			metadata.Note = fallbackAttemptTriageNote(issue, "triage interrupted before its result was persisted")
 		}
-		if err := o.connector.CreateComment(ctx, issue.ID, metadata.Note+"\n\n"+marker); err != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, metadata.Note+"\n\n"+marker+attemptTriageObservedEvidence(issue, now)); err != nil {
 			return err
 		}
 	}
@@ -259,4 +372,19 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		return nil
 	}
 	return o.updateIssueState(ctx, state, issue, autoPromoteSourceState, now, attemptAllowanceExhaustedReason)
+}
+
+// Observation timestamps qualify the historical worker explanation without
+// pretending that the provider's check completion time is available here.
+func attemptTriageObservedEvidence(issue connector.Issue, observedAt time.Time) string {
+	pr := issue.PullRequest
+	if pr == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\n### PR evidence observed at %s\nHead: `%s`; mergeable state: `%s`; CI: `%s`; unresolved threads: %d.\nThe worker explanation above predates this observation.\n", observedAt.UTC().Format(time.RFC3339), pr.HeadSHA, pr.MergeableState, pr.CIStatus, len(pr.UnresolvedReviewThreads))
+	for _, check := range pr.Checks {
+		fmt.Fprintf(&b, "- Check %q (run %d): status=%q, conclusion=%q; observed at %s.\n", check.Name, check.ID, check.Status, check.Conclusion, observedAt.UTC().Format(time.RFC3339))
+	}
+	return b.String()
 }

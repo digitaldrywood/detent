@@ -245,6 +245,8 @@ type doctorTelemetryStore interface {
 
 type doctorDeps struct {
 	inspectCaches        func(context.Context) toolcache.Report
+	githubWorkflows      func(context.Context, workflowconfig.Config, string) (map[string]string, error)
+	codexStorage         func(context.Context, string, workflowconfig.Config, func(string) string) []doctorCheck
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
 	resolveCommandOnPath func(string, string) (string, error)
@@ -1189,6 +1191,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.inspectCaches == nil {
 		d.inspectCaches = toolcache.Inspect
 	}
+	if d.codexStorage == nil {
+		d.codexStorage = defaults.codexStorage
+	}
 	if d.loadWorkflow == nil {
 		d.loadWorkflow = defaults.loadWorkflow
 	}
@@ -1224,6 +1229,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	}
 	if d.githubMergeSettings == nil {
 		d.githubMergeSettings = defaults.githubMergeSettings
+	}
+	if d.githubWorkflows == nil {
+		d.githubWorkflows = defaults.githubWorkflows
 	}
 	if d.githubRepositoryInfo == nil {
 		d.githubRepositoryInfo = defaults.githubRepositoryInfo
@@ -1296,6 +1304,7 @@ func defaultDoctorDeps() doctorDeps {
 		resolveCommandInDir:  resolveDoctorCommandInDir,
 		runCommandInDir:      runDoctorCommandInDir,
 		codexInitialize:      probeDoctorCodexInitialize,
+		codexStorage:         checkDoctorCodexStorage,
 		codexAccount:         probeDoctorCodexAccount,
 		httpDo:               defaultDoctorHTTPDo,
 		githubScopes:         defaultGitHubScopes,
@@ -1303,6 +1312,7 @@ func defaultDoctorDeps() doctorDeps {
 		githubMergeSettings:  defaultDoctorGitHubMergeSettings,
 		githubBranchPolicy:   defaultDoctorGitHubBranchMergePolicy,
 		githubRepositoryInfo: defaultDoctorGitHubRepositoryInfo,
+		githubWorkflows:      defaultDoctorWorkflowSources,
 		githubLabels:         defaultDoctorGitHubRepositoryLabels,
 		ghAuthToken:          defaultGHAuthToken,
 		listen:               net.Listen,

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const serviceStatusSnapshotTimeout = 2 * time.Second
@@ -230,18 +231,18 @@ func (r statusServiceRunner) Status(ctx context.Context) (servicepkg.Status, err
 		status.DashboardURL = dashboardURL
 	}
 	if status.Running() {
-		status.BackendOutages = r.backendOutages(ctx, status.DashboardURL)
+		status.BackendOutages, status.WorkspaceRetention = r.snapshotStatus(ctx, status.DashboardURL)
 	}
 	return status, nil
 }
 
-func (r statusServiceRunner) backendOutages(ctx context.Context, dashboardURL string) []telemetry.BackendOutage {
+func (r statusServiceRunner) snapshotStatus(ctx context.Context, dashboardURL string) ([]telemetry.BackendOutage, []workspace.RetentionTotals) {
 	if r.httpDo == nil {
-		return nil
+		return nil, nil
 	}
 	baseURL, err := url.Parse(strings.TrimSpace(dashboardURL))
 	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
-		return nil
+		return nil, nil
 	}
 	client := &DashboardReadClient{
 		baseURL:    baseURL,
@@ -251,17 +252,24 @@ func (r statusServiceRunner) backendOutages(ctx context.Context, dashboardURL st
 	}
 	state, err := client.State(ctx, "")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	raw, err := json.Marshal(state.field("backend_outages"))
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	var outages []telemetry.BackendOutage
 	if err := json.Unmarshal(raw, &outages); err != nil {
-		return nil
+		return nil, nil
 	}
-	return outages
+	var retention []workspace.RetentionTotals
+	raw, err = json.Marshal(state.field("workspace_retention"))
+	if err == nil {
+		if err := json.Unmarshal(raw, &retention); err != nil {
+			retention = nil
+		}
+	}
+	return outages, retention
 }
 
 func installedServiceDashboardURL(manager servicepkg.ManagerName, path string, fallbackURL string) (string, bool) {
@@ -561,6 +569,9 @@ func writeServiceStatusText(out io.Writer, status servicepkg.Status) error {
 		"Dashboard: "+status.DashboardURL,
 		"Config: "+status.ConfigPath,
 	)
+	for _, sweep := range status.WorkspaceRetention {
+		lines = append(lines, fmt.Sprintf("Last workspace sweep: %s at %s; workspaces=%d/%d bytes quarantine=%d/%d bytes hook_logs=%d/%d bytes attempts=%d/%d bytes ownership=%d/%d bytes", sweep.Workdir, sweep.At.Format(time.RFC3339), sweep.Workspaces.Count, sweep.Workspaces.Bytes, sweep.Quarantine.Count, sweep.Quarantine.Bytes, sweep.HookLogs.Count, sweep.HookLogs.Bytes, sweep.Attempts.Count, sweep.Attempts.Bytes, sweep.Ownership.Count, sweep.Ownership.Bytes))
+	}
 	for _, outage := range status.BackendOutages {
 		if outage.Kind != "github_lookup_backoff" {
 			continue

@@ -372,6 +372,16 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	setDoctorCurrentCheck("Project " + id + " workflow_source_drift")
+	checks = append(checks, checkDoctorWorkflowSourceDrift(ctx, id, project, workflow.Config, deps))
+	files, instructionProblems := doctorInstructionFiles(ctx, projectSourceRoot(project, workflow.Config), workflow.Prompt)
+	checks = append(checks, checkDoctorInstructionBudget(id, files, instructionProblems))
+	checks = append(checks, checkDoctorGateInstructionConflict(id, workflow.Config.Gate.Run, files, instructionProblems))
+	setDoctorCurrentCheck("Project " + id + " model_policy")
+	checks = append(checks, checkDoctorModelPolicy(ctx, id, storePath, workflow.Config, deps))
+	checks = append(checks, checkDoctorTokenAccounting(ctx, id, storePath, deps))
+	setDoctorCurrentCheck("Project " + id + " ci_trigger_shape")
+	checks = append(checks, checkDoctorCITriggerShape(ctx, id, workflow.Config, deps))
 	if workflow.Config.SchedulersEnabled() {
 		setDoctorCurrentCheck("Project " + id + " schedule ownership")
 		checks = append(checks, checkDoctorScheduleOwnership(ctx, id, workflow.Config, deps))
@@ -402,6 +412,10 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, workerGitHubCheck)
 	}
 	checks = append(checks, checkDoctorCodexInstructions(id, workflow.Config, deps.lookupEnv)...)
+	if deps.codexStorage != nil {
+		setDoctorCurrentCheck("Project " + id + " Codex storage")
+		checks = append(checks, deps.codexStorage(ctx, id, workflow.Config, deps.lookupEnv)...)
+	}
 	if deps.modelCatalogProbe != nil {
 		setDoctorCurrentCheck("Project " + id + " backend model catalogs")
 		checks = append(checks, checkDoctorBackendModelCatalogs(ctx, id, workflow.Config, deps)...)
@@ -480,6 +494,7 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " local SQLite tracker")
 		checks = append(checks, checkDoctorLocalSQLiteTracker(ctx, id, project, workflow.Config, deps))
 	}
+	checks = append(checks, checkDoctorSharedCache(ctx, id, workflow.Config.Workspace.Root))
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
 		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
 		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))

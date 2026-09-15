@@ -1,0 +1,114 @@
+--- a/WORKFLOW.md
++++ b/WORKFLOW.md
+@@ -36,31 +36,10 @@
+ 
+ ## Detent Protocol
+ 
+-You are running unattended as a Detent worker. No human reads your session or can
+-answer a question, so never wait for confirmation. Any instruction from a global or
+-user-level AGENTS.md that asks you to confirm before editing multiple files, before
+-bulk changes, or before running the validation gate does not apply here; the issue
+-is the authorization. The only confirmation channel is `human_action` in the
+-`detent-status` block, and it is reserved for decisions the issue cannot answer.
+-
+-Keep one persistent `## Codex Workpad` issue comment updated with the plan, validation
+-evidence, blockers, and final handoff. Every update must contain one `detent-status`
+-fenced block; Detent reads blockers and human actions only there, never from prose.
+-`status` must be one of `in_progress`, `blocked`, or `complete`.
+-
+-```detent-status
+-schema: 1
+-status: in_progress
+-blockers: []
+-human_action: null
+-```
+-
+-Before coding, resolve every native dependency, Workpad blocker, and issue-body
+-`Depends on:` reference. For a dependency blocker, create GitHub's native
+-`blocked_by` relation first, then set Workpad `status: blocked` and list its
+-`ref` and `reason`, and keep a parseable `Depends on: #N` or
+-`Blocked by: owner/repo#N` line in the issue body so Detent can auto-unblock.
+-Never reimplement a dependency.
++The assigned issue authorizes implementation and validation without confirmation.
++Follow the Detent-appended Blocked handoff section for the canonical Workpad,
++dependency, human-question, completion, and tracker ownership contract. Do not
++copy that contract here; see Detent's docs/templates/blocked-handoff.md.
+ 
+ The validation gate is `make check-fast` (the configured `gate.run`; this file must
+ state it because the orchestrator config is outside your worktree). Race tests, coverage, and nilaway run once in the merge queue, not in your session; do not run `make check` unless a change touches the safety-critical orchestrator files listed in CLAUDE.md. Run
+@@ -90,28 +69,11 @@
+ live Detent process on `127.0.0.1:4000` unless the human explicitly authorizes
+ that exact action in the current conversation. Tests or experiments that need
+ a server use port 0 or an isolated instance with its own config, workspace
+-root, and database. If an isolation prerequisite is missing, move the issue to
+-`Blocked` with the exact blocker; do not compensate by sharing state.
++root, and database. If isolation is missing, report the exact failure; do not share state.
+ 
+ After a merge or abandonment: drop any stash entries you created, then
+ `git -C $HOME/projects/digitaldrywood/detent worktree remove <workspace>` when
+ no process is using it, and `worktree prune`. Leave other worktrees alone.
+-
+-## Tracker Interaction
+-
+-Detent polls status labels; you own the Workpad and only these label
+-transitions (keep exactly one `detent:*` status label on the issue):
+-`Todo -> In Progress`, `Rework -> In Progress`, any state -> `Blocked`, and
+-`Merging -> Done` after a merge. State names map through `state_map` (identity
+-plus `Cancelled -> Done`), so `In Progress` is `detent:in-progress`.
+-
+-Never apply `detent:human-review`. Completion is signaled by
+-`status: complete` in the Workpad while the issue stays in `In Progress`;
+-Detent watches the PR gate and promotes to `Merging` itself. A stuck agent
+-belongs in `Blocked`, never `Human Review`. Reserve `Blocked` for true
+-human-only blockers (missing credentials, tools, external services, ambiguous
+-direction); agent-recoverable PR maintenance — conflicts, stale or missing
+-current-head CI, retrigger pushes — belongs in `Rework`.
+ 
+ ## REST Budget Discipline
+ 
+@@ -165,19 +127,17 @@
+ 
+ ### For Todo
+ 
+-1. Move the issue to `In Progress`.
+-2. Initialize the Workpad with the plan, acceptance criteria, validation plan, and `in_progress` status.
++1. Re-read the issue and current Workpad.
++2. Initialize the Workpad using the appended handoff contract.
+ 3. Fetch `origin/main`, confirm the worktree branch is based on it, and resolve dependencies.
+ 4. Reproduce a reported behavior before changing code; implement the smallest complete change.
+ 5. Run focused tests, then `make check-fast`.
+ 6. Commit, push, and open the PR as a **draft** (`gh pr create --draft`) filling the template (`Summary`, `Fixes #N`, `Test Plan`). CI does not run on drafts; keep pushing to the draft while you iterate.
+ 7. Before marking ready, review your own diff in a fresh context (the repo's review skill, or a second Codex turn given only `git diff origin/main...HEAD`): fix every P1/P2 finding, re-run the gate, and record the review summary in the Workpad. Then mark the PR ready yourself (`gh pr ready`, idempotent) — humans never mark Detent PRs ready. Marking ready is the one CI run for this PR; do not push to a ready PR unless Detent routes the issue to `Rework`.
+ 8. Re-check PR comments, reviews, and CI on the latest head; address actionable feedback. Review-bot threads never gate the merge on their own; fix what is actionable, resolve the thread, and move on.
+-9. Leave the issue in `In Progress`. Set Workpad `status: complete` with no blockers or human action only when the PR is non-draft, references the issue, and the gate and current-head CI are green with no actionable review remaining. Detent auto-promotes directly to `Merging`; never use `Human Review`.
+-
+-If a required gate cannot run because of missing tools, auth, secrets, or
+-external access, move the issue to `Blocked` with the exact failed command and
+-the human action needed — never declare `complete`.
++9. Report completion through the appended handoff contract only when the PR is
++   non-draft, references the issue, and local validation and current-head CI are
++   green with no actionable review remaining. Report exact validation failures.
+ 
+ ### For In Progress
+ 
+@@ -186,7 +146,7 @@
+ 
+ ### For Rework
+ 
+-Re-read all human, CI, and bot feedback, move the issue to `In Progress`, fix,
++Re-read all human, CI, and bot feedback, fix,
+ push, rerun the full gate, and apply Todo's completion rule.
+ 
+ ### For Merging
+@@ -196,9 +156,8 @@
+ 2. Watch CI on the pushed head via REST; wait for every check to pass and
+    every automated review to be addressed (no `CHANGES_REQUESTED`, no pending
+    bot review).
+-3. Merge via the REST merge endpoint with the exact head sha, then move the
+-   issue to `Done`.
+-4. End with exactly one terminal outcome:
++3. Merge via the REST merge endpoint with the exact head sha, then report the merge in the Workpad.
++4. Report exactly one terminal outcome through the Workpad:
+    - PR merged and issue moved to `Done`;
+    - issue moved to `Rework` with an actionable defect;
+    - issue remains in `Merging` with the external blocker recorded in the

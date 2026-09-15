@@ -4,12 +4,16 @@ package toolcache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Paths are resolved by Go, including operator environment and GOENV settings.
@@ -18,14 +22,57 @@ type Paths struct {
 	Modules string `json:"GOMODCACHE"`
 }
 
-func Resolve(ctx context.Context) (Paths, error) {
-	output, err := exec.CommandContext(ctx, "go", "env", "-json", "GOCACHE", "GOMODCACHE").Output()
+// Resolve discovers the daemon's host caches once, independently of any worker
+// module or cancellation. Discovery failure never prevents a worker from starting.
+func Resolve(_ context.Context) (Paths, error) { return hostPaths() }
+
+var hostPaths = sync.OnceValues(func() (Paths, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	paths, err := resolve(ctx)
 	if err != nil {
-		return Paths{}, fmt.Errorf("resolve host Go caches: %w", err)
+		slog.Warn("host Go cache discovery unavailable; continuing without cache roots", "error", err)
 	}
-	var paths Paths
-	if err := json.Unmarshal(output, &paths); err != nil {
-		return Paths{}, fmt.Errorf("decode Go caches: %w", err)
+	return paths, err
+})
+
+func resolve(ctx context.Context) (Paths, error) {
+	paths := Paths{Build: os.Getenv("GOCACHE"), Modules: os.Getenv("GOMODCACHE")}
+	if paths.Build != "" && paths.Modules != "" {
+		return paths, nil
+	}
+	cmd := exec.CommandContext(ctx, "go", "env", "-json", "GOCACHE", "GOMODCACHE")
+	cmd.Dir = os.TempDir()
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	if output, err := cmd.Output(); err == nil {
+		var discovered Paths
+		if json.Unmarshal(output, &discovered) == nil {
+			if paths.Build == "" {
+				paths.Build = discovered.Build
+			}
+			if paths.Modules == "" {
+				paths.Modules = discovered.Modules
+			}
+		}
+	}
+	if paths.Build == "" {
+		if root, err := os.UserCacheDir(); err == nil {
+			paths.Build = filepath.Join(root, "go-build")
+		}
+	}
+	if paths.Modules == "" {
+		root := os.Getenv("GOPATH")
+		if root == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				root = filepath.Join(home, "go")
+			}
+		}
+		if roots := filepath.SplitList(root); len(roots) > 0 && roots[0] != "" {
+			paths.Modules = filepath.Join(roots[0], "pkg", "mod")
+		}
+	}
+	if paths.Build == "" && paths.Modules == "" {
+		return paths, errors.New("no host Go cache paths available")
 	}
 	return paths, nil
 }
@@ -88,8 +135,10 @@ type Report struct {
 	Error       string `json:"error,omitempty"`
 }
 
-func Inspect(ctx context.Context) Report {
-	paths, err := Resolve(ctx)
+func Inspect(ctx context.Context) Report { return inspect(ctx, Resolve) }
+
+func inspect(ctx context.Context, resolvePaths func(context.Context) (Paths, error)) Report {
+	paths, err := resolvePaths(ctx)
 	if err != nil {
 		return Report{Error: err.Error()}
 	}

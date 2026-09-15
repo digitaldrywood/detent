@@ -196,6 +196,8 @@
 #       branch_name: null
 #       # tracker.issues[].url | type: string | default: none | required: No | validation: None
 #       url: null
+#       # tracker.issues[].closed_at | type: mapping | default: none | required: No | validation: None
+#       closed_at: null
 #       # tracker.issues[].closed | type: boolean | default: false when configured | required: No | validation: None
 #       closed: false
 #       # tracker.issues[].closed_reason | type: string | default: none | required: No | validation: None

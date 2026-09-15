@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type State struct {
@@ -71,6 +72,8 @@ type State struct {
 	ManualRefresh            telemetry.RefreshAttempt
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
+	WorkspaceRetention       []workspace.RetentionTotals
+	SharedCache              workspace.CacheUsage
 	CleanupFailures          map[string]string
 	CleanupFailureAt         time.Time
 	RecentEvents             []telemetry.ActivityEvent
@@ -502,6 +505,8 @@ func (s State) clone() State {
 		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
+		WorkspaceRetention:       append([]workspace.RetentionTotals(nil), s.WorkspaceRetention...),
+		SharedCache:              s.SharedCache,
 		CleanupFailures:          maps.Clone(s.CleanupFailures),
 		CleanupFailureAt:         s.CleanupFailureAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),
@@ -750,6 +755,7 @@ func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 func cloneIssue(issue connector.Issue) connector.Issue {
 	issue.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
 	cloned := issue
+	cloned.PRHeadCommittedAt = cloneTimePointer(issue.PRHeadCommittedAt)
 	if issue.Priority != nil {
 		priority := *issue.Priority
 		cloned.Priority = &priority
@@ -760,6 +766,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.PullRequest != nil {
 		pullRequest := *issue.PullRequest
+		pullRequest.HeadCommittedAt = cloneTimePointer(issue.PullRequest.HeadCommittedAt)
 		if issue.PullRequest.MergeQueueEntry != nil {
 			entry := clonePullRequestMergeQueueEntry(*issue.PullRequest.MergeQueueEntry)
 			pullRequest.MergeQueueEntry = &entry
@@ -800,6 +807,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		deliverable := *issue.Deliverable
 		deliverable.Metadata = cloneStringMap(issue.Deliverable.Metadata)
 		cloned.Deliverable = &deliverable
+	}
+	if issue.ClosedAt != nil {
+		closedAt := *issue.ClosedAt
+		cloned.ClosedAt = &closedAt
 	}
 	if issue.CreatedAt != nil {
 		createdAt := *issue.CreatedAt

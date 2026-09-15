@@ -1377,8 +1377,34 @@ components:
           type: array
           items: {$ref: "#/components/schemas/GenericObject"}
         stats: {$ref: "#/components/schemas/GenericObject"}
-        board: {$ref: "#/components/schemas/GenericObject"}
+        board: {$ref: "#/components/schemas/BoardState"}
       additionalProperties: true
+    BoardState:
+      type: object
+      properties:
+        cards:
+          type: array
+          items: {$ref: "#/components/schemas/BoardCardFacts"}
+      additionalProperties: true
+    BoardCardFacts:
+      type: object
+      description: Active card facts. Daily attempt counts use UTC; null evidence is unavailable.
+      properties:
+        project_id: {type: string}
+        issue_id: {type: string}
+        identifier: {type: string}
+        state: {type: string}
+        has_pr: {type: boolean}
+        head_sha: {type: string}
+        head_committed_at: {type: string, format: date-time, nullable: true}
+        ci: {type: string, enum: ["", queued, running, green, red, skipped, unknown]}
+        mergeability: {type: string}
+        has_session: {type: boolean}
+        session_started_at: {type: string, format: date-time, nullable: true}
+        session_tokens: {type: integer, format: int64}
+        attempts_today: {type: integer, format: int64, nullable: true}
+        lane_reason: {type: string}
+        lane_reason_at: {type: string, format: date-time, nullable: true}
     StateEnrichment:
       type: object
       required: [status]

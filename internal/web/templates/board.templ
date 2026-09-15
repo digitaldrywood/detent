@@ -693,7 +693,21 @@ templ boardCardView2(card boardCardView) {
 		if card.TrackerSummary != "" {
 			<div class="min-w-0 text-2xs text-dim" title={ "Tracker snapshot observed " + card.TrackerObservedAt } data-board-tracker-observation={ card.TrackerObservedAt }>{ card.TrackerSummary }</div>
 		}
-		if card.AgeFooter != "" {
+		if len(card.Facts) > 0 {
+			<div class="min-w-0 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" data-board-card-facts title={ cardFactDetail(card.Facts) }>
+				for _, row := range boardFactRows(card) {
+					<div class="flex min-w-0 gap-2 whitespace-nowrap">
+						for _, fact := range row {
+							if fact.Name == "lane" {
+								<span class="min-w-0 truncate" data-board-card-age-footer title={ fact.Detail }>{ fact.Text }</span>
+							} else {
+								<span class="min-w-0 truncate" data-card-fact={ fact.Name } data-compact={ cardFactCompact(fact) } title={ cardFactTitle(fact) }>{ fact.Text }</span>
+							}
+						}
+					</div>
+				}
+			</div>
+		} else if card.AgeFooter != "" {
 			<div class="flex min-w-0 items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer>
 				<span class="min-w-0 truncate">In lane</span>
 				<span class="flex-none whitespace-nowrap tabular-nums">{ card.AgeFooter }</span>

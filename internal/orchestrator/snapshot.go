@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const (
@@ -145,11 +146,15 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		StalenessWarnings:       stalenessWarningSnapshots(s.StalenessWarnings),
 		StrandedActiveIssues:    strandedActiveIssues,
 		CleanupFaults:           workspaceCleanupFailureSnapshots(s),
+		WorkspaceRetention:      s.WorkspaceRetention,
 		OverloadRetriesLastHour: overloadRetriesLastHour(s.WorkAttempts, now),
 		Tokens:                  tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
+	}
+	if !s.SharedCache.ObservedAt.IsZero() {
+		snapshot.SharedCaches = []workspace.CacheUsage{s.SharedCache}
 	}
 	snapshot.Dispatch.RateWindowPacing = rateWindowPacingSnapshot(s, now)
 	if snapshot.Dispatch.Stalled {
@@ -1295,6 +1300,8 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		State:                      pullRequest.State,
 		MergeableState:             pullRequest.MergeableState,
 		HeadSHA:                    pullRequest.HeadSHA,
+		HeadCommittedAt:            timePointerFromPtr(pullRequest.HeadCommittedAt),
+		Checks:                     telemetryPullRequestChecks(pullRequest.Checks),
 		BaseSHA:                    pullRequest.BaseSHA,
 		HydrationUnavailableReason: pullRequest.HydrationUnavailableReason,
 		HydrationDegradedReason:    pullRequest.HydrationDegradedReason,

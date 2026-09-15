@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -113,9 +114,6 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"Check generator aliases before editing.",
 		"## Blocked handoff",
 		"`status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid.",
-		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.",
-		"Worker GitHub credentials and connector write-policy denials are instance conditions.",
-		"Do not use ask_human_question, create a prerequisite issue, or request a manual pull request for them",
 		"dependencies/blocked_by",
 		"```detent-status",
 		"status: blocked",
@@ -124,28 +122,21 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"Narrative Workpad sentences are never read as blockers",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
-		"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation",
-		"Keep blocker and human-action declarations in the structured detent-status block",
 		"## Available skills",
-		"- migrate — Issue mentions schema changes.",
+		"- migrate",
 		"## Skill creation loop",
-		"Before final handoff, make an explicit skill-draft decision",
-		"a repeated multi-step procedure",
-		"a non-obvious debugging recipe",
-		"a project-specific convention discovered the hard way",
-		"This is in-scope work",
+		"Draft only reusable methods",
+		"Rerun validation after drafting; PR review approves it.",
 		"Skill draft: yes",
 		"Skill draft: no",
 		"Draft at most 1 candidate skill file under `.detent/skills/`",
-		"rerun the required validation gate after the draft",
-		"the draft skill enters future prompts only after humans review and merge it",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if strings.Contains(prompt, "Add migrations.") {
-		t.Fatalf("prompt included skill description, want only when_to_use:\n%s", prompt)
+	if strings.Contains(prompt, "Add migrations.") || strings.Contains(prompt, "Issue mentions schema changes.") {
+		t.Fatalf("prompt included skill description, want names only:\n%s", prompt)
 	}
 }
 
@@ -280,53 +271,55 @@ func TestSkillDraftProposed(t *testing.T) {
 
 func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	t.Parallel()
+	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
+		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
+			prompt := appendBlockedHandoffBlock("", opts)
+			blocks := strings.Split(prompt, "```detent-status\n")[1:]
+			if len(blocks) != 2 {
+				t.Fatalf("got %d examples, want 2", len(blocks))
+			}
+			for i, block := range blocks {
+				content := strings.SplitN(block, "```", 2)[0]
+				for _, ref := range []string{"owner/repo#123", "#123"} {
+					signal, err := workpad.ParseStatusBlock(strings.ReplaceAll(content, "owner/repo#123", ref), "owner/repo")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(signal.UnknownKeys) != 0 {
+						t.Fatalf("unknown fields: %v", signal.UnknownKeys)
+					}
+					if i == 0 && (signal.Status != workpad.StatusBlocked || signal.Blockers[0].Identifier != "owner/repo#123" || signal.Blockers[0].Unverifiable) {
+						t.Fatalf("invalid dependency signal: %+v", signal)
+					}
+					if i == 1 && signal.Status != workpad.StatusComplete {
+						t.Fatalf("invalid completion: %+v", signal)
+					}
+				}
+			}
+		})
+	}
+}
 
-	prompt, err := BuildPrompt(config.Workflow{
-		Prompt: "Base prompt",
-	}, connector.Issue{
-		Identifier: "digitaldrywood/detent#1106",
-		Title:      "Document workpad status",
-	}, PromptOptions{})
+func TestPromptWrapperBytes(t *testing.T) {
+	t.Parallel()
+	loaded, err := skills.Load("../..", skills.Options{})
 	if err != nil {
-		t.Fatalf("BuildPrompt() error = %v", err)
+		t.Fatal(err)
 	}
-
-	for _, want := range []string{
-		"`status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid.",
-		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.",
-		"```detent-status\n" +
-			"schema: 1\n" +
-			"status: blocked\n" +
-			"blockers:\n" +
-			"  - ref: \"owner/repo#123\"\n" +
-			"    reason: \"waiting for the dependency to merge\"\n" +
-			"    owner: orchestrator\n" +
-			"    predicate:\n" +
-			"      type: issue_state\n" +
-			"      states: [open]\n" +
-			"    recheck_interval: tick\n" +
-			"human_action: null\n" +
-			"```",
-		"A bare free-text blocker is accepted for compatibility but is surfaced as unverifiable with its owner and age",
-		"```detent-status\n" +
-			"schema: 1\n" +
-			"status: complete\n" +
-			"blockers: []\n" +
-			"human_action: null\n" +
-			"```",
-		"Operational work completed outside the repository with no diff and no pull request may instead declare completion only when the issue body authorized it before dispatch with:",
-		"```detent-completion",
-		"Adding authorization at completion time does not qualify.",
-		"completion_kind: operational",
-		"completion_evidence: \"what changed on the host and how it was verified\"",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt missing %q:\n%s", want, prompt)
-		}
+	if len(loaded.Skills) != skills.DefaultMaxSkillsInPrompt {
+		t.Fatalf("fixture needs capped skills: %d", len(loaded.Skills))
 	}
-
-	if strings.Contains(prompt, "never use Human Review") {
-		t.Fatalf("prompt contains project-specific review policy:\n%s", prompt)
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: t.TempDir(), Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, section := range strings.Split(prompt, "\n## ") {
+		t.Logf("section %s: %d", strings.SplitN(section, "\n", 2)[0], len(section))
+	}
+	size := len(prompt) - len("WORKFLOW")
+	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(loaded.Skills)))
+	if size >= 6000 {
+		t.Errorf("wrapper is %d bytes, want under 6000", size)
 	}
 }
 
@@ -633,7 +626,7 @@ func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
 
 	for _, want := range []string{
 		"## Handoff notes",
-		"verify important facts against the repository",
+		"Verify prior notes",
 		"Maintain `.detent/notes.md`",
 		"## 2026-07-02T21:45:00Z - Implementation handoff",
 		"Key file: internal/runner/prompt.go",
@@ -1018,12 +1011,10 @@ func TestBuildPromptPrependsWorkspaceIsolationBlock(t *testing.T) {
 
 			for _, want := range []string{
 				"## Detent workspace isolation",
-				"You are already isolated in a Detent-created git worktree at `" + tt.workspacePath + "` on branch `" + tt.branch + "`.",
-				"The branch name format (`detent/<project>-<identifier>-<digest>`) is generated by Detent.",
-				"Do not validate, compare, require, or block on branch-name format.",
-				"Do not block on branch naming, workspace, or worktree prerequisites.",
-				"Use the Detent-provided temporary directory (`TMPDIR`, `TMP`, or `TEMP`)",
-				"Do not create scratch siblings in the host temp directory",
+				"Detent's worktree `" + tt.workspacePath + "` and branch `" + tt.branch + "` satisfy isolation.",
+				"Never require different branch naming or workspace prerequisites.",
+				"Use `TMPDIR`/`TMP`/`TEMP` for all scratch output",
+				"Never use host-temp siblings",
 				"Issue prompt",
 			} {
 				if !strings.Contains(prompt, want) {

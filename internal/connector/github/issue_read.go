@@ -223,6 +223,7 @@ fragment DetentGitHubIssueParent on Issue {
   body
   state
   stateReason
+ closedAt
   url
   createdAt
   updatedAt
@@ -230,7 +231,7 @@ fragment DetentGitHubIssueParent on Issue {
   assignees(first: 100) { nodes { id login } }
   labels(first: 20) { nodes { name } }
   repository { nameWithOwner }
-  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }
   subIssues(first: $linkedIssuesFirst) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -387,6 +388,7 @@ fragment DetentGitHubIssueParentLabel on Issue {
   body
   state
   stateReason
+ closedAt
   url
   createdAt
   updatedAt
@@ -394,7 +396,7 @@ fragment DetentGitHubIssueParentLabel on Issue {
   assignees(first: 100) { nodes { id login } }
   labels(first: 20) { nodes { name } }
   repository { nameWithOwner }
-  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }
   subIssues(first: $linkedIssuesFirst) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -960,6 +962,19 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 			return nil, err
 		}
 		if ok {
+			// GitHub's issue endpoint also returns pull requests. Resolve the
+			// referenced PR itself instead of searching for a PR linked to it.
+			if strings.Contains(issue.URL, "/pull/") {
+				ref, _ := issueRefFromIdentifier(identifier)
+				repo := pullRequestRepo{Owner: ref.Owner, Name: ref.Name}
+				pr, err := c.fetchRepositoryPullRequest(ctx, repo, ref.Number)
+				if err != nil {
+					return nil, err
+				}
+				attachPullRequestToIssue(&issue, repo, pr)
+				issues = append(issues, issue)
+				continue
+			}
 			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
 				return nil, err
 			}
@@ -1519,7 +1534,10 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		URL:               issue.URL,
 		Closed:            githubIssueClosed(issue.State),
 		ClosedReason:      issue.StateReason,
+		ClosedAt:          parseGitHubTime(issue.ClosedAt),
 		PRNumber:          pullRequestNumber,
+		PRHeadSHA:         pullRequestRef.HeadSHA,
+		PRHeadCommittedAt: cloneGitHubTime(pullRequestRef.HeadCommittedAt),
 		PRRepository:      pullRequestRepository,
 		PRSource:          pullRequestAssociationSource,
 		AuthorID:          actorLogin(issue.Author),

@@ -40,6 +40,15 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Boot and reaper tests use disposable provider state as well as a test
+	// runtime store. They must never pair an empty store with host rollouts.
+	codexHome, err := os.MkdirTemp("", "detent-cli-codex-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("CODEX_HOME", codexHome); err != nil {
+		panic(err)
+	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
@@ -48,7 +57,12 @@ func TestMain(m *testing.M) {
 			panic("clear " + name + ": " + err.Error())
 		}
 	}
-	os.Exit(m.Run())
+	exitCode := m.Run()
+	if err := os.RemoveAll(codexHome); err != nil {
+		fmt.Fprintln(os.Stderr, "clean test Codex home:", err)
+		exitCode = 1
+	}
+	os.Exit(exitCode)
 }
 
 func TestAwaitStartupServerRequiresExpectedBuild(t *testing.T) {

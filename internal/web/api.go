@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const (
@@ -692,6 +693,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		LaneSignalWarnings: append([]telemetry.LaneSignalWarning(nil), snapshot.LaneSignalWarnings...),
 		StalenessWarnings:  append([]telemetry.StalenessWarning(nil), snapshot.StalenessWarnings...),
 		CleanupFaults:      append([]telemetry.CleanupFault(nil), snapshot.CleanupFaults...),
+		SharedCaches:       snapshot.SharedCaches,
 		Budget:             budgetResponse(snapshot.Budget),
 	}
 }
@@ -749,7 +751,14 @@ func instanceResponse(instance telemetry.Instance, displayName string, build bui
 }
 
 func boardResponse(snapshot telemetry.Snapshot) boardAPIResponse {
+	cards := []boardCardAPIResponse{}
+	for _, issue := range telemetry.CardIssues(snapshot) {
+		if telemetry.ActiveIssueCard(snapshot, issue) {
+			cards = append(cards, boardCardAPIResponse{ProjectID: issue.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, State: issue.State, CardFacts: telemetry.IssueCardFacts(snapshot, issue)})
+		}
+	}
 	return boardAPIResponse{
+		Cards:             cards,
 		StateDistribution: telemetry.BoardStateCounts(snapshot),
 		Flow:              telemetry.BoardProgressPoints(snapshot),
 	}
@@ -1665,6 +1674,7 @@ type stateAPIResponse struct {
 	DispatchStalls     []telemetry.DispatchStatus    `json:"dispatch_stalls,omitempty"`
 	LaneSignalWarnings []telemetry.LaneSignalWarning `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings  []telemetry.StalenessWarning  `json:"staleness_warnings,omitempty"`
+	SharedCaches       []workspace.CacheUsage        `json:"shared_caches,omitempty"`
 	CleanupFaults      []telemetry.CleanupFault      `json:"workspace_cleanup_failures,omitempty"`
 	Budget             budgetAPIResponse             `json:"budget"`
 }
@@ -1694,7 +1704,16 @@ type instanceAPIResponse struct {
 	AuthorizationConfigured bool   `json:"authorization_configured"`
 }
 
+type boardCardAPIResponse struct {
+	ProjectID  string `json:"project_id"`
+	IssueID    string `json:"issue_id"`
+	Identifier string `json:"identifier"`
+	State      string `json:"state"`
+	telemetry.CardFacts
+}
+
 type boardAPIResponse struct {
+	Cards             []boardCardAPIResponse         `json:"cards"`
 	StateDistribution []telemetry.BoardStateCount    `json:"state_distribution"`
 	Flow              []telemetry.BoardProgressPoint `json:"flow"`
 }

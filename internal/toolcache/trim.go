@@ -3,8 +3,10 @@ package toolcache
 import (
 	"context"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -26,11 +28,26 @@ func (p Policy) Normalized() Policy {
 	return p
 }
 
+var cacheEntryName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
+var cacheShardName = regexp.MustCompile(`^[0-9a-f]{2}$`)
+
 // Trim expires old entries, then evicts oldest-first to enforce MaxBytes.
 // Metadata is counted toward the size but is never removed.
 func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64, error) {
 	policy = policy.Normalized()
 	if root == "" || root == "off" {
+		return 0, nil
+	}
+	root = filepath.Clean(root)
+	marked := false
+	for _, name := range []string{"README", "trim.txt"} {
+		if info, err := os.Lstat(filepath.Join(root, name)); err == nil && info.Mode().IsRegular() {
+			marked = true
+			break
+		}
+	}
+	if !marked {
+		slog.Warn("skip host Go cache trim: cache marker absent", "path", root)
 		return 0, nil
 	}
 	type candidate struct {
@@ -49,6 +66,11 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 		if err != nil {
 			return err
 		}
+		if entry.IsDir() && path != root {
+			if filepath.Dir(path) != root || !cacheShardName.MatchString(entry.Name()) {
+				return filepath.SkipDir
+			}
+		}
 		if !entry.Type().IsRegular() {
 			return nil
 		}
@@ -60,7 +82,7 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 			return err
 		}
 		total += info.Size()
-		if !strings.HasSuffix(entry.Name(), "-a") && !strings.HasSuffix(entry.Name(), "-d") {
+		if filepath.Dir(filepath.Dir(path)) != root || !cacheShardName.MatchString(filepath.Base(filepath.Dir(path))) || !cacheEntryName.MatchString(entry.Name()) {
 			return nil
 		}
 		if !info.ModTime().Before(now.Add(-policy.MaxAge)) {

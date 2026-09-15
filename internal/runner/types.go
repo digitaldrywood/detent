@@ -303,6 +303,7 @@ type WorkspaceCleanupFailure struct {
 }
 
 type WorkspaceReconcileResult struct {
+	Cache             workspace.CacheUsage
 	Removed           int
 	ActiveSkipped     int
 	PreservedSkipped  int
@@ -741,6 +742,7 @@ type RunResult struct {
 	FinalMessage            string
 	Model                   string
 	TurnStarted             bool
+	TurnCount               int
 	RuntimeIdentity         agentidentity.Identity
 	Tokens                  TokenTotals
 	DiffStats               DiffStats

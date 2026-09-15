@@ -192,7 +192,7 @@ func hostCacheWritableRoots(ctx context.Context, options Options, roots []string
 	}
 	paths, err := toolcache.Resolve(ctx)
 	if err != nil {
-		return nil, err
+		return roots, nil
 	}
 	roots = append([]string(nil), roots...)
 	for _, path := range []string{paths.Build, paths.Modules} {

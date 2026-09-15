@@ -58,6 +58,7 @@ func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state 
 			o.logger.Warn("trim host Go cache", "error", err)
 		}
 	}
+	o.sweepRetention(ctx, state, now)
 	states := cleanupFetchStates(o.cfg)
 	swept := len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)
 	reconciled := o.reconcileResidualWorkspaces(ctx, state, now)
@@ -76,6 +77,7 @@ func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *S
 		return true
 	}
 	result, err := reconciler.ReconcileWorkspaces(ctx, activeWorkspaceIssues(state, o.cfg.TerminalStates))
+	state.SharedCache = result.Cache
 	if state.CleanupFailures == nil {
 		state.CleanupFailures = map[string]string{}
 	}

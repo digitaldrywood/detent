@@ -144,6 +144,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	removeWorkspace = reapErr == nil
 	turnErr = errors.Join(turnErr, reapErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
 	turnErr = classifyAgentCapacityError(backend, selection, backendConfig, result.RuntimeIdentity, turnErr, result.RateLimits, startedAt)
+	result.TurnCount = turnCount
 	result.Output = output.String()
 	if turnErr != nil {
 		result.FinalState = finalStateForTurnError(turnErr)

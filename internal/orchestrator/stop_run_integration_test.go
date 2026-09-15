@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -295,83 +296,83 @@ func TestStopRunAcknowledgesBeforeTrackerTransitionCompletes(t *testing.T) {
 }
 
 func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
-	issue := testIssue("issue-stop-recovery", "digitaldrywood/detent#1311", "In Progress")
-	tracker := &operatorStopRecoveryConnector{fakeConnector: newFakeConnector(issue), stateUpdated: make(chan struct{}), releaseStateUpdate: make(chan struct{})}
-	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = runtimeStore.Close() })
-	now := time.Date(2026, 7, 14, 18, 0, 0, 0, time.UTC)
-	attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, WorkerType: "agent", Lane: issue.State, AttemptNumber: 0, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute)})
-	if err != nil {
-		t.Fatalf("StartWorkAttempt() error = %v", err)
-	}
-	metadata, err := json.Marshal(map[string]any{"operator_stop": map[string]any{"project_id": "detent", "issue_id": issue.ID, "identifier": issue.Identifier, "attempt": 0, "work_attempt_id": attemptID, "destination": "Blocked", "outcome": "transition_failed", "requested_at": now.Add(-30 * time.Second), "completed_at": now.Add(-20 * time.Second)}})
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
-	if err := runtimeStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: now.Add(-20 * time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalOperatorStopped, Phase: "operator_stop_transition_failed", StatusMessage: "run stopped; tracker transition failed", WorkerMetadataJSON: string(metadata), NextAction: "retry tracker transition to Blocked"}); err != nil {
-		t.Fatalf("CompleteWorkAttempt() error = %v", err)
-	}
-	orch, err := orchestrator.New(orchestrator.Config{PollInterval: 5 * time.Millisecond, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkAttempts: runtimeStore, WorkflowMetrics: runtimeStore})
-	if err != nil {
-		t.Fatalf("orchestrator.New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
-	releaseStateUpdate := sync.OnceFunc(func() { close(tracker.releaseStateUpdate) })
-	defer releaseStateUpdate()
-	select {
-	case <-tracker.stateUpdated:
-	case <-time.After(operatorStopIntegrationWaitTimeout):
-		t.Fatal("timed out waiting for recovered tracker transition")
-	}
-	state, err := orch.State(t.Context())
-	if err != nil {
-		t.Fatalf("State() error = %v", err)
-	}
-	if len(tracker.stateUpdateCalls()) == 0 || len(state.Running) != 0 {
-		t.Fatal("want tracker update with no running items while reconciliation is paused")
-	}
-	if attempt, ok := workAttemptSnapshot(state, attemptID); !ok || attempt.Phase != "operator_stop_transition_failed" || attempt.NextAction != "retry tracker transition to Blocked" {
-		t.Fatalf("work attempt snapshot = %#v, %v, want unreconciled operator stop while transition is paused", attempt, ok)
-	}
-	recovered := func(state orchestrator.State) bool {
-		attempt, ok := workAttemptSnapshot(state, attemptID)
-		return ok && attempt.Phase == "operator_stop_succeeded" && attempt.NextAction == "await operator resume" && len(state.Running) == 0 && len(state.Blocked) == 0
-	}
-	for _, tt := range []struct {
-		name  string
-		state orchestrator.State
-	}{
-		{name: "paused tracker transition", state: state},
-		{name: "published collections ahead of receipt", state: orchestrator.State{WorkAttempts: state.WorkAttempts}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if recovered(tt.state) {
-				t.Fatal("recovery predicate accepted the unreconciled operator stop snapshot")
-			}
-		})
-	}
-	releaseStateUpdate()
-	state = waitForOperatorStopState(t, orch, recovered)
-	if attempt, ok := workAttemptSnapshot(state, attemptID); !ok || attempt.Phase != "operator_stop_succeeded" || attempt.NextAction != "await operator resume" {
-		t.Fatalf("work attempt snapshot = %#v, %v, want reconciled operator stop", attempt, ok)
-	}
-	select {
-	case request := <-runner.started:
-		t.Fatalf("recovered stopped item redispatched: %#v", request)
-	case <-time.After(25 * time.Millisecond):
-	}
-	receipt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
-	if err != nil {
-		t.Fatalf("WorkAttempt() error = %v", err)
-	}
-	if receipt.Phase != "operator_stop_succeeded" || receipt.NextAction != "await operator resume" {
-		t.Fatalf("work attempt = %#v, want reconciled operator stop", receipt)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		issue := testIssue("issue-stop-recovery", "digitaldrywood/detent#1311", "In Progress")
+		tracker := &operatorStopRecoveryConnector{fakeConnector: newFakeConnector(issue), stateUpdated: make(chan struct{}), releaseStateUpdate: make(chan struct{})}
+		runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
+		runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+		if err != nil {
+			t.Fatalf("store.Open() error = %v", err)
+		}
+		t.Cleanup(func() { _ = runtimeStore.Close() })
+		now := time.Date(2026, 7, 14, 18, 0, 0, 0, time.UTC)
+		attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, WorkerType: "agent", Lane: issue.State, AttemptNumber: 0, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute)})
+		if err != nil {
+			t.Fatalf("StartWorkAttempt() error = %v", err)
+		}
+		metadata, err := json.Marshal(map[string]any{"operator_stop": map[string]any{"project_id": "detent", "issue_id": issue.ID, "identifier": issue.Identifier, "attempt": 0, "work_attempt_id": attemptID, "destination": "Blocked", "outcome": "transition_failed", "requested_at": now.Add(-30 * time.Second), "completed_at": now.Add(-20 * time.Second)}})
+		if err != nil {
+			t.Fatalf("json.Marshal() error = %v", err)
+		}
+		if err := runtimeStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: now.Add(-20 * time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalOperatorStopped, Phase: "operator_stop_transition_failed", StatusMessage: "run stopped; tracker transition failed", WorkerMetadataJSON: string(metadata), NextAction: "retry tracker transition to Blocked"}); err != nil {
+			t.Fatalf("CompleteWorkAttempt() error = %v", err)
+		}
+		orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkAttempts: runtimeStore, WorkflowMetrics: runtimeStore})
+		if err != nil {
+			t.Fatalf("orchestrator.New() error = %v", err)
+		}
+		stop := runOrchestrator(t, orch)
+		defer stop()
+		releaseStateUpdate := sync.OnceFunc(func() { close(tracker.releaseStateUpdate) })
+		defer releaseStateUpdate()
+		select {
+		case <-tracker.stateUpdated:
+		case <-time.After(operatorStopIntegrationWaitTimeout):
+			t.Fatal("timed out waiting for recovered tracker transition")
+		}
+		state, err := orch.State(t.Context())
+		if err != nil {
+			t.Fatalf("State() error = %v", err)
+		}
+		if len(tracker.stateUpdateCalls()) == 0 || len(state.Running) != 0 {
+			t.Fatal("want tracker update with no running items while reconciliation is paused")
+		}
+		if attempt, ok := workAttemptSnapshot(state, attemptID); !ok || attempt.Phase != "operator_stop_transition_failed" || attempt.NextAction != "retry tracker transition to Blocked" {
+			t.Fatalf("work attempt snapshot = %#v, %v, want unreconciled operator stop while transition is paused", attempt, ok)
+		}
+		releaseStateUpdate()
+		// Wait for the recovery tick to finish, including receipt persistence and
+		// snapshot publication, without advancing the polling clock.
+		synctest.Wait()
+		state, err = orch.State(t.Context())
+		if err != nil {
+			t.Fatalf("State() error = %v", err)
+		}
+		if attempt, ok := workAttemptSnapshot(state, attemptID); !ok || attempt.Phase != "operator_stop_succeeded" || attempt.NextAction != "await operator resume" {
+			t.Fatalf("work attempt snapshot = %#v, %v, want reconciled operator stop", attempt, ok)
+		}
+		if len(state.Running) != 0 || len(state.Blocked) != 0 {
+			t.Fatalf("recovered state: running = %#v, blocked = %#v, want neither", state.Running, state.Blocked)
+		}
+		// Exercise another complete dispatch pass instead of waiting a fixed
+		// interval to infer that the stopped issue cannot run again.
+		if _, err := orch.RequestRefresh(t.Context()); err != nil {
+			t.Fatalf("RequestRefresh() error = %v", err)
+		}
+		synctest.Wait()
+		select {
+		case request := <-runner.started:
+			t.Fatalf("recovered stopped item redispatched: %#v", request)
+		default:
+		}
+		receipt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+		if err != nil {
+			t.Fatalf("WorkAttempt() error = %v", err)
+		}
+		if receipt.Phase != "operator_stop_succeeded" || receipt.NextAction != "await operator resume" {
+			t.Fatalf("work attempt = %#v, want reconciled operator stop", receipt)
+		}
+	})
 }
 
 func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {

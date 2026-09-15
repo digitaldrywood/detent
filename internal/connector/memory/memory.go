@@ -472,6 +472,7 @@ func (c *Connector) Events() []Event {
 func (c *Connector) CloseIssue(_ context.Context, issueID string) error {
 	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
 		issue.Closed = true
+		issue.ClosedAt = &now
 		issue.UpdatedAt = &now
 	})
 	c.send(Event{Kind: EventKindClose, IssueID: issueID})
@@ -771,6 +772,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	if issue.Metadata != nil {
 		issue.Metadata = cloneStringMap(issue.Metadata)
 	}
+	issue.ClosedAt = cloneTime(issue.ClosedAt)
 	issue.CreatedAt = cloneTime(issue.CreatedAt)
 	issue.UpdatedAt = cloneTime(issue.UpdatedAt)
 	issue.StageUpdatedAt = cloneTime(issue.StageUpdatedAt)

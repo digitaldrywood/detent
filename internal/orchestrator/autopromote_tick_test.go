@@ -6756,7 +6756,7 @@ func TestTickAutoPromoteMalformedRework(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
-			issue := autoPromoteTickIssue("malformed-rework", []string{"bug"}, &connector.PullRequest{Number: 2641, URL: "https://github.test/digitaldrywood/detent/pull/2641", State: "OPEN", MergeableState: "clean", CIStatus: "pass"})
+			issue := autoPromoteTickIssue("malformed-rework", []string{"bug"}, &connector.PullRequest{Number: 2641, HeadSHA: "head-2641", URL: "https://github.test/digitaldrywood/detent/pull/2641", State: "OPEN", MergeableState: "clean", CIStatus: "pass"})
 			issue.State = "Rework"
 			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: local:e2e-verify-2113.loop.local.json\n    reason: local check\n" + tt.extra + "human_action: null\n```"}}
 			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, ActiveStates: []string{"In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}})

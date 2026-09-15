@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -158,6 +159,108 @@ func TestQueuedDispatchConsumesImmediateHostAssignment(t *testing.T) {
 			running, started := state.Running[issue.ID]
 			if !started || running.WorkerHost != "b" || running.globalSlot.Host != "b" {
 				t.Fatalf("immediate grant host lost: started %t, worker %q, slot %q", started, running.WorkerHost, running.globalSlot.Host)
+			}
+		})
+	}
+}
+
+type standingGateWithoutCycleHooks struct {
+	scheduler.ProjectDispatchGate
+	scheduler.QueuedProjectDispatchGate
+}
+
+type standingDispatchConnector struct {
+	hydratingDispatchConnector
+	fail bool
+}
+
+func (c *standingDispatchConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	if c.fail {
+		return nil, errors.New("tracker unavailable")
+	}
+	return c.hydratingDispatchConnector.FetchIssueStatesByIDs(ctx, ids)
+}
+
+func TestStandingDispatchSurvivesProjectRefresh(t *testing.T) {
+	for _, refresh := range []string{"mid-pass", "same candidate", "ineligible", "removed", "failed hydration", "gate without cycle hooks"} {
+		t.Run(refresh, func(t *testing.T) {
+			now := time.Now()
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "higher", Priority: 0}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			issue := retryTestIssue("standing", "digitaldrywood/detent#20")
+			tracker := &standingDispatchConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}}
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+			held, ok, err := gate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: "holder"}, scheduler.SlotRequest{State: "Todo"}, now)
+			if err != nil || !ok {
+				t.Fatalf("initial slot = %t %v", ok, err)
+			}
+			o := Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: gate, globalDispatchReady: make(chan struct{}, 1), globalDispatchPending: make(map[string]pendingGlobalDispatch)}
+			state := newState(cfg)
+			defer o.cancelPendingGlobalDispatches()
+			o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			original, exists := o.globalDispatchPending[issue.ID]
+			if !exists {
+				t.Fatal("higher request not queued")
+			}
+			lower, cancel, _ := gate.Submit(t.Context(), scheduler.ProjectCandidate{ID: "lower", Priority: 3}, scheduler.SlotRequest{State: "Todo"}, now.Add(time.Minute), nil)
+			defer cancel()
+			if refresh == "gate without cycle hooks" {
+				o.globalDispatchGate = standingGateWithoutCycleHooks{ProjectDispatchGate: gate, QueuedProjectDispatchGate: gate}
+			}
+			o.beginGlobalProjectCycle()
+			defer o.endGlobalProjectCycle()
+			switch refresh {
+			case "same candidate":
+				tracker.issue.Title = "updated title"
+				o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{tracker.issue}, now.Add(2*time.Minute))
+				pending := o.globalDispatchPending[issue.ID]
+				if pending.result != original.result {
+					t.Fatal("refresh recreated the request")
+				}
+				if pending.action.issue.Title != "updated title" {
+					t.Fatal("refresh did not update the action")
+				}
+			case "removed":
+				o.dispatchReadyIssues(t.Context(), &state, nil, now.Add(2*time.Minute))
+				if len(o.globalDispatchPending) != 0 {
+					t.Fatal("removed candidate retained")
+				}
+			case "failed hydration":
+				tracker.fail = true
+				o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(2*time.Minute))
+				if pending := o.globalDispatchPending[issue.ID]; pending.result != original.result {
+					t.Fatal("failed read discarded standing readiness")
+				}
+			case "ineligible":
+				tracker.issue.State = "Done"
+				o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{tracker.issue}, now.Add(2*time.Minute))
+				if len(o.globalDispatchPending) != 0 {
+					t.Fatal("ineligible request retained")
+				}
+			}
+			if err := gate.Release(held); err != nil {
+				t.Fatal(err)
+			}
+			winner, loser := original.result, lower
+			if refresh == "ineligible" || refresh == "removed" {
+				winner, loser = lower, original.result
+			}
+			select {
+			case grant := <-winner:
+				if grant.Err != nil || grant.Slot == (scheduler.Slot{}) {
+					t.Fatalf("grant = %+v", grant)
+				}
+				select {
+				case unexpected := <-loser:
+					t.Fatalf("loser granted before winner released: %+v", unexpected)
+				default:
+				}
+				cancel()
+				o.cancelPendingGlobalDispatches()
+				if err := gate.Release(grant.Slot); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				t.Fatal("best-ranked standing request did not receive released capacity")
 			}
 		})
 	}

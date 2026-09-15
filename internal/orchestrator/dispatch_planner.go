@@ -17,8 +17,9 @@ import (
 )
 
 type dispatchPlanner struct {
-	cfg Config
-	now time.Time
+	recordedBlockers func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
+	cfg              Config
+	now              time.Time
 }
 
 type dispatchPlanHooks struct {
@@ -350,7 +351,7 @@ func (p dispatchPlanner) retryAction(
 		if workerGitHubMonitorProbeReserved {
 			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", decision.reason, now)
 		}
-		if decision.reason == dispatchSkipCurrentHeadCIWait {
+		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency || decision.reason == dispatchSkipTrackerUnavailable {
 			state.Retry[retry.Issue.ID] = retry
 			return dispatchAction{}, false, decision.reason
 		}
@@ -398,7 +399,7 @@ func (p dispatchPlanner) retryAction(
 func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now time.Time) (dispatchAction, bool, string) {
 	decision := p.dispatchableIssueDecision(issue, state, false, now, "")
 	if !decision.dispatchable {
-		if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
+		if issueBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     cloneIssue(issue),
 				Reason:    blockedReasonDependency,
@@ -564,7 +565,7 @@ func (p dispatchPlanner) trackBlockedCandidates(state *State, issues []connector
 		if issue.ID == "" {
 			continue
 		}
-		if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
+		if issueBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 			seenBlocked[issue.ID] = struct{}{}
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     cloneIssue(issue),
@@ -783,7 +784,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if p.needsAssignee(issue) {
 		return dispatchableDecision{reason: dispatchSkipOwnershipAssigneeRequired}
 	}
-	if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
+	if issueBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 		return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: humanDependencyWaitReason(issue.BlockedBy)}
 	}
 	if _, ok := state.Running[issue.ID]; ok {
@@ -826,6 +827,15 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
+	}
+	if p.recordedBlockers != nil {
+		evaluation, err := p.recordedBlockers(issue, state, now)
+		if err != nil {
+			return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
+		}
+		if evaluation.Holds || evaluation.Unverifiable || evaluation.HumanOwned {
+			return dispatchableDecision{reason: dispatchSkipBlockedByDependency}
+		}
 	}
 	return dispatchableDecision{dispatchable: true}
 }

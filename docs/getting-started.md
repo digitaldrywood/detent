@@ -1,5 +1,8 @@
 # Quick Start
 
+For concise agent instructions, use the [instruction-cost guide](instruction-cost.md)
+when writing `WORKFLOW.md`, `AGENTS.md`, and skills.
+
 [Back to README](../README.md#documentation)
 
 The quickest compatibility setup is one GitHub ProjectV2 board and one local
@@ -475,8 +478,8 @@ Workers inherit the host Go build and module caches and operator toolchain
 settings. `TMPDIR`, `TMP`, and `TEMP` remain per-attempt. At startup, Detent
 removes legacy `workspace.root/.detent/cache` directories. The existing reaper
 expires host Go build entries older than `global.cache.max_age` (default 48h).
-The size target `global.cache.max_bytes` defaults to 1000 GiB; recent entries
-are protected even when their total exceeds this target.
+The size cap `global.cache.max_bytes` defaults to 1000 GiB and takes precedence
+over age; recent entries are evicted oldest-first until the cache fits the cap.
 
 When `workspace.auto_branch` is enabled and the source repository has an
 `origin` remote, Detent fetches that remote's default branch before creating a

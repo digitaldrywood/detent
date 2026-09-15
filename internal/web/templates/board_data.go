@@ -993,6 +993,7 @@ type boardLaneVisibilityPayload struct {
 
 // boardCardView preformats the shared and density-specific card fields.
 type boardCardView struct {
+	Facts             []cardFactView
 	DomID             string
 	Identity          string
 	IssueID           string
@@ -1493,6 +1494,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	retrying := !running && boardCardIsRetrying(data.Snapshot, card)
 	waiting := strings.EqualFold(lane.Title, "In Progress") && !running && !retrying
 	view := boardCardView{
+		Facts:             boardCardFacts(data, card),
 		DomID:             "card-" + boardCardScopedSlug(projectID, identity),
 		Identity:          identity,
 		IssueID:           card.IssueID,

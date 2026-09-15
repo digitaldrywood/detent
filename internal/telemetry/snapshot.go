@@ -10,9 +10,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type Snapshot struct {
+	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
+	SharedCaches       []workspace.CacheUsage      `json:"shared_caches,omitempty"`
+
+	CardActiveStates        map[string][]string `json:"-"`
 	LastKnown               bool                `json:"-"`
 	LastKnownUntil          time.Time           `json:"-"`
 	Tracker                 SnapshotSection     `json:"tracker,omitzero"`
@@ -1112,6 +1117,9 @@ func (d TrackerDrift) IsZero() bool {
 }
 
 type Issue struct {
+	AttemptsToday         *int64                 `json:"attempts_today"`
+	LaneReason            string                 `json:"lane_reason"`
+	LaneReasonAt          *time.Time             `json:"lane_reason_at"`
 	ID                    string                 `json:"issue_id"`
 	Identifier            string                 `json:"identifier,omitempty"`
 	Number                int                    `json:"number,omitempty"`
@@ -1243,7 +1251,9 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	HumanQuestionWorkFingerprint string `json:"human_question_work_fingerprint,omitempty"`
+	HeadCommittedAt              *time.Time         `json:"head_committed_at"`
+	Checks                       []PullRequestCheck `json:"checks,omitempty"`
+	HumanQuestionWorkFingerprint string             `json:"human_question_work_fingerprint,omitempty"`
 
 	Number                     int                         `json:"number,omitempty"`
 	URL                        string                      `json:"url,omitempty"`

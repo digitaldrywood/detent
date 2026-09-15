@@ -642,8 +642,10 @@ func publishSnapshotOnce(
 		projectMetadata := projectSnapshotMetadata(trackedProject, now)
 		if !trackedProject.Running() {
 			if trackedProject.Paused() {
+				cache := trackedProject.SweepPausedSharedCache(ctx, now)
 				merged = mergeSnapshot(merged, telemetry.Snapshot{
 					Project:      projectMetadata,
+					SharedCaches: []workspace.CacheUsage{cache},
 					Runtime:      liveSnapshotSection(now),
 					DashboardURL: cleanDashboardURL(dashboardURL),
 					Shutdown:     telemetry.Shutdown{Status: "running"},
@@ -1034,6 +1036,8 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Dispatch = mergeFleetDispatchStatus(current.Dispatch, next.Dispatch, next.GeneratedAt)
 	current.DispatchStalls = append(current.DispatchStalls, next.DispatchStalls...)
 	current.CleanupFaults = append(current.CleanupFaults, next.CleanupFaults...)
+	current.WorkspaceRetention = append(current.WorkspaceRetention, next.WorkspaceRetention...)
+	current.SharedCaches = append(current.SharedCaches, next.SharedCaches...)
 	if !next.Release.IsZero() {
 		current.Releases = append(current.Releases, next.Release)
 		if current.Release.IsZero() {

@@ -9,6 +9,11 @@ The JSON structure is shared in `internal/operations`. Historical aggregation
 lives in the store; the web layer adds instance identity, current merge-queue
 telemetry, explicit human gates, and issue links.
 
+The operator health metric is tokens per merged PR per project per day across
+both hosts. Compute it from recorded history, never the dashboard or completion
+receipt averages. See [Token spend diagnosis](diagnosis.md#token-spend) for the
+authoritative sources, merge definition, and runnable audit queries.
+
 ## Stats
 
 The two windows are the trailing 24 hours and seven days, ending at `data_time`.
@@ -123,3 +128,32 @@ launchd agent keeps a synced copy current:
 
 On Linux, a systemd user timer calling the same command is equivalent.
 
+
+## Codex disk retention
+
+Detent retains seven days of Codex feedback log rows in the `.detent-worker`
+and `.detent-launchd` profiles beneath each configured Codex home. At boot,
+after the prior-worker sweep, it deletes older `logs_<N>.sqlite` rows and
+vacuums the database. If the database still exceeds 1 GiB, it removes that
+log database and its SQLite sidecars; Codex recreates it. Maintenance skips
+when any Codex app-server is running or the process list cannot be inspected.
+It never stops a process to reclaim disk space. Worker thread state and
+thread-history databases are not pruned.
+
+Shared-root rollout deletion is deferred. Worker profiles share the source
+Codex home's `sessions` directory, and independent Detent runtime databases
+cannot identify another instance's unfinished sessions. The originator field
+alone does not establish instance ownership. Detent does not automatically
+delete rollouts; the doctor total remains available for operator inspection.
+
+`detent doctor` reports each worker-profile SQLite file size (including
+sidecars), the Detent rollout total, and their combined size. It warns above
+2 GiB; the doctor check does not delete files. Inspect the sizes before and
+after an operator-controlled boot on each host to verify reclaimed bytes.
+A host with a running Codex app-server will defer log maintenance.
+
+User-level Codex databases, such as `~/.codex/logs_<N>.sqlite`, are the
+operator's responsibility. With Codex closed, its disposable log database and
+sidecars can safely be removed and will be recreated. Thread state and history
+contain session data: back them up and review what would be lost before manual
+pruning. Detent never prunes user-level SQLite databases.

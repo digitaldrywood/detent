@@ -568,7 +568,7 @@ func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State
 	if reason == dispatchSkipBlockedByDependency {
 		var identifiers []string
 		for _, ref := range decision.Issue.BlockedBy {
-			if todoBlockedByNonTerminal(connector.Issue{State: decision.Issue.State, BlockedBy: []connector.BlockedRef{ref}}, o.cfg.TerminalStates) && ref.Identifier != "" {
+			if issueBlockedByNonTerminal(connector.Issue{State: decision.Issue.State, BlockedBy: []connector.BlockedRef{ref}}, o.cfg.TerminalStates) && ref.Identifier != "" {
 				identifiers = append(identifiers, ref.Identifier)
 			}
 		}

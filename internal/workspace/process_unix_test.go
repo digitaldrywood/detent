@@ -252,10 +252,16 @@ func TestWorkspaceScanOutput(t *testing.T) {
 				}
 			}
 			if tt.wantStage == "wait" {
-				for _, field := range []string{"wait_elapsed=", "pid=", "output_bytes=" + strconv.Itoa(len(tt.wantOutput)), "context_at_start=<nil>"} {
+				for _, field := range []string{"wait_elapsed=", "pid=", "context_at_start=<nil>"} {
 					if !strings.Contains(err.Error(), field) {
 						t.Errorf("error %q missing %q", err, field)
 					}
+				}
+			}
+			if tt.wantStage == "wait" {
+				wantBytes := "output_bytes=" + strconv.Itoa(len(tt.wantOutput))
+				if !strings.Contains(err.Error(), wantBytes) && (!tt.cancelReady || !strings.Contains(err.Error(), "output_bytes=unknown")) {
+					t.Errorf("error %q missing output count %q", err, wantBytes)
 				}
 			}
 			var exitErr *exec.ExitError
@@ -491,8 +497,8 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 
 func TestWorkspaceScanOutputCancellationWithInheritedPipes(t *testing.T) {
 	for _, command := range []string{
-		"sleep 60 & echo $! >&3; wait",
-		"sleep 60 & echo $! >&3; exit 0",
+		"printf observed; sleep 60 & echo $! >&3; wait",
+		"printf observed; sleep 60 & echo $! >&3; exit 0",
 	} {
 		t.Run(command, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -534,6 +540,9 @@ func TestWorkspaceScanOutputCancellationWithInheritedPipes(t *testing.T) {
 				received = true
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("scan error = %v, want context cancellation", err)
+				}
+				if !strings.Contains(err.Error(), "output_bytes=unknown") {
+					t.Fatalf("pending pipe drain must not report zero output: %v", err)
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("scan cancellation waited for inherited pipes to close")

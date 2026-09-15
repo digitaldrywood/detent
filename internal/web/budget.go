@@ -160,6 +160,7 @@ func (c *snapshotEnrichmentCache) enrichVersion(ctx context.Context, snapshot te
 func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
 	snapshot.AdmissionProposals = s.snapshotAdmissionProposals(ctx, snapshot.GeneratedAt)
 	snapshot = s.snapshotParkSummaries(ctx, snapshot)
+	snapshot = s.snapshotCardHistory(ctx, snapshot)
 	if cycleTime, ok := s.snapshotCycleTime(ctx); ok {
 		snapshot.CycleTime = cycleTime
 	}
