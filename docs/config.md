@@ -30,7 +30,7 @@ and sizes.
 global:
   cache:
     max_age: 48h
-    max_bytes: 1073741824000 # 1000 GiB
+    max_bytes: 21474836480 # 20 GiB
 ```
 
 The existing workspace reaper expires build-cache entries older than `max_age`.

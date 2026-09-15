@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -694,6 +695,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		StalenessWarnings:  append([]telemetry.StalenessWarning(nil), snapshot.StalenessWarnings...),
 		CleanupFaults:      append([]telemetry.CleanupFault(nil), snapshot.CleanupFaults...),
 		SharedCaches:       snapshot.SharedCaches,
+		HostCache:          snapshot.HostCache,
 		Budget:             budgetResponse(snapshot.Budget),
 	}
 }
@@ -1674,6 +1676,7 @@ type stateAPIResponse struct {
 	DispatchStalls     []telemetry.DispatchStatus    `json:"dispatch_stalls,omitempty"`
 	LaneSignalWarnings []telemetry.LaneSignalWarning `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings  []telemetry.StalenessWarning  `json:"staleness_warnings,omitempty"`
+	HostCache          *toolcache.Report             `json:"host_cache,omitempty"`
 	SharedCaches       []workspace.CacheUsage        `json:"shared_caches,omitempty"`
 	CleanupFaults      []telemetry.CleanupFault      `json:"workspace_cleanup_failures,omitempty"`
 	Budget             budgetAPIResponse             `json:"budget"`
