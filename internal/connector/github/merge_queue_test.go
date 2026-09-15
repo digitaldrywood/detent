@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -286,4 +287,71 @@ func mergeQueueFixture(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestMergeGroupRemovalIdentityAndFailure(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, comparison, wantHead string
+		failed                     bool
+		logFallback                bool
+	}{
+		{"current head in failed group", "ahead", "head", true, false},
+		{"generic annotation uses job log", "ahead", "head", true, true},
+		{"repaired head not in old group", "diverged", "group", false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			responses := []graphqlTestResponse{
+				{body: `{"data":{"repository":{"pullRequest":{"id":"PR_42","headRefOid":"head","mergeQueue":{},"timelineItems":{"nodes":[{"reason":"failed_checks","createdAt":"2026-09-15T09:44:00Z","beforeCommit":{"oid":"group"}}]}}}}}`},
+				{method: http.MethodGet, path: "/repos/example/repo/compare/head...group", body: `{"status":"` + tt.comparison + `"}`},
+			}
+			if tt.failed {
+				responses = append(responses,
+					graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/commits/group/check-runs?per_page=100", body: `{"total_count":1,"check_runs":[{"id":9001,"name":"build/vet","status":"completed","conclusion":"failure","details_url":"https://github.com/example/repo/actions/runs/34950349298/job/9001"}]}`},
+					graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/check-runs/9001/annotations?per_page=100", body: `[{"path":"internal/cli","annotation_level":"failure","message":"--- FAIL: TestCheckDoctorProjects"}]`})
+			}
+			if tt.logFallback {
+				responses[len(responses)-1].body = `[{"annotation_level":"failure","message":"Process completed with exit code 1"}]`
+				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/actions/jobs/9001/logs", body: "2026-09-15T09:44:00Z --- FAIL: TestCheckDoctorProjects (0.01s)\n"})
+			}
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{})
+			status, err := c.InspectPullRequestMergeQueue(t.Context(), connector.Issue{PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 42, HeadSHA: "head"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.RemovedHeadSHA != tt.wantHead {
+				t.Fatalf("head=%s", status.RemovedHeadSHA)
+			}
+			if tt.failed {
+				for _, want := range []string{"build/vet", "34950349298", "TestCheckDoctorProjects"} {
+					if !strings.Contains(status.RemovalReason, want) {
+						t.Fatalf("reason=%s missing %s", status.RemovalReason, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestMergeQueueFailedTestLog(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, url, body, want string }{
+		{"Actions log names test", "https://github.com/example/repo/actions/runs/1/job/23", "2026-09-15T00:00:00Z --- FAIL: TestCheckDoctorProjects (0.01s)\nexit status 1", "--- FAIL: TestCheckDoctorProjects (0.01s)"},
+		{"no Go failure", "https://github.com/example/repo/actions/runs/1/job/23", "compile error", ""},
+		{"non Actions check", "https://ci.example/build/23", "", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var responses []graphqlTestResponse
+			if strings.Contains(tt.url, "/job/") {
+				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/actions/jobs/23/logs", body: tt.body})
+			}
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{})
+			got, err := c.mergeQueueFailedTestLog(t.Context(), pullRequestRepo{Owner: "example", Name: "repo"}, restCheckRun{ID: 999, DetailsURL: tt.url})
+			if err != nil || got != tt.want {
+				t.Fatalf("detail=%q err=%v want=%q", got, err, tt.want)
+			}
+		})
+	}
 }

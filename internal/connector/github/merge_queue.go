@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
 const inspectPullRequestMergeQueueQuery = `
@@ -173,6 +177,53 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 	if status.Entry != nil && status.Entry.Batching == (connector.MergeQueueBatching{}) {
 		status.Entry.Batching = status.Batching
 	}
+	if status.Entry == nil && status.RemovalObserved && issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.HeadSHA) == status.HeadSHA && status.RemovedHeadSHA != "" {
+		removedCommit := status.RemovedHeadSHA
+		if removedCommit != status.HeadSHA {
+			var comparison struct {
+				Status string `json:"status"`
+			}
+			path := restRepositoryPath(pullRequestRepoName(repo)) + "/compare/" + url.PathEscape(status.HeadSHA) + "..." + url.PathEscape(removedCommit)
+			if err := c.client.REST(ctx, http.MethodGet, path, nil, &comparison); err != nil {
+				return status, fmt.Errorf("identify removed merge group: %w", err)
+			}
+			if comparison.Status == "ahead" || comparison.Status == "identical" {
+				status.RemovedHeadSHA = status.HeadSHA
+			}
+		}
+		if status.RemovedHeadSHA == status.HeadSHA {
+			runs, err := fetchRESTCheckRuns(ctx, c.client, restCommitCheckRunsPath(repo, removedCommit))
+			if err != nil {
+				return status, fmt.Errorf("read removed merge-group checks: %w", err)
+			}
+			if _, err := c.transientCheckRunFailures(ctx, repo, runs); err != nil {
+				return status, err
+			}
+			for _, run := range effectiveCheckRuns(runs) {
+				if !completedFailedCheckRun(run) {
+					continue
+				}
+				status.RemovalReason += fmt.Sprintf("\n- failed job: %s; run: %d; %s", run.Name, checkRunWorkflowRunID(run), firstNonBlank(run.DetailsURL, run.HTMLURL))
+				if !strings.Contains(run.FailureDetail, "--- FAIL:") {
+					detail, err := c.mergeQueueFailedTestLog(ctx, repo, run)
+					if err != nil {
+						if pullRequestHydrationThrottleError(err) {
+							return status, err
+						}
+						// Missing or expired logs must not erase the queue outcome.
+						if c.logger != nil {
+							c.logger.DebugContext(ctx, "read merge-group job log failed", "check_run_id", run.ID, "error", err)
+						}
+					} else if detail != "" {
+						run.FailureDetail = strings.TrimSpace(run.FailureDetail + "\n" + detail)
+					}
+				}
+				if run.FailureDetail != "" {
+					status.RemovalReason += "\n  " + run.FailureDetail
+				}
+			}
+		}
+	}
 	return status, nil
 }
 
@@ -268,4 +319,35 @@ func connectorMergeQueueEntry(entry *mergeQueueEntryNode) *connector.PullRequest
 		out.Batching = entry.MergeQueue.Configuration.batching()
 	}
 	return out
+}
+
+// Use Actions' job identity from its details URL, not the check-run ID.
+func (c *Connector) mergeQueueFailedTestLog(ctx context.Context, repo pullRequestRepo, run restCheckRun) (string, error) {
+	parsed, err := url.Parse(firstNonBlank(run.DetailsURL, run.HTMLURL))
+	if err != nil {
+		return "", nil
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 2 || parts[len(parts)-2] != "job" {
+		return "", nil
+	}
+	job, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	if err != nil || job <= 0 {
+		return "", nil
+	}
+	path := restRepositoryPath(pullRequestRepoName(repo)) + "/actions/jobs/" + strconv.FormatInt(job, 10) + "/logs"
+	logs, _, err := c.client.RESTText(ctx, path, "application/vnd.github+json", 4<<20)
+	if err != nil {
+		return "", err
+	}
+	var failures []string
+	for line := range strings.SplitSeq(logs, "\n") {
+		if index := strings.Index(line, "--- FAIL:"); index >= 0 {
+			failures = append(failures, strings.TrimSpace(line[index:]))
+			if len(failures) == 10 {
+				break
+			}
+		}
+	}
+	return runtimeoutput.Truncate(strings.Join(failures, "\n"), 2048).Value, nil
 }
