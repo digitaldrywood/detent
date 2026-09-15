@@ -1261,6 +1261,13 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			continue
 		}
 		repository := nativeMergeQueueRepositoryKey(issue)
+		if issue.PullRequest != nil && issue.PullRequest.Draft {
+			var hydrated bool
+			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+			if !hydrated {
+				continue
+			}
+		}
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg)
 		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) && decision.reason != string(AutoPromoteReasonCINotGreen) {
 			continue
@@ -1357,7 +1364,7 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) 
 			}
 		}
 		if pullRequest.Draft {
-			return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: "draft_pull_request"}
+			return draftMergingPullRequestDecision(issue, cfg)
 		}
 		if mergeWorkerCIFailed(pullRequest) {
 			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonCINotGreen)}
@@ -1421,6 +1428,11 @@ func (o *Orchestrator) applyStaleMergingPullRequestDecision(
 }
 
 func staleMergingPullRequestComment(issue connector.Issue, decision staleMergingPullRequestDecision) string {
+	if issue.PullRequest != nil && issue.PullRequest.Draft {
+		if handoff := mergeReworkComment(issue, decision.reason, decision.targetState); handoff != "" {
+			return handoff
+		}
+	}
 	var b strings.Builder
 	b.WriteString("Reconciled this issue from Merging to ")
 	b.WriteString(decision.targetState)

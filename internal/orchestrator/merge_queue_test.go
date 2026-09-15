@@ -1278,6 +1278,7 @@ func TestNativeMergeQueueReviewRework(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name            string
+		clean           bool
 		unresolved      bool
 		hydratedThreads *[]connector.PullRequestReviewThread
 		hydrationErr    error
@@ -1287,6 +1288,7 @@ func TestNativeMergeQueueReviewRework(t *testing.T) {
 		wantRework      bool
 	}{
 		{name: "unresolved thread", unresolved: true, wantRework: true},
+		{name: "green clean head with unresolved thread", clean: true, unresolved: true, wantRework: true},
 		{name: "resolved thread", unresolved: true, hydratedThreads: &[]connector.PullRequestReviewThread{}, wantEnqueues: 1},
 		{name: "newly hydrated thread", hydratedThreads: &[]connector.PullRequestReviewThread{{Path: "merge.go", Line: 10}}, wantRework: true},
 		{name: "hydration unavailable", hydrationErr: errors.New("unavailable")},
@@ -1299,6 +1301,9 @@ func TestNativeMergeQueueReviewRework(t *testing.T) {
 			now := time.Now()
 			issue := nativeMergeQueueTestIssue(2643, "success")
 			issue.PullRequest.MergeableState = "blocked"
+			if tt.clean {
+				issue.PullRequest.MergeableState = "clean"
+			}
 			if tt.unresolved {
 				issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "merge.go", Line: 10}}
 			}

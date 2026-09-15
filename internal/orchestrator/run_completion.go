@@ -1513,6 +1513,15 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
 		return true
 	}
+	if issue.PullRequest != nil && issue.PullRequest.Draft {
+		var hydrated bool
+		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+		if !hydrated {
+			running.Issue = issue
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+			return true
+		}
+	}
 	if revocation, revoked := mergeRevocationForIssue(
 		issue,
 		o.cfg,

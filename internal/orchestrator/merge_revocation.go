@@ -88,6 +88,13 @@ func (o *Orchestrator) revokeRunningMergeIfIneligible(
 		return running, false
 	}
 	running.Issue = mergeIssueTrackerFields(running.Issue, refreshed)
+	if running.Issue.PullRequest != nil && running.Issue.PullRequest.Draft {
+		var hydrated bool
+		running.Issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, running.Issue)
+		if !hydrated {
+			return running, false
+		}
+	}
 	if decision, revoked := mergeRevocationForIssue(running.Issue, o.cfg, true, operationalCompletionAccepted); revoked {
 		o.beginMergeRevocation(state, running, decision, now)
 		return running, true
@@ -146,10 +153,11 @@ func mergeRevocationForIssue(
 		if !pullRequest.Draft {
 			return mergeRevocation{}, false
 		}
+		decision := draftMergingPullRequestDecision(issue, cfg)
 		return mergeRevocation{
 			issue:       cloneIssue(issue),
-			reason:      mergeRevocationDraftPullRequest,
-			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+			reason:      decision.reason,
+			targetState: decision.targetState,
 		}, true
 	case "closed":
 		return mergeRevocation{
@@ -160,6 +168,32 @@ func mergeRevocationForIssue(
 	default:
 		return mergeRevocation{}, false
 	}
+}
+
+// Draft merges share the existing review and CI routing before asking a human
+// to explain a draft whose current head has no actionable failure.
+func draftMergingPullRequestDecision(issue connector.Issue, cfg Config) staleMergingPullRequestDecision {
+	config := normalizeAutoPromoteConfig(cfg.AutoPromote)
+	if len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+		return staleMergingPullRequestDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonUnresolvedReviewThreads)}
+	}
+	if mergeWorkerCIFailed(issue.PullRequest) {
+		return staleMergingPullRequestDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonCINotGreen)}
+	}
+	return staleMergingPullRequestDecision{targetState: config.SourceState, reason: mergeRevocationDraftPullRequest}
+}
+
+func mergeReworkComment(issue connector.Issue, reason, target string) string {
+	if reason != string(AutoPromoteReasonUnresolvedReviewThreads) && reason != string(AutoPromoteReasonCINotGreen) {
+		return ""
+	}
+	summary := AutoPromoteSummaryFromIssue(issue)
+	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReason(reason))
+	decision.CIStatus = summary.CIStatus
+	for _, thread := range summary.UnresolvedReviewThreads {
+		decision.Findings = append(decision.Findings, AutoPromoteFinding{Body: thread.Body, Path: thread.Path, Line: thread.Line})
+	}
+	return autoPromoteComment(summary, decision, autoPromoteMergingState, target)
 }
 
 func mergeRevocationRequiresImmediateStop(revocation mergeRevocation, result runpkg.RunResult) bool {
@@ -531,6 +565,10 @@ func (o *Orchestrator) routeMergeRevocation(ctx context.Context, state *State, r
 		}
 		break
 	}
+	reason := string(store.WorkAttemptTerminalMergeRevoked) + ":" + revocation.reason
+	if revocation.reason == string(AutoPromoteReasonUnresolvedReviewThreads) || revocation.reason == string(AutoPromoteReasonCINotGreen) {
+		reason = revocation.reason
+	}
 	if err := o.updateIssueStateByID(
 		ctx,
 		state,
@@ -538,7 +576,7 @@ func (o *Orchestrator) routeMergeRevocation(ctx context.Context, state *State, r
 		revocation.issue,
 		revocation.targetState,
 		at,
-		string(store.WorkAttemptTerminalMergeRevoked)+":"+revocation.reason,
+		reason,
 	); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
@@ -631,6 +669,10 @@ func (o *Orchestrator) commentMergeRevocation(
 			body.WriteString("\n- pull_request: ")
 			body.WriteString(url)
 		}
+	}
+	if handoff := mergeReworkComment(revocation.issue, revocation.reason, revocation.targetState); handoff != "" {
+		body.WriteString("\n\n")
+		body.WriteString(handoff)
 	}
 	body.WriteString("\n\n")
 	body.WriteString(signature)
