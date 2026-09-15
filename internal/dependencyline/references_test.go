@@ -60,3 +60,24 @@ func FuzzDependencyReferences(f *testing.F) {
 		}
 	})
 }
+
+func TestDeclarationsPreservesProseOutsideFences(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, body string
+		want       []string
+		wantErr    bool
+	}{
+		{name: "trailing prose", body: "**Depends on:** #1 so helpers exist", want: []string{"#1 so helpers exist"}},
+		{name: "surrounding declarations", body: "Depends on: #1\n~~~text\nDepends on: #2\n~~~\nBlocked by: #3", want: []string{"#1", "#3"}},
+		{name: "unfinished fence", body: "Depends on: #1\n```text\nDepends on: #2", want: []string{"#1"}, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, complete := Declarations(tt.body)
+			if !reflect.DeepEqual(got, tt.want) || !complete != tt.wantErr {
+				t.Fatalf("Declarations() = %v, %v; want %v, complete %v", got, complete, tt.want, !tt.wantErr)
+			}
+		})
+	}
+}

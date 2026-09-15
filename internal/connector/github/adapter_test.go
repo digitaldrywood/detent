@@ -1383,10 +1383,11 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name:    "empty native list ignores prose",
+			name:    "empty native list retains body",
 			initial: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			status:  http.StatusOK,
 			body:    `[]`,
+			want:    []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -1394,7 +1395,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name: "native excludes unmatched prose",
+			name: "native includes unmatched body",
 			initial: []connector.BlockedRef{
 				{Identifier: "digitaldrywood/detent#100", Source: connector.BlockedRefSourceProse},
 				{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse},
@@ -1406,7 +1407,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 				Identifier: "digitaldrywood/detent#100",
 				State:      "Done",
 				Source:     connector.BlockedRefSourceNative,
-			}},
+			}, {Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -1430,7 +1431,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name:             "native only ignores prose on capable repo",
+			name:             "legacy native only retains body on capable repo",
 			dependencySource: dependencySourceNativeOnly,
 			initial:          []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			status:           http.StatusOK,
@@ -1440,7 +1441,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 				Identifier: "digitaldrywood/detent#100",
 				State:      "Open",
 				Source:     connector.BlockedRefSourceNative,
-			}},
+			}, {Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -4125,6 +4126,7 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 				{
 					body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
 				},
+				{method: http.MethodGet, path: "/repos/digitaldrywood/creswoodcorners-phone/issues/163/dependencies/blocked_by?per_page=100", body: `[]`},
 				{
 					method: http.MethodGet,
 					path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
@@ -4160,33 +4162,30 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 	}
 }
 
-func TestConnectorFetchIssuesByStatesKeepsBodyDependencyWhenHydrationFails(t *testing.T) {
+func TestConnectorFetchIssuesByStatesRejectsBodyDependencyWhenHydrationFails(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
-		},
-		{
-			status: http.StatusInternalServerError,
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
-			body:   `{"message":"temporary github failure"}`,
-		},
-	})
-	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	for _, status := range []int{http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{
+					body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
+				},
+				{
+					status: status,
+					method: http.MethodGet,
+					path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
+					body:   `{"message":"temporary github failure"}`,
+				},
+			})
+			c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
-	got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
-	if err != nil {
-		t.Fatalf("FetchIssuesByStates() error = %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
-	}
-
-	want := []connector.BlockedRef{{Identifier: "digitaldrywood/creswoodcorners-phone#162", Source: connector.BlockedRefSourceProse}}
-	if !reflect.DeepEqual(got[0].BlockedBy, want) {
-		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+			got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
+			if err == nil || len(got) != 0 {
+				t.Fatalf("FetchIssuesByStates() = %+v, %v; want error and no issues", got, err)
+			}
+		})
 	}
 }
 

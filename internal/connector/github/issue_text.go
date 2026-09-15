@@ -2,7 +2,6 @@ package github
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -46,14 +45,10 @@ func (c *Connector) resolveBlockedByProjectState(ctx context.Context, issues []c
 	for _, identifier := range missing {
 		blocker, ok, err := c.fetchIssueByIdentifier(ctx, identifier)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return fmt.Errorf("resolve blocked-by issue %s: %w", identifier, err)
-			}
-			c.logBlockedByHydrationError(ctx, identifier, err)
-			continue
+			return fmt.Errorf("resolve blocked-by issue %s: %w", identifier, err)
 		}
 		if !ok {
-			continue
+			return fmt.Errorf("resolve blocked-by issue %s: %w", identifier, ErrNotFound)
 		}
 		key := normalizedIssueIdentifier(identifier)
 		if key != "" {
@@ -88,13 +83,6 @@ func (c *Connector) applyBlockedByIssueState(ref *connector.BlockedRef, blocker 
 	ref.State = state
 	ref.HumanOwned = connector.HumanOwned(blocker)
 	ref.HumanCompletionReady = ref.HumanOwned && connector.HumanPrerequisiteReady(blocker)
-}
-
-func (c *Connector) logBlockedByHydrationError(ctx context.Context, identifier string, err error) {
-	if c == nil || c.logger == nil {
-		return
-	}
-	c.logger.DebugContext(ctx, "github blocked-by hydration skipped", "identifier", identifier, "error", err)
 }
 
 func labelNames(labels nodeConnection[label]) []string {
@@ -266,13 +254,10 @@ func parseBlockedBy(body string, repo string) []connector.BlockedRef {
 	seen := map[string]struct{}{}
 	blockers := []connector.BlockedRef{}
 
-	for _, line := range strings.FieldsFunc(body, func(r rune) bool {
-		return r == '\n' || r == '\r'
-	}) {
-		text, ok := dependencyline.Match(line)
-		if !ok {
-			continue
-		}
+	// Keep declarations before an unfinished fence; its remaining contents are
+	// examples. Only writers need to reject an unfinished fence before appending.
+	declarations, _ := dependencyline.Declarations(body)
+	for _, text := range declarations {
 		for _, identifier := range issueReferencesInText(text, repo) {
 			key := normalizedIssueIdentifier(identifier)
 			if key == "" {

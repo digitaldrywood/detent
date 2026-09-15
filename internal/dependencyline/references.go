@@ -29,8 +29,10 @@ func CanonicalReference(value, repository string) (string, error) {
 	return strings.ToLower(value), nil
 }
 
-func References(body, repository string) ([]string, error) {
-	var refs []string
+// Declarations returns dependency text outside fenced examples. An unfinished
+// fence returns false so callers that append declarations cannot hide new text.
+func Declarations(body string) ([]string, bool) {
+	var declarations []string
 	fence := ""
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -50,6 +52,22 @@ func References(body, repository string) ([]string, error) {
 		if !ok {
 			continue
 		}
+
+		declarations = append(declarations, text)
+	}
+	if fence != "" {
+		return declarations, false
+	}
+	return declarations, true
+}
+
+func References(body, repository string) ([]string, error) {
+	declarations, complete := Declarations(body)
+	if !complete {
+		return nil, errors.New("unterminated code fence hides dependency declarations")
+	}
+	var refs []string
+	for _, text := range declarations {
 		for _, value := range strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' }) {
 			ref, err := CanonicalReference(strings.Trim(value, "`"), repository)
 			if err != nil {
@@ -59,9 +77,6 @@ func References(body, repository string) ([]string, error) {
 				refs = append(refs, ref)
 			}
 		}
-	}
-	if fence != "" {
-		return nil, errors.New("unterminated code fence hides dependency declarations")
 	}
 	return refs, nil
 }
