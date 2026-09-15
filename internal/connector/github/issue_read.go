@@ -231,7 +231,7 @@ fragment DetentGitHubIssueParent on Issue {
   assignees(first: 100) { nodes { id login } }
   labels(first: 20) { nodes { name } }
   repository { nameWithOwner }
-  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }
   subIssues(first: $linkedIssuesFirst) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -396,7 +396,7 @@ fragment DetentGitHubIssueParentLabel on Issue {
   assignees(first: 100) { nodes { id login } }
   labels(first: 20) { nodes { name } }
   repository { nameWithOwner }
-  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }
   subIssues(first: $linkedIssuesFirst) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -1536,6 +1536,8 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		ClosedReason:      issue.StateReason,
 		ClosedAt:          parseGitHubTime(issue.ClosedAt),
 		PRNumber:          pullRequestNumber,
+		PRHeadSHA:         pullRequestRef.HeadSHA,
+		PRHeadCommittedAt: cloneGitHubTime(pullRequestRef.HeadCommittedAt),
 		PRRepository:      pullRequestRepository,
 		PRSource:          pullRequestAssociationSource,
 		AuthorID:          actorLogin(issue.Author),

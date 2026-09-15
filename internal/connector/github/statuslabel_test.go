@@ -607,9 +607,9 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 			body:   `[{"number":434,"html_url":"https://github.com/digitaldrywood/digitaldrywood/pull/434","state":"open","head":{"ref":"detent/digitaldrywood-digitaldrywood_digitaldrywood_433-a212db2634a4","sha":"sha-434"}}]`,
 		},
 		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/digitaldrywood/pulls/434",
-			body:   `{"number":434,"html_url":"https://github.com/digitaldrywood/digitaldrywood/pull/434","state":"open","head":{"ref":"detent/digitaldrywood-digitaldrywood_digitaldrywood_433-a212db2634a4","sha":"sha-434"}}`,
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"repository":{"pullRequest":{"number":434,"url":"https://github.com/digitaldrywood/digitaldrywood/pull/434","state":"OPEN","headRefName":"detent/digitaldrywood-digitaldrywood_digitaldrywood_433-a212db2634a4","headSHA":"sha-434","activityAt":null,"commits":{"nodes":[{"commit":{"oid":"sha-434","committedDate":"2026-06-05T10:30:00Z"}}]}}}}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -706,9 +706,7 @@ func TestConnectorFetchIssuesByStatesScopesPullRequestHydrationByIssueState(t *t
 			body:   `[{"number":110,"html_url":"https://github.com/digitaldrywood/detent/pull/110","state":"closed","merged_at":"2026-07-01T12:00:00Z","head":{"ref":"detent/digitaldrywood_detent_10","sha":"sha-110"}},{"number":120,"html_url":"https://github.com/digitaldrywood/detent/pull/120","state":"open","head":{"ref":"detent/digitaldrywood_detent_20","sha":"sha-120"}}]`,
 		},
 		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls/120",
-			body:   `{"number":120,"html_url":"https://github.com/digitaldrywood/detent/pull/120","state":"open","head":{"ref":"detent/digitaldrywood_detent_20","sha":"sha-120"}}`,
+			method: http.MethodPost, path: "/", body: `{"data":{"repository":{"pullRequest":{"number":120,"url":"https://github.com/digitaldrywood/detent/pull/120","state":"OPEN","headRefName":"detent/digitaldrywood_detent_20","headSHA":"sha-120","activityAt":null,"mergedAt":null}}}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -1047,9 +1045,7 @@ func TestConnectorFetchCandidateIssuesSurfacesStatusLabelConflict(t *testing.T) 
 			body:   `[{"number":609,"html_url":"https://github.com/digitaldrywood/detent/pull/609","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_606-97bf7548e359","sha":"sha-609"}}]`,
 		},
 		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls/609",
-			body:   `{"number":609,"html_url":"https://github.com/digitaldrywood/detent/pull/609","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_606-97bf7548e359","sha":"sha-609"}}`,
+			method: http.MethodPost, path: "/", body: `{"data":{"repository":{"pullRequest":{"number":609,"url":"https://github.com/digitaldrywood/detent/pull/609","state":"OPEN","headRefName":"detent/detent-digitaldrywood_detent_606-97bf7548e359","headSHA":"sha-609","activityAt":null,"mergedAt":null}}}}`,
 		},
 		{
 			method: http.MethodGet,

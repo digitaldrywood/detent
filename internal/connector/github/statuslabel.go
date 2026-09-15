@@ -37,7 +37,7 @@ query DetentGitHubLabelIssuePullRequestReferences($issueIds: [ID!]!) {
       }
       closedByPullRequestsReferences(first: 100) {
         pageInfo { hasNextPage endCursor }
-        nodes { number url state updatedAt repository { nameWithOwner } }
+        nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } }
       }
     }
   }
@@ -52,7 +52,7 @@ query DetentGitHubLabelIssuePullRequestReferencesPage($issueId: ID!, $after: Str
       id
       closedByPullRequestsReferences(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { number url state updatedAt repository { nameWithOwner } }
+        nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } }
       }
     }
   }
@@ -238,6 +238,8 @@ func (c *Connector) attachIssuePullRequestReferences(ctx context.Context, issues
 			for _, index := range indexesByID[id] {
 				number := ref.Number
 				issues[index].PRNumber = &number
+				issues[index].PRHeadSHA = ref.HeadSHA
+				issues[index].PRHeadCommittedAt = cloneGitHubTime(ref.HeadCommittedAt)
 				issues[index].PRRepository = ref.Repository
 				issues[index].PRSource = "github_closing_reference"
 				if includeState {

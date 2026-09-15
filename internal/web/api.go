@@ -751,7 +751,14 @@ func instanceResponse(instance telemetry.Instance, displayName string, build bui
 }
 
 func boardResponse(snapshot telemetry.Snapshot) boardAPIResponse {
+	cards := []boardCardAPIResponse{}
+	for _, issue := range telemetry.CardIssues(snapshot) {
+		if telemetry.ActiveIssueCard(snapshot, issue) {
+			cards = append(cards, boardCardAPIResponse{ProjectID: issue.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, State: issue.State, CardFacts: telemetry.IssueCardFacts(snapshot, issue)})
+		}
+	}
 	return boardAPIResponse{
+		Cards:             cards,
 		StateDistribution: telemetry.BoardStateCounts(snapshot),
 		Flow:              telemetry.BoardProgressPoints(snapshot),
 	}
@@ -1697,7 +1704,16 @@ type instanceAPIResponse struct {
 	AuthorizationConfigured bool   `json:"authorization_configured"`
 }
 
+type boardCardAPIResponse struct {
+	ProjectID  string `json:"project_id"`
+	IssueID    string `json:"issue_id"`
+	Identifier string `json:"identifier"`
+	State      string `json:"state"`
+	telemetry.CardFacts
+}
+
 type boardAPIResponse struct {
+	Cards             []boardCardAPIResponse         `json:"cards"`
 	StateDistribution []telemetry.BoardStateCount    `json:"state_distribution"`
 	Flow              []telemetry.BoardProgressPoint `json:"flow"`
 }

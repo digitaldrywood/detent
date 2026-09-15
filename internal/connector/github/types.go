@@ -143,14 +143,17 @@ type issueComment struct {
 }
 
 type pullRequest struct {
-	Number     int        `json:"number"`
-	URL        string     `json:"url"`
-	State      string     `json:"state"`
-	UpdatedAt  *string    `json:"updatedAt"`
-	Repository repository `json:"repository"`
+	HeadSHA    string                            `json:"headRefOid"`
+	Commits    nodeConnection[pullRequestCommit] `json:"commits"`
+	Number     int                               `json:"number"`
+	URL        string                            `json:"url"`
+	State      string                            `json:"state"`
+	UpdatedAt  *string                           `json:"updatedAt"`
+	Repository repository                        `json:"repository"`
 }
 
 type pullRequestNode struct {
+	HeadCommittedAt            *time.Time                          `json:"-"`
 	MergedAt                   *time.Time                          `json:"mergedAt"`
 	NodeID                     string                              `json:"id"`
 	Number                     int                                 `json:"number"`
@@ -179,6 +182,8 @@ type pullRequestCommit struct {
 }
 
 type commitNode struct {
+	OID               string             `json:"oid"`
+	CommittedDate     *time.Time         `json:"committedDate"`
 	StatusCheckRollup *statusCheckRollup `json:"statusCheckRollup"`
 }
 

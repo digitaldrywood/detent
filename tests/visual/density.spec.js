@@ -327,8 +327,9 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
             signalLines: visibleSignals.map(x => x.getBoundingClientRect().height / parseFloat(getComputedStyle(x).lineHeight)),
           };
         });
-        expect(geometry.supportingHeight).toBeLessThanOrEqual(density === "compact" ? 76 : 130);
-        expect(geometry.height).toBeLessThanOrEqual(density === "compact" ? 160 : 215);
+        // Active facts add one 16px line and the existing 4px card gap.
+        expect(geometry.supportingHeight).toBeLessThanOrEqual(density === "compact" ? 96 : 150);
+        expect(geometry.height).toBeLessThanOrEqual(density === "compact" ? 180 : 235);
         expect(geometry.titleLines).toBeLessThanOrEqual(density === "compact" ? 1.05 : 2.05);
         for (const lines of geometry.signalLines) expect(lines).toBeLessThanOrEqual(1.05);
         if (density === "cozy") cozyHeight = geometry.height;

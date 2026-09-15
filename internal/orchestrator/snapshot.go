@@ -1300,6 +1300,8 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		State:                      pullRequest.State,
 		MergeableState:             pullRequest.MergeableState,
 		HeadSHA:                    pullRequest.HeadSHA,
+		HeadCommittedAt:            timePointerFromPtr(pullRequest.HeadCommittedAt),
+		Checks:                     telemetryPullRequestChecks(pullRequest.Checks),
 		BaseSHA:                    pullRequest.BaseSHA,
 		HydrationUnavailableReason: pullRequest.HydrationUnavailableReason,
 		HydrationDegradedReason:    pullRequest.HydrationDegradedReason,
