@@ -7357,8 +7357,32 @@ func TestSecurityAuditDeltaSnapshot(t *testing.T) {
 			if (snapshot.Previous != nil) != tt.delta {
 				t.Fatalf("snapshot = %#v", snapshot)
 			}
-			if tt.delta && snapshot.FindingFiles["auth.go"] != "authorization now checked" {
+			if tt.delta && snapshot.FindingFiles[filePath] != "authorization now checked" {
 				t.Fatalf("missing finding file: %#v", snapshot)
+			}
+			if tt.delta {
+				if snapshot.Previous.Findings[0].Path != filePath {
+					t.Fatalf("carried path = %q, want %q", snapshot.Previous.Findings[0].Path, filePath)
+				}
+				// The next pass has no rename metadata: the carried verdict must
+				// already identify the file at its current path.
+				nextMetadata := strings.ReplaceAll(metadata, "new", "next")
+				nextServer := newGraphQLTestServer(t, []graphqlTestResponse{
+					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
+					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", body: `{"status":"ahead"}`},
+					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", accept: "application/vnd.github.diff", body: "next delta"},
+					{method: http.MethodGet, path: "/repos/example/repo/contents/" + filePath + "?ref=next", accept: "application/vnd.github.raw", body: "authorization now checked"},
+					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
+				})
+				carried := *snapshot.Previous
+				carried.HeadSHA = snapshot.HeadSHA
+				next, err := newGitHubTestConnector(t, nextServer, Config{}).SecurityAuditDeltaSnapshot(t.Context(), connector.Issue{PRNumber: &number, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number}}, 4096, carried)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if next.FindingFiles[filePath] != "authorization now checked" {
+					t.Fatalf("next finding files = %#v", next.FindingFiles)
+				}
 			}
 		})
 	}

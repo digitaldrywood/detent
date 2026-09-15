@@ -524,6 +524,16 @@ func (c *Connector) securityAuditSnapshot(ctx context.Context, issue connector.I
 	}
 	findingFiles := map[string]string{}
 	if previous != nil && !truncated {
+		// Carry current paths into the next verdict; a later delta will no
+		// longer contain this rename. Copy findings to preserve caller history.
+		carried := *previous
+		carried.Findings = append([]securityaudit.Finding(nil), previous.Findings...)
+		for i := range carried.Findings {
+			if renamed := renamedFiles[carried.Findings[i].Path]; renamed != "" {
+				carried.Findings[i].Path = renamed
+			}
+		}
+		previous = &carried
 		raw, err := json.Marshal(previous)
 		if err != nil {
 			return securityaudit.Snapshot{}, err
@@ -541,11 +551,7 @@ func (c *Connector) securityAuditSnapshot(ctx context.Context, issue connector.I
 				truncated = true
 				break
 			}
-			currentPath := finding.Path
-			if renamed := renamedFiles[finding.Path]; renamed != "" {
-				currentPath = renamed
-			}
-			filePath := "/repos/" + pullRequestRepoName(repo) + "/contents/" + url.PathEscape(currentPath) + "?ref=" + url.QueryEscape(before.Head.SHA)
+			filePath := "/repos/" + pullRequestRepoName(repo) + "/contents/" + url.PathEscape(finding.Path) + "?ref=" + url.QueryEscape(before.Head.SHA)
 			content, oversized, err := c.client.RESTText(ctx, filePath, "application/vnd.github.raw", remaining)
 			if errors.Is(err, ErrNotFound) && removedFiles[finding.Path] {
 				content, err = "File deleted in this delta.", nil
