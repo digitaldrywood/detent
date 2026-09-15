@@ -114,7 +114,9 @@ func (c *Connector) readRESTCandidates(ctx context.Context, request connector.Ca
 		pageNodes := make([]githubIssueNode, 0, len(items))
 		for index := position.Offset; index < len(items) && index-position.Offset < request.Limit-result.ItemsRead; index++ {
 			if items[index].PullRequest == nil {
-				pageNodes = append(pageNodes, githubIssueNode{ID: items[index].NodeID})
+				node := githubIssueNodeFromREST(issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: items[index].Number}, items[index])
+				node.CandidateState = c.githubToDetentState(c.statusLabelStates(request.States)[normalizeLabelName(sources[position.Source])])
+				pageNodes = append(pageNodes, node)
 			}
 		}
 		evidence := c.candidateEvidence(ctx, pageNodes, true)
@@ -250,9 +252,20 @@ func (c *Connector) readProjectCandidates(ctx context.Context, request connector
 		}
 		items := response.Node.Items.Nodes
 		pageNodes := make([]githubIssueNode, 0, len(items))
+		eligible := 0
 		for index := position.Offset; index < len(items); index++ {
 			if items[index].Content != nil {
-				pageNodes = append(pageNodes, *items[index].Content)
+				node := *items[index].Content
+				if items[index].StatusValue != nil {
+					state := c.githubToDetentState(items[index].StatusValue.Name)
+					if _, wanted := wantedStates[normalizeStateName(state)]; wanted {
+						if eligible < request.Limit-len(result.Issues) {
+							node.CandidateState = state
+						}
+						eligible++
+					}
+				}
+				pageNodes = append(pageNodes, node)
 			}
 		}
 		evidence := c.candidateEvidence(ctx, pageNodes, false)

@@ -1541,14 +1541,7 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 	if err != nil {
 		return pullRequestCodexReviews{}, fmt.Errorf("fetch github pull request reviews: %w", err)
 	}
-	reviews := pullRequestCodexReviews{}
-	if review, ok := latestCodexReview(response, headSHA); ok {
-		reviews.CurrentHead = []pullRequestReview{review}
-	}
-	if review, ok := latestCodexReview(response, ""); ok {
-		reviews.Latest = []pullRequestReview{review}
-	}
-	if len(reviews.CurrentHead) > 0 {
+	if reviews := pullRequestReviewsFromEvidence(response, nil, headSHA); len(reviews.CurrentHead) > 0 {
 		return reviews, nil
 	}
 	comments, err := fetchRESTList[restComment](ctx, c.client, restIssueCommentsListPath(issueRef{
@@ -1559,6 +1552,21 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 	if err != nil {
 		return pullRequestCodexReviews{}, fmt.Errorf("fetch github pull request review summary comments: %w", err)
 	}
+	return pullRequestReviewsFromEvidence(response, comments, headSHA), nil
+}
+
+func pullRequestReviewsFromEvidence(response []restReview, comments []restComment, headSHA string) pullRequestCodexReviews {
+	reviews := pullRequestCodexReviews{}
+	if review, ok := latestCodexReview(response, headSHA); ok {
+		reviews.CurrentHead = []pullRequestReview{review}
+	}
+	if review, ok := latestCodexReview(response, ""); ok {
+		reviews.Latest = []pullRequestReview{review}
+	}
+	if len(reviews.CurrentHead) > 0 {
+		return reviews
+	}
+
 	if review, ok := latestCodexSummaryEvidence(comments); ok && len(reviews.Latest) == 0 {
 		reviews.Latest = []pullRequestReview{review}
 	} else if _, ok := latestTrustedCodexSummaryComment(comments); ok && len(reviews.Latest) == 0 {
@@ -1571,7 +1579,7 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 			reviews.Latest = []pullRequestReview{review}
 		}
 	}
-	return reviews, nil
+	return reviews
 }
 
 type pullRequestReference struct {

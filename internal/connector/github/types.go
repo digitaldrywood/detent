@@ -57,29 +57,31 @@ type projectItemNode struct {
 }
 
 type githubIssueNode struct {
-	BlockedBy                      *issueNodesConnection        `json:"blockedBy"`
-	ClosedAt                       *string                      `json:"closedAt"`
-	TypeName                       string                       `json:"__typename"`
-	ID                             string                       `json:"id"`
-	Number                         int                          `json:"number"`
-	Title                          string                       `json:"title"`
-	Body                           string                       `json:"body"`
-	State                          string                       `json:"state"`
-	StateReason                    string                       `json:"stateReason"`
-	URL                            string                       `json:"url"`
-	CreatedAt                      *string                      `json:"createdAt"`
-	UpdatedAt                      *string                      `json:"updatedAt"`
-	Author                         *actor                       `json:"author"`
-	AuthorAssociation              string                       `json:"authorAssociation"`
-	Assignees                      nodeConnection[assignee]     `json:"assignees"`
-	Labels                         nodeConnection[label]        `json:"labels"`
-	Comments                       nodeConnection[issueComment] `json:"comments"`
-	Repository                     repository                   `json:"repository"`
-	ClosedByPullRequestsReferences nodeConnection[pullRequest]  `json:"closedByPullRequestsReferences"`
-	TimelineItems                  nodeConnection[timelineItem] `json:"timelineItems"`
-	ProjectItems                   *projectItemsConnection      `json:"projectItems"`
-	SubIssues                      linkedIssuesConnection       `json:"subIssues"`
-	TrackedIssues                  linkedIssuesConnection       `json:"trackedIssues"`
+	CandidateState                 string                        `json:"-"`
+	CandidatePR                    *candidatePullRequestEvidence `json:"-"`
+	BlockedBy                      *issueNodesConnection         `json:"blockedBy"`
+	ClosedAt                       *string                       `json:"closedAt"`
+	TypeName                       string                        `json:"__typename"`
+	ID                             string                        `json:"id"`
+	Number                         int                           `json:"number"`
+	Title                          string                        `json:"title"`
+	Body                           string                        `json:"body"`
+	State                          string                        `json:"state"`
+	StateReason                    string                        `json:"stateReason"`
+	URL                            string                        `json:"url"`
+	CreatedAt                      *string                       `json:"createdAt"`
+	UpdatedAt                      *string                       `json:"updatedAt"`
+	Author                         *actor                        `json:"author"`
+	AuthorAssociation              string                        `json:"authorAssociation"`
+	Assignees                      nodeConnection[assignee]      `json:"assignees"`
+	Labels                         nodeConnection[label]         `json:"labels"`
+	Comments                       nodeConnection[issueComment]  `json:"comments"`
+	Repository                     repository                    `json:"repository"`
+	ClosedByPullRequestsReferences nodeConnection[pullRequest]   `json:"closedByPullRequestsReferences"`
+	TimelineItems                  nodeConnection[timelineItem]  `json:"timelineItems"`
+	ProjectItems                   *projectItemsConnection       `json:"projectItems"`
+	SubIssues                      linkedIssuesConnection        `json:"subIssues"`
+	TrackedIssues                  linkedIssuesConnection        `json:"trackedIssues"`
 }
 
 type timelineItem struct {
@@ -372,6 +374,8 @@ type restCommitStatus struct {
 }
 
 type pullRequestCI struct {
+	checkRuns             []restCheckRun
+	workflowRuns          []restWorkflowRun
 	State                 string
 	Checks                []connector.PullRequestCheck
 	CheckRunCount         int

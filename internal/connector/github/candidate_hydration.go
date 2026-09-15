@@ -21,6 +21,7 @@ var candidateProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery
 // replace REST hydration; nil native connections are not authoritative empties.
 func (c *Connector) candidateEvidence(ctx context.Context, nodes []githubIssueNode, fetch bool) map[string]githubIssueNode {
 	complete := make(map[string]githubIssueNode)
+	defer func() { c.observeCandidatePullRequests(ctx, nodes, complete) }()
 	pending := make([]githubIssueNode, 0, len(nodes))
 	for _, node := range nodes {
 		if strings.TrimSpace(node.ID) == "" {
@@ -138,6 +139,9 @@ func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue conn
 	node, ok := evidence[issue.ID]
 	issues := []connector.Issue{issue}
 	if !ok {
+		if pullRequestStatusPolicy(issue.State, true) != pullRequestStatusSkip {
+			c.logCandidatePRFallback(ctx, issue.Identifier, "incomplete scheduler observation")
+		}
 		err := c.hydrateCandidateIssues(ctx, issues, states)
 		return issues[0], err
 	}
@@ -164,6 +168,36 @@ func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue conn
 	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 		return issue, err
 	}
-	err := c.attachStatePullRequests(ctx, issues, true)
+	if node.CandidatePR != nil && node.CandidatePR.complete {
+		issues[0] = withoutPullRequestAssociation(issues[0])
+		issues[0].PRHeadSHA = ""
+		issues[0].PRHeadCommittedAt = nil
+		if c.usesLabelStatus() {
+			if transition, ok := currentLabelTransition(node.TimelineItems.Nodes, c.statusLabelForState(issue.State)); ok {
+				issues[0].StageUpdatedAt = &transition.EnteredAt
+				issues[0].StageUpdatedActor = transition.Actor
+			}
+		}
+		if node.CandidatePR.pullRequest != nil {
+			issues[0].PRSource = node.CandidatePR.source
+			attachPullRequestToIssue(&issues[0], node.CandidatePR.repo, *node.CandidatePR.pullRequest)
+		}
+		return issues[0], nil
+	}
+	if node.CandidatePR != nil {
+		// The board list carries only a short association preview. If the
+		// observation could not resolve it, use the existing paginated reader.
+		issues[0] = withoutPullRequestAssociation(issues[0])
+		issues[0].PRHeadSHA, issues[0].PRHeadCommittedAt = "", nil
+		if node.CandidatePR.number > 0 {
+			number := node.CandidatePR.number
+			issues[0].PRNumber = &number
+			issues[0].PRRepository = pullRequestRepoName(node.CandidatePR.repo)
+			issues[0].PRSource = node.CandidatePR.source
+		} else if err := c.attachIssuePullRequestReferences(ctx, issues, c.usesLabelStatus(), false); err != nil {
+			return issues[0], err
+		}
+	}
+	err := c.attachStatePullRequests(ctx, issues, node.CandidatePR == nil)
 	return issues[0], err
 }

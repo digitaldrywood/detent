@@ -60,6 +60,8 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		return pullRequestCI{}, err
 	}
 	return pullRequestCI{
+		checkRuns:             append([]restCheckRun(nil), checkRuns...),
+		workflowRuns:          append([]restWorkflowRun(nil), workflowRuns...),
 		State:                 state,
 		Checks:                pullRequestCheckInventory(checkRuns, statuses),
 		CheckRunCount:         len(checkRuns),
