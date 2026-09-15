@@ -3,7 +3,11 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -523,56 +527,57 @@ func TestTransitionCompletedActiveIssuesRoutesUnresolvedReviewThreadsToRework(t 
 	}
 }
 
-func TestTransitionCompletedReworkIssueParksWhileReviewThreadsRemainUnresolved(t *testing.T) {
+// Reproduce #2721: completed Rework cards with unresolved threads were removed
+// on every refresh, until an operator label edit cleared their completion state.
+func TestCompletedReworkCandidatesRemainVisible(t *testing.T) {
 	t.Parallel()
+	for _, tt := range []struct{ number, pr, threads int }{
+		{2659, 2677, 2}, {2660, 2668, 1}, {2663, 2673, 2},
+	} {
+		t.Run(strconv.Itoa(tt.number), func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 15, 2, 21, 0, 0, time.UTC)
+			issue := completionTransitionIssue("Rework", "OPEN")
+			issue.ID = strconv.Itoa(tt.number)
+			issue.Identifier = fmt.Sprintf("digitaldrywood/detent#%d", tt.number)
+			issue.PullRequest.Number = tt.pr
+			issue.PullRequest.MergeableState = "blocked"
+			issue.PullRequest.CIStatus = "pass"
+			issue.PullRequest.UnresolvedReviewThreads = make([]connector.PullRequestReviewThread, tt.threads)
+			cfg := normalizeConfig(Config{
+				AutoPromote:  AutoPromoteConfig{Enabled: true, QuietDuration: 10 * time.Minute, Gate: gate.Config{Kind: gate.KindCommand}},
+				ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"},
+			})
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			slot := dispatchTestIssue("occupied-slot", "Merging")
+			state.Running[slot.ID] = Running{Issue: slot}
+			state.Completed[issue.ID] = Completed{Issue: issue, CompletedAt: now.Add(-5 * time.Hour), FinalState: FinalStateCompleted}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-5 * time.Hour)}
+			for refresh := range 2 {
+				orch.tick(t.Context(), &state, now.Add(time.Duration(refresh)*time.Minute))
+				if len(state.BoardIssues) != 1 || state.BoardIssues[0].ID != issue.ID {
+					t.Fatalf("refresh %d board = %#v, want %s", refresh, state.BoardIssues, issue.Identifier)
+				}
+				if state.DispatchStatus.CandidateCount != 1 {
+					t.Fatalf("refresh %d candidate count = %d", refresh, state.DispatchStatus.CandidateCount)
+				}
+				if state.CandidatesMissingVsTracker == nil || *state.CandidatesMissingVsTracker != 0 {
+					t.Fatalf("missing candidates = %v", state.CandidatesMissingVsTracker)
+				}
 
-	now := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
-	issue := completionTransitionIssue("Rework", "OPEN")
-	issue.PullRequest = &connector.PullRequest{
-		Number:   2104,
-		URL:      "https://github.test/digitaldrywood/detent/pull/2104",
-		State:    "OPEN",
-		CIStatus: "pass",
-		UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
-			Path: "internal/orchestrator/completion_transition.go",
-			Line: 211,
-		}},
-	}
-	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
-	cfg := normalizeConfig(Config{
-		AutoPromote: AutoPromoteConfig{
-			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
-			Gate:          gate.Config{Kind: gate.KindHumanReview},
-		},
-		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates: []string{"Done", "Cancelled"},
-	})
-	orch := &Orchestrator{cfg: cfg, connector: tracker}
-	state := newState(cfg)
-	state.Completed[issue.ID] = Completed{
-		Issue:       issue,
-		CompletedAt: now.Add(-time.Minute),
-		FinalState:  FinalStateCompleted,
-	}
-	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
-
-	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
-
-	if _, ok := result.transitioned[issue.ID]; !ok {
-		t.Fatalf("transitioned[%q] missing", issue.ID)
-	}
-	if len(result.dispatchCandidates) != 0 || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
-		t.Fatalf("result = %#v updates = %#v comments = %#v, want parked without redispatch", result, tracker.updates, tracker.comments)
-	}
-	if _, ok := state.Completed[issue.ID]; !ok {
-		t.Fatalf("Completed[%q] missing while review threads remain unresolved", issue.ID)
-	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		t.Fatalf("Claimed[%q] missing while review threads remain unresolved", issue.ID)
-	}
-	if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
-		t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+				if _, ok := state.Completed[issue.ID]; ok {
+					t.Fatal("completion still prevents Rework dispatch")
+				}
+				if _, ok := state.Claimed[issue.ID]; ok {
+					t.Fatal("completed claim retained")
+				}
+			}
+			if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+				t.Fatal("same-state handoff wrote tracker")
+			}
+		})
 	}
 }
 

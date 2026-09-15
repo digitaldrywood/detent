@@ -727,6 +727,10 @@ type RefreshProgress struct {
 }
 
 type Refresh struct {
+	// CandidatesMissingVsTracker counts discovered candidates absent from the published board.
+	// Nil means no successful comparison has been published.
+	CandidatesMissingVsTracker *int `json:"candidates_missing_vs_tracker"`
+
 	InFlight                *RefreshProgress `json:"in_flight,omitempty"`
 	PollIntervalSeconds     int64            `json:"poll_interval_seconds,omitempty"`
 	StaleAfterSeconds       int64            `json:"stale_after_seconds,omitempty"`

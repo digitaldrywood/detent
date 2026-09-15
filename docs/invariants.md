@@ -272,6 +272,18 @@ failures while preserving earlier snapshots after partial deletion.
 lossless expiry, and repeated removal failures. See
 [workspace retention](workspace-retention.md) for limits and recovery instructions.
 
+Completed Rework cards with unresolved review threads use the existing same-lane
+handoff (#2721). The completion-specific thread park is removed: it previously
+filtered cards out of every refresh while retaining their completion state.
+`TestCompletedReworkCandidatesRemainVisible` reproduces the three incident cards
+and checks repeated candidate/board retention and completion cleanup. The
+read-only `refresh.candidates_missing_vs_tracker` count compares identities from
+the successful candidate read with the published board (including lane changes).
+Doctor reports it per project. Null means no completed comparison; the count
+retains its last successful value on refresh failure and does not independently
+audit GitHub or include observed-only lanes. No additional polling or dispatch
+gate is introduced.
+
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.

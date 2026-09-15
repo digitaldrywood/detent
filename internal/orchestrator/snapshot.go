@@ -45,6 +45,9 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		failureThreshold = refreshFailureDegradedThreshold
 	}
 	refresh := telemetry.Refresh{
+
+		CandidatesMissingVsTracker: cloneIntPointer(s.CandidatesMissingVsTracker),
+
 		PollIntervalSeconds: int64(s.PollInterval / time.Second),
 		StaleAfterSeconds:   int64(staleAfter / time.Second),
 		LastDurationSeconds: durationSecondsCeil(s.LastRefreshDuration),

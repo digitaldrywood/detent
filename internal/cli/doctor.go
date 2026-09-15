@@ -623,6 +623,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			},
 		},
 		doctorCheckJob{
+			Name: "Candidate completeness",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorCandidateCompleteness(jobCtx, boot, cfg.ProjectID, deps)}
+			},
+		},
+		doctorCheckJob{
 			Name: "Dispatch stalls",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorDispatchStalls(jobCtx, boot, cfg.ProjectID, deps)}

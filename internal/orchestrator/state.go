@@ -68,6 +68,9 @@ type State struct {
 	NextRefreshAt            time.Time
 	LastRefreshError         string
 	LastRefreshErrorAt       time.Time
+
+	CandidatesMissingVsTracker *int
+
 	RefreshSources           map[telemetry.RefreshSourceName]telemetry.RefreshSource
 	ManualRefresh            telemetry.RefreshAttempt
 	LastRunningReconcileAt   time.Time
@@ -502,6 +505,9 @@ func (s State) clone() State {
 		LastRefreshError:         s.LastRefreshError,
 		LastRefreshErrorAt:       s.LastRefreshErrorAt,
 		RefreshSources:           cloneRefreshSources(s.RefreshSources),
+
+		CandidatesMissingVsTracker: cloneIntPointer(s.CandidatesMissingVsTracker),
+
 		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,

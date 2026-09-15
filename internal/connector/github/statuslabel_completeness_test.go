@@ -48,6 +48,10 @@ func TestActiveLabelDiscoveryComplete(t *testing.T) {
 					t.Fatalf("refresh %d: candidates = %v, want %v", refresh, got, want)
 				}
 			}
+			if got := len(server.requests()); got != len(responses) {
+				t.Fatalf("request count = %d, want %d across both refreshes", got, len(responses))
+			}
+
 		})
 	}
 }

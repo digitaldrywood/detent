@@ -849,6 +849,8 @@ type doctorHealthProbe struct {
 }
 
 type doctorHealthResponse struct {
+	CandidatesMissingVsTracker map[string]*int `json:"candidates_missing_vs_tracker"`
+
 	Status                     string                           `json:"status"`
 	Version                    string                           `json:"version"`
 	Commit                     string                           `json:"commit"`
