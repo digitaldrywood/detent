@@ -348,6 +348,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
+	if o.completeRecordedInstanceBlockers(ctx, state, event, running) {
+		return
+	}
+
 	if event.Err != nil {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
 			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
@@ -697,19 +701,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		Tokens:                     event.Result.Tokens,
 		RuntimeIdentity:            running.RuntimeIdentity,
 	}
-	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
-	if event.Result.RateLimits != nil {
-		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-	}
-	if diffStatsPresent(event.Result.DiffStats) {
-		state.DiffStats[event.IssueID] = event.Result.DiffStats
-	}
-	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() {
-		refusal := *event.Result.BudgetRefusal
-		refusal.Issue = cloneIssue(running.Issue)
-		state.BudgetRefusals[event.IssueID] = refusal
-		o.commentBudgetRefusal(ctx, event.IssueID, refusal)
-	}
+	o.recordCompletionUsage(ctx, state, event, running.Issue)
 	if artifactConvergence.Tripped {
 		o.parkArtifactGateConvergence(ctx, state, running.Issue, running.Attempt, event.CompletedAt, artifactConvergence)
 		return
@@ -3020,4 +3012,21 @@ func (o *Orchestrator) completeNativeMergeQueueWorker(ctx context.Context, state
 	}
 	queued := o.delegateNativeMergeQueueIssues(ctx, state, mergeIssueSlices([]connector.Issue{issue}, state.Pipeline), event.CompletedAt)
 	state.Pipeline = overlayNativeMergeQueueIssues(state.Pipeline, queued)
+}
+
+// recordCompletionUsage preserves final usage for ordinary and instance-blocked completions.
+func (o *Orchestrator) recordCompletionUsage(ctx context.Context, state *State, event runpkg.Completion, issue connector.Issue) {
+	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[event.IssueID] = event.Result.DiffStats
+	}
+	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() {
+		refusal := *event.Result.BudgetRefusal
+		refusal.Issue = cloneIssue(issue)
+		state.BudgetRefusals[event.IssueID] = refusal
+		o.commentBudgetRefusal(ctx, event.IssueID, refusal)
+	}
 }

@@ -485,7 +485,7 @@ func autoPromoteWorkpadBlocker(issue connector.Issue, cfg AutoPromoteConfig) aut
 		signal = workpad.CloneSignal(signal)
 		blockers := signal.Blockers[:0]
 		for _, blocker := range signal.Blockers {
-			if blocker.Ref != "" && blocker.Identifier == "" {
+			if blocker.Ref != "" && blocker.Identifier == "" && blocker.Owner != workpad.BlockerOwnerInstance {
 				continue
 			}
 			blockers = append(blockers, blocker)

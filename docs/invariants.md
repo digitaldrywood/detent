@@ -145,6 +145,15 @@ checks missing credentials and secret-free diagnostics, and
 `TestWorkerGitHubCLIAuthStatus` verifies authentication with token environment
 variables absent against an isolated local HTTP fixture.
 
+Scheme-prefixed Workpad blocker refs (#2748) retain their reference and text as
+instance-owned, unverifiable evidence. Successful workers reporting them release
+their claim without issue no-progress strikes or lane changes. Existing live
+Workpad evaluation holds dispatch and promotion until the report clears;
+`TestSymbolicBlockerCompletion` and `TestSymbolicBlockerPromotion` cover attribution,
+retained diagnostic detail, final usage/diff accounting, CI scheduling after a pushed head,
+and promotion after clearance. This replaces symbolic
+ref rejection and Rework routing without adding a park, timer, or recovery loop.
+
 ## INV-3 — Mechanism moratorium
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.

@@ -2,11 +2,14 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -356,4 +359,58 @@ func (c *blockerEvidenceTestConnector) HydratePullRequest(_ context.Context, iss
 		issue.PullRequest = c.hydratedPullRequest
 	}
 	return issue, nil
+}
+
+func TestSymbolicBlockerCompletion(t *testing.T) {
+	t.Parallel()
+	for _, ref := range []string{"instance:chrome-devtools", "go-workflow:ship-state-bootstrap"} {
+		t.Run(ref, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				now := time.Now()
+				issue := implementProgressIssue("head")
+				issue.State = "In Progress"
+				issue.AssignedToWorker = true
+				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '" + ref + "'\n    reason: tool unavailable\n```"}}
+				tracker := &implementProgressConnector{refreshed: issue, hydrated: issue, relabelStarted: make(chan autoPromoteTickRelabel, 1)}
+				attempts := &implementProgressAttemptStore{}
+				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
+				cfg.AutoPromote.Gate.CITriggerLabel = "run-ci"
+				cfg.AutoPromote.Gate.RequiredStatusChecks = []string{"new-check"}
+				o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+				state := newState(cfg)
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 1, TurnCount: 1}
+				tokens := TokenTotals{InputTokens: 100, OutputTokens: 20, TotalTokens: 120}
+				diff := DiffStats{FilesChanged: 2, AddedLines: 12}
+				o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: FinalStateCompleted, PullRequestHeadPushed: true, Tokens: tokens, DiffStats: diff}})
+				synctest.Wait()
+				if len(tracker.relabelStarted) != 1 {
+					t.Error("pushed head did not schedule CI label")
+				}
+				if state.TokenTotals != tokens || state.DiffStats[issue.ID].FilesChanged != diff.FilesChanged {
+					t.Errorf("completion usage lost: tokens=%+v diff=%+v", state.TokenTotals, state.DiffStats[issue.ID])
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+					t.Fatalf("completions = %#v", attempts.completions)
+				}
+				if len(tracker.updates) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 0 || len(state.Claimed) != 0 {
+					t.Fatalf("instance blocker changed issue state: updates=%v blocked=%v retries=%v claims=%v", tracker.updates, state.Blocked, state.Retry, state.Claimed)
+				}
+				evidence := o.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now)
+				if !evidence.Unverifiable || evidence.HumanOwned || len(evidence.Evidence) != 1 || evidence.Evidence[0].Owner != workpad.BlockerOwnerInstance || evidence.Evidence[0].Reference != ref {
+					t.Fatalf("evidence = %#v", evidence)
+				}
+				planner := o.liveDispatchPlanner(t.Context())
+				decision := planner.dispatchableIssueDecision(issue, &state, false, now, "")
+				if decision.dispatchable || !strings.Contains(decision.detail, ref) || !strings.Contains(decision.detail, "tool unavailable") {
+					t.Fatalf("dispatch = %#v", decision)
+				}
+				tracker.refreshed.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\n```"}}
+				issue.Comments = tracker.refreshed.Comments
+				if got := o.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now); got.Holds || got.Unverifiable {
+					t.Fatalf("cleared evidence = %#v", got)
+				}
+			})
+		})
+	}
 }

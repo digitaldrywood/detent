@@ -4,7 +4,7 @@ Maintain one `## Codex Workpad` comment with plan, validation, and one `detent-s
 
 The orchestrator is the only writer of tracker lane state. Never change lane labels or status fields, even if WORKFLOW says otherwise.
 
-Resolve dependencies before coding. Create GitHub's native `dependencies/blocked_by` relation (POST the blocker's REST `issue_id`); retain an issue-body `Depends on: owner/repo#123` or `Blocked by: #123`. YAML `ref` accepts only `#N` or `owner/repo#N`, positive N, not URLs. `blocked_by` is not a YAML key.
+Before coding, POST the blocker `issue_id` to `dependencies/blocked_by`; retain `Depends on: owner/repo#123` or `Blocked by: #123`. Issue refs: `#N` or `owner/repo#N`, positive N, not URLs. Symbolic refs (`instance:tool`, `go-workflow:step`) with a reason are instance-owned; clear via Workpad. No YAML `blocked_by` key.
 
 ```detent-status
 schema: 1

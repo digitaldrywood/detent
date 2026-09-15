@@ -6758,7 +6758,7 @@ func TestTickAutoPromoteMalformedRework(t *testing.T) {
 			now := time.Now()
 			issue := autoPromoteTickIssue("malformed-rework", []string{"bug"}, &connector.PullRequest{Number: 2641, HeadSHA: "head-2641", URL: "https://github.test/digitaldrywood/detent/pull/2641", State: "OPEN", MergeableState: "clean", CIStatus: "pass"})
 			issue.State = "Rework"
-			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: local:e2e-verify-2113.loop.local.json\n    reason: local check\n" + tt.extra + "human_action: null\n```"}}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: malformed-local-ref\n    reason: local check\n" + tt.extra + "human_action: null\n```"}}
 			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, ActiveStates: []string{"In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}})
 			state := newState(cfg)
 			if tt.running {
@@ -6780,7 +6780,7 @@ func TestTickAutoPromoteMalformedRework(t *testing.T) {
 				}
 				return
 			}
-			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[0].body, `blockers[0].ref "local:e2e-verify-2113.loop.local.json" must be #N or owner/repo#N`) {
+			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[0].body, `blockers[0].ref "malformed-local-ref" must be #N or owner/repo#N`) {
 				t.Fatalf("missing diagnostic: %#v", tracker.comments)
 			}
 		})

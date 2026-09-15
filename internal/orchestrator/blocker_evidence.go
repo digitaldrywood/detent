@@ -10,6 +10,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -668,4 +671,42 @@ func recordedBlockerRecoveryComment(
 		b.WriteString(" (owner: orchestrator)")
 	}
 	return b.String()
+}
+
+// completeRecordedInstanceBlockers leaves cause-based dispatch to the existing
+// live Workpad evaluator. Reporting an instance blocker is not issue no-progress.
+func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+	if event.Err != nil || running.Mode == runpkg.RunModePlan || event.Result.FinalState != "" && event.Result.FinalState != FinalStateCompleted {
+		return false
+	}
+	issue, current := o.refreshImplementCompletionIssue(ctx, running.Issue)
+	if !current || workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+		return false
+	}
+	signal := issue.WorkpadSignal
+	if signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked {
+		return false
+	}
+	instance := false
+	for _, blocker := range signal.Blockers {
+		instance = instance || blocker.Owner == workpad.BlockerOwnerInstance
+	}
+	if !instance {
+		return false
+	}
+	evidence := o.evaluateRecordedBlockers(ctx, state, issue, nil, event.CompletedAt)
+	running.Issue = issue
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+		o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
+	}
+	o.recordCompletionUsage(ctx, state, event, issue)
+	detail := workpad.Reason(signal)
+	if o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, map[string]any{"blocker_evidence": evidence.Evidence}) {
+		o.releaseCompletedAttemptClaim(ctx, state, issue)
+		delete(state.mergeReservations, issue.ID)
+	}
+	return true
 }

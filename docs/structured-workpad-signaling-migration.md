@@ -61,3 +61,14 @@ Issue bodies, project instructions, and recalled notes/knowledge are variable
 content rather than fixed wrapper overhead. For a live rollout, measure the same
 sections of its first user message after the updated binary is deployed; existing
 rollouts retain the old text.
+
+### Symbolic blocker references
+
+Scheme-prefixed refs such as `instance:chrome-devtools` and
+`go-workflow:ship-state-bootstrap` are accepted as instance-owned, unverifiable
+blockers. Their scheme and reason remain visible in existing blocker and dispatch
+diagnostics. They are never looked up as issue dependencies, and an inferred
+issue-state predicate is removed. A corrected Workpad must clear the report;
+these refs cannot infer tool availability or automatically clear from issue state.
+Malformed refs without a scheme retain their existing diagnostics. Valid blockers
+and status fields are preserved when ref diagnostics are the only defect.

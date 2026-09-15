@@ -834,7 +834,13 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 			return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
 		}
 		if evaluation.Holds || evaluation.Unverifiable || evaluation.HumanOwned {
-			return dispatchableDecision{reason: dispatchSkipBlockedByDependency}
+			parts := make([]string, 0, len(evaluation.Evidence))
+			for _, evidence := range evaluation.Evidence {
+				if evidence.Status != blockerEvidenceStatusCleared {
+					parts = append(parts, strings.TrimSpace(evidence.Owner+": "+evidence.Reference+" "+evidence.Reason))
+				}
+			}
+			return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: strings.Join(parts, "; ")}
 		}
 	}
 	return dispatchableDecision{dispatchable: true}
