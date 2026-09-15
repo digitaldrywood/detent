@@ -163,8 +163,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
+	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
-		event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
 			return
@@ -206,7 +206,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleWorkspaceBranchHoldCompletion(ctx, state, event, running) {
 		return
 	}
-	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
 	credentialForgeWait := workerGitHubCredentialUnavailableError(event.Err)
 	if !credentialForgeWait && o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 		return

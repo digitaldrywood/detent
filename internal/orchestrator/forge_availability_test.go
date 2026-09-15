@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -1009,6 +1011,51 @@ func TestCredentialCanaryCrossHostFailureReleasesReservation(t *testing.T) {
 			}
 			if probes != 1 {
 				t.Fatalf("reserved %d probes, want one", probes)
+			}
+		})
+	}
+}
+
+func TestCredentialCanaryExcludesMergeWorker(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 15, 6, 30, 0, 0, time.UTC)
+	for _, lane := range []string{"Merging", "In Progress", "Rework"} {
+		t.Run(lane, func(t *testing.T) {
+			state := newState(normalizeConfig(Config{}))
+			issue := dispatchTestIssue("canary", lane)
+			state.ForgeUnavailable["github.com"] = ForgeCondition{Host: "github.com", ErrorClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable, NextProbeAt: now}
+			state.Retry["merge"] = Retry{Issue: dispatchTestIssue("merge", "Merging"), ForgeUnavailable: true, ForgeHost: "github.com"}
+			if got := forgeAvailabilityBlocks(&state, issue, Retry{}, "github.com", now); got != (lane == "Merging") {
+				t.Fatalf("blocked = %v for %s", got, lane)
+			}
+		})
+	}
+}
+
+func TestCompoundPushCLIAuthCompletion(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"git push", "post-push command"} {
+		t.Run(operation, func(t *testing.T) {
+			now := time.Date(2026, 9, 15, 5, 58, 15, 0, time.UTC)
+			cfg := normalizeConfig(Config{ForgeHost: "github.com"})
+			issue := dispatchTestIssue("2731", "In Progress")
+			issue.URL = "https://detent.dev/issues/2731"
+			attempts := &implementProgressAttemptStore{}
+			orch := Orchestrator{cfg: cfg, connector: &implementProgressConnector{}, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 2731, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute)}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now,
+				Result: runpkg.RunResult{PullRequestHeadPushed: true, ForgeWriteCompleted: true, TurnStarted: true},
+				Err:    &runpkg.DeliverableCommandError{OperationClass: "push", Operation: operation, Message: "32bbf98..9773c9e HEAD -> detent/example\nlist pull request labels: exit status 4: To get started with GitHub CLI, please run: gh auth login"},
+			})
+			if len(state.ForgeUnavailable) != 0 || len(state.Blocked) != 0 {
+				t.Fatalf("unexpected pause or park: %#v / %#v", state.ForgeUnavailable, state.Blocked)
+			}
+			if state.Retry[issue.ID].Attempt != 4 {
+				t.Fatalf("attempt charged: %#v", state.Retry[issue.ID])
+			}
+			if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workerGitHubTokenResolutionErrorClass {
+				t.Fatalf("completion = %#v", attempts.completions)
 			}
 		})
 	}

@@ -19,6 +19,8 @@
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
       "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
       "TestCredentialForgeProbeRequiresSuccessfulWrite",
+      "TestCompoundPushCLIAuthCompletion",
+      "TestCredentialCanaryExcludesMergeWorker",
       "TestCredentialWaitSurvivesOverlappingFailures",
       "TestCredentialCanaryRecoversOverlappingHosts",
       "TestCredentialCanaryReplacementOverlappingHosts",

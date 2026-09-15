@@ -262,6 +262,7 @@ type doctorDeps struct {
 	githubRepositoryInfo func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error)
 	githubLabels         func(context.Context, workflowconfig.Config, string) ([]string, error)
 	ghAuthToken          func(context.Context) (string, error)
+	ghAuthStatus         func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
 	openSQLite           func(context.Context, string) (doctorStore, error)
 	openSQLiteReadOnly   func(context.Context, string) (doctorTelemetryStore, error)
@@ -1238,6 +1239,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.githubLabels == nil {
 		d.githubLabels = defaults.githubLabels
 	}
+	if d.ghAuthStatus == nil {
+		d.ghAuthStatus = defaults.ghAuthStatus
+	}
 	if d.ghAuthToken == nil {
 		d.ghAuthToken = defaults.ghAuthToken
 	}
@@ -1314,6 +1318,7 @@ func defaultDoctorDeps() doctorDeps {
 		githubWorkflows:      defaultDoctorWorkflowSources,
 		githubLabels:         defaultDoctorGitHubRepositoryLabels,
 		ghAuthToken:          defaultGHAuthToken,
+		ghAuthStatus:         func(ctx context.Context) (string, error) { return defaultCommandRunner(ctx, "gh", "auth", "status") },
 		listen:               net.Listen,
 		openSQLite:           openDoctorSQLite,
 		openSQLiteReadOnly:   openDoctorSQLiteReadOnly,

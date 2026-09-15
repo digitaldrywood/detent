@@ -95,6 +95,9 @@ func Classify(operation string, detail string) (string, bool) {
 	if !WriteOperation(operation) || detail == "" {
 		return "", false
 	}
+	if GitHubCLIAuthFailure(operation, detail) {
+		return "", false
+	}
 	if WorkerGitHubCredentialUnavailable(detail) {
 		return ClassWorkerGitHubCredentialUnavailable, true
 	}
@@ -136,6 +139,21 @@ func Classify(operation string, detail string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// GitHubCLIAuthFailure distinguishes local CLI login failures from remote write
+// rejection. Git cannot emit gh login instructions; compound commands can.
+func GitHubCLIAuthFailure(operation, detail string) bool {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	detail = strings.ToLower(detail)
+	// A rejected Git write remains a write fault even if advice also mentions gh.
+	for _, rejection := range []string{"authentication failed", "permission denied (publickey)", "could not read username", "http 401", "status 401"} {
+		if strings.Contains(detail, rejection) {
+			return false
+		}
+	}
+	cliLogin := strings.Contains(detail, "gh auth login") || strings.Contains(detail, "not logged into any github hosts")
+	return cliLogin && (operation == "git push" || operation == "git fetch" || !WriteOperation(operation))
 }
 
 func WorkerGitHubCredentialUnavailable(detail string) bool {

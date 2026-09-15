@@ -122,7 +122,7 @@ func forgeHostForIssue(issue connector.Issue, fallback string) string {
 }
 
 func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, fallbackHost string, now time.Time) bool {
-	if workerGitHubCredentialAvailabilityBlocks(state, issue.ID, retry, now) {
+	if workerGitHubCredentialAvailabilityBlocks(state, issue, retry, now) {
 		return true
 	}
 	host := retry.ForgeHost
@@ -143,7 +143,7 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 	return retry.ForgeUnavailable || mergeWorkerIssue(issue)
 }
 
-func workerGitHubCredentialAvailabilityBlocks(state *State, issueID string, retry Retry, now time.Time) bool {
+func workerGitHubCredentialAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, now time.Time) bool {
 	if state == nil {
 		return false
 	}
@@ -157,7 +157,7 @@ func workerGitHubCredentialAvailabilityBlocks(state *State, issueID string, retr
 		// Credential conditions share project-wide admission: one host's write
 		// canary must pass overlapping pauses, while all other workers wait.
 		if condition.ProbeIssueID != "" {
-			if condition.ProbeIssueID != issueID {
+			if condition.ProbeIssueID != issue.ID {
 				return true
 			}
 			canary = true
@@ -168,7 +168,7 @@ func workerGitHubCredentialAvailabilityBlocks(state *State, issueID string, retr
 			canary = true
 		}
 	}
-	return active && !canary
+	return active && (!canary || mergeWorkerIssue(issue))
 }
 
 // A retained project condition can outlive its original issue. Reuse the next
@@ -178,7 +178,7 @@ func credentialCanaryNeedsIssue(state *State, condition ForgeCondition, now time
 		return false
 	}
 	for _, retry := range state.Retry {
-		if retry.ForgeUnavailable && forgeavailability.NormalizeHost(retry.ForgeHost) == forgeavailability.NormalizeHost(condition.Host) {
+		if retry.ForgeUnavailable && !mergeWorkerIssue(retry.Issue) && forgeavailability.NormalizeHost(retry.ForgeHost) == forgeavailability.NormalizeHost(condition.Host) {
 			return false
 		}
 	}
@@ -472,6 +472,9 @@ func (o *Orchestrator) classifyWorkerGitHubCredentialUnavailable(err error, runn
 	if !errors.As(err, &deliverableErr) || deliverableErr == nil {
 		return err
 	}
+	if cliErr := runpkg.WorkerGitHubCLIAuthError(err); cliErr != nil {
+		return cliErr
+	}
 	detail := strings.TrimSpace(deliverableErr.Message + "\n" + deliverableErr.Body)
 	if !deliverableErr.ApprovalDenied && !forgeavailability.WorkerGitHubCredentialUnavailable(detail) {
 		return err
@@ -494,7 +497,10 @@ func (o *Orchestrator) classifyWorkerGitHubCredentialUnavailable(err error, runn
 		}
 	}
 	if strings.TrimSpace(scope.Host) == "" {
-		scope.Host = forgeavailability.HostFromText(deliverableErr.Arguments + " " + deliverableErr.Error())
+		scope.Host = o.cfg.ForgeHost
+		if scope.Host == "" {
+			scope.Host = forgeavailability.HostFromText(deliverableErr.Arguments)
+		}
 	}
 	if strings.TrimSpace(scope.Host) == "" {
 		scope.Host = forgeHostForIssue(running.Issue, o.cfg.ForgeHost)
