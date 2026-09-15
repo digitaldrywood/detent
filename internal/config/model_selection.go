@@ -87,7 +87,6 @@ func SolFirstModelSelection() ModelSelection {
 		},
 		Rules: &[]ModelSelectionRule{
 			{Name: "very_complex", Level: "very_complex", Selector: selector.Selector{Labels: selector.Labels{Include: []string{"complexity:very-complex"}}}},
-			{Name: "explicit_effort", Level: "complex", Efforts: []string{"xhigh", "max"}},
 			{Name: "complex", Level: "complex", Selector: selector.Selector{Labels: selector.Labels{Include: []string{"complexity:complex"}}}},
 		},
 		Unavailable: new("fallback"), FallbackOrder: &[]string{"normal"},

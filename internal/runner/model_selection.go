@@ -326,22 +326,15 @@ func (s agentSelection) rejectIssue(field, value, reason string) agentSelection 
 }
 
 func boundSelectionEffort(result agentSelection, policy config.ModelSelection, level, role string) agentSelection {
-	ceiling := -1
-	for _, defaults := range policy.Levels {
-		ceiling = max(ceiling, selectionEffortRank(selectionValue(defaults.Effort)))
+	limit := selectionValue(policy.Levels[level].Effort)
+	if stage := policy.Stages[role]; selectionValue(stage.Effort) != "" {
+		limit = selectionValue(stage.Effort)
 	}
-	stage := policy.Stages[role]
-	ceiling = max(ceiling, selectionEffortRank(selectionValue(stage.Effort)))
-	if ceiling < 0 || selectionEffortRank(result.Effort) <= ceiling {
+	if selectionEffortRank(limit) < 0 || selectionEffortRank(result.Effort) <= selectionEffortRank(limit) {
 		return result
 	}
-	result.Effort = selectionValue(policy.Levels[level].Effort)
-	field := "levels." + level + ".effort"
-	if stage.Effort != nil && *stage.Effort != "" {
-		result.Effort = *stage.Effort
-		field = "stages." + role + ".effort"
-	}
-	result.Selection.EffortSource = selectionSource(policy, field, "") + ":ceiling"
+	result.Selection.EffortClampedFrom = result.Effort
+	result.Effort = limit
 	return result
 }
 
