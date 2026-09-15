@@ -20,7 +20,6 @@
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/main`.
 - Keep changes scoped to the active issue.
-- Run `make check` before pushing or opening a PR.
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
 - Commit only when explicitly requested by the workflow or human, and use conventional commit messages.
 
@@ -68,15 +67,14 @@ source of incidents.
 
 ## Validation
 
-- `make check` is the local pre-review gate.
-- `make check` runs build, golangci-lint, go vet, race tests, and a 70% coverage gate.
+- Follow the validation rule in [AGENTS.md](AGENTS.md#validation).
 - New or modified Go behavior requires focused table-driven tests using only the standard library.
 - Generated Go files such as `*_templ.go` and sqlc output do not need hand-written tests.
 
 ### Safety-critical orchestrator validation
 
 - `internal/orchestrator/implement_progress.go`, `internal/orchestrator/backend_capacity.go`, `internal/orchestrator/spend_progress.go`, `internal/orchestrator/ranking.go`, `internal/scheduler/global_gate.go`, and the capacity path in `internal/admission/manager.go` are safety-critical brakes and dispatch controls.
-- Changes to these files must preserve their exact-file coverage floor of at least 90% in `scripts/coverage-exceptions.txt` and pass `make check`.
+- Changes to these files must preserve their exact-file coverage floor of at least 90% in `scripts/coverage-exceptions.txt`.
 - Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases and pass `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, dispatch ordering, and priority-only real-capacity acquisition.
 - Run `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s` before submitting such changes.
 
@@ -97,4 +95,4 @@ source of incidents.
 
 Follow [docs/invariants.md](docs/invariants.md). Changes to an invariant or its
 enforcement must update that document in the same PR and identify the invariant
-in the PR template. Run `make check`, including the existing invariant gate.
+in the PR template.

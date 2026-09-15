@@ -12,7 +12,7 @@ when_to_use: "Use when parallel Go HTTP tests intermittently fail with transport
 - Arrange the readiness signal so both implementations progress: the close-sensitive transport signals it when the buggy client uses the process default, while the target server handler signals it when an isolated client reaches the server. This lets the unchanged test fail with the observed error before the fix and complete without timing assumptions afterward.
 - Assert the ownership invariant separately by constructing two clients and verifying both transports are non-nil and distinct.
 - Isolate lifecycle state by cloning the standard `*http.Transport` for each client. If the process default can be a custom `RoundTripper`, use an independent standard-settings fallback rather than silently sharing the custom transport.
-- Prove the regression red against the old constructor, then repeat the focused test, the affected package with a high `-count`, the focused package under `-race`, and the repository validation gate.
+- Prove the regression red against the old constructor, then repeat the focused test, the affected package with a high `-count`, the focused package under `-race`.
 
 ## Confirm the real bodyless-response window
 

@@ -12,4 +12,4 @@ when_to_use: Use when Go tests pass alone but repeated runs skip fake HTTP handl
 - Cover shared registry, private registry, different endpoint, and different credential in a table. Avoid waiting for the OS to reuse a port or for real backoff timers to expire.
 - Isolate fixtures that produce persistent state using an existing instance registry seam. Do not reset package globals while parallel tests can use them, disable production brakes, or retry failing assertions.
 - Preserve a test of default cross-client sharing with a unique per-invocation credential; a test name alone repeats under `-count`.
-- Run repeated race tests for the whole affected package and the repository validation gate.
+- Run repeated race tests for the whole affected package.

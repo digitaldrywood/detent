@@ -12,5 +12,5 @@ when_to_use: Use when focused tests pass but concurrent or race suites intermitt
 - Correlate the trace with the full failing log or stack. A failure in a later test-helper command after the production call succeeded indicates environmental process instability, not necessarily invalid fixture lifecycle.
 - Prefer eliminating launches: reject non-target paths before spawning, bound repository discovery, and combine read-only queries into one command when the tool supports it.
 - If required fan-out remains unsafe across concurrent worktrees, serialize only the top-level validation gate with a crash-safe OS lock scoped to the Git common directory. Bound the wait, share no outputs through the lock location, and keep temp files, generated assets, binaries, and coverage profiles worktree-local.
-- Repeat the same traced command after the change and record before/after launch counts. Then remove the tracing wrapper from `PATH` and run focused race repetitions plus the full validation gate.
+- Repeat the same traced command after the change and record before/after launch counts. Then remove the tracing wrapper from `PATH` and run focused race repetitions.
 - Keep real integration coverage for the external tool's observable behavior; replace only redundant setup or expectation commands with direct fixture facts when those facts are independently known.

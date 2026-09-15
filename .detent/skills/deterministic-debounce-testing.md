@@ -11,4 +11,4 @@ when_to_use: Use when scheduler pressure lets a real debounce timer expire betwe
 - Give the controlled timer observable reset acknowledgements and an explicit fire operation. Use bounded real-time deadlines only to detect a stuck test, never to arrange the debounce cycle.
 - Write the first value, deliver its matching event, and wait for the first timer reset. Write the second value, deliver its event, and wait for the second reset. Fire the timer exactly once.
 - Assert the first delivered update contains the second value and that no additional update follows. Never drain and ignore intermediate updates because that stops testing coalescing.
-- Run the focused test repeatedly with the race detector, then run the repository's full validation gate.
+- Run the focused test repeatedly with the race detector.
