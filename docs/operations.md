@@ -145,7 +145,9 @@ days by modification time only when their first `session_meta` record identifies
 `detent-orchestrator`. Active attempt references and unfinished or recent
 sessions across all projects protect their provider thread IDs, including
 thread references recovered from composite thread/turn session IDs. Recent rollout
-files or metadata for the same session also protect that session. Unknown or
+files or metadata for the same session also protect that session. Protection
+follows `parent_thread_id` through all descendant rollouts, including children
+without their own runtime session rows. Unknown or
 malformed ownership records and non-Detent rollouts remain untouched. The
 shared `sessions` directory may be a symlink; rollout file symlinks are not
 followed. Successful sweeps log `removed_bytes` for measurement.

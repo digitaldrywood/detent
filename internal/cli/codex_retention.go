@@ -183,10 +183,10 @@ func pruneCodexLog(ctx context.Context, path string, now time.Time, limit int64,
 }
 
 type codexRollout struct {
-	path, id string
-	size     int64
-	modified time.Time
-	started  time.Time
+	path, id, parentID string
+	size               int64
+	modified           time.Time
+	started            time.Time
 }
 
 func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
@@ -219,6 +219,7 @@ func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
 			Type    string `json:"type"`
 			Payload struct {
 				ID         string `json:"id"`
+				ParentID   string `json:"parent_thread_id"`
 				Originator string `json:"originator"`
 				Timestamp  string `json:"timestamp"`
 			} `json:"payload"`
@@ -246,7 +247,7 @@ func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
 				return nil
 			} // Uncertain session age must not authorize deletion.
 		}
-		rollouts = append(rollouts, codexRollout{path: path, id: meta.Payload.ID, size: info.Size(), modified: info.ModTime(), started: started})
+		rollouts = append(rollouts, codexRollout{path: path, id: meta.Payload.ID, parentID: meta.Payload.ParentID, size: info.Size(), modified: info.ModTime(), started: started})
 		return nil
 	})
 	return rollouts, err
@@ -265,6 +266,30 @@ func pruneCodexRollouts(ctx context.Context, home string, now time.Time, source 
 	for _, rollout := range rollouts {
 		if !rollout.modified.Before(cutoff) || !rollout.started.Before(cutoff) {
 			protected[rollout.id] = true
+		}
+	}
+	// Propagate protection through the full descendant tree, independent of file
+	// ordering. Children are not necessarily recorded in this instance's store.
+	children := make(map[string][]string)
+	for _, rollout := range rollouts {
+		if rollout.parentID != "" {
+			children[rollout.parentID] = append(children[rollout.parentID], rollout.id)
+		}
+	}
+	var pending []string
+	for id, keep := range protected {
+		if keep {
+			pending = append(pending, id)
+		}
+	}
+	for len(pending) > 0 {
+		id := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, child := range children[id] {
+			if !protected[child] {
+				protected[child] = true
+				pending = append(pending, child)
+			}
 		}
 	}
 	var removed int64

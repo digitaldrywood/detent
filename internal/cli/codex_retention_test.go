@@ -303,3 +303,58 @@ func TestCodexAppServerInProcessList(t *testing.T) {
 		})
 	}
 }
+
+func TestPruneCodexRolloutDescendants(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-40 * 24 * time.Hour)
+	for _, tt := range []struct {
+		name         string
+		protected    map[string]bool
+		recentParent bool
+		wantRemoved  bool
+	}{
+		{name: "active parent", protected: map[string]bool{"parent": true}},
+		{name: "recent parent", recentParent: true},
+		{name: "parent absent from tree", protected: map[string]bool{"missing": true}},
+		{name: "unprotected family", wantRemoved: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			parent := "parent"
+			if tt.name == "parent absent from tree" {
+				parent = "missing"
+			} else {
+				mtime := old
+				if tt.recentParent {
+					mtime = now
+				}
+				writeRollout(t, home, "z-parent", parent, "detent-orchestrator", mtime)
+			}
+			var paths []string
+			// Grandchild sorts before child and parent to exercise order independence.
+			for _, child := range []struct{ name, id, parent string }{
+				{"a-grandchild", "grandchild", "child"},
+				{"b-child", "child", parent},
+			} {
+				path := writeRollout(t, home, child.name, child.id, "detent-orchestrator", old)
+				content := fmt.Sprintf(`{"type":"session_meta","payload":{"id":%q,"parent_thread_id":%q,"originator":"detent-orchestrator"}}`, child.id, child.parent)
+				if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(path, old, old); err != nil {
+					t.Fatal(err)
+				}
+				paths = append(paths, path)
+			}
+			if _, err := pruneCodexRollouts(t.Context(), home, now, retentionFixture{protected: tt.protected}); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range paths {
+				_, err := os.Stat(path)
+				if errors.Is(err, os.ErrNotExist) != tt.wantRemoved {
+					t.Fatalf("%s: stat=%v, want removed=%v", path, err, tt.wantRemoved)
+				}
+			}
+		})
+	}
+}
