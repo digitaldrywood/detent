@@ -839,7 +839,30 @@ var noteSectionHeading = regexp.MustCompile(`(?m)^## \d{4}-\d{2}-\d{2}T\d{2}:\d{
 // compactFailedRunNotes keeps the latest appended failure and its last 40 output
 // lines. The persisted notes remain available for full failure diagnostics.
 func compactFailedRunNotes(content string) string {
-	headings := noteSectionHeading.FindAllStringIndex(content, -1)
+	// Captured output can itself contain note headings. Only headings outside
+	// Markdown fences delimit entries in the rendered notes.
+	var headings [][]int
+	var fence byte
+	fenceLength := 0
+	offset := 0
+	for line := range strings.SplitAfterSeq(content, "\n") {
+		text := strings.TrimSuffix(line, "\n")
+		trimmed := strings.TrimSpace(text)
+		if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
+			length := 0
+			for length < len(trimmed) && trimmed[length] == trimmed[0] {
+				length++
+			}
+			if fence == 0 && length >= 3 {
+				fence, fenceLength = trimmed[0], length
+			} else if trimmed[0] == fence && length >= fenceLength && strings.TrimSpace(trimmed[length:]) == "" {
+				fence, fenceLength = 0, 0
+			}
+		} else if fence == 0 && noteSectionHeading.MatchString(text) {
+			headings = append(headings, []int{offset, offset + len(text)})
+		}
+		offset += len(line)
+	}
 	latest := -1
 	for i, heading := range headings {
 		if strings.HasSuffix(content[heading[0]:heading[1]], " - Failed run output tail") {

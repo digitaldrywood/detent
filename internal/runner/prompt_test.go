@@ -1361,3 +1361,39 @@ func TestBuildPromptCapsFailedRunNotes(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPromptIgnoresFencedNoteHeadings(t *testing.T) {
+	t.Parallel()
+	for _, title := range []string{"Implementation handoff", "Failed run output tail"} {
+		t.Run(title, func(t *testing.T) {
+			t.Parallel()
+			workspace := t.TempDir()
+			path := filepath.Join(workspace, ".detent", "notes.md")
+			embedded := "## 2099-01-01T00:00:00Z - " + title
+			oldOutput := "old-start\n" + embedded + "\n" + strings.Repeat("obsolete-output\n", 100)
+			latestOutput := "latest-start\n" + embedded + "\n" + strings.Repeat("latest-output\n", 60)
+			for i, output := range []string{oldOutput, latestOutput} {
+				err := notes.Append(path, notes.Entry{Title: "Failed run output tail", Body: failedRunNoteBody(RunResult{Output: output}, nil)}, notes.AppendOptions{Now: time.Date(2026, 9, 14, 0, i, 0, 0, time.UTC)})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := notes.Append(path, notes.Entry{Title: "Implementation handoff", Body: "keep neighboring note"}, notes.AppendOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{}, PromptOptions{WorkspacePath: workspace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(prompt, "obsolete-output") || strings.Contains(prompt, "latest-start") || strings.Contains(prompt, embedded) {
+				t.Fatal("prompt retained output preceding the latest 40 lines")
+			}
+			if got := strings.Count(prompt, "latest-output"); got != 40 {
+				t.Fatalf("latest output lines = %d, want 40", got)
+			}
+			if !strings.Contains(prompt, "keep neighboring note") {
+				t.Fatal("lost neighboring note")
+			}
+		})
+	}
+}
