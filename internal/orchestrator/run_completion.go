@@ -1542,6 +1542,12 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 		return true
 	}
+	if issue.PullRequest.AutomatedReviewPending() {
+		o.requestAutomatedReview(ctx, issue)
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt,
+			string(AutoPromoteReasonCodexReviewMissing), string(AutoPromoteReasonCodexReviewMissing), "Waiting for current-head review: ")
+		return true
+	}
 	missingChecks := mergeWorkerMissingRequiredChecks(issue)
 	streaks := o.evaluateMergeRequiredCheckStreaks(ctx, issue, missingChecks, event.CompletedAt)
 	if persistent := persistentMissingRequiredCheckStreaks(streaks); len(persistent) > 0 {
@@ -2071,7 +2077,7 @@ func mergeFastPathResult(event runpkg.Completion) bool {
 }
 
 func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
-	return mergeWorkerCheckedPullRequest(issue) &&
+	return mergeWorkerCheckedPullRequest(issue) && !issue.PullRequest.AutomatedReviewPending() &&
 		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean")
 }
 

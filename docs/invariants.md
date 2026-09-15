@@ -324,6 +324,19 @@ failures while preserving earlier snapshots after partial deletion.
 lossless expiry, and repeated removal failures. See
 [workspace retention](workspace-retention.md) for limits and recovery instructions.
 
+The existing automated-review check retains stale and in-progress bot summary
+evidence (#2764): an established review cycle must complete at the current head
+before promotion, native queue admission, or programmatic merge. A disabled
+initial-review requirement or expired review deadline does not waive that cycle.
+The existing `automated_review_missing` wait and PR comment publication are reused;
+a per-head comment marker deduplicates `@codex review` requests across ticks and
+restarts. No new gate, reason, or reconciliation loop is introduced.
+`TestAutoPromoteReviewAtHead`, `TestReviewHeadRequestAndWait`, and
+`TestReviewSummaryRetainsPendingHead` cover decision, request failures/deduplication,
+and trusted summary evidence respectively.
+`TestReworkLiveDraftPromotion` preserves marking a clean draft ready to trigger
+review while keeping stale-review promotion pending.
+
 Completed Rework cards with unresolved review threads use the existing same-lane
 handoff (#2721). The completion-specific thread park is removed: it previously
 filtered cards out of every refresh while retaining their completion state.

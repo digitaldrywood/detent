@@ -275,3 +275,17 @@ func (i *Issue) UnmarshalYAML(value *yaml.Node) error {
 	*i = Issue(defaults)
 	return nil
 }
+
+// AutomatedReviewPending reports a review cycle that has not covered the head.
+// CodexReviewState contains only current-head evidence from the forge adapter.
+func (p *PullRequest) AutomatedReviewPending() bool {
+	if p == nil || strings.TrimSpace(p.HeadSHA) == "" || strings.TrimSpace(p.LatestCodexReviewState) == "" {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(p.CodexReviewState)) {
+	case "APPROVED", "COMMENTED", "REQUESTED_CHANGES", "CHANGES_REQUESTED", "P1", "P2":
+		return false
+	default:
+		return true
+	}
+}
