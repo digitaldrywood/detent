@@ -40,7 +40,9 @@ func TestRunPausesProjectAfterCorrelatedFailuresAcrossIssues(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
+	// Multiple worker completions may exceed one second under aggregate-suite load.
+	// These timeouts are deadlock guards, not assertions about failure latency.
+	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
 		return state.FailureBreaker.Active()
 	})
 	if state.FailureBreaker.Count != 5 {
@@ -63,7 +65,7 @@ func TestRunPausesProjectAfterCorrelatedFailuresAcrossIssues(t *testing.T) {
 	if got := runner.calls.Load(); got != 5 {
 		t.Fatalf("runner calls after intake pause = %d, want 5", got)
 	}
-	state = waitForState(t, orch, func(state orchestrator.State) bool {
+	state = waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
 		for _, decision := range state.SchedulerDecisions {
 			if decision.Reason == "project_failure_breaker_paused" {
 				return true
@@ -83,7 +85,7 @@ func TestRunPausesProjectAfterCorrelatedFailuresAcrossIssues(t *testing.T) {
 	if !canary.Requested || !canary.Active {
 		t.Fatalf("RequestProjectFailureBreakerCanary() = %#v, want immediate canary", canary)
 	}
-	state = waitForState(t, orch, func(state orchestrator.State) bool {
+	state = waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
 		return runner.calls.Load() >= 10 && state.FailureBreaker.Active() && state.FailureBreaker.Count == 5 && state.FailureBreaker.CanaryIssueID == ""
 	})
 	if got := runner.calls.Load(); got != 10 {

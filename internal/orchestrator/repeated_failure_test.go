@@ -71,7 +71,9 @@ func TestRunParksIssueAfterRepeatedCostlyWorkerFailures(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
+	// Multiple worker completions may exceed one second under aggregate-suite load.
+	// This timeout is a deadlock guard, not an assertion about failure latency.
+	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
 		_, ok := state.Blocked[issue.ID]
 		return ok
 	})
@@ -134,7 +136,9 @@ func TestRunRepeatedFailureCounterSurvivesYieldlessCompletion(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
+	// Multiple worker completions may exceed one second under aggregate-suite load.
+	// This timeout is a deadlock guard, not an assertion about failure latency.
+	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
 		_, ok := state.Completed[issue.ID]
 		return ok
 	})
