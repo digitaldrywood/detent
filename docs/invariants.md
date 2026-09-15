@@ -154,6 +154,10 @@ Issue-body effort is bounded by the selected complexity level's effective effort
 its complexity labels remain the escalation path. This consolidates the existing
 ceiling and removes the preset effort escalation rule without adding a mechanism.
 `TestIssueEffortUsesComplexityCeiling` covers defaults, clamps, and log provenance.
+Resume classification uses the requested issue effort for custom effort rules,
+not the previously clamped value. Each bound evaluation clears old clamp
+provenance; `TestResumeEffortClampProvenance` covers unchanged requests and
+operator reductions.
 
 Worker GitHub credential unavailability and connector write-policy denials reuse
 the forge-availability pause and write canary (#2548). They do not park an issue or

@@ -654,3 +654,33 @@ func TestIssueEffortUsesComplexityCeiling(t *testing.T) {
 		})
 	}
 }
+
+func TestResumeEffortClampProvenance(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, body, want, clamped string }{
+		{name: "unchanged custom effort rule", body: "effort: xhigh", want: "high"},
+		{name: "lower request clears provenance", body: "effort: low", want: "low"},
+		{name: "new clamp replaces provenance", body: "effort: medium", want: "low", clamped: "medium"},
+		{name: "role request keeps custom rule", body: "code:\n  effort: xhigh", want: "high"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6-astra"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}, "very_complex": {Effort: new("high")}}, Rules: &[]config.ModelSelectionRule{{Name: "custom_effort", Level: "very_complex", Efforts: []string{"xhigh"}}}}
+			backend := &catalogAgentBackend{models: selectionCatalog()}
+			issue := connector.Issue{Description: "```detent-agent\nschema: 1\neffort: xhigh\n```"}
+			fresh := resolveAgentSelection(t.Context(), issue, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			if fresh.Err != nil || fresh.Effort != "high" || fresh.Selection.EffortClampedFrom != "xhigh" {
+				t.Fatalf("fresh selection = %+v", fresh)
+			}
+			identity := agentidentity.Configured("codex", "codex", "default", RoleCode, fresh.Model, "", fresh.Effort, "", time.Now())
+			identity.Selection = fresh.Selection
+			issue.Description = "```detent-agent\nschema: 1\n" + tt.body + "\n```"
+			req := RunRequest{Issue: issue, RetryMode: RetryModeResume, ResumeState: store.AgentResumeState{ProviderThreadID: "thread-1", RuntimeIdentity: identity}}
+			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			if got.Err != nil || got.Effort != tt.want || got.Selection.EffortClampedFrom != tt.clamped {
+				t.Fatalf("resumed selection = %+v, want effort %s, clamped from %q", got, tt.want, tt.clamped)
+			}
+		})
+	}
+}

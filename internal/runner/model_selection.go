@@ -73,7 +73,11 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process A
 			result.Selection.EffortSource = "issue." + field
 		}
 		explicitModel, _ := override.ModelForRole(role)
-		level, _ := selectionComplexity(policy, req.Issue, role, result.Effort, roleEffort, explicitModel == "")
+		complexityEffort := effort
+		if complexityEffort == "" {
+			complexityEffort = result.Effort
+		}
+		level, _ := selectionComplexity(policy, req.Issue, role, complexityEffort, roleEffort, explicitModel == "")
 		result = boundSelectionEffort(result, policy, level, role)
 		if result.Effort == identity.ReasoningEffort.Value {
 			return result
@@ -326,6 +330,7 @@ func (s agentSelection) rejectIssue(field, value, reason string) agentSelection 
 }
 
 func boundSelectionEffort(result agentSelection, policy config.ModelSelection, level, role string) agentSelection {
+	result.Selection.EffortClampedFrom = ""
 	limit := selectionValue(policy.Levels[level].Effort)
 	if stage := policy.Stages[role]; selectionValue(stage.Effort) != "" {
 		limit = selectionValue(stage.Effort)
