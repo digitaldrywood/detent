@@ -446,7 +446,7 @@ func TestOnboardingDocsPresentDeliveryProfilesBeforeAnswersEnvFields(t *testing.
 	assertOrder(t, onboarding, "Conservative/manual expands to:", "GATE_REQUIRE_AUTOMATED_REVIEW=true")
 }
 
-func TestOnboardingDocsGenerateAdmissionAndEffortGuidance(t *testing.T) {
+func TestOnboardingDocsGenerateAdmissionAndInstanceEffortGuidance(t *testing.T) {
 	t.Parallel()
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
@@ -456,25 +456,19 @@ func TestOnboardingDocsGenerateAdmissionAndEffortGuidance(t *testing.T) {
 		"ADMISSION_READINESS_CRITERIA",
 		"ADMISSION_SIZE_CRITERIA",
 		"ADMISSION_SAFETY_GATES",
-		"EFFORT_MEDIUM_CRITERIA",
-		"EFFORT_HIGH_CRITERIA",
-		"EFFORT_XHIGH_CRITERIA",
-		"EFFORT_MAX_CRITERIA",
 		"## Admission Criteria",
 		"### Alignment",
 		"### Readiness",
 		"### Size",
 		"### Safety Gates",
-		"creates or appends the operator-approved four-tier rubric in `AGENTS.md`",
-		"leaves `model` unset",
 		`detent onboarding build-workflow`,
-		"contain no detent-agent guidance",
+		"Do not request or generate an issue effort rubric during onboarding",
+		"require_effort: false",
 	} {
 		assertContainsWords(t, onboarding, want)
 	}
 
 	assertOrder(t, onboarding, "For assisted or autonomous intake", "ADMISSION_ALIGNMENT_CRITERIA")
-	assertOrder(t, onboarding, "Ask every project", "EFFORT_MEDIUM_CRITERIA")
 	assertOrder(t, onboarding, "## Phase 4", "detent onboarding build-workflow")
 	assertOrder(t, onboarding, "detent onboarding build-workflow", "## Phase 5")
 }
@@ -732,49 +726,20 @@ func TestWorkflowTemplatesLinkToSkillsOnboarding(t *testing.T) {
 	assertContainsWords(t, onboarding, "Reviewers approve a skill by merging the pull request")
 }
 
-func TestWorkflowTemplatesDocumentStatusEnumAndReviewFlow(t *testing.T) {
+func TestWorkflowTemplatesReferenceAppendedContract(t *testing.T) {
 	t.Parallel()
-
-	for _, path := range []string{
-		"docs/templates/WORKFLOW.project_v2.md",
-		"docs/templates/WORKFLOW.issue_field.md",
-		"docs/templates/WORKFLOW.label.md",
-		"docs/templates/WORKFLOW.github_local.md",
-		"docs/templates/WORKFLOW.non_code_artifact.md",
-	} {
+	for _, path := range []string{"docs/templates/WORKFLOW.project_v2.md", "docs/templates/WORKFLOW.issue_field.md", "docs/templates/WORKFLOW.label.md", "docs/templates/WORKFLOW.github_local.md", "docs/templates/WORKFLOW.non_code_artifact.md"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
-
 			content := readRepositoryTextFile(t, path)
-			assertContainsWords(t, content, "`status` must be one of `in_progress`, `blocked`, or `complete`")
-			for _, want := range []string{
-				"status: in_progress",
-				"status: blocked",
-				"status: complete",
-				"gate_wait_state:",
-				"gate_wait_timeout_seconds:",
-			} {
-				assertContains(t, content, want)
+			assertContainsWords(t, content, "Detent-appended Blocked handoff")
+			assertContainsWords(t, content, "The orchestrator owns all lane transitions")
+			if strings.Contains(content, "```detent-status") || strings.Contains(content, "### For ") {
+				t.Fatal("template duplicates handoff or legacy lanes")
 			}
-
-			workflow, err := workflowconfig.ParseWorkflow([]byte(content))
-			if err != nil {
-				t.Fatalf("ParseWorkflow(%s) error = %v", path, err)
+			if _, err := workflowconfig.ParseWorkflow([]byte(content)); err != nil {
+				t.Fatal(err)
 			}
-			autoPromote := workflow.Config.Agent.AutoPromote
-			autopilot := autoPromote.Enabled &&
-				autoPromote.QuietSeconds == 0 &&
-				autoPromote.GateWaitState == workflowconfig.AutoPromoteGateWaitStateSource
-			if autopilot {
-				assertContainsWords(t, content, "leave the work item in `Production`")
-				assertContainsWords(t, content, "Do not self-move work items to `Review`")
-				return
-			}
-
-			if autoPromote.GateWaitState != workflowconfig.AutoPromoteGateWaitStateReview {
-				t.Fatalf("GateWaitState = %q, want review for review-gate template", autoPromote.GateWaitState)
-			}
-			assertContainsWords(t, content, "Move the issue to `Human Review` only after")
 		})
 	}
 }
@@ -792,16 +757,11 @@ func TestRenderedGitHubWorkflowTemplatesRequireReadyNonDraftPR(t *testing.T) {
 			t.Parallel()
 
 			content := readRepositoryTextFile(t, path)
-			for _, want := range []string{
-				"Use `complete` only when the pull request is open, marked ready for review, is not a draft",
-				"gh pr ready <number>",
-				"gh pr view <number> --json isDraft --jq '.isDraft' # must be false",
-			} {
+			for _, want := range []string{"open a draft PR", "before marking ready", "Verify current-head CI and reviews before reporting completion", "Detent-appended Blocked handoff"} {
 				assertContainsWords(t, content, want)
 			}
+			assertOrder(t, content, "open a draft PR", "before marking ready")
 
-			assertOrder(t, content, "gh pr ready <number>", "status: complete")
-			assertOrder(t, content, "gh pr view <number> --json isDraft", "status: complete")
 		})
 	}
 }
@@ -871,18 +831,7 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
 	bootstrap := readRepositoryTextFile(t, "docs/bootstrap.md")
 
-	for _, want := range []string{
-		"`## Required Execution Flow`",
-		"`For Todo`",
-		"`For In Progress`",
-		"`For Rework`",
-		"`For Merging`",
-		"`$go-workflow:ship`",
-		"`gh pr merge` directly outside ship",
-		"Codex environment exposes `$go-workflow:ship`",
-		"issue remaining in `Merging` with a concrete external blocker recorded",
-		"Current Detent status: {{ issue.state }}",
-	} {
+	for _, want := range []string{"agent.instructions_by_state", "### State:", "The orchestrator owns lane transitions", "Detent-appended Blocked handoff"} {
 		assertContainsWords(t, onboarding, want)
 	}
 
@@ -911,33 +860,13 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 			t.Parallel()
 
 			content := readRepositoryTextFile(t, path)
-			for _, want := range []string{
-				"## Required Execution Flow",
-				"Current Detent status: {{ issue.state }}",
-				"### For Todo",
-				"### For In Progress",
-				"### For Rework",
-				"### For Merging",
-				"```detent-status",
-				"dependencies/blocked_by",
-				"Move the issue to `In Progress`.",
-				"Move the issue to `Human Review` only after the pull request is open",
-				"Confirm `$go-workflow:ship` is available in the Codex environment.",
-				"record the missing ship workflow",
-				"as `human_action` in the `detent-status` block",
-				"Invoke and follow `$go-workflow:ship`.",
-				"Do not call `gh pr merge` directly outside the ship workflow.",
-				"pull request merged and issue moved to `Done`",
-				"issue moved to `Rework` with an actionable defect",
-				"issue remains in `Merging` with a concrete external blocker recorded",
-				"Move the issue to `Done` only after the pull request is merged.",
-			} {
+			for _, want := range []string{"## Required Execution Flow", "Current Detent status: {{ issue.state }}", "### State: Todo", "### State: In Progress", "### State: Rework", "### State: Merging", "Detent-appended Blocked handoff"} {
 				assertContains(t, content, want)
 			}
+			assertOrder(t, content, "### State: Todo", "### State: In Progress")
+			assertOrder(t, content, "### State: In Progress", "### State: Rework")
+			assertOrder(t, content, "### State: Rework", "### State: Merging")
 
-			assertOrder(t, content, "### For Todo", "### For In Progress")
-			assertOrder(t, content, "### For In Progress", "### For Rework")
-			assertOrder(t, content, "### For Rework", "### For Merging")
 		})
 	}
 }

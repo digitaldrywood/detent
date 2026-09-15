@@ -362,67 +362,67 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 		{
 			preset:              "project_v2",
 			profile:             "review_gate",
-			wantReviewPhrase:    "Move the issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "project_v2",
 			profile:             "full_autopilot",
 			wantAutopilot:       true,
-			wantReviewPhrase:    "Move the issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "issue_field",
 			profile:             "review_gate",
-			wantReviewPhrase:    "Move the issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "issue_field",
 			profile:             "full_autopilot",
 			wantAutopilot:       true,
-			wantReviewPhrase:    "Move the issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "label",
 			profile:             "review_gate",
-			wantReviewPhrase:    "Move the issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "label",
 			profile:             "full_autopilot",
 			wantAutopilot:       true,
-			wantReviewPhrase:    "Move the issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "github_local",
 			profile:             "review_gate",
-			wantReviewPhrase:    "Move the local issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the local issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "github_local",
 			profile:             "full_autopilot",
 			wantAutopilot:       true,
-			wantReviewPhrase:    "Move the local issue to `Human Review` only after",
-			wantAutopilotPhrase: "do not move the local issue to `Human Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "non_code_artifact",
 			profile:             "review_gate",
-			wantReviewPhrase:    "move the work item to\n   `Review`",
-			wantAutopilotPhrase: "do not move it to `Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 		{
 			preset:              "non_code_artifact",
 			profile:             "full_autopilot",
 			wantAutopilot:       true,
-			wantReviewPhrase:    "move the work item to\n   `Review`",
-			wantAutopilotPhrase: "do not move it to `Review`",
+			wantReviewPhrase:    "The orchestrator owns all lane transitions",
+			wantAutopilotPhrase: "The orchestrator owns all lane transitions",
 		},
 	}
 
@@ -457,9 +457,6 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 					t.Fatalf("GateWaitState = %q, want source", cfg.Agent.AutoPromote.GateWaitState)
 				}
 				assertOnboardingWorkflowContains(t, result.Workflow, tt.wantAutopilotPhrase)
-				if strings.Contains(result.Workflow, tt.wantReviewPhrase) {
-					t.Fatalf("autopilot workflow contains review handoff phrase %q:\n%s", tt.wantReviewPhrase, result.Workflow)
-				}
 			} else {
 				if cfg.Agent.AutoPromote.QuietSeconds != 600 {
 					t.Fatalf("QuietSeconds = %d, want 600", cfg.Agent.AutoPromote.QuietSeconds)
@@ -468,19 +465,21 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 					t.Fatalf("GateWaitState = %q, want review", cfg.Agent.AutoPromote.GateWaitState)
 				}
 				assertOnboardingWorkflowContains(t, result.Workflow, tt.wantReviewPhrase)
-				if strings.Contains(result.Workflow, tt.wantAutopilotPhrase) {
-					t.Fatalf("review-gate workflow contains autopilot phrase %q:\n%s", tt.wantAutopilotPhrase, result.Workflow)
-				}
 			}
 
-			assertOnboardingWorkflowContainsWords(t, result.Workflow, "`status` must be one of `in_progress`, `blocked`, or `complete`")
-			for _, want := range []string{
-				"status: in_progress",
-				"status: blocked",
-				"status: complete",
-			} {
-				assertOnboardingWorkflowContains(t, result.Workflow, want)
+			assertOnboardingWorkflowContains(t, result.Workflow, "Detent-appended Blocked handoff")
+			if tt.preset == "non_code_artifact" {
+				status := "pending_review"
+				if tt.wantAutopilot {
+					status = "valid"
+				}
+				assertOnboardingWorkflowContains(t, result.Workflow, "set `render_status` to `"+status+"`")
 			}
+
+			if strings.Contains(result.Workflow, "```detent-status") {
+				t.Fatal("duplicated contract")
+			}
+
 		})
 	}
 }
@@ -541,7 +540,7 @@ func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
 			if len(workflow.Config.Intake.Sources) != tt.wantIntakeSources {
 				t.Fatalf("len(Intake.Sources) = %d, want %d", len(workflow.Config.Intake.Sources), tt.wantIntakeSources)
 			}
-			for _, want := range []string{"## Issue effort selection", "```detent-agent", "`medium`", "`high`", "`xhigh`", "`max`", "Leave `model` unset"} {
+			for _, want := range []string{"## Agent guidance", "Detent instance", "[project skills]"} {
 				if !strings.Contains(result.Agents, want) {
 					t.Fatalf("generated AGENTS.md missing %q:\n%s", want, result.Agents)
 				}
@@ -580,19 +579,18 @@ func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
 			if workflow.Config.BacklogAdmission.CriteriaSection != onboardingAdmissionCriteriaHeading {
 				t.Fatalf("CriteriaSection = %q, want exact generated heading %q", workflow.Config.BacklogAdmission.CriteriaSection, onboardingAdmissionCriteriaHeading)
 			}
-			if !workflow.Config.BacklogAdmission.RequireEffort ||
-				workflow.Config.BacklogAdmission.EffortFile != workflowconfig.BacklogAdmissionEffortFileAgents ||
-				workflow.Config.BacklogAdmission.EffortSection != onboardingEffortRubricHeading {
-				t.Fatalf("BacklogAdmission effort source = %#v, want AGENTS.md rubric", workflow.Config.BacklogAdmission)
+			if workflow.Config.BacklogAdmission.RequireEffort {
+				t.Fatal("effort must be instance-owned")
 			}
+
 			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.enabled", "answer")
 			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.max_candidates_per_run", "answer")
-			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.effort_file", "preset")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "backlog_admission.require_effort", "preset")
 		})
 	}
 }
 
-func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
+func TestBuildOnboardingWorkflowWritesAgentGuidance(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -604,17 +602,17 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 		wantHeadingCount int
 		wantUnchanged    bool
 	}{
-		{name: "creates AGENTS.md when absent", wantHeadingCount: 1},
-		{name: "appends to existing AGENTS.md", existing: "# Repository agent guidance\n\nPreserve this project-owned content.\n", wantHeadingCount: 1},
+		{name: "creates AGENTS.md when absent", wantHeadingCount: 0},
+		{name: "appends to existing AGENTS.md", existing: "# Repository agent guidance\n\nPreserve this project-owned content.\n", wantHeadingCount: 0},
 		{
 			name:             "writes AGENTS.md beside nested workflow",
 			outputDir:        "config",
 			rootAgents:       "# Root agent guidance\n\nPreserve this root-owned content.\n",
 			intakeProfile:    "assisted_intake",
-			wantHeadingCount: 1,
+			wantHeadingCount: 0,
 		},
 		{
-			name:             "replaces matching heading that lacks guidance",
+			name:             "preserves human guidance under matching heading",
 			existing:         "# Repository agent guidance\n\n## Issue effort selection\n\nRecord estimates here.\n",
 			wantHeadingCount: 1,
 		},
@@ -639,7 +637,7 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 				"",
 			}, "\n"),
 			wantHeadingCount: 1,
-			wantUnchanged:    true,
+			wantUnchanged:    false,
 		},
 	}
 
@@ -700,7 +698,7 @@ func TestBuildOnboardingWorkflowWritesEffortRubric(t *testing.T) {
 			if count := strings.Count(got, "## Issue effort selection"); count != tt.wantHeadingCount {
 				t.Fatalf("effort heading count = %d, want %d:\n%s", count, tt.wantHeadingCount, got)
 			}
-			for _, want := range []string{"```detent-agent", "effort: high", "`medium`", "`high`", "`xhigh`", "`max`", "Leave `model` unset"} {
+			for _, want := range []string{"## Agent guidance", "Detent instance", "[project skills]"} {
 				if !strings.Contains(got, want) {
 					t.Fatalf("AGENTS.md missing %q:\n%s", want, got)
 				}
@@ -731,7 +729,7 @@ func TestRenderOnboardingWorkflowPromptReplacesCRLFExecutionFlow(t *testing.T) {
 	if strings.Contains(got, "Move the issue to `Human Review` only after") {
 		t.Fatalf("rendered prompt retained review flow:\n%s", got)
 	}
-	assertOnboardingWorkflowContains(t, got, "do not move the issue to `Human Review`")
+	assertOnboardingWorkflowContains(t, got, "### State: In Progress")
 	if strings.Contains(got, "\r") {
 		t.Fatalf("rendered prompt retained carriage returns: %q", got)
 	}
@@ -802,7 +800,7 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(AGENTS.md) error = %v", err)
 	}
-	if !strings.Contains(string(agentsRaw), "## Issue effort selection") {
+	if !strings.Contains(string(agentsRaw), "## Agent guidance") {
 		t.Fatalf("AGENTS.md missing generated effort rubric:\n%s", string(agentsRaw))
 	}
 	raw, err := os.ReadFile(outputPath)
@@ -915,14 +913,6 @@ func assertOnboardingWorkflowContains(t *testing.T, text string, want string) {
 	t.Helper()
 
 	if !strings.Contains(text, want) {
-		t.Fatalf("workflow missing %q:\n%s", want, text)
-	}
-}
-
-func assertOnboardingWorkflowContainsWords(t *testing.T, text string, want string) {
-	t.Helper()
-
-	if !strings.Contains(strings.Join(strings.Fields(text), " "), strings.Join(strings.Fields(want), " ")) {
 		t.Fatalf("workflow missing %q:\n%s", want, text)
 	}
 }

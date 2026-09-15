@@ -1215,34 +1215,16 @@ authorization.
      "$ONBOARDING_DIR/answers.env"
    ```
 
-   Ask every project, including manual-intake projects, how issue authors
-   should select reasoning effort. Calibrate the four tiers against concrete
-   repository examples and reserve `max` for explicit operator designation.
-   Record the operator-approved rubric:
-
-   ```sh
-   printf '%s\n' \
-     'EFFORT_MEDIUM_CRITERIA=<small, mechanical, tightly specified work>' \
-     'EFFORT_HIGH_CRITERIA=<standard feature or fix with ambiguity or cross-cutting impact>' \
-     'EFFORT_XHIGH_CRITERIA=<new subsystem or tricky state, concurrency, restart, recovery, or interaction work>' \
-     'EFFORT_MAX_CRITERIA=<exceptional work that only an operator may designate>' \
-     >> "$ONBOARDING_DIR/answers.env"
-   rg '^EFFORT_(MEDIUM|HIGH|XHIGH|MAX)_CRITERIA=' \
-     "$ONBOARDING_DIR/answers.env"
-   ```
+   Model and reasoning effort belong to the Detent instance configuration.
+   Do not request or generate an issue effort rubric during onboarding.
 
    The workflow builder turns the admission answers into `## Admission
    Criteria` with `### Alignment`, `### Readiness`, `### Size`, and `### Safety
    Gates`, and sets `criteria_section` to the exact heading. It writes no
    admission heading or dangling `criteria_section` key when admission is off.
-   It always creates or appends the operator-approved four-tier rubric in
-   `AGENTS.md`, replacing an incomplete matching section while preserving
-   complete existing guidance and unrelated content, and leaves `model` unset.
-   When admission is enabled, it also sets
-   `require_effort: true`, `effort_file: AGENTS.md`, and `effort_section` to
-   that exact generated heading. The builder resolves both named sections from
-   their configured files before it writes any proposal. The four admission
-   run ceilings are always written explicitly.
+   It generates short `AGENTS.md` guidance linking to project skills and preserves
+   unrelated existing content. Enabled admission uses `require_effort: false`;
+   instance configuration owns effort. The four admission run ceilings remain explicit.
 
 7. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
    wants to override a selected profile's `KANBAN_MODE`, switch to
@@ -2208,28 +2190,15 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    The preview shows all three generated artifacts. With `--write`, the builder
    creates `detent.yaml` and `WORKFLOW.md`, creates `AGENTS.md` when absent, or
-   appends the effort section to the existing file after reading it. Do not use
+   updates generated guidance after reading the existing file. Do not use
    the raw template download path for mutation because it omits the
    operator-owned generated sections.
 
-   When adding Detent to a repository that already has a `WORKFLOW.md`, audit
-   the existing prompt body instead of replacing it blindly. Add or tighten the
-   `## Codex Workpad` contract so every update includes a fenced
-   `detent-status` block, blockers are declared in that block, and narrative
-   Workpad sentences are treated as prose only. Dependency blockers should
-   prefer GitHub's native `blocked_by` relation, then the structured Workpad
-   block, with issue-body `Blocked by:` or `Depends on:` lines kept only as a
-   labeled legacy fallback during the deprecation window. Add or tighten a
-   `## Required Execution Flow` section when it is missing, with explicit `For
-   Todo`, `For In Progress`, `For Rework`, and `For Merging` instructions. The
-   `For Merging` section should invoke `$go-workflow:ship`, should not call
-   `gh pr merge` directly outside ship, and should require exactly one terminal
-   outcome: pull request merged and issue moved to `Done`, issue moved to
-   `Rework` with an actionable defect, or issue remaining in `Merging` with a
-   concrete external blocker recorded in the `detent-status` block. Before
-   dispatching `Merging`, confirm the Detent host's Codex environment exposes
-   `$go-workflow:ship`; otherwise install or enable that workflow, or replace
-   the `For Merging` section with equivalent project-local merge instructions.
+   For an existing project, use `detent refresh-project PROJECT_ID` to propose
+   the instruction trims as a diff. Review before applying with `--yes`.
+   Preserve project-specific policies and CI mappings. Reference the appended
+   handoff contract, keep one shared validation rule, and migrate lane bodies
+   into `agent.instructions_by_state` for selection by the runner.
 
    Add a `## Project CI Quality Gates` section to every code-oriented workflow
    prompt. List each required stage category and the project-specific local
@@ -2249,7 +2218,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    rule are illustrative; equivalent comparisons are valid.
 
    Treat the prompt body as a thin, always-loaded core. Keep universal safety,
-   state-transition, validation, and handoff contracts in `WORKFLOW.md`; move
+   validation rules and a reference to the appended handoff in `WORKFLOW.md`; move
    domain-specific runbooks and conditionally relevant tool guidance into
    reviewed lazy skills under `.detent/skills`. `detent doctor` estimates the
    loaded prompt body at four characters per token and warns above 4,000 tokens
@@ -2643,22 +2612,17 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    fingerprint are also required; issue descriptions and manual parking events
    never authorize recovery.
 
-8. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
-   the `detent-status` schema examples, include the native `blocked_by`
-   dependency command with the labeled legacy fallback note, include repo
-   authority files discovered in Phase 2, state the validation gate, and keep
-   the maintained template's `## Required Execution Flow` unless the human
-   explicitly chooses stronger project-specific instructions. The flow should
-   tell agents what to do in `Todo`, `In Progress`, `Rework`, and `Merging`,
-   including the `For Merging` requirement to use `$go-workflow:ship`, record
-   external blockers in the structured status block, and move the issue to
-   `Done` only after the pull request is merged. Include the current state with
-   `Current Detent status: {{ issue.state }}` so resumed agents choose the
-   right section. Verify:
+8. **Write the prompt body.** Reference the Detent-appended Blocked handoff
+   contract. Keep repository authority links and one shared validation rule.
+   The maintained templates use `### State:` authoring headings; the builder
+   moves their bodies into `agent.instructions_by_state` so only the current
+   lane is appended to worker prompts. Keep shared delivery instructions in
+   `WORKFLOW.md`. The orchestrator owns lane transitions.
 
    ```sh
-   rg 'Current Detent status|Codex Workpad|detent-status|dependencies/blocked_by|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>' \
+   rg 'Current Detent status|Detent-appended Blocked handoff|Required Execution Flow' \
      <source-root>/WORKFLOW.md
+   rg 'instructions_by_state:' <source-root>/detent.yaml
    ```
 
 9. **Check the workflow contract before registration.** This is a structural
@@ -2890,12 +2854,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    board work. Before doctor, verify the generated project guidance. Admission
    must name the exact generated heading and all four subsections when enabled;
    admission-disabled projects must not retain a dangling `criteria_section`.
-   Every project must carry the four-tier effort rubric in `AGENTS.md`.
+   Generated `AGENTS.md` links to skills and contains no effort rubric.
    Verify:
 
    ```sh
    test -s <source-root>/AGENTS.md
-   rg -n '^## Issue effort selection$|^```detent-agent$|^- `(medium|high|xhigh|max)`' \
+   rg -n '^## Agent guidance$' \
      <source-root>/AGENTS.md
    if rg -q '^backlog_admission:' <source-root>/detent.yaml; then
      CRITERIA_SECTION="$(
@@ -2906,11 +2870,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      rg -Fx "## $CRITERIA_SECTION" <source-root>/WORKFLOW.md
      rg -n '^### (Alignment|Readiness|Size|Safety Gates)$' \
        <source-root>/WORKFLOW.md
-     rg -q '^[[:space:]]*require_effort:[[:space:]]*true$' \
-       <source-root>/detent.yaml
-     rg -q '^[[:space:]]*effort_file:[[:space:]]*AGENTS.md$' \
-       <source-root>/detent.yaml
-     rg -q '^[[:space:]]*effort_section:[[:space:]]*Issue effort selection$' \
+     rg -q '^[[:space:]]*require_effort:[[:space:]]*false$' \
        <source-root>/detent.yaml
    else
      ! rg -q '^[[:space:]]*criteria_section:' <source-root>/detent.yaml
@@ -3511,7 +3471,7 @@ the card instead of auto-resolving it.
 | Backlog admission ceilings | `BACKLOG_ADMISSION_MAX_CANDIDATES_PER_RUN`, `BACKLOG_ADMISSION_MAX_PROPOSALS_PER_RUN`, `BACKLOG_ADMISSION_MAX_OPEN_PROPOSALS`, and `BACKLOG_ADMISSION_PROPOSAL_EXPIRY_DAYS` map to the same-named lower-case `backlog_admission` keys. |
 | Backlog auto-admission | `BACKLOG_ADMISSION_AUTO_ADMIT` and `BACKLOG_ADMISSION_AUTO_ADMIT_MIN_CONFIDENCE` map to `backlog_admission.auto_admit` and `auto_admit_min_confidence`; `BACKLOG_ADMISSION_AUTHORS_ALLOW_ASSOCIATION` maps to the trusted `backlog_admission.authors.allow_association` scopes. |
 | Admission criteria prose | `ADMISSION_ALIGNMENT_CRITERIA`, `ADMISSION_READINESS_CRITERIA`, `ADMISSION_SIZE_CRITERIA`, and `ADMISSION_SAFETY_GATES` generate the matching `WORKFLOW.md` subsections when admission is enabled. |
-| Issue effort rubric | `EFFORT_MEDIUM_CRITERIA`, `EFFORT_HIGH_CRITERIA`, `EFFORT_XHIGH_CRITERIA`, and `EFFORT_MAX_CRITERIA` generate the four-tier `detent-agent` rubric in `AGENTS.md`; enabled admission points `effort_file` and `effort_section` at that rubric, and `model` remains unset. |
+| Issue effort | Inherited from instance configuration; onboarding generates no effort rubric. |
 | Scheduled repository routine | `ROUTINES_ENABLED`, `ROUTINE_NAME`, `ROUTINE_SCHEDULE`, and `ROUTINE_PROMPT` control the generated `routines` entry. |
 | Built-in stale-TODO intake | `STALE_TODOS_ENABLED` and `STALE_TODOS_SCHEDULE` control the generated scheduled `intake.sources` scanner. |
 | Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |
@@ -3562,10 +3522,7 @@ the code role value at both the issue and project levels; set `rework.effort` or
 `agent.effort.rework` to choose a distinct value. Role efforts are validated
 against the effective model for that role at dispatch and by `detent doctor`.
 
-Define a project-specific effort rubric in the repository's agent-facing docs,
-such as `AGENTS.md` or `CLAUDE.md`. Issue authors should select the least effort
-appropriate for the work so routine issues do not inherit a more expensive
-fleet baseline than they need.
+Configure effort in the Detent instance. Generated agent instructions contain no effort rubric.
 
 ```markdown
 ## Problem
@@ -3634,3 +3591,31 @@ If `gh` uses a secret service, add `After=` and `Wants=` dependencies in the
 actual secret-service unit installed on that host. Unit names vary by desktop
 and keyring provider; use the unit in the same user manager, and ensure its
 keyring can unlock unattended. Ordering does not unlock a locked keyring.
+
+## Generated instruction budget and refresh
+
+Fresh onboarding keeps `AGENTS.md` below 4 KB and the combined `WORKFLOW.md`
+and `AGENTS.md` below 10 KB. Reference material belongs in project skills.
+The workflow references the Detent-appended handoff contract instead of copying it.
+Template lane instructions use `### State:` headings. The builder stores their
+bodies in `agent.instructions_by_state`; the runner appends only the current lane. Shared validation and delivery rules remain visible.
+
+The configured `GATE_RUN` command (default `make check`) is supplied by the
+Detent-appended Validation gate block, which owns full-versus-focused selection
+including the Merging optimization. Generated workflows reference that authority
+and require the selected validation once immediately before push. Use targeted
+tests while editing; after green, rerun only if files changed. Bound output with
+a summary target or Bash `pipefail` and `tail -40`, preserving failure status.
+UI files (`.html`, `.htm`, `.templ`, `.jsx`, `.tsx`, `.vue`, `.svelte`) cause the
+probe to include browser / e2e guidance, conditional on the diff touching the
+detected UI surface, including supporting routes and responses. Backend-only
+repositories receive no browser requirement.
+Artifact presets keep their artifact validation and do not require a PR.
+
+`detent refresh-project PROJECT_ID` proposes the same generated-section trims
+as a diff. Existing effort guidance and admission settings remain project-owned;
+refresh does not infer generated ownership from a section heading. Preset lane
+instructions are limited to configured active states, and legacy lane migration
+is limited to the Required Execution Flow section.
+Review the proposal; only `--yes` applies it. Custom project sections and CI
+stage mappings remain available for review and are preserved.

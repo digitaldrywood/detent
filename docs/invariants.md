@@ -29,6 +29,9 @@ The ledger owns both `UpdateIssueState` and state-field `SetIssueField` calls;
 adapters implement/forward these operations rather than decide transitions.
 Admission requires its injected orchestrator writer, verified by
 `TestAdmissionRequiresLedgerWriter`. Worker outcomes belong in Workpad status.
+Generated onboarding workflows and refresh proposals reinforce INV-1 by replacing
+worker lane-transition commands with orchestrator ownership and a reference to
+the appended handoff contract; workers report outcomes rather than move lanes.
 This source check cannot recognize arbitrary raw HTTP tracker writes; review
 must reject those bypasses too.
 
