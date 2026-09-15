@@ -130,8 +130,8 @@ func RemoveLegacy(workspaceRoot string) (int64, error) {
 type Report struct {
 	BuildPath   string `json:"build_path"`
 	BuildBytes  int64  `json:"build_bytes"`
-	ModulePath  string `json:"module_path"`
-	ModuleBytes int64  `json:"module_bytes"`
+	ModulePath  string `json:"module_path,omitempty"`
+	ModuleBytes int64  `json:"module_bytes,omitempty"`
 	Error       string `json:"error,omitempty"`
 	LastTrim    string `json:"last_trim,omitempty"`
 }

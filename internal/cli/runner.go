@@ -125,14 +125,7 @@ func withRunnerFactory(
 					hostCache.Store(&toolcache.Report{Error: err.Error()})
 					return err
 				}
-				_, err = toolcache.Trim(ctx, paths.Build, policy, now)
-				report := toolcache.Inspect(ctx)
-				if err != nil {
-					if report.Error != "" {
-						report.Error += "; "
-					}
-					report.Error += err.Error()
-				}
+				report, err := toolcache.TrimWithReport(ctx, paths.Build, policy, now)
 				hostCache.Store(&report)
 				return err
 			}

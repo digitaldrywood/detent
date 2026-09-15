@@ -34,6 +34,22 @@ var cacheShardName = regexp.MustCompile(`^[0-9a-f]{2}$`)
 // Trim expires old entries, then evicts oldest-first to enforce MaxBytes.
 // Metadata is counted toward the size but is never removed.
 func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64, error) {
+	return trim(ctx, root, policy, now, nil)
+}
+
+// TrimWithReport reuses the trim walk to report retained build-cache bytes.
+// It never inspects the module cache. Concurrent builds can change the size
+// during or after the walk, so the report is an estimate.
+func TrimWithReport(ctx context.Context, root string, policy Policy, now time.Time) (Report, error) {
+	report := Report{BuildPath: root}
+	_, err := trim(ctx, root, policy, now, &report)
+	if err != nil {
+		report.Error = err.Error()
+	}
+	return report, err
+}
+
+func trim(ctx context.Context, root string, policy Policy, now time.Time, report *Report) (int64, error) {
 	policy = policy.Normalized()
 	if root == "" || root == "off" {
 		return 0, nil
@@ -56,6 +72,9 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 	}
 	var remaining []candidate
 	var reclaimed, total int64
+	if report != nil {
+		defer func() { report.BuildBytes = total }()
+	}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -140,5 +159,17 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 		reclaimed += entry.info.Size()
 		total -= entry.info.Size()
 	}
-	return reclaimed, os.WriteFile(filepath.Join(root, "detent-trim.txt"), []byte(now.UTC().Format(time.RFC3339Nano)+"\n"), 0o600)
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	marker := filepath.Join(root, "detent-trim.txt")
+	if info, err := os.Lstat(marker); err == nil && info.Mode().IsRegular() {
+		total -= info.Size()
+	}
+	err = os.WriteFile(marker, []byte(stamp+"\n"), 0o600)
+	if err == nil {
+		total += int64(len(stamp) + 1)
+		if report != nil {
+			report.LastTrim = stamp
+		}
+	}
+	return reclaimed, err
 }
