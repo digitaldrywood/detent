@@ -126,6 +126,14 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
+Worker GitHub CLI preflight (#2741) checks that `gh auth token` can read the
+selected credential from its private per-attempt `hosts.yml`. Failures reuse
+`WorkerGitHubBudgetMonitorError` and its existing instance attribution; no issue
+question or lane writer is added. `TestWorkerGitHubCLIAuthenticationPreflight`
+checks missing credentials and secret-free diagnostics, and
+`TestWorkerGitHubCLIAuthStatus` verifies authentication with token environment
+variables absent against an isolated local HTTP fixture.
+
 ## INV-3 — Mechanism moratorium
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.

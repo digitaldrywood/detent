@@ -22,6 +22,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -526,11 +527,57 @@ func configureWorkerGitHubEnvironment(request *AgentTurnRequest) error {
 		variables[key] = value
 	}
 	variables["GH_CONFIG_DIR"] = configDir
-	variables["GH_TOKEN"] = request.workerGitHub.Token
-	variables["GITHUB_TOKEN"] = request.workerGitHub.Token
-	variables["GH_ENTERPRISE_TOKEN"] = request.workerGitHub.Token
-	variables["GITHUB_ENTERPRISE_TOKEN"] = request.workerGitHub.Token
+	// Clear inherited credentials; the private config file is the sole token channel.
+	variables["GH_TOKEN"] = ""
+	variables["GITHUB_TOKEN"] = ""
+	variables["GH_ENTERPRISE_TOKEN"] = ""
+	variables["GITHUB_ENTERPRISE_TOKEN"] = ""
 	request.Environment.Variables = variables
+	hostsPath := filepath.Join(configDir, "hosts.yml")
+	if request.workerGitHub.Token == "" {
+		if err := os.Remove(hostsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove worker github credentials: %w", err)
+		}
+		return nil
+	}
+	// JSON is valid YAML and quotes credentials and host names without interpolation.
+	hosts := map[string]map[string]string{request.workerGitHub.cliHost(): {
+		"oauth_token":  request.workerGitHub.Token,
+		"user":         request.workerGitHub.Principal.Login,
+		"git_protocol": "https",
+	}}
+	data, err := json.Marshal(hosts)
+	if err != nil {
+		return fmt.Errorf("encode worker github credentials: %w", err)
+	}
+	if err := os.WriteFile(hostsPath, data, 0o600); err != nil {
+		return fmt.Errorf("write worker github credentials: %w", err)
+	}
+	return nil
+}
+
+func (p workerGitHubPolicy) cliHost() string {
+	endpoint, err := url.Parse(p.GraphQLURL)
+	if err != nil || endpoint.Host == "" || endpoint.Host == "api.github.com" {
+		return "github.com"
+	}
+	return endpoint.Host
+}
+
+// Verify the file handoff without a network request or token-bearing diagnostics.
+// API validity is already checked by the worker credential policy.
+func (p workerGitHubPolicy) verifyCLIAuthentication(ctx context.Context, environment procgroup.Environment) error {
+	if p.Token == "" {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, workerGitHubProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, "gh", "auth", "token", "--hostname", p.cliHost()) // #nosec G204 -- fixed executable/subcommand; configured host is a separate flag value, never shell code.
+	procgroup.SetEnvironment(cmd, environment)
+	output, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(output)) != p.Token {
+		return p.monitorError("credential_handoff", errors.New("instance worker.github_token resolved but worker gh cannot read the selected credential from GH_CONFIG_DIR"))
+	}
 	return nil
 }
 
@@ -574,6 +621,9 @@ func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest
 	}
 	if err := configureWorkerGitHubEnvironment(&turn); err != nil {
 		return AgentProcessRequest{}, nil, errors.Join(fmt.Errorf("prepare agent preflight github environment: %w", err), cleanup())
+	}
+	if err := policy.verifyCLIAuthentication(ctx, turn.Environment); err != nil {
+		return AgentProcessRequest{}, nil, errors.Join(err, cleanup())
 	}
 	process.TempDir = tempDir
 	process.Environment = turn.Environment

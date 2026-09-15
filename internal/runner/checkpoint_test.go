@@ -330,7 +330,7 @@ func TestCheckpointPublicationCredentialIsolation(t *testing.T) {
 				}
 				return
 			}
-			if publication.environment.Variables["GH_TOKEN"] != "selected-credential" || publication.environment.Variables["GH_CONFIG_DIR"] == "" {
+			if publication.environment.Variables["GH_TOKEN"] != "" || publication.environment.Variables["GH_CONFIG_DIR"] == "" {
 				t.Fatal("publication did not use isolated selected credentials")
 			}
 			if _, err := os.Stat(publication.environment.Variables["GH_CONFIG_DIR"]); !errors.Is(err, os.ErrNotExist) {

@@ -3,14 +3,18 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -333,11 +337,11 @@ func TestConfigureWorkerGitHubEnvironment(t *testing.T) {
 			if err := configureWorkerGitHubEnvironment(&request); err != nil {
 				t.Fatalf("configureWorkerGitHubEnvironment() error = %v", err)
 			}
-			if request.Environment.Variables["GH_TOKEN"] != tt.token || request.Environment.Variables["GITHUB_TOKEN"] != tt.token {
-				t.Fatalf("token environment = %#v, want %q", request.Environment.Variables, tt.token)
+			if request.Environment.Variables["GH_TOKEN"] != "" || request.Environment.Variables["GITHUB_TOKEN"] != "" {
+				t.Fatal("worker token environment was not cleared")
 			}
-			if request.Environment.Variables["GH_ENTERPRISE_TOKEN"] != tt.token || request.Environment.Variables["GITHUB_ENTERPRISE_TOKEN"] != tt.token {
-				t.Fatalf("enterprise token environment = %#v, want %q", request.Environment.Variables, tt.token)
+			if request.Environment.Variables["GH_ENTERPRISE_TOKEN"] != "" || request.Environment.Variables["GITHUB_ENTERPRISE_TOKEN"] != "" {
+				t.Fatal("worker enterprise token environment was not cleared")
 			}
 			if request.Environment.Variables["EXISTING"] != "value" {
 				t.Fatalf("EXISTING = %q, want value", request.Environment.Variables["EXISTING"])
@@ -348,6 +352,38 @@ func TestConfigureWorkerGitHubEnvironment(t *testing.T) {
 			}
 			if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
 				t.Fatalf("worker github config directory = %v, %v", info, err)
+			}
+			hostsPath := filepath.Join(configDir, "hosts.yml")
+			data, err := os.ReadFile(hostsPath)
+			if tt.token == "" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("disabled credential file: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var hosts map[string]map[string]string
+			if err := json.Unmarshal(data, &hosts); err != nil {
+				t.Fatal(err)
+			}
+			if hosts["github.com"]["oauth_token"] != tt.token || hosts["github.com"]["git_protocol"] != "https" {
+				t.Fatal("credential file does not contain selected authentication")
+			}
+			info, err := os.Stat(hostsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+				t.Fatalf("credential permissions = %o", info.Mode().Perm())
+			}
+			request.workerGitHub.Token = ""
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(hostsPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("disabled credential retained: %v", err)
 			}
 		})
 	}
@@ -385,8 +421,8 @@ func TestWorkerGitHubSentinelResolvesAndInjects(t *testing.T) {
 			if err := configureWorkerGitHubEnvironment(&request); err != nil {
 				t.Fatalf("configureWorkerGitHubEnvironment() error = %v", err)
 			}
-			if request.Environment.Variables["GH_TOKEN"] != "resolved-token" || request.Environment.Variables["GITHUB_TOKEN"] != "resolved-token" {
-				t.Fatalf("worker token environment = %#v, want resolved token", request.Environment.Variables)
+			if request.Environment.Variables["GH_TOKEN"] != "" || request.Environment.Variables["GITHUB_TOKEN"] != "" {
+				t.Fatal("worker token environment was not cleared")
 			}
 			if request.Environment.Variables["GH_CONFIG_DIR"] == "/ambient/config" {
 				t.Fatal("GH_CONFIG_DIR preserved ambient GitHub CLI configuration")
@@ -424,11 +460,11 @@ func TestRunAgentBackendTurnAppliesWorkerGitHubPolicy(t *testing.T) {
 				t.Fatalf("runAgentBackendTurn() errors = %v, %v", runErr, cleanupErr)
 			}
 			variables := backend.request.Environment.Variables
-			if variables["GH_TOKEN"] != tt.token || variables["GITHUB_TOKEN"] != tt.token {
-				t.Fatalf("worker token environment = %#v, want %q", variables, tt.token)
+			if variables["GH_TOKEN"] != "" || variables["GITHUB_TOKEN"] != "" {
+				t.Fatal("worker token environment was not cleared")
 			}
-			if variables["GH_ENTERPRISE_TOKEN"] != tt.token || variables["GITHUB_ENTERPRISE_TOKEN"] != tt.token {
-				t.Fatalf("worker enterprise token environment = %#v, want %q", variables, tt.token)
+			if variables["GH_ENTERPRISE_TOKEN"] != "" || variables["GITHUB_ENTERPRISE_TOKEN"] != "" {
+				t.Fatal("worker enterprise token environment was not cleared")
 			}
 			if variables["GH_CONFIG_DIR"] != filepath.Join(backend.request.TempDir, "github-cli") {
 				t.Fatalf("GH_CONFIG_DIR = %q, want isolated worker scratch", variables["GH_CONFIG_DIR"])
@@ -988,4 +1024,114 @@ func preclassifyWorkerGitHubPolicy(policy *workerGitHubPolicy) {
 func (b *workerGitHubCaptureBackend) RunTurn(_ context.Context, request AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
 	b.request = request
 	return AgentTurnResult{}, nil
+}
+
+func TestWorkerGitHubFilteredEnvironment(t *testing.T) {
+	t.Parallel()
+	gh, err := exec.LookPath("gh")
+	if err != nil {
+		t.Skip("gh is not installed")
+	}
+	for _, host := range []string{"github.com", "github.example.com"} {
+		t.Run(host, func(t *testing.T) {
+			request := AgentTurnRequest{TempDir: t.TempDir(), workerGitHub: workerGitHubPolicy{Token: "test-worker-token", Principal: connector.IssueActor{Login: "worker"}, GraphQLURL: "https://" + host + "/api/graphql"}}
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), gh, "auth", "token", "--hostname", host)
+			cmd.Env = []string{"GH_CONFIG_DIR=" + request.Environment.Variables["GH_CONFIG_DIR"], "PATH=" + os.Getenv("PATH")}
+			output, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("gh cannot read credentials without token environment: %v", err)
+			}
+			if strings.TrimSpace(string(output)) != "test-worker-token" {
+				t.Fatal("gh read a different credential")
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("local HTTP fixture requires Unix sockets")
+	}
+	gh, err := exec.LookPath("gh")
+	if err != nil {
+		t.Skip("gh is not installed")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "unix", "gh.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "token test-worker-token" && r.Header.Get("Authorization") != "Bearer test-worker-token" {
+			t.Error("CLI did not send selected credential")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-OAuth-Scopes", "repo, read:org")
+		if strings.HasSuffix(r.URL.Path, "/graphql") {
+			_, _ = io.WriteString(w, `{"data":{"viewer":{"login":"worker"}}}`)
+		} else {
+			_, _ = io.WriteString(w, `{"login":"worker"}`)
+		}
+	}))
+	if err := server.Listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	policy := workerGitHubPolicy{Token: "test-worker-token", Principal: connector.IssueActor{Login: "worker"}, GraphQLURL: "https://github.com/graphql"}
+	request := AgentTurnRequest{TempDir: dir, workerGitHub: policy}
+	if err := configureWorkerGitHubEnvironment(&request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "github-cli", "config.yml"), []byte("http_unix_socket: gh.sock\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), gh, "auth", "status", "--hostname", policy.cliHost())
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_CONFIG_DIR=" + request.Environment.Variables["GH_CONFIG_DIR"], "HOME=" + dir}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("gh auth status: %v: %s", err, output)
+	}
+}
+
+func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("gh"); err != nil {
+		t.Skip("gh is not installed")
+	}
+	for _, tc := range []struct {
+		name    string
+		remove  bool
+		token   string
+		wantErr bool
+	}{
+		{name: "disabled"}, {name: "configured", token: "test-worker-token"}, {name: "missing config", token: "test-worker-token", remove: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := workerGitHubPolicy{Token: tc.token, Principal: connector.IssueActor{Login: "worker"}}
+			request := AgentTurnRequest{TempDir: t.TempDir(), workerGitHub: policy}
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatal(err)
+			}
+			if tc.remove {
+				if err := os.Remove(filepath.Join(request.TempDir, "github-cli", "hosts.yml")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := policy.verifyCLIAuthentication(t.Context(), request.Environment)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("preflight error = %v", err)
+			}
+			if tc.wantErr && (!errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !strings.Contains(err.Error(), "instance") || strings.Contains(err.Error(), tc.token)) {
+				t.Fatalf("unclassified or unsafe error: %v", err)
+			}
+		})
+	}
 }
