@@ -151,12 +151,14 @@ func runGoTest(ctx context.Context, packages []string, parallel int, timeout tim
 func goTestArgs(packages []string, parallel int, timeout time.Duration, race bool, coverProfile string) []string {
 	args := []string{
 		"-json",
+		// Avoid replaying filesystem-heavy test input logs; keep build caching.
+		"-count=1",
 		"-p=1",
 		"-parallel=" + strconv.Itoa(parallel),
 		"-timeout=" + timeout.String(),
 	}
 	if race {
-		args = append(args, "-race", "-count=1")
+		args = append(args, "-race")
 	}
 	if coverProfile != "" {
 		args = append(args, "-covermode=atomic", "-coverprofile="+coverProfile)

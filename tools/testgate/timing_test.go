@@ -165,9 +165,10 @@ func TestGoTestCoverageArgs(t *testing.T) {
 		profile string
 		want    string
 	}{
-		{"race", true, "", "-json -p=1 -parallel=2 -timeout=15m0s -race -count=1 ./internal/hubserver"},
-		{"combined", true, "current.out", "-json -p=1 -parallel=2 -timeout=15m0s -race -count=1 -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
-		{"coverage", false, "current.out", "-json -p=1 -parallel=2 -timeout=15m0s -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"ordinary", false, "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s ./internal/hubserver"},
+		{"race", true, "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race ./internal/hubserver"},
+		{"combined", true, "current.out", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"coverage", false, "current.out", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
