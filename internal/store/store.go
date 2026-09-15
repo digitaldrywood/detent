@@ -170,7 +170,6 @@ type WorkAttemptStore interface {
 	ListActiveWorkAttempts(context.Context, WorkAttemptQuery) ([]WorkAttempt, error)
 	ListRecentTerminalWorkAttempts(context.Context, WorkAttemptHistoryQuery) ([]WorkAttempt, error)
 	TimeoutExpiredWorkAttempts(context.Context, WorkAttemptTimeout) ([]WorkAttempt, error)
-	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
 }
@@ -817,19 +816,12 @@ type ConcurrencyBucket struct {
 }
 
 type WorkAttemptTimeout struct {
-	ProjectID     string
-	Now           time.Time
-	TerminalState WorkAttemptTerminalState
-	ErrorClass    string
-	ErrorMessage  string
-}
-
-type WorkAttemptReclaim struct {
-	ProjectID     string
-	Now           time.Time
-	TerminalState WorkAttemptTerminalState
-	ErrorClass    string
-	ErrorMessage  string
+	ExcludeAttemptIDs []int64
+	ProjectID         string
+	Now               time.Time
+	TerminalState     WorkAttemptTerminalState
+	ErrorClass        string
+	ErrorMessage      string
 }
 
 type MergeRequiredCheckEvaluation struct {

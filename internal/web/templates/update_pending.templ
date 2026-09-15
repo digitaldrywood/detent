@@ -1,12 +1,17 @@
 package templates
 
 import (
+	"fmt"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 )
 
 templ updatePendingBanner(snapshot telemetry.Snapshot, class string) {
-	if detentUpdatePending(snapshot.Update) {
+	if snapshot.Update.State == "draining" {
+		<section id="update-pending" class={ "rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm " + class } role="status" aria-live="polite">
+			{ fmt.Sprintf("draining for update: %d active attempts", snapshot.Update.ActiveAttempts) }
+		</section>
+	} else if detentUpdatePending(snapshot.Update) {
 		<section id="update-pending" class={ "flex min-w-0 flex-none flex-col gap-3 rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm sm:flex-row sm:items-center " + class } role="status" aria-live="polite">
 			<div class="flex min-w-0 flex-1 items-start gap-3">
 				@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})

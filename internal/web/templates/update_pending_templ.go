@@ -9,6 +9,7 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 import (
+	"fmt"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 )
@@ -34,8 +35,8 @@ func updatePendingBanner(snapshot telemetry.Snapshot, class string) templ.Compon
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		if detentUpdatePending(snapshot.Update) {
-			var templ_7745c5c3_Var2 = []any{"flex min-w-0 flex-none flex-col gap-3 rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm sm:flex-row sm:items-center " + class}
+		if snapshot.Update.State == "draining" {
+			var templ_7745c5c3_Var2 = []any{"rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm " + class}
 			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var2...)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -53,7 +54,43 @@ func updatePendingBanner(snapshot telemetry.Snapshot, class string) templ.Compon
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" role=\"status\" aria-live=\"polite\"><div class=\"flex min-w-0 flex-1 items-start gap-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" role=\"status\" aria-live=\"polite\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var4 string
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("draining for update: %d active attempts", snapshot.Update.ActiveAttempts))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/update_pending.templ`, Line: 12, Col: 91}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</section>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else if detentUpdatePending(snapshot.Update) {
+			var templ_7745c5c3_Var5 = []any{"flex min-w-0 flex-none flex-col gap-3 rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm sm:flex-row sm:items-center " + class}
+			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var5...)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<section id=\"update-pending\" class=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var6 string
+			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var5).String())
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/update_pending.templ`, Line: 1, Col: 0}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\" role=\"status\" aria-live=\"polite\"><div class=\"flex min-w-0 flex-1 items-start gap-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -61,20 +98,20 @@ func updatePendingBanner(snapshot telemetry.Snapshot, class string) templ.Compon
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"min-w-0\"><p class=\"font-medium text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div class=\"min-w-0\"><p class=\"font-medium text-text\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var4 string
-			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs("Detent " + detentPendingUpdateVersion(snapshot.Update) + " is pending")
+			var templ_7745c5c3_Var7 string
+			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs("Detent " + detentPendingUpdateVersion(snapshot.Update) + " is pending")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/update_pending.templ`, Line: 14, Col: 111}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/update_pending.templ`, Line: 19, Col: 111}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</p><p id=\"update-pending-detail\" class=\"mt-0.5 break-words text-xs text-sec\">Automatic apply is waiting for all active work attempts across every project to finish.</p></div></div><form class=\"shrink-0\" hx-post=\"/api/v1/update/apply\" hx-target=\"#update-pending-detail\" hx-swap=\"innerHTML\" hx-confirm=\"Apply the update now? Detent will drain active attempts and restart.\"><input type=\"hidden\" name=\"confirm\" value=\"true\"> <button type=\"submit\" class=\"inline-flex min-h-8 items-center justify-center rounded-card border border-warn/50 bg-surface px-3 py-1.5 text-xs font-medium text-text hover:bg-warn/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warn/50\">Apply now</button></form></section>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</p><p id=\"update-pending-detail\" class=\"mt-0.5 break-words text-xs text-sec\">Automatic apply is waiting for all active work attempts across every project to finish.</p></div></div><form class=\"shrink-0\" hx-post=\"/api/v1/update/apply\" hx-target=\"#update-pending-detail\" hx-swap=\"innerHTML\" hx-confirm=\"Apply the update now? Detent will drain active attempts and restart.\"><input type=\"hidden\" name=\"confirm\" value=\"true\"> <button type=\"submit\" class=\"inline-flex min-h-8 items-center justify-center rounded-card border border-warn/50 bg-surface px-3 py-1.5 text-xs font-medium text-text hover:bg-warn/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warn/50\">Apply now</button></form></section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

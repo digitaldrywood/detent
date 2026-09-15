@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -991,6 +992,9 @@ func healthUpdateRowAt(update telemetry.Update, now time.Time) healthRow {
 	}
 	row.Kind = primitives.KindOK
 	row.Status = strings.ReplaceAll(strings.TrimSpace(update.DisplayState(now)), "_", " ")
+	if update.State == "draining" {
+		row.Status = fmt.Sprintf("draining for update: %d active attempts", update.ActiveAttempts)
+	}
 	if row.Status == "" || row.Status == "scheduled" {
 		row.Status = "Scheduled"
 	}
