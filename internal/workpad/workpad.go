@@ -34,6 +34,7 @@ const (
 
 	BlockerOwnerOrchestrator = "orchestrator"
 	BlockerOwnerHuman        = "human"
+	BlockerOwnerInstance     = "instance"
 
 	PredicateIssueState        = "issue_state"
 	PredicatePullRequestState  = "pull_request_state"
@@ -41,6 +42,8 @@ const (
 	PredicateBudgetCapacity    = "budget_capacity"
 	PredicateConfigFingerprint = "config_fingerprint"
 )
+
+var symbolicRefPattern = regexp.MustCompile(`^[a-z][a-z0-9+.-]*:[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
 var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)$`)
 
@@ -303,13 +306,16 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		ref := strings.TrimSpace(blocker.Ref)
 		reason := strings.TrimSpace(blocker.Reason)
 		owner := normalizeToken(blocker.Owner)
+		if owner != "" && owner != BlockerOwnerOrchestrator && owner != BlockerOwnerHuman && owner != BlockerOwnerInstance {
+			problems = append(problems, fmt.Sprintf("blockers[%d].owner %q must be orchestrator, human, or instance", index, strings.TrimSpace(blocker.Owner)))
+		}
 		predicate, predicateProblems, predicateRefProblems := normalizePredicate(blocker.Predicate, ref, repo)
 		refProblems += predicateRefProblems
 		for _, problem := range predicateProblems {
 			problems = append(problems, fmt.Sprintf("blockers[%d].%s", index, problem))
 		}
 		identifier := ""
-		if ref != "" {
+		if ref != "" && !symbolicRefPattern.MatchString(ref) {
 			parsed, err := ParseRef(ref, repo)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("blockers[%d].ref %q must be #N or owner/repo#N", index, ref))
@@ -318,7 +324,16 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 				identifier = parsed
 			}
 		}
-		if predicate == nil && ref != "" {
+		symbolic := symbolicRefPattern.MatchString(ref) || predicate != nil && symbolicRefPattern.MatchString(predicate.Ref)
+		if symbolic {
+			if ref == "" {
+				ref = predicate.Ref
+			}
+			identifier = ""
+			predicate = nil
+			owner = BlockerOwnerInstance
+		}
+		if predicate == nil && ref != "" && !symbolic {
 			predicate = &Predicate{Type: PredicateIssueState, Ref: ref, Identifier: identifier}
 		}
 		if owner == "" {
@@ -326,9 +341,6 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 			if predicate != nil {
 				owner = BlockerOwnerOrchestrator
 			}
-		}
-		if owner != BlockerOwnerOrchestrator && owner != BlockerOwnerHuman {
-			problems = append(problems, fmt.Sprintf("blockers[%d].owner %q must be orchestrator or human", index, strings.TrimSpace(blocker.Owner)))
 		}
 		expiresAt, expiryProblem := parseExpiry(blocker.ExpiresAt)
 		if expiryProblem != "" {
@@ -338,7 +350,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		if intervalProblem != "" {
 			problems = append(problems, fmt.Sprintf("blockers[%d].recheck_interval %s", index, intervalProblem))
 		}
-		if predicate == nil && reason == "" {
+		if predicate == nil && reason == "" && !symbolic {
 			problems = append(problems, fmt.Sprintf("blockers[%d] requires a ref, predicate, or reason", index))
 		}
 		blockers = append(blockers, Blocker{
@@ -419,7 +431,7 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 		ref = strings.TrimSpace(blockerRef)
 	}
 	identifier := ""
-	if ref != "" {
+	if ref != "" && !symbolicRefPattern.MatchString(ref) {
 		parsed, err := ParseRef(ref, repo)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("predicate.ref %q must be #N or owner/repo#N", ref))
@@ -452,7 +464,7 @@ func normalizePredicate(raw *predicateYAML, blockerRef string, repo string) (*Pr
 	}
 	switch predicate.Type {
 	case PredicateIssueState:
-		if predicate.Identifier == "" {
+		if predicate.Identifier == "" && !symbolicRefPattern.MatchString(ref) {
 			problems = append(problems, "predicate.ref is required for issue_state")
 			// An inherited malformed ref already explains the missing identifier.
 			if inheritedRef && ref != "" {

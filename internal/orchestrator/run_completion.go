@@ -348,6 +348,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
+	if o.completeRecordedInstanceBlockers(ctx, state, event, running) {
+		return
+	}
+
 	if event.Err != nil {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
 			telemetry.WorkAttemptIDKey, running.WorkAttemptID,

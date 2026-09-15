@@ -1388,7 +1388,7 @@ func TestEvaluateAutoPromoteMalformedBlockerRefs(t *testing.T) {
 			issue := autoPromoteTestIssue("malformed", nil)
 			issue.Identifier = "digitaldrywood/detent#2640"
 			issue.PullRequest = &connector.PullRequest{Number: 2641, State: "OPEN", MergeableState: tt.mergeable, CIStatus: tt.ci}
-			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: local:e2e-verify-2113.loop.local.json\n    reason: local check\n  - ref: worker:github-cli-auth\n    reason: auth\n" + tt.extra + "human_action: null\n```"}}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: malformed-local-ref\n    reason: local check\n  - ref: malformed-worker-ref\n    reason: auth\n" + tt.extra + "human_action: null\n```"}}
 			summary := AutoPromoteSummaryFromIssue(issue)
 			summary.CompletedFinalState = FinalStateCompleted
 			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
@@ -1398,8 +1398,40 @@ func TestEvaluateAutoPromoteMalformedBlockerRefs(t *testing.T) {
 			if tt.ci == "fail" && got.Reason != AutoPromoteReasonCINotGreen {
 				t.Fatalf("reason = %s, want CI reason for transient retry", got.Reason)
 			}
-			if !strings.Contains(got.WorkpadStatusInvalid, `blockers[0].ref "local:e2e-verify-2113.loop.local.json" must be #N or owner/repo#N`) {
+			if !strings.Contains(got.WorkpadStatusInvalid, `blockers[0].ref "malformed-local-ref" must be #N or owner/repo#N`) {
 				t.Fatalf("missing verbatim diagnostic: %#v", got)
+			}
+		})
+	}
+}
+
+func TestSymbolicBlockerPromotion(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, blockers string
+		want           AutoPromoteAction
+	}{
+		{"instance", "  - ref: instance:chrome-devtools\n    reason: tool unavailable\n", AutoPromoteActionAwaitReview},
+		{"workflow", "  - ref: go-workflow:ship-state-bootstrap\n    reason: step unavailable\n", AutoPromoteActionAwaitReview},
+		{"mixed malformed", "  - ref: malformed-text\n  - ref: instance:chrome-devtools\n    reason: tool unavailable\n", AutoPromoteActionAwaitReview},
+		{"cleared", "", AutoPromoteActionPromote},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := autoPromoteTestIssue("symbolic", nil)
+			issue.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN", MergeableState: "clean", CIStatus: "pass"}
+			body := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n" + tt.blockers + "```"
+			if tt.blockers == "" {
+				body = "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\n```"
+			}
+			issue.Comments = []connector.IssueComment{{Body: body}}
+			summary := AutoPromoteSummaryFromIssue(issue)
+			summary.CompletedFinalState = FinalStateCompleted
+			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
+			if got.Action != tt.want {
+				t.Fatalf("decision = %#v, want %s", got, tt.want)
+			}
+			if tt.name != "mixed malformed" && got.WorkpadStatusInvalid != "" {
+				t.Fatalf("invalid = %s", got.WorkpadStatusInvalid)
 			}
 		})
 	}

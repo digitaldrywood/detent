@@ -1459,6 +1459,12 @@ func boardBlockerEvidenceDetail(row telemetry.Blocked, now time.Time) string {
 			continue
 		}
 		parts := []string{"unverifiable " + strings.ReplaceAll(strings.TrimSpace(evidence.Type), "_", " ")}
+		if reference := strings.TrimSpace(evidence.Reference); reference != "" {
+			parts = append(parts, reference)
+		}
+		if reason := strings.TrimSpace(evidence.Reason); reason != "" {
+			parts = append(parts, reason)
+		}
 		if owner := strings.TrimSpace(evidence.Owner); owner != "" {
 			parts = append(parts, "owner "+owner)
 		}

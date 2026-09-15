@@ -2625,6 +2625,9 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		}
 		issue.Metadata[projectKanbanBlockedSourceMetadataKey] = string(row.Source)
 		issue.Metadata[projectKanbanBlockedReasonMetadataKey] = row.Error
+		if evidence := boardBlockerEvidenceDetail(row, time.Time{}); evidence != "" {
+			issue.Metadata[projectKanbanBlockedReasonMetadataKey] = strings.TrimSpace(row.Error + " · " + evidence)
+		}
 		issue.Metadata[projectKanbanBlockedRecoveryActionMetadataKey] = row.RecoveryAction
 		issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey] = row.RecoveryReason
 		issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey] = row.RecoveryRemedy

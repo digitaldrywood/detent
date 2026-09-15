@@ -4904,3 +4904,20 @@ func TestBoardFiguresExcludeOnlyCachedProject(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardSymbolicBlockerDetail(t *testing.T) {
+	t.Parallel()
+	for _, ref := range []string{"instance:chrome-devtools", "go-workflow:ship-state-bootstrap"} {
+		t.Run(ref, func(t *testing.T) {
+			detail := boardBlockerEvidenceDetail(telemetry.Blocked{BlockerEvidence: []telemetry.BlockerEvidence{{Type: "free_text", Owner: "instance", Reference: ref, Reason: "tool unavailable", Unverifiable: true}}}, time.Time{})
+			data := boardTestData()
+			data.Snapshot.Blocked[0].BlockerEvidence = []telemetry.BlockerEvidence{{Type: "free_text", Owner: "instance", Reference: ref, Reason: "tool unavailable", Unverifiable: true}}
+			html := renderBoardComponent(t, BoardPage(data))
+			for _, want := range []string{ref, "tool unavailable", "owner instance"} {
+				if !strings.Contains(detail, want) || !strings.Contains(html, want) {
+					t.Fatalf("detail or card missing %q: %q", want, detail)
+				}
+			}
+		})
+	}
+}

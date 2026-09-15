@@ -588,13 +588,13 @@ func TestMalformedRefPartialSignal(t *testing.T) {
 		{"inherited issue ref", "blocked", "    predicate:\n      type: issue_state\n", true},
 		{"inherited PR ref", "blocked", "    predicate:\n      type: pull_request_state\n      state: open\n", true},
 		{"missing PR state", "blocked", "    predicate:\n      type: pull_request_state\n", false},
-		{"explicit invalid predicate ref", "blocked", "    predicate:\n      type: issue_state\n      ref: local:other\n", false},
+		{"explicit invalid predicate ref", "blocked", "    predicate:\n      type: issue_state\n      ref: malformed other\n", false},
 		{"invalid predicate type", "blocked", "    predicate:\n      type: invalid\n", false},
 		{"invalid status", "human-review", "", false},
 		{"invalid owner", "blocked", "    owner: invalid\n", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			body := "```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers:\n  - ref: local:test\n    reason: local test\n" + tt.extra + "  - ref: '#42'\n    reason: dependency\nhuman_action: null\n```"
+			body := "```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers:\n  - ref: malformed text\n    reason: local test\n" + tt.extra + "  - ref: '#42'\n    reason: dependency\nhuman_action: null\n```"
 			got, ok := SignalFromComment(body, "comment-url", "owner/repo")
 			if !ok || got.Invalid == nil || got.Invalid.BlockerRefsOnly != tt.partial {
 				t.Fatalf("signal = %#v, want partial %v", got, tt.partial)
@@ -604,6 +604,57 @@ func TestMalformedRefPartialSignal(t *testing.T) {
 			}
 			if !tt.partial && len(got.Blockers) != 0 {
 				t.Fatalf("invalid schema retained blockers: %#v", got.Blockers)
+			}
+		})
+	}
+}
+
+func TestSymbolicBlockerReferences(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		ref               string
+		symbolic, invalid bool
+	}{
+		{"#42", false, false}, {"owner/repo#42", false, false},
+		{"instance:chrome-devtools", true, false}, {"go-workflow:ship-state-bootstrap", true, false},
+		{"not a reference", false, true},
+	} {
+		t.Run(tt.ref, func(t *testing.T) {
+			for _, predicate := range []string{"", "    predicate:\n      type: issue_state\n", "    predicate:\n      type: issue_state\n      ref: '" + tt.ref + "'\n"} {
+				body := "```detent-status\nschema: 1\nstatus: blocked\nfields:\n  render_status: passed\nblockers:\n  - ref: '" + tt.ref + "'\n    reason: waiting for tool\n" + predicate + "  - ref: '#43'\n```"
+				got, ok := SignalFromComment(body, "", "owner/repo")
+				if !ok || (got.Invalid != nil) != tt.invalid {
+					t.Fatalf("signal = %#v", got)
+				}
+				if tt.invalid {
+					continue
+				}
+				if len(got.Blockers) != 2 || got.Fields["render_status"] != "passed" || got.Blockers[1].Identifier != "owner/repo#43" {
+					t.Fatalf("lost status data: %#v", got)
+				}
+				b := got.Blockers[0]
+				if b.Ref != tt.ref || b.Reason != "waiting for tool" {
+					t.Fatalf("blocker = %#v", b)
+				}
+				if tt.symbolic && (b.Owner != "instance" || !b.Unverifiable || b.Predicate != nil || b.Identifier != "") {
+					t.Fatalf("symbolic blocker = %#v", b)
+				}
+				if !tt.symbolic && (b.Predicate == nil || b.Identifier == "") {
+					t.Fatalf("issue blocker = %#v", b)
+				}
+			}
+		})
+	}
+}
+
+func TestSymbolicBlockerPreservesSchemaErrors(t *testing.T) {
+	t.Parallel()
+	for _, extra := range []string{"    owner: invalid\n", "    expires_at: invalid\n", "    predicate:\n      type: invalid\n"} {
+		t.Run(extra, func(t *testing.T) {
+			body := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:chrome-devtools\n" + extra + "```"
+			got, ok := SignalFromComment(body, "", "owner/repo")
+			if !ok || got.Invalid == nil {
+				t.Fatalf("invalid schema accepted: %#v", got)
 			}
 		})
 	}
