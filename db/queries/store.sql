@@ -1566,3 +1566,13 @@ SELECT *
 FROM security_audit_dispositions
 WHERE audit_run_id = ?
 ORDER BY recorded_at, id;
+
+-- name: LatestCompletedSecurityAuditRunForPullRequest :one
+SELECT *
+FROM security_audit_runs
+WHERE project_id = sqlc.arg(project_id)
+  AND repository = sqlc.arg(repository)
+  AND pr_number = sqlc.arg(pr_number)
+  AND exit_status = 'success'
+ORDER BY recorded_at DESC, id DESC
+LIMIT 1;

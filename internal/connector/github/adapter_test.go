@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -7312,6 +7313,76 @@ func TestCheckRunFailureEvidence(t *testing.T) {
 			inventory := pullRequestCheckInventory(runs, nil)
 			if len(inventory) != 1 || inventory[0].FailureDetail != tt.want {
 				t.Fatalf("failure evidence = %#v, want %q", inventory, tt.want)
+			}
+		})
+	}
+}
+
+func TestSecurityAuditDeltaSnapshot(t *testing.T) {
+	t.Parallel()
+	metadata := `{"number":42,"head":{"sha":"new"},"base":{"sha":"base"}}`
+	for _, tt := range []struct {
+		name, status, base string
+		delta              bool
+	}{
+		{"renamed", "ahead", "base", true}, {"descendant", "ahead", "base", true}, {"same tree", "identical", "base", true}, {"force push", "diverged", "base", false}, {"base changed", "ahead", "other", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			responses := []graphqlTestResponse{{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata}}
+			comparison := `{"status":"` + tt.status + `"}`
+			filePath := "auth.go"
+			if tt.name == "renamed" {
+				comparison = `{"status":"ahead","files":[{"status":"renamed","previous_filename":"auth.go","filename":"new_auth.go"}]}`
+				filePath = "new_auth.go"
+			}
+			if tt.base == "base" {
+				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/compare/old...new", body: comparison})
+			}
+			diffPath := "/repos/example/repo/pulls/42"
+			if tt.delta {
+				diffPath = "/repos/example/repo/compare/old...new"
+			}
+			responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: diffPath, accept: "application/vnd.github.diff", body: "delta"})
+			if tt.delta {
+				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/contents/" + filePath + "?ref=new", accept: "application/vnd.github.raw", body: "authorization now checked"})
+			}
+			responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata})
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{})
+			number := 42
+			snapshot, err := c.SecurityAuditDeltaSnapshot(t.Context(), connector.Issue{PRNumber: &number, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number}}, 4096, securityaudit.PreviousAudit{BaseSHA: tt.base, HeadSHA: "old", Verdict: "fail", Findings: []securityaudit.Finding{{ID: "auth", Path: "auth.go", Severity: "p1", Body: "missing authorization"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (snapshot.Previous != nil) != tt.delta {
+				t.Fatalf("snapshot = %#v", snapshot)
+			}
+			if tt.delta && snapshot.FindingFiles[filePath] != "authorization now checked" {
+				t.Fatalf("missing finding file: %#v", snapshot)
+			}
+			if tt.delta {
+				if snapshot.Previous.Findings[0].Path != filePath {
+					t.Fatalf("carried path = %q, want %q", snapshot.Previous.Findings[0].Path, filePath)
+				}
+				// The next pass has no rename metadata: the carried verdict must
+				// already identify the file at its current path.
+				nextMetadata := strings.ReplaceAll(metadata, "new", "next")
+				nextServer := newGraphQLTestServer(t, []graphqlTestResponse{
+					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
+					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", body: `{"status":"ahead"}`},
+					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", accept: "application/vnd.github.diff", body: "next delta"},
+					{method: http.MethodGet, path: "/repos/example/repo/contents/" + filePath + "?ref=next", accept: "application/vnd.github.raw", body: "authorization now checked"},
+					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
+				})
+				carried := *snapshot.Previous
+				carried.HeadSHA = snapshot.HeadSHA
+				next, err := newGitHubTestConnector(t, nextServer, Config{}).SecurityAuditDeltaSnapshot(t.Context(), connector.Issue{PRNumber: &number, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number}}, 4096, carried)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if next.FindingFiles[filePath] != "authorization now checked" {
+					t.Fatalf("next finding files = %#v", next.FindingFiles)
+				}
 			}
 		})
 	}

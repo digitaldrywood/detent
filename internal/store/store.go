@@ -235,6 +235,7 @@ type SecurityAuditStore interface {
 	RecordSecurityAuditRun(context.Context, securityaudit.Run) (securityaudit.Run, error)
 	LatestSecurityAuditRun(context.Context, securityaudit.Key) (securityaudit.Run, error)
 	LatestSecurityAuditRunForPullRequest(context.Context, string, string, int) (securityaudit.Run, error)
+	LatestCompletedSecurityAuditRunForPullRequest(context.Context, string, string, int) (securityaudit.Run, error)
 	RecordSecurityAuditDisposition(context.Context, securityaudit.Disposition) (securityaudit.Disposition, error)
 	ListSecurityAuditDispositions(context.Context, int64) ([]securityaudit.Disposition, error)
 }

@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	ReviewerVersion             = "1"
+	ReviewerVersion             = "2"
 	MaxDispositionEvidenceBytes = 16 * 1024
 
 	AuthenticationSubscription = "chatgpt_subscription"
@@ -46,6 +46,7 @@ type Key struct {
 }
 
 type Finding struct {
+	Status   string `json:"status,omitempty"`
 	ID       string `json:"id"`
 	Severity string `json:"severity"`
 	Body     string `json:"body"`
@@ -103,11 +104,12 @@ type Disposition struct {
 }
 
 type Evaluation struct {
-	Running  bool
-	Allowed  bool
-	Reason   string
-	RunID    int64
-	Findings []Finding
+	AllFindings []Finding
+	Running     bool
+	Allowed     bool
+	Reason      string
+	RunID       int64
+	Findings    []Finding
 }
 
 func ReviewerDigest() string {
@@ -168,6 +170,7 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 		return evaluation
 	}
 
+	evaluation.AllFindings = run.Findings
 	blocking := unresolvedFindings(run.Findings, dispositions, serviceIdentity, blockOn)
 	if len(blocking) > 0 {
 		evaluation.Reason = ReasonUnresolvedFindings
@@ -193,9 +196,9 @@ func validSuccessfulRun(run Run) bool {
 	}
 	switch run.Verdict {
 	case VerdictPass:
-		return len(run.Findings) == 0
+		return len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) == 0
 	case VerdictFail:
-		return len(run.Findings) > 0
+		return len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) > 0
 	default:
 		return false
 	}
@@ -228,6 +231,9 @@ func unresolvedFindings(findings []Finding, dispositions []Disposition, serviceI
 
 	unresolved := make([]Finding, 0, len(findings))
 	for _, finding := range findings {
+		if finding.Status == "resolved" {
+			continue
+		}
 		if !slices.Contains(blockedSeverities, strings.ToLower(strings.TrimSpace(finding.Severity))) {
 			continue
 		}

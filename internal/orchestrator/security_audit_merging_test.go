@@ -319,3 +319,46 @@ func TestMergeWorkerAuditFailureDoesNotPublishFindings(t *testing.T) {
 		})
 	}
 }
+
+func TestSecurityAuditAdvisoryPublication(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, status, verdict string
+		publishErr            bool
+	}{
+		{"advisory", "unresolved", securityaudit.VerdictFail, false},
+		{"resolved", "resolved", securityaudit.VerdictPass, false},
+		{"publication failure", "unresolved", securityaudit.VerdictFail, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o, tracker, issue := mergingSecurityAuditFixture()
+			memo := newSecurityAuditMemoryStore()
+			o.securityAuditStore = memo
+			run := securityAuditPassingRun(issue)
+			run.Verdict = tt.verdict
+			run.Findings = []securityaudit.Finding{{ID: "advisory", Severity: "p3", Status: tt.status, Body: "advisory detail", Path: "file.go"}}
+			if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
+				t.Fatal(err)
+			}
+			if tt.publishErr {
+				tracker.publishErr = errors.New("publication unavailable")
+			}
+			state := newState(o.cfg)
+			now := time.Now()
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean, TurnStarted: true}}
+			running := Running{Issue: issue, Attempt: 1, Mode: runpkg.RunModeMerge, StartedAt: now.Add(-time.Minute)}
+			if !o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
+				t.Fatal("completion not handled")
+			}
+			if tt.publishErr {
+				if len(tracker.merges) != 0 {
+					t.Fatal("merged without publication")
+				}
+				return
+			}
+			if len(tracker.merges) != 1 || len(tracker.prComments) != 1 || !strings.Contains(tracker.prComments[0].body, "advisory detail") || !strings.Contains(tracker.prComments[0].body, tt.status) {
+				t.Fatalf("merges=%v comments=%v", tracker.merges, tracker.prComments)
+			}
+		})
+	}
+}

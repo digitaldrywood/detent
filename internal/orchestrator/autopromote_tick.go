@@ -3242,7 +3242,7 @@ func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
 		return "", false
 	}
 
-	if decision.Reason == AutoPromoteReasonSecurityAuditFindings {
+	if decision.Reason == AutoPromoteReasonSecurityAuditFindings || len(summary.SecurityAudit.AllFindings) > 0 {
 		if err := o.publishSecurityAuditFindings(ctx, issue, summary.SecurityAudit); err != nil {
 			o.logSecurityAuditFailure(issue, "publication_failed", err)
 			return "", false

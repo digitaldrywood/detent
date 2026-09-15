@@ -2429,6 +2429,61 @@ func (q *Queries) IssueWorkflowTimelineRows(ctx context.Context, arg IssueWorkfl
 	return items, nil
 }
 
+const latestCompletedSecurityAuditRunForPullRequest = `-- name: LatestCompletedSecurityAuditRunForPullRequest :one
+SELECT id, invocation_id, project_id, issue_id, identifier, issue_url, repository, pr_number, base_sha, head_sha, service_identity, reviewer_version, reviewer_digest, authentication_mode, worker_pid, worker_pgid, worker_started_at, provider_thread_id, provider_session_id, exit_status, failure, output_digest, output_bytes, verdict, summary, findings_json, attempt, started_at, completed_at, recorded_at
+FROM security_audit_runs
+WHERE project_id = ?1
+  AND repository = ?2
+  AND pr_number = ?3
+  AND exit_status = 'success'
+ORDER BY recorded_at DESC, id DESC
+LIMIT 1
+`
+
+type LatestCompletedSecurityAuditRunForPullRequestParams struct {
+	ProjectID  string `json:"project_id"`
+	Repository string `json:"repository"`
+	PrNumber   int64  `json:"pr_number"`
+}
+
+func (q *Queries) LatestCompletedSecurityAuditRunForPullRequest(ctx context.Context, arg LatestCompletedSecurityAuditRunForPullRequestParams) (SecurityAuditRun, error) {
+	row := q.db.QueryRowContext(ctx, latestCompletedSecurityAuditRunForPullRequest, arg.ProjectID, arg.Repository, arg.PrNumber)
+	var i SecurityAuditRun
+	err := row.Scan(
+		&i.ID,
+		&i.InvocationID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.Repository,
+		&i.PrNumber,
+		&i.BaseSha,
+		&i.HeadSha,
+		&i.ServiceIdentity,
+		&i.ReviewerVersion,
+		&i.ReviewerDigest,
+		&i.AuthenticationMode,
+		&i.WorkerPid,
+		&i.WorkerPgid,
+		&i.WorkerStartedAt,
+		&i.ProviderThreadID,
+		&i.ProviderSessionID,
+		&i.ExitStatus,
+		&i.Failure,
+		&i.OutputDigest,
+		&i.OutputBytes,
+		&i.Verdict,
+		&i.Summary,
+		&i.FindingsJson,
+		&i.Attempt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.RecordedAt,
+	)
+	return i, err
+}
+
 const latestSecurityAuditRun = `-- name: LatestSecurityAuditRun :one
 SELECT id, invocation_id, project_id, issue_id, identifier, issue_url, repository, pr_number, base_sha, head_sha, service_identity, reviewer_version, reviewer_digest, authentication_mode, worker_pid, worker_pgid, worker_started_at, provider_thread_id, provider_session_id, exit_status, failure, output_digest, output_bytes, verdict, summary, findings_json, attempt, started_at, completed_at, recorded_at
 FROM security_audit_runs

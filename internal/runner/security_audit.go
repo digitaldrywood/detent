@@ -170,6 +170,9 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	}
 
 	execution.Result, err = securityaudit.ParseOutput(execution.Output)
+	if err == nil {
+		err = securityaudit.ValidateContinuation(req.Snapshot.Previous, execution.Result)
+	}
 	if err != nil {
 		runResult.FinalState = FinalStateFailed
 	}

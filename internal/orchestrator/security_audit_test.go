@@ -419,3 +419,66 @@ func securityAuditPassingRun(issue connector.Issue) securityaudit.Run {
 var _ runner.SecurityAuditor = (*securityAuditTestAuditor)(nil)
 
 func intPointer(value int) *int { return &value }
+
+func (s *securityAuditMemoryStore) LatestCompletedSecurityAuditRunForPullRequest(_ context.Context, projectID, repository string, prNumber int) (securityaudit.Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := len(s.runs) - 1; index >= 0; index-- {
+		run := s.runs[index]
+		if run.ExitStatus == securityaudit.ExitStatusSuccess && run.ProjectID == projectID && run.Repository == repository && run.PRNumber == prNumber {
+			return run, nil
+		}
+	}
+	return securityaudit.Run{}, store.ErrNotFound
+}
+
+type securityAuditDeltaTestConnector struct{ securityAuditTestConnector }
+
+func (c *securityAuditDeltaTestConnector) SecurityAuditDeltaSnapshot(_ context.Context, _ connector.Issue, _ int, previous securityaudit.PreviousAudit) (securityaudit.Snapshot, error) {
+	snapshot := c.snapshot
+	snapshot.Previous = &previous
+	snapshot.Diff = "delta only"
+	return snapshot, nil
+}
+
+func TestSecurityAuditCarriesPriorVerdict(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		mutate    func(*securityaudit.Run)
+		wantDelta bool
+	}{
+		{"prior pass", func(*securityaudit.Run) {}, true},
+		{"prior failure findings", func(r *securityaudit.Run) {
+			r.Verdict = "fail"
+			r.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "missing auth", Path: "auth.go"}}
+		}, true},
+		{"changed base", func(r *securityaudit.Run) { r.BaseSHA = "other" }, false},
+		{"untrusted", func(r *securityaudit.Run) { r.ServiceIdentity = "other" }, false},
+		{"old reviewer", func(r *securityaudit.Run) { r.ReviewerDigest = "old" }, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := securityAuditTestIssue()
+			memo := newSecurityAuditMemoryStore()
+			prior := securityAuditPassingRun(issue)
+			prior.HeadSHA = "old"
+			tt.mutate(&prior)
+			memo.runs = append(memo.runs, prior)
+			snapshot := securityAuditSnapshotFromIssue("detent", issue)
+			snapshot.Diff = "full diff"
+			c := &securityAuditDeltaTestConnector{securityAuditTestConnector{snapshot: snapshot}}
+			orch := securityAuditTestOrchestrator(memo)
+			orch.connector = c
+			got, err := orch.collectSecurityAuditSnapshot(t.Context(), c, issue, securityAuditKey(snapshot), 4096)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got.Previous != nil) != tt.wantDelta {
+				t.Fatalf("snapshot = %#v", got)
+			}
+			if tt.wantDelta && (got.Previous.HeadSHA != "old" || got.Previous.Verdict != prior.Verdict || got.Diff != "delta only") {
+				t.Fatalf("lost prior verdict: %#v", got)
+			}
+		})
+	}
+}
