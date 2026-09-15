@@ -48,6 +48,7 @@ type Config struct {
 }
 
 type Store interface {
+	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	auth.Store
 	StatsStore
 	FairShareStore
@@ -822,6 +823,15 @@ type WorkAttemptTimeout struct {
 	TerminalState     WorkAttemptTerminalState
 	ErrorClass        string
 	ErrorMessage      string
+}
+
+// WorkAttemptReclaim with an empty ProjectID reclaims all projects at instance startup.
+type WorkAttemptReclaim struct {
+	ProjectID     string
+	Now           time.Time
+	TerminalState WorkAttemptTerminalState
+	ErrorClass    string
+	ErrorMessage  string
 }
 
 type MergeRequiredCheckEvaluation struct {

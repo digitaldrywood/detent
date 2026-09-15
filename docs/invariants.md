@@ -167,6 +167,20 @@ restores the base interval. Actual exhaustion, provider throttles, and connector
 REST write protection remain authoritative. `TestProjectRefreshColdFleetRequestCounts`
 and `TestProjectRefreshActiveFleetDispatch` cover cold five/ten-project reads,
 eventual refresh, reset recovery, free permits, and dispatch transition writes.
+Startup process reconciliation reuses the existing durable-attempt reclaim query
+across all projects before project loading (#2749), including removed projects.
+Project restarts without an instance restart retain the existing lease-based
+recovery, including exclusions for locally running attempts. Deferred completions retain their existing exclusion, and restart-abandoned
+attempts retain orphan-session resume eligibility. Recorded processless stops use
+the existing completion and pending operator-stop records without requiring a
+running project; live workers still require the orchestrator. Live and recorded
+stops share route normalization, validation, and completion construction. Configured
+default/custom destinations survive project initialization. Unreadable or invalid pending
+workflows still permit record-only and canonical stops; removed projects reuse the
+standard Todo priority names through shared priority normalization. Linked session completion
+is atomic with attempt completion and preserves an existing finish timestamp. Covered by
+`TestStartupReclaimsProcesslessWorkAttempts`, `TestStopRecordedRunBeforeProjectStartup`,
+`TestStopRecordedRun`, and `TestReapWorkerProcessesPreservesInterruptedSession`.
 
 Legacy worker caches are removed at project startup using an absolute, home-expanded
 workspace root (#2742). The obsolete per-project shared-cache sweep and its state
