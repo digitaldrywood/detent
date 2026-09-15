@@ -343,10 +343,11 @@ relations remain authoritative for issue-state dependencies.
 
 Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
 attempt accounting into one fixed allowance: three code/rework sessions started
-since the last merged PR or operator move out of Human Review (#2692). The
+since the last merged PR or operator lane move (#2692, #2729). The
 durable attempt log owns the count, with the window derived from existing lane
 history. Human-origin moves, and moves not initiated by the Detent instance,
-reset the window for any destination; Detent-instance moves do not. Sessions
+reset the window regardless of source or destination lane, including Merging or
+Blocked to Rework; Detent-instance moves and same-lane observations do not. Sessions
 started at the operator-move timestamp count in the renewed window because lane
 observation precedes dispatch in the same tick; merge boundaries remain exclusive. New commits,
 new PR heads, CI signatures, ordinary lane changes, and acknowledgements alone

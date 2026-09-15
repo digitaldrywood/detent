@@ -28,8 +28,8 @@ type attemptAllowance struct {
 func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
 
 // Unlike progress accounting, every started code/rework attempt consumes the same
-// issue allowance. The window starts at the last merge or operator move out of
-// Human Review; ordinary head, lane, and diff changes do not replenish it.
+// issue allowance. The window starts at the last merge or operator lane move;
+// ordinary head, Detent lane, and diff changes do not replenish it.
 func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
 	var result attemptAllowance
 	for _, attempt := range attempts {
@@ -139,8 +139,7 @@ func lastAllowanceOperatorMoveAt(events []store.WorkflowPhaseEvent) time.Time {
 	var latest time.Time
 	for _, event := range events {
 		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(event.Status, "entered") ||
-			normalizeState(event.PreviousPhaseName) != normalizeState(autoPromoteSourceState) ||
-			normalizeState(event.PhaseName) == normalizeState(autoPromoteSourceState) || strings.TrimSpace(event.PhaseName) == "" {
+			normalizeState(event.PreviousPhaseName) == normalizeState(event.PhaseName) || strings.TrimSpace(event.PhaseName) == "" {
 			continue
 		}
 		metadata, _ := workflowLaneMetadataFromJSON(event.MetadataJSON)
