@@ -128,6 +128,18 @@ func TestSQLiteLatestSecurityAuditRunForPullRequest(t *testing.T) {
 	if got.InvocationID != second.InvocationID || got.HeadSHA != second.HeadSHA {
 		t.Fatalf("LatestSecurityAuditRunForPullRequest() = %#v, want latest run", got)
 	}
+	failed := second
+	failed.InvocationID = "failed-3"
+	failed.ExitStatus = securityaudit.ExitStatusFailed
+	failed.RecordedAt = second.RecordedAt.Add(time.Minute)
+	if _, err := backend.RecordSecurityAuditRun(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := backend.LatestCompletedSecurityAuditRunForPullRequest(ctx, first.ProjectID, first.Repository, first.PRNumber)
+	if err != nil || completed.InvocationID != second.InvocationID {
+		t.Fatalf("completed = %#v, error = %v", completed, err)
+	}
+
 }
 
 func securityAuditTestRun() securityaudit.Run {

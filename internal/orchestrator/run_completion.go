@@ -1610,6 +1610,13 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 	}
+	if len(audit.AllFindings) > 0 {
+		if err := o.publishSecurityAuditFindings(ctx, issue, audit); err != nil {
+			running.Issue = issue
+			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
+			return true
+		}
+	}
 	if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
 		var hydrated bool
 		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)

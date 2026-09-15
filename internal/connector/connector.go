@@ -217,6 +217,10 @@ type PullRequestDiffFingerprintReader interface {
 	PullRequestDiffFingerprint(context.Context, Issue) (string, error)
 }
 
+type SecurityAuditDeltaReader interface {
+	SecurityAuditDeltaSnapshot(context.Context, Issue, int, securityaudit.PreviousAudit) (securityaudit.Snapshot, error)
+}
+
 type SecurityAuditSnapshotReader interface {
 	SecurityAuditSnapshot(context.Context, Issue, int) (securityaudit.Snapshot, error)
 }

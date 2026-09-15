@@ -265,3 +265,21 @@ func validateSecurityAuditKey(key securityaudit.Key) error {
 	}
 	return nil
 }
+
+func (s *sqliteStore) LatestCompletedSecurityAuditRunForPullRequest(ctx context.Context, projectID, repository string, prNumber int) (securityaudit.Run, error) {
+	if strings.TrimSpace(projectID) == "" || strings.TrimSpace(repository) == "" || prNumber <= 0 {
+		return securityaudit.Run{}, errors.New("project_id, repository, and pr_number are required")
+	}
+	row, err := s.queries.LatestCompletedSecurityAuditRunForPullRequest(ctx, sqlc.LatestCompletedSecurityAuditRunForPullRequestParams{
+		ProjectID:  strings.TrimSpace(projectID),
+		Repository: strings.TrimSpace(repository),
+		PrNumber:   int64(prNumber),
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return securityaudit.Run{}, ErrNotFound
+		}
+		return securityaudit.Run{}, fmt.Errorf("reading pull request security audit run: %w", err)
+	}
+	return securityAuditRunFromRow(row)
+}

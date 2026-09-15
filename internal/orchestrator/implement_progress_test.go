@@ -2411,10 +2411,6 @@ func (s *implementProgressAttemptStore) TimeoutExpiredWorkAttempts(context.Conte
 	return nil, nil
 }
 
-func (s *implementProgressAttemptStore) ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error) {
-	return nil, nil
-}
-
 func (s *implementProgressAttemptStore) RecordSchedulerDecision(context.Context, store.SchedulerDecision) (int64, error) {
 	return 0, nil
 }

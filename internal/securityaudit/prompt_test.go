@@ -8,8 +8,11 @@ import (
 func TestBuildPromptSecurityScope(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ name, instruction string }{
-		{"p1", "p1 = exploitable defect (injection, authorization bypass, secret or PII exposure, cross-tenant access, unsafe deserialization)"},
+		{"p1", "p1 = exploitable defect (injection, authorization bypass, secret or PII exposure, cross-tenant access, unsafe deserialization, resource exhaustion or other availability attacks including denial of service reachable without authentication)"},
 		{"p2", "p2 = defect with a realistic path to one of the above exploits"},
+		{"availability example", "an unauthenticated request triggering unbounded allocation warrants a p1 denial-of-service finding and verdict fail"},
+		{"availability surface", "resource exhaustion and availability"},
+		{"resolved history", "otherwise pass, even if resolved findings remain"},
 		{"p3", "p3 = security hardening suggestion"},
 		{"scope", "Anything else is not a finding"},
 		{"intent", "The issue description is the authority on intended product behavior"},

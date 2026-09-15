@@ -619,13 +619,18 @@ the configured interval, and stops or refuses a worker at its reserve. Keep
 literal tokens out of checked-in project files.
 
 `workpad.structured_only` requires machine-readable workpad status instead of
-accepting legacy narrative signals. GitHub native blocked-by relations are
-authoritative when supported, including an empty list. Issue-body dependency
-lines are a fallback when native relations are unavailable; historical comments
-never add blockers. Unmatched prose references are reported as ignored in issue
-explanations. The existing `dependencies.source` values (`merged` and
-`native_only`) remain accepted for configuration compatibility; neither unions
-prose with native relations on capable GitHub repositories.
+accepting legacy narrative signals. GitHub native blocked-by relations and
+recognized current issue-body dependency lines form one blocker list. Native
+metadata wins for duplicate references; an empty native list does not discard
+body declarations. Fenced examples never add blockers. Historical comments are
+diagnostic only, with unmatched references reported as ignored in issue
+explanations. Unsupported repositories use body declarations alone. Failed
+blocker-state lookups propagate errors rather than returning dispatch candidates.
+
+The existing `dependencies.source` values (`merged` and `native_only`) are
+deprecated compatibility aliases for this same behavior; neither disables
+current body declarations. Remove a body declaration to remove its blocker
+(and remove the native relation as well if one exists).
 
 ### Agents, backends, and routing
 

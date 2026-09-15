@@ -79,6 +79,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		}
 	}()
 
+	o.expireOrphanedWorkAttempts(ctx, state, now)
 	o.syncGitHubRESTCapacityOutage(state, now)
 	if o.scheduling == nil && o.githubLookupBackoffGate(ctx, state, now) {
 		return

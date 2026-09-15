@@ -449,6 +449,7 @@ type StrandedIssue struct {
 }
 
 type Update struct {
+	ActiveAttempts     int        `json:"active_attempts"`
 	Enabled            bool       `json:"enabled"`
 	AutoApplyEnabled   bool       `json:"auto_apply_enabled"`
 	CheckIntervalHours int        `json:"check_interval_hours"`

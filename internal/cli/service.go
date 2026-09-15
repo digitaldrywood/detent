@@ -69,6 +69,14 @@ func newStartCommand(configPath *string, host *string, port *int, opts options) 
 			if err != nil {
 				return err
 			}
+			if restart && !opts.serviceInjected {
+				client, clientErr := newDashboardReadClient(cmd.Context(), pointerString(configPath), pointerString(host), pointerInt(port, -1), flagChanged(cmd, "port"), opts)
+				if clientErr != nil {
+					return clientErr
+				}
+				stopProgress := client.reportDrain(cmd.Context(), cmd.ErrOrStderr(), "restart")
+				defer stopProgress()
+			}
 			result, err := runner.Start(cmd.Context(), servicepkg.StartOptions{Install: assumeYes, Restart: restart})
 			if err != nil {
 				return err

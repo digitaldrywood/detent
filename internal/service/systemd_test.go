@@ -24,7 +24,8 @@ func TestSystemdUnitIncludesRuntimeAndShutdownSettings(t *testing.T) {
 		"After=network-online.target",
 		"Wants=network-online.target",
 		"Restart=on-failure",
-		"KillMode=control-group",
+		"KillMode=mixed",
+		"TimeoutStopSec=infinity",
 		"WantedBy=default.target",
 	} {
 		if !strings.Contains(unit, want) {
@@ -42,12 +43,22 @@ func TestSystemdInspectAndCommands(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	var commands [][]string
+	stopped := false
 	cfg := normalizeConfig(Config{
 		UserSystemdPath: userPath,
 		RunCommand: func(_ context.Context, name string, args ...string) (string, error) {
 			commands = append(commands, append([]string{name}, args...))
 			switch name {
 			case "systemctl":
+				if len(args) > 1 && args[1] == "kill" {
+					if !reflect.DeepEqual(args, []string{"--user", "kill", "--kill-whom=main", "--signal=SIGTERM", systemdUnitName}) {
+						t.Errorf("signal command = %v", args)
+					}
+					stopped = true
+				}
+				if stopped {
+					return "LoadState=loaded\nActiveState=inactive\nSubState=dead\n", nil
+				}
 				return "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=42\n", nil
 			case "ps":
 				return "Thu Jul 16 10:30:00 2026\n", nil
@@ -70,7 +81,7 @@ func TestSystemdInspectAndCommands(t *testing.T) {
 	if err := manager.Restart(t.Context()); err != nil {
 		t.Fatalf("Restart() error = %v", err)
 	}
-	if got := commands[len(commands)-1]; !reflect.DeepEqual(got, []string{"systemctl", "--user", "restart", systemdUnitName}) {
+	if got := commands[len(commands)-1]; !reflect.DeepEqual(got, []string{"systemctl", "--user", "start", systemdUnitName}) {
 		t.Fatalf("restart command = %#v", got)
 	}
 }

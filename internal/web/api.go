@@ -717,7 +717,7 @@ func projectsAPIResponse(snapshot telemetry.Snapshot) []telemetry.ProjectSnapsho
 }
 
 func runtimeStatus(snapshot telemetry.Snapshot) string {
-	if snapshot.Shutdown.Draining {
+	if snapshot.Shutdown.Draining || snapshot.Update.State == "draining" {
 		return "draining"
 	}
 	return "running"

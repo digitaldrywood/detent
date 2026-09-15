@@ -79,9 +79,6 @@ func newRuntimeUpdateScheduler(
 		ExecutablePath: executable,
 		GOOS:           runtime.GOOS,
 	})
-	if !schedulerConfig.Enabled {
-		return detentupdate.NewScheduler(schedulerConfig)
-	}
 	version := runtimeUpdateVersion(cfg)
 	schedulerConfig.Updater = newRuntimeUpdater(cfg, executable, version)
 	schedulerConfig.RequestRestart = func(binary string) bool {
@@ -212,6 +209,11 @@ func runtimeUpdateDrainTimeout(registry *project.Registry) time.Duration {
 	timeout := time.Duration(0)
 	for _, trackedProject := range registry.List() {
 		agent := trackedProject.Workflow().Config.Agent
+		for _, level := range trackedProject.Workflow().Config.Agents.ModelSelection.Levels {
+			if level.MaxSessionDurationMS != nil {
+				timeout = max(timeout, time.Duration(*level.MaxSessionDurationMS)*time.Millisecond)
+			}
+		}
 		ceilings := []struct {
 			configured int
 			fallback   int

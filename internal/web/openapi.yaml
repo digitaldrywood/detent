@@ -623,7 +623,7 @@ paths:
   /api/v1/update/apply:
     post:
       operationId: applyUpdate
-      summary: Apply a pending Detent update
+      summary: Drain active attempts and apply a Detent update
       tags: [administration]
       security:
         - bearerAuth: []
@@ -640,6 +640,8 @@ paths:
               required: [confirm]
               properties:
                 confirm: {type: boolean}
+                release: {type: boolean, description: Explicitly apply a release even when automatic updates are disabled.}
+                from_release: {type: boolean, description: Replace a go-install-managed binary with a release asset.}
       responses:
         "202":
           description: Update application started.

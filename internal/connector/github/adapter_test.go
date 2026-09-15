@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -1382,10 +1383,11 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name:    "empty native list ignores prose",
+			name:    "empty native list retains body",
 			initial: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			status:  http.StatusOK,
 			body:    `[]`,
+			want:    []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -1393,7 +1395,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name: "native excludes unmatched prose",
+			name: "native includes unmatched body",
 			initial: []connector.BlockedRef{
 				{Identifier: "digitaldrywood/detent#100", Source: connector.BlockedRefSourceProse},
 				{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse},
@@ -1405,7 +1407,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 				Identifier: "digitaldrywood/detent#100",
 				State:      "Done",
 				Source:     connector.BlockedRefSourceNative,
-			}},
+			}, {Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -1429,7 +1431,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name:             "native only ignores prose on capable repo",
+			name:             "legacy native only retains body on capable repo",
 			dependencySource: dependencySourceNativeOnly,
 			initial:          []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			status:           http.StatusOK,
@@ -1439,7 +1441,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 				Identifier: "digitaldrywood/detent#100",
 				State:      "Open",
 				Source:     connector.BlockedRefSourceNative,
-			}},
+			}, {Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -4124,6 +4126,7 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 				{
 					body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
 				},
+				{method: http.MethodGet, path: "/repos/digitaldrywood/creswoodcorners-phone/issues/163/dependencies/blocked_by?per_page=100", body: `[]`},
 				{
 					method: http.MethodGet,
 					path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
@@ -4159,33 +4162,30 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 	}
 }
 
-func TestConnectorFetchIssuesByStatesKeepsBodyDependencyWhenHydrationFails(t *testing.T) {
+func TestConnectorFetchIssuesByStatesRejectsBodyDependencyWhenHydrationFails(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
-		},
-		{
-			status: http.StatusInternalServerError,
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
-			body:   `{"message":"temporary github failure"}`,
-		},
-	})
-	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	for _, status := range []int{http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{
+					body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
+				},
+				{
+					status: status,
+					method: http.MethodGet,
+					path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
+					body:   `{"message":"temporary github failure"}`,
+				},
+			})
+			c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
-	got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
-	if err != nil {
-		t.Fatalf("FetchIssuesByStates() error = %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
-	}
-
-	want := []connector.BlockedRef{{Identifier: "digitaldrywood/creswoodcorners-phone#162", Source: connector.BlockedRefSourceProse}}
-	if !reflect.DeepEqual(got[0].BlockedBy, want) {
-		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+			got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
+			if err == nil || len(got) != 0 {
+				t.Fatalf("FetchIssuesByStates() = %+v, %v; want error and no issues", got, err)
+			}
+		})
 	}
 }
 
@@ -7312,6 +7312,76 @@ func TestCheckRunFailureEvidence(t *testing.T) {
 			inventory := pullRequestCheckInventory(runs, nil)
 			if len(inventory) != 1 || inventory[0].FailureDetail != tt.want {
 				t.Fatalf("failure evidence = %#v, want %q", inventory, tt.want)
+			}
+		})
+	}
+}
+
+func TestSecurityAuditDeltaSnapshot(t *testing.T) {
+	t.Parallel()
+	metadata := `{"number":42,"head":{"sha":"new"},"base":{"sha":"base"}}`
+	for _, tt := range []struct {
+		name, status, base string
+		delta              bool
+	}{
+		{"renamed", "ahead", "base", true}, {"descendant", "ahead", "base", true}, {"same tree", "identical", "base", true}, {"force push", "diverged", "base", false}, {"base changed", "ahead", "other", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			responses := []graphqlTestResponse{{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata}}
+			comparison := `{"status":"` + tt.status + `"}`
+			filePath := "auth.go"
+			if tt.name == "renamed" {
+				comparison = `{"status":"ahead","files":[{"status":"renamed","previous_filename":"auth.go","filename":"new_auth.go"}]}`
+				filePath = "new_auth.go"
+			}
+			if tt.base == "base" {
+				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/compare/old...new", body: comparison})
+			}
+			diffPath := "/repos/example/repo/pulls/42"
+			if tt.delta {
+				diffPath = "/repos/example/repo/compare/old...new"
+			}
+			responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: diffPath, accept: "application/vnd.github.diff", body: "delta"})
+			if tt.delta {
+				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/contents/" + filePath + "?ref=new", accept: "application/vnd.github.raw", body: "authorization now checked"})
+			}
+			responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata})
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{})
+			number := 42
+			snapshot, err := c.SecurityAuditDeltaSnapshot(t.Context(), connector.Issue{PRNumber: &number, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number}}, 4096, securityaudit.PreviousAudit{BaseSHA: tt.base, HeadSHA: "old", Verdict: "fail", Findings: []securityaudit.Finding{{ID: "auth", Path: "auth.go", Severity: "p1", Body: "missing authorization"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (snapshot.Previous != nil) != tt.delta {
+				t.Fatalf("snapshot = %#v", snapshot)
+			}
+			if tt.delta && snapshot.FindingFiles[filePath] != "authorization now checked" {
+				t.Fatalf("missing finding file: %#v", snapshot)
+			}
+			if tt.delta {
+				if snapshot.Previous.Findings[0].Path != filePath {
+					t.Fatalf("carried path = %q, want %q", snapshot.Previous.Findings[0].Path, filePath)
+				}
+				// The next pass has no rename metadata: the carried verdict must
+				// already identify the file at its current path.
+				nextMetadata := strings.ReplaceAll(metadata, "new", "next")
+				nextServer := newGraphQLTestServer(t, []graphqlTestResponse{
+					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
+					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", body: `{"status":"ahead"}`},
+					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", accept: "application/vnd.github.diff", body: "next delta"},
+					{method: http.MethodGet, path: "/repos/example/repo/contents/" + filePath + "?ref=next", accept: "application/vnd.github.raw", body: "authorization now checked"},
+					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
+				})
+				carried := *snapshot.Previous
+				carried.HeadSHA = snapshot.HeadSHA
+				next, err := newGitHubTestConnector(t, nextServer, Config{}).SecurityAuditDeltaSnapshot(t.Context(), connector.Issue{PRNumber: &number, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number}}, 4096, carried)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if next.FindingFiles[filePath] != "authorization now checked" {
+					t.Fatalf("next finding files = %#v", next.FindingFiles)
+				}
 			}
 		})
 	}

@@ -510,10 +510,6 @@ func (s *soakAttemptStore) TimeoutExpiredWorkAttempts(context.Context, store.Wor
 	return nil, nil
 }
 
-func (s *soakAttemptStore) ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error) {
-	return nil, nil
-}
-
 func (s *soakAttemptStore) RecordSchedulerDecision(context.Context, store.SchedulerDecision) (int64, error) {
 	return 0, nil
 }

@@ -155,6 +155,23 @@ fields are removed; the existing host cache trim and report are the single cache
 mechanism. Doctor retains read-only warnings for legacy roots. `TestRemoveLegacy`
 covers absent, absolute, and tilde roots.
 
+Update and restart draining (#2745) reuses the runtime dispatch pause and session
+limits. Manual runtime update requests use the same drain reservation as automatic
+updates; SIGTERM shutdown uses that duration ceiling, including model-selection
+levels. Managed restarts preserve child processes while the orchestrator drains.
+Startup no longer bulk-reclaims live work attempts as `service_restart`; the
+reclaim store API and query are removed. Historical restart rows remain readable
+for retry and accounting compatibility. Existing expired-lease recovery runs at startup and on normal refresh, including
+tracker pauses. Its query excludes currently owned attempts and deferred completions;
+retained crash orphans expire without requiring another restart.
+`TestRetainedWorkAttemptsExpireOnTick` covers this lifecycle.
+The issue explicitly authorizes the existing update banner to show the drain count.
+`TestSchedulerApplyPendingWaitsForBothAttempts` and
+`TestStartupDoesNotReclaimLiveWorkAttempts` cover the update and persistence boundary
+and replace the old startup-reclaim regression in the invariant manifest.
+`TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled` also runs through
+the manifest to preserve CLI coordination when automatic updates are off.
+
 **Why:** The September 10 audit identified interactions among self-protection
 mechanisms as the main source of incidents; adding another conditional guard
 perpetuates that failure mode.
@@ -243,22 +260,22 @@ must remain to reject unverified artifacts before replacement.
 Startup, serving, and readiness workers share cancellation and are joined before
 identity-failure exits allow caller-owned resources to be cleaned up.
 
-GitHub dependency hydration uses native relations as the source of truth when
-available, removing the union with prose dependencies (#2575). Unsupported
-repositories fall back to issue-body lines; historical comments are diagnostic
-only. Public reads select the dependency source before resolving blockers, and
-tracker refreshes replace authoritative empty lists instead of restoring prior
-refs. This also removes the orchestrator's historical-comment union and prevents
-reparsing connector-owned dependencies. Degraded native reads propagate errors
-instead of certifying prose fallback or suppressing subsequent native reads.
-Ignored prose and structured workpad dependency predicates absent from the native
-list are explained without introducing another blocking mechanism. Native-backed
-dispatch uses the current relation list instead of the terminal attempt's saved
-dependency-deferral metadata; past attempts cannot restore a removed relation.
-Removed structured dependencies remain cleared evidence for the existing blocked
-recovery transition. Legacy workpad dependency sections and phrases are not
-reinterpreted as human actions on native repositories; explicit human-action
-sections and non-dependency predicates retain their existing meaning.
+GitHub dependency hydration consolidates native relations and current issue-body
+declarations into one blocker list (#2751). Native state wins for duplicate refs;
+an empty native list does not discard a current `Depends on:` declaration.
+Unsupported repositories use the same body parser. Historical comments remain
+diagnostic only, and refresh replaces the previous list rather than restoring
+removed declarations. Public reads select dependencies before resolving blocker
+state; the orchestrator consumes that list through its existing dependency gate.
+Degraded native reads and unresolved blocker-state lookups propagate errors,
+preventing candidates with unknown blocker state from dispatching. Both parsers
+share fence-aware declaration scanning; fenced examples never add blockers. Workpad issue-state predicates
+absent from the current combined list are explained and cleared as before;
+explicit human actions and non-dependency predicates retain their meaning.
+`TestDependencyAuthority` reproduces text-only hydration, including bold labels;
+`TestDispatchDependencyRetry` covers repeated Todo waits and release on closure.
+This repairs the body exclusion introduced in #2575 without adding a dispatch
+gate, tracker write, reason code, or recovery loop.
 
 Validator launch accounting uses the existing validator-run registry and shared
 worker progress publisher. Validators appear alongside implementation workers in
@@ -341,8 +358,9 @@ auto-unblock resolver and readiness predicate, sharing blocker reads within each
 dispatch refresh (#2509). Closed tracker state releases ordinary dependencies
 without requiring a terminal lane observation; human completion evidence remains
 required. Current structured Workpad blockers in `in_progress` or `blocked` with
-an open `issue_state` predicate join body fallback dependencies; native relations
-remain authoritative. Unresolved Workpad evidence preserves the dependency wait;
+an open `issue_state` predicate join current body dependencies; native relations
+provide state for duplicate references. Current body declarations survive an
+empty native list (#2751), while historical comments remain diagnostic only. Unresolved Workpad evidence preserves the dependency wait;
 explicit open predicates use tracker closure, even in terminal lanes. A dependency
 wait preserves retry attempt and resume state.
 `TestDispatchDependencyRetry` covers open-to-closed transitions for native, body,
@@ -353,7 +371,7 @@ Dispatch also consults the existing recorded-blocker evaluator for structured
 Workpad predicates, including direct PR references (#2645). Normal dispatch,
 due retries, and queued grants wait while evidence holds or is unverifiable;
 cleared predicates release dispatch without a new park or recovery loop. Native
-relations remain authoritative for issue-state dependencies.
+relations and current body declarations share authority for issue-state dependencies.
 
 Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
 attempt accounting into one fixed allowance: three code/rework sessions started
@@ -495,6 +513,17 @@ and prior-attempt handoff (#2643). Hydrated unresolved threads and GitHub's
 conversation-resolution enqueue rejection use `unresolved_review_threads`;
 transient enqueue failures retain their existing handling. This consolidates
 review routing without adding a reason or retry mechanism.
+
+Security audit continuations (#2746, operator-approved) reuse the existing durable
+run history for an unchanged base and descendant head. They audit the delta and
+prior finding files, require explicit finding resolution, and retain p1/p2 defaults.
+Changed bases or diverged history receive a full audit. Full findings, including
+advisory and resolved entries, are published before routing; only unresolved
+configured severities block. This consolidates repeated full audits without adding
+configuration, routing mechanisms, or dashboard surfaces. `TestSecurityAuditCarriesPriorVerdict`,
+`TestSecurityAuditDeltaSnapshot`, and `TestSecurityAuditAdvisoryPublication` cover the behavior. The reviewed dynamic-reason
+fingerprint changes only to publish advisory findings before the existing lane write;
+transition reasons and lane ownership are unchanged.
 
 ## INV-4 — Native merge queue
 

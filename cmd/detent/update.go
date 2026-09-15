@@ -81,7 +81,15 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 					opts.Confirm = confirmUpdate(cmd)
 					opts.SelectGoInstallAction = selectGoInstallAction(cmd)
 				}
-				status, err = runner.Apply(runCtx, opts)
+				if _, local := runner.(*detentupdate.Service); local {
+					var handled bool
+					status, handled, err = cli.ApplyRunningUpdate(runCtx, cmd, opts)
+					if !handled {
+						status, err = runner.Apply(runCtx, opts)
+					}
+				} else {
+					status, err = runner.Apply(runCtx, opts)
+				}
 			}
 
 			if writeErr := out.Write(func(out io.Writer) error {

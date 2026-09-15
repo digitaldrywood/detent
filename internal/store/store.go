@@ -170,7 +170,6 @@ type WorkAttemptStore interface {
 	ListActiveWorkAttempts(context.Context, WorkAttemptQuery) ([]WorkAttempt, error)
 	ListRecentTerminalWorkAttempts(context.Context, WorkAttemptHistoryQuery) ([]WorkAttempt, error)
 	TimeoutExpiredWorkAttempts(context.Context, WorkAttemptTimeout) ([]WorkAttempt, error)
-	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
 }
@@ -235,6 +234,7 @@ type SecurityAuditStore interface {
 	RecordSecurityAuditRun(context.Context, securityaudit.Run) (securityaudit.Run, error)
 	LatestSecurityAuditRun(context.Context, securityaudit.Key) (securityaudit.Run, error)
 	LatestSecurityAuditRunForPullRequest(context.Context, string, string, int) (securityaudit.Run, error)
+	LatestCompletedSecurityAuditRunForPullRequest(context.Context, string, string, int) (securityaudit.Run, error)
 	RecordSecurityAuditDisposition(context.Context, securityaudit.Disposition) (securityaudit.Disposition, error)
 	ListSecurityAuditDispositions(context.Context, int64) ([]securityaudit.Disposition, error)
 }
@@ -816,19 +816,12 @@ type ConcurrencyBucket struct {
 }
 
 type WorkAttemptTimeout struct {
-	ProjectID     string
-	Now           time.Time
-	TerminalState WorkAttemptTerminalState
-	ErrorClass    string
-	ErrorMessage  string
-}
-
-type WorkAttemptReclaim struct {
-	ProjectID     string
-	Now           time.Time
-	TerminalState WorkAttemptTerminalState
-	ErrorClass    string
-	ErrorMessage  string
+	ExcludeAttemptIDs []int64
+	ProjectID         string
+	Now               time.Time
+	TerminalState     WorkAttemptTerminalState
+	ErrorClass        string
+	ErrorMessage      string
 }
 
 type MergeRequiredCheckEvaluation struct {

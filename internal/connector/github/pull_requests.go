@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -463,6 +465,14 @@ func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connec
 }
 
 func (c *Connector) SecurityAuditSnapshot(ctx context.Context, issue connector.Issue, maxDiffBytes int) (securityaudit.Snapshot, error) {
+	return c.securityAuditSnapshot(ctx, issue, maxDiffBytes, nil)
+}
+
+func (c *Connector) SecurityAuditDeltaSnapshot(ctx context.Context, issue connector.Issue, maxDiffBytes int, previous securityaudit.PreviousAudit) (securityaudit.Snapshot, error) {
+	return c.securityAuditSnapshot(ctx, issue, maxDiffBytes, &previous)
+}
+
+func (c *Connector) securityAuditSnapshot(ctx context.Context, issue connector.Issue, maxDiffBytes int, previous *securityaudit.PreviousAudit) (securityaudit.Snapshot, error) {
 	repo, number, ok := hydratedPullRequestRef(issue)
 	if !ok {
 		return securityaudit.Snapshot{}, errors.New("security audit snapshot requires a linked pull request")
@@ -475,9 +485,87 @@ func (c *Connector) SecurityAuditSnapshot(ctx context.Context, issue connector.I
 	if err := c.client.REST(ctx, http.MethodGet, restPullRequestPath(repo, number), nil, &before); err != nil {
 		return securityaudit.Snapshot{}, fmt.Errorf("fetch security audit pull request metadata: %w", err)
 	}
-	diff, truncated, err := c.client.RESTText(ctx, restPullRequestPath(repo, number), "application/vnd.github.diff", maxDiffBytes)
+	removedFiles := map[string]bool{}
+	renamedFiles := map[string]string{}
+	diffPath := restPullRequestPath(repo, number)
+	if previous != nil && previous.BaseSHA != before.Base.SHA {
+		previous = nil
+	}
+	if previous != nil {
+		comparePath := "/repos/" + pullRequestRepoName(repo) + "/compare/" + url.PathEscape(previous.HeadSHA) + "..." + url.PathEscape(before.Head.SHA)
+		var comparison struct {
+			Status string `json:"status"`
+			Files  []struct {
+				Filename         string `json:"filename"`
+				PreviousFilename string `json:"previous_filename"`
+				Status           string `json:"status"`
+			} `json:"files"`
+		}
+		if err := c.client.REST(ctx, http.MethodGet, comparePath, nil, &comparison); err != nil {
+			return securityaudit.Snapshot{}, fmt.Errorf("compare prior audit head: %w", err)
+		}
+		for _, file := range comparison.Files {
+			if file.Status == "renamed" {
+				renamedFiles[file.PreviousFilename] = file.Filename
+			}
+			if file.Status == "removed" {
+				removedFiles[file.Filename] = true
+			}
+		}
+		if comparison.Status == "ahead" || comparison.Status == "identical" {
+			diffPath = comparePath
+		} else {
+			previous = nil
+		}
+	}
+	diff, truncated, err := c.client.RESTText(ctx, diffPath, "application/vnd.github.diff", maxDiffBytes)
 	if err != nil {
 		return securityaudit.Snapshot{}, fmt.Errorf("fetch security audit pull request diff: %w", err)
+	}
+	findingFiles := map[string]string{}
+	if previous != nil && !truncated {
+		// Carry current paths into the next verdict; a later delta will no
+		// longer contain this rename. Copy findings to preserve caller history.
+		carried := *previous
+		carried.Findings = append([]securityaudit.Finding(nil), previous.Findings...)
+		for i := range carried.Findings {
+			if renamed := renamedFiles[carried.Findings[i].Path]; renamed != "" {
+				carried.Findings[i].Path = renamed
+			}
+		}
+		previous = &carried
+		raw, err := json.Marshal(previous)
+		if err != nil {
+			return securityaudit.Snapshot{}, err
+		}
+		remaining := maxDiffBytes - len(diff) - len(raw)
+		for _, finding := range previous.Findings {
+			if finding.Path == "" || finding.Status == "resolved" {
+				continue
+			}
+			if _, exists := findingFiles[finding.Path]; exists {
+				continue
+			}
+			remaining -= len(finding.Path)
+			if remaining <= 0 {
+				truncated = true
+				break
+			}
+			filePath := "/repos/" + pullRequestRepoName(repo) + "/contents/" + url.PathEscape(finding.Path) + "?ref=" + url.QueryEscape(before.Head.SHA)
+			content, oversized, err := c.client.RESTText(ctx, filePath, "application/vnd.github.raw", remaining)
+			if errors.Is(err, ErrNotFound) && removedFiles[finding.Path] {
+				content, err = "File deleted in this delta.", nil
+			}
+			if err != nil {
+				return securityaudit.Snapshot{}, fmt.Errorf("read prior finding file %q: %w", finding.Path, err)
+			}
+			findingFiles[finding.Path] = content
+			remaining -= len(content)
+			if oversized {
+				truncated = true
+				break
+			}
+		}
 	}
 	var after restPullRequest
 	if err := c.client.REST(ctx, http.MethodGet, restPullRequestPath(repo, number), nil, &after); err != nil {
@@ -489,6 +577,8 @@ func (c *Connector) SecurityAuditSnapshot(ctx context.Context, issue connector.I
 		return securityaudit.Snapshot{}, errors.New("security audit pull request head changed while collecting textual diff")
 	}
 	return securityaudit.Snapshot{
+		Previous:         previous,
+		FindingFiles:     findingFiles,
 		ProjectID:        "",
 		IssueID:          strings.TrimSpace(issue.ID),
 		Identifier:       strings.TrimSpace(issue.Identifier),

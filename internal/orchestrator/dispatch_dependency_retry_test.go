@@ -11,7 +11,7 @@ import (
 
 func TestDispatchDependencyRetry(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"native", "body", "workpad"} {
+	for _, source := range []string{"native", "body", "github body", "workpad"} {
 		for _, retry := range []bool{false, true} {
 			name := source + "/stranded"
 			if retry {
@@ -29,6 +29,11 @@ func TestDispatchDependencyRetry(t *testing.T) {
 					issue.BlockedBy = []connector.BlockedRef{{Identifier: ref, State: "Todo", Source: connector.BlockedRefSourceNative}}
 				case "body":
 					issue.Description = "Depends on: " + ref
+				case "github body":
+					issue.State = "Todo"
+					issue.Description = "**Depends on:** #2680\n- Depends on #2680 so the helpers exist."
+					issue.DependencySource = connector.BlockedRefSourceNative
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: ref, Source: connector.BlockedRefSourceProse}}
 				case "workpad":
 					issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers:\n  - ref: 'digitaldrywood/detent#2680'\n    predicate: {type: issue_state, ref: 'digitaldrywood/detent#2680', states: [open]}\n    recheck_interval: tick\n```"}}
 				}
@@ -38,7 +43,7 @@ func TestDispatchDependencyRetry(t *testing.T) {
 				if retry {
 					planner.scheduleRetryAfter(&state, issue, 2, now, 0, "", "")
 				}
-				for _, closed := range []bool{false, true} {
+				for _, closed := range []bool{false, false, false, true} {
 					o := &Orchestrator{cfg: cfg, connector: hydratingDispatchConnector{blockers: []connector.Issue{{ID: "blocker", Identifier: ref, State: "Todo", Closed: closed}}}}
 					var decisions []dispatchPlanDecision
 					cache := make(map[string]dependencyBlocker)

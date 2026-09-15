@@ -751,6 +751,9 @@ func publishSnapshotOnce(
 	}
 	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource)
 	merged.Update = telemetryUpdateStatus(updateSources)
+	if merged.Update.State == "draining" {
+		merged.Update.ActiveAttempts = len(merged.Running)
+	}
 	if status, ok := shutdown.currentShutdownStatus(); ok {
 		merged.Shutdown = status
 	}

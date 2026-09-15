@@ -991,21 +991,7 @@ WHERE completed_at IS NULL
   AND lease_expires_at IS NOT NULL
   AND lease_expires_at <= sqlc.arg(lease_expires_at)
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-RETURNING *;
-
--- name: ReclaimActiveWorkAttempts :many
-UPDATE work_attempts
-SET status = ?,
-    terminal_state = ?,
-    completed_at = ?,
-    heartbeat_at = ?,
-    error_class = ?,
-    error_message = ?,
-    phase = ?,
-    status_message = ?
-WHERE completed_at IS NULL
-  AND project_id = ?
-  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
+  AND id NOT IN (SELECT value FROM json_each(sqlc.arg(exclude_attempt_ids)))
 RETURNING *;
 
 -- name: CreateSchedulerDecision :one
@@ -1566,3 +1552,13 @@ SELECT *
 FROM security_audit_dispositions
 WHERE audit_run_id = ?
 ORDER BY recorded_at, id;
+
+-- name: LatestCompletedSecurityAuditRunForPullRequest :one
+SELECT *
+FROM security_audit_runs
+WHERE project_id = sqlc.arg(project_id)
+  AND repository = sqlc.arg(repository)
+  AND pr_number = sqlc.arg(pr_number)
+  AND exit_status = 'success'
+ORDER BY recorded_at DESC, id DESC
+LIMIT 1;

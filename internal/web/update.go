@@ -16,7 +16,9 @@ type UpdateApplier interface {
 }
 
 type updateApplyRequest struct {
-	Confirm bool `json:"confirm" form:"confirm"`
+	Confirm     bool `json:"confirm" form:"confirm"`
+	Release     bool `json:"release" form:"release"`
+	FromRelease bool `json:"from_release" form:"from_release"`
 }
 
 type updateApplyResponse struct {
@@ -36,7 +38,19 @@ func (s *Server) apiUpdateApply(c echo.Context) error {
 		return updateApplyError(c, http.StatusPreconditionRequired, "confirmation_required", "Confirm the update restart with confirm=true")
 	}
 
-	status, err := s.updateApplier.ApplyPending(c.Request().Context())
+	var status detentupdate.Status
+	var err error
+	if request.Release {
+		applier, ok := s.updateApplier.(interface {
+			ApplyRelease(context.Context, bool) (detentupdate.Status, error)
+		})
+		if !ok {
+			return updateApplyError(c, http.StatusServiceUnavailable, "update_unavailable", "Runtime release apply is unavailable")
+		}
+		status, err = applier.ApplyRelease(c.Request().Context(), request.FromRelease)
+	} else {
+		status, err = s.updateApplier.ApplyPending(c.Request().Context())
+	}
 	if err != nil {
 		if errors.Is(err, detentupdate.ErrNoPendingUpdate) {
 			return updateApplyError(c, http.StatusConflict, "update_not_pending", "No Detent update is pending")
@@ -47,6 +61,9 @@ func (s *Server) apiUpdateApply(c echo.Context) error {
 	response := updateApplyResponse{Status: "applying", Version: status.LatestVersion}
 	if htmxRequest(c) {
 		return c.HTML(http.StatusAccepted, `<span class="font-medium text-ok">Update applied; Detent is restarting.</span>`)
+	}
+	if request.Release {
+		return c.JSON(http.StatusAccepted, status)
 	}
 	return c.JSON(http.StatusAccepted, response)
 }
