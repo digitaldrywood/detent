@@ -282,3 +282,40 @@ func TestMergeWorkerActionableGateControls(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeWorkerAuditFailureDoesNotPublishFindings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*securityaudit.Run)
+	}{
+		{name: "backend failure", mutate: func(r *securityaudit.Run) { r.ExitStatus = securityaudit.ExitStatusFailed }},
+		{name: "metered authentication", mutate: func(r *securityaudit.Run) { r.AuthenticationMode = "api_key" }},
+		{name: "untrusted evidence", mutate: func(r *securityaudit.Run) { r.ServiceIdentity = "untrusted" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, tracker, issue := mergingSecurityAuditFixture()
+			memo := newSecurityAuditMemoryStore()
+			o.securityAuditStore = memo
+			audit := securityAuditPassingRun(issue)
+			audit.Attempt = gate.DefaultSecurityAuditMaxAttempts
+			tc.mutate(&audit)
+			if _, err := memo.RecordSecurityAuditRun(t.Context(), audit); err != nil {
+				t.Fatal(err)
+			}
+			tracker.publishErr = errors.New("PR comment unavailable")
+			state := newState(o.cfg)
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean, TurnStarted: true}}
+			running := Running{Issue: issue, Attempt: 1, Mode: runpkg.RunModeMerge}
+			if !o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
+				t.Fatal("completion was not handled")
+			}
+			if len(tracker.prComments) != 0 || len(tracker.comments) != 0 || len(tracker.updates) != 0 || len(tracker.merges) != 0 {
+				t.Fatalf("audit infrastructure failure published findings or changed issue: %+v", tracker)
+			}
+			if got := state.Retry[issue.ID].Error; got != string(gate.ReasonSecurityAuditFailed) {
+				t.Fatalf("retry reason = %q, want %q", got, gate.ReasonSecurityAuditFailed)
+			}
+		})
+	}
+}

@@ -1593,7 +1593,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		}
 		// An audit can finish between launch and this read. A passing result
 		// proceeds directly; findings use the existing publication and Rework path.
-		if auditDecision.Action == gate.ActionRework {
+		if auditDecision.Reason == gate.ReasonSecurityAuditFindings {
 			if err := o.publishSecurityAuditFindings(ctx, issue, audit); err != nil {
 				running.Issue = issue
 				o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
