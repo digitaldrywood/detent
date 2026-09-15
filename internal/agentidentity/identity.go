@@ -70,16 +70,17 @@ type Identity struct {
 }
 
 type Selection struct {
-	Policy         string `json:"policy,omitempty"`
-	PolicySource   string `json:"policy_source,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	Level          string `json:"level,omitempty"`
-	RequestedModel string `json:"requested_model,omitempty"`
-	ModelSource    string `json:"model_source,omitempty"`
-	EffortSource   string `json:"effort_source,omitempty"`
-	FallbackReason string `json:"fallback_reason,omitempty"`
-	BackendSource  string `json:"backend_source,omitempty"`
-	RouteSource    string `json:"route_source,omitempty"`
+	EffortClampedFrom string `json:"effort_clamped_from,omitempty"`
+	Policy            string `json:"policy,omitempty"`
+	PolicySource      string `json:"policy_source,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	Level             string `json:"level,omitempty"`
+	RequestedModel    string `json:"requested_model,omitempty"`
+	ModelSource       string `json:"model_source,omitempty"`
+	EffortSource      string `json:"effort_source,omitempty"`
+	FallbackReason    string `json:"fallback_reason,omitempty"`
+	BackendSource     string `json:"backend_source,omitempty"`
+	RouteSource       string `json:"route_source,omitempty"`
 }
 
 func Configured(backendID string, backendKind string, route string, role string, requestedModel string, provider string, effort string, serviceTier string, observedAt time.Time) Identity {

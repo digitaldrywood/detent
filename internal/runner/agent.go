@@ -5598,6 +5598,7 @@ func runtimeIdentityLogAttrs(identity agentidentity.Identity) []any {
 		"model_selection_fallback_reason", identity.Selection.FallbackReason,
 		"model_selection_model_source", identity.Selection.ModelSource,
 		"model_selection_effort_source", identity.Selection.EffortSource,
+		"model_selection_effort_clamped_from", identity.Selection.EffortClampedFrom,
 		"backend_source", identity.Selection.BackendSource,
 		"route_source", identity.Selection.RouteSource,
 		"backend_id", identity.BackendID,

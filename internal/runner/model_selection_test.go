@@ -123,13 +123,13 @@ func TestAutomaticModelSelection(t *testing.T) {
 	}{
 		{name: "missing metadata", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "generic enhancement", label: "enhancement", model: "gpt-5.6-sol", effort: "medium"},
-		{name: "high effort", body: "effort: high", model: "gpt-5.6-sol", effort: "high"},
+		{name: "high effort", body: "effort: high", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "complex metadata", label: "complexity:complex", model: "gpt-6-astra", effort: "medium"},
 		{name: "very complex", label: "complexity:very-complex", model: "gpt-6-astra", effort: "high"},
 		{name: "model only", body: "model: gpt-6-astra", model: "gpt-6-astra", effort: "medium"},
 		{name: "explicit low", body: "effort: low", label: "complexity:very-complex", model: "gpt-6-astra", effort: "low"},
-		{name: "xhigh signal", body: "effort: xhigh", model: "gpt-6-astra", effort: "medium"},
-		{name: "max signal", body: "effort: max", model: "gpt-6-astra", effort: "medium"},
+		{name: "xhigh signal", body: "effort: xhigh", model: "gpt-5.6-sol", effort: "medium"},
+		{name: "max signal", body: "effort: max", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "both explicit", body: "model: gpt-5.6-sol\neffort: max", label: "complexity:very-complex", model: "gpt-5.6-sol", effort: "high"},
 		{name: "role fields", body: "model: gpt-6-astra\neffort: high\ncode:\n  model: gpt-5.6-sol\n  effort: low", model: "gpt-5.6-sol", effort: "low"},
 		{name: "role model issue effort", body: "effort: xhigh\ncode:\n  model: gpt-5.6-sol", model: "gpt-5.6-sol", effort: "medium"},
@@ -139,7 +139,7 @@ func TestAutomaticModelSelection(t *testing.T) {
 		{name: "routine stays normal", role: RoleRoutine, label: "complexity:very-complex", body: "effort: xhigh", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "merge stays normal", role: RoleMerge, label: "complexity:very-complex", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "validator stays normal", role: RoleValidator, label: "complexity:complex", model: "gpt-5.6-sol", effort: "medium"},
-		{name: "role specific merge signal", role: RoleMerge, body: "merge:\n  effort: xhigh", model: "gpt-6-astra", effort: "medium"},
+		{name: "role specific merge signal", role: RoleMerge, body: "merge:\n  effort: xhigh", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "route pin", base: "gpt-5.6-sol", label: "complexity:very-complex", model: "gpt-5.6-sol", effort: "high"},
 		{name: "issue wins route", base: "gpt-6-astra", body: "model: gpt-5.6-sol", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "project effort not complexity", projectEffort: "xhigh", model: "gpt-5.6-sol", effort: "medium"},
@@ -373,11 +373,11 @@ func TestConfiguredEffortCeiling(t *testing.T) {
 		resume bool
 		want   string
 	}{
-		{name: "legacy xhigh", effort: "xhigh", want: "medium"},
-		{name: "legacy max", effort: "max", want: "medium"},
-		{name: "supported high", effort: "high", want: "high"},
-		{name: "resumed legacy xhigh", effort: "xhigh", resume: true, want: "medium"},
-		{name: "resumed operator reduction", effort: "medium", resume: true, want: "medium"},
+		{name: "legacy xhigh", effort: "xhigh", want: "low"},
+		{name: "legacy max", effort: "max", want: "low"},
+		{name: "supported high", effort: "high", want: "low"},
+		{name: "resumed legacy xhigh", effort: "xhigh", resume: true, want: "low"},
+		{name: "resumed operator reduction", effort: "medium", resume: true, want: "low"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -531,7 +531,7 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 		wantError       bool
 	}{
 		{name: "policy permits xhigh", mutate: func(p *config.ModelSelection) {
-			p.Levels = map[string]config.ModelSelectionDefaults{"complex": {Effort: new("xhigh")}}
+			p.Levels = map[string]config.ModelSelectionDefaults{"normal": {Effort: new("xhigh")}}
 		}, body: "effort: xhigh", want: "xhigh"},
 		{name: "stage permits xhigh", mutate: func(p *config.ModelSelection) {
 			p.Stages = map[string]config.ModelSelectionStage{RoleMerge: {Effort: new("xhigh")}}
@@ -612,6 +612,74 @@ func TestIssueConfigurationErrorClassification(t *testing.T) {
 			var invalid *IssueConfigurationError
 			if errors.As(selection.Err, &invalid) != tc.wantConfiguration || (selection.Err != nil) != tc.wantError {
 				t.Fatalf("classification = %T (%v), want configuration %v, error %v", selection.Err, selection.Err, tc.wantConfiguration, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestIssueEffortUsesComplexityCeiling(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, body, label, want string }{
+		{name: "normal high", body: "effort: high", want: "low"},
+		{name: "normal xhigh", body: "effort: xhigh", want: "low"},
+		{name: "very complex xhigh", body: "effort: xhigh", label: "complexity:very-complex", want: "high"},
+		{name: "normal default", want: "low"},
+		{name: "very complex default", label: "complexity:very-complex", want: "high"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}, "very_complex": {Effort: new("high")}}}
+			issue := connector.Issue{Labels: []string{tt.label}}
+			if tt.body != "" {
+				issue.Description = "```detent-agent\nschema: 1\n" + tt.body + "\n```"
+			}
+			got := resolveAgentSelection(t.Context(), issue, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{models: selectionCatalog()})
+			if got.Err != nil || got.Effort != tt.want {
+				t.Fatalf("selection=%+v, want effort %s", got, tt.want)
+			}
+			if tt.body != "" {
+				wantFrom := strings.TrimPrefix(tt.body, "effort: ")
+				if got.Selection.EffortSource != "issue.effort" || got.Selection.EffortClampedFrom != wantFrom {
+					t.Fatalf("clamp provenance = %+v", got.Selection)
+				}
+				var logs bytes.Buffer
+				slog.New(slog.NewTextHandler(&logs, nil)).Info("selection", runtimeIdentityLogAttrs(agentidentity.Identity{Selection: got.Selection})...)
+				if !strings.Contains(logs.String(), "model_selection_effort_clamped_from="+wantFrom) {
+					t.Fatalf("missing clamp log: %s", logs.String())
+				}
+			} else if got.Selection.EffortClampedFrom != "" {
+				t.Fatalf("default effort was clamped: %+v", got.Selection)
+			}
+		})
+	}
+}
+
+func TestResumeEffortClampProvenance(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, body, want, clamped string }{
+		{name: "unchanged custom effort rule", body: "effort: xhigh", want: "high"},
+		{name: "lower request clears provenance", body: "effort: low", want: "low"},
+		{name: "new clamp replaces provenance", body: "effort: medium", want: "low", clamped: "medium"},
+		{name: "role request keeps custom rule", body: "code:\n  effort: xhigh", want: "high"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6-astra"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}, "very_complex": {Effort: new("high")}}, Rules: &[]config.ModelSelectionRule{{Name: "custom_effort", Level: "very_complex", Efforts: []string{"xhigh"}}}}
+			backend := &catalogAgentBackend{models: selectionCatalog()}
+			issue := connector.Issue{Description: "```detent-agent\nschema: 1\neffort: xhigh\n```"}
+			fresh := resolveAgentSelection(t.Context(), issue, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			if fresh.Err != nil || fresh.Effort != "high" || fresh.Selection.EffortClampedFrom != "xhigh" {
+				t.Fatalf("fresh selection = %+v", fresh)
+			}
+			identity := agentidentity.Configured("codex", "codex", "default", RoleCode, fresh.Model, "", fresh.Effort, "", time.Now())
+			identity.Selection = fresh.Selection
+			issue.Description = "```detent-agent\nschema: 1\n" + tt.body + "\n```"
+			req := RunRequest{Issue: issue, RetryMode: RetryModeResume, ResumeState: store.AgentResumeState{ProviderThreadID: "thread-1", RuntimeIdentity: identity}}
+			got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			if got.Err != nil || got.Effort != tt.want || got.Selection.EffortClampedFrom != tt.clamped {
+				t.Fatalf("resumed selection = %+v, want effort %s, clamped from %q", got, tt.want, tt.clamped)
 			}
 		})
 	}
