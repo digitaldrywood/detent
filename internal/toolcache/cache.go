@@ -110,20 +110,32 @@ func size(ctx context.Context, root string) (int64, error) {
 	return size, err
 }
 
-// RemoveLegacy removes only the former Detent-owned cache root.
-func RemoveLegacy(workspaceRoot string) (int64, error) {
+// RemoveLegacy removes only the former Detent-owned cache root and returns
+// reclaimed bytes and the absolute, home-expanded workspace root.
+func RemoveLegacy(workspaceRoot string) (int64, string, error) {
 	if strings.TrimSpace(workspaceRoot) == "" {
-		return 0, nil
+		return 0, "", nil
 	}
-	root := filepath.Join(workspaceRoot, ".detent", "cache")
+	if workspaceRoot == "~" || strings.HasPrefix(workspaceRoot, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return 0, "", fmt.Errorf("resolve workspace home: %w", err)
+		}
+		workspaceRoot = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(workspaceRoot, "~"), "/"))
+	}
+	resolved, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return 0, "", fmt.Errorf("resolve workspace root: %w", err)
+	}
+	root := filepath.Join(resolved, ".detent", "cache")
 	size, err := Size(root)
 	if err != nil {
-		return 0, err
+		return 0, resolved, err
 	}
 	if err := os.RemoveAll(root); err != nil {
-		return 0, err
+		return 0, resolved, err
 	}
-	return size, nil
+	return size, resolved, nil
 }
 
 // Report describes the locally resolved caches for doctor and status.

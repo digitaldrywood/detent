@@ -2456,53 +2456,34 @@ func waitForProjectDataSeq(t *testing.T, project *projectpkg.Project, wantAtLeas
 	return 0
 }
 
-func TestPublishSnapshotOnceSweepsLiveSharedCache(t *testing.T) {
-	for _, broken := range []bool{false, true} {
-		t.Run(map[bool]string{false: "over budget", true: "scan error"}[broken], func(t *testing.T) {
+func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "running", true: "paused"}[paused], func(t *testing.T) {
 			cfg := workflowconfig.Default()
 			cfg.Tracker.Kind = workflowconfig.TrackerMemory
 			cfg.Workspace.Root = t.TempDir()
 			tracked, err := projectpkg.New(projectpkg.Config{
-				Project:  globalconfig.Project{ID: "cache-test", Workdir: t.TempDir(), Weight: 1},
+				Project:  globalconfig.Project{ID: "cache-test", Workdir: t.TempDir(), Weight: 1, Paused: paused},
 				Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 			}, projectpkg.Dependencies{HostCacheReport: func() *toolcache.Report { return &toolcache.Report{BuildBytes: 47 << 30} }})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := tracked.Start(context.Background()); err != nil {
-				t.Fatal(err)
+			if !paused {
+				if err := tracked.Start(context.Background()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			t.Cleanup(func() {
+				if paused {
+					return
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
 				if err := tracked.Stop(ctx); err != nil {
 					t.Error(err)
 				}
 			})
-			dir := filepath.Join(workspace.SharedCacheRoot(tracked.Workflow().Config.Workspace.Root, "cache-test"), "go-build")
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(dir, "data")
-			if broken {
-				if err := os.WriteFile(filepath.Join(dir, "a-data"), []byte("data"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(t.TempDir(), path); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				f, err := os.Create(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := f.Truncate(workspace.SharedBuildCacheBudget + 1); err != nil {
-					t.Fatal(err)
-				}
-				if err := f.Close(); err != nil {
-					t.Fatal(err)
-				}
-			}
 			registry := projectpkg.NewRegistry()
 			mustSetProject(t, registry, tracked)
 			snapshots := hub.New[telemetry.Snapshot]()
@@ -2511,21 +2492,11 @@ func TestPublishSnapshotOnceSweepsLiveSharedCache(t *testing.T) {
 				t.Fatal(err)
 			}
 			snapshot, ok := snapshots.Latest()
-			if !ok || len(snapshot.SharedCaches) != 1 {
-				t.Fatalf("shared caches = %+v", snapshot.SharedCaches)
+			if !ok {
+				t.Fatal("missing snapshot")
 			}
 			if snapshot.HostCache == nil || snapshot.HostCache.BuildBytes != 47<<30 {
 				t.Fatalf("host cache = %+v", snapshot.HostCache)
-			}
-			usage := snapshot.SharedCaches[0]
-			if usage.ProjectID != "cache-test" || usage.ObservedAt.IsZero() || (usage.Error != "") != broken {
-				t.Fatalf("usage = %+v", usage)
-			}
-			if broken && (usage.BuildBytes != 4 || usage.TotalBytes != 4) {
-				t.Fatalf("partial measurement lost: %+v", usage)
-			}
-			if !broken && (usage.BuildBytes != 0 || usage.RemovedBytes != workspace.SharedBuildCacheBudget+1) {
-				t.Fatalf("over budget cache not trimmed: %+v", usage)
 			}
 		})
 	}

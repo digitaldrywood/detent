@@ -17,7 +17,6 @@ import (
 type Snapshot struct {
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
-	SharedCaches       []workspace.CacheUsage      `json:"shared_caches,omitempty"`
 
 	CardActiveStates        map[string][]string `json:"-"`
 	LastKnown               bool                `json:"-"`

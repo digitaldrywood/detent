@@ -20,6 +20,7 @@ func TestINV12DoctorNativeCaches(t *testing.T) {
 	}{
 		{"native", "", "", doctorOK},
 		{"legacy root", ".detent/cache", "", doctorWarn},
+		{"tilde legacy root", ".detent/cache", "", doctorWarn},
 		{"legacy attempt", "attempt/.detent/cache", "", doctorWarn},
 		{"legacy isolated", "workdir/.detent/worker-tmp/attempt-old/go-build", "", doctorWarn},
 		{"legacy isolated modules", "workdir/.detent/worker-tmp/attempt-old/go-mod", "", doctorWarn},
@@ -35,7 +36,13 @@ func TestINV12DoctorNativeCaches(t *testing.T) {
 			deps := doctorDeps{cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil }, inspectCaches: func(context.Context) toolcache.Report {
 				return toolcache.Report{BuildPath: "/host/build", ModulePath: "/host/modules", BuildBytes: 12, ModuleBytes: 34, LastTrim: "2026-09-14T12:00:00Z", Error: tt.reportError}
 			}}
-			got := checkDoctorNativeCaches(t.Context(), "test", root, deps, toolcache.Policy{})
+			configured := root
+			if tt.name == "tilde legacy root" {
+				t.Setenv("HOME", filepath.Dir(root))
+				t.Setenv("USERPROFILE", filepath.Dir(root))
+				configured = "~/" + filepath.Base(root)
+			}
+			got := checkDoctorNativeCaches(t.Context(), "test", configured, deps, toolcache.Policy{})
 			if got.Status != tt.want {
 				t.Fatalf("check = %+v", got)
 			}

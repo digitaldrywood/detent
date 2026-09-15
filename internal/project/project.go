@@ -43,7 +43,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/toolcache"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var (
@@ -174,8 +173,6 @@ type Dependencies struct {
 }
 
 type Project struct {
-	cacheMu                   sync.Mutex
-	sharedCache               workspace.CacheUsage
 	hostCacheReport           func() *toolcache.Report
 	id                        ID
 	cfg                       globalconfig.Project
@@ -310,10 +307,10 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if reclaimed, err := toolcache.RemoveLegacy(workflow.Config.Workspace.Root); err != nil {
-		logger.Warn("remove legacy worker caches", "error", err)
+	if reclaimed, resolvedRoot, err := toolcache.RemoveLegacy(workflow.Config.Workspace.Root); err != nil {
+		logger.Warn("remove legacy worker caches", "workspace_root", resolvedRoot, "error", err)
 	} else if reclaimed > 0 {
-		logger.Info("removed legacy worker caches", "bytes_reclaimed", reclaimed, "workspace_root", workflow.Config.Workspace.Root)
+		logger.Info("removed legacy worker caches", "bytes_reclaimed", reclaimed, "workspace_root", resolvedRoot)
 	}
 	scheduleFault := &scheduleFaultState{}
 	scheduleHealth, err := schedulehealth.New(string(id), scheduleDefinitions(workflow.Config), deps.ScheduleRuns, schedulehealth.Dependencies{

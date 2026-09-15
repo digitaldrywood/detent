@@ -64,12 +64,6 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out := snapshot
 	out.Project = selectedProject
 	out.Projects = nil
-	out.SharedCaches = nil
-	for _, cache := range snapshot.SharedCaches {
-		if strings.TrimSpace(cache.ProjectID) == selectedProjectID {
-			out.SharedCaches = append(out.SharedCaches, cache)
-		}
-	}
 	out.BoardIssues = scopedIssues(snapshot.BoardIssues, selectedProjectID, fallbackProjectID)
 	out.TrackerDrift = scopedTrackerDrift(snapshot.TrackerDrift, selectedProjectID, fallbackProjectID)
 	out.Pipeline = scopedIssues(snapshot.Pipeline, selectedProjectID, fallbackProjectID)

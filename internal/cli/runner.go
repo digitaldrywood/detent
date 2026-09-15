@@ -652,8 +652,6 @@ func publishSnapshotOnce(
 	tracked := make(map[project.ID]struct{}, len(trackedProjects))
 	for _, trackedProject := range trackedProjects {
 		tracked[trackedProject.ID()] = struct{}{}
-		cache := trackedProject.SweepSharedCache(ctx, now)
-		merged.SharedCaches = append(merged.SharedCaches, cache)
 		if host := trackedProject.HostCache(); host != nil {
 			merged.HostCache = host
 		}
@@ -713,7 +711,6 @@ func publishSnapshotOnce(
 			continue
 		}
 		snapshot := state.Snapshot(now)
-		snapshot.SharedCaches = nil // The fleet sweep owns current cache measurements.
 		snapshot.Project = projectMetadata
 		snapshot.Tracker = unknownSnapshotSection()
 		if !state.LastRefreshAt.IsZero() {
@@ -1054,7 +1051,6 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.DispatchStalls = append(current.DispatchStalls, next.DispatchStalls...)
 	current.CleanupFaults = append(current.CleanupFaults, next.CleanupFaults...)
 	current.WorkspaceRetention = append(current.WorkspaceRetention, next.WorkspaceRetention...)
-	current.SharedCaches = append(current.SharedCaches, next.SharedCaches...)
 	if !next.Release.IsZero() {
 		current.Releases = append(current.Releases, next.Release)
 		if current.Release.IsZero() {

@@ -53,8 +53,12 @@ func TestTrim(t *testing.T) {
 }
 
 func TestRemoveLegacy(t *testing.T) {
-	for _, present := range []bool{false, true} {
-		t.Run(map[bool]string{false: "absent", true: "present"}[present], func(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		present, tilde bool
+	}{{"absent", false, false}, {"present", true, false}, {"tilde", true, true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			present := tt.present
 			root := t.TempDir()
 			cache := filepath.Join(root, ".detent", "cache")
 			if present {
@@ -65,7 +69,16 @@ func TestRemoveLegacy(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			size, err := RemoveLegacy(root)
+			configured := root
+			if tt.tilde {
+				t.Setenv("HOME", filepath.Dir(root))
+				t.Setenv("USERPROFILE", filepath.Dir(root))
+				configured = "~/" + filepath.Base(root)
+			}
+			size, resolved, err := RemoveLegacy(configured)
+			if resolved != root {
+				t.Fatalf("resolved = %q, want %q", resolved, root)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

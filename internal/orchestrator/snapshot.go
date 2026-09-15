@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const (
@@ -156,9 +155,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
 	}
-	if !s.SharedCache.ObservedAt.IsZero() {
-		snapshot.SharedCaches = []workspace.CacheUsage{s.SharedCache}
-	}
+
 	snapshot.Dispatch.RateWindowPacing = rateWindowPacingSnapshot(s, now)
 	if snapshot.Dispatch.Stalled {
 		snapshot.DispatchStalls = []telemetry.DispatchStatus{snapshot.Dispatch}
