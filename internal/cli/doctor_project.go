@@ -412,6 +412,10 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, workerGitHubCheck)
 	}
 	checks = append(checks, checkDoctorCodexInstructions(id, workflow.Config, deps.lookupEnv)...)
+	if deps.codexStorage != nil {
+		setDoctorCurrentCheck("Project " + id + " Codex storage")
+		checks = append(checks, deps.codexStorage(ctx, id, workflow.Config, deps.lookupEnv)...)
+	}
 	if deps.modelCatalogProbe != nil {
 		setDoctorCurrentCheck("Project " + id + " backend model catalogs")
 		checks = append(checks, checkDoctorBackendModelCatalogs(ctx, id, workflow.Config, deps)...)
