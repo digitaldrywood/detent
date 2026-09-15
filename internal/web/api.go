@@ -23,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const (
@@ -694,7 +693,6 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		LaneSignalWarnings: append([]telemetry.LaneSignalWarning(nil), snapshot.LaneSignalWarnings...),
 		StalenessWarnings:  append([]telemetry.StalenessWarning(nil), snapshot.StalenessWarnings...),
 		CleanupFaults:      append([]telemetry.CleanupFault(nil), snapshot.CleanupFaults...),
-		SharedCaches:       snapshot.SharedCaches,
 		HostCache:          snapshot.HostCache,
 		Budget:             budgetResponse(snapshot.Budget),
 	}
@@ -1677,7 +1675,6 @@ type stateAPIResponse struct {
 	LaneSignalWarnings []telemetry.LaneSignalWarning `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings  []telemetry.StalenessWarning  `json:"staleness_warnings,omitempty"`
 	HostCache          *toolcache.Report             `json:"host_cache,omitempty"`
-	SharedCaches       []workspace.CacheUsage        `json:"shared_caches,omitempty"`
 	CleanupFaults      []telemetry.CleanupFault      `json:"workspace_cleanup_failures,omitempty"`
 	Budget             budgetAPIResponse             `json:"budget"`
 }

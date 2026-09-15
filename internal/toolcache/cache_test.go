@@ -53,8 +53,12 @@ func TestTrim(t *testing.T) {
 }
 
 func TestRemoveLegacy(t *testing.T) {
-	for _, present := range []bool{false, true} {
-		t.Run(map[bool]string{false: "absent", true: "present"}[present], func(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		present, tilde bool
+	}{{"absent", false, false}, {"present", true, false}, {"tilde", true, true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			present := tt.present
 			root := t.TempDir()
 			cache := filepath.Join(root, ".detent", "cache")
 			if present {
@@ -65,7 +69,16 @@ func TestRemoveLegacy(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			size, err := RemoveLegacy(root)
+			configured := root
+			if tt.tilde {
+				t.Setenv("HOME", filepath.Dir(root))
+				t.Setenv("USERPROFILE", filepath.Dir(root))
+				configured = "~/" + filepath.Base(root)
+			}
+			size, resolved, err := RemoveLegacy(configured)
+			if resolved != root {
+				t.Fatalf("resolved = %q, want %q", resolved, root)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -77,6 +90,49 @@ func TestRemoveLegacy(t *testing.T) {
 			}
 			if _, err := os.Stat(root); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRemoveLegacySymlinks(t *testing.T) {
+	for _, tt := range []struct {
+		name, link string
+		wantErr    bool
+	}{
+		{"metadata directory", ".detent", true},
+		{"cache directory", ".detent/cache", true},
+		{"cache child", ".detent/cache/child", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			workspace := filepath.Join(home, "workspace")
+			outside := filepath.Join(home, "unrelated")
+			sentinel := filepath.Join(outside, "cache", "keep")
+			if err := os.MkdirAll(filepath.Dir(sentinel), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(sentinel, []byte("keep"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(workspace, tt.link)
+			if err := os.MkdirAll(filepath.Dir(link), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, link); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			reclaimed, _, err := RemoveLegacy("~/workspace")
+			if data, readErr := os.ReadFile(sentinel); readErr != nil || string(data) != "keep" {
+				t.Fatalf("external data changed: %q, %v", data, readErr)
+			}
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("RemoveLegacy error = %v, want error %t", err, tt.wantErr)
+			}
+			if reclaimed != 0 {
+				t.Fatalf("reclaimed external bytes: %d", reclaimed)
 			}
 		})
 	}
