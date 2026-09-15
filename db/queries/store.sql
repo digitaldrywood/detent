@@ -206,7 +206,8 @@ SELECT
 FROM codex_sessions s
 JOIN work_attempts w ON w.id = s.work_attempt_id
 WHERE w.project_id = sqlc.arg(project_id)
-  AND lower(trim(COALESCE(w.status, ''))) = 'active'
+  AND (lower(trim(COALESCE(w.status, ''))) = 'active'
+       OR (w.terminal_state = 'abandoned' AND w.error_class = 'service_restart'))
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
@@ -1004,7 +1005,7 @@ SET status = ?,
     phase = ?,
     status_message = ?
 WHERE completed_at IS NULL
-  AND project_id = ?
+  AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
 RETURNING *;
 

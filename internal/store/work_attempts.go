@@ -379,9 +379,6 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 
 func (s *sqliteStore) ReclaimActiveWorkAttempts(ctx context.Context, attrs WorkAttemptReclaim) ([]WorkAttempt, error) {
 	projectID := strings.TrimSpace(attrs.ProjectID)
-	if projectID == "" {
-		return nil, errors.New("project_id is required")
-	}
 	now, err := requiredTimestamp("now", attrs.Now)
 	if err != nil {
 		return nil, err
@@ -399,15 +396,15 @@ func (s *sqliteStore) ReclaimActiveWorkAttempts(ctx context.Context, attrs WorkA
 		errorMessage = "active work attempt reclaimed after service restart"
 	}
 	rows, err := s.queries.ReclaimActiveWorkAttempts(ctx, sqlc.ReclaimActiveWorkAttemptsParams{
-		Status:        string(WorkAttemptStatusTerminal),
-		TerminalState: nullString(string(terminalState)),
-		CompletedAt:   sql.NullString{String: now, Valid: true},
-		HeartbeatAt:   sql.NullString{String: now, Valid: true},
-		ErrorClass:    nullString(errorClass),
-		ErrorMessage:  nullString(errorMessage),
-		Phase:         nullString("recovered"),
-		StatusMessage: nullString(errorMessage),
-		ProjectID:     projectID,
+		Status:          string(WorkAttemptStatusTerminal),
+		TerminalState:   nullString(string(terminalState)),
+		CompletedAt:     sql.NullString{String: now, Valid: true},
+		HeartbeatAt:     sql.NullString{String: now, Valid: true},
+		ErrorClass:      nullString(errorClass),
+		ErrorMessage:    nullString(errorMessage),
+		Phase:           nullString("recovered"),
+		StatusMessage:   nullString(errorMessage),
+		FilterProjectID: projectID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reclaiming active work attempts: %w", err)

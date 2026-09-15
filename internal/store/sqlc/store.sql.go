@@ -3468,7 +3468,8 @@ SELECT
 FROM codex_sessions s
 JOIN work_attempts w ON w.id = s.work_attempt_id
 WHERE w.project_id = ?1
-  AND lower(trim(COALESCE(w.status, ''))) = 'active'
+  AND (lower(trim(COALESCE(w.status, ''))) = 'active'
+       OR (w.terminal_state = 'abandoned' AND w.error_class = 'service_restart'))
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
@@ -4349,21 +4350,21 @@ SET status = ?,
     phase = ?,
     status_message = ?
 WHERE completed_at IS NULL
-  AND project_id = ?
+  AND (?9 = '' OR project_id = ?9)
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
 type ReclaimActiveWorkAttemptsParams struct {
-	Status        string         `json:"status"`
-	TerminalState sql.NullString `json:"terminal_state"`
-	CompletedAt   sql.NullString `json:"completed_at"`
-	HeartbeatAt   sql.NullString `json:"heartbeat_at"`
-	ErrorClass    sql.NullString `json:"error_class"`
-	ErrorMessage  sql.NullString `json:"error_message"`
-	Phase         sql.NullString `json:"phase"`
-	StatusMessage sql.NullString `json:"status_message"`
-	ProjectID     string         `json:"project_id"`
+	Status          string         `json:"status"`
+	TerminalState   sql.NullString `json:"terminal_state"`
+	CompletedAt     sql.NullString `json:"completed_at"`
+	HeartbeatAt     sql.NullString `json:"heartbeat_at"`
+	ErrorClass      sql.NullString `json:"error_class"`
+	ErrorMessage    sql.NullString `json:"error_message"`
+	Phase           sql.NullString `json:"phase"`
+	StatusMessage   sql.NullString `json:"status_message"`
+	FilterProjectID interface{}    `json:"filter_project_id"`
 }
 
 func (q *Queries) ReclaimActiveWorkAttempts(ctx context.Context, arg ReclaimActiveWorkAttemptsParams) ([]WorkAttempt, error) {
@@ -4376,7 +4377,7 @@ func (q *Queries) ReclaimActiveWorkAttempts(ctx context.Context, arg ReclaimActi
 		arg.ErrorMessage,
 		arg.Phase,
 		arg.StatusMessage,
-		arg.ProjectID,
+		arg.FilterProjectID,
 	)
 	if err != nil {
 		return nil, err

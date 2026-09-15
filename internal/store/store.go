@@ -823,6 +823,7 @@ type WorkAttemptTimeout struct {
 	ErrorMessage  string
 }
 
+// WorkAttemptReclaim with an empty ProjectID reclaims all projects at instance startup.
 type WorkAttemptReclaim struct {
 	ProjectID     string
 	Now           time.Time

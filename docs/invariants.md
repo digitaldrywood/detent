@@ -149,6 +149,16 @@ variables absent against an isolated local HTTP fixture.
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
 
+Startup process reconciliation reuses the existing durable-attempt reclaim query
+across all projects before project loading (#2749), including removed projects.
+Project-local reclaim remains necessary for project restarts without an instance
+restart. Deferred completions retain their existing exclusion, and restart-abandoned
+attempts retain orphan-session resume eligibility. Recorded processless stops use
+the existing completion and pending operator-stop records without requiring a
+running project; live workers still require the orchestrator. Covered by
+`TestStartupReclaimsProcesslessWorkAttempts`, `TestStopRecordedRunBeforeProjectStartup`,
+`TestStopRecordedRun`, and `TestReapWorkerProcessesPreservesInterruptedSession`.
+
 Legacy worker caches are removed at project startup using an absolute, home-expanded
 workspace root (#2742). The obsolete per-project shared-cache sweep and its state
 fields are removed; the existing host cache trim and report are the single cache
