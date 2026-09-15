@@ -108,7 +108,7 @@ func (o *Orchestrator) startSecurityAuditStage(ctx context.Context, issue connec
 			return
 		}
 
-		snapshot, err := reader.SecurityAuditSnapshot(ctx, issue, securityAuditMaxDiffBytes(cfg))
+		snapshot, err := o.collectSecurityAuditSnapshot(ctx, reader, issue, identity.key, securityAuditMaxDiffBytes(cfg))
 		if err != nil {
 			o.recordSecurityAuditFailure(ctx, issue, securityAuditSnapshotFromIssue(o.workflowMetricsProjectID(), issue), o.nextSecurityAuditAttempt(ctx, identity.key), now, err)
 			return
@@ -341,9 +341,53 @@ func (o *Orchestrator) publishSecurityAuditFindings(ctx context.Context, issue c
 
 func securityAuditFindingsComment(issue connector.Issue, audit securityaudit.Evaluation, marker string) string {
 	var body strings.Builder
-	fmt.Fprintf(&body, "%s\n## Security audit findings\n\nAudit run %d, base `%s`, head `%s`. Resolve these findings in Rework.\n", marker, audit.RunID, issue.PullRequest.BaseSHA, issue.PullRequest.HeadSHA)
-	for _, finding := range audit.Findings {
-		fmt.Fprintf(&body, "\n- **%s** `%s:%d`: %s\n", finding.Severity, finding.Path, finding.Line, finding.Body)
+	fmt.Fprintf(&body, "%s\n## Security audit findings\n\nAudit run %d, base `%s`, head `%s`. Blocking findings require Rework; lower severities are advisory. Resolved findings are retained for history.\n", marker, audit.RunID, issue.PullRequest.BaseSHA, issue.PullRequest.HeadSHA)
+	findings := audit.AllFindings
+	if findings == nil {
+		findings = audit.Findings
+	}
+	for _, finding := range findings {
+		fmt.Fprintf(&body, "\n- **%s** [%s] `%s` `%s:%d`: %s\n", finding.Severity, securityAuditFindingStatus(finding), finding.ID, finding.Path, finding.Line, finding.Body)
 	}
 	return body.String()
+}
+
+func (o *Orchestrator) collectSecurityAuditSnapshot(ctx context.Context, reader connector.SecurityAuditSnapshotReader, issue connector.Issue, key securityaudit.Key, limit int) (securityaudit.Snapshot, error) {
+	deltaReader, ok := o.connector.(connector.SecurityAuditDeltaReader)
+	if !ok {
+		return reader.SecurityAuditSnapshot(ctx, issue, limit)
+	}
+	prior, err := o.securityAuditStore.LatestCompletedSecurityAuditRunForPullRequest(ctx, key.ProjectID, key.Repository, key.PRNumber)
+	if errors.Is(err, store.ErrNotFound) {
+		return reader.SecurityAuditSnapshot(ctx, issue, limit)
+	}
+	if err != nil {
+		return securityaudit.Snapshot{}, err
+	}
+	priorKey := key
+	priorKey.BaseSHA, priorKey.HeadSHA = prior.BaseSHA, prior.HeadSHA
+	evaluation := securityaudit.Evaluate(prior, nil, priorKey, o.cfg.ServiceIdentity, []string{"p1", "p2", "p3"})
+	if (!evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings) || prior.BaseSHA != key.BaseSHA {
+		return reader.SecurityAuditSnapshot(ctx, issue, limit)
+	}
+	dispositions, err := o.securityAuditStore.ListSecurityAuditDispositions(ctx, prior.ID)
+	if err != nil {
+		return securityaudit.Snapshot{}, err
+	}
+	for i, finding := range prior.Findings {
+		for _, disposition := range dispositions {
+			if disposition.FindingID == finding.ID && disposition.ServiceIdentity == o.cfg.ServiceIdentity && disposition.Status == securityaudit.DispositionFalsePositive && strings.TrimSpace(disposition.Evidence) != "" {
+				prior.Findings[i].Status = "resolved"
+				prior.Findings[i].Body += "\nAccepted false positive: " + disposition.Evidence
+			}
+		}
+	}
+	return deltaReader.SecurityAuditDeltaSnapshot(ctx, issue, limit, securityaudit.PreviousAudit{BaseSHA: prior.BaseSHA, HeadSHA: prior.HeadSHA, Verdict: prior.Verdict, Summary: prior.Summary, Findings: prior.Findings})
+}
+
+func securityAuditFindingStatus(finding securityaudit.Finding) string {
+	if finding.Status == "resolved" {
+		return "resolved"
+	}
+	return "unresolved"
 }

@@ -496,6 +496,17 @@ conversation-resolution enqueue rejection use `unresolved_review_threads`;
 transient enqueue failures retain their existing handling. This consolidates
 review routing without adding a reason or retry mechanism.
 
+Security audit continuations (#2746, operator-approved) reuse the existing durable
+run history for an unchanged base and descendant head. They audit the delta and
+prior finding files, require explicit finding resolution, and retain p1/p2 defaults.
+Changed bases or diverged history receive a full audit. Full findings, including
+advisory and resolved entries, are published before routing; only unresolved
+configured severities block. This consolidates repeated full audits without adding
+configuration, routing mechanisms, or dashboard surfaces. `TestSecurityAuditCarriesPriorVerdict`,
+`TestSecurityAuditDeltaSnapshot`, and `TestSecurityAuditAdvisoryPublication` cover the behavior. The reviewed dynamic-reason
+fingerprint changes only to publish advisory findings before the existing lane write;
+transition reasons and lane ownership are unchanged.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
