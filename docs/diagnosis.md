@@ -669,3 +669,28 @@ WHERE phase_type = 'lane'
 GROUP BY project_id, recovery_reason
 ORDER BY blocked_entries DESC, project_id, recovery_reason;
 ```
+
+## Security audit waits (#2716)
+
+`security_audit_runs` stores completed results, not launch records. Its
+`completed_at` field is required. Absence of a row cannot establish that an
+audit did not start. Correlate the wait timestamp with `codex_sessions` where
+`agent_role = 'security_audit'`, including `started_at` and `completed_at`.
+Audit scratch paths alone are insufficient: allowance triage also uses the
+security-audit scratch root.
+
+On prometheus after the September 14 21:12Z restart, session 12329 for
+`digitaldrywood/pyroapex#2127` started at 23:49:18Z and completed at 23:58:06Z.
+The 23:54:51Z `security_audit_wait` decision fell inside that interval.
+Completed audit row 29 has the same timestamps, successful execution, and a
+`fail` verdict. This evidence contradicts the reported absence of audit
+launches; it does not establish the cause of other cards' allowance parks.
+
+The in-memory stage registry prevents duplicate launches while a reviewer is
+active. It is initialized empty on restart. Missing exact-base/head results
+request an audit on the existing auto-promote pass, including Merging; a
+trusted completed result remains usable after restart. Re-running a completed
+passing audit merely because the process restarted is unnecessary.
+`TestSecurityAuditLifecycleAcrossRestart` covers those boundaries with a held
+reviewer, without wall-clock sleeps. No additional startup reconciliation is
+needed to discard a registry that is never persisted.
