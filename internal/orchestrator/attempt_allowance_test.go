@@ -570,15 +570,19 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 func TestAttemptAllowanceOperatorMove(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, lane string
-		origin     provenance.Origin
-		want       int
+		name, from, lane string
+		origin           provenance.Origin
+		want             int
 	}{
-		{"human rework", "Rework", provenance.OriginHuman, 0},
-		{"human todo", "Todo", provenance.OriginHuman, 0},
-		{"human merging", "Merging", provenance.OriginHuman, 0},
-		{"unknown tracker actor", "Rework", provenance.OriginUnknown, 0},
-		{"detent move", "Rework", provenance.OriginDetent, 3},
+		{"human rework", "Human Review", "Rework", provenance.OriginHuman, 0},
+		{"human todo", "Human Review", "Todo", provenance.OriginHuman, 0},
+		{"human merging", "Human Review", "Merging", provenance.OriginHuman, 0},
+		{"unknown tracker actor", "Human Review", "Rework", provenance.OriginUnknown, 0},
+		{"detent move", "Human Review", "Rework", provenance.OriginDetent, 3},
+		{"human from merging", "Merging", "Rework", provenance.OriginHuman, 0},
+		{"human from blocked", "Blocked", "Rework", provenance.OriginHuman, 0},
+		{"tracker from blocked", "Blocked", "Rework", provenance.OriginUnknown, 0},
+		{"detent from merging", "Merging", "Rework", provenance.OriginDetent, 3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -613,7 +617,7 @@ func TestAttemptAllowanceOperatorMove(t *testing.T) {
 			if err := orch.publishAttemptTriage(t.Context(), &parked, issue, store.WorkAttempt{ID: triageID, WorkerMetadataJSON: metadata}, triageAt.Add(time.Second)); err != nil {
 				t.Fatal(err)
 			}
-			issue.State = "Human Review"
+			issue.State = tt.from
 			orch.recordLaneTransition(t.Context(), issue, tt.lane, now, "operator_move", workflowLaneMetadata{Provenance: provenance.Attribution{Origin: tt.origin}})
 			issue.State = tt.lane
 			got, err := orch.issueAttemptAllowance(t.Context(), issue)
@@ -700,7 +704,7 @@ func TestAllowanceOperatorMoveBoundary(t *testing.T) {
 		{"legacy detent", "Human Review", "Rework", "entered", `{"provenance":{"origin":"detent"}}`, false},
 		{"instance initiator", "Human Review", "Rework", "entered", `{"provenance":{"origin":"external_automation","initiator":"detent_instance"}}`, false},
 		{"unattributed", "Human Review", "Todo", "entered", `{}`, true},
-		{"other source", "Rework", "Todo", "entered", `{}`, false},
+		{"other source", "Rework", "Todo", "entered", `{}`, true},
 		{"same lane", "Human Review", "Human Review", "entered", `{}`, false},
 		{"exit event", "Human Review", "Rework", "exited", `{}`, false},
 	} {
