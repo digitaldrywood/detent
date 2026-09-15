@@ -492,25 +492,12 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 		if source.Condition == schedulingUnavailableCondition && source.FailureStreak > 0 {
 			return schedulingBackoffInterval(base, source.FailureStreak)
 		}
-		return dispatchRecoveryPollInterval(state, now, base)
+		return dispatchRecoveryPollInterval(state, now, o.projectRefreshInterval(state, now, base))
 	}
-
 	if pause := o.gitHubGraphQLPause(state, now); pause > base {
 		return pause
 	}
-	bucket := gitHubGraphQLBucketFromState(state)
-	if bucket == nil || bucket.Remaining <= 0 || bucket.Remaining >= gitHubGraphQLBackoffRemaining {
-		return dispatchRecoveryPollInterval(state, now, base)
-	}
-
-	multiplier := int64(gitHubGraphQLBackoffRemaining) / bucket.Remaining
-	if int64(gitHubGraphQLBackoffRemaining)%bucket.Remaining != 0 {
-		multiplier++
-	}
-	if multiplier < 2 {
-		multiplier = 2
-	}
-	return dispatchRecoveryPollInterval(state, now, base*time.Duration(multiplier))
+	return dispatchRecoveryPollInterval(state, now, o.projectRefreshInterval(state, now, base))
 }
 
 func gitHubRESTBackoffPause(state *State, now time.Time) time.Duration {
@@ -548,7 +535,7 @@ func (o *Orchestrator) gitHubGraphQLPause(state *State, now time.Time) time.Dura
 	if bucket.ResetInSeconds > 0 && bucket.ResetAt.After(now) {
 		return bucket.ResetAt.Sub(now)
 	}
-	if bucket.Remaining >= gitHubGraphQLPauseRemaining {
+	if bucket.Remaining > 0 {
 		return 0
 	}
 	if !bucket.ResetAt.After(now) {
@@ -570,4 +557,33 @@ func gitHubGraphQLRemaining(state *State) int64 {
 		return 0
 	}
 	return bucket.Remaining
+}
+
+// projectRefreshInterval uses the existing project timer to reduce quiet reads.
+// Candidate-bearing projects and pending transitions retain their normal cadence;
+// the connector still reserves REST capacity for dispatch writes.
+func (o *Orchestrator) projectRefreshInterval(state *State, now time.Time, base time.Duration) time.Duration {
+	if state == nil || state.RateLimits == nil || tickHasActiveWork(state, state.LaneSignalCandidates) || len(state.Claimed) > 0 || len(state.deferredCompletions) > 0 {
+		return base
+	}
+	interval := base
+	pace := func(bucket *telemetry.RateLimitBucket, reserve int64) {
+		if bucket == nil || bucket.Limit <= 0 || reserve <= 0 || bucket.Remaining > reserve ||
+			(bucket.ResetAt != nil && !now.Before(*bucket.ResetAt)) {
+			return
+		}
+		// Bound the delay even when a stale snapshot reports no remaining capacity.
+		remaining := max(int64(1), bucket.Remaining)
+		multiplier := min(int64(10), max(int64(2), 1+(reserve-1)/remaining))
+		interval = max(interval, min(base*time.Duration(multiplier), max(base, 5*time.Minute)))
+	}
+	pace(state.RateLimits.GitHubGraphQL, o.cfg.GitHubGraphQLMinReserve)
+	pace(state.RateLimits.GitHubREST, o.cfg.GitHubRESTMinReserve)
+	for _, budget := range state.RateLimits.GitHubRESTBudgets {
+		if budget.Resource != "" && budget.Resource != "core" {
+			continue
+		}
+		pace(&telemetry.RateLimitBucket{Limit: budget.Limit, Remaining: budget.Remaining, ResetAt: budget.ResetAt}, o.cfg.GitHubRESTMinReserve)
+	}
+	return interval
 }

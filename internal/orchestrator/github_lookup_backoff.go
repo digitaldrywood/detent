@@ -10,7 +10,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -114,13 +113,12 @@ func (o *Orchestrator) githubLookupBackoffGate(ctx context.Context, state *State
 		return true
 	}
 	o.captureGitHubLookupProbe(state, rateLimit, now)
-	if rateLimit.Limit <= 0 || rateLimit.Remaining <= o.cfg.GitHubGraphQLMinReserve {
+	if rateLimit.Limit <= 0 || rateLimit.Remaining <= 0 {
 		signal = githubLookupSignal{
 			trigger: githubLookupTriggerGraphQL,
 			reason: fmt.Sprintf(
-				"GitHub GraphQL remaining %d is at or below lookup floor %d",
+				"GitHub GraphQL has no available capacity (remaining %d)",
 				rateLimit.Remaining,
-				o.cfg.GitHubGraphQLMinReserve,
 			),
 			resetAt: rateLimit.ResetAt,
 		}
@@ -156,7 +154,7 @@ func (o *Orchestrator) probeGitHubRESTLookupBackoff(
 	}
 
 	outage.LastProbeAt = now.UTC()
-	rateLimit, err := prober.ProbeRESTRateLimit(ctx, o.cfg.GitHubRESTMinReserve)
+	rateLimit, err := prober.ProbeRESTRateLimit(ctx, 0)
 	if err != nil {
 		resetAt := outage.ResetAt
 		if signal, active := o.currentGitHubLookupSignal(state, now); active && signal.trigger == githubLookupTriggerREST && signal.resetAt.After(resetAt) {
@@ -170,14 +168,12 @@ func (o *Orchestrator) probeGitHubRESTLookupBackoff(
 		return true
 	}
 	o.captureGitHubRESTLookupProbe(state, rateLimit, now)
-	reserve := github.RESTResourceReserve(rateLimit.Resource, o.cfg.GitHubRESTMinReserve)
-	if rateLimit.Limit <= 0 || rateLimit.Remaining <= reserve {
+	if rateLimit.Limit <= 0 || rateLimit.Remaining <= 0 {
 		o.advanceGitHubLookupBackoff(state, outage, githubLookupSignal{
 			trigger: githubLookupTriggerREST,
 			reason: fmt.Sprintf(
-				"GitHub REST remaining %d is at or below lookup floor %d",
+				"GitHub REST has no available capacity (remaining %d)",
 				rateLimit.Remaining,
-				reserve,
 			),
 			resetAt: rateLimit.ResetAt,
 		}, now, time.Time{})
@@ -252,14 +248,13 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 	}
 	if reporter, ok := o.connector.(connector.RateLimitReporter); ok {
 		if rateLimit, exists := reporter.GraphQLRateLimit(); exists {
-			if graphQLLookupReserveExceeded(rateLimit, o.cfg.GitHubGraphQLMinReserve, now) {
+			if graphQLLookupExhausted(rateLimit, now) {
 				o.captureGitHubLookupProbe(state, rateLimit, now)
 				return githubLookupSignal{
 					trigger: githubLookupTriggerGraphQL,
 					reason: fmt.Sprintf(
-						"GitHub GraphQL remaining %d is at or below lookup floor %d",
+						"GitHub GraphQL exhausted (remaining %d)",
 						rateLimit.Remaining,
-						o.cfg.GitHubGraphQLMinReserve,
 					),
 					resetAt: rateLimit.ResetAt,
 				}, true
@@ -287,13 +282,12 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 				reason:  "GitHub REST returned a rate-limit response",
 			}, true
 		}
-		if rateLimit, exceeded := restLookupReserveExceededForUsage(usage, o.cfg.GitHubRESTMinReserve, now); exceeded {
+		if rateLimit, exceeded := restLookupExhaustedForUsage(usage, now); exceeded {
 			return githubLookupSignal{
 				trigger: githubLookupTriggerREST,
 				reason: fmt.Sprintf(
-					"GitHub REST remaining %d is at or below lookup floor %d",
+					"GitHub REST exhausted (remaining %d)",
 					rateLimit.Remaining,
-					github.RESTResourceReserve(rateLimit.Resource, o.cfg.GitHubRESTMinReserve),
 				),
 				resetAt: rateLimit.ResetAt,
 			}, true
@@ -308,13 +302,12 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 				resetAt: rateLimitBucketResetAt(bucket),
 			}, true
 		}
-		if budgetBelowReserve(bucket, o.cfg.GitHubGraphQLMinReserve, now) {
+		if lookupBucketExhausted(bucket, now) {
 			return githubLookupSignal{
 				trigger: githubLookupTriggerGraphQL,
 				reason: fmt.Sprintf(
-					"GitHub GraphQL remaining %d is at or below lookup floor %d",
+					"GitHub GraphQL exhausted (remaining %d)",
 					bucket.Remaining,
-					o.cfg.GitHubGraphQLMinReserve,
 				),
 				resetAt: rateLimitBucketResetAt(bucket),
 			}, true
@@ -340,17 +333,17 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 				resetAt: rateLimitBucketResetAt(state.RateLimits.GitHubREST),
 			}, true
 		}
-		budget, exceeded, hasFamilyBudgets := restLookupBudgetBelowReserve(state.RateLimits.GitHubRESTBudgets, o.cfg.GitHubRESTMinReserve, now)
+		budget, exceeded, hasFamilyBudgets := restLookupBudgetExhausted(state.RateLimits.GitHubRESTBudgets, now)
 		rest := state.RateLimits.GitHubREST
 		if exceeded ||
-			(!hasFamilyBudgets && budgetBelowReserve(rest, o.cfg.GitHubRESTMinReserve, now)) {
+			(!hasFamilyBudgets && lookupBucketExhausted(rest, now)) {
 			resetAt := rateLimitBucketResetAt(rest)
 			if exceeded && budget.ResetAt != nil {
 				resetAt = *budget.ResetAt
 			}
 			return githubLookupSignal{
 				trigger: githubLookupTriggerREST,
-				reason:  "GitHub REST returned a rate-limit response or crossed its reserve floor",
+				reason:  "GitHub REST exhausted",
 				resetAt: resetAt,
 			}, true
 		}
@@ -405,22 +398,22 @@ func restLookupRateLimitedForContributors(usage *telemetry.RESTUsage, now time.T
 	return time.Time{}, false, true
 }
 
-func restLookupReserveExceededForUsage(usage connector.RESTRateLimitUsage, floor int64, now time.Time) (connector.RESTRateLimit, bool) {
+func restLookupExhaustedForUsage(usage connector.RESTRateLimitUsage, now time.Time) (connector.RESTRateLimit, bool) {
 	if len(usage.Budgets) == 0 {
-		return usage.RateLimit, restLookupReserveExceeded(usage.RateLimit, usage.HasRateLimit, floor, now)
+		return usage.RateLimit, restLookupExhausted(usage.RateLimit, usage.HasRateLimit, now)
 	}
 	for _, budget := range usage.Budgets {
 		if !githubRESTCandidateLookupEndpointFamily(budget.EndpointFamily) {
 			continue
 		}
-		if restLookupReserveExceeded(budget.RateLimit, true, floor, now) {
+		if restLookupExhausted(budget.RateLimit, true, now) {
 			return budget.RateLimit, true
 		}
 	}
 	return connector.RESTRateLimit{}, false
 }
 
-func restLookupBudgetBelowReserve(budgets []telemetry.RESTBudget, floor int64, now time.Time) (telemetry.RESTBudget, bool, bool) {
+func restLookupBudgetExhausted(budgets []telemetry.RESTBudget, now time.Time) (telemetry.RESTBudget, bool, bool) {
 	hasOrchestratorBudgets := false
 	for _, budget := range budgets {
 		consumer := strings.TrimSpace(budget.Consumer)
@@ -431,8 +424,7 @@ func restLookupBudgetBelowReserve(budgets []telemetry.RESTBudget, floor int64, n
 		if !githubRESTCandidateLookupEndpointFamily(budget.EndpointFamily) {
 			continue
 		}
-		reserve := github.RESTResourceReserve(budget.Resource, floor)
-		if budget.Limit > 0 && budget.Remaining <= reserve && (budget.ResetAt == nil || !now.After(budget.ResetAt.Add(githubRateLimitResetSkew))) {
+		if budget.Limit > 0 && budget.Remaining <= 0 && (budget.ResetAt == nil || !now.After(budget.ResetAt.Add(githubRateLimitResetSkew))) {
 			return budget, true, true
 		}
 	}
@@ -448,18 +440,16 @@ func githubRESTCandidateLookupEndpointFamily(family string) bool {
 	}
 }
 
-func graphQLLookupReserveExceeded(rateLimit connector.GraphQLRateLimit, floor int64, now time.Time) bool {
-	return floor > 0 &&
-		rateLimit.Limit > 0 &&
-		rateLimit.Remaining <= floor &&
+func graphQLLookupExhausted(rateLimit connector.GraphQLRateLimit, now time.Time) bool {
+	return rateLimit.Limit > 0 &&
+		rateLimit.Remaining <= 0 &&
 		(rateLimit.ResetAt.IsZero() || !now.After(rateLimit.ResetAt.Add(githubRateLimitResetSkew)))
 }
 
-func restLookupReserveExceeded(rateLimit connector.RESTRateLimit, hasRateLimit bool, floor int64, now time.Time) bool {
-	floor = github.RESTResourceReserve(rateLimit.Resource, floor)
+func restLookupExhausted(rateLimit connector.RESTRateLimit, hasRateLimit bool, now time.Time) bool {
 	return hasRateLimit &&
 		rateLimit.Limit > 0 &&
-		rateLimit.Remaining <= floor &&
+		rateLimit.Remaining <= 0 &&
 		(rateLimit.ResetAt.IsZero() || !now.After(rateLimit.ResetAt.Add(githubRateLimitResetSkew)))
 }
 
@@ -674,4 +664,9 @@ func githubLookupBackoffAllowsDispatch(state *State, capacityProbeKey string) bo
 	return outage.Trigger == githubLookupTriggerProvider &&
 		outage.LastProbeResult == githubLookupProbeResultProviderDue &&
 		strings.TrimSpace(capacityProbeKey) != ""
+}
+
+func lookupBucketExhausted(bucket *telemetry.RateLimitBucket, now time.Time) bool {
+	return bucket != nil && bucket.Limit > 0 && bucket.Remaining <= 0 &&
+		(bucket.ResetAt == nil || !now.After(bucket.ResetAt.Add(githubRateLimitResetSkew)))
 }
