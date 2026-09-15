@@ -23,6 +23,7 @@ func StopRecordedRun(ctx context.Context, attempts store.WorkAttemptStore, proce
 	if strings.TrimSpace(request.ProjectID) == "" || strings.TrimSpace(request.IssueID) == "" || request.WorkAttemptID <= 0 || request.Attempt < 0 {
 		return StopRunResult{}, ErrStopRunInvalidIdentity
 	}
+	cfg.StopRunPriorityNames = normalizeStopRunPriorityNames(cfg.StopRunPriorityNames)
 	request = normalizeStopRunRequest(cfg, request)
 	route := request
 	if route.Destination == "" {

@@ -157,7 +157,9 @@ attempts retain orphan-session resume eligibility. Recorded processless stops us
 the existing completion and pending operator-stop records without requiring a
 running project; live workers still require the orchestrator. Live and recorded
 stops share route normalization, validation, and completion construction. Configured
-default/custom destinations survive project initialization; linked session completion
+default/custom destinations survive project initialization. Unreadable or invalid pending
+workflows still permit record-only and canonical stops; removed projects reuse the
+standard Todo priority names through shared priority normalization. Linked session completion
 is atomic with attempt completion and preserves an existing finish timestamp. Covered by
 `TestStartupReclaimsProcesslessWorkAttempts`, `TestStopRecordedRunBeforeProjectStartup`,
 `TestStopRecordedRun`, and `TestReapWorkerProcessesPreservesInterruptedSession`.

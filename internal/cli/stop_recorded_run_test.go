@@ -27,9 +27,14 @@ func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
 		name           string
 		pending, stale bool
 		target         string
+		broken         string
+		destination    string
 	}{
 		{name: "initializing", pending: true},
 		{name: "removed"},
+		{name: "missing workflow", pending: true, broken: "missing"},
+		{name: "invalid workflow", pending: true, broken: "invalid"},
+		{name: "invalid workflow canonical route", pending: true, broken: "invalid", destination: "Backlog"},
 		{name: "initializing custom target", pending: true, target: "Paused"},
 		{name: "stale identity", stale: true},
 	} {
@@ -60,6 +65,14 @@ Work`), 0600); err != nil {
 						t.Fatal(err)
 					}
 				}
+				if tc.broken != "" {
+					cfg.Workflow = filepath.Join(t.TempDir(), "WORKFLOW.md")
+					if tc.broken == "invalid" {
+						if err := os.WriteFile(cfg.Workflow, []byte("---\ntracker: [\n---\nWork"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				if err := registry.SetPending(cfg, project.RuntimeError{}); err != nil {
 					t.Fatal(err)
 				}
@@ -73,7 +86,7 @@ Work`), 0600); err != nil {
 			if err != nil {
 				t.Fatal(err)
 			}
-			body := fmt.Sprintf(`{"issue_id":"issue","work_attempt_id":%d,"detent_session_id":%d,"confirm":true}`, id, sessionID)
+			body := fmt.Sprintf(`{"issue_id":"issue","work_attempt_id":%d,"detent_session_id":%d,"confirm":true,"destination":%q}`, id, sessionID, tc.destination)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/project/runs/1/stop", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer test-token")
@@ -92,11 +105,15 @@ Work`), 0600); err != nil {
 					t.Fatal(err)
 				}
 				wantOutcome := "stopped"
-				if tc.target != "" {
+				wantTarget := tc.target
+				if tc.destination != "" {
+					wantTarget = tc.destination
+				}
+				if wantTarget != "" {
 					wantOutcome = "pending"
 				}
-				if result.Destination != tc.target {
-					t.Fatalf("destination = %q, want %q", result.Destination, tc.target)
+				if result.Destination != wantTarget {
+					t.Fatalf("destination = %q, want %q", result.Destination, wantTarget)
 				}
 				if result.Outcome != wantOutcome {
 					t.Fatalf("outcome = %q", result.Outcome)

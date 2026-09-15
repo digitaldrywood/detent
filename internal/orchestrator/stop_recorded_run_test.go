@@ -23,13 +23,15 @@ func TestStopRecordedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := []struct {
-		name    string
-		change  func(*StopRunRequest, *recordedStopStore)
-		wantErr error
-		pending bool
-		target  string
+		name         string
+		change       func(*StopRunRequest, *recordedStopStore)
+		wantErr      error
+		pending      bool
+		target       string
+		priorityName string
 	}{
 		{name: "processless"},
+		{name: "removed project Todo", pending: true, priorityName: "High", change: func(r *StopRunRequest, _ *recordedStopStore) { r.Destination = "Todo"; r.Priority = 2 }},
 		{name: "configured default", target: "Paused", pending: true},
 		{name: "configured explicit", target: "Paused", pending: true, change: func(r *StopRunRequest, _ *recordedStopStore) { r.Destination = "Paused" }},
 		{name: "pending route", pending: true, change: func(r *StopRunRequest, _ *recordedStopStore) { r.Destination = "Backlog" }},
@@ -81,6 +83,9 @@ func TestStopRecordedRun(t *testing.T) {
 			}
 			if tt.pending {
 				metadata, ok := operatorStopMetadataFromAttempt(store.WorkAttempt{WorkerMetadataJSON: backend.completion.WorkerMetadataJSON})
+				if result.PriorityName != tt.priorityName || metadata.PriorityName != tt.priorityName {
+					t.Fatalf("priority: result=%+v metadata=%+v", result, metadata)
+				}
 				if !ok || metadata.Destination != result.Destination || result.Outcome != "pending" {
 					t.Fatalf("pending stop = %+v, metadata = %+v", result, metadata)
 				}

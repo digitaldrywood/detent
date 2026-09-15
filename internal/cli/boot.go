@@ -1998,10 +1998,11 @@ func (r registryRefresher) StopRun(ctx context.Context, request orchestrator.Sto
 			cfg = orchestrator.ConfigFromWorkflow(tracked.Workflow().Config)
 		} else if pending, ok := r.registry.Pending(project.ID(request.ProjectID)); ok && pending.Project.Workflow != "" {
 			workflow, loadErr := project.LoadWorkflowContext(ctx, pending.Project)
-			if loadErr != nil {
-				return orchestrator.StopRunResult{}, loadErr
+			// Broken workflow settings must not prevent a processless record
+			// from being stopped. Canonical routes need no workflow config.
+			if loadErr == nil {
+				cfg = orchestrator.ConfigFromWorkflow(workflow.Config)
 			}
-			cfg = orchestrator.ConfigFromWorkflow(workflow.Config)
 		}
 		return orchestrator.StopRecordedRun(ctx, r.attempts, r.processes, request, cfg)
 	}
