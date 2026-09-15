@@ -508,14 +508,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		report.Add(check)
 	}
 	binaryEnvironment := resolveDoctorBinaryEnvironment(ctx, resolution, liveBoot, deps)
-	jobs := []doctorCheckJob{{Name: "Host Go caches", Run: func(ctx context.Context) []doctorCheck {
-		report := deps.inspectCaches(ctx)
-		check := doctorCheck{Name: "Host Go caches", Status: doctorOK, Detail: report.String()}
-		if report.Error != "" {
-			check.Status = doctorWarn
-		}
-		return []doctorCheck{check}
-	}}}
+	var jobs []doctorCheckJob
 	if global != nil {
 		globalConfig := *global
 		workflowDriftBoot := liveBoot

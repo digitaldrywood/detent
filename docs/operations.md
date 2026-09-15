@@ -157,3 +157,11 @@ operator's responsibility. With Codex closed, its disposable log database and
 sidecars can safely be removed and will be recreated. Thread state and history
 contain session data: back them up and review what would be lost before manual
 pruning. Detent never prunes user-level SQLite databases.
+
+## Toolchain caches
+
+Workers use the host toolchain caches, including Go's native build and module
+caches; no per-project cache choice exists (INV-12). The existing reaper trim
+bounds the Go build cache using `global.cache`. `detent doctor` reports the native
+paths, current sizes, and last completed reaper trim per project, and warns about
+remaining Detent-owned cache roots without modifying them.

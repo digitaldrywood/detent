@@ -761,6 +761,42 @@ admission rule 9 and review enforce that broader requirement.
 criteria in the same PR. Identify INV-11 in the PR template and record the
 operator-managed workflow update when it lives outside the repository.
 
+## INV-12 — Native toolchain caches
+
+Detent never substitutes its own cache or state location for a toolchain's native
+one; bounding uses the toolchain's own mechanism. Workers inherit the host
+toolchain caches. Detent may house-keep a native cache (age or size trim that the
+toolchain tolerates) but never relocates it, never keys it per project or per
+attempt, and never introduces a configuration key that does either. Per-attempt
+isolation is limited to `TMPDIR`/`TMP`/`TEMP`.
+
+Detent's former per-attempt and per-project Go caches duplicated a content-addressed,
+concurrency-safe host cache. Two Detent-owned caches of about 750 GB on one host,
+plus the operator's copy, filled the disk and took twelve CI runners down. The
+same duplication risk applies to npm, pnpm, Cargo, pip, uv, Playwright browsers,
+and Docker layers.
+
+The runner must not set `GOCACHE`, `GOMODCACHE`, `GOBIN`, `GOLANGCI_LINT_CACHE`,
+`GOFLAGS` (including injected `-modcacherw` flags), `npm_config_cache`, `PNPM_HOME`,
+`YARN_CACHE_FOLDER`, `CARGO_HOME`, `CARGO_TARGET_DIR`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`,
+`PLAYWRIGHT_BROWSERS_PATH`, or `DOCKER_CONFIG`, unless explicitly passed through
+by the operator. Host values and explicit environment overrides are preserved.
+New `workspace.*cache*` keys fail configuration loading with an INV-12 message.
+The removed `workspace.cache_strategy` retains #2680's one-release warning and
+is ignored; it does not select a cache location.
+
+`TestINV12WorkerInheritsToolchainEnvironment` tests the common runner preparation;
+`TestINV12BackendToolchainEnvironment` launches local helper processes through both
+Codex and Claude Code backends and checks absent, inherited, and explicit values.
+`TestINV12WorkspaceCacheKeys`, `TestINV12DoctorNativeCaches`,
+`TestINV12DoctorWorkspaceKinds`, and `TestINV12TrimReadout` enforce config rejection
+and read-only diagnostics. All are registered in the invariant manifest.
+Doctor reports native Go cache paths and sizes per project, the last completed
+reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
+the workspace root or workdirs, including former per-attempt cache components
+under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
+inside the native build cache; Go's own `trim.txt` is left untouched.
+
 ## Check boundaries
 
 The source walk covers non-test Go packages under `internal`, `cmd`, and `tools`

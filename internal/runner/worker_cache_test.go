@@ -8,8 +8,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
-func TestWorkerInheritsToolchainEnvironment(t *testing.T) {
-	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOBIN", "GOLANGCI_LINT_CACHE"} {
+func TestINV12WorkerInheritsToolchainEnvironment(t *testing.T) {
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOBIN", "GOLANGCI_LINT_CACHE", "GOFLAGS", "npm_config_cache", "PNPM_HOME", "YARN_CACHE_FOLDER", "CARGO_HOME", "CARGO_TARGET_DIR", "PIP_CACHE_DIR", "UV_CACHE_DIR", "PLAYWRIGHT_BROWSERS_PATH", "DOCKER_CONFIG"} {
 		t.Run(name, func(t *testing.T) {
 			for _, override := range []bool{false, true} {
 				variables := map[string]string{}

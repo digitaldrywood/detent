@@ -46,7 +46,9 @@
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
       "TestWorkerCredentialBlockerError",
-      "TestRunnerTriageIsReadOnly"
+      "TestRunnerTriageIsReadOnly",
+      "TestINV12WorkerInheritsToolchainEnvironment",
+      "TestINV12BackendToolchainEnvironment"
     ],
     "./internal/store": [
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
@@ -80,7 +82,9 @@
       "TestDoctorInvariantAdmissionBatches",
       "TestDoctorInvariantScopeClassification",
       "TestDoctorInvariantAdmissionRepeatedEntries",
-      "TestDoctorInvariantAdmissionUnavailableEvidence"
+      "TestDoctorInvariantAdmissionUnavailableEvidence",
+      "TestINV12DoctorNativeCaches",
+      "TestINV12DoctorWorkspaceKinds"
     ],
     "./internal/connector/github": [
       "TestMachineIssueDuplicate",
@@ -104,6 +108,12 @@
       "TestQueuedDispatchCapacityChanges",
       "TestQueuedDispatchRanksSynchronousAndQueuedCallersTogether",
       "TestQueuedDispatchReleaseIncludesEnrolledCallers"
+    ],
+    "./internal/config": [
+      "TestINV12WorkspaceCacheKeys"
+    ],
+    "./internal/toolcache": [
+      "TestINV12TrimReadout"
     ]
   }
 }

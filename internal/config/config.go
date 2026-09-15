@@ -3822,9 +3822,41 @@ func (w *Workspace) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	*w = Workspace(value)
+	return w.validateCacheKeys(node, "workspace", make(map[*yaml.Node]bool))
+}
+
+func (w *Workspace) validateCacheKeys(node *yaml.Node, path string, visiting map[*yaml.Node]bool) error {
+	if visiting[node] {
+		return fmt.Errorf("%s contains a cyclic YAML alias; cannot validate INV-12", path)
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+	if node.Kind == yaml.AliasNode {
+		return w.validateCacheKeys(node.Alias, path, visiting)
+	}
+	if node.Kind != yaml.MappingNode {
+		for _, child := range node.Content {
+			if err := w.validateCacheKeys(child, path, visiting); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == "cache_strategy" {
+		key := node.Content[i].Value
+		keyPath := path + "." + key
+		if keyPath == "workspace.cache_strategy" {
 			w.legacyCacheStrategy = true
+			continue
+		}
+		if strings.Contains(strings.ToLower(key), "cache") {
+			return fmt.Errorf("%s is forbidden by INV-12: workers inherit native toolchain caches; configure trimming with global.cache", keyPath)
+		}
+		if key == "<<" {
+			keyPath = path
+		}
+		if err := w.validateCacheKeys(node.Content[i+1], keyPath, visiting); err != nil {
+			return err
 		}
 	}
 	return nil
