@@ -244,6 +244,7 @@ type doctorTelemetryStore interface {
 }
 
 type doctorDeps struct {
+	cacheFreeBytes       func(string) (uint64, error)
 	inspectCaches        func(context.Context) toolcache.Report
 	githubWorkflows      func(context.Context, workflowconfig.Config, string) (map[string]string, error)
 	codexStorage         func(context.Context, string, workflowconfig.Config, func(string) string) []doctorCheck

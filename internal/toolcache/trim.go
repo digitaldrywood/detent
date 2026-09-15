@@ -23,7 +23,7 @@ func (p Policy) Normalized() Policy {
 		p.MaxAge = 48 * time.Hour
 	}
 	if p.MaxBytes == 0 {
-		p.MaxBytes = 1000 * 1024 * 1024 * 1024
+		p.MaxBytes = 20 * 1024 * 1024 * 1024
 	}
 	return p
 }

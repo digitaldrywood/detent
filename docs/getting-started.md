@@ -478,8 +478,11 @@ Workers inherit the host Go build and module caches and operator toolchain
 settings. `TMPDIR`, `TMP`, and `TEMP` remain per-attempt. At startup, Detent
 removes legacy `workspace.root/.detent/cache` directories. The existing reaper
 expires host Go build entries older than `global.cache.max_age` (default 48h).
-The size cap `global.cache.max_bytes` defaults to 1000 GiB and takes precedence
+The size cap `global.cache.max_bytes` defaults to 20 GiB and takes precedence
 over age; recent entries are evicted oldest-first until the cache fits the cap.
+Doctor warns when the effective cap exceeds 10% of available space on the build
+cache volume. `/api/v1/state` reports the last swept host build and module cache
+sizes in `host_cache`, alongside `shared_caches`.
 
 When `workspace.auto_branch` is enabled and the source repository has an
 `origin` remote, Detent fetches that remote's default branch before creating a

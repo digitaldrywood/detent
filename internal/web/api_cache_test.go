@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -62,5 +63,31 @@ func TestProjectScopedSharedCaches(t *testing.T) {
 				t.Fatal("scoping mutated fleet snapshot")
 			}
 		})
+	}
+}
+
+func TestStateResponseHostCache(t *testing.T) {
+	for _, report := range []*toolcache.Report{nil, {BuildPath: "/native/build", BuildBytes: 47 << 30, ModuleBytes: 123}, {Error: "scan interrupted"}} {
+		snapshot := telemetry.Snapshot{HostCache: report}
+		response := stateResponse(snapshot, time.Now(), time.Now(), "test", buildinfo.Info{})
+		data, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			HostCache *toolcache.Report `json:"host_cache"`
+		}
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if report == nil {
+			if decoded.HostCache != nil {
+				t.Fatal("unexpected report")
+			}
+			continue
+		}
+		if decoded.HostCache == nil || *decoded.HostCache != *report {
+			t.Fatalf("report = %+v", decoded.HostCache)
+		}
 	}
 }

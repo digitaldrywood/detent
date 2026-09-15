@@ -139,6 +139,7 @@ type startOptions struct {
 }
 
 type Dependencies struct {
+	HostCacheReport           func() *toolcache.Report
 	TrimHostCache             func(context.Context, toolcache.Policy, time.Time) error
 	Connector                 connector.Connector
 	Scheduling                orchestrator.SchedulingSource
@@ -175,6 +176,7 @@ type Dependencies struct {
 type Project struct {
 	cacheMu                   sync.Mutex
 	sharedCache               workspace.CacheUsage
+	hostCacheReport           func() *toolcache.Report
 	id                        ID
 	cfg                       globalconfig.Project
 	workflow                  workflowconfig.Workflow
@@ -496,6 +498,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	cfg.Project.ID = string(id)
 	project = &Project{
+		hostCacheReport:           deps.HostCacheReport,
 		id:                        id,
 		cfg:                       cfg.Project,
 		workflow:                  workflow,

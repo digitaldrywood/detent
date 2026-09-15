@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -2464,7 +2465,7 @@ func TestPublishSnapshotOnceSweepsLiveSharedCache(t *testing.T) {
 			tracked, err := projectpkg.New(projectpkg.Config{
 				Project:  globalconfig.Project{ID: "cache-test", Workdir: t.TempDir(), Weight: 1},
 				Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
-			}, projectpkg.Dependencies{})
+			}, projectpkg.Dependencies{HostCacheReport: func() *toolcache.Report { return &toolcache.Report{BuildBytes: 47 << 30} }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2512,6 +2513,9 @@ func TestPublishSnapshotOnceSweepsLiveSharedCache(t *testing.T) {
 			snapshot, ok := snapshots.Latest()
 			if !ok || len(snapshot.SharedCaches) != 1 {
 				t.Fatalf("shared caches = %+v", snapshot.SharedCaches)
+			}
+			if snapshot.HostCache == nil || snapshot.HostCache.BuildBytes != 47<<30 {
+				t.Fatalf("host cache = %+v", snapshot.HostCache)
 			}
 			usage := snapshot.SharedCaches[0]
 			if usage.ProjectID != "cache-test" || usage.ObservedAt.IsZero() || (usage.Error != "") != broken {

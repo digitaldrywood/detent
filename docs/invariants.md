@@ -808,6 +808,10 @@ reaper trim (or “not recorded”), and warns about legacy `.detent/cache` root
 the workspace root or workdirs, including former per-attempt cache components
 under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
+The native build cache defaults to 20 GiB with the existing 48-hour age trim.
+Doctor warns when the effective bound exceeds 10% of available space on the
+cache volume. The existing reaper measures native caches after trimming and publishes
+`host_cache` in `/api/v1/state` beside shared caches (#2733).
 
 ## Check boundaries
 

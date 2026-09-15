@@ -87,7 +87,7 @@ func TestPolicyDefaults(t *testing.T) {
 		name        string
 		input, want Policy
 	}{
-		{"defaults", Policy{}, Policy{MaxAge: 48 * time.Hour, MaxBytes: 1000 * 1024 * 1024 * 1024}},
+		{"defaults", Policy{}, Policy{MaxAge: 48 * time.Hour, MaxBytes: 20 * 1024 * 1024 * 1024}},
 		{"explicit", Policy{MaxAge: time.Hour, MaxBytes: 123}, Policy{MaxAge: time.Hour, MaxBytes: 123}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -218,6 +218,59 @@ func TestTrimCandidateLayout(t *testing.T) {
 			_, err := os.Stat(path)
 			if os.IsNotExist(err) != tt.remove {
 				t.Fatalf("stat=%v, remove=%t", err, tt.remove)
+			}
+		})
+	}
+}
+
+// Sparse files reproduce the reported 47 GiB growth without consuming that disk space.
+func TestTrimDefaultReportedGrowth(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		size    int64
+		age     time.Duration
+		removed bool
+	}{
+		{"reported recent growth", 47 << 30, 5 * time.Hour, true},
+		{"below budget", 19 << 30, 5 * time.Hour, false},
+		{"expired below budget", 1 << 20, 49 * time.Hour, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "README"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "00"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "00", strings.Repeat("0", 64)+"-d")
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			truncateErr := f.Truncate(tt.size)
+			closeErr := f.Close()
+			if truncateErr != nil {
+				t.Fatal(truncateErr)
+			}
+			if closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			now := time.Now()
+			at := now.Add(-tt.age)
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+			reclaimed, err := Trim(t.Context(), root, Policy{}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = os.Stat(path)
+			if os.IsNotExist(err) != tt.removed {
+				t.Fatalf("stat = %v; removed = %t", err, tt.removed)
+			}
+			if tt.removed && reclaimed != tt.size {
+				t.Fatalf("reclaimed = %d", reclaimed)
 			}
 		})
 	}

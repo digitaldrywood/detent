@@ -12,7 +12,7 @@ func TestParseGlobalCache(t *testing.T) {
 		bytes      int64
 		bad        bool
 	}{
-		{"defaults", "", 48 * time.Hour, 1000 * 1024 * 1024 * 1024, false},
+		{"defaults", "", 48 * time.Hour, 20 * 1024 * 1024 * 1024, false},
 		{"explicit", "  cache: {max_age: 12h, max_bytes: 123}\n", 12 * time.Hour, 123, false},
 		{"negative age", "  cache: {max_age: -1h}\n", 0, 0, true},
 		{"negative size", "  cache: {max_bytes: -1}\n", 0, 0, true},

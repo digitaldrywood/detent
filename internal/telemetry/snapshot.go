@@ -10,11 +10,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type Snapshot struct {
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
+	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
 	SharedCaches       []workspace.CacheUsage      `json:"shared_caches,omitempty"`
 
 	CardActiveStates        map[string][]string `json:"-"`
