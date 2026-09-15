@@ -160,7 +160,7 @@ func TestSnapshotBudgetPreservesReleaseWork(t *testing.T) {
 		end     string
 		markers []string
 	}{
-		{"hooks", "before:", "\nbuilds:", []string{"go mod download", "go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0", "make generate", "make test"}},
+		{"hooks", "before:", "\nbuilds:", []string{"go mod download", "make check-generated", "make test"}},
 		{"targets", "builds:", "\narchives:", []string{"CGO_ENABLED=0", "-trimpath", "- darwin", "- linux", "- windows", "- amd64", "- arm64"}},
 		{"archives", "archives:", "\nbrews:", []string{"- tar.gz", "goos: windows", "- zip", "- README.md", "- LICENSE", "- docs/**/*", "- scripts/hub-smoke.py"}},
 		{"packages", "nfpms:", "\nscoops:", []string{"- deb", "- rpm"}},
@@ -173,6 +173,20 @@ func TestSnapshotBudgetPreservesReleaseWork(t *testing.T) {
 				if !strings.Contains(section, marker) {
 					t.Errorf("release configuration missing %q", marker)
 				}
+			}
+		})
+	}
+}
+
+func TestReleaseHooksDoNotRegenerate(t *testing.T) {
+	t.Parallel()
+
+	config := readNormalizedFile(t, ".goreleaser.yaml")
+	hooks := workflowBetween(t, config, "before:", "\nbuilds:")
+	for _, forbidden := range []string{"make generate", "sqlc@", "sqlc generate"} {
+		t.Run(forbidden, func(t *testing.T) {
+			if strings.Contains(hooks, forbidden) {
+				t.Errorf("release hooks must verify committed sources, found %q", forbidden)
 			}
 		})
 	}

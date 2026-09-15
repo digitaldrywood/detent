@@ -17,6 +17,8 @@ MODERNIZE_FIX_FLAGS ?= -newexpr=false
 TEMPL ?= go run github.com/a-h/templ/cmd/templ@v0.3.1001
 TAILWIND_INPUT ?= static/css/input.css
 TAILWIND_OUTPUT ?= static/css/output.css
+SQLC_VERSION := v1.31.1
+SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 SQLC_CONFIG ?= sqlc/sqlc.yaml
 MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
@@ -78,6 +80,7 @@ check-migrations:
 	go run ./tools/migrationcheck
 
 check-generated:
+	$(SQLC) diff -f "$(SQLC_CONFIG)"
 	go run ./internal/config/cmd/configdoc -root . -check
 
 css:
@@ -207,7 +210,7 @@ release-snapshot:
 
 sqlc:
 	@if [ -f "$(SQLC_CONFIG)" ]; then \
-		sqlc generate -f "$(SQLC_CONFIG)"; \
+		$(SQLC) generate -f "$(SQLC_CONFIG)"; \
 	else \
 		echo "No sqlc config at $(SQLC_CONFIG); skipping sqlc generate."; \
 	fi
@@ -223,7 +226,7 @@ db-migrate:
 setup: $(GOLANGCI_LINT)
 	go install github.com/air-verse/air@latest
 	go install github.com/a-h/templ/cmd/templ@v0.3.1001
-	go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	go install github.com/pressly/goose/v3/cmd/goose@latest
 	@if [ -f package.json ]; then npm install; fi
 

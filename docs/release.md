@@ -110,3 +110,13 @@ Tag publication reconciles the exact tag target before mutation and after an
 uncertain response; a tag pointing elsewhere is a failure. These operations rely
 on Detent's single service owner per project; concurrent evaluations within that
 owner are serialized.
+
+### Generated sources
+
+The Makefile pins sqlc in `SQLC_VERSION`; `make generate`, `make sqlc`, and
+`make setup` use that version. Commit regenerated SQL output with query changes.
+`make check-generated` checks SQL output with `sqlc diff` and checks the generated
+configuration reference without rewriting either. The required Verify check runs
+this verification in the merge queue and on main, before compilation; PR checks
+retain the repository’s placeholder policy. GoReleaser uses the same verification
+hook and builds committed sources instead of regenerating them during release.

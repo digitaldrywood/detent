@@ -104,6 +104,9 @@ jobs:
           go-version: '1.26.6'
           cache: true
 
+      - name: Verify committed generated sources
+        run: make check-generated
+
       - name: Check integrated migration versions
         run: make check-migrations
 
@@ -247,10 +250,6 @@ jobs:
       - name: Install Playwright browsers
         if: steps.visual-changes.outputs.run_visual == 'true'
         run: npx playwright install --with-deps chromium
-
-      - name: Install visual build generators
-        if: steps.visual-changes.outputs.run_visual == 'true'
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
       - name: Build Detent visual test binary
         if: steps.visual-changes.outputs.run_visual == 'true'
