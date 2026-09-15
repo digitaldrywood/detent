@@ -57,6 +57,7 @@ type projectItemNode struct {
 }
 
 type githubIssueNode struct {
+	BlockedBy                      *issueNodesConnection        `json:"blockedBy"`
 	ClosedAt                       *string                      `json:"closedAt"`
 	TypeName                       string                       `json:"__typename"`
 	ID                             string                       `json:"id"`

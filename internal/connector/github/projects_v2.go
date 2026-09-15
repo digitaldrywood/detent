@@ -141,6 +141,8 @@ query DetentGitHubObservedStatusProjectItems(
               id
               number
               title
+              body
+              updatedAt
               state
               stateReason
  closedAt
