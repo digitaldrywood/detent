@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -29,6 +30,7 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 		name      string
 		attempts  []store.WorkAttempt
 		mergedAt  time.Time
+		resetAt   time.Time
 		count     int
 		exhausted bool
 		triage    int64
@@ -36,13 +38,18 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 		{name: "two code sessions permit another", attempts: base[:2], count: 2},
 		{name: "three code and rework sessions refuse fourth despite new heads and lanes", attempts: base, count: 3, exhausted: true},
 		{name: "merge resets prior sessions", attempts: base, mergedAt: now.Add(time.Minute), count: 1},
+		{name: "reset includes same tick session", attempts: base, resetAt: now, count: 3, exhausted: true},
+		{name: "reset excludes earlier sessions", attempts: base, resetAt: now.Add(time.Minute), count: 2},
+		{name: "reset after merge includes same tick session", attempts: base, mergedAt: now, resetAt: now.Add(time.Minute), count: 2},
+		{name: "merge after reset excludes same tick session", attempts: base, mergedAt: now.Add(time.Minute), resetAt: now, count: 1},
+		{name: "simultaneous merge and reset preserves merge boundary", attempts: base, mergedAt: now.Add(time.Minute), resetAt: now.Add(time.Minute), count: 1},
 		{name: "merge after all sessions", attempts: base, mergedAt: now.Add(3 * time.Minute)},
 		{name: "triage is recorded but not charged", attempts: append(append([]store.WorkAttempt{}, base...), store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, StartedAt: now.Add(3 * time.Minute)}), count: 3, exhausted: true, triage: 4},
 		{name: "validator and merge runs are not code sessions", attempts: []store.WorkAttempt{{WorkerType: "validator"}, {WorkerType: "merge"}, {WorkerType: "planner"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := countSessionsWithoutMerge(tt.attempts, tt.mergedAt)
+			got := countSessionsWithoutMerge(tt.attempts, tt.mergedAt, tt.resetAt)
 			var triage int64
 			if got.Triage != nil {
 				triage = got.Triage.ID
@@ -56,7 +63,7 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 		t.Run(class+" does not consume allowance", func(t *testing.T) {
 			attempts := append([]store.WorkAttempt{}, base...)
 			attempts[2].ErrorClass = class
-			if got := countSessionsWithoutMerge(attempts, time.Time{}); got.Sessions != 2 || got.exhausted() {
+			if got := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{}); got.Sessions != 2 || got.exhausted() {
 				t.Fatalf("allowance = %#v", got)
 			}
 		})
@@ -555,6 +562,196 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 						t.Errorf("triage missing %q: %s", want, tracker.comments[0].body)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestAttemptAllowanceOperatorMove(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, lane string
+		origin     provenance.Origin
+		want       int
+	}{
+		{"human rework", "Rework", provenance.OriginHuman, 0},
+		{"human todo", "Todo", provenance.OriginHuman, 0},
+		{"human merging", "Merging", provenance.OriginHuman, 0},
+		{"unknown tracker actor", "Rework", provenance.OriginUnknown, 0},
+		{"detent move", "Rework", provenance.OriginDetent, 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			issue := connector.Issue{ID: "reset", Identifier: "owner/repo#2692", State: "Human Review"}
+			cfg := laneMutationTestConfig()
+			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now.Add(-time.Hour))
+			for i := range 3 {
+				if i > 0 {
+					var err error
+					id, err = db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: "Rework", StartedAt: now.Add(-time.Duration(10-i) * time.Minute)})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: issue}}
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			triageAt := now.Add(-time.Minute)
+			triageID, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: runpkg.RunModeTriage, Lane: "Rework", StartedAt: triageAt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadata := marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": fallbackAttemptTriageNote(issue, "disk exhaustion, PR conflicting")})
+			if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: triageID, CompletedAt: triageAt.Add(time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: metadata}); err != nil {
+				t.Fatal(err)
+			}
+			issue.State = "Rework"
+			parked := newState(cfg)
+			if err := orch.publishAttemptTriage(t.Context(), &parked, issue, store.WorkAttempt{ID: triageID, WorkerMetadataJSON: metadata}, triageAt.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			issue.State = "Human Review"
+			orch.recordLaneTransition(t.Context(), issue, tt.lane, now, "operator_move", workflowLaneMetadata{Provenance: provenance.Attribution{Origin: tt.origin}})
+			issue.State = tt.lane
+			got, err := orch.issueAttemptAllowance(t.Context(), issue)
+			if err != nil || got.Sessions != tt.want {
+				t.Fatalf("sessions=%d want %d, error=%v", got.Sessions, tt.want, err)
+			}
+
+			if tt.want != 0 {
+				return
+			}
+			// A fresh runtime must honor the durable operator decision.
+			orch = newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			if tt.lane != "Merging" {
+				tracker.refreshed, tracker.hydrated = issue, issue
+				orch.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
+				orch.runResults = make(chan runpkg.Completion, 1)
+				state := newState(cfg)
+				if !orch.dispatchIssue(t.Context(), &state, issue, 4, now, "") {
+					t.Fatal("operator move did not permit dispatch")
+				}
+				select {
+				case result := <-orch.runResults:
+					if result.Request.Mode != runpkg.RunModeImplement {
+						t.Fatalf("mode=%s", result.Request.Mode)
+					}
+					if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: state.Running[issue.ID].WorkAttemptID, CompletedAt: now.Add(2 * time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("runner did not complete")
+				}
+			}
+			// Three subsequent sessions exhaust the new window too.
+			remaining := 3
+			if tt.lane != "Merging" {
+				remaining--
+			}
+			for i := range remaining {
+				id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: tt.lane, StartedAt: now.Add(time.Duration(i+1) * time.Minute)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(time.Duration(i+1)*time.Minute + time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err = orch.issueAttemptAllowance(t.Context(), issue)
+			if err != nil || got.Sessions != 3 || !got.exhausted() || got.Triage != nil {
+				t.Fatalf("new window=%+v error=%v", got, err)
+			}
+
+			issue.State = "Rework"
+			tracker.refreshed, tracker.hydrated = issue, issue
+			orch.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
+			orch.runResults = make(chan runpkg.Completion, 1)
+			state := newState(cfg)
+			if !orch.dispatchIssue(t.Context(), &state, issue, 7, now.Add(10*time.Minute), "") {
+				t.Fatal("new window triage refused")
+			}
+			select {
+			case result := <-orch.runResults:
+				if result.Request.Mode != runpkg.RunModeTriage {
+					t.Fatalf("mode=%s", result.Request.Mode)
+				}
+				orch.handleRunResult(t.Context(), &state, result)
+			case <-time.After(5 * time.Second):
+				t.Fatal("triage did not complete")
+			}
+			if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != "Human Review" {
+				t.Fatalf("did not park again: %+v", tracker.updates)
+			}
+		})
+	}
+}
+
+func TestAllowanceOperatorMoveBoundary(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	for _, tt := range []struct {
+		name, from, to, status, metadata string
+		reset                            bool
+	}{
+		{"human", "Human Review", "Rework", "entered", `{"provenance":{"origin":"human"}}`, true},
+		{"legacy detent", "Human Review", "Rework", "entered", `{"provenance":{"origin":"detent"}}`, false},
+		{"instance initiator", "Human Review", "Rework", "entered", `{"provenance":{"origin":"external_automation","initiator":"detent_instance"}}`, false},
+		{"unattributed", "Human Review", "Todo", "entered", `{}`, true},
+		{"other source", "Rework", "Todo", "entered", `{}`, false},
+		{"same lane", "Human Review", "Human Review", "entered", `{}`, false},
+		{"exit event", "Human Review", "Rework", "exited", `{}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			events := []store.WorkflowPhaseEvent{{PhaseType: store.WorkflowPhaseTypeLane, PreviousPhaseName: tt.from, PhaseName: tt.to, Status: tt.status, MetadataJSON: tt.metadata, StartedAt: now}}
+			got := lastAllowanceOperatorMoveAt(events)
+			if got.Equal(now) != tt.reset {
+				t.Fatalf("reset=%v want %v", got, tt.reset)
+			}
+		})
+	}
+}
+
+type allowanceResetConnector struct {
+	attemptTriageConnector
+	edits int
+}
+
+func (c *allowanceResetConnector) UpdateIssueComment(_ context.Context, _, id, body string) error {
+	c.edits++
+	for i := range c.refreshed.Comments {
+		if c.refreshed.Comments[i].ID == id {
+			c.refreshed.Comments[i].Body = body
+		}
+	}
+	return nil
+}
+func TestAllowanceResetAnnotation(t *testing.T) {
+	t.Parallel()
+	for _, posted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("posted=%v", posted), func(t *testing.T) {
+			at := time.Date(2026, 9, 14, 21, 47, 47, 0, time.UTC)
+			tracker := &allowanceResetConnector{}
+			if posted {
+				tracker.refreshed.Comments = []connector.IssueComment{{ID: "note", Body: "triage evidence\n<!-- detent-attempt-triage:4 -->"}}
+			}
+			orch := &Orchestrator{connector: tracker}
+			for range 2 {
+				if err := orch.annotateAllowanceReset(t.Context(), connector.Issue{ID: "issue"}, 4, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := 0
+			if posted {
+				want = 1
+			}
+			if tracker.edits != want {
+				t.Fatalf("edits=%d want %d", tracker.edits, want)
+			}
+			if posted && !strings.Contains(tracker.refreshed.Comments[0].Body, "allowance reset by operator move at 2026-09-14T21:47:47Z") {
+				t.Fatal("missing reset explanation")
 			}
 		})
 	}

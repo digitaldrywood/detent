@@ -292,9 +292,15 @@ adding a recovery loop.
 
 Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
 attempt accounting into one fixed allowance: three code/rework sessions started
-since the last merged PR. The durable attempt log owns the count; lane changes,
-new commits, new PR heads, CI signatures, and operator acknowledgements do not
-reset it. Instance-attributed startup, transport, workspace and restart failures
+since the last merged PR or operator move out of Human Review (#2692). The
+durable attempt log owns the count, with the window derived from existing lane
+history. Human-origin moves, and moves not initiated by the Detent instance,
+reset the window for any destination; Detent-instance moves do not. Sessions
+started at the operator-move timestamp count in the renewed window because lane
+observation precedes dispatch in the same tick; merge boundaries remain exclusive. New commits,
+new PR heads, CI signatures, ordinary lane changes, and acknowledgements alone
+do not reset it. The existing triage comment receives a timestamped reset line
+when comment updates are supported; publication failure does not undo the move. Instance-attributed startup, transport, workspace and restart failures
 are excluded. Immutable PR merge times and merge observations in the durable lane timeline
 reset prior work; subsequent activity on a merged PR is not a reset.
 
@@ -325,7 +331,9 @@ explicit operational completion workflows retain their own deliverable rules.
 `TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
 `TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
 `TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
-`TestAttemptAllowancePreservesOperatorCompletionLane`, and
+`TestAttemptAllowancePreservesOperatorCompletionLane`,
+`TestAttemptAllowanceOperatorMove`, `TestAllowanceOperatorMoveBoundary`,
+`TestAllowanceResetAnnotation`, and
 `TestPullRequestMergeTimeSurvivesLaterActivity` enforce the allowance and restricted publication
 contract. `TestRunnerTriageNativeAdmission` and `TestRunnerTriageBudget` verify
 reservation identity, capacity loss, issue/daily budget refusal, and metered
