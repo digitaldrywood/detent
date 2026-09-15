@@ -58,6 +58,15 @@ func scanSharedCache(ctx context.Context, root, projectID string) (usage CacheUs
 	if strings.TrimSpace(root) == "" {
 		return usage, nil, newest
 	}
+	resolved, err := canonicalExistingPath(root)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			usage.Error = err.Error()
+		}
+		return usage, nil, newest
+	}
+	root = resolved
+	usage.Path = SharedCacheRoot(root, projectID)
 	// Opening the workspace root first prevents traversal through an external cache symlink.
 	base, err := os.OpenRoot(root)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -144,6 +153,11 @@ func TrimSharedCache(ctx context.Context, root, projectID string, idleTTL time.D
 func trimSharedCache(ctx context.Context, root, projectID string, idleTTL time.Duration, active bool, budget int64, now time.Time) (result CacheUsage) {
 	usage, files, newest := scanSharedCache(ctx, root, projectID)
 	if usage.Error != "" || newest.IsZero() {
+		return usage
+	}
+	root, err := canonicalExistingPath(root)
+	if err != nil {
+		usage.Error = err.Error()
 		return usage
 	}
 	base, err := os.OpenRoot(root)

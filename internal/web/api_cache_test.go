@@ -39,3 +39,28 @@ func TestStateResponseSharedCaches(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectScopedSharedCaches(t *testing.T) {
+	snapshot := telemetry.Snapshot{SharedCaches: []workspace.CacheUsage{{ProjectID: "a", BuildBytes: 4}, {ProjectID: "b", BuildBytes: 8}}}
+	for _, id := range []string{"a", "b", "missing"} {
+		t.Run(id, func(t *testing.T) {
+			scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: id})
+			response := stateResponse(scoped, time.Now(), time.Now(), "test", buildinfo.Info{})
+			want := 1
+			if id == "missing" {
+				want = 0
+			}
+			if len(response.SharedCaches) != want {
+				t.Fatalf("caches = %+v", response.SharedCaches)
+			}
+			for _, cache := range response.SharedCaches {
+				if cache.ProjectID != id {
+					t.Fatalf("foreign cache = %+v", cache)
+				}
+			}
+			if len(snapshot.SharedCaches) != 2 || snapshot.SharedCaches[0].ProjectID != "a" {
+				t.Fatal("scoping mutated fleet snapshot")
+			}
+		})
+	}
+}

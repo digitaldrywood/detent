@@ -86,3 +86,42 @@ func TestInspectSharedCache(t *testing.T) {
 		})
 	}
 }
+
+func TestSharedCacheHomeRelativeRoot(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(map[bool]string{false: "paused", true: "running"}[active], func(t *testing.T) {
+			root := t.TempDir()
+			home, err := os.UserHomeDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			relative, err := filepath.Rel(home, root)
+			if err != nil {
+				t.Skip("fixture and home are on different volumes")
+			}
+			configuredRoot := "~/" + filepath.ToSlash(relative)
+			dir := filepath.Join(SharedCacheRoot(root, "test"), "go-build")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Create(filepath.Join(dir, "data"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Truncate(SharedBuildCacheBudget + 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before := InspectSharedCache(t.Context(), configuredRoot, "test")
+			if before.Error != "" || before.BuildBytes != SharedBuildCacheBudget+1 {
+				t.Fatalf("before = %+v", before)
+			}
+			after := TrimSharedCache(t.Context(), configuredRoot, "test", 24*time.Hour, active)
+			if after.Error != "" || after.BuildBytes != 0 {
+				t.Fatalf("after = %+v", after)
+			}
+		})
+	}
+}
