@@ -471,8 +471,11 @@ eligibility check consolidates into the mandatory final revalidation; other
 completed candidates can still use the evaluation window.
 
 Security audit verdict routing from Merging shares the existing auto-promote
-consumer with source-lane completion (#2642). The merge completion handler no
-longer independently fails or routes audit outcomes. Findings publish to the PR
+classifier and findings publisher with source-lane completion (#2642, #2726).
+The merge completion handler routes actionable findings through its existing
+Rework handler immediately, clears retries, and includes findings on the issue;
+pending evidence and audit infrastructure failures retain their existing wait
+without publishing issue findings. Findings publish to the PR
 before the existing lane writer routes to Rework; the trusted run marker prevents
 repeat publication after a failed lane write. Comments remain explanatory, never
 verdict evidence. Required-gate telemetry uses the same audit classifier.

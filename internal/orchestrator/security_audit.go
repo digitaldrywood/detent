@@ -332,13 +332,18 @@ func (o *Orchestrator) publishSecurityAuditFindings(ctx context.Context, issue c
 			return nil
 		}
 	}
+
+	if err := commenter.CreatePullRequestComment(ctx, repository, number, securityAuditFindingsComment(issue, audit, marker)); err != nil {
+		return fmt.Errorf("publish security audit findings: %w", err)
+	}
+	return nil
+}
+
+func securityAuditFindingsComment(issue connector.Issue, audit securityaudit.Evaluation, marker string) string {
 	var body strings.Builder
 	fmt.Fprintf(&body, "%s\n## Security audit findings\n\nAudit run %d, base `%s`, head `%s`. Resolve these findings in Rework.\n", marker, audit.RunID, issue.PullRequest.BaseSHA, issue.PullRequest.HeadSHA)
 	for _, finding := range audit.Findings {
 		fmt.Fprintf(&body, "\n- **%s** `%s:%d`: %s\n", finding.Severity, finding.Path, finding.Line, finding.Body)
 	}
-	if err := commenter.CreatePullRequestComment(ctx, repository, number, body.String()); err != nil {
-		return fmt.Errorf("publish security audit findings: %w", err)
-	}
-	return nil
+	return body.String()
 }
