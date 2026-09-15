@@ -1163,6 +1163,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 
 			codexHome := t.TempDir()
 			got := checkDoctorProjects(context.Background(), globalconfig.Config{Projects: tt.projects}, doctorDeps{
+				cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
 				inspectCaches: func(context.Context) toolcache.Report {
 					return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 				},
@@ -6190,6 +6191,7 @@ func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
 	}, doctorDeps{
 		// Project progress must not wait for a scan of the host toolchain caches.
+		cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 		},
@@ -6320,6 +6322,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 				Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
 			}, doctorDeps{
 				// Only the explicitly blocked stage should consume the timeout.
+				cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
 				inspectCaches: func(context.Context) toolcache.Report {
 					return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 				},
@@ -6712,6 +6715,7 @@ func assertDoctorMissingCheck(t *testing.T, report doctorReport, name string) {
 
 func successfulDoctorDeps() doctorDeps {
 	return doctorDeps{
+		cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 		},
