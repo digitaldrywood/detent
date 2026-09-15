@@ -111,39 +111,18 @@ func cardCI(pr *PullRequest) string {
 // CardIssues follows the board's pipeline, queue, running, and blocked precedence.
 // Raw GitHub states only supply a fallback when no tracker lane is available.
 func CardIssues(snapshot Snapshot) []Issue {
-	result := []Issue{}
-	indexes := map[string]int{}
+	type candidate struct {
+		issue Issue
+		raw   bool
+	}
+	var candidates []candidate
 	add := func(issue Issue, fallback string) {
 		raw := strings.EqualFold(issue.State, "open") || strings.EqualFold(issue.State, "closed")
 		issue.State = CardRuntimeLane(issue.State, fallback)
-		if issue.State == "" {
-			return
-		}
 		if issue.ProjectID == "" {
 			issue.ProjectID = snapshot.Project.ID
 		}
-		key := issue.ProjectID + "\x00" + issue.ID
-		if issue.ID == "" {
-			key = issue.ProjectID + "\x00" + issue.Identifier
-		}
-		if index, found := indexes[key]; found {
-			if raw {
-				return
-			}
-			previous := result[index]
-			if issue.AttemptsToday == nil {
-				issue.AttemptsToday = previous.AttemptsToday
-				issue.LaneReason = previous.LaneReason
-				issue.LaneReasonAt = previous.LaneReasonAt
-			}
-			if issue.PullRequest == nil {
-				issue.PullRequest = previous.PullRequest
-			}
-			result[index] = issue
-			return
-		}
-		indexes[key] = len(result)
-		result = append(result, issue)
+		candidates = append(candidates, candidate{issue: issue, raw: raw})
 	}
 	for _, issue := range snapshot.BoardIssues {
 		add(issue, "")
@@ -165,6 +144,62 @@ func CardIssues(snapshot Snapshot) []Issue {
 			fallback = "Blocked"
 		}
 		add(issue, fallback)
+	}
+	// Group all aliases before applying precedence. A later copy can connect two
+	// earlier copies, and even a raw tracker copy can supply a missing alias.
+	type alias struct {
+		project string
+		field   int
+		value   string
+	}
+	aliases := map[alias]int{}
+	parents := make([]int, len(candidates))
+	root := func(index int) int {
+		for parents[index] != index {
+			index = parents[index]
+		}
+		return index
+	}
+	for i, candidate := range candidates {
+		parents[i] = i
+		issue := candidate.issue
+		for field, value := range []string{issue.ID, issue.Identifier, issue.URL} {
+			if value == "" {
+				continue
+			}
+			key := alias{project: issue.ProjectID, field: field, value: value}
+			if previous, ok := aliases[key]; ok {
+				parents[root(i)] = root(previous)
+			}
+			aliases[key] = i
+		}
+	}
+	result := []Issue{}
+	indexes := map[int]int{}
+	for i, candidate := range candidates {
+		issue := candidate.issue
+		if issue.State == "" {
+			continue
+		}
+		key := root(i)
+		if index, found := indexes[key]; found {
+			if candidate.raw {
+				continue
+			}
+			previous := result[index]
+			if issue.AttemptsToday == nil {
+				issue.AttemptsToday = previous.AttemptsToday
+				issue.LaneReason = previous.LaneReason
+				issue.LaneReasonAt = previous.LaneReasonAt
+			}
+			if issue.PullRequest == nil {
+				issue.PullRequest = previous.PullRequest
+			}
+			result[index] = issue
+			continue
+		}
+		indexes[key] = len(result)
+		result = append(result, issue)
 	}
 	return result
 }

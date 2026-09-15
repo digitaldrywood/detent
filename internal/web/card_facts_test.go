@@ -15,14 +15,23 @@ func TestBoardCardFactsAPI(t *testing.T) {
 	at := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	count := int64(75)
 	for _, tt := range []struct {
-		name    string
-		running bool
-	}{{"no session", false}, {"running", true}} {
+		name      string
+		running   bool
+		missingID bool
+	}{{"no session", false, false}, {"running", true, false}, {"identifier-only runtime", true, true}} {
 		t.Run(tt.name, func(t *testing.T) {
-			issue := telemetry.Issue{ID: "i", ProjectID: "p", State: "Rework", AttemptsToday: &count, LaneReason: "workpad_status_invalid", LaneReasonAt: &at, PullRequest: &telemetry.PullRequest{HeadSHA: "head", HeadCommittedAt: &at, CIStatus: "success", MergeableState: "clean"}}
+			issue := telemetry.Issue{ID: "i", Identifier: "DET-1", ProjectID: "p", State: "Rework", AttemptsToday: &count, LaneReason: "workpad_status_invalid", LaneReasonAt: &at, PullRequest: &telemetry.PullRequest{HeadSHA: "head", HeadCommittedAt: &at, CIStatus: "success", MergeableState: "clean"}}
 			snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}, Pipeline: []telemetry.Issue{issue}}
 			if tt.running {
-				snapshot.Running = []telemetry.Running{{Issue: issue, StartedAt: at, Tokens: telemetry.Tokens{Total: 42}}}
+				running := issue
+				if tt.missingID {
+					running.ID = ""
+					running.PullRequest = nil
+					running.AttemptsToday = nil
+					running.LaneReason = ""
+					running.LaneReasonAt = nil
+				}
+				snapshot.Running = []telemetry.Running{{Issue: running, StartedAt: at, Tokens: telemetry.Tokens{Total: 42}}}
 			}
 			response := boardResponse(snapshot)
 			if len(response.Cards) != 1 {

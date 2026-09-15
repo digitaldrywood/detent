@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -126,6 +127,48 @@ func TestActiveIssueCardConfiguredLanes(t *testing.T) {
 			snapshot := Snapshot{CardActiveStates: map[string][]string{"custom": {"Todo", "Production"}}}
 			if got := ActiveIssueCard(snapshot, Issue{ProjectID: tt.project, State: tt.lane}); got != tt.want {
 				t.Fatalf("active = %v", got)
+			}
+		})
+	}
+}
+
+func TestCardIssuesIdentityAliases(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                     string
+		board, pipeline, running []Issue
+		want                     []string
+	}{
+		{name: "mixed ID and identifier", board: []Issue{{ID: "id", Identifier: "DET-1", Title: "board"}}, running: []Issue{{Identifier: "DET-1", Title: "runtime"}}, want: []string{"runtime"}},
+		{name: "mixed ID and URL", board: []Issue{{ID: "id", URL: "https://example.com/1", Title: "board"}}, running: []Issue{{URL: "https://example.com/1", Title: "runtime"}}, want: []string{"runtime"}},
+		{name: "distinct URLs", board: []Issue{{URL: "https://example.com/1", Title: "first"}, {URL: "https://example.com/2", Title: "second"}}, want: []string{"first", "second"}},
+		{name: "projects remain separate", board: []Issue{{ProjectID: "other", ID: "id", Identifier: "DET-1", URL: "url", Title: "other"}}, running: []Issue{{ID: "id", Identifier: "DET-1", URL: "url", Title: "runtime"}}, want: []string{"other", "runtime"}},
+		{name: "identity fields remain separate", board: []Issue{{ID: "same", Title: "id"}, {Identifier: "same", Title: "identifier"}, {URL: "same", Title: "url"}}, want: []string{"id", "identifier", "url"}},
+		{name: "missing identities remain separate", board: []Issue{{Title: "first"}, {Title: "second"}}, want: []string{"first", "second"}},
+		{name: "raw copy registers aliases", board: []Issue{{ID: "id", Title: "board"}}, pipeline: []Issue{{ID: "id", Identifier: "DET-1", State: "OPEN", Title: "raw"}}, running: []Issue{{Identifier: "DET-1", Title: "runtime"}}, want: []string{"runtime"}},
+		{name: "later copy bridges earlier aliases", board: []Issue{{ID: "id", Title: "board"}, {URL: "url", Title: "url"}}, running: []Issue{{ID: "id", URL: "url", Title: "runtime"}}, want: []string{"runtime"}},
+		{name: "aliases survive replacement", board: []Issue{{ID: "id", Identifier: "DET-1", URL: "url", Title: "board"}}, pipeline: []Issue{{Identifier: "DET-1", Title: "pipeline"}}, running: []Issue{{URL: "url", Title: "runtime"}}, want: []string{"runtime"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := Snapshot{Project: Project{ID: "p"}, BoardIssues: tt.board, Pipeline: tt.pipeline}
+			for i := range snapshot.BoardIssues {
+				snapshot.BoardIssues[i].State = "Todo"
+			}
+			for i := range snapshot.Pipeline {
+				if snapshot.Pipeline[i].State == "" {
+					snapshot.Pipeline[i].State = "Rework"
+				}
+			}
+			for _, issue := range tt.running {
+				issue.State = "In Progress"
+				snapshot.Running = append(snapshot.Running, Running{Issue: issue})
+			}
+			var got []string
+			for _, issue := range CardIssues(snapshot) {
+				got = append(got, issue.Title)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("card titles = %v, want %v", got, tt.want)
 			}
 		})
 	}
