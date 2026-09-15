@@ -2210,6 +2210,9 @@ func classifyForgeDeliverableError(err error, fallbackHost string, workProductPu
 	if err == nil {
 		return nil
 	}
+	if cliErr := WorkerGitHubCLIAuthError(err); cliErr != nil {
+		return cliErr
+	}
 	if availabilityErr, ok := forgeavailability.As(err); ok && availabilityErr != nil {
 		return err
 	}
@@ -2226,9 +2229,9 @@ func classifyForgeDeliverableError(err error, fallbackHost string, workProductPu
 			operation = "git push"
 		}
 		if deliverableErr.ApprovalDenied && forgeavailability.WriteOperation(operation) {
-			host := forgeavailability.HostFromText(deliverableErr.Arguments + " " + deliverableErr.Error())
+			host := fallbackHost
 			if host == "" {
-				host = fallbackHost
+				host = forgeavailability.HostFromText(deliverableErr.Arguments)
 			}
 			return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, forgeavailability.ClassTransport, err)
 		}
@@ -2236,13 +2239,27 @@ func classifyForgeDeliverableError(err error, fallbackHost string, workProductPu
 		if !unavailable {
 			continue
 		}
-		host := forgeavailability.HostFromText(deliverableErr.Arguments + " " + deliverableErr.Error())
+		host := fallbackHost
 		if host == "" {
-			host = fallbackHost
+			host = forgeavailability.HostFromText(deliverableErr.Arguments)
 		}
 		return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
 	}
 	return err
+}
+
+// WorkerGitHubCLIAuthError reuses token-resolution recovery for CLI setup faults.
+func WorkerGitHubCLIAuthError(err error) error {
+	if resolutionErr, ok := AsWorkerGitHubTokenResolutionError(err); ok && resolutionErr != nil {
+		return err
+	}
+	errorsFound, _ := deliverableCommandErrors(err)
+	for _, failure := range errorsFound {
+		if failure != nil && forgeavailability.GitHubCLIAuthFailure(failure.Operation, failure.Message+"\n"+failure.Body) {
+			return &WorkerGitHubTokenResolutionError{Attempts: 1, Err: fmt.Errorf("worker_github_cli_auth: %w", failure)}
+		}
+	}
+	return nil
 }
 
 func IsDeliverableConfigurationError(err error) bool {

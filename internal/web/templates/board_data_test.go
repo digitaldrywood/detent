@@ -3280,7 +3280,7 @@ func TestBoardAlertsNameWorkerGitHubCredentialProjectPause(t *testing.T) {
 		t.Fatalf("credential action = %#v, want write canary without unpausing", alerts[0].Action)
 	}
 	combined := alerts[0].DetailSummary + " " + alerts[0].DetailRows[0].Detail
-	for _, want := range []string{"Project dispatch is paused", "successful write canary", "worker_github_credential_unavailable"} {
+	for _, want := range []string{"Project dispatch is paused", "successful write canary", "worker_github_credential_unavailable", "POST /api/v1/forge/availability/clear"} {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("credential alert = %q, want containing %q", combined, want)
 		}

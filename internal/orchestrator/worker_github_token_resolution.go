@@ -157,7 +157,9 @@ func workerGitHubTokenResolutionWaitMetadataFromAttempt(attempt store.WorkAttemp
 		return workerGitHubTokenResolutionWaitMetadata{}, false
 	}
 	wait := metadata.Wait
-	if wait.Attempts <= 0 || wait.TimeoutMS <= 0 || wait.DetectedAt.IsZero() || wait.NextRetryAt.IsZero() {
+	// Timeout is diagnostic: CLI login failures can return without timing out.
+	// The persisted retry deadline controls recovery for every token-resolution wait.
+	if wait.Attempts <= 0 || wait.DetectedAt.IsZero() || wait.NextRetryAt.IsZero() {
 		return workerGitHubTokenResolutionWaitMetadata{}, false
 	}
 	return wait, true

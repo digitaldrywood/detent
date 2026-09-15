@@ -416,7 +416,19 @@ func doctorTrackerUsesGitHubReads(kind string) bool {
 	return kind == workflowconfig.TrackerGitHub || kind == workflowconfig.TrackerGitHubLocal
 }
 
-func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) doctorCheck {
+func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) (check doctorCheck) {
+	defer func() {
+		if check.Status != doctorOK || token.ResolvedVia != "gh" || deps.ghAuthStatus == nil {
+			return
+		}
+		status, err := deps.ghAuthStatus(ctx)
+		if err == nil && strings.Contains(strings.ToLower(status), "(keyring)") {
+			check.Status = doctorWarn
+			check.Detail += "; gh authentication uses a desktop keyring that may be unavailable to a headless service"
+			check.Hint = "Provide GH_TOKEN in the service environment, or use gh auth login --insecure-storage with appropriately protected configuration files."
+		}
+	}()
+
 	hasGitHubProject := doctorHasGitHubProject(ctx, cfg, deps)
 	requiresRuntimeToken := doctorRequiresRuntimeGitHubToken(ctx, cfg, deps)
 	if cfg != nil && !hasGitHubProject {

@@ -463,7 +463,7 @@ func boardForgeUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 	}
 	for _, condition := range snapshot.ForgeUnavailable {
 		if condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable {
-			alert.DetailSummary = "Project dispatch is paused until a successful write canary proves the worker GitHub credential is available."
+			alert.DetailSummary = "Project dispatch is paused until a successful write canary proves the worker GitHub credential is available. After restoring credentials, request a retry with POST /api/v1/forge/availability/clear."
 			break
 		}
 	}

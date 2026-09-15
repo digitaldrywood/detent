@@ -59,3 +59,36 @@ func TestClassifyForgeDeliverableError(t *testing.T) {
 		})
 	}
 }
+
+func TestCompoundPushCLIAuth(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"git push", "post-push command", "gh pr view"} {
+		t.Run(operation, func(t *testing.T) {
+			failure := &DeliverableCommandError{Operation: operation, Message: "32bbf98..9773c9e HEAD -> detent/example\nlist pull request labels: exit status 4: To get started with GitHub CLI, please run: gh auth login"}
+			got := classifyForgeDeliverableError(failure, "github.com", true)
+			if _, ok := forgeavailability.As(got); ok {
+				t.Fatalf("opened outage: %v", got)
+			}
+			if _, ok := AsWorkerGitHubTokenResolutionError(got); !ok {
+				t.Fatalf("not instance token resolution: %v", got)
+			}
+			if !errors.Is(got, failure) {
+				t.Fatal("lost command evidence")
+			}
+		})
+	}
+}
+
+func TestForgeDeliverableHostProvenance(t *testing.T) {
+	t.Parallel()
+	for _, detail := range []string{"Authentication failed", "HTTP 503: unavailable"} {
+		t.Run(detail, func(t *testing.T) {
+			failure := &DeliverableCommandError{OperationClass: "push", Operation: "git push", Arguments: "git push && curl https://detent.dev/status", Message: detail}
+			got := classifyForgeDeliverableError(failure, "github.com", false)
+			outage, ok := forgeavailability.As(got)
+			if !ok || outage.Scope.Host != "github.com" {
+				t.Fatalf("outage = %#v", outage)
+			}
+		})
+	}
+}

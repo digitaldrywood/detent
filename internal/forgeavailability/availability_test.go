@@ -17,6 +17,8 @@ func TestClassify(t *testing.T) {
 		{name: "git DNS", operation: "git push", detail: "ssh: Could not resolve hostname github.com: no such host\nfatal: Could not read from remote repository.", wantClass: ClassTransport, want: true},
 		{name: "git fetch server error", operation: "git fetch", detail: "remote: HTTP 503 Service Unavailable", wantClass: ClassServer, want: true},
 		{name: "pull request server error", operation: "codex_apps/github.create_pull_request", detail: `{"status":502,"message":"unavailable"}`, wantClass: ClassServer, want: true},
+		{name: "rejected push with CLI advice", operation: "git push", detail: "fatal: Authentication failed; run gh auth login", wantClass: ClassWorkerGitHubCredentialUnavailable, want: true},
+		{name: "push succeeded before CLI read failed", operation: "git push", detail: "32bbf98..9773c9e HEAD -> detent/example\nlist pull request labels: exit status 4: To get started with GitHub CLI, please run: gh auth login"},
 		{name: "GitHub CLI credential unavailable", operation: "gh pr create", detail: "run gh auth login or populate GH_TOKEN", wantClass: ClassWorkerGitHubCredentialUnavailable, want: true},
 		{name: "connector approval denied", operation: "codex_apps/github.create_pull_request", detail: "MCP tool call requires approval, but approval policy is never", wantClass: ClassWorkerGitHubCredentialUnavailable, want: true},
 		{name: "non fast forward", operation: "git push", detail: "[rejected] main -> main (non-fast-forward)"},
