@@ -9,6 +9,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -70,7 +71,7 @@ func TestOnboardingInstructionBudget(t *testing.T) {
 						if strings.Count(prompt, "## Validation gate") != 1 || strings.Contains(prompt, "bash -o pipefail -c") {
 							t.Fatal("runtime gate must be the sole command execution authority")
 						}
-						if !strings.Contains(prompt, "In Merging, run a focused rebase/smoke gate") {
+						if !strings.Contains(prompt, gate.InstructionsForGitHubHost(workflow.Config.Gate, "github.com")) {
 							t.Fatal("runtime merging optimization lost")
 						}
 					}
@@ -134,7 +135,7 @@ func TestRefreshProjectInstructionTrims(t *testing.T) {
 			writeOnboardingWorkflowBuilderFile(t, fixture.workflowPath, legacy)
 			writeOnboardingWorkflowBuilderFile(t, fixture.agentsPath, "# Project rules\n\n## Issue effort selection\n\neffort: high\n\n## Custom\n\nKeep me.\n")
 			raw := readProjectRefreshTestFile(t, fixture.configPath)
-			raw = strings.Replace(raw, "require_effort: false", "require_effort: true\n    effort_file: AGENTS.md\n    effort_section: Issue effort selection", 1)
+			// Existing project settings remain authoritative.
 			writeOnboardingWorkflowBuilderFile(t, fixture.configPath, raw)
 			before := projectRefreshTestSnapshot(t, fixture)
 			cfg := projectRefreshConfig{ConfigPath: fixture.globalPath, ProjectID: "api", Options: defaultOptions()}
@@ -158,7 +159,7 @@ func TestRefreshProjectInstructionTrims(t *testing.T) {
 				t.Fatalf("incorrect refreshed instructions:\n%s", workflow)
 			}
 			agents := string(projectRefreshTestChange(t, plan, fixture.agentsPath).after)
-			if strings.Contains(agents, "effort: high") || !strings.Contains(agents, "Keep me.") {
+			if !strings.Contains(agents, "effort: high") || !strings.Contains(agents, "Keep me.") {
 				t.Fatalf("agents=%s", agents)
 			}
 			if strings.Contains(workflow, "verify the release signature") {
@@ -264,4 +265,57 @@ func TestRefreshPreservesUnreplacedCustomSections(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRefreshConfiguredLaneMigration(t *testing.T) {
+	t.Parallel()
+	for _, custom := range []bool{false, true} {
+		name := "standard"
+		states := []string{"Todo", "In Progress", "Rework", "Merging"}
+		if custom {
+			name = "custom"
+			states = []string{"Research", "Draft", "Review", "Package"}
+		}
+		t.Run(name, func(t *testing.T) {
+			root, err := parseProjectRefreshYAML([]byte("tracker:\n  active_states: ["+strings.Join(states, ", ")+"]\n"), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			desired, err := parseProjectRefreshYAML([]byte("agent:\n  instructions_by_state:\n    Todo: Start work.\n    Merging: Merge work.\n"), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			outside := "## Deployment\n\n### For staging\n\nKeep staging policy.\n\n### For " + states[0] + "\n\nKeep shared policy.\n\n"
+			input := outside + "## Required Execution Flow\n\n### For " + states[0] + "\n\nKeep lane policy.\n\n### For staging\n\nKeep flow staging policy.\n"
+			got, changed := migrateProjectRefreshStateInstructions(input, root, desired)
+			if !changed || !strings.Contains(got, outside) || !strings.Contains(got, "### For staging\n\nKeep flow staging policy.") {
+				t.Fatalf("shared policy changed: %s", got)
+			}
+			lane := projectRefreshYAMLPathNode(root, "agent.instructions_by_state."+states[0])
+			if lane == nil || !strings.Contains(lane.Value, "Keep lane policy.") || strings.Contains(lane.Value, "staging") {
+				t.Fatalf("lane policy = %#v", lane)
+			}
+			if projectRefreshYAMLPathNode(root, "agent.instructions_by_state.staging") != nil {
+				t.Fatal("created unrelated lane")
+			}
+			defaults := projectRefreshYAMLPathNode(desired, "agent.instructions_by_state")
+			if custom && len(defaults.Content) != 0 {
+				t.Fatal("preset lanes survived custom state filtering")
+			}
+		})
+	}
+}
+
+func TestRefreshCustomStatesPreview(t *testing.T) {
+	t.Parallel()
+	fixture := newProjectRefreshTestFixture(t, "assisted_intake")
+	replace := strings.NewReplacer("Todo", "Research", "In Progress", "Draft", "Rework", "Revise", "Merging", "Package")
+	writeOnboardingWorkflowBuilderFile(t, fixture.configPath, replace.Replace(readProjectRefreshTestFile(t, fixture.configPath)))
+	writeOnboardingWorkflowBuilderFile(t, fixture.workflowPath, replace.Replace(readProjectRefreshTestFile(t, fixture.workflowPath)))
+	before := projectRefreshTestSnapshot(t, fixture)
+	_, err := planProjectRefresh(context.Background(), projectRefreshConfig{ConfigPath: fixture.globalPath, ProjectID: "api", Options: defaultOptions()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProjectRefreshTestSnapshot(t, fixture, before)
 }

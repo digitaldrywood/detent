@@ -612,9 +612,9 @@ func TestBuildOnboardingWorkflowWritesAgentGuidance(t *testing.T) {
 			wantHeadingCount: 0,
 		},
 		{
-			name:             "replaces matching heading that lacks guidance",
+			name:             "preserves human guidance under matching heading",
 			existing:         "# Repository agent guidance\n\n## Issue effort selection\n\nRecord estimates here.\n",
-			wantHeadingCount: 0,
+			wantHeadingCount: 1,
 		},
 		{
 			name: "preserves complete existing guidance",
@@ -636,7 +636,7 @@ func TestBuildOnboardingWorkflowWritesAgentGuidance(t *testing.T) {
 				"Leave `model` unset.",
 				"",
 			}, "\n"),
-			wantHeadingCount: 0,
+			wantHeadingCount: 1,
 			wantUnchanged:    false,
 		},
 	}

@@ -3613,6 +3613,9 @@ repositories receive no browser requirement.
 Artifact presets keep their artifact validation and do not require a PR.
 
 `detent refresh-project PROJECT_ID` proposes the same generated-section trims
-as a diff, including migration of the generated admission effort source.
+as a diff. Existing effort guidance and admission settings remain project-owned;
+refresh does not infer generated ownership from a section heading. Preset lane
+instructions are limited to configured active states, and legacy lane migration
+is limited to the Required Execution Flow section.
 Review the proposal; only `--yes` applies it. Custom project sections and CI
 stage mappings remain available for review and are preserved.

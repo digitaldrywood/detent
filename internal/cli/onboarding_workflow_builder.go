@@ -1108,7 +1108,6 @@ func readOnboardingAgentsFile(path string) (string, error) {
 }
 
 func renderOnboardingAgentGuidance(existing string, _ onboardingAnswers) (string, error) {
-	existing = replaceProjectRefreshMarkdownSection(existing, "## "+onboardingEffortRubricHeading, "")
 	guidance := "## Agent guidance\n\nKeep changes scoped to the assigned issue and follow repository conventions.\nModel and reasoning effort are configured by the Detent instance.\nUse the available [project skills](.detent/skills/) for reference material; read only skills relevant to the task.\n"
 	if _, found := onboardingMarkdownSection(existing, "## Agent guidance"); !found {
 		return strings.TrimSpace(strings.TrimSpace(existing)+"\n\n"+guidance) + "\n", nil

@@ -279,13 +279,6 @@ func planProjectRefresh(ctx context.Context, cfg projectRefreshConfig) (projectR
 	sharedWorkflow, migratedStates := migrateProjectRefreshStateInstructions(string(workflowRaw), existingRoot, desiredRoot)
 	configChanged := mergeProjectRefreshYAML(existingRoot, desiredRoot, nil, decisionByPath, &result)
 	configChanged = configChanged || migratedStates
-	if existingConfig.BacklogAdmission.RequireEffort && existingConfig.BacklogAdmission.EffortSection == onboardingEffortRubricHeading {
-		setOnboardingYAMLPath(existingRoot, []string{"backlog_admission", "require_effort"}, false)
-		deleteOnboardingYAMLPath(existingRoot, []string{"backlog_admission", "effort_section"})
-		deleteOnboardingYAMLPath(existingRoot, []string{"backlog_admission", "effort_file"})
-		existingConfig.BacklogAdmission.RequireEffort = false
-		configChanged = true
-	}
 
 	refreshedConfig := configRaw
 	if configChanged {
@@ -1387,9 +1380,53 @@ func trimProjectRefreshHandoff(existing string) string {
 // Keep custom lane additions scoped when retiring the old generated lane text.
 func migrateProjectRefreshStateInstructions(existing string, root *yaml.Node, desired *yaml.Node) (string, bool) {
 	trimmed := trimProjectRefreshHandoff(existing)
-	trimmed = strings.ReplaceAll(trimmed, "### For ", "### State: ")
+	active := map[string]bool{}
+	if configured := projectRefreshYAMLPathNode(root, "tracker.active_states"); configured != nil {
+		for _, state := range configured.Content {
+			active[state.Value] = true
+		}
+	}
+	// Preset lanes must not introduce keys outside the project's configured states.
+	if defaults := projectRefreshYAMLPathNode(desired, "agent.instructions_by_state"); defaults != nil {
+		var kept []*yaml.Node
+		for i := 0; i+1 < len(defaults.Content); i += 2 {
+			if active[defaults.Content[i].Value] {
+				kept = append(kept, defaults.Content[i], defaults.Content[i+1])
+			}
+		}
+		defaults.Content = kept
+	}
+	var sharedLines []string
+	bodies := map[string]string{}
+	inFlow, state := false, ""
+	for _, line := range strings.Split(trimmed, "\n") {
+		if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "# ") {
+			inFlow = line == "## Required Execution Flow"
+			state = ""
+		}
+		if strings.HasPrefix(line, "### ") {
+			state = ""
+			for _, prefix := range []string{"### For ", "### State: "} {
+				if inFlow && strings.HasPrefix(line, prefix) {
+					candidate := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+					if active[candidate] {
+						state = candidate
+					}
+				}
+			}
+			if state != "" {
+				continue
+			}
+		}
+		if state != "" {
+			bodies[state] += line + "\n"
+		} else {
+			sharedLines = append(sharedLines, line)
+		}
+	}
 	extracted := &yaml.Node{Kind: yaml.MappingNode}
-	shared := onboardingWorkflowStateInstructions(extracted, trimmed)
+	setOnboardingYAMLPath(extracted, []string{"agent", "instructions_by_state"}, bodies)
+	shared := strings.TrimSpace(strings.Join(sharedLines, "\n")) + "\n"
 	states := projectRefreshYAMLPathNode(extracted, "agent.instructions_by_state")
 	changed := false
 	for index := 0; index+1 < len(states.Content); index += 2 {
