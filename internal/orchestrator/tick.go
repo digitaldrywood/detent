@@ -146,6 +146,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
+	trackerCandidates := cloneIssues(fetched.candidates)
 	fetched = filterReconciledTickIssues(state, fetched, earlyUnblocked)
 	for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
 		if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
@@ -325,6 +326,8 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			boardIssuesFromFetched(fetched),
 			state.tickTransitions.boardIssues,
 		)
+		missing := candidatesMissingFromBoard(trackerCandidates, state.BoardIssues)
+		state.CandidatesMissingVsTracker = &missing
 		o.refreshCurrentLaneEntries(ctx, state, now)
 		o.refreshStalenessWarnings(ctx, state, fetched.candidates, now)
 		o.markRefreshSucceeded(state, now)
@@ -1087,4 +1090,24 @@ func (o *Orchestrator) dispatchTickIssues(
 		o.trackCandidateBlockedStatusIssues(ctx, state, fetched.candidates, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+// Compare identities from this successful tracker read with the published board,
+// including lane transitions made during the refresh. This adds no tracker reads.
+func candidatesMissingFromBoard(candidates, board []connector.Issue) int {
+	present := make(map[string]struct{}, len(board))
+	for _, issue := range board {
+		present[issueIdentityKey(issue)] = struct{}{}
+	}
+	missing := make(map[string]struct{})
+	for _, issue := range candidates {
+		key := issueIdentityKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, ok := present[key]; !ok {
+			missing[key] = struct{}{}
+		}
+	}
+	return len(missing)
 }

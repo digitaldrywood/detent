@@ -1217,6 +1217,7 @@ func (s *Server) health(c echo.Context) error {
 	notificationFailures := []healthnotify.Failure{}
 	refreshFailures := []telemetry.RefreshFailure{}
 	refresh := telemetry.Refresh{}
+	candidatesMissing := map[string]*int{}
 	memoryPressure := telemetry.MemoryPressure{}
 	ioPressure := telemetry.IOPressure{}
 	cpuPressure := telemetry.CPUPressure{}
@@ -1228,6 +1229,12 @@ func (s *Server) health(c echo.Context) error {
 		if snapshot, ok := s.hub.Latest(); ok {
 			snapshot = snapshot.WithFreshness(now)
 			latestSnapshot = snapshot
+			if len(snapshot.Projects) == 0 {
+				candidatesMissing[snapshot.Project.ID] = snapshot.Refresh.CandidatesMissingVsTracker
+			}
+			for _, project := range snapshot.Projects {
+				candidatesMissing[project.Project.ID] = project.Refresh.CandidatesMissingVsTracker
+			}
 			refreshFailures = snapshot.RefreshFailures()
 			snapshotGeneratedAt = snapshot.GeneratedAt
 			snapshotAgeSeconds = snapshot.AgeSeconds(now)
@@ -1321,6 +1328,8 @@ func (s *Server) health(c echo.Context) error {
 		status = "not_ready"
 	}
 	return c.JSON(httpStatus, healthResponse{
+		CandidatesMissingVsTracker: candidatesMissing,
+
 		Status:                 status,
 		Ready:                  ready,
 		Lifecycle:              lifecycle,
@@ -1813,6 +1822,8 @@ func (s *Server) connectorName() string {
 }
 
 type healthResponse struct {
+	CandidatesMissingVsTracker map[string]*int `json:"candidates_missing_vs_tracker"`
+
 	Status                 string                           `json:"status"`
 	Ready                  bool                             `json:"ready"`
 	Lifecycle              StartupLifecycleState            `json:"lifecycle"`

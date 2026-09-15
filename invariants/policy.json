@@ -4,6 +4,7 @@
       "TestBehaviorEvidence"
     ],
     "./internal/orchestrator": [
+      "TestCompletedReworkCandidatesRemainVisible",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
       "TestAttemptMetadataRetainsApprovedPolicy",
       "TestConfiguredTerminalRetryAfterStoreRestart",

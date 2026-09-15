@@ -14333,3 +14333,35 @@ func TestBoardHeaderProjectExclusions(t *testing.T) {
 		})
 	}
 }
+
+func TestStateAndHealthCandidateCompleteness(t *testing.T) {
+	t.Parallel()
+	for index, count := range []*int{nil, new(0), new(3)} {
+		t.Run(strconv.Itoa(index), func(t *testing.T) {
+			deps := testDeps(t)
+			snapshot := telemetry.Snapshot{GeneratedAt: time.Now(), Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent"}, Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, CandidatesMissingVsTracker: count}}}}
+			if err := deps.Hub.Publish(snapshot); err != nil {
+				t.Fatal(err)
+			}
+			server, err := newServerWithLaneWriter(web.Config{}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+			got := health["candidates_missing_vs_tracker"].(map[string]any)["detent"]
+			var want any
+			if count != nil {
+				want = float64(*count)
+			}
+			if got != want {
+				t.Fatalf("health count=%v want %v", got, want)
+			}
+			state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+			projects := state["projects"].([]any)
+			got = projects[0].(map[string]any)["refresh"].(map[string]any)["candidates_missing_vs_tracker"]
+			if got != want {
+				t.Fatalf("state count=%v want %v", got, want)
+			}
+		})
+	}
+}
