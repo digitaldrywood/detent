@@ -119,6 +119,9 @@ context and subsequent updates retry through the existing write path.
 `TestProviderIdentityFailureDoesNotCancelTurn` covers cancelled and timed-out store
 writes followed by successful persistence and normal turn completion.
 
+Dispatch Workpad comment-read failures use the existing tracker availability observer
+and tracker-unavailable dispatch reason; they never become issue dependency evidence.
+
 ## INV-3 — Mechanism moratorium
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
@@ -298,6 +301,12 @@ wait preserves retry attempt and resume state.
 `TestDispatchDependencyRetry` covers open-to-closed transitions for native, body,
 and Workpad sources (#2699). This consolidates dependency readiness without
 adding a recovery loop.
+
+Dispatch also consults the existing recorded-blocker evaluator for structured
+Workpad predicates, including direct PR references (#2645). Normal dispatch,
+due retries, and queued grants wait while evidence holds or is unverifiable;
+cleared predicates release dispatch without a new park or recovery loop. Native
+relations remain authoritative for issue-state dependencies.
 
 Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
 attempt accounting into one fixed allowance: three code/rework sessions started

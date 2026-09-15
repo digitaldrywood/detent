@@ -25,6 +25,22 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 	return newDispatchPlanner(o.cfg)
 }
 
+// liveDispatchPlanner shares recorded blocker evidence with recovery. The plain
+// planner remains usable for previews that cannot perform remote reads.
+func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
+	planner := o.dispatchPlanner()
+	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) (recordedBlockerEvaluation, error) {
+		issue, err := o.refreshDependencyAutoUnblockComments(ctx, issue)
+		if err != nil {
+			o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+			markRefreshError(state, "fetch dispatch Workpad comments failed: "+err.Error(), now)
+			return recordedBlockerEvaluation{}, err
+		}
+		return o.evaluateRecordedBlockers(ctx, state, issue, nil, now), nil
+	}
+	return planner
+}
+
 func (o *Orchestrator) pruneBudgetRefusals(ctx context.Context, state *State, now time.Time) {
 	o.dispatchPlanner().pruneBudgetRefusals(
 		state,
@@ -141,7 +157,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
 	o.observePullRequestHydrationRecovery(state, issues, now)
-	planner := o.dispatchPlanner()
+	planner := o.liveDispatchPlanner(ctx)
 	blockerCache := make(map[string]dependencyBlocker)
 	o.logOwnershipEligibilityStartup(planner, issues)
 	var lastDispatchFailure string
@@ -377,7 +393,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 			continue
 		}
 		issue = o.hydrateDispatchDependencies(ctx, issue, blockerCache)
-		if !o.dispatchable(issue, state, now) {
+		if !o.liveDispatchPlanner(ctx).dispatchable(issue, state, now) {
 			continue
 		}
 

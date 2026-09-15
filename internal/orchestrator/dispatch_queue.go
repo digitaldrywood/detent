@@ -139,6 +139,12 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 	// State reads need not include PR enrichment. Keep fresh tracker fields
 	// authoritative (including an empty lane or assignee), while preserving the
 	// PR identity needed by the existing hydrator to refresh its head and checks.
+	// Lightweight state reads may omit Workpad comments. Retain recorded
+	// predicates so the grant recheck still evaluates their live evidence.
+	if fresh.WorkpadSignal == nil && len(fresh.Comments) == 0 {
+		fresh.WorkpadSignal = cloneIssue(action.issue).WorkpadSignal
+		fresh.Comments = cloneIssue(action.issue).Comments
+	}
 	if fresh.PullRequest == nil {
 		fresh.PullRequest = cloneIssue(action.issue).PullRequest
 	}
@@ -168,7 +174,7 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 			}
 		}()
 	}
-	if !o.dispatchPlanner().dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired).dispatchable {
+	if !o.liveDispatchPlanner(ctx).dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired).dispatchable {
 		return
 	}
 	consumed := grant

@@ -962,6 +962,19 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 			return nil, err
 		}
 		if ok {
+			// GitHub's issue endpoint also returns pull requests. Resolve the
+			// referenced PR itself instead of searching for a PR linked to it.
+			if strings.Contains(issue.URL, "/pull/") {
+				ref, _ := issueRefFromIdentifier(identifier)
+				repo := pullRequestRepo{Owner: ref.Owner, Name: ref.Name}
+				pr, err := c.fetchRepositoryPullRequest(ctx, repo, ref.Number)
+				if err != nil {
+					return nil, err
+				}
+				attachPullRequestToIssue(&issue, repo, pr)
+				issues = append(issues, issue)
+				continue
+			}
 			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
 				return nil, err
 			}
