@@ -1304,3 +1304,96 @@ func TestBuildAdmissionPromptUsesCurrentDependencyEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPromptCapsFailedRunNotes(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{0, 1, 40, 41, 100} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			t.Parallel()
+			workspace := t.TempDir()
+			path := filepath.Join(workspace, ".detent", "notes.md")
+			var lines []string
+			for i := range count {
+				lines = append(lines, "output-line-"+strconv.Itoa(i))
+			}
+			entries := []notes.Entry{
+				{Title: "Implementation handoff", Body: "preserve earlier context"},
+				{Title: "Failed run output tail", Body: "obsolete failure"},
+				{Title: "Implementation handoff", Body: "preserve intervening context"},
+				{Title: "Failed run output tail", Body: failedRunNoteBody(RunResult{Output: strings.Join(lines, "\n")}, nil)},
+				{Title: "Implementation handoff", Body: "preserve later context"},
+			}
+			for i, entry := range entries {
+				if err := notes.Append(path, entry, notes.AppendOptions{Now: time.Date(2026, 9, 14, 0, i, 0, 0, time.UTC)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{}, PromptOptions{WorkspacePath: workspace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(prompt, " - Failed run output tail") != 1 || strings.Contains(prompt, "obsolete failure") {
+				t.Fatal("prompt retained obsolete failure")
+			}
+			for _, text := range []string{"preserve earlier context", "preserve intervening context", "preserve later context", "- final_state: failed"} {
+				if !strings.Contains(prompt, text) {
+					t.Errorf("prompt missing %q", text)
+				}
+			}
+			want := lines[max(0, len(lines)-40):]
+			if strings.Count(prompt, "output-line-") != len(want) {
+				t.Errorf("output line count = %d, want %d", strings.Count(prompt, "output-line-"), len(want))
+			}
+			if len(want) > 0 && !strings.Contains(prompt, "```text\n"+strings.Join(want, "\n")+"\n```") {
+				t.Error("prompt missing fenced latest output tail")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("prompt rendering modified persisted notes")
+			}
+		})
+	}
+}
+
+func TestBuildPromptIgnoresFencedNoteHeadings(t *testing.T) {
+	t.Parallel()
+	for _, title := range []string{"Implementation handoff", "Failed run output tail"} {
+		t.Run(title, func(t *testing.T) {
+			t.Parallel()
+			workspace := t.TempDir()
+			path := filepath.Join(workspace, ".detent", "notes.md")
+			embedded := "## 2099-01-01T00:00:00Z - " + title
+			oldOutput := "old-start\n" + embedded + "\n" + strings.Repeat("obsolete-output\n", 100)
+			latestOutput := "latest-start\n" + embedded + "\n" + strings.Repeat("latest-output\n", 60)
+			for i, output := range []string{oldOutput, latestOutput} {
+				err := notes.Append(path, notes.Entry{Title: "Failed run output tail", Body: failedRunNoteBody(RunResult{Output: output}, nil)}, notes.AppendOptions{Now: time.Date(2026, 9, 14, 0, i, 0, 0, time.UTC)})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := notes.Append(path, notes.Entry{Title: "Implementation handoff", Body: "keep neighboring note"}, notes.AppendOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{}, PromptOptions{WorkspacePath: workspace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(prompt, "obsolete-output") || strings.Contains(prompt, "latest-start") || strings.Contains(prompt, embedded) {
+				t.Fatal("prompt retained output preceding the latest 40 lines")
+			}
+			if got := strings.Count(prompt, "latest-output"); got != 40 {
+				t.Fatalf("latest output lines = %d, want 40", got)
+			}
+			if !strings.Contains(prompt, "keep neighboring note") {
+				t.Fatal("lost neighboring note")
+			}
+		})
+	}
+}
