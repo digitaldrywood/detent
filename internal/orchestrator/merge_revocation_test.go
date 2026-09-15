@@ -674,6 +674,10 @@ func TestDraftMergeHydratesFindings(t *testing.T) {
 				cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true}, ActiveStates: []string{"Merging", "Rework"}})
 				orch := &Orchestrator{cfg: cfg, connector: tracker}
 				state := newState(cfg)
+				if !active {
+					sibling := nativeMergeQueueTestIssue(2760, "success")
+					state.Running[sibling.ID] = Running{Issue: sibling, Mode: runpkg.RunModeMerge}
+				}
 				if active {
 					running, revoked := orch.revokeRunningMergeIfIneligible(t.Context(), &state, Running{Issue: issue}, now)
 					if revoked == fail {
@@ -700,5 +704,33 @@ func TestDraftMergeHydratesFindings(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDraftMergeCompletionHydrationFailurePreservesAttempt(t *testing.T) {
+	t.Parallel()
+	for _, attempt := range []int{1, 3} {
+		t.Run(fmt.Sprintf("attempt=%d", attempt), func(t *testing.T) {
+			t.Parallel()
+			now := time.Now()
+			issue := nativeMergeQueueTestIssue(2759, "success")
+			issue.PullRequest.Draft = true
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}, hydrationErr: errors.New("review unavailable")}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Merging", "Rework"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			running := Running{Issue: issue, Attempt: attempt, Mode: runpkg.RunModeMerge}
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean}}
+			if !orch.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
+				t.Fatal("completion was not handled")
+			}
+			retry, ok := state.Retry[issue.ID]
+			if !ok || retry.Attempt != attempt || retry.Wait.Kind == retryWaitCurrentHeadCI || !strings.Contains(retry.Error, "pull request hydration") {
+				t.Fatalf("retry = %+v, want hydration wait preserving attempt %d", retry, attempt)
+			}
+			if len(tracker.updates) != 0 || len(tracker.merges) != 0 {
+				t.Fatal("unavailable review evidence changed lane or merged")
+			}
+		})
 	}
 }

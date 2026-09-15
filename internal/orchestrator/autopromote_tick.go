@@ -1269,7 +1269,8 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			}
 		}
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg)
-		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) && decision.reason != string(AutoPromoteReasonCINotGreen) {
+		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) &&
+			decision.reason != string(AutoPromoteReasonCINotGreen) && decision.reason != string(AutoPromoteReasonUnresolvedReviewThreads) {
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {

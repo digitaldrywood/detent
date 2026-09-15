@@ -1517,8 +1517,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		var hydrated bool
 		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 		if !hydrated {
-			running.Issue = issue
-			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
 			return true
 		}
 	}
