@@ -34,8 +34,6 @@ const (
 	defaultRunningReconcileInterval            = 2 * time.Minute
 	defaultWorkspaceCleanupIdleTTL             = 24 * time.Hour
 	defaultWorkspaceCleanupSweep               = 10 * time.Minute
-	gitHubGraphQLPauseRemaining                = 100
-	gitHubGraphQLBackoffRemaining              = 500
 	defaultGitHubGraphQLWarnRemaining          = 500
 	defaultGitHubGraphQLMinReserve             = 1000
 	defaultGitHubRESTMinReserve                = 1000

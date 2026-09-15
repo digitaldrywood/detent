@@ -18,7 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestTickPausesUntilGitHubGraphQLResetWhenRemainingLow(t *testing.T) {
+func TestTickPacesQuietProjectWhenGraphQLRemainingLow(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -45,24 +45,22 @@ func TestTickPausesUntilGitHubGraphQLResetWhenRemainingLow(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 0 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 during lookup backoff", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("candidate reads = %d, want 1", tracker.fetchCandidateCalls)
 	}
-	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
-		t.Fatalf("RateLimits = %#v, want GitHub GraphQL snapshot", state.RateLimits)
+	if state.RateLimits.GitHubGraphQL.Remaining != 25 {
+		t.Fatal("missing budget snapshot")
 	}
-	if state.RateLimits.GitHubGraphQL.Remaining != 25 || state.RateLimits.GitHubGraphQL.Cost != 4 {
-		t.Fatalf("GitHubGraphQL = %#v, want remaining 25 cost 4", state.RateLimits.GitHubGraphQL)
-	}
-	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
-		t.Fatalf("PollInterval = %s, want jittered initial backoff between 24s and 36s", state.PollInterval)
+	if state.PollInterval != 5*time.Minute {
+		t.Fatalf("interval = %s, want 5m", state.PollInterval)
 	}
 	if !state.NextRefreshAt.Equal(now.Add(state.PollInterval)) {
-		t.Fatalf("NextRefreshAt = %v, want %v", state.NextRefreshAt, now.Add(state.PollInterval))
+		t.Fatal("refresh not scheduled")
 	}
-	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerGraphQL || outage.ProbeAttempts != 1 {
-		t.Fatalf("BackendOutages = %#v, want first GraphQL lookup backoff", state.BackendOutages)
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatal("positive capacity created backoff")
 	}
+
 }
 
 func TestTickSkipsConnectorPollingDuringGitHubGraphQLPause(t *testing.T) {
@@ -1051,7 +1049,7 @@ func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *tes
 	}
 }
 
-func TestTickBacksOffAllGitHubWorkBelowRESTReserve(t *testing.T) {
+func TestTickPacesQuietProjectBelowRESTReserve(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -1085,19 +1083,16 @@ func TestTickBacksOffAllGitHubWorkBelowRESTReserve(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 0 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want no lookups below REST reserve", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("candidate reads = %d, want 1", tracker.fetchCandidateCalls)
 	}
-	if tracker.fetchByStatesCalls != 0 {
-		t.Fatalf("FetchIssuesByStates() calls = %d, want no cleanup or observed sweep", tracker.fetchByStatesCalls)
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatal("positive capacity created backoff")
 	}
-	if tracker.fetchByStatesLimitCalls != 0 {
-		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want no observed probe during reserve", tracker.fetchByStatesLimitCalls)
+	if state.PollInterval != time.Minute {
+		t.Fatalf("interval = %s, want 1m", state.PollInterval)
 	}
-	_, outage, ok := githubLookupBackoff(state.BackendOutages)
-	if !ok || outage.Trigger != githubLookupTriggerREST || outage.ProbeAttempts != 1 {
-		t.Fatalf("BackendOutages = %#v, want first REST-triggered lookup backoff", state.BackendOutages)
-	}
+
 }
 
 func TestGitHubBudgetReserveDecisionUsesCurrentRateLimitWindow(t *testing.T) {
@@ -1157,7 +1152,7 @@ func TestGitHubBudgetReserveDecisionUsesCurrentRateLimitWindow(t *testing.T) {
 	}
 }
 
-func TestTickBacksOffConditionalPollingBelowRESTReserve(t *testing.T) {
+func TestTickAllowsConditionalPollingBelowRESTReserve(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -1189,15 +1184,16 @@ func TestTickBacksOffConditionalPollingBelowRESTReserve(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if base.fetchCandidateCalls != 0 || base.fetchByStatesCalls != 0 {
-		t.Fatalf("fetch calls = candidates %d states %d, want no conditional cycle during backoff", base.fetchCandidateCalls, base.fetchByStatesCalls)
+	if base.fetchCandidateCalls != 1 || base.fetchByStatesCalls != 1 {
+		t.Fatalf("fetch calls = candidates %d states %d, want conditional cycle", base.fetchCandidateCalls, base.fetchByStatesCalls)
 	}
-	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerREST {
-		t.Fatalf("BackendOutages = %#v, want REST-triggered lookup backoff", state.BackendOutages)
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatal("conditional reads suppressed by reserve")
 	}
+
 }
 
-func TestTickDefersStaleBlockedStatusReconciliationBelowGitHubReserve(t *testing.T) {
+func TestTickReconcilesStaleBlockedStatusBelowGitHubReserve(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -1241,21 +1237,16 @@ func TestTickDefersStaleBlockedStatusReconciliationBelowGitHubReserve(t *testing
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 0 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want no lookup during backoff", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("candidate reads = %d, want 1", tracker.fetchCandidateCalls)
 	}
-	if tracker.fetchByStatesCalls != 0 {
-		t.Fatalf("FetchIssuesByStates() calls = %d, want observed polling skipped", tracker.fetchByStatesCalls)
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatal("stale blocked status retained after fresh candidate read")
 	}
-	if tracker.fetchByStatesLimitCalls != 0 {
-		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want observed probe skipped", tracker.fetchByStatesLimitCalls)
+	if state.PollInterval != cfg.PollInterval {
+		t.Fatalf("active interval = %s, want %s", state.PollInterval, cfg.PollInterval)
 	}
-	if len(state.BoardIssues) != 0 {
-		t.Fatalf("BoardIssues = %#v, want prior snapshot preserved without lookup", state.BoardIssues)
-	}
-	if _, ok := state.Blocked[issue.ID]; !ok {
-		t.Fatalf("Blocked[%q] cleared without tracker lookup", issue.ID)
-	}
+
 }
 
 func TestTickSkipsObservedPollingBelowGraphQLReserve(t *testing.T) {
@@ -1286,8 +1277,8 @@ func TestTickSkipsObservedPollingBelowGraphQLReserve(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.fetchCandidateCalls != 0 {
-		t.Fatalf("FetchCandidateIssues() calls = %d, want no lookup during backoff", tracker.fetchCandidateCalls)
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want fresh candidate lookup below reserve", tracker.fetchCandidateCalls)
 	}
 	if tracker.fetchByStatesCalls != 0 {
 		t.Fatalf("FetchIssuesByStates() calls = %d, want observed polling skipped", tracker.fetchByStatesCalls)
@@ -1709,8 +1700,8 @@ func TestGitHubLookupBackoffProbesAndRecoversGradually(t *testing.T) {
 	tracker := &rateLimitConnector{
 		rateLimitStatus: connector.GraphQLRateLimitStatusExhausted,
 		probeRateLimits: []connector.GraphQLRateLimit{
-			{Limit: 5000, Used: 4000, Remaining: 1000, ResetAt: resetAt},
-			{Limit: 5000, Used: 3999, Remaining: 1001, ResetAt: resetAt},
+			{Limit: 5000, Used: 5000, Remaining: 0, ResetAt: resetAt},
+			{Limit: 5000, Used: 4500, Remaining: 500, ResetAt: resetAt},
 		},
 	}
 	orch := newRateLimitTestOrchestrator(cfg, tracker)
@@ -1772,8 +1763,8 @@ func TestGitHubRESTLookupBackoffUsesRESTProbe(t *testing.T) {
 			BackoffUntil: now.Add(time.Minute),
 		},
 		restProbeRateLimits: []connector.RESTRateLimit{
-			{Limit: 5000, Used: 4000, Remaining: 1000, ResetAt: resetAt},
-			{Limit: 5000, Used: 3999, Remaining: 1001, ResetAt: resetAt},
+			{Limit: 5000, Used: 5000, Remaining: 0, ResetAt: resetAt},
+			{Limit: 5000, Used: 4500, Remaining: 500, ResetAt: resetAt},
 		},
 	}
 	orch := newRateLimitTestOrchestrator(cfg, tracker)
@@ -2176,13 +2167,13 @@ func TestGitHubRESTResourceReserveLookupAdmission(t *testing.T) {
 		wantHeld    bool
 	}{
 		{name: "healthy search", resource: "search", remaining: 29},
-		{name: "core at reserve", resource: "core", remaining: 1000, wantHeld: true},
-		{name: "unnamed core at reserve", remaining: 1000, wantHeld: true},
+		{name: "core at reserve", resource: "core", remaining: 1000},
+		{name: "unnamed core at reserve", remaining: 1000},
 		{name: "healthy core", resource: "core", remaining: 1001},
 		{name: "exhausted search snapshot", resource: "search", wantHeld: true},
 		{name: "primary search throttle", resource: "search", rateLimited: true, wantHeld: true},
 		{name: "secondary search backoff", resource: "search", remaining: 29, backoff: true, wantHeld: true},
-		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true, wantHeld: true},
+		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2239,12 +2230,11 @@ func TestGitHubRESTLookupReserveUsesEndpointFamilyWindows(t *testing.T) {
 			},
 		},
 		{
-			name: "low issue lookup window holds issue lookups",
+			name: "low issue lookup window permits issue lookups",
 			budgets: []connector.RESTRateLimitBudget{
 				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
 				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
 			},
-			wantHeld: true,
 		},
 		{
 			name: "check runs throttle does not hold candidate lookups",
@@ -2312,9 +2302,9 @@ func TestGitHubRESTResourceReserveLookupRecovery(t *testing.T) {
 	}{
 		{name: "healthy search", resource: "search", remaining: 29},
 		{name: "exhausted search", resource: "search", wantHeld: true},
-		{name: "core at reserve", resource: "core", remaining: 1000, wantHeld: true},
+		{name: "core at reserve", resource: "core", remaining: 1000},
 		{name: "healthy core", resource: "core", remaining: 1001},
-		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true, wantHeld: true},
+		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

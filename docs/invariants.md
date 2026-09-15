@@ -158,6 +158,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
 
+GitHub refresh pacing (#2763) replaces proactive global lookup-floor backoff
+and the low-positive-GraphQL reset pause with the existing per-project refresh
+timer. Quiet projects lengthen their interval under shared budget pressure, capped
+at five minutes (or their configured base interval if longer); active candidates,
+claims, and pending completion writes keep the normal cadence. Budget reset
+restores the base interval. Actual exhaustion, provider throttles, and connector
+REST write protection remain authoritative. `TestProjectRefreshColdFleetRequestCounts`
+and `TestProjectRefreshActiveFleetDispatch` cover cold five/ten-project reads,
+eventual refresh, reset recovery, free permits, and dispatch transition writes.
+
 Legacy worker caches are removed at project startup using an absolute, home-expanded
 workspace root (#2742). The obsolete per-project shared-cache sweep and its state
 fields are removed; the existing host cache trim and report are the single cache
