@@ -1588,10 +1588,20 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if auditDecision, pending := gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, audit); pending {
 		if auditDecision.Reason == gate.ReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, event.CompletedAt)
-			auditDecision, _ = gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, o.securityAuditEvaluation(ctx, issue))
+			audit = o.securityAuditEvaluation(ctx, issue)
+			auditDecision, _ = gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, audit)
 		}
 		// An audit can finish between launch and this read. A passing result
-		// proceeds directly; all other verdicts defer to auto-promote routing.
+		// proceeds directly; findings use the existing publication and Rework path.
+		if auditDecision.Action == gate.ActionRework {
+			if err := o.publishSecurityAuditFindings(ctx, issue, audit); err != nil {
+				running.Issue = issue
+				o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
+				return true
+			}
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, string(auditDecision.Reason), nil, securityAuditFindingsComment(issue, audit, ""))
+			return true
+		}
 		if auditDecision.Action != "" {
 			o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt,
 				string(auditDecision.Reason), "merge_worker_gate_wait", "Waiting for security audit routing: ")
@@ -2467,7 +2477,11 @@ func mergeWorkerReworkComment(issue connector.Issue, reason string, missingCheck
 		b.WriteString(strings.Join(missingChecks, ", "))
 	}
 	if findings = strings.TrimSpace(findings); findings != "" {
-		b.WriteString("\n\nMerge-fallback findings:\n\n```text\n")
+		if reason == string(AutoPromoteReasonSecurityAuditFindings) {
+			b.WriteString("\n\nSecurity audit findings:\n\n```text\n")
+		} else {
+			b.WriteString("\n\nMerge-fallback findings:\n\n```text\n")
+		}
 		b.WriteString(findings)
 		b.WriteString("\n```")
 	}
@@ -2493,7 +2507,9 @@ func mergeWorkerReworkComment(issue connector.Issue, reason string, missingCheck
 			b.WriteString(mergeableState)
 		}
 	}
-	if reason == string(AutoPromoteReasonUnresolvedReviewThreads) {
+	if reason == string(AutoPromoteReasonSecurityAuditFindings) {
+		b.WriteString("\n\nResolve the security audit findings, then complete the normal Rework gate.")
+	} else if reason == string(AutoPromoteReasonUnresolvedReviewThreads) {
 		b.WriteString("\n\nResolve the outstanding review threads, then complete the normal Rework gate.")
 	} else {
 		b.WriteString("\n\nRefresh or re-push the current PR head so required checks run, then complete the normal Rework gate.")

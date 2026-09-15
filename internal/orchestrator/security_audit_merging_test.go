@@ -83,14 +83,12 @@ func TestMergingSecurityAuditVerdict(t *testing.T) {
 			if !o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
 				t.Fatal("merge completion was not handled")
 			}
-			if tc.verdict != securityaudit.VerdictPass {
-				if len(tracker.updates) != 0 {
-					t.Fatalf("merge worker wrote lane: %+v", tracker.updates)
-				}
+			if tc.running {
 				if retry := state.Retry[issue.ID]; retry.Error != tc.wantReason {
 					t.Fatalf("retry = %+v", retry)
 				}
-				o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			} else if _, retry := state.Retry[issue.ID]; retry {
+				t.Fatal("completed audit scheduled another merge attempt")
 			}
 			if tc.wantState == "" {
 				if len(tracker.updates) != 0 {
@@ -103,6 +101,12 @@ func TestMergingSecurityAuditVerdict(t *testing.T) {
 				t.Fatalf("PR comments = %+v", tracker.prComments)
 			}
 			if tc.wantComments > 0 {
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "authorization bypass") {
+					t.Fatalf("issue findings handoff = %+v", tracker.comments)
+				}
+				if got := state.PriorAttempts[issue.ID].Reason; got != tc.wantReason {
+					t.Fatalf("Rework reason = %q, want %q", got, tc.wantReason)
+				}
 				for _, fragment := range []string{"p1", "p2", "internal/database/webhook.go:342", "templates/pages/payment_settings.templ:340", "authorization bypass", "payment input is unsafe"} {
 					if !strings.Contains(tracker.prComments[0].body, fragment) {
 						t.Errorf("comment missing %q", fragment)
@@ -110,8 +114,8 @@ func TestMergingSecurityAuditVerdict(t *testing.T) {
 				}
 				// A repeated stale tracker snapshot and a restarted orchestrator must reuse the PR comment.
 				o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
-				if len(tracker.prComments) != 1 {
-					t.Fatal("duplicate findings comment")
+				if len(tracker.prComments) != 1 || len(tracker.updates) != 1 {
+					t.Fatal("duplicate findings comment or lane transition")
 				}
 			}
 			if got := len(tracker.merges); (got == 1) != (tc.verdict == securityaudit.VerdictPass) {
@@ -179,7 +183,9 @@ func TestSecurityAuditPublicationRetry(t *testing.T) {
 				tracker.updateErr = err
 			}
 			state := newState(o.cfg)
-			o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean, TurnStarted: true}}
+			running := Running{Issue: issue, Attempt: 1, Mode: runpkg.RunModeMerge}
+			o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue)
 			if tracker.stateIssues[0].State != "Merging" {
 				t.Fatalf("transition before publication: %+v", tracker.updates)
 			}
@@ -187,7 +193,7 @@ func TestSecurityAuditPublicationRetry(t *testing.T) {
 			tracker.readErr, tracker.publishErr, tracker.updateErr = nil, nil, nil
 			// No in-memory publication cache survives this reset.
 			state = newState(o.cfg)
-			o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+			o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue)
 			if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" || len(tracker.prComments) != 1 {
 				t.Fatalf("updates = %+v, comments = %+v", tracker.updates, tracker.prComments)
 			}
@@ -238,4 +244,41 @@ func (a *mergingSecurityAuditor) Audit(ctx context.Context, request SecurityAudi
 }
 func (c *mergingSecurityAuditConnector) SecurityAuditSnapshot(_ context.Context, issue connector.Issue, _ int) (securityaudit.Snapshot, error) {
 	return securityAuditSnapshotFromIssue("detent", issue), nil
+}
+
+func TestMergeWorkerActionableGateControls(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		ci         string
+		threads    []connector.PullRequestReviewThread
+		wantReason string
+	}{
+		{name: "failed checks", ci: "failure", wantReason: mergeWorkerFastPathNotReadyReason},
+		{name: "unresolved threads", ci: "success", threads: []connector.PullRequestReviewThread{{Path: "merge.go", Line: 10}}, wantReason: string(AutoPromoteReasonUnresolvedReviewThreads)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, tracker, issue := mergingSecurityAuditFixture()
+			o.cfg.AutoPromote.Gate.SecurityAudit.Enabled = false
+			o.cfg.AutoPromote.Gate.Kind = gate.KindCommand
+			issue.PullRequest.CIStatus = tc.ci
+			issue.PullRequest.UnresolvedReviewThreads = tc.threads
+			tracker.stateIssues = []connector.Issue{issue}
+			state := newState(o.cfg)
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean, TurnStarted: true}}
+			running := Running{Issue: issue, Attempt: 1, Mode: runpkg.RunModeMerge}
+			if !o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
+				t.Fatal("completion was not handled")
+			}
+			if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" || len(tracker.merges) != 0 {
+				t.Fatalf("updates = %+v, merges = %+v", tracker.updates, tracker.merges)
+			}
+			if _, retry := state.Retry[issue.ID]; retry {
+				t.Fatal("Rework scheduled a merge retry")
+			}
+			if state.PriorAttempts[issue.ID].Reason != tc.wantReason {
+				t.Fatalf("reason = %q", state.PriorAttempts[issue.ID].Reason)
+			}
+		})
+	}
 }
