@@ -133,6 +133,7 @@ type Report struct {
 	ModulePath  string `json:"module_path"`
 	ModuleBytes int64  `json:"module_bytes"`
 	Error       string `json:"error,omitempty"`
+	LastTrim    string `json:"last_trim,omitempty"`
 }
 
 func Inspect(ctx context.Context) Report { return inspect(ctx, Resolve) }
@@ -143,6 +144,19 @@ func inspect(ctx context.Context, resolvePaths func(context.Context) (Paths, err
 		return Report{Error: err.Error()}
 	}
 	report := Report{BuildPath: paths.Build, ModulePath: paths.Modules}
+	if paths.Build != "" && paths.Build != "off" {
+		data, readErr := os.ReadFile(filepath.Join(paths.Build, "detent-trim.txt"))
+		if readErr == nil {
+			at, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+			if parseErr != nil {
+				report.Error = "read last reaper trim: " + parseErr.Error()
+			} else {
+				report.LastTrim = at.UTC().Format(time.RFC3339Nano)
+			}
+		} else if !os.IsNotExist(readErr) {
+			report.Error = "read last reaper trim: " + readErr.Error()
+		}
+	}
 	report.BuildBytes, err = size(ctx, paths.Build)
 	if err != nil {
 		report.Error = err.Error()
@@ -156,8 +170,9 @@ func inspect(ctx context.Context, resolvePaths func(context.Context) (Paths, err
 }
 
 func (r Report) String() string {
+	detail := fmt.Sprintf("GOCACHE=%s (%d bytes); GOMODCACHE=%s (%d bytes)", r.BuildPath, r.BuildBytes, r.ModulePath, r.ModuleBytes)
 	if r.Error != "" {
-		return fmt.Sprintf("GOCACHE=%s GOMODCACHE=%s: %s", r.BuildPath, r.ModulePath, r.Error)
+		detail += "; " + r.Error
 	}
-	return fmt.Sprintf("GOCACHE=%s (%d bytes); GOMODCACHE=%s (%d bytes)", r.BuildPath, r.BuildBytes, r.ModulePath, r.ModuleBytes)
+	return detail
 }

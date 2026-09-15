@@ -140,5 +140,5 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 		reclaimed += entry.info.Size()
 		total -= entry.info.Size()
 	}
-	return reclaimed, nil
+	return reclaimed, os.WriteFile(filepath.Join(root, "detent-trim.txt"), []byte(now.UTC().Format(time.RFC3339Nano)+"\n"), 0o600)
 }

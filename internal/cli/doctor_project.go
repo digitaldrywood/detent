@@ -34,6 +34,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		}
 	}
 
+	deps.inspectCaches = cacheDoctorInspection(deps.inspectCaches)
 	deps.pauseProjects = append([]globalconfig.Project(nil), cfg.Projects...)
 	deps.pauseGitHubToken = runtimeGlobalGitHubToken(githubToken)
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
@@ -217,6 +218,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		}}
 	}
 
+	deps.inspectCaches = cacheDoctorInspection(deps.inspectCaches)
 	deps.pauseProjects = append([]globalconfig.Project(nil), cfg.Projects...)
 	deps.pauseGitHubToken = runtimeGlobalGitHubToken(githubToken)
 	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
@@ -494,7 +496,8 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " local SQLite tracker")
 		checks = append(checks, checkDoctorLocalSQLiteTracker(ctx, id, project, workflow.Config, deps))
 	}
-	checks = append(checks, checkDoctorSharedCache(ctx, id, workflow.Config.Workspace.Root))
+	setDoctorCurrentCheck("Project " + id + " native toolchain caches")
+	checks = append(checks, checkDoctorNativeCaches(ctx, id, workflow.Config.Workspace.Root, deps))
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
 		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
 		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))
