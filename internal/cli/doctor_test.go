@@ -6152,6 +6152,9 @@ func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 	t.Parallel()
 
+	workflow := validDoctorDependencyWorkflow(false)
+	workflow.Workspace.Root = t.TempDir()
+
 	const responses = 3
 	connectorStarted := make(chan struct{})
 	requestProgress := make(chan struct{})
@@ -6186,8 +6189,12 @@ func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 	jobs := doctorProjectCheckJobs(globalconfig.Config{
 		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
 	}, doctorDeps{
+		// Project progress must not wait for a scan of the host toolchain caches.
+		inspectCaches: func(context.Context) toolcache.Report {
+			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
+		},
 		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: validDoctorDependencyWorkflow(false)}, nil
+			return workflowconfig.Workflow{Config: workflow}, nil
 		},
 		gitWorkTree: func(context.Context, string) error {
 			return nil
@@ -6200,6 +6207,9 @@ func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 		},
 		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
 			return nil, nil
+		},
+		githubBranchPolicy: func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
+			return ghconnector.BranchMergePolicy{Branch: "main"}, nil
 		},
 		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
 			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
@@ -6290,6 +6300,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 			t.Parallel()
 
 			workflow := validDoctorDependencyWorkflow(false)
+			workflow.Workspace.Root = t.TempDir()
 			releaseBlockedCheck := make(chan struct{})
 			blockedCheckStarted := make(chan struct{})
 			var blockedCheckOnce sync.Once
@@ -6303,11 +6314,15 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 			})
 			loadedWorkflow := workflowconfig.Workflow{Config: workflow}
 			if tt.blockOverlay {
-				loadedWorkflow.Overlay.Path = "/repo/WORKFLOW.local.md"
+				loadedWorkflow.Overlay.Path = filepath.Join(workflow.Workspace.Root, "WORKFLOW.local.md")
 			}
 			jobs := doctorProjectCheckJobs(globalconfig.Config{
 				Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
 			}, doctorDeps{
+				// Only the explicitly blocked stage should consume the timeout.
+				inspectCaches: func(context.Context) toolcache.Report {
+					return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
+				},
 				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 					return loadedWorkflow, nil
 				},
@@ -6343,6 +6358,9 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 						<-releaseBlockedCheck
 					}
 					return nil, nil
+				},
+				githubBranchPolicy: func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
+					return ghconnector.BranchMergePolicy{Branch: "main"}, nil
 				},
 				githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
 					return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
