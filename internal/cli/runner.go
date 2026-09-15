@@ -180,7 +180,6 @@ func buildRunnerDependencies(
 		Workspace:           backend,
 		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(buildAgentBackend),
 		Store:               sessionStore,
-		PruneRollouts:       codexRolloutSweep(sessionStore, logger),
 		Pricing:             pricing,
 		BudgetGuardBuilder:  budgetGuardBuilder,
 		MaxAgentRSSBytes:    uint64(memory.MaxAgentRSSBytes),

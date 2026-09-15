@@ -140,17 +140,11 @@ when any Codex app-server is running or the process list cannot be inspected.
 It never stops a process to reclaim disk space. Worker thread state and
 thread-history databases are not pruned.
 
-The existing workspace reaper removes rollout JSONL files older than thirty
-days by modification time only when their first `session_meta` record identifies
-`detent-orchestrator`. Active attempt references and unfinished or recent
-sessions across all projects protect their provider thread IDs, including
-thread references recovered from composite thread/turn session IDs. Recent rollout
-files or metadata for the same session also protect that session. Protection
-follows `parent_thread_id` through all descendant rollouts, including children
-without their own runtime session rows. Unknown or
-malformed ownership records and non-Detent rollouts remain untouched. The
-shared `sessions` directory may be a symlink; rollout file symlinks are not
-followed. Successful sweeps log `removed_bytes` for measurement.
+Shared-root rollout deletion is deferred. Worker profiles share the source
+Codex home's `sessions` directory, and independent Detent runtime databases
+cannot identify another instance's unfinished sessions. The originator field
+alone does not establish instance ownership. Detent does not automatically
+delete rollouts; the doctor total remains available for operator inspection.
 
 `detent doctor` reports each worker-profile SQLite file size (including
 sidecars), the Detent rollout total, and their combined size. It warns above

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,14 +18,9 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
-const codexRolloutRetention = 30 * 24 * time.Hour
 const codexLogSizeLimit int64 = 1 << 30
 
 var codexLogName = regexp.MustCompile(`^logs_[0-9]+\.sqlite$`)
-
-type codexRetentionStore interface {
-	ProtectedCodexSessions(context.Context, time.Time) (map[string]bool, error)
-}
 
 func codexRetentionHomes(cfg workflowconfig.Config, lookup func(string) (string, bool)) ([]string, error) {
 	var homes []string
@@ -183,10 +177,7 @@ func pruneCodexLog(ctx context.Context, path string, now time.Time, limit int64,
 }
 
 type codexRollout struct {
-	path, id, parentID string
-	size               int64
-	modified           time.Time
-	started            time.Time
+	size int64
 }
 
 func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
@@ -219,9 +210,7 @@ func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
 			Type    string `json:"type"`
 			Payload struct {
 				ID         string `json:"id"`
-				ParentID   string `json:"parent_thread_id"`
 				Originator string `json:"originator"`
-				Timestamp  string `json:"timestamp"`
 			} `json:"payload"`
 		}
 		valid := scanner.Scan() && json.Unmarshal(scanner.Bytes(), &meta) == nil
@@ -240,102 +229,10 @@ func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
 		if err != nil {
 			return err
 		}
-		var started time.Time
-		if meta.Payload.Timestamp != "" {
-			started, err = time.Parse(time.RFC3339Nano, meta.Payload.Timestamp)
-			if err != nil {
-				return nil
-			} // Uncertain session age must not authorize deletion.
-		}
-		rollouts = append(rollouts, codexRollout{path: path, id: meta.Payload.ID, parentID: meta.Payload.ParentID, size: info.Size(), modified: info.ModTime(), started: started})
+		rollouts = append(rollouts, codexRollout{size: info.Size()})
 		return nil
 	})
 	return rollouts, err
-}
-
-func pruneCodexRollouts(ctx context.Context, home string, now time.Time, source codexRetentionStore) (int64, error) {
-	rollouts, err := detentRollouts(ctx, home)
-	if err != nil {
-		return 0, err
-	}
-	cutoff := now.Add(-codexRolloutRetention)
-	protected, err := source.ProtectedCodexSessions(ctx, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	for _, rollout := range rollouts {
-		if !rollout.modified.Before(cutoff) || !rollout.started.Before(cutoff) {
-			protected[rollout.id] = true
-		}
-	}
-	// Propagate protection through the full descendant tree, independent of file
-	// ordering. Children are not necessarily recorded in this instance's store.
-	children := make(map[string][]string)
-	for _, rollout := range rollouts {
-		if rollout.parentID != "" {
-			children[rollout.parentID] = append(children[rollout.parentID], rollout.id)
-		}
-	}
-	var pending []string
-	for id, keep := range protected {
-		if keep {
-			pending = append(pending, id)
-		}
-	}
-	for len(pending) > 0 {
-		id := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		for _, child := range children[id] {
-			if !protected[child] {
-				protected[child] = true
-				pending = append(pending, child)
-			}
-		}
-	}
-	var removed int64
-	for _, rollout := range rollouts {
-		if protected[rollout.id] || !rollout.modified.Before(cutoff) {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return removed, err
-		}
-		info, err := os.Lstat(rollout.path)
-		if err != nil {
-			return removed, err
-		}
-		if !info.Mode().IsRegular() || !info.ModTime().Equal(rollout.modified) || info.Size() != rollout.size {
-			continue
-		}
-		if err := os.Remove(rollout.path); err != nil {
-			return removed, err
-		}
-		removed += rollout.size
-	}
-	return removed, nil
-}
-
-func codexRolloutSweep(source any, logger *slog.Logger) func(context.Context, workflowconfig.Config) error {
-	retentionStore, ok := source.(codexRetentionStore)
-	if !ok {
-		return nil
-	}
-	return func(ctx context.Context, cfg workflowconfig.Config) error {
-		homes, err := codexRetentionHomes(cfg, os.LookupEnv)
-		if err != nil {
-			return err
-		}
-		for _, home := range homes {
-			removed, err := pruneCodexRollouts(ctx, home, time.Now(), retentionStore)
-			if err != nil {
-				return err
-			}
-			if removed > 0 {
-				logger.Info("pruned Detent Codex rollouts", "home", home, "removed_bytes", removed)
-			}
-		}
-		return nil
-	}
 }
 
 func checkDoctorCodexStorage(ctx context.Context, id string, cfg workflowconfig.Config, lookup func(string) string) []doctorCheck {
@@ -390,7 +287,7 @@ func checkDoctorCodexStorage(ctx context.Context, id string, cfg workflowconfig.
 		check.Detail = strings.Join(details, "; ")
 		if total > 2<<30 {
 			check.Status = doctorWarn
-			check.Hint = "Combined Codex storage exceeds 2 GiB. Boot retains seven days of worker logs; the existing reaper retains thirty days of unreferenced Detent rollouts."
+			check.Hint = "Combined Codex storage exceeds 2 GiB. Boot retains seven days of worker logs; shared-root rollouts are reported only and are not automatically deleted."
 		}
 		checks = append(checks, check)
 	}

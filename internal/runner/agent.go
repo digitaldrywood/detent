@@ -116,7 +116,6 @@ type Dependencies struct {
 	AgentBackends          map[string]AgentBackend
 	AgentBackendFactory    AgentBackendFactory
 	Store                  SessionStore
-	PruneRollouts          func(context.Context, config.Config) error
 	Pricing                budget.PricingTable
 	BudgetChecker          BudgetChecker
 	DispatchEstimator      DispatchEstimator
@@ -147,7 +146,6 @@ type Runner struct {
 	agentRuntime              agentRuntime
 	agentBackendFactory       AgentBackendFactory
 	store                     SessionStore
-	pruneRollouts             func(context.Context, config.Config) error
 	pricing                   budget.PricingTable
 	budgetChecker             BudgetChecker
 	dispatchEstimator         DispatchEstimator
@@ -251,7 +249,6 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		agentRuntime:              runtime,
 		agentBackendFactory:       deps.AgentBackendFactory,
 		store:                     deps.Store,
-		pruneRollouts:             deps.PruneRollouts,
 		pricing:                   deps.Pricing,
 		budgetChecker:             budgetChecker,
 		dispatchEstimator:         dispatchEstimator,
@@ -3350,12 +3347,6 @@ func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (Work
 func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connector.Issue) (WorkspaceReconcileResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if r.pruneRollouts != nil {
-		workflow, _, _, _ := r.runtimeSnapshot()
-		if err := r.pruneRollouts(ctx, workflow.Config); err != nil {
-			r.logger.Warn("Codex rollout retention failed", "error", err)
-		}
 	}
 	reconciler, ok := r.workspace.(workspace.ResidualReconciler)
 	if !ok {
