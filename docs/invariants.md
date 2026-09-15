@@ -155,7 +155,10 @@ updates; SIGTERM shutdown uses that duration ceiling, including model-selection
 levels. Managed restarts preserve child processes while the orchestrator drains.
 Startup no longer bulk-reclaims live work attempts as `service_restart`; the
 reclaim store API and query are removed. Historical restart rows remain readable
-for retry and accounting compatibility. Existing expired-lease recovery remains.
+for retry and accounting compatibility. Existing expired-lease recovery runs at startup and on normal refresh, including
+tracker pauses. Its query excludes currently owned attempts and deferred completions;
+retained crash orphans expire without requiring another restart.
+`TestRetainedWorkAttemptsExpireOnTick` covers this lifecycle.
 The issue explicitly authorizes the existing update banner to show the drain count.
 `TestSchedulerApplyPendingWaitsForBothAttempts` and
 `TestStartupDoesNotReclaimLiveWorkAttempts` cover the update and persistence boundary

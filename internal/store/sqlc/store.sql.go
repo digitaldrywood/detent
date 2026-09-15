@@ -4392,20 +4392,22 @@ WHERE completed_at IS NULL
   AND lease_expires_at IS NOT NULL
   AND lease_expires_at <= ?10
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
+  AND id NOT IN (SELECT value FROM json_each(?11))
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
 type TimeoutExpiredWorkAttemptsParams struct {
-	Status          string         `json:"status"`
-	TerminalState   sql.NullString `json:"terminal_state"`
-	CompletedAt     sql.NullString `json:"completed_at"`
-	HeartbeatAt     sql.NullString `json:"heartbeat_at"`
-	ErrorClass      sql.NullString `json:"error_class"`
-	ErrorMessage    sql.NullString `json:"error_message"`
-	Phase           sql.NullString `json:"phase"`
-	StatusMessage   sql.NullString `json:"status_message"`
-	FilterProjectID interface{}    `json:"filter_project_id"`
-	LeaseExpiresAt  sql.NullString `json:"lease_expires_at"`
+	Status            string         `json:"status"`
+	TerminalState     sql.NullString `json:"terminal_state"`
+	CompletedAt       sql.NullString `json:"completed_at"`
+	HeartbeatAt       sql.NullString `json:"heartbeat_at"`
+	ErrorClass        sql.NullString `json:"error_class"`
+	ErrorMessage      sql.NullString `json:"error_message"`
+	Phase             sql.NullString `json:"phase"`
+	StatusMessage     sql.NullString `json:"status_message"`
+	FilterProjectID   interface{}    `json:"filter_project_id"`
+	LeaseExpiresAt    sql.NullString `json:"lease_expires_at"`
+	ExcludeAttemptIds interface{}    `json:"exclude_attempt_ids"`
 }
 
 func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExpiredWorkAttemptsParams) ([]WorkAttempt, error) {
@@ -4420,6 +4422,7 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 		arg.StatusMessage,
 		arg.FilterProjectID,
 		arg.LeaseExpiresAt,
+		arg.ExcludeAttemptIds,
 	)
 	if err != nil {
 		return nil, err

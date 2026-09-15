@@ -815,11 +815,12 @@ type ConcurrencyBucket struct {
 }
 
 type WorkAttemptTimeout struct {
-	ProjectID     string
-	Now           time.Time
-	TerminalState WorkAttemptTerminalState
-	ErrorClass    string
-	ErrorMessage  string
+	ExcludeAttemptIDs []int64
+	ProjectID         string
+	Now               time.Time
+	TerminalState     WorkAttemptTerminalState
+	ErrorClass        string
+	ErrorMessage      string
 }
 
 type MergeRequiredCheckEvaluation struct {

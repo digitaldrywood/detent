@@ -48,19 +48,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 			o.logger.Warn("orphaned agent session lookup failed", "project_id", projectID, "error", err)
 		}
 	}
-	timedOut, err := o.workAttempts.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
-		ProjectID:     projectID,
-		Now:           now,
-		TerminalState: store.WorkAttemptTerminalTimedOut,
-		ErrorClass:    "lease_expired",
-		ErrorMessage:  "work attempt lease expired before scheduler startup",
-	})
-	if err != nil && o.logger != nil {
-		o.logger.Warn("work attempt timeout recovery failed", "project_id", projectID, "error", err)
-	}
-	for _, attempt := range timedOut {
-		o.recordRecoveredWorkAttempt(state, attempt, now)
-	}
+	o.expireOrphanedWorkAttempts(ctx, state, now)
 
 	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: projectID})
 	if err != nil {
@@ -127,6 +115,40 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	}
 	o.recoverOrphanedAgentSessions(ctx, state, orphanedSessions, now)
 	o.recoverPendingOperatorStops(ctx, state, now)
+}
+
+// expireOrphanedWorkAttempts applies the existing lease recovery at startup and
+// on refresh. The event-loop-owned running set excludes local workers even if
+// their independent heartbeat is delayed; deferred completions remain excluded
+// by the store query.
+func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *State, now time.Time) {
+	if o == nil || o.workAttempts == nil || state == nil {
+		return
+	}
+	projectID := strings.TrimSpace(o.cfg.Project.ID)
+	if projectID == "" {
+		return
+	}
+	runningIDs := make([]int64, 0, len(state.Running))
+	for _, running := range state.Running {
+		if running.WorkAttemptID > 0 {
+			runningIDs = append(runningIDs, running.WorkAttemptID)
+		}
+	}
+	timedOut, err := o.workAttempts.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
+		ProjectID:         projectID,
+		ExcludeAttemptIDs: runningIDs,
+		Now:               now,
+		TerminalState:     store.WorkAttemptTerminalTimedOut,
+		ErrorClass:        "lease_expired",
+		ErrorMessage:      "work attempt lease expired",
+	})
+	if err != nil && o.logger != nil {
+		o.logger.Warn("work attempt timeout recovery failed", "project_id", projectID, "error", err)
+	}
+	for _, attempt := range timedOut {
+		o.recordRecoveredWorkAttempt(state, attempt, now)
+	}
 }
 
 func (o *Orchestrator) recoverPendingWorkAttemptCapacityReleases(ctx context.Context, state *State, projectID string, now time.Time) {

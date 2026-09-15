@@ -1768,6 +1768,73 @@ func TestStartupDoesNotReclaimLiveWorkAttempts(t *testing.T) {
 	}
 }
 
+func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		running      bool
+		phase        string
+		wantTerminal bool
+	}{
+		{name: "orphan expires", wantTerminal: true},
+		{name: "owned attempt survives expired heartbeat", running: true},
+		{name: "deferred completion survives", phase: "completion_deferred"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			runtimeStore := openWorkAttemptRecoveryStore(t, ctx)
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+			now := time.Now().UTC()
+			id, err := runtimeStore.StartWorkAttempt(ctx, store.WorkAttemptStart{
+				ProjectID: "detent", IssueID: "retained", WorkerType: "implement",
+				StartedAt: now, LeaseExpiresAt: now.Add(time.Minute),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracker := &rateLimitConnector{hasRateLimit: true, rateLimit: connector.GraphQLRateLimit{Remaining: 0, ResetAt: now.Add(time.Hour)}}
+			o := newRateLimitTestOrchestrator(cfg, tracker)
+			o.workAttempts = runtimeStore
+			state := newState(cfg)
+			o.recoverDurableWorkAttempts(ctx, &state, now)
+			active, err := runtimeStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: "detent"})
+			if err != nil || len(active) != 1 {
+				t.Fatalf("startup active = %v, err = %v", active, err)
+			}
+			if tt.phase != "" {
+				err := runtimeStore.RecordWorkAttemptHeartbeat(ctx, store.WorkAttemptHeartbeat{AttemptID: id, HeartbeatAt: now, LeaseExpiresAt: now.Add(time.Minute), Phase: tt.phase})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.running {
+				state.Running["retained"] = Running{Issue: connector.Issue{ID: "retained"}, WorkAttemptID: id}
+			}
+			o.tick(ctx, &state, now.Add(30*time.Second))
+			active, err = runtimeStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: "detent"})
+			if err != nil || len(active) != 1 {
+				t.Fatalf("before expiry active = %v, err = %v", active, err)
+			}
+			// Recovery must still run when tracker polling is paused.
+			o.tick(ctx, &state, now.Add(2*time.Minute))
+			active, err = runtimeStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: "detent"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(active) == 0; got != tt.wantTerminal {
+				t.Fatalf("terminal = %t, want %t", got, tt.wantTerminal)
+			}
+			recent, err := runtimeStore.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{ProjectID: "detent", Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantTerminal && (len(recent) != 1 || recent[0].ErrorClass != "lease_expired") {
+				t.Fatalf("terminal attempts = %#v", recent)
+			}
+		})
+	}
+}
+
 func TestTerminalRetryTransitionFailures(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
