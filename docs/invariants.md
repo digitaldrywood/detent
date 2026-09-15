@@ -745,7 +745,11 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
 manifest. The existing boundary fuzz seeds retain free-capacity and release
-failure coverage. `TestRepositorySources` rejects retired selection, rescue,
+failure coverage. The no-polling queue fixture waits for both initial ticks to
+complete before mutating candidate state or releasing the occupied slot (#2772).
+A submission notification precedes its return, and startup State reads can serve
+snapshots; neither alone proves the request reached the pending-grant path.
+`TestRepositorySources` rejects retired selection, rescue,
 reservation, and preemption symbols and reason strings, including assembled
 constants. Only the two enumerated historical store readers and the dedicated
 configuration compatibility reader may retain old reason strings; negative

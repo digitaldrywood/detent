@@ -108,6 +108,16 @@ func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
 					t.Fatalf("pending acquisition blocked owner state requests: %v", err)
 				}
 			}
+			// Submit signals before returning, and State can serve a startup
+			// snapshot while that call is still in progress. Wait for the initial
+			// tick to finish so both requests are pending before changing tracker
+			// state or releasing capacity; otherwise a grant can be consumed by
+			// the initial dispatch instead of the queued refresh under test.
+			for _, owner := range []*orchestrator.Orchestrator{higher, lower} {
+				waitForStateWithin(t, owner, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
+					return state.LastRefreshDuration > 0
+				})
+			}
 			if scenario == "candidate became terminal" || scenario == "slow terminal refresh" {
 				if err := higherTracker.UpdateIssueState(t.Context(), higherIssue.ID, "Done"); err != nil {
 					t.Fatal(err)
