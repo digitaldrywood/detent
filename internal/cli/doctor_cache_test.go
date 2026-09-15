@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,10 +32,10 @@ func TestINV12DoctorNativeCaches(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			deps := doctorDeps{inspectCaches: func(context.Context) toolcache.Report {
+			deps := doctorDeps{cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil }, inspectCaches: func(context.Context) toolcache.Report {
 				return toolcache.Report{BuildPath: "/host/build", ModulePath: "/host/modules", BuildBytes: 12, ModuleBytes: 34, LastTrim: "2026-09-14T12:00:00Z", Error: tt.reportError}
 			}}
-			got := checkDoctorNativeCaches(t.Context(), "test", root, deps)
+			got := checkDoctorNativeCaches(t.Context(), "test", root, deps, toolcache.Policy{})
 			if got.Status != tt.want {
 				t.Fatalf("check = %+v", got)
 			}
@@ -70,6 +71,7 @@ func TestINV12DoctorWorkspaceKinds(t *testing.T) {
 				cfg.Workspace.AutoBranch = false
 			}
 			deps := successfulDoctorDeps()
+			deps.cacheFreeBytes = func(string) (uint64, error) { return 1 << 50, nil }
 			inspections := 0
 			deps.inspectCaches = func(context.Context) toolcache.Report {
 				inspections++
@@ -96,6 +98,49 @@ func TestINV12DoctorWorkspaceKinds(t *testing.T) {
 			}
 			if count != 2 {
 				t.Fatalf("native cache checks = %d, want 2", count)
+			}
+		})
+	}
+}
+
+func TestDoctorCacheBound(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		bound int64
+		free  uint64
+		path  string
+		err   error
+		want  doctorStatus
+	}{
+		{name: "default on reported 92 GiB free", free: 92 << 30, path: "/native/build", want: doctorWarn},
+		{name: "default ample space", free: 300 << 30, path: "/native/build", want: doctorOK},
+		{name: "explicit at ten percent", bound: 100, free: 1000, path: "/native/build", want: doctorOK},
+		{name: "explicit above ten percent", bound: 101, free: 1000, path: "/native/build", want: doctorWarn},
+		{name: "full volume", bound: 1, path: "/native/build", want: doctorWarn},
+		{name: "lookup failure", path: "/native/build", err: errors.New("stat failed"), want: doctorWarn},
+		{name: "disabled", path: "off", want: doctorOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			deps := doctorDeps{
+				inspectCaches: func(context.Context) toolcache.Report { return toolcache.Report{BuildPath: tt.path} },
+				cacheFreeBytes: func(path string) (uint64, error) {
+					calls++
+					if path != tt.path {
+						t.Fatalf("volume path = %s", path)
+					}
+					return tt.free, tt.err
+				},
+			}
+			got := checkDoctorNativeCaches(t.Context(), "test", t.TempDir(), deps, toolcache.Policy{MaxBytes: tt.bound})
+			if got.Status != tt.want {
+				t.Fatalf("check = %+v", got)
+			}
+			if tt.path == "off" && calls != 0 {
+				t.Fatal("inspected disabled cache")
+			}
+			if tt.want == doctorWarn && tt.err == nil && !strings.Contains(got.Detail, "exceeds 10%") {
+				t.Fatalf("missing threshold: %+v", got)
 			}
 		})
 	}

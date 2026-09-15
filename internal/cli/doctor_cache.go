@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,7 +11,7 @@ import (
 )
 
 // checkDoctorNativeCaches is read-only, including when legacy caches remain.
-func checkDoctorNativeCaches(ctx context.Context, projectID, root string, deps doctorDeps) doctorCheck {
+func checkDoctorNativeCaches(ctx context.Context, projectID, root string, deps doctorDeps, policy toolcache.Policy) doctorCheck {
 	check := doctorCheck{Name: "Project " + projectID + " native toolchain caches", Status: doctorOK}
 	inspect := deps.inspectCaches
 	if inspect == nil {
@@ -18,6 +19,26 @@ func checkDoctorNativeCaches(ctx context.Context, projectID, root string, deps d
 	}
 	report := inspect(ctx)
 	check.Detail = report.String()
+	policy = policy.Normalized()
+	check.Detail += fmt.Sprintf("; build cache bound: %d bytes", policy.MaxBytes)
+	if report.BuildPath != "" && report.BuildPath != "off" {
+		freeBytes := deps.cacheFreeBytes
+		if freeBytes == nil {
+			freeBytes = toolcache.FreeBytes
+		}
+		free, err := freeBytes(report.BuildPath)
+		if err != nil {
+			check.Status = doctorWarn
+			check.Detail += "; inspect cache volume free space: " + err.Error()
+		} else {
+			check.Detail += fmt.Sprintf("; cache volume free: %d bytes", free)
+			if uint64(policy.MaxBytes) > free/10 {
+				check.Status = doctorWarn
+				check.Detail += "; effective build cache bound exceeds 10% of cache-volume free space"
+				check.Hint = "Reduce global.cache.max_bytes or free space on the cache volume."
+			}
+		}
+	}
 	lastTrim := report.LastTrim
 	if lastTrim == "" {
 		lastTrim = "not recorded"

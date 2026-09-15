@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -43,4 +44,12 @@ func (p *Project) SweepSharedCache(ctx context.Context, now time.Time) workspace
 		"budget_bytes", p.sharedCache.BudgetBytes, "removed_bytes", p.sharedCache.RemovedBytes,
 		"error", p.sharedCache.Error)
 	return p.sharedCache
+}
+
+// HostCache returns the host measurement recorded by the existing reaper.
+func (p *Project) HostCache() *toolcache.Report {
+	if p.hostCacheReport == nil {
+		return nil
+	}
+	return p.hostCacheReport()
 }

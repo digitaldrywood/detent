@@ -79,6 +79,7 @@ func withRunnerFactory(
 	serviceTokenSource func(string) string,
 	githubTokenSource ...func() string,
 ) project.Factory {
+	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
 		workflow, err := project.LoadWorkflow(cfg)
 		if err != nil {
@@ -107,13 +108,25 @@ func withRunnerFactory(
 
 		projectDeps := deps
 		projectDeps.Runner = run
+		if projectDeps.HostCacheReport == nil {
+			projectDeps.HostCacheReport = func() *toolcache.Report {
+				report := hostCache.Load()
+				if report == nil {
+					return nil
+				}
+				copy := *report
+				return &copy
+			}
+		}
 		if projectDeps.TrimHostCache == nil {
 			projectDeps.TrimHostCache = func(ctx context.Context, policy toolcache.Policy, now time.Time) error {
 				paths, err := toolcache.Resolve(ctx)
 				if err != nil {
+					hostCache.Store(&toolcache.Report{Error: err.Error()})
 					return err
 				}
-				_, err = toolcache.Trim(ctx, paths.Build, policy, now)
+				report, err := toolcache.TrimWithReport(ctx, paths.Build, policy, now)
+				hostCache.Store(&report)
 				return err
 			}
 		}
@@ -641,6 +654,9 @@ func publishSnapshotOnce(
 		tracked[trackedProject.ID()] = struct{}{}
 		cache := trackedProject.SweepSharedCache(ctx, now)
 		merged.SharedCaches = append(merged.SharedCaches, cache)
+		if host := trackedProject.HostCache(); host != nil {
+			merged.HostCache = host
+		}
 		projectMetadata := projectSnapshotMetadata(trackedProject, now)
 		if !trackedProject.Running() {
 			if trackedProject.Paused() {

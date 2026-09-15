@@ -45,6 +45,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.GlobalAgents = cfg.Global.Agents
 		project.GlobalBudget = cfg.Global.Budget
+		project.GlobalCache = cfg.Global.Cache.Normalized()
 		project.Identity = cfg.Global.Identity
 		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
 		if cfg.Client.Configured() {
@@ -226,6 +227,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.GlobalAgents = cfg.Global.Agents
 		project.GlobalBudget = cfg.Global.Budget
+		project.GlobalCache = cfg.Global.Cache.Normalized()
 		project.Identity = cfg.Global.Identity
 		id := doctorProjectID(project)
 		progress := newDoctorCheckProgress()
@@ -497,7 +499,7 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorLocalSQLiteTracker(ctx, id, project, workflow.Config, deps))
 	}
 	setDoctorCurrentCheck("Project " + id + " native toolchain caches")
-	checks = append(checks, checkDoctorNativeCaches(ctx, id, workflow.Config.Workspace.Root, deps))
+	checks = append(checks, checkDoctorNativeCaches(ctx, id, workflow.Config.Workspace.Root, deps, project.GlobalCache))
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
 		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
 		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))
