@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -596,6 +597,139 @@ func TestMergeRevocationStreakStopsAtDifferentOutcomeOrReason(t *testing.T) {
 			got := mergeRevocationStreakFromAttempts(tt.attempts, int(prNumber))
 			if got != tt.want {
 				t.Fatalf("mergeRevocationStreakFromAttempts() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDraftMergeRoutesByEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                  string
+		threads               []connector.PullRequestReviewThread
+		checks                []connector.PullRequestCheck
+		wantState, wantReason string
+		fragments             []string
+	}{
+		{name: "bot findings", threads: []connector.PullRequestReviewThread{
+			{Body: "P1 preserve startup failure", Path: "internal/cli/boot.go", Line: 1996},
+			{Body: "P2 retain stop result", Path: "internal/orchestrator/stop_recorded_run.go", Line: 109},
+		}, wantState: "Rework", wantReason: "unresolved_review_threads", fragments: []string{"P1 preserve startup failure", "internal/cli/boot.go:1996", "P2 retain stop result", "internal/orchestrator/stop_recorded_run.go:109"}},
+		{name: "required check failed", checks: []connector.PullRequestCheck{{Name: "Verify", Status: "completed", Conclusion: "failure"}}, wantState: "Rework", wantReason: "ci_not_green", fragments: []string{"Verify"}},
+		{name: "unexplained green draft", wantState: "Human Review", wantReason: "draft_pull_request"},
+	} {
+		for _, active := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/active=%t", tt.name, active), func(t *testing.T) {
+				t.Parallel()
+				now := time.Date(2026, 9, 15, 14, 53, 0, 0, time.UTC)
+				issue := connector.Issue{ID: "draft-evidence", State: "Merging", PullRequest: &connector.PullRequest{State: "OPEN", Draft: true, CIStatus: "success", HeadSHA: "head", UnresolvedReviewThreads: tt.threads, RequiredCheckFailures: tt.checks}}
+				cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true}, ActiveStates: []string{"Merging", "Rework"}})
+				tracker := &mergeRevocationCommentConnector{now: now}
+				orch := &Orchestrator{cfg: cfg, connector: tracker}
+				state := newState(cfg)
+				if active {
+					revocation, revoked := mergeRevocationForIssue(issue, cfg, true, false)
+					if !revoked || revocation.reason != tt.wantReason {
+						t.Fatalf("revocation = %+v, revoked=%t; want %s", revocation, revoked, tt.wantReason)
+					}
+					orch.routeMergeRevocation(t.Context(), &state, &revocation, now)
+					orch.commentMergeRevocation(t.Context(), &state, revocation, now)
+				} else {
+					decision := staleMergingPullRequestDecisionForIssue(issue, cfg)
+					if decision.reason != tt.wantReason {
+						t.Fatalf("decision = %+v, want %s", decision, tt.wantReason)
+					}
+					orch.applyStaleMergingPullRequestDecision(t.Context(), &state, issue, decision, now)
+				}
+				if len(tracker.updates) != 1 || tracker.updates[0] != tt.wantState {
+					t.Fatalf("updates = %v, want %s", tracker.updates, tt.wantState)
+				}
+				if len(tracker.comments) != 1 {
+					t.Fatalf("comments = %v, want one handoff", tracker.comments)
+				}
+				for _, fragment := range append(tt.fragments, "reason: "+tt.wantReason) {
+					if !strings.Contains(tracker.comments[0].Body, fragment) {
+						t.Errorf("handoff missing %q: %s", fragment, tracker.comments[0].Body)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDraftMergeHydratesFindings(t *testing.T) {
+	t.Parallel()
+	for _, fail := range []bool{false, true} {
+		for _, active := range []bool{false, true} {
+			t.Run(fmt.Sprintf("unavailable=%t/active=%t", fail, active), func(t *testing.T) {
+				t.Parallel()
+				now := time.Now()
+				issue := nativeMergeQueueTestIssue(2759, "success")
+				issue.PullRequest.Draft = true
+				threads := []connector.PullRequestReviewThread{{Body: "P1 hydrated finding", Path: "boot.go", Line: 1996}}
+				tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}, hydratedThreads: &threads}
+				if fail {
+					tracker.hydrationErr = errors.New("review unavailable")
+				}
+				cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true}, ActiveStates: []string{"Merging", "Rework"}})
+				orch := &Orchestrator{cfg: cfg, connector: tracker}
+				state := newState(cfg)
+				if !active {
+					sibling := nativeMergeQueueTestIssue(2760, "success")
+					state.Running[sibling.ID] = Running{Issue: sibling, Mode: runpkg.RunModeMerge}
+				}
+				if active {
+					running, revoked := orch.revokeRunningMergeIfIneligible(t.Context(), &state, Running{Issue: issue}, now)
+					if revoked == fail {
+						t.Fatalf("revoked=%t, hydration failed=%t", revoked, fail)
+					}
+					if revoked {
+						revocation := orch.pendingMergeRevocations[issue.ID]
+						orch.finishMergeRevocation(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now}, running, revocation)
+					}
+				} else {
+					orch.reconcileStaleMergingPullRequestIssues(t.Context(), &state, []connector.Issue{issue}, now)
+				}
+				if fail {
+					if len(tracker.updates) != 0 {
+						t.Fatalf("unavailable evidence routed issue: %v", tracker.updates)
+					}
+					return
+				}
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
+					t.Fatalf("updates=%v, want Rework", tracker.updates)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "P1 hydrated finding") {
+					t.Fatalf("comments=%v, want hydrated finding", tracker.comments)
+				}
+			})
+		}
+	}
+}
+
+func TestDraftMergeCompletionHydrationFailurePreservesAttempt(t *testing.T) {
+	t.Parallel()
+	for _, attempt := range []int{1, 3} {
+		t.Run(fmt.Sprintf("attempt=%d", attempt), func(t *testing.T) {
+			t.Parallel()
+			now := time.Now()
+			issue := nativeMergeQueueTestIssue(2759, "success")
+			issue.PullRequest.Draft = true
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}, hydrationErr: errors.New("review unavailable")}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Merging", "Rework"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			running := Running{Issue: issue, Attempt: attempt, Mode: runpkg.RunModeMerge}
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean}}
+			if !orch.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
+				t.Fatal("completion was not handled")
+			}
+			retry, ok := state.Retry[issue.ID]
+			if !ok || retry.Attempt != attempt || retry.Wait.Kind == retryWaitCurrentHeadCI || !strings.Contains(retry.Error, "pull request hydration") {
+				t.Fatalf("retry = %+v, want hydration wait preserving attempt %d", retry, attempt)
+			}
+			if len(tracker.updates) != 0 || len(tracker.merges) != 0 {
+				t.Fatal("unavailable review evidence changed lane or merged")
 			}
 		})
 	}

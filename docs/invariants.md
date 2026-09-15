@@ -525,6 +525,19 @@ configuration, routing mechanisms, or dashboard surfaces. `TestSecurityAuditCarr
 fingerprint changes only to publish advisory findings before the existing lane write;
 transition reasons and lane ownership are unchanged.
 
+Draft merge revocation (#2759) and idle-Merging draft reconciliation share
+current-head review/CI classification. Unresolved threads reuse
+`unresolved_review_threads`; failing checks reuse `ci_not_green`, routing to the
+configured Rework lane with finding bodies, locations, and check names. Only an
+unexplained draft retains the configured review lane. Review-thread hydration
+uses the existing reader before classifying drafts; unavailable evidence uses the
+existing hydration wait without a CI retry or attempt increment. Idle findings
+route to Rework even while another PR in the repository has an active worker.
+`TestDraftMergeRoutesByEvidence` covers both routing paths. The reviewed dynamic
+revocation writer forwards those existing reasons without a `merge_revoked:`
+prefix; other revocations retain their existing vocabulary. No mechanism or
+reason is added.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
