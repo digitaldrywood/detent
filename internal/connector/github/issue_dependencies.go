@@ -175,22 +175,26 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 		issue.Comments = connectorIssueComments(comments)
 		issue.WorkpadSignal = parseWorkpadSignal(githubIssueNode{Body: issue.Description, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}, Comments: nodeConnection[issueComment]{Nodes: comments}})
 	}
-	// Current body declarations and native relations share one blocker list.
-	// Prefer native state for duplicates; historical comments remain diagnostic.
+	applyNativeDependencyEvidence(issue, ref.Owner+"/"+ref.Name, nativeRefs)
+	return nil
+}
+
+// Both transports retain current body declarations alongside authoritative
+// native relations. Historical comments remain diagnostic only.
+func applyNativeDependencyEvidence(issue *connector.Issue, repo string, nativeRefs []connector.BlockedRef) {
 	seen := make(map[string]struct{}, len(nativeRefs))
 	for _, blocker := range nativeRefs {
 		seen[normalizedIssueIdentifier(blocker.Identifier)] = struct{}{}
 	}
-	for _, blocker := range parseBlockedBy(issue.Description, ref.Owner+"/"+ref.Name) {
+	for _, blocker := range parseBlockedBy(issue.Description, repo) {
 		if _, exists := seen[normalizedIssueIdentifier(blocker.Identifier)]; !exists {
 			nativeRefs = append(nativeRefs, blocker)
 		}
 	}
 	issue.DependencySource = connector.BlockedRefSourceNative
-	issue.DependencyNotes = ignoredProseDependencyNotes(*issue, ref.Owner+"/"+ref.Name, nativeRefs)
+	issue.DependencyNotes = ignoredProseDependencyNotes(*issue, repo, nativeRefs)
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(nativeRefs, issue.Identifier)
 	*issue = issue.WithNativeWorkpadAuthority()
-	return nil
 }
 
 func (c *Connector) fetchNativeBlockedByRefs(ctx context.Context, ref issueRef) ([]connector.BlockedRef, bool, error) {

@@ -111,6 +111,13 @@ func (c *Connector) readRESTCandidates(ctx context.Context, request connector.Ca
 			return candidateReadResult(result, position, true, fmt.Errorf("fetch github candidates: %w", err))
 		}
 		result.PagesRead++
+		pageNodes := make([]githubIssueNode, 0, len(items))
+		for index := position.Offset; index < len(items) && index-position.Offset < request.Limit-result.ItemsRead; index++ {
+			if items[index].PullRequest == nil {
+				pageNodes = append(pageNodes, githubIssueNode{ID: items[index].NodeID})
+			}
+		}
+		evidence := c.candidateEvidence(ctx, pageNodes, true)
 		for position.Offset < len(items) {
 			item := items[position.Offset]
 			issue, ok, err := c.readRESTCandidate(ctx, request, item, sources[position.Source])
@@ -118,12 +125,12 @@ func (c *Connector) readRESTCandidates(ctx context.Context, request connector.Ca
 				return candidateReadResult(result, position, true, err)
 			}
 			if ok && !seen[issue.ID] {
-				hydrated := []connector.Issue{issue}
-				if err := c.hydrateCandidateIssues(ctx, hydrated, request.States); err != nil {
+				hydrated, err := c.hydrateCandidateWithEvidence(ctx, issue, request.States, evidence)
+				if err != nil {
 					return candidateReadResult(result, position, true, err)
 				}
 				seen[issue.ID] = true
-				result.Issues = append(result.Issues, hydrated[0])
+				result.Issues = append(result.Issues, hydrated)
 			}
 			position.Offset++
 			result.ItemsRead++
@@ -227,16 +234,28 @@ func (c *Connector) readProjectCandidates(ctx context.Context, request connector
 		if position.After != "" {
 			after = &position.After
 		}
-		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, observedStatusProjectItemsQuery, map[string]any{
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, candidateProjectItemsQuery, map[string]any{
 			"projectId": c.projectID, "first": min(request.EffectivePageSize(), projectItemsPageSize), "after": after,
 		}, &response); err != nil {
-			return candidateReadResult(result, position, true, fmt.Errorf("fetch github project candidates: %w", err))
+			// Older schemas can still supply board membership. Hydration then uses REST.
+			if fallbackErr := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, observedStatusProjectItemsQuery, map[string]any{
+				"projectId": c.projectID, "first": min(request.EffectivePageSize(), projectItemsPageSize), "after": after,
+			}, &response); fallbackErr != nil {
+				return candidateReadResult(result, position, true, fmt.Errorf("fetch github project candidates: %w", errors.Join(err, fallbackErr)))
+			}
 		}
 		result.PagesRead++
 		if response.Node == nil {
 			return result, ErrProjectNotFound
 		}
 		items := response.Node.Items.Nodes
+		pageNodes := make([]githubIssueNode, 0, len(items))
+		for index := position.Offset; index < len(items); index++ {
+			if items[index].Content != nil {
+				pageNodes = append(pageNodes, *items[index].Content)
+			}
+		}
+		evidence := c.candidateEvidence(ctx, pageNodes, false)
 		for position.Offset < len(items) {
 			issue, _, ok, blankStatusItemID, err := c.normalizeProjectItem(items[position.Offset])
 			if err != nil {
@@ -247,11 +266,11 @@ func (c *Connector) readProjectCandidates(ctx context.Context, request connector
 					blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
 				}
 				if _, wanted := wantedStates[normalizeStateName(issue.State)]; wanted {
-					hydrated := []connector.Issue{issue}
-					if err := c.hydrateCandidateIssues(ctx, hydrated, request.States); err != nil {
+					hydrated, err := c.hydrateCandidateWithEvidence(ctx, issue, request.States, evidence)
+					if err != nil {
 						return candidateReadResult(result, position, true, err)
 					}
-					result.Issues = append(result.Issues, hydrated[0])
+					result.Issues = append(result.Issues, hydrated)
 				}
 			}
 			position.Offset++

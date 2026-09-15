@@ -118,6 +118,8 @@ func TestCandidateProgressUnderRESTBudget(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				switch {
+				case r.Method == http.MethodPost:
+					fmt.Fprint(w, `{"errors":[{"message":"GraphQL unavailable: exercise REST budget fallback"}]}`)
 				case strings.Contains(r.URL.Path, "/dependencies/blocked_by"):
 					fmt.Fprint(w, `[]`)
 				case strings.HasPrefix(r.URL.Path, "/orgs/"):

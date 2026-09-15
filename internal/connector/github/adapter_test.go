@@ -7040,6 +7040,14 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
+	// Legacy scripts predate page hydration and exercise its REST fallback.
+	// Dedicated batching fixtures serve DetentGitHubCandidateHydration explicitly.
+	if query, _ := payload["query"].(string); strings.Contains(query, "DetentGitHubCandidateHydration") {
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errors":[{"message":"candidate hydration unsupported by legacy fixture"}]}`))
+		return
+	}
 	if s.unsupportedNative && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/dependencies/blocked_by") {
 		payload["implicit_native_probe"] = true
 		s.seen = append(s.seen, payload)
