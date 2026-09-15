@@ -4029,7 +4029,7 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	}
 }
 
-func TestRunDoctorSuppressesConnectorLogsFromProgress(t *testing.T) {
+func TestDoctorChecksSuppressConnectorLogsFromProgress(t *testing.T) {
 	workflow := validDoctorWorkflow("/repo")
 	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
 	workflow.Tracker.APIKey = "token"
@@ -4038,15 +4038,7 @@ func TestRunDoctorSuppressesConnectorLogsFromProgress(t *testing.T) {
 	workflow.Tracker.ObservedStates = []string{"Human Review", "Blocked"}
 	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
 
-	configPath := filepath.Join(t.TempDir(), "global.yaml")
-	global := validDoctorGlobalWithProjects(configPath, "alpha")
 	deps := successfulDoctorDeps()
-	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
-		return workflowconfig.Workflow{Config: workflow}, nil
-	}
-	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-		return &fakeDoctorAutoPromoteConnector{}, nil
-	}
 
 	var progress bytes.Buffer
 	previous := slog.Default()
@@ -4075,14 +4067,20 @@ func TestRunDoctorSuppressesConnectorLogsFromProgress(t *testing.T) {
 		}}, nil
 	}
 
-	report := runDoctor(context.Background(), doctorConfig{
-		ConfigPath:   configPath,
-		Output:       &progress,
-		CheckTimeout: time.Second,
-		Flags: runtimeFlags{
-			Port: runtimeIntFlag{Value: 0, Set: true},
+	// Exercise connector logging and progress without unrelated project diagnostics
+	// (including real invariant-evidence probes) sharing a short timeout.
+	jobs := []doctorCheckJob{{
+		Name: "Project alpha checks",
+		Run: func(ctx context.Context) []doctorCheck {
+			return checkDoctorGitHubReadiness(ctx, "alpha", globalconfig.Project{ID: "alpha"}, workflow, deps, RuntimeSecret{}, "", false)
 		},
-	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+	}}
+	var report doctorReport
+	for _, checks := range runDoctorChecks(context.Background(), jobs, doctorTestSafetyTimeout, &progress) {
+		for _, check := range checks {
+			report.Add(check)
+		}
+	}
 
 	assertDoctorCheck(t, report, "Project alpha GitHub readiness", doctorOK, "ready")
 	got := progress.String()
