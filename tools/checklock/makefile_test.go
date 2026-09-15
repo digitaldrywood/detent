@@ -28,11 +28,13 @@ func TestMakeCheckGeneratedPreflight(t *testing.T) {
 		invalid   bool
 		wantTrace string
 		wantError bool
+		staleSQL  bool
 	}{
-		{"stale before admission", true, false, false, "migrations\ngenerated\n", true},
-		{"changed during admission", false, true, false, "migrations\ngenerated\nlock\ninvariants\nmigrations\ngenerated\n", true},
-		{"unchanged inputs", false, false, false, "migrations\ngenerated\nlock\ninvariants\nmigrations\ngenerated\n", false},
-		{"invariant failure", false, false, true, "migrations\ngenerated\nlock\ninvariants\n", true},
+		{"stale SQL before admission", false, false, false, "migrations\nsqlc\n", true, true},
+		{"stale before admission", true, false, false, "migrations\nsqlc\ngenerated\n", true, false},
+		{"changed during admission", false, true, false, "migrations\nsqlc\ngenerated\nlock\ninvariants\nmigrations\nsqlc\ngenerated\n", true, false},
+		{"unchanged inputs", false, false, false, "migrations\nsqlc\ngenerated\nlock\ninvariants\nmigrations\nsqlc\ngenerated\n", false, false},
+		{"invariant failure", false, false, true, "migrations\nsqlc\ngenerated\nlock\ninvariants\n", true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,6 +57,9 @@ func TestMakeCheckGeneratedPreflight(t *testing.T) {
 			if tt.change {
 				write("change-at-admission", "", 0o600)
 			}
+			if tt.staleSQL {
+				write("stale-sql", "", 0o600)
+			}
 			if tt.invalid {
 				write("invalid-invariants", "", 0o600)
 			}
@@ -68,6 +73,10 @@ case "$*" in
     ;;
   'run ./tools/migrationcheck')
     echo migrations >> trace
+    ;;
+  'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f sqlc/sqlc.yaml')
+    echo sqlc >> trace
+    test ! -f stale-sql
     ;;
   'run ./internal/config/cmd/configdoc -root . -check')
     echo generated >> trace
