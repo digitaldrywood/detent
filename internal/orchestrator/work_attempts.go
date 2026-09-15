@@ -62,19 +62,6 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 		o.recordRecoveredWorkAttempt(state, attempt, now)
 	}
 
-	reclaimed, err := o.workAttempts.ReclaimActiveWorkAttempts(ctx, store.WorkAttemptReclaim{
-		ProjectID:     projectID,
-		Now:           now,
-		TerminalState: store.WorkAttemptTerminalAbandoned,
-		ErrorClass:    "service_restart",
-		ErrorMessage:  "work attempt reclaimed after scheduler restart",
-	})
-	if err != nil && o.logger != nil {
-		o.logger.Warn("work attempt reclaim failed", "project_id", projectID, "error", err)
-	}
-	for _, attempt := range reclaimed {
-		o.recordRecoveredWorkAttempt(state, attempt, now)
-	}
 	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: projectID})
 	if err != nil {
 		if o.logger != nil {

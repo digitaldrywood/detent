@@ -734,24 +734,7 @@ func publishShutdownSnapshot(cfg runningShutdownConfig, now time.Time, requested
 }
 
 func shutdownDrainTimeout(registry *project.Registry) time.Duration {
-	timeoutMS := workflowconfig.DefaultShutdownDrainTimeoutMS
-	if registry == nil {
-		return defaultShutdownDrainTimeout()
-	}
-
-	found := false
-	for _, trackedProject := range registry.List() {
-		workflow := trackedProject.Workflow()
-		next := workflow.Config.Agent.Shutdown.DrainTimeoutMS
-		if next <= 0 {
-			next = workflowconfig.DefaultShutdownDrainTimeoutMS
-		}
-		if !found || next > timeoutMS {
-			timeoutMS = next
-		}
-		found = true
-	}
-	return time.Duration(timeoutMS) * time.Millisecond
+	return runtimeUpdateDrainTimeout(registry)
 }
 
 func defaultShutdownDrainTimeout() time.Duration {

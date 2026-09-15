@@ -85,8 +85,13 @@ func (m *launchdManager) Start(ctx context.Context) error {
 }
 
 func (m *launchdManager) Restart(ctx context.Context) error {
-	_, err := m.cfg.RunCommand(ctx, "launchctl", "kickstart", "-k", m.target())
-	return err
+	if _, err := m.cfg.RunCommand(ctx, "launchctl", "kill", "SIGTERM", m.target()); err != nil {
+		return err
+	}
+	if err := m.WaitStopped(ctx); err != nil {
+		return err
+	}
+	return m.Start(ctx)
 }
 
 func (m *launchdManager) WaitStopped(ctx context.Context) error {

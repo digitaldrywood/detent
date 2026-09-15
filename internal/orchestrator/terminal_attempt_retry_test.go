@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1491,10 +1491,6 @@ func (s *terminalRetryWorkAttemptStore) TimeoutExpiredWorkAttempts(context.Conte
 	return nil, nil
 }
 
-func (s *terminalRetryWorkAttemptStore) ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error) {
-	return nil, nil
-}
-
 func (s *terminalRetryWorkAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
 	return nil, nil
 }
@@ -1739,77 +1735,35 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 	}
 }
 
-func TestServiceRestartsRecoverRetainedWorkAndDispatch(t *testing.T) {
+func TestStartupDoesNotReclaimLiveWorkAttempts(t *testing.T) {
 	t.Parallel()
-
-	for _, restarts := range []int{3, 6} {
-		t.Run(fmt.Sprintf("%d restarts", restarts), func(t *testing.T) {
-			t.Parallel()
+	for _, count := range []int{1, 2} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			ctx := t.Context()
 			runtimeStore := openWorkAttemptRecoveryStore(t, ctx)
-			workspacePath := t.TempDir()
-			retainedPath := filepath.Join(workspacePath, "implementation.go")
-			retainedWork := []byte("package implementation\n")
-			if err := os.WriteFile(retainedPath, retainedWork, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			metadata, err := json.Marshal(map[string]any{"workspace_path": workspacePath, "work_product_pushed": false})
-			if err != nil {
-				t.Fatal(err)
-			}
-			issue := terminalRetryTestIssue("restart-retained-work")
-			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
-			cfg := normalizeConfig(Config{
-				Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 1,
-				ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"},
-			})
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
 			now := time.Now().UTC()
-			var o *Orchestrator
-			var state State
-			for index := range restarts {
-				at := now.Add(time.Duration(index) * time.Minute)
-				issue.State = "In Progress"
-				tracker.issues[issue.ID] = cloneIssue(issue)
-				id, err := runtimeStore.StartWorkAttempt(ctx, store.WorkAttemptStart{
-					ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier,
-					WorkerType: "implement", StartedAt: at, LeaseExpiresAt: at.Add(time.Hour),
-					WorkerMetadataJSON: string(metadata),
+			for index := range count {
+				_, err := runtimeStore.StartWorkAttempt(ctx, store.WorkAttemptStart{
+					ProjectID: "detent", IssueID: strconv.Itoa(index), WorkerType: "implement",
+					StartedAt: now, LeaseExpiresAt: now.Add(time.Hour),
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				o = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: runtimeStore}
-				state = newState(cfg)
-				o.recoverDurableWorkAttempts(ctx, &state, at.Add(time.Second))
-				recovered, err := runtimeStore.WorkAttempt(ctx, id)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if recovered.ErrorClass != "service_restart" || recovered.Phase != "recovered" || recovered.ErrorMessage != "work attempt reclaimed after scheduler restart" || recovered.WorkerMetadataJSON != string(metadata) {
-					t.Fatalf("recovered attempt = %#v, want restart with retained workspace metadata", recovered)
-				}
-				transitions := o.reconcileTerminalAttemptRetryStates(ctx, &state, []connector.Issue{issue}, at.Add(time.Second))
-				if len(transitions) != 1 || transitions[0].State != "Todo" {
-					t.Fatalf("restart %d transitions = %#v, want Todo", index+1, transitions)
-				}
-				issue = transitions[0]
-				if _, blocked := state.Blocked[issue.ID]; blocked || len(tracker.comments) != 0 {
-					t.Fatal("service restart parked issue or reported failure limit")
+			}
+			o := &Orchestrator{cfg: cfg, workAttempts: runtimeStore}
+			state := newState(cfg)
+			o.recoverDurableWorkAttempts(ctx, &state, now.Add(time.Second))
+			attempts, err := runtimeStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: "detent"})
+			if err != nil || len(attempts) != count {
+				t.Fatalf("active attempts = %d, error = %v", len(attempts), err)
+			}
+			for _, attempt := range attempts {
+				if attempt.ErrorClass != "" {
+					t.Fatalf("attempt classified during restart: %#v", attempt)
 				}
 			}
-			runner := newWorkerHostRunner()
-			o.supervisor = newTestSupervisor(t, runner, cfg)
-			o.runResults = make(chan runpkg.Completion, 1)
-			o.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now.Add(time.Duration(restarts)*time.Minute))
-			request := receiveWorkerHostRunRequest(t, runner.started)
-			if request.Issue.ID != issue.ID || request.WorkAttemptID <= int64(restarts) {
-				t.Fatalf("dispatched request = %#v, want new attempt for recovered issue", request)
-			}
-			retained, err := os.ReadFile(retainedPath)
-			if err != nil || string(retained) != string(retainedWork) {
-				t.Fatalf("retained work = %q, error = %v", retained, err)
-			}
-			state.Running[issue.ID].cancel()
 		})
 	}
 }

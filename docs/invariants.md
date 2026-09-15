@@ -149,6 +149,20 @@ concurrent new files and rejects symlink aliases. Doctor and state expose measur
 component bytes. `TestTrimSharedCache`, `TestInspectSharedCache`,
 `TestSweepSharedCache`, and `TestDoctorSharedCache` cover this behavior.
 
+Update and restart draining (#2745) reuses the runtime dispatch pause and session
+limits. Manual runtime update requests use the same drain reservation as automatic
+updates; SIGTERM shutdown uses that duration ceiling, including model-selection
+levels. Managed restarts preserve child processes while the orchestrator drains.
+Startup no longer bulk-reclaims live work attempts as `service_restart`; the
+reclaim store API and query are removed. Historical restart rows remain readable
+for retry and accounting compatibility. Existing expired-lease recovery remains.
+The issue explicitly authorizes the existing update banner to show the drain count.
+`TestSchedulerApplyPendingWaitsForBothAttempts` and
+`TestStartupDoesNotReclaimLiveWorkAttempts` cover the update and persistence boundary
+and replace the old startup-reclaim regression in the invariant manifest.
+`TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled` also runs through
+the manifest to preserve CLI coordination when automatic updates are off.
+
 **Why:** The September 10 audit identified interactions among self-protection
 mechanisms as the main source of incidents; adding another conditional guard
 perpetuates that failure mode.

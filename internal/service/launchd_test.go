@@ -46,6 +46,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 	}
 	var commands [][]string
 	loaded := false
+	stopped := false
 	cfg := normalizeConfig(Config{
 		UID:              "501",
 		LaunchdPlistPath: path,
@@ -58,7 +59,16 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 				loaded = true
 				return "", nil
 			}
+			if len(args) > 0 && args[0] == "kill" {
+				if !reflect.DeepEqual(args, []string{"kill", "SIGTERM", "gui/501/" + launchdLabel}) {
+					t.Errorf("signal command = %v", args)
+				}
+				stopped = true
+			}
 			if len(args) > 0 && args[0] == "print" {
+				if stopped {
+					return "state = exited\n", nil
+				}
 				if !loaded {
 					return "Could not find service", errors.New("exit status 113")
 				}
@@ -91,7 +101,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 	if err := manager.Restart(t.Context()); err != nil {
 		t.Fatalf("Restart() error = %v", err)
 	}
-	wantRestart := []string{"launchctl", "kickstart", "-k", "gui/501/" + launchdLabel}
+	wantRestart := []string{"launchctl", "kickstart", "gui/501/" + launchdLabel}
 	if len(commands) == 0 {
 		t.Fatal("commands are empty after restart")
 	}

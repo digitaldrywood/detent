@@ -115,8 +115,13 @@ func (m *systemdManager) Start(ctx context.Context) error {
 }
 
 func (m *systemdManager) Restart(ctx context.Context) error {
-	_, err := m.cfg.RunCommand(ctx, "systemctl", m.systemctlArgs("restart", systemdUnitName)...)
-	return err
+	if _, err := m.cfg.RunCommand(ctx, "systemctl", m.systemctlArgs("kill", "--kill-whom=main", "--signal=SIGTERM", systemdUnitName)...); err != nil {
+		return err
+	}
+	if err := m.WaitStopped(ctx); err != nil {
+		return err
+	}
+	return m.Start(ctx)
 }
 
 func (m *systemdManager) WaitStopped(ctx context.Context) error {
@@ -178,7 +183,8 @@ func systemdUnit(cfg Config) string {
 		"ExecStart=" + strings.Join(execStartParts, " "),
 		"Restart=on-failure",
 		"RestartSec=5",
-		"KillMode=control-group",
+		"KillMode=mixed",
+		"TimeoutStopSec=infinity",
 		"",
 		"[Install]",
 		"WantedBy=default.target",

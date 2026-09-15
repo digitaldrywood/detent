@@ -274,7 +274,23 @@ func (s *Scheduler) ApplyPending(ctx context.Context) (Status, error) {
 	if !s.pendingIdle() {
 		return Status{}, ErrNoPendingUpdate
 	}
-	return s.applyLocked(ctx, nil)
+	return s.drainAndApplyLocked(ctx)
+}
+
+// ApplyRelease applies an explicitly requested update through the runtime drain,
+// including when automatic checking or applying is disabled.
+func (s *Scheduler) ApplyRelease(ctx context.Context, fromRelease bool) (Status, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil || s.cfg.Updater == nil || s.cfg.ReserveDrain == nil {
+		return Status{}, errors.New("runtime update is unavailable")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	opts := s.cfg.ApplyOptions
+	opts.FromRelease = fromRelease
+	return s.drainAndApplyWithOptionsLocked(ctx, opts)
 }
 
 func (s *Scheduler) applyWhenIdle(ctx context.Context) (Status, error) {
@@ -297,6 +313,10 @@ func (s *Scheduler) applyWhenIdle(ctx context.Context) (Status, error) {
 }
 
 func (s *Scheduler) drainAndApplyLocked(ctx context.Context) (Status, error) {
+	return s.drainAndApplyWithOptionsLocked(ctx, s.cfg.ApplyOptions)
+}
+
+func (s *Scheduler) drainAndApplyWithOptionsLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "draining"
 		status.LastError = ""
@@ -309,10 +329,14 @@ func (s *Scheduler) drainAndApplyLocked(ctx context.Context) (Status, error) {
 		})
 		return Status{}, fmt.Errorf("drain runtime for automatic update: %w", err)
 	}
-	return s.applyLocked(ctx, releaseDrain)
+	return s.applyWithOptionsLocked(ctx, releaseDrain, opts)
 }
 
 func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status, error) {
+	return s.applyWithOptionsLocked(ctx, releaseIdle, s.cfg.ApplyOptions)
+}
+
+func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func(), applyOptions ApplyOptions) (Status, error) {
 	keepIdleReserved := false
 	defer func() {
 		if !keepIdleReserved && releaseIdle != nil {
@@ -324,7 +348,6 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 		status.LastError = ""
 	})
 
-	applyOptions := s.cfg.ApplyOptions
 	applyOptions.AssumeYes = true
 	applyOptions.Stdout = io.Discard
 	applyOptions.Stderr = io.Discard

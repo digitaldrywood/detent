@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
@@ -191,5 +193,25 @@ func TestRequestUpdateRestartRacesManualDrainWithoutOverwritingOwner(t *testing.
 			t.Fatalf("Binary() = %q, want empty or update binary", restart.Binary())
 		}
 		deactivate()
+	}
+}
+
+func TestDrainCeilingIncludesSelectedSessionLevels(t *testing.T) {
+	t.Parallel()
+	for _, hours := range []int{12, 24} {
+		t.Run((time.Duration(hours) * time.Hour).String(), func(t *testing.T) {
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerMemory
+			duration := hours * 60 * 60 * 1000
+			cfg.Agents.ModelSelection.Levels = map[string]workflowconfig.ModelSelectionDefaults{"high": {MaxSessionDurationMS: &duration}}
+			tracked := newShutdownRuntimeProjectWithConfig(t, "fixture", cfg, orchestrator.FakeRunner{})
+			registry := project.NewRegistry()
+			if err := registry.Set(tracked); err != nil {
+				t.Fatal(err)
+			}
+			if got := shutdownDrainTimeout(registry); got != time.Duration(duration)*time.Millisecond {
+				t.Fatalf("ceiling = %s", got)
+			}
+		})
 	}
 }

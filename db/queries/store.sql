@@ -993,21 +993,6 @@ WHERE completed_at IS NULL
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
 RETURNING *;
 
--- name: ReclaimActiveWorkAttempts :many
-UPDATE work_attempts
-SET status = ?,
-    terminal_state = ?,
-    completed_at = ?,
-    heartbeat_at = ?,
-    error_class = ?,
-    error_message = ?,
-    phase = ?,
-    status_message = ?
-WHERE completed_at IS NULL
-  AND project_id = ?
-  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-RETURNING *;
-
 -- name: CreateSchedulerDecision :one
 INSERT INTO scheduler_decisions (
   project_id,

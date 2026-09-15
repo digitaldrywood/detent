@@ -1302,7 +1302,7 @@ func TestRunningShutdownConfigComputesDrainTimeoutFromCurrentRegistry(t *testing
 		},
 	}
 
-	wantDefault := time.Duration(workflowconfig.DefaultShutdownDrainTimeoutMS) * time.Millisecond
+	wantDefault := runtimeUpdateDrainTimeout(registry)
 	if got := shutdownDrainTimeoutForConfig(cfg); got != wantDefault {
 		t.Fatalf("shutdownDrainTimeoutForConfig() = %v, want %v", got, wantDefault)
 	}

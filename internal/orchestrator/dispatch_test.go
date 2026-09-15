@@ -4107,10 +4107,6 @@ func (s *recordingWorkAttemptStore) TimeoutExpiredWorkAttempts(context.Context, 
 	return append([]store.WorkAttempt(nil), s.reclaimed...), nil
 }
 
-func (s *recordingWorkAttemptStore) ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error) {
-	return append([]store.WorkAttempt(nil), s.reclaimed...), nil
-}
-
 func (s *recordingWorkAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
 	return nil, nil
 }

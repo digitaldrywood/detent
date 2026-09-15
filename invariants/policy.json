@@ -9,7 +9,7 @@
       "TestAttemptMetadataRetainsApprovedPolicy",
       "TestConfiguredTerminalRetryAfterStoreRestart",
       "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
-      "TestServiceRestartsRecoverRetainedWorkAndDispatch",
+      "TestStartupDoesNotReclaimLiveWorkAttempts",
       "TestHumanQuestionRestartAndConcurrentRequests",
       "TestHumanQuestionReplyAuthorization",
       "TestHumanQuestionIndependentRework",
@@ -58,6 +58,8 @@
       "TestMandatoryEvidence"
     ],
     "./internal/update": [
+      "TestSchedulerApplyPendingWaitsForBothAttempts",
+      "TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled",
       "TestStartupRecoveryPersistsCrashLoopAcrossProcesses",
       "TestStartupRecoveryAttemptsOneUpdatePerVersion",
       "TestReplaceBinaryRollsBackWhenVerificationFails",

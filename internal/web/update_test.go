@@ -2,11 +2,17 @@ package web_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/telemetry"
 
 	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -42,6 +48,12 @@ func TestUpdateApplyEndpoint(t *testing.T) {
 			wantStatus: http.StatusConflict,
 			want:       "No Detent update is pending",
 			wantCalls:  1,
+		},
+		{
+			name:       "explicit release",
+			applier:    &updateApplierStub{status: update.Status{LatestVersion: "1.2.4"}},
+			form:       url.Values{"confirm": {"true"}, "release": {"true"}, "from_release": {"true"}},
+			wantStatus: http.StatusAccepted, want: "Detent is restarting", wantCalls: 1,
 		},
 		{
 			name:       "applies update",
@@ -107,4 +119,36 @@ type updateApplierStub struct {
 func (s *updateApplierStub) ApplyPending(context.Context) (update.Status, error) {
 	s.calls++
 	return s.status, s.err
+}
+
+func (s *updateApplierStub) ApplyRelease(ctx context.Context, fromRelease bool) (update.Status, error) {
+	return s.ApplyPending(ctx)
+}
+
+func TestAPIStateReportsUpdateDrain(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{0, 2} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			deps := testDeps(t)
+			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now(), Update: telemetry.Update{State: "draining", ActiveAttempts: count}}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/state", nil))
+			var got struct {
+				Status string
+				Update telemetry.Update
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != "draining" || got.Update.State != "draining" || got.Update.ActiveAttempts != count {
+				t.Fatalf("state = %+v", got)
+			}
+		})
+	}
 }
