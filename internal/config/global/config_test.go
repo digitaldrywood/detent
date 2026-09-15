@@ -632,6 +632,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 			},
 			FairShare: map[string]any{"half_life": "30m"},
 			Startup:   map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+			Cache:     defaultSettings().Cache,
 			Memory:    defaultSettings().Memory,
 			IO:        defaultSettings().IO,
 			CPU:       defaultSettings().CPU,
@@ -644,6 +645,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		},
 		Projects: []Project{
 			{
+				GlobalCache:      defaultSettings().Cache,
 				ID:               "detent",
 				Pool:             "code",
 				Workflow:         paths.workflowPath,

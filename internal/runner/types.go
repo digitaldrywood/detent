@@ -388,8 +388,6 @@ type AgentTurnRequest struct {
 	Environment             procgroup.Environment
 	MaxRSSBytes             uint64
 	RSSPollInterval         time.Duration
-	cacheStrategy           string
-	projectID               string
 	workerGitHub            workerGitHubPolicy
 	processRSS              func(context.Context, procgroup.Identity) (uint64, error)
 }

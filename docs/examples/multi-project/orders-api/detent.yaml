@@ -39,7 +39,6 @@ polling:
 workspace:
   root: /srv/detent/worktrees/orders-api
   source_root: /srv/detent/repos/orders-api
-  cache_strategy: isolated
   auto_branch: true
 
 deliverable:

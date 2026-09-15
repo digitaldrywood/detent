@@ -18,6 +18,7 @@ import (
 	intakeconfig "github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 const (
@@ -136,6 +137,7 @@ func (u Update) NormalizedMaxDeferralHours() int {
 }
 
 type Settings struct {
+	Cache               toolcache.Policy                   `yaml:"cache,omitempty"`
 	Agents              workflowconfig.Agents              `yaml:"agents,omitempty"`
 	Budget              workflowconfig.AgentBudgetDefaults `yaml:"budget,omitempty"`
 	MaxConcurrentAgents int                                `yaml:"max_concurrent_agents"`
@@ -217,6 +219,7 @@ type AgentPool struct {
 type Project struct {
 	GlobalAgents             workflowconfig.Agents              `yaml:"-"`
 	GlobalBudget             workflowconfig.AgentBudgetDefaults `yaml:"-"`
+	GlobalCache              toolcache.Policy                   `yaml:"-"`
 	ID                       string                             `yaml:"id"`
 	Pool                     string                             `yaml:"pool,omitempty"`
 	Workflow                 string                             `yaml:"workflow"`
@@ -721,6 +724,12 @@ func (c Config) Validate(opts ...Option) error {
 	}
 
 	var problems []string
+	if c.Global.Cache.MaxAge < 0 {
+		problems = append(problems, "global.cache.max_age must be positive")
+	}
+	if c.Global.Cache.MaxBytes < 0 {
+		problems = append(problems, "global.cache.max_bytes must be positive")
+	}
 	if strings.TrimSpace(c.APIVersion) == "" {
 		problems = append(problems, "apiVersion: is required")
 	} else if c.APIVersion != APIVersion {
@@ -1038,6 +1047,7 @@ func defaultConfig(path string) Config {
 
 func defaultSettings() Settings {
 	return Settings{
+		Cache:               (toolcache.Policy{}).Normalized(),
 		MaxConcurrentAgents: 8,
 		RateWindowPacing:    workflowconfig.DefaultRateWindowPacing(),
 		Scheduling:          SchedulingWeighted,
@@ -2026,6 +2036,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	for index := range builtProjects {
 		builtProjects[index].GlobalAgents = settings.Agents
 		builtProjects[index].GlobalBudget = settings.Budget
+		builtProjects[index].GlobalCache = settings.Cache.Normalized()
 	}
 	return Config{
 		Path:                  path,
@@ -2154,6 +2165,12 @@ func buildUpdate(value any) (Update, error) {
 
 func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	settings := defaultSettings()
+	if attrs["cache"] != nil {
+		if err := decodeYAMLValue(attrs["cache"], &settings.Cache); err != nil {
+			return Settings{}, fmt.Errorf("global.cache: %w", err)
+		}
+	}
+	settings.Cache = settings.Cache.Normalized()
 	if attrs["agents"] != nil {
 		if err := decodeYAMLValue(attrs["agents"], &settings.Agents); err != nil {
 			return Settings{}, fmt.Errorf("global.agents: %w", err)

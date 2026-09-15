@@ -24,6 +24,7 @@ import (
 
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -39,9 +40,10 @@ type ServiceFactory func(servicepkg.Config) (ServiceRunner, error)
 
 type statusServiceRunner struct {
 	ServiceRunner
-	fallbackURL string
-	credential  string
-	httpDo      func(*http.Request) (*http.Response, error)
+	inspectCaches func(context.Context) toolcache.Report
+	fallbackURL   string
+	credential    string
+	httpDo        func(*http.Request) (*http.Response, error)
 }
 
 func defaultServiceFactory(cfg servicepkg.Config) (ServiceRunner, error) {
@@ -185,12 +187,14 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	}
 	factory := opts.service
 	statusHTTPDo := opts.httpDo
+	inspectCaches := toolcache.Inspect
 	statusCredential := dashboardAPICredential(cfg.APIToken, opts.lookupEnv)
 	if factory == nil {
 		factory = defaultServiceFactory
 	}
 	if opts.serviceInjected {
 		statusHTTPDo = nil
+		inspectCaches = nil
 	}
 	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
 	runner, err := factory(servicepkg.Config{
@@ -208,7 +212,7 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		return nil, err
 	}
 	if cmd.Name() == "status" {
-		return statusServiceRunner{ServiceRunner: runner, fallbackURL: dashboardURL, credential: statusCredential, httpDo: statusHTTPDo}, nil
+		return statusServiceRunner{ServiceRunner: runner, inspectCaches: inspectCaches, fallbackURL: dashboardURL, credential: statusCredential, httpDo: statusHTTPDo}, nil
 	}
 	return runner, nil
 }
@@ -217,6 +221,10 @@ func (r statusServiceRunner) Status(ctx context.Context) (servicepkg.Status, err
 	status, err := r.ServiceRunner.Status(ctx)
 	if err != nil {
 		return servicepkg.Status{}, err
+	}
+	if r.inspectCaches != nil {
+		cache := r.inspectCaches(ctx)
+		status.HostCache = &cache
 	}
 	status.DashboardURL = r.fallbackURL
 	if dashboardURL, ok := installedServiceDashboardURL(status.ServiceManager, status.DefinitionPath, status.DashboardURL); ok {
@@ -543,6 +551,9 @@ func writeServiceStatusText(out io.Writer, status servicepkg.Status) error {
 		"Service manager: " + formatServiceManager(servicepkg.ManagerInfo{Name: status.ServiceManager, Scope: status.ServiceScope}),
 		"Service: " + status.Service,
 		"State: " + string(status.State),
+	}
+	if status.HostCache != nil {
+		lines = append(lines, "Host Go caches: "+status.HostCache.String())
 	}
 	if status.PID > 0 {
 		lines = append(lines, "PID: "+strconv.Itoa(status.PID))

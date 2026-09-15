@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
@@ -81,7 +82,11 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.type", "workspaceWrite")
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.networkAccess", true)
-	assertJSONContains(t, sent[3].Params, "sandboxPolicy.writableRoots", []any{"/existing", "/extra"})
+	paths, err := toolcache.Resolve(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONContains(t, sent[3].Params, "sandboxPolicy.writableRoots", []any{"/existing", "/extra", paths.Build, paths.Modules})
 	assertJSONContains(t, sent[3].Params, "model", "gpt-5-codex")
 	assertJSONContains(t, sent[3].Params, "effort", "high")
 

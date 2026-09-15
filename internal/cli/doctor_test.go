@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -6690,6 +6691,9 @@ func assertDoctorMissingCheck(t *testing.T, report doctorReport, name string) {
 
 func successfulDoctorDeps() doctorDeps {
 	return doctorDeps{
+		inspectCaches: func(context.Context) toolcache.Report {
+			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
+		},
 		codexStorage: func(context.Context, string, workflowconfig.Config, func(string) string) []doctorCheck { return nil },
 		proposalLaneWriter: func(ctx context.Context, _ string, _ workflowconfig.Config, tracker connector.Connector, issue connector.Issue, target string) error {
 			return tracker.UpdateIssueState(ctx, issue.ID, target)

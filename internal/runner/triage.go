@@ -109,7 +109,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		ToolInstructions: triageInstructions, ReadOnly: true, Model: model, ModelProvider: provider,
 		ServiceTier: tier, ReasoningEffort: effort, MaxTurns: 1, TurnTimeout: 2 * time.Minute, MaxDuration: 2 * time.Minute,
 		Environment: environment, MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval,
-		projectID: r.projectID, processRSS: r.processRSS,
+		processRSS: r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
 			result.TurnStarted = true

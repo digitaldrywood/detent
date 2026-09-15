@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 const (
@@ -133,6 +134,7 @@ type Config struct {
 	BudgetRefusalCooldown         time.Duration
 	WorkspaceCleanupIdleTTL       time.Duration
 	WorkspaceCleanupSweepInterval time.Duration
+	HostCache                     toolcache.Policy
 	ContinuationRetryDelay        time.Duration
 	FailureRetryBaseDelay         time.Duration
 	SelectorPersona               string
@@ -201,6 +203,7 @@ type SchedulingSource interface {
 }
 
 type Dependencies struct {
+	TrimHostCache        func(context.Context, toolcache.Policy, time.Time) error
 	Connector            connector.Connector
 	Scheduling           SchedulingSource
 	Runner               Runner
@@ -295,6 +298,7 @@ type Orchestrator struct {
 	validator               Validator
 	securityAuditor         SecurityAuditor
 	reaper                  WorkspaceReaper
+	trimHostCache           func(context.Context, toolcache.Policy, time.Time) error
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
 	globalDispatchReady     chan struct{}
@@ -689,6 +693,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validator:               validator,
 		securityAuditor:         securityAuditor,
 		reaper:                  reaper,
+		trimHostCache:           deps.TrimHostCache,
 		logger:                  logger,
 		globalDispatchGate:      deps.GlobalDispatchGate,
 		readMemoryPressure:      readMemoryPressure,

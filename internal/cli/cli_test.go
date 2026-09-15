@@ -1116,6 +1116,7 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	}
 	got := cfg.Projects[0]
 	want := globalconfig.Project{
+		GlobalCache:   cfg.Global.Cache,
 		ID:            "detent",
 		Workflow:      paths.workflowPath,
 		WorkflowRef:   "origin/main",

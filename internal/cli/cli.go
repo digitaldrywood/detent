@@ -820,6 +820,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 				return projectExistsError(cfg.ID)
 			}
 
+			cfg.GlobalCache = global.Global.Cache.Normalized()
 			global.Projects = append(global.Projects, cfg)
 			if err := opts.write(path, global); err != nil {
 				return err

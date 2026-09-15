@@ -36,7 +36,6 @@ polling:
 workspace:
   root: /srv/detent/worktrees/storefront
   source_root: /srv/detent/repos/storefront
-  cache_strategy: isolated
   auto_branch: true
 
 deliverable:
