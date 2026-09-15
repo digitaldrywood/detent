@@ -495,16 +495,22 @@ worker where no queue exists. These tests do not inspect live GitHub settings.
 `merge_worker_programmatic_merge` lane event or `programmatic_merge_failed`
 attempt in the last 24 hours fails the check. The store records no queue
 activation time, so a merge from before a queue was enabled can fail the
-check until it ages out of that day; a second queue removal routing to Human
-Review is the budget, not a bypass.
+check until it ages out of that day; a second queue removal on the same PR head routes to Rework under the
+existing budget, not through a merge bypass.
 
 Queue removal is consumed once by the existing removal accounting (#2621).
 The first removal clears ended queue ownership and leaves the issue in Merging;
 the next pass uses normal admission for an eligible PR. Repeated observations
 of that removal do not route clean branches to Rework or spend another attempt.
-The second distinct removal retains the Human Review budget outcome. Removal
-accounting is persisted in the existing workflow timeline before retry admission
-and restored after restart; the budget lane transition resets the accounting.
+The second distinct removal on the same PR head routes to the configured Rework
+lane with available failed job, workflow run, and test diagnostics (#2738). Removal
+accounting is persisted with the PR head in the existing workflow timeline before
+retry admission and restored after restart. Rework retains the exhausted head
+budget; a repaired head starts a fresh count. Legacy events without a head retain
+their conservative issue-wide accounting. GitHub commit comparison attributes an
+integration-commit removal only when it contains the current PR head, including
+after local queue-cache loss. `TestNativeMergeQueueHeadBudget` and
+`TestMergeGroupRemovalIdentityAndFailure` cover head identity and failure evidence.
 `TestNativeMergeQueueBudgetSurvivesRestart` exercises SQLite close/reopen between
 attempts, and `TestNativeMergeQueueRemovalStorageFailure` verifies that unavailable
 accounting cannot authorize admission.
