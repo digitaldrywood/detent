@@ -175,8 +175,17 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 		issue.Comments = connectorIssueComments(comments)
 		issue.WorkpadSignal = parseWorkpadSignal(githubIssueNode{Body: issue.Description, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}, Comments: nodeConnection[issueComment]{Nodes: comments}})
 	}
-	// Native relations are authoritative, including an empty list. Historical
-	// prose is retained only as explanation evidence, never as scheduler input.
+	// Current body declarations and native relations share one blocker list.
+	// Prefer native state for duplicates; historical comments remain diagnostic.
+	seen := make(map[string]struct{}, len(nativeRefs))
+	for _, blocker := range nativeRefs {
+		seen[normalizedIssueIdentifier(blocker.Identifier)] = struct{}{}
+	}
+	for _, blocker := range parseBlockedBy(issue.Description, ref.Owner+"/"+ref.Name) {
+		if _, exists := seen[normalizedIssueIdentifier(blocker.Identifier)]; !exists {
+			nativeRefs = append(nativeRefs, blocker)
+		}
+	}
 	issue.DependencySource = connector.BlockedRefSourceNative
 	issue.DependencyNotes = ignoredProseDependencyNotes(*issue, ref.Owner+"/"+ref.Name, nativeRefs)
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(nativeRefs, issue.Identifier)

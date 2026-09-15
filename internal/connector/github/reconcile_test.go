@@ -33,6 +33,11 @@ func TestConnectorReconcileIssueFetchesOneLabelIssue(t *testing.T) {
 					_, _ = w.Write([]byte(`[]`))
 					return
 				}
+				if r.URL.Path == "/repos/digitaldrywood/detent/issues/100" {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"number":100,"node_id":"I_100","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/100"}`))
+					return
+				}
 				if r.URL.Path != "/repos/digitaldrywood/detent/issues/1133" {
 					t.Fatalf("path = %q, want targeted issue path", r.URL.Path)
 				}
@@ -63,8 +68,11 @@ func TestConnectorReconcileIssueFetchesOneLabelIssue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReconcileIssue() error = %v", err)
 			}
-			if result.Issue.DependencySource != connector.BlockedRefSourceNative || len(result.Issue.BlockedBy) != 0 || len(result.Issue.DependencyNotes) != 1 {
-				t.Fatalf("targeted refresh lost native authority: %+v", result.Issue)
+			if result.Issue.DependencySource != connector.BlockedRefSourceNative || len(result.Issue.BlockedBy) != 1 || len(result.Issue.DependencyNotes) != 0 {
+				t.Fatalf("targeted refresh lost body dependency: %+v", result.Issue)
+			}
+			if ref := result.Issue.BlockedBy[0]; ref.ID != "I_100" || ref.Source != connector.BlockedRefSourceProse || ref.State != "Open" {
+				t.Fatalf("body dependency = %+v", ref)
 			}
 			if !result.Found || result.Issue.ID != "I_1133" || result.Issue.State != tt.wantState {
 				t.Fatalf("ReconcileIssue() = %#v, want found issue in %q", result, tt.wantState)

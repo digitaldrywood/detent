@@ -22,7 +22,8 @@ func TestDependencyAuthority(t *testing.T) {
 		native     string
 		wantSource string
 	}{
-		{name: "native empty ignores body", body: "Depends on: #100", status: http.StatusOK, native: `[]`},
+		{name: "native empty retains body", body: "Depends on: #100", status: http.StatusOK, native: `[]`, wantSource: connector.BlockedRefSourceProse},
+		{name: "bold body duplicate", body: "**Depends on:** #100\n- Depends on #100 so the helpers exist.", status: http.StatusOK, native: `[]`, wantSource: connector.BlockedRefSourceProse},
 		{name: "native empty ignores old workpad", comment: "## Codex Workpad\nBlocked by: #100", status: http.StatusOK, native: `[]`},
 		{name: "native wins", body: "Depends on: #100", status: http.StatusOK, native: `[{"node_id":"I_100","number":100,"state":"open"}]`, wantSource: connector.BlockedRefSourceNative},
 		{name: "unsupported uses body", body: "Depends on: #100", status: http.StatusNotFound, native: `{"message":"Not Found"}`, wantSource: connector.BlockedRefSourceProse},

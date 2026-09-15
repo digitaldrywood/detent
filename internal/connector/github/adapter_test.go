@@ -1382,10 +1382,11 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name:    "empty native list ignores prose",
+			name:    "empty native list retains body",
 			initial: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			status:  http.StatusOK,
 			body:    `[]`,
+			want:    []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -1393,7 +1394,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name: "native excludes unmatched prose",
+			name: "native includes unmatched body",
 			initial: []connector.BlockedRef{
 				{Identifier: "digitaldrywood/detent#100", Source: connector.BlockedRefSourceProse},
 				{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse},
@@ -1405,7 +1406,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 				Identifier: "digitaldrywood/detent#100",
 				State:      "Done",
 				Source:     connector.BlockedRefSourceNative,
-			}},
+			}, {Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -1429,7 +1430,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 			},
 		},
 		{
-			name:             "native only ignores prose on capable repo",
+			name:             "legacy native only retains body on capable repo",
 			dependencySource: dependencySourceNativeOnly,
 			initial:          []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			status:           http.StatusOK,
@@ -1439,7 +1440,7 @@ func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) 
 				Identifier: "digitaldrywood/detent#100",
 				State:      "Open",
 				Source:     connector.BlockedRefSourceNative,
-			}},
+			}, {Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
 			wantCapability: connector.DependencyCapability{
 				Repository:      "digitaldrywood/detent",
 				NativeBlockedBy: nativeDependencyStatusAvailable,
@@ -4124,6 +4125,7 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 				{
 					body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
 				},
+				{method: http.MethodGet, path: "/repos/digitaldrywood/creswoodcorners-phone/issues/163/dependencies/blocked_by?per_page=100", body: `[]`},
 				{
 					method: http.MethodGet,
 					path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
