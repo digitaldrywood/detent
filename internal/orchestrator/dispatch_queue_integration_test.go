@@ -22,6 +22,10 @@ func (g *observedQueueGate) Submit(ctx context.Context, project scheduler.Projec
 	return result, cancel, decision
 }
 
+func (g *observedQueueGate) Update(result <-chan scheduler.DispatchResult, req scheduler.SlotRequest, now time.Time) {
+	g.ProjectDispatchGate.(scheduler.QueuedProjectDispatchGate).Update(result, req, now)
+}
+
 // terminalRefreshConnector injects tracker latency only after the candidate has
 // become terminal, so initial queue submission is unaffected.
 type terminalRefreshConnector struct {
