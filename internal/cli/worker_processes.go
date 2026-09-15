@@ -112,6 +112,17 @@ func reapWorkerProcessesWithCleanup(
 			terminationFailed = true
 		}
 	}
+	// Reuse startup's process reconciliation for durable attempts as well. Project
+	// initialization (or removal from config) must not delay reclaiming old rows.
+	if strings.TrimSpace(reason) == "startup" && !terminationFailed {
+		if attempts, ok := processStore.(interface {
+			ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error)
+		}); ok {
+			if _, err := attempts.ReclaimActiveWorkAttempts(ctx, store.WorkAttemptReclaim{Now: now().UTC()}); err != nil {
+				return errors.Join(result, err)
+			}
+		}
+	}
 	if result != nil && !terminationFailed {
 		return &workerArtifactCleanupError{err: result}
 	}

@@ -15,7 +15,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -560,6 +563,54 @@ func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
 			if tt.reapErr == nil && tt.cleanupErr != nil && !errors.Is(err, tt.cleanupErr) {
 				t.Fatalf("error %v does not wrap %v", err, tt.cleanupErr)
 			}
+		})
+	}
+}
+
+func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
+	t.Parallel()
+	for _, projectID := range []string{"configured", "removed"} {
+		t.Run(projectID, func(t *testing.T) {
+			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			now := time.Now().UTC()
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", StartedAt: now.Add(-46 * time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now }, nil, func(store.WorkerProcess) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := backend.WorkAttempt(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempt.Status != store.WorkAttemptStatusTerminal {
+				t.Fatalf("status = %s, want terminal before project startup", attempt.Status)
+			}
+			active, err := backend.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(active) != 0 {
+				t.Fatalf("active attempts = %d, want 0", len(active))
+			}
+			issue := connector.NewIssue()
+			issue.ID, issue.State = "stranded", "In Progress"
+			issue.Identifier, issue.Title = "project#2749", "Resume stranded work"
+			runner := newRestartRecoveryRunner()
+			orch, stop := runRestartRecoveryOrchestrator(t, memory.New(memory.Config{Issues: []connector.Issue{issue}}), runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
+			defer stop()
+			select {
+			case <-runner.started:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("reclaimed card did not dispatch: %+v", restartRecoveryState(t, orch).SchedulerDecisions)
+			}
+
 		})
 	}
 }

@@ -195,6 +195,7 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 	}
 	if err := queries.UpdateCodexSessionFinalStateByWorkAttempt(ctx, sqlc.UpdateCodexSessionFinalStateByWorkAttemptParams{
 		FinalState:    nullString(attrs.SessionFinalState),
+		CompletedAt:   sql.NullString{String: completedAt, Valid: true},
 		WorkAttemptID: nullPositiveInt64(attrs.AttemptID),
 	}); err != nil {
 		return fmt.Errorf("updating work attempt session final state: %w", err)
@@ -382,6 +383,41 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 	})
 	if err != nil {
 		return nil, fmt.Errorf("timing out expired work attempts: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) ReclaimActiveWorkAttempts(ctx context.Context, attrs WorkAttemptReclaim) ([]WorkAttempt, error) {
+	projectID := strings.TrimSpace(attrs.ProjectID)
+	now, err := requiredTimestamp("now", attrs.Now)
+	if err != nil {
+		return nil, err
+	}
+	terminalState := attrs.TerminalState
+	if terminalState == "" {
+		terminalState = WorkAttemptTerminalAbandoned
+	}
+	errorClass := attrs.ErrorClass
+	if strings.TrimSpace(errorClass) == "" {
+		errorClass = "service_restart"
+	}
+	errorMessage := attrs.ErrorMessage
+	if strings.TrimSpace(errorMessage) == "" {
+		errorMessage = "active work attempt reclaimed after service restart"
+	}
+	rows, err := s.queries.ReclaimActiveWorkAttempts(ctx, sqlc.ReclaimActiveWorkAttemptsParams{
+		Status:          string(WorkAttemptStatusTerminal),
+		TerminalState:   nullString(string(terminalState)),
+		CompletedAt:     sql.NullString{String: now, Valid: true},
+		HeartbeatAt:     sql.NullString{String: now, Valid: true},
+		ErrorClass:      nullString(errorClass),
+		ErrorMessage:    nullString(errorMessage),
+		Phase:           nullString("recovered"),
+		StatusMessage:   nullString(errorMessage),
+		FilterProjectID: projectID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reclaiming active work attempts: %w", err)
 	}
 	return workAttemptsFromRows(rows)
 }

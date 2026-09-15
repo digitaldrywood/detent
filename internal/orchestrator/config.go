@@ -264,11 +264,8 @@ func normalizeConfig(cfg Config) Config {
 	if strings.TrimSpace(cfg.StopRunTargetState) == "" {
 		cfg.StopRunTargetState = blockedStatusState
 	}
-	if len(cfg.StopRunPriorityNames) == 0 {
-		cfg.StopRunPriorityNames = map[int]string{1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
-	} else {
-		cfg.StopRunPriorityNames = cloneStopRunPriorityNames(cfg.StopRunPriorityNames)
-	}
+	cfg.StopRunPriorityNames = normalizeStopRunPriorityNames(cfg.StopRunPriorityNames)
+
 	if cfg.WorkspaceCleanupIdleTTL <= 0 {
 		cfg.WorkspaceCleanupIdleTTL = defaultWorkspaceCleanupIdleTTL
 	}
@@ -386,6 +383,13 @@ func stopRunPriorityNames(value workflowconfig.StringOrMap) map[int]string {
 		}
 	}
 	return result
+}
+
+func normalizeStopRunPriorityNames(values map[int]string) map[int]string {
+	if len(values) == 0 {
+		return map[int]string{1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
+	}
+	return cloneStopRunPriorityNames(values)
 }
 
 func cloneStopRunPriorityNames(values map[int]string) map[int]string {

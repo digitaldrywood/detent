@@ -321,52 +321,66 @@ INSERT INTO codex_sessions (id, work_attempt_id, identifier, started_at, complet
 func TestCompleteWorkAttemptFinalizesLinkedSessionOutcome(t *testing.T) {
 	t.Parallel()
 
-	ctx := t.Context()
-	backend := openTestStore(t, ctx)
-	now := time.Date(2026, 8, 27, 11, 0, 0, 0, time.UTC)
-	attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
-		ProjectID:     "detent",
-		IssueID:       "issue-1998",
-		Identifier:    "digitaldrywood/detent#1998",
-		WorkerType:    "implementation",
-		AttemptNumber: 1,
-		StartedAt:     now.Add(-time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("StartWorkAttempt() error = %v", err)
-	}
-	sessionID, err := backend.StartSession(ctx, SessionStart{
-		WorkAttemptID: attemptID,
-		ProjectID:     "detent",
-		IssueID:       "issue-1998",
-		Identifier:    "digitaldrywood/detent#1998",
-		StartedAt:     now.Add(-time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("StartSession() error = %v", err)
-	}
-	if err := backend.FinishSession(ctx, sessionID, SessionFinish{
-		CompletedAt: now,
-		FinalState:  "lane_revoked",
-	}); err != nil {
-		t.Fatalf("FinishSession() error = %v", err)
-	}
+	for _, finished := range []bool{false, true} {
+		t.Run(fmt.Sprintf("finished=%t", finished), func(t *testing.T) {
+			ctx := t.Context()
+			backend := openTestStore(t, ctx)
+			now := time.Date(2026, 8, 27, 11, 0, 0, 0, time.UTC)
+			attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+				ProjectID:     "detent",
+				IssueID:       "issue-1998",
+				Identifier:    "digitaldrywood/detent#1998",
+				WorkerType:    "implementation",
+				AttemptNumber: 1,
+				StartedAt:     now.Add(-time.Hour),
+			})
+			if err != nil {
+				t.Fatalf("StartWorkAttempt() error = %v", err)
+			}
+			sessionID, err := backend.StartSession(ctx, SessionStart{
+				WorkAttemptID: attemptID,
+				ProjectID:     "detent",
+				IssueID:       "issue-1998",
+				Identifier:    "digitaldrywood/detent#1998",
+				StartedAt:     now.Add(-time.Hour),
+			})
+			if err != nil {
+				t.Fatalf("StartSession() error = %v", err)
+			}
+			if finished {
+				if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+					CompletedAt: now.Add(-time.Minute),
+					FinalState:  "lane_revoked",
+				}); err != nil {
+					t.Fatalf("FinishSession() error = %v", err)
+				}
 
-	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
-		AttemptID:         attemptID,
-		CompletedAt:       now,
-		TerminalState:     WorkAttemptTerminalDelivered,
-		SessionFinalState: "delivered",
-	}); err != nil {
-		t.Fatalf("CompleteWorkAttempt() error = %v", err)
-	}
+			}
+			if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
+				AttemptID:         attemptID,
+				CompletedAt:       now,
+				TerminalState:     WorkAttemptTerminalDelivered,
+				SessionFinalState: "delivered",
+			}); err != nil {
+				t.Fatalf("CompleteWorkAttempt() error = %v", err)
+			}
 
-	session, err := backend.Queries().GetCodexSession(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("GetCodexSession() error = %v", err)
-	}
-	if session.FinalState.String != "delivered" {
-		t.Fatalf("session final_state = %q, want delivered", session.FinalState.String)
+			session, err := backend.Queries().GetCodexSession(ctx, sessionID)
+			if err != nil {
+				t.Fatalf("GetCodexSession() error = %v", err)
+			}
+			if session.FinalState.String != "delivered" {
+				t.Fatalf("session final_state = %q, want delivered", session.FinalState.String)
+			}
+			wantCompleted := now
+			if finished {
+				wantCompleted = now.Add(-time.Minute)
+			}
+			completed, err := time.Parse(time.RFC3339Nano, session.CompletedAt.String)
+			if err != nil || !completed.Equal(wantCompleted) {
+				t.Fatalf("session completed_at = %q, want %s", session.CompletedAt.String, wantCompleted)
+			}
+		})
 	}
 }
 

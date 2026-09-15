@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 // A ready higher-priority project that never acquires must not strand real work.
@@ -110,9 +111,14 @@ func runRestartRecoveryOrchestrator(
 	runner orchestrator.Runner,
 	gate scheduler.ProjectDispatchGate,
 	project scheduler.ProjectCandidate,
+	attempts ...store.WorkAttemptStore,
 ) (*orchestrator.Orchestrator, func()) {
 	t.Helper()
 
+	var attemptStore store.WorkAttemptStore
+	if len(attempts) > 0 {
+		attemptStore = attempts[0]
+	}
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:        time.Hour,
 		MaxConcurrentAgents: 1,
@@ -121,6 +127,7 @@ func runRestartRecoveryOrchestrator(
 		TerminalStates:      []string{"Done", "Cancelled"},
 	}, orchestrator.Dependencies{
 		Connector:          tracker,
+		WorkAttempts:       attemptStore,
 		Runner:             runner,
 		GlobalDispatchGate: gate,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
