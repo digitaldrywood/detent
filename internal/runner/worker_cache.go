@@ -1,8 +1,6 @@
 package runner
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -12,8 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
-
-const sharedCacheKeyDigestLength = 12
 
 func configureWorkerCache(request *AgentTurnRequest) error {
 	if request == nil {
@@ -64,13 +60,7 @@ func configureWorkerCache(request *AgentTurnRequest) error {
 }
 
 func sharedWorkerCacheRoot(workspacePath string, projectID string) string {
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		projectID = defaultProjectID
-	}
-	sum := sha256.Sum256([]byte(projectID))
-	key := workspace.SafeKey(projectID) + "-" + hex.EncodeToString(sum[:])[:sharedCacheKeyDigestLength]
-	return filepath.Join(filepath.Dir(filepath.Clean(workspacePath)), ".detent", "cache", key)
+	return workspace.SharedCacheRoot(filepath.Dir(filepath.Clean(workspacePath)), projectID)
 }
 
 func appendUniquePath(paths []string, candidate string) []string {

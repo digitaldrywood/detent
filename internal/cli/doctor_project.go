@@ -494,6 +494,7 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " local SQLite tracker")
 		checks = append(checks, checkDoctorLocalSQLiteTracker(ctx, id, project, workflow.Config, deps))
 	}
+	checks = append(checks, checkDoctorSharedCache(ctx, id, workflow.Config.Workspace.Root))
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
 		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
 		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))

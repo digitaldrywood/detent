@@ -73,6 +73,7 @@ type State struct {
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
 	WorkspaceRetention       []workspace.RetentionTotals
+	SharedCache              workspace.CacheUsage
 	CleanupFailures          map[string]string
 	CleanupFailureAt         time.Time
 	RecentEvents             []telemetry.ActivityEvent
@@ -505,6 +506,7 @@ func (s State) clone() State {
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
 		WorkspaceRetention:       append([]workspace.RetentionTotals(nil), s.WorkspaceRetention...),
+		SharedCache:              s.SharedCache,
 		CleanupFailures:          maps.Clone(s.CleanupFailures),
 		CleanupFailureAt:         s.CleanupFailureAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),

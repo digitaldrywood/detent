@@ -72,6 +72,7 @@ func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *S
 		return true
 	}
 	result, err := reconciler.ReconcileWorkspaces(ctx, activeWorkspaceIssues(state, o.cfg.TerminalStates))
+	state.SharedCache = result.Cache
 	if state.CleanupFailures == nil {
 		state.CleanupFailures = map[string]string{}
 	}
