@@ -444,6 +444,12 @@ duration expiry, token usage, and configuration changes during triage.
 This is the issue-authorized replacement reason and consolidation, not an
 additional breaker, configuration key, or recovery loop. Non-PR artifact and
 explicit operational completion workflows retain their own deliverable rules.
+Already-merged completion no longer requires pre-dispatch authorization (#2778):
+the worker records the merging PR, commit, tracked branch/head, successful ancestry
+check, and acceptance evidence. Existing operational completion and current-attempt
+checks persist and publish this evidence before Done; incomplete evidence retains
+the PR gate. `TestMergedCompletionEvidence` and
+`TestTransitionAlreadyMergedCompletion` cover this consolidation.
 `TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
 `TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
 `TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
@@ -676,7 +682,12 @@ work and obscure whether an issue came from an operator or automation.
 contract through the manifest; `TestMachineIssueDuplicate`,
 `TestMachineIssueSeparateConnectors`, and `TestMachineOriginSurvivesBodyUpdates`
 exercise duplicate commenting, concurrent publishers, and durable origin stamping. Use `file_machine_issue`, with a stable problem key,
-for worker discoveries. Review must ensure a fingerprint describes the problem
+for worker discoveries. A proven upstream defect uses the same tool with an
+explicit destination repository, preserving origin and deduplication there and
+publishing the link and evidence on the original issue. Source board configuration
+is never applied upstream. `TestMachineIssueUpstreamTool` and
+`TestRepositoryMachineIssue` cover routing, reuse, and publication failure.
+Review must ensure a fingerprint describes the problem
 rather than a timestamp, attempt, or wording variation.
 
 **Change:** Edit INV-7 and origin/deduplication scenarios in the same PR before

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -239,6 +240,53 @@ func TestMachineIssueListingAbsenceIsNotClosure(t *testing.T) {
 			closed, err := backend.IntakeIssueClosed(t.Context(), "I_1")
 			if err != nil || closed != (state == "closed") {
 				t.Fatalf("closed=%v err=%v", closed, err)
+			}
+		})
+	}
+}
+
+func TestRepositoryMachineIssue(t *testing.T) {
+	t.Parallel()
+	for _, reused := range []bool{false, true} {
+		t.Run(strconv.FormatBool(reused), func(t *testing.T) {
+			t.Parallel()
+			body := issueorigin.Stamp("upstream.go:42; no local implementation", issueorigin.Origin{Kind: "worker", Source: "5914", Fingerprint: "upstream-defect"})
+			existing := "[]"
+			path := "/repos/upstream/dependency/issues"
+			response := fmt.Sprintf(`{"node_id":"I_42","number":42,"state":"open","body":%q,"html_url":"https://github.com/upstream/dependency/issues/42"}`, body)
+			if reused {
+				existing = "[" + response + "]"
+				path += "/42/comments"
+				response = `{"node_id":"IC_occurrence"}`
+			}
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{method: http.MethodGet, path: "/repos/upstream/dependency/issues?state=open&per_page=100&page=1", body: existing},
+				{method: http.MethodPost, path: path, body: response},
+			})
+			c := newGitHubTestConnector(t, server, Config{Repository: "example/repo", ProjectSlug: "source-project"})
+			c.machineIssueStore = &machineTestStore{records: map[string]coordination.Record{}}
+			issue, err := c.CreateRepositoryIntakeIssue(t.Context(), "upstream/dependency", intake.IssueDraft{Title: "Defect", Body: body, Labels: []string{"detent:todo"}})
+			if err != nil || issue.Reused != reused || issue.Identifier != "upstream/dependency#42" {
+				t.Fatalf("issue=%+v err=%v", issue, err)
+			}
+			requests := server.requests()
+			if len(requests) != 2 {
+				t.Fatalf("unexpected board mutation: %+v", requests)
+			}
+			posted := requests[1]["body"].(map[string]any)
+			if _, ok := posted["labels"]; ok {
+				t.Fatalf("source labels leaked upstream: %+v", posted)
+			}
+			if !strings.Contains(posted["body"].(string), "upstream.go:42") {
+				t.Fatal("ownership evidence missing")
+			}
+		})
+	}
+	for _, repository := range []string{"", "invalid", "example/repo", "EXAMPLE/REPO"} {
+		t.Run("reject_"+repository, func(t *testing.T) {
+			c := newGitHubTestConnector(t, newGraphQLTestServer(t, nil), Config{Repository: "example/repo"})
+			if _, err := c.CreateRepositoryIntakeIssue(t.Context(), repository, intake.IssueDraft{Title: "Defect"}); err == nil {
+				t.Fatal("accepted invalid upstream")
 			}
 		})
 	}

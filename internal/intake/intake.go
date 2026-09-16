@@ -61,6 +61,12 @@ type IssueStore interface {
 	SetIntakeIssueState(context.Context, string, string) error
 }
 
+// RepositoryIssueStore routes an upstream defect without applying the source
+// project's board configuration to the destination repository.
+type RepositoryIssueStore interface {
+	CreateRepositoryIntakeIssue(context.Context, string, IssueDraft) (Issue, error)
+}
+
 type IssueCreator interface {
 	EnsureIntakeIssue(context.Context, string, IssueDraft) (Issue, bool, error)
 }

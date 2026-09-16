@@ -1360,3 +1360,42 @@ func artifactCompletionTestGate() gate.Config {
 		},
 	}
 }
+
+func mergedCompletionWorkpadBody() string {
+	return strings.Replace(operationalCompletionWorkpadBody("Acceptance regression passed 100 repetitions; git merge-base --is-ancestor merge head exited 0."), "  completion_kind: operational", `  completion_kind: operational
+  completion_merged_pr: https://github.com/example/repo/pull/12
+  completion_merge_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  completion_branch: origin/main
+  completion_branch_head: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  completion_ancestry: verified`, 1)
+}
+
+func TestTransitionAlreadyMergedCompletion(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"In Progress", "Rework"} {
+		t.Run(lane, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now()
+			issue := completionTransitionIssue(lane, "")
+			issue.Description = "Bug already fixed; no operational pre-authorization."
+			issue.Comments = []connector.IssueComment{{Body: mergedCompletionWorkpadBody(), URL: "https://github.test/comment/merge-evidence"}}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand}}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			state.Completed[issue.ID] = Completed{Issue: issue, CompletedAt: now.Add(-time.Minute), FinalState: FinalStateCompleted, CompletionKind: workpad.CompletionOperational}
+			result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+			if len(result.dispatchCandidates) != 0 || len(tracker.updates) != 1 || tracker.updates[0].state != "Done" {
+				t.Fatalf("updates=%+v candidates=%+v", tracker.updates, result.dispatchCandidates)
+			}
+			if len(tracker.comments) != 1 {
+				t.Fatalf("comments=%+v", tracker.comments)
+			}
+			for _, evidence := range []string{"pull/12", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "origin/main", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "100 repetitions", "exited 0"} {
+				if !strings.Contains(tracker.comments[0].body, evidence) {
+					t.Fatalf("audit missing %q: %s", evidence, tracker.comments[0].body)
+				}
+			}
+		})
+	}
+}

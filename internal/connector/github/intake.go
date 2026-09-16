@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -68,6 +69,29 @@ func (c *Connector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDra
 		}
 	}
 	return intakeIssue(issue), nil
+}
+
+// CreateRepositoryIntakeIssue reuses machine identity and duplicate publication
+// for an upstream repository, without enrolling it in this project's board.
+func (c *Connector) CreateRepositoryIntakeIssue(ctx context.Context, repository string, draft intake.IssueDraft) (intake.Issue, error) {
+	repo, ok := pullRequestRepoFromName(strings.TrimSpace(repository))
+	if !ok {
+		return intake.Issue{}, ErrMissingRepository
+	}
+	if strings.EqualFold(repo.Owner+"/"+repo.Name, c.repository.Owner+"/"+c.repository.Name) {
+		return intake.Issue{}, errors.New("upstream repository must differ from the configured repository")
+	}
+	// Share the authenticated client and durable coordination store, not mutexes
+	// or the source project's status mapping. Publication protection resolves the
+	// destination's visibility using the same source policy.
+	target := &Connector{
+		client: c.client, repository: repo, machineIssueStore: c.machineIssueStore,
+		statusSource: GitHubStatusSourceLabel, statusLabelPrefix: defaultGitHubStatusLabelPrefix,
+		projectCache: newProjectCache(githubCacheTTL, c.now),
+		publication:  c.publication, logger: c.logger, now: c.now,
+	}
+	issue, err := target.CreateIssue(ctx, connector.IssueDraft{Title: draft.Title, Body: draft.Body})
+	return intakeIssue(issue), err
 }
 
 func (c *Connector) UpdateIntakeIssue(ctx context.Context, issueID string, draft intake.IssueDraft) (intake.Issue, error) {

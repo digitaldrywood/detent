@@ -661,7 +661,7 @@ func appendFollowupsBlock(prompt string, cfg config.Followups) string {
 	}
 
 	const block = "## Out-of-scope discoveries\n\n" +
-		"File follow-ups only via file_machine_issue in the project's Backlog state; if unavailable, report here. Search open issues; reuse matching fingerprints or a stable problem key (no timestamps/attempt IDs). Include a fenced `detent-agent` block: schema: 1, best-guess `effort` per project rubric. If unavailable, file the issue without a state and say so in the final handoff."
+		"File follow-ups via file_machine_issue in the project's Backlog state; proven upstream defects use repository (owner/repo), without asking. See docs/workflow-completion.md. If unavailable, report here. Search open issues; reuse matching fingerprints or a stable problem key (no timestamps/attempt IDs). Include a fenced `detent-agent` block: schema: 1, best-guess `effort` per project rubric. If unavailable, file the issue without a state and say so in the final handoff."
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block
 }

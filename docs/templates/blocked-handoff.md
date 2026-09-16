@@ -1,10 +1,10 @@
 ## Blocked handoff
 
-Maintain one `## Codex Workpad` comment with plan, validation, and one `detent-status` fence per update. Use `schema: 1`; `status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid. Narrative Workpad sentences are never read as blockers.
+One `## Codex Workpad`: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
 
 The orchestrator is the only writer of tracker lane state. Never change lane labels or status fields, even if WORKFLOW says otherwise.
 
-Before coding, POST the blocker `issue_id` to `dependencies/blocked_by`; retain `Depends on: owner/repo#123` or `Blocked by: #123`. Issue refs: `#N` or `owner/repo#N`, positive N, not URLs. Symbolic refs (`instance:tool`, `go-workflow:step`) with a reason are instance-owned; clear via Workpad. No YAML `blocked_by` key.
+POST real blocker `issue_id` to `dependencies/blocked_by` before coding; retain `Depends on: owner/repo#123`. Refs: positive `#N` or `owner/repo#N`, not URLs. Symbolic refs (`instance:tool`) are instance-owned; clear via Workpad. No YAML `blocked_by`.
 
 ```detent-status
 schema: 1
@@ -15,11 +15,11 @@ blockers:
 human_action: null
 ```
 
-Refs default to issue-state checks, orchestrator ownership, and tick rechecks. Reason-only blockers never auto-clear. `blocked` needs a blocker, `human_action`, or `reason_code`. See docs/structured-workpad-signaling-migration.md for optional predicates and recovery codes.
+Defaults: issue-state/tick checks, orchestrator ownership. `blocked` needs blocker, `human_action`, or `reason_code`; reason-only blockers never auto-clear.
 
-Report credentials/write-policy failures as instance errors, never dependencies or manual-PR requests. Finish independent work before `ask_human_question`; keep `in_progress` and the PR. Never synthesize dependencies or acknowledge breaker parks. Replies authorize only what they say; clarify ambiguity. Report a missing question tool.
+Credentials/write-policy failures are instance errors, never dependencies. Finish independent work before `ask_human_question`; keep `in_progress` and PR. Never invent dependencies or acknowledge breaker parks. Clarify ambiguous replies. Report missing question tool.
 
-For ongoing work use `in_progress`; on success:
+Success:
 
 ```detent-status
 schema: 1
@@ -28,4 +28,6 @@ status: complete
 human_action: null
 ```
 
-No-PR completion requires pre-dispatch issue-body `detent-completion` authorization (`schema: 1`, `completion_kind: operational`). Add `completion_kind: operational` and concrete `completion_evidence` under `fields`, retaining attempt identity. Otherwise the PR gate applies.
+Already-merged work needs no authorization. In `fields`, set `completion_kind: operational`, `completion_evidence` (acceptance results), `completion_merged_pr` (URL), `completion_merge_commit` (SHA), `completion_branch` (tracked ref), `completion_branch_head` (SHA), and `completion_ancestry: verified` after fetch and successful `git merge-base --is-ancestor`. Ask if evidence is missing. Other no-PR work needs issue-body `detent-completion` authorization.
+
+Route proven upstream defects via `file_machine_issue(repository: owner/repo)` with ownership evidence; link it here. Ask only if the target is unknown. State decisions plainly.

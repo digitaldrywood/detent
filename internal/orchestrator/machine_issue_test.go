@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector/memory"
@@ -96,5 +97,60 @@ func TestMachineIssueToolDelegates(t *testing.T) {
 	result, err = request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "other"})
 	if err != nil || result.Content != "previous" {
 		t.Fatalf("delegation = %+v, %v", result, err)
+	}
+}
+
+type upstreamMachineTracker struct {
+	*machineIssueTracker
+	repository, comment string
+	commentErr          error
+}
+
+func (s *upstreamMachineTracker) CreateRepositoryIntakeIssue(ctx context.Context, repository string, draft intake.IssueDraft) (intake.Issue, error) {
+	s.repository = repository
+	issue, err := s.CreateIntakeIssue(ctx, draft)
+	issue.URL = "https://github.com/upstream/repo/issues/1"
+	return issue, err
+}
+
+func (s *upstreamMachineTracker) CreateComment(_ context.Context, _, body string) error {
+	s.comment = body
+	return s.commentErr
+}
+
+func TestMachineIssueUpstreamTool(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                            string
+		reused, createFail, commentFail bool
+	}{
+		{name: "file"}, {name: "reuse", reused: true}, {name: "write failure", createFail: true}, {name: "link failure", commentFail: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tracker := &upstreamMachineTracker{machineIssueTracker: &machineIssueTracker{Connector: memory.New(memory.Config{}), reused: tt.reused}}
+			if tt.createFail {
+				tracker.createErr = errors.New("upstream denied")
+			}
+			if tt.commentFail {
+				tracker.commentErr = errors.New("comment denied")
+			}
+			orch := &Orchestrator{connector: tracker}
+			request := RunRequest{WorkAttemptID: 5914}
+			orch.attachMachineIssueTool(&request)
+			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "file_machine_issue", Arguments: json.RawMessage(`{"repository":"upstream/repo","title":"Defect","body":"Dependency source.go:42 owns the defect; no local pin.","fingerprint":"upstream-defect"}`)})
+			if err != nil || result.Success != (!tt.createFail && !tt.commentFail) || tracker.states != 0 || tracker.repository != "upstream/repo" {
+				t.Fatalf("result=%+v err=%v tracker=%+v", result, err, tracker)
+			}
+			if _, ok := issueorigin.Parse(tracker.draft.Body); !ok {
+				t.Fatal("missing upstream origin")
+			}
+			if !tt.createFail && (!strings.Contains(tracker.comment, "https://github.com/upstream/repo/issues/1") || !strings.Contains(tracker.comment, "source.go:42")) {
+				t.Fatalf("comment=%q", tracker.comment)
+			}
+			if tt.commentFail && !strings.Contains(result.Content, "https://github.com/upstream/repo/issues/1") {
+				t.Fatalf("lost filed URL: %+v", result)
+			}
+		})
 	}
 }

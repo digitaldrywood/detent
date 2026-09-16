@@ -44,7 +44,9 @@
       "TestAttemptAllowanceTriagePublication",
       "TestAttemptAllowanceNoteFormat",
       "TestAttemptAllowanceMergeTimeAndRunningOwnership",
-      "TestAttemptAllowancePreservesOperatorCompletionLane"
+      "TestAttemptAllowancePreservesOperatorCompletionLane",
+      "TestTransitionAlreadyMergedCompletion",
+      "TestMachineIssueUpstreamTool"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
@@ -95,7 +97,8 @@
       "TestMachineIssueDuplicate",
       "TestMachineIssueSeparateConnectors",
       "TestMachineOriginSurvivesBodyUpdates",
-      "TestPullRequestMergeTimeSurvivesLaterActivity"
+      "TestPullRequestMergeTimeSurvivesLaterActivity",
+      "TestRepositoryMachineIssue"
     ],
     "./internal/scheduler": [
       "TestGlobalDispatchGatePriorityOnlyPicksNextJob",
@@ -119,6 +122,9 @@
     ],
     "./internal/toolcache": [
       "TestINV12TrimReadout"
+    ],
+    "./internal/workpad": [
+      "TestMergedCompletionEvidence"
     ]
   }
 }

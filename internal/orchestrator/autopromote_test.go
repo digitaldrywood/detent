@@ -1436,3 +1436,32 @@ func TestSymbolicBlockerPromotion(t *testing.T) {
 		})
 	}
 }
+
+func TestOperationalCompletionAuthorizationSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                            string
+		dispatch, current, merged, want bool
+	}{
+		{name: "ordinary authorized", dispatch: true, current: true, want: true},
+		{name: "ordinary revoked", dispatch: true},
+		{name: "ordinary added after dispatch", current: true},
+		{name: "merged without authorization", merged: true, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := autoPromoteTestIssue("completion", nil)
+			if tt.current {
+				issue.Description = operationalCompletionAuthorizationBody()
+			}
+			body := operationalCompletionWorkpadBody("Acceptance passed.")
+			if tt.merged {
+				body = mergedCompletionWorkpadBody()
+			}
+			issue.Comments = []connector.IssueComment{{Body: body}}
+			if _, got := operationalCompletionWithAuthorization(issue, tt.dispatch); got != tt.want {
+				t.Fatalf("accepted=%v want=%v", got, tt.want)
+			}
+		})
+	}
+}
