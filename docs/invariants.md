@@ -161,6 +161,13 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
+predicate for clean, green PRs without actionable threads or findings. The existing
+`awaiting_gate` decision no longer requires retained completion evidence for this
+case, so question waits cannot cause repeated sessions while a review is pending.
+`TestReworkLiveReviewGateDispatch` replays post-answer scheduler passes and checks
+that a current-head review or actionable PR state preserves dispatch eligibility.
+
 Question closure resolution (#2793) uses the existing transition refresh and
 answer columns. Durable unanswered issue IDs join that refresh so questions
 left behind across restart resolve when the tracker reports closure or a terminal
