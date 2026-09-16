@@ -680,3 +680,62 @@ func TestOperationsClosureResolvedQuestions(t *testing.T) {
 		})
 	}
 }
+
+func TestOperationsWorkpadHumanAction(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, state, status, reason string
+		existing                    bool
+		want                        int
+	}{
+		{name: "PR-less Rework", state: "Rework", status: "unverifiable", reason: "make skill available or waive it", want: 1},
+		{name: "cleared", state: "Rework", status: "cleared", reason: "make skill available or waive it"},
+		{name: "empty action", state: "Rework", status: "unverifiable"},
+		{name: "terminal", state: "Done", status: "unverifiable", reason: "make skill available or waive it"},
+		{name: "existing question wins", state: "Rework", status: "unverifiable", reason: "make skill available or waive it", existing: true, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			at := now.Add(-2 * time.Hour)
+			deps := testDeps(t)
+			setOperationsTestProject(t, deps.Registry, "p", true, "", nil, "", "", "", "", []string{"Done"})
+			report := operations.Report{DataTime: now}
+			if tc.existing {
+				report.Decisions = []operations.Decision{{ProjectID: "p", Issue: "owner/repo#1", Question: "existing question", AskedAt: &at}}
+			}
+			deps.Store = operationsStore{Store: openWebTestStore(t), report: report}
+			issue := telemetry.Issue{ID: "i", ProjectID: "p", Identifier: "owner/repo#1", Title: "Waiting card", State: tc.state, WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: tc.status, Reason: tc.reason, RecordedAt: &at}}
+			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var got operations.Report
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Decisions) != tc.want {
+				t.Fatalf("decisions=%+v", got.Decisions)
+			}
+			if tc.want == 1 {
+				d := got.Decisions[0]
+				want := tc.reason
+				if tc.existing {
+					want = "existing question"
+				}
+				if d.Kind != "question" || d.Question != want || d.AskedAt == nil || !d.AskedAt.Equal(at) || d.AgeSeconds == nil || *d.AgeSeconds < 7200 {
+					t.Fatalf("decision=%+v", d)
+				}
+			}
+		})
+	}
+}

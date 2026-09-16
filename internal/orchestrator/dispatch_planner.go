@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type dispatchPlanner struct {
@@ -35,6 +36,8 @@ type dispatchPlanHooks struct {
 }
 
 type dispatchAction struct {
+	// skipDetail preserves the refusal evidence when no action is dispatched.
+	skipDetail          string
 	issue               connector.Issue
 	attempt             int
 	workerHost          string
@@ -158,6 +161,7 @@ func (p dispatchPlanner) plan(
 					WorkerHost:    retry.WorkerHost,
 					Retry:         true,
 					SkipReason:    reason,
+					SkipDetail:    action.skipDetail,
 				})
 				continue
 			}
@@ -208,6 +212,7 @@ func (p dispatchPlanner) plan(
 				Issue:         issue,
 				QueuePosition: queuePosition,
 				SkipReason:    reason,
+				SkipDetail:    action.skipDetail,
 			})
 			continue
 		}
@@ -353,14 +358,14 @@ func (p dispatchPlanner) retryAction(
 		}
 		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency || decision.reason == dispatchSkipTrackerUnavailable {
 			state.Retry[retry.Issue.ID] = retry
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if decision.reason == dispatchSkipProjectFailureBreaker {
 			if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
 				retry.DueAt = state.FailureBreaker.ResumeAt
 			}
 			state.Retry[retry.Issue.ID] = retry
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 			if reason == dispatchSkipBudgetCooldown {
@@ -368,19 +373,19 @@ func (p dispatchPlanner) retryAction(
 			} else {
 				p.parkBudgetHardHold(state, issue.ID)
 			}
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if !p.slotsAvailableForModelRequirement(issue, state, retry.WorkerHost, modelPermitRequired) {
 			p.rescheduleRetry(state, retry, now, "no available orchestrator slots", false)
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if _, blocked := state.Blocked[issue.ID]; blocked {
 			p.releaseClaim(state, issue.ID)
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 
 		p.releaseIssue(state, issue.ID)
-		return dispatchAction{}, false, decision.reason
+		return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 	}
 
 	action, ok := p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true, modelPermitRequired, &retry)
@@ -407,7 +412,7 @@ func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now
 				Source:    BlockedSourceDependency,
 			}
 		}
-		return dispatchAction{}, false, decision.reason
+		return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 	}
 
 	action, ok := p.newDispatchAction(state, issue, 0, "", false, p.modelPermitRequiredAtDispatch(issue), nil)
@@ -833,14 +838,18 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		if err != nil {
 			return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
 		}
+		// Instance reports are diagnostic evidence, not issue dispatch vetoes.
+		// Existing instance controls own infrastructure eligibility.
 		if evaluation.Holds || evaluation.Unverifiable || evaluation.HumanOwned {
 			parts := make([]string, 0, len(evaluation.Evidence))
 			for _, evidence := range evaluation.Evidence {
-				if evidence.Status != blockerEvidenceStatusCleared {
+				if evidence.Owner != workpad.BlockerOwnerInstance && evidence.Status != blockerEvidenceStatusCleared {
 					parts = append(parts, strings.TrimSpace(evidence.Owner+": "+evidence.Reference+" "+evidence.Reason))
 				}
 			}
-			return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: strings.Join(parts, "; ")}
+			if len(parts) > 0 {
+				return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: strings.Join(parts, "; ")}
+			}
 		}
 	}
 	return dispatchableDecision{dispatchable: true}
