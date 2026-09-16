@@ -426,11 +426,7 @@ func TestHumanQuestionWaitCompletesAttemptWithoutCompletingIssue(t *testing.T) {
 			if _, retry := state.Retry[issue.ID]; retry == tt.waiting {
 				t.Fatalf("retry = %v, waiting = %v", retry, tt.waiting)
 			}
-			wantBlocked := 1
-			if tt.waiting {
-				wantBlocked++
-			}
-			if len(state.Completed) != 0 || len(state.Blocked) != wantBlocked || issue.State != "Rework" || issue.PullRequest.HeadSHA != "head" {
+			if len(state.Completed) != 0 || len(state.Blocked) != 1 || issue.State != "Rework" || issue.PullRequest.HeadSHA != "head" {
 				t.Fatal("question wait changed issue completion, independent park, lane, or PR")
 			}
 		})

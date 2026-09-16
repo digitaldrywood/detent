@@ -211,7 +211,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
-			o.operatorReturnRetiredParks(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
+			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
 		)
 		timing.step("recover_backend_capacity_blocked_issues")
 		fetched = filterReconciledTickIssues(

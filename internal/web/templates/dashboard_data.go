@@ -2633,7 +2633,7 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		issue.Metadata[projectKanbanBlockedRecoveryRemedyMetadataKey] = row.RecoveryRemedy
 		issue.Metadata[projectKanbanBlockedNeedsHumanAttentionMetadataKey] = strconv.FormatBool(row.NeedsHumanAttention)
 		fallback := "Todo"
-		if !telemetry.BlockedRowDependencyWaiting(row) && !strings.EqualFold(strings.TrimSpace(issue.State), "Human Review") {
+		if !telemetry.BlockedRowDependencyWaiting(row) {
 			issue.State = "Blocked"
 			fallback = "Blocked"
 		}

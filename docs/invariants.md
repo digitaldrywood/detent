@@ -156,6 +156,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Human-owned Workpad blockers route through the existing completion Blocked
+transition on the first report (#2779). The repeated-report threshold is removed:
+live blocker evaluation already suppresses the next dispatch, so a second
+completion cannot be required. `TestFirstHumanBlockerCompletionReachesBlocked`
+replays that conflict with and without a PR and preserves human-owned recovery.
+Question waits retain their current lane; automated Blocked transitions do not
+renew the attempt allowance.
+
+
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
 
 GitHub refresh pacing (#2763) replaces proactive global lookup-floor backoff
@@ -190,17 +199,6 @@ The issue explicitly authorizes the existing update banner to show the drain cou
 and replace the old startup-reclaim regression in the invariant manifest.
 `TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled` also runs through
 the manifest to preserve CLI coordination when automatic updates are off.
-
-Human waits (#2779) consolidate dispatch-only question suppression into the existing
-lane transition and recovery paths. An unanswered worker question uses Human Review;
-a Workpad human-owned blocker with a human action uses Blocked. Existing lane
-metadata retains the source lane, and an authorized reply or cleared blocker returns
-only the matching current wait entry. Completion, refresh, dispatch, and promotion
-share this decision; unrelated Human Review cards retain their lane. The board
-receives the question and elapsed wait or the human action through its existing
-blocked-reason fields. No lane, reason code, storage schema, or recovery loop is added.
-`TestHumanWaitLaneReplay` replays the reported lanes and verifies clearance and
-return after restart; the existing question authorization tests remain authoritative.
 
 **Why:** The September 10 audit identified interactions among self-protection
 mechanisms as the main source of incidents; adding another conditional guard

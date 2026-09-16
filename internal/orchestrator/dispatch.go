@@ -550,10 +550,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
 	}
-	if handled, _, err := o.reconcileHumanWaitLane(ctx, state, &issue, now); err != nil {
+	if waiting, err := o.humanQuestionWaiting(ctx, &issue); err != nil {
 		return dispatchIssueOutcome{reason: "human_question_unavailable", waitReason: err.Error()}
-	} else if handled {
-		return dispatchIssueOutcome{reason: "human_question_wait", waitReason: "waiting for human input"}
+	} else if waiting {
+		return dispatchIssueOutcome{reason: "human_question_wait", waitReason: "waiting for a reply on the original issue"}
 	}
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}

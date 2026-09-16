@@ -35,7 +35,7 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 	issue := request.Issue
 	request.AgentTools = append(request.AgentTools, runner.AgentTool{
 		Name:        "ask_human_question",
-		Description: "Ask one concise researched question in a comment on your assigned issue. Finish all independent work first. Detent routes the wait to Human Review without creating dependencies. Reuse the stable key on retries; use a new key only for a focused follow-up after an ambiguous reply. Replies authorize only what they actually say.",
+		Description: "Ask one concise researched question in a comment on your assigned issue. Finish all independent work first. Detent persists the wait without changing the lane or creating dependencies. Reuse the stable key on retries; use a new key only for a focused follow-up after an ambiguous reply. Replies authorize only what they actually say.",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["key","question"],"properties":{"key":{"type":"string","minLength":1},"question":{"type":"string","minLength":1}}}`),
 	})
 	request.AgentToolHandler = func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
@@ -105,7 +105,7 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 					if err := questions.RecordHumanQuestionComment(ctx, existing); err != nil {
 						return fail(err)
 					}
-					return runner.AgentToolResult{Success: true, Content: "Question recorded on " + issue.Identifier + " (comment " + comment.ID + "). Keep the PR intact and leave lane changes to Detent. End with an in_progress Workpad; Detent routes the wait to Human Review until an authorized reply. Do not create a dependency or claim completion."}, nil
+					return runner.AgentToolResult{Success: true, Content: "Question recorded on " + issue.Identifier + " (comment " + comment.ID + "). Keep the lane and PR intact. End with an in_progress Workpad; Detent waits for an authorized reply. Do not create a dependency or claim completion."}, nil
 				}
 			}
 			return fail(errors.New("question posting outcome is uncertain; Detent will reconcile the original thread without posting a duplicate"))
@@ -157,7 +157,6 @@ func (o *Orchestrator) humanQuestionWaiting(ctx context.Context, issue *connecto
 		if questionIndex < 0 {
 			return true, errors.New("question posting is unconfirmed; reconcile the original thread before waiting for a reply")
 		}
-		issue.Comments = comments
 		question := comments[questionIndex]
 		for index, comment := range comments {
 			if comment.ID == "" || comment.ID == question.ID || comment.CreatedAt == nil || question.CreatedAt == nil || (comment.CreatedAt.Before(*question.CreatedAt) || (comment.CreatedAt.Equal(*question.CreatedAt) && index <= questionIndex)) || strings.EqualFold(comment.AuthorKind, "bot") || strings.TrimSpace(comment.Body) == "" || strings.Contains(comment.Body, "<!-- detent-") || autoPromoteIsWorkpadComment(comment.Body) {
@@ -202,7 +201,16 @@ func (o *Orchestrator) completeHumanQuestionWait(ctx context.Context, state *Sta
 		if err := questions.RecordHumanQuestionWork(ctx, q); err != nil {
 			return true
 		}
-		return o.completeHumanWait(ctx, state, event, running, "Human Review", q.Body, "human_question_wait")
+		if event.Result.Tokens != (TokenTotals{}) {
+			running.Tokens = event.Result.Tokens
+		}
+		if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "waiting for a human reply on the original issue", nil) {
+			return true
+		}
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+		delete(state.Retry, running.Issue.ID)
+		return true
 	}
 	return false
 }
@@ -222,22 +230,4 @@ func humanQuestionWorkFingerprint(issue connector.Issue) string {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func (o *Orchestrator) completeHumanWait(ctx context.Context, state *State, event runner.Completion, running Running, target, reason, action string) bool {
-	if humanWaitWorkingLane(running.Issue.State) {
-		if _, changed, err := o.applyHumanWaitLane(ctx, state, running.Issue, nil, target, reason, action, event.CompletedAt); err != nil || !changed {
-			return true
-		}
-	}
-	if event.Result.Tokens != (TokenTotals{}) {
-		running.Tokens = event.Result.Tokens
-	}
-	if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", reason, nil) {
-		return true
-	}
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
-	delete(state.Retry, running.Issue.ID)
-	return true
 }

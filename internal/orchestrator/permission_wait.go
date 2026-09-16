@@ -79,14 +79,6 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 	if !ok {
 		return false
 	}
-	if o.completeHumanQuestionWait(ctx, state, event, running) {
-		return true
-	}
-	if signal, ok := workpad.SignalFromComment(event.Result.FinalMessage, "", ""); ok {
-		if action := humanWaitWorkpadAction(signal); action != "" {
-			return o.completeHumanWait(ctx, state, event, running, blockedStatusState, action, "human_action")
-		}
-	}
 	wait.Question = o.operatorText(wait.Question)
 	wait.WorkAttemptID = running.WorkAttemptID
 	wait.SessionID = running.SessionID
