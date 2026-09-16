@@ -319,3 +319,46 @@ func TestRefreshCustomStatesPreview(t *testing.T) {
 	}
 	assertProjectRefreshTestSnapshot(t, fixture, before)
 }
+
+func TestRefreshStateInstructionExtraction(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, flow, shared string
+		want               map[string]string
+	}{
+		{"no state sections", "Shared policy.\n", "Shared policy.\n", nil},
+		{"empty state", "## Required Execution Flow\n### For Todo\n\n", "## Required Execution Flow\n", nil},
+		{"multiple states", "## Required Execution Flow\n### For Todo\nCustom todo.\n### State: Merging\nCustom merge.\n", "## Required Execution Flow\n", map[string]string{"Todo": "Existing todo.\n\nCustom todo.\n", "Merging": "Default merge.\n\nCustom merge.\n\n"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := parseProjectRefreshYAML([]byte("tracker:\n  active_states: [Todo, Merging]\nagent:\n  instructions_by_state:\n    Todo: Existing todo.\n"), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			desired, err := parseProjectRefreshYAML([]byte("agent:\n  instructions_by_state:\n    Merging: Default merge.\n"), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			shared, changed := migrateProjectRefreshStateInstructions(tt.flow, root, desired)
+			if shared != tt.shared || changed != (len(tt.want) > 0) {
+				t.Fatalf("migration = (%q, %v), want (%q, %v)", shared, changed, tt.shared, len(tt.want) > 0)
+			}
+			for state, want := range tt.want {
+				node := projectRefreshYAMLPathNode(root, "agent.instructions_by_state."+state)
+				if node == nil || node.Value != want {
+					t.Fatalf("state %s = %#v, want %q", state, node, want)
+				}
+			}
+			if len(tt.want) == 0 {
+				node := projectRefreshYAMLPathNode(root, "agent.instructions_by_state.Todo")
+				if node == nil || node.Value != "Existing todo." {
+					t.Fatalf("existing instruction changed: %#v", node)
+				}
+			}
+			if again, changed := migrateProjectRefreshStateInstructions(tt.flow, root, desired); again != shared || changed {
+				t.Fatalf("repeated migration = (%q, %v), want (%q, false)", again, changed, shared)
+			}
+		})
+	}
+}
