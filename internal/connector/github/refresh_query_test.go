@@ -196,18 +196,22 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 	}{
 		{"human review", nil, nil, nil, "Human Review", true},
 		{"blocked", nil, nil, nil, "Blocked", true},
+		{"backlog repurposed", []string{"Backlog"}, nil, []string{"Archived"}, "Backlog", true},
 		{"custom active", []string{"Queued"}, nil, []string{"Archived"}, "Queued", true},
-		{"custom observed", []string{"Queued"}, []string{"Review"}, []string{"Archived"}, "Review", false},
+		{"custom observed", []string{"Queued"}, []string{"Review"}, []string{"Archived"}, "Review", true},
 		{"custom terminal", []string{"Queued"}, []string{"Archived"}, []string{"Archived"}, "Archived", false},
 		{"unconfigured observed", []string{"Queued"}, []string{"Review"}, []string{"Archived"}, "Retired", false},
 		{"default name repurposed", []string{"Done"}, nil, []string{"Archived"}, "Done", true},
+		{"observed only custom", []string{"Queued"}, []string{"Intake"}, []string{"Archived"}, "Intake", false},
 		{"observed backlog", []string{"Queued"}, []string{"Backlog"}, []string{"Archived"}, "Backlog", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			hydrated := false
+			restCalls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.Method != http.MethodPost {
+					restCalls++
 					fmt.Fprint(w, `[]`)
 					return
 				}
@@ -231,9 +235,12 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 			}))
 			defer server.Close()
 			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: tt.active, ObservedStates: tt.observed, TerminalStates: tt.terminal})
-			result := c.FetchRefreshIssues(t.Context(), nil, []string{tt.state}, connector.IssueFilterHint{})
+			result := c.FetchRefreshIssues(t.Context(), nil, []string{tt.state}, connector.IssueFilterHint{SchedulerStates: []string{"Review", "Human Review", "Blocked"}})
 			if result.CandidateError != nil || result.StatusError != nil || hydrated != tt.enrich {
 				t.Fatalf("hydrated=%t want=%t result=%+v", hydrated, tt.enrich, result)
+			}
+			if !tt.enrich && restCalls != 0 {
+				t.Fatalf("thin lane made %d REST evidence calls", restCalls)
 			}
 		})
 	}
@@ -356,9 +363,46 @@ func TestRefreshBusyBoardCompletes(t *testing.T) {
 			c = newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo"})
 			for range 3 {
 				result := c.FetchRefreshIssues(t.Context(), nil, []string{"Done"}, connector.IssueFilterHint{})
+				if change == "count" {
+					if !errors.Is(result.CandidateError, ErrProjectItemsTruncated) || len(result.Statuses) != 0 {
+						t.Fatalf("incomplete board published: %+v", result)
+					}
+					continue
+				}
 				if result.CandidateError != nil || len(result.Statuses) != 15 {
 					t.Fatalf("busy board failed: %+v", result)
 				}
+			}
+		})
+	}
+}
+
+func TestRefreshTruncatedEnumeration(t *testing.T) {
+	for _, total := range []int{3, 15} {
+		t.Run(strconv.Itoa(total), func(t *testing.T) {
+			pages := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pages++
+				page := projectItemsConnection{TotalCount: total, PageInfo: pageInfo{HasNextPage: pages%3 != 0, EndCursor: strconv.Itoa(pages)}}
+				page.Nodes = []projectItemNode{{ID: fmt.Sprintf("P%d", pages), StatusValue: &singleSelectValue{Name: "Done"}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", pages), Number: pages, Repository: repository{NameWithOwner: "owner/repo"}}}}
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"node": map[string]any{"items": page}}}); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo"})
+			for range 2 {
+				result := c.FetchRefreshIssues(t.Context(), nil, []string{"Done"}, connector.IssueFilterHint{})
+				if total == 3 {
+					if result.CandidateError != nil || len(result.Statuses) != 3 {
+						t.Fatalf("complete enumeration: error=%v statuses=%d", result.CandidateError, len(result.Statuses))
+					}
+				} else if !errors.Is(result.CandidateError, ErrProjectItemsTruncated) || len(result.Statuses) != 0 || len(result.LaneSignalCandidates) != 0 {
+					t.Fatalf("partial enumeration published: error=%v statuses=%d signals=%d", result.CandidateError, len(result.Statuses), len(result.LaneSignalCandidates))
+				}
+			}
+			if pages != 6 {
+				t.Fatalf("pages=%d, want two fresh enumerations", pages)
 			}
 		})
 	}

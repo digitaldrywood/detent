@@ -590,15 +590,21 @@ inside the existing board scanner. Failed pages retain the private accumulator;
 only a completed enumeration publishes a snapshot. Retained progress is verified
 against the project update timestamp and local cache revision before resuming,
 using an updatedAt-only preflight. Changes during enumeration do not discard the
-scan: the final pageInfo confirms completion despite concurrent count changes. Thin board metadata
+scan, but final pageInfo alone cannot prove completeness: the existing count
+check rejects enumerations below the fetched totalCount and clears their cursor
+for a fresh attempt (#2830). Thin board metadata
 and scalar bodies supply lane diagnostics and avoid REST body fanout. Requested
-candidates and configured active states, plus Human Review and Blocked for PR
-routing and dependency/workpad recovery, receive batched scheduler and authoritative
-PR evidence. Backlog and configured terminal states never receive enrichment. No retry loop, timer, configuration, or lane writer
+candidates and configured active states, plus observed states supplied by the
+auto-promote, plan-stop, dependency auto-unblock, blocked-recovery, and blocker
+auto-promote readers, receive batched scheduler and authoritative PR evidence.
+Observed-only and configured terminal states stay thin; Backlog used as an active
+or candidate state receives enrichment. No retry loop, timer, configuration, or lane writer
 is added. `TestRefreshBoardResumesFailedPage` covers page failure and cancellation;
 `TestRefreshBoardChangedBetweenAttempts` covers shifted pages and missing revisions;
-`TestRefreshBusyBoardCompletes` covers continuous timestamp, count, and local changes. `TestRefreshConfiguredSchedulerStates` covers custom state
-sets, and `TestRefreshThinBodyFallback` checks 152 candidates under GraphQL
+`TestRefreshBusyBoardCompletes` covers continuous timestamp/local changes and rejects truncated count changes. `TestRefreshConfiguredSchedulerStates` covers custom state
+sets; `TestRefreshHintRoutingStates` checks routing reader configuration and
+`TestRefreshTruncatedEnumeration` rejects partial publication and verifies a fresh
+retry. `TestRefreshThinBodyFallback` checks 152 candidates under GraphQL
 backoff against the existing REST cap, without publishing partial results.
 `TestProjectRefreshHourlyWorkload` checks the large-board request and point budget
 using measured GraphQL response costs, including resumed preflight requests and

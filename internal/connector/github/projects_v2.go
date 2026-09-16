@@ -506,12 +506,10 @@ func (c *Connector) scanProjectItems(
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
-			// A thin refresh completes at the final page, even if concurrent board
-			// edits changed totalCount. Other scanners retain their count contract.
-			if queryDocument != thinRefreshProjectItemsQuery {
-				if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
-					return connector.IssueStateScan{}, err
-				}
+			if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
+				blankStatusItemIDs = nil
+				*progress = projectItemsScanProgress{}
+				return connector.IssueStateScan{}, err
 			}
 			if cacheProjectFields {
 				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)

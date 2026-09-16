@@ -162,7 +162,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 								if observed {
 									candidateStates, observedStates = nil, candidateStates
 								}
-								result := c.FetchRefreshIssues(t.Context(), candidateStates, observedStates, connector.IssueFilterHint{})
+								result := c.FetchRefreshIssues(t.Context(), candidateStates, observedStates, connector.IssueFilterHint{SchedulerStates: observedStates})
 								issues := result.Candidates
 								if observed {
 									issues = result.Statuses
