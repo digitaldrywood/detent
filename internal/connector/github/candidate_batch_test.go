@@ -32,7 +32,7 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 							}
 							enhanced := strings.Contains(request.Query, "blockedBy(")
 							if enhanced && strings.Contains(mode, "fallback") {
-								fmt.Fprint(w, `{"errors":[{"message":"schema unavailable"}]}`)
+								fmt.Fprint(w, `{"errors":[{"message":"Field 'blockedBy' doesn't exist on type 'Issue'"}]}`)
 								return
 							}
 							if strings.Contains(request.Query, "DetentGitHubCandidateHydration") {

@@ -72,7 +72,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 										return
 									}
 									if mode == "schema fallback etag" && strings.Contains(req.Query, "blockedBy(") {
-										write(map[string]any{"errors": []map[string]string{{"message": "schema unavailable"}}})
+										write(map[string]any{"errors": []map[string]string{{"message": "Field 'blockedBy' doesn't exist on type 'Issue'"}}})
 										return
 									}
 									switch {

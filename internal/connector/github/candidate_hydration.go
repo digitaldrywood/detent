@@ -170,7 +170,9 @@ func (c *Connector) applySchedulerEvidence(issue connector.Issue, node githubIss
 	issue.Comments = connectorIssueComments(node.Comments.Nodes)
 	issue.CommentCount = node.Comments.TotalCount
 	issue.WorkpadSignal = parseWorkpadSignal(node)
-	issue.BlockerReason = parseBlockerReason(node)
+	if reason := parseBlockerReason(node); reason != "" {
+		issue.BlockerReason = reason
+	}
 	native := make([]restIssueDependency, 0, len(node.BlockedBy.Nodes))
 	for _, blocker := range node.BlockedBy.Nodes {
 		native = append(native, restIssueDependency{NodeID: blocker.ID, Number: blocker.Number, Body: blocker.Body, State: blocker.State, HTMLURL: "https://github.com/" + blocker.Repository.NameWithOwner + fmt.Sprintf("/issues/%d", blocker.Number), Labels: blocker.Labels.Nodes})
