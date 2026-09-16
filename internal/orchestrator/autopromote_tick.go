@@ -763,6 +763,14 @@ func autoPromoteActiveGatePendingIssue(
 	cfg Config,
 	autoCfg AutoPromoteConfig,
 ) bool {
+	// An established review cycle waiting for this head cannot be advanced by
+	// another worker, including after a question wait without completion evidence.
+	if autoPromoteReworkGateWaitTrackedIssue(issue, cfg, autoCfg) &&
+		reworkGateWaitPullRequestReady(issue) &&
+		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean") &&
+		mergeWorkerCIGreen(issue.PullRequest.CIStatus) && issue.PullRequest.AutomatedReviewPending() {
+		return true
+	}
 	if state == nil {
 		return false
 	}
