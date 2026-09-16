@@ -62,6 +62,14 @@ func boardCardFacts(data DashboardData, card projectKanbanCard) []cardFactView {
 			reason.Detail = reason.Text
 		}
 	}
+	if facts.Question != nil {
+		age := "age unknown"
+		if facts.Question.AskedAt != nil {
+			age = cardFactAge(now, *facts.Question.AskedAt)
+		}
+		reason.Text = "waiting for a human reply · " + age
+		reason.Detail = facts.Question.Question
+	}
 	return []cardFactView{push, {Name: "ci", Text: "CI " + ci}, {Name: "mergeability", Text: merge}, session, reason}
 }
 

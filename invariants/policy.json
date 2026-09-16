@@ -12,7 +12,7 @@
       "TestStartupDoesNotReclaimLiveWorkAttempts",
       "TestHumanQuestionRestartAndConcurrentRequests",
       "TestHumanQuestionReplyAuthorization",
-      "TestHumanQuestionIndependentRework",
+      "TestHumanQuestionUnansweredRework",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
       "TestPreTurnFailuresDrainInstance",
       "TestObservedLanePreTurnFailureRemainsInstanceOwned",

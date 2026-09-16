@@ -102,6 +102,7 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 			for _, comment := range comments {
 				if comment.ID != "" && strings.Contains(comment.Body, humanQuestionMarker(existing)) {
 					existing.QuestionCommentID = comment.ID
+					existing.AskedAt = comment.CreatedAt
 					if err := questions.RecordHumanQuestionComment(ctx, existing); err != nil {
 						return fail(err)
 					}
@@ -128,9 +129,6 @@ func (o *Orchestrator) humanQuestionWaiting(ctx context.Context, issue *connecto
 			issue.Comments = append(issue.Comments, connector.IssueComment{ID: q.AnswerCommentID, Body: q.AnswerBody, AuthorAuthorized: true})
 			continue
 		}
-		if fingerprint := humanQuestionWorkFingerprint(*issue); fingerprint != "" && fingerprint != q.WorkFingerprint {
-			return false, nil
-		}
 		reader, ok := o.connector.(connector.IssueCommentReader)
 		if !ok {
 			return true, errors.New("human question comment reader unavailable")
@@ -148,6 +146,7 @@ func (o *Orchestrator) humanQuestionWaiting(ctx context.Context, issue *connecto
 			if comment.ID != "" && (comment.ID == q.QuestionCommentID || strings.Contains(comment.Body, humanQuestionMarker(q))) {
 				questionIndex = i
 				q.QuestionCommentID = comment.ID
+				q.AskedAt = comment.CreatedAt
 				if err := questions.RecordHumanQuestionComment(ctx, q); err != nil {
 					return true, err
 				}

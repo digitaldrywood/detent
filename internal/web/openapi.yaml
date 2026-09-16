@@ -1380,7 +1380,21 @@ components:
           items: {$ref: "#/components/schemas/GenericObject"}
         stats: {$ref: "#/components/schemas/GenericObject"}
         board: {$ref: "#/components/schemas/BoardState"}
+        open_questions:
+          type: array
+          description: Unanswered questions across projects, oldest first; unknown legacy ages sort first.
+          items: {$ref: "#/components/schemas/OpenQuestion"}
       additionalProperties: true
+    OpenQuestion:
+      type: object
+      required: [project_id, issue, question, url, asked_at, age_seconds]
+      properties:
+        project_id: {type: string}
+        issue: {type: string}
+        question: {type: string}
+        url: {type: string}
+        asked_at: {type: string, format: date-time, nullable: true}
+        age_seconds: {type: integer, format: int64, minimum: 0, nullable: true}
     BoardState:
       type: object
       properties:
@@ -1407,6 +1421,7 @@ components:
         attempts_today: {type: integer, format: int64, nullable: true}
         lane_reason: {type: string}
         lane_reason_at: {type: string, format: date-time, nullable: true}
+        question: {$ref: "#/components/schemas/OpenQuestion"}
     StateEnrichment:
       type: object
       required: [status]

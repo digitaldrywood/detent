@@ -61,13 +61,6 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 		if operationsDecisionSeen(seen, keys) {
 			continue
 		}
-		if current && operationsPullRequestSupersedesQuestion(issue.PullRequest) {
-			continue
-		}
-		// Match humanQuestionWaiting: only nonempty current evidence supersedes a question.
-		if current && issue.PullRequest != nil && issue.PullRequest.HumanQuestionWorkFingerprint != "" && issue.PullRequest.HumanQuestionWorkFingerprint != d.WorkFingerprint {
-			continue
-		}
 		d.Kind = "question"
 		if current {
 			d.Title = issue.Title
@@ -154,8 +147,20 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 			d.URL = "/api/v1/projects/" + url.PathEscape(d.ProjectID) + "/issues/explanation?reference=" + url.QueryEscape(d.Issue)
 		}
 	}
+	report.Decisions = operations.WithQuestionAges(report.Decisions, now)
 	sort.Slice(report.Decisions, func(i, j int) bool {
 		a, b := report.Decisions[i], report.Decisions[j]
+		if (a.Kind == "question") != (b.Kind == "question") {
+			return a.Kind == "question"
+		}
+		if a.Kind == "question" {
+			if (a.AskedAt == nil) != (b.AskedAt == nil) {
+				return a.AskedAt == nil
+			}
+			if a.AskedAt != nil && !a.AskedAt.Equal(*b.AskedAt) {
+				return a.AskedAt.Before(*b.AskedAt)
+			}
+		}
 		if a.ProjectID != b.ProjectID {
 			return a.ProjectID < b.ProjectID
 		}

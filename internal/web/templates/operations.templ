@@ -115,6 +115,7 @@ templ operationsSections(report operations.Report) {
 	</section>
 	<section id="operations-decisions" class="flex flex-col gap-2" aria-labelledby="operations-decisions-title">
 		<h2 id="operations-decisions-title" class="text-sm font-semibold">Needs you</h2>
+  <p class="text-sm">{ operationsQuestionSummary(report) }</p>
 		if len(report.Decisions) == 0 {
 			<p class="text-sm">Nothing needs you right now.</p>
 		}
@@ -125,6 +126,9 @@ templ operationsSections(report operations.Report) {
 					<p class="text-xs text-sec">{ decision.Title }</p>
 				}
 				<p>{ decision.Question }</p>
+    if decision.Kind == "question" {
+     <p class="text-xs text-sec">{ decision.ProjectID + " · Waiting " + operationsQuestionAge(decision, report.DataTime) }</p>
+    }
 				if decision.Prerequisite != nil {
 					<p class="mt-1 text-xs">
 						<span class="text-sec">Prerequisite:</span>

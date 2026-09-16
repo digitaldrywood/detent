@@ -102,13 +102,13 @@ func TestOperationsCurrentDecisionEvidence(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, stored, current, gate, prState, want string }{
 		{name: "current question", stored: "current", current: "current", gate: "New gate?", want: "Original question?"},
-		{name: "superseded question", stored: "old", current: "current"},
-		{name: "superseded question allows current gate", stored: "old", current: "current", gate: "New gate?", want: "New gate?"},
-		{name: "unfingerprinted question superseded", current: "current", gate: "New gate?", want: "New gate?"},
+		{name: "superseded question", stored: "old", current: "current", want: "Original question?"},
+		{name: "superseded question allows current gate", stored: "old", current: "current", gate: "New gate?", want: "Original question?"},
+		{name: "unfingerprinted question superseded", current: "current", gate: "New gate?", want: "Original question?"},
 		{name: "no new refusal evidence", stored: "old", want: "Original question?"},
-		{name: "closed pull request supersedes question", stored: "current", current: "current", prState: "CLOSED"},
-		{name: "merged pull request supersedes question", stored: "current", current: "current", prState: "MERGED"},
-		{name: "closed pull request preserves independent gate", stored: "current", current: "current", gate: "Restore deployment credentials.", prState: "CLOSED", want: "Restore deployment credentials."},
+		{name: "closed pull request supersedes question", stored: "current", current: "current", prState: "CLOSED", want: "Original question?"},
+		{name: "merged pull request supersedes question", stored: "current", current: "current", prState: "MERGED", want: "Original question?"},
+		{name: "closed pull request preserves independent gate", stored: "current", current: "current", gate: "Restore deployment credentials.", prState: "CLOSED", want: "Original question?"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -346,11 +346,11 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			}},
 		},
 		{
-			name:         "closed pull request supersedes published question",
+			name:         "closed pull request retains unanswered question",
 			recorded:     []operations.Decision{{ProjectID: "detent", Issue: "digitaldrywood/detent#2465", Question: "Choose a recovery?", WorkFingerprint: "same"}},
 			snapshot:     telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "closed", ProjectID: "detent", Identifier: "digitaldrywood/detent#2465", PullRequest: &telemetry.PullRequest{State: "CLOSED", HumanQuestionWorkFingerprint: "same"}}}},
-			wantKind:     "",
-			wantQuestion: "",
+			wantKind:     "question",
+			wantQuestion: "Choose a recovery?",
 		},
 		{
 			name: "duplicate durable questions",

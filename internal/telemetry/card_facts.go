@@ -3,21 +3,24 @@ package telemetry
 import (
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/operations"
 )
 
 // CardFacts is the shared board/API projection. Nil values mean evidence is unavailable.
 type CardFacts struct {
-	HasSession       bool       `json:"has_session"`
-	HasPR            bool       `json:"has_pr"`
-	HeadSHA          string     `json:"head_sha"`
-	HeadCommittedAt  *time.Time `json:"head_committed_at"`
-	CI               string     `json:"ci"`
-	Mergeability     string     `json:"mergeability"`
-	SessionStartedAt *time.Time `json:"session_started_at"`
-	SessionTokens    int64      `json:"session_tokens"`
-	AttemptsToday    *int64     `json:"attempts_today"`
-	LaneReason       string     `json:"lane_reason"`
-	LaneReasonAt     *time.Time `json:"lane_reason_at"`
+	HasSession       bool                 `json:"has_session"`
+	HasPR            bool                 `json:"has_pr"`
+	HeadSHA          string               `json:"head_sha"`
+	HeadCommittedAt  *time.Time           `json:"head_committed_at"`
+	CI               string               `json:"ci"`
+	Mergeability     string               `json:"mergeability"`
+	SessionStartedAt *time.Time           `json:"session_started_at"`
+	SessionTokens    int64                `json:"session_tokens"`
+	AttemptsToday    *int64               `json:"attempts_today"`
+	Question         *operations.Decision `json:"question,omitempty"`
+	LaneReason       string               `json:"lane_reason"`
+	LaneReasonAt     *time.Time           `json:"lane_reason_at"`
 }
 
 func ActiveCardLane(state string, configured ...string) bool {
@@ -38,6 +41,18 @@ func ActiveCardLane(state string, configured ...string) bool {
 
 func IssueCardFacts(snapshot Snapshot, issue Issue) CardFacts {
 	facts := CardFacts{AttemptsToday: issue.AttemptsToday, LaneReason: issue.LaneReason, LaneReasonAt: issue.LaneReasonAt}
+	for _, question := range snapshot.OpenQuestions {
+		projectID := issue.ProjectID
+		if projectID == "" {
+			projectID = snapshot.Project.ID
+		}
+		if question.ProjectID == projectID && question.Issue == issue.Identifier {
+			facts.Question = &question
+			facts.LaneReason = "waiting for a human reply"
+			facts.LaneReasonAt = question.AskedAt
+			break
+		}
+	}
 	if pr := issue.PullRequest; pr != nil {
 		facts.HasPR = true
 		facts.HeadSHA = pr.HeadSHA
