@@ -27,7 +27,6 @@ const (
 	noProgressLimitReason              = "no_progress_limit"
 	strandedUnpushedWorkReason         = "stranded_unpushed_work"
 	workpadBlockedUnactionedReason     = "workpad_blocked_unactioned"
-	workpadBlockedUnactionedLimit      = 2
 	workspaceHeadUnavailableReason     = "workspace_head_unavailable_for_unpushed_check"
 	pullRequestHeadUnavailableReason   = "pull_request_head_unavailable_for_unpushed_check"
 	unpushedRemoteTruthUnavailable     = "unpushed_remote_truth_unavailable_without_pull_request"
@@ -223,13 +222,13 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 				decision.HumanAction,
 				decision.TrackerState,
 			)
-			if decision.ConsecutiveHumanAction >= workpadBlockedUnactionedLimit {
-				decision.Outcome = store.WorkAttemptTerminalNoProgress
-				decision.Reason = workpadBlockedUnactionedReason
-				decision.BlockReason = workpadBlockedUnactionedReason
-				decision.Block = true
-				return decision
-			}
+			// Recorded human blockers suppress dispatch immediately, so routing
+			// cannot depend on a second completion.
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = workpadBlockedUnactionedReason
+			decision.BlockReason = workpadBlockedUnactionedReason
+			decision.Block = true
+			return decision
 		}
 		if operationalCompletionCandidate && (running.DiffStats.UnpushedCommits > 0 || running.DiffStats.CommitsAhead > 0) {
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -397,11 +396,9 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		}
 		if decision.HumanAction != "" {
 			decision.ConsecutiveHumanAction = 1 + consecutiveImplementBlockedHumanActionAttempts(attempts, decision.HumanAction, decision.TrackerState)
-			decision.Block = decision.ConsecutiveHumanAction >= workpadBlockedUnactionedLimit
-			if decision.Block {
-				decision.Reason = workpadBlockedUnactionedReason
-				decision.BlockReason = workpadBlockedUnactionedReason
-			}
+			decision.Block = true
+			decision.Reason = workpadBlockedUnactionedReason
+			decision.BlockReason = workpadBlockedUnactionedReason
 		}
 		return decision
 	}
@@ -1159,6 +1156,8 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 		b.WriteString("Routed this issue to Blocked: loop detected after ")
 		b.WriteString(strconv.Itoa(decision.ConsecutiveNoProgress))
 		b.WriteString(" dispatches without lane, diff, commit, or pull request advancement.")
+	} else if strings.TrimSpace(decision.HumanAction) != "" {
+		b.WriteString("Routed this issue to Blocked because the Workpad requests human action.")
 	} else if implementProgressStrandedEvidence(decision.WorkspaceDiffStats) {
 		b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly with work produced but stranded unpushed in the workspace.")
 	} else {

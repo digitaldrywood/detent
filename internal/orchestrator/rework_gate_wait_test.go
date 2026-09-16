@@ -677,24 +677,23 @@ func TestReworkCapabilityBlockerIsBoundedWithDependentTodo(t *testing.T) {
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, NoProgressLimit: 3, Gate: gate.Config{Kind: gate.KindCommand}}})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
-			for n := 1; n <= workpadBlockedUnactionedLimit; n++ {
-				now := time.Date(2026, 9, 5, 19, n, 0, 0, time.UTC)
-				state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: int64(n), Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"}}
-				orch.handleRunResult(context.Background(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean"}}})
-				completion := attempts.completions[len(attempts.completions)-1]
-				if completion.TerminalState != store.WorkAttemptTerminalNoProgress {
-					t.Fatalf("terminal state = %s", completion.TerminalState)
-				}
-				attempt := store.WorkAttempt{ID: int64(n), TerminalState: completion.TerminalState, WorkerMetadataJSON: completion.WorkerMetadataJSON}
-				if completionGateWaitReasonFromAttempt(attempt) != "" {
-					t.Fatal("capability blocker became a wait")
-				}
-				record, ok := implementProgressRecordFromAttempt(attempt)
-				if !ok || record.HumanAction != action {
-					t.Fatalf("lost human action: %#v", record)
-				}
-				attempts.history = append([]store.WorkAttempt{attempt}, attempts.history...)
+			now := time.Date(2026, 9, 5, 19, 1, 0, 0, time.UTC)
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 1, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"}}
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean"}}})
+			completion := attempts.completions[len(attempts.completions)-1]
+			if completion.TerminalState != store.WorkAttemptTerminalNoProgress {
+				t.Fatalf("terminal state = %s", completion.TerminalState)
 			}
+			attempt := store.WorkAttempt{ID: 1, TerminalState: completion.TerminalState, WorkerMetadataJSON: completion.WorkerMetadataJSON}
+			if completionGateWaitReasonFromAttempt(attempt) != "" {
+				t.Fatal("capability blocker became a wait")
+			}
+			record, ok := implementProgressRecordFromAttempt(attempt)
+			if !ok || record.HumanAction != action {
+				t.Fatalf("lost human action: %#v", record)
+			}
+			attempts.history = append([]store.WorkAttempt{attempt}, attempts.history...)
+
 			if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != blockedStatusState {
 				t.Fatalf("updates = %#v", tracker.updates)
 			}

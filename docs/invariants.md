@@ -156,6 +156,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Human-owned Workpad blockers route through the existing completion Blocked
+transition on the first report (#2779). The repeated-report threshold is removed:
+live blocker evaluation already suppresses the next dispatch, so a second
+completion cannot be required. `TestFirstHumanBlockerCompletionReachesBlocked`
+replays that conflict with and without a PR and preserves human-owned recovery.
+Question waits retain their current lane; automated Blocked transitions do not
+renew the attempt allowance.
+
+
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
 
 GitHub refresh pacing (#2763) replaces proactive global lookup-floor backoff
