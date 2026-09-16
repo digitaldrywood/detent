@@ -9,11 +9,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 )
 
@@ -35,6 +37,7 @@ type dashboardAddress struct {
 
 const (
 	dashboardAddressSourceServiceFlag       = "service flag"
+	dashboardAddressSourceListener          = "running listener"
 	dashboardAddressSourceWorkerEnvironment = "worker environment"
 )
 
@@ -216,6 +219,17 @@ func resolveDashboardBootConfig(
 			}
 		}
 	}
+	if inspection, err := instancelock.Inspect(filepath.Join(filepath.Dir(resolution.Path), "detent.db.lock")); err == nil && inspection.Status == instancelock.StatusHeld && inspection.MetadataError == nil {
+		listenerHost, listenerPort, splitErr := net.SplitHostPort(inspection.Owner.DashboardAddress)
+		if p, valid := validServicePort(listenerPort); splitErr == nil && listenerHost != "" && valid && p > 0 && p <= 65535 {
+			if dashboardAddressMayUseServiceFlag(hostSetting.Source) {
+				hostSetting = RuntimeValue{Value: listenerHost, Source: dashboardAddressSourceListener}
+			}
+			if dashboardAddressMayUseServiceFlag(portSetting.Source) {
+				portSetting = RuntimeIntValue{Value: p, Source: dashboardAddressSourceListener}
+			}
+		}
+	}
 	if dashboardAddressMayUseServiceFlag(hostSetting.Source) || dashboardAddressMayUseServiceFlag(portSetting.Source) {
 		serviceArguments := runningServiceArguments(ctx, resolution.Path, opts)
 		if dashboardAddressMayUseServiceFlag(hostSetting.Source) {
@@ -249,7 +263,7 @@ func dashboardAddressMayUseWorkerEnvironment(source string) bool {
 }
 
 func dashboardAddressMayUseServiceFlag(source string) bool {
-	return source != runtimeSourceFlag && source != dashboardAddressSourceWorkerEnvironment
+	return source != runtimeSourceFlag && source != dashboardAddressSourceWorkerEnvironment && source != dashboardAddressSourceListener
 }
 
 func workerServiceAddress(lookupEnv func(string) string) (string, int, bool, error) {

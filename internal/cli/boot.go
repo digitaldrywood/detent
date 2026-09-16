@@ -251,6 +251,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 	}()
 
+	if instanceLock != nil {
+		address, err := dashboardServiceAddress(listener.Addr())
+		if err != nil {
+			return err
+		}
+		if err := instanceLock.SetDashboardAddress(address); err != nil {
+			return fmt.Errorf("publish dashboard listener: %w", err)
+		}
+	}
+
 	runtimeStore, err := openRuntimeStore(runCtx, cfg)
 	if err != nil {
 		return err

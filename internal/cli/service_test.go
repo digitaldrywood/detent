@@ -725,3 +725,34 @@ func (s *serviceRunnerStub) Start(_ context.Context, opts servicepkg.StartOption
 func (s *serviceRunnerStub) Status(context.Context) (servicepkg.Status, error) {
 	return s.status, s.statusErr
 }
+
+func TestRunningProcessArguments(t *testing.T) {
+	for _, tt := range []struct {
+		name, args string
+		pid        int
+		wantHost   string
+		readErr    bool
+	}{
+		{"expanded environment", "/usr/bin/detent\x00--config\x00/config/global.yaml\x00--host\x00100.111.222.33\x00--port=4303\x00", 42, "100.111.222.33", false},
+		{"different instance", "detent\x00--config=/elsewhere/global.yaml\x00--host=100.111.222.33\x00", 42, "", false},
+		{"no explicit config", "detent\x00--host=100.111.222.33\x00", 42, "", false},
+		{"missing process", "", 42, "", true},
+		{"no process", "", 0, "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := runningProcessArguments(tt.pid, "/config/global.yaml", func(path string) ([]byte, error) {
+				if path != "/proc/42/cmdline" {
+					t.Fatalf("path=%s", path)
+				}
+				if tt.readErr {
+					return nil, os.ErrNotExist
+				}
+				return []byte(tt.args), nil
+			})
+			host, _ := serviceStringFlag(args, "--host")
+			if host != tt.wantHost {
+				t.Fatalf("host=%q want %q", host, tt.wantHost)
+			}
+		})
+	}
+}

@@ -92,6 +92,9 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 				}
 			}
 
+			if strings.TrimSpace(status.CurrentVersion) == "" {
+				status.CurrentVersion = currentVersionInfo().Version
+			}
 			if writeErr := out.Write(func(out io.Writer) error {
 				return writeUpdateText(out, status)
 			}, status); writeErr != nil {
