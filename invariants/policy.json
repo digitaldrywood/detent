@@ -47,7 +47,8 @@
       "TestAttemptAllowanceTriagePublication",
       "TestAttemptAllowanceNoteFormat",
       "TestAttemptAllowanceMergeTimeAndRunningOwnership",
-      "TestAttemptAllowancePreservesOperatorCompletionLane"
+      "TestAttemptAllowancePreservesOperatorCompletionLane",
+      "TestTransitionAlreadyMergedCompletion"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
@@ -122,6 +123,9 @@
     ],
     "./internal/toolcache": [
       "TestINV12TrimReadout"
+    ],
+    "./internal/workpad": [
+      "TestMergedCompletionEvidence"
     ]
   }
 }

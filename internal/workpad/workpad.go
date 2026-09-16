@@ -654,6 +654,24 @@ func OperationalCompletion(signal *Signal) (string, bool) {
 	return evidence, evidence != ""
 }
 
+// MergedCompletionEvidence accepts the worker's recorded merge verification in
+// place of pre-dispatch operational authorization. Acceptance results remain in
+// completion_evidence; attempt identity is checked by the completion handler.
+func MergedCompletionEvidence(signal *Signal) bool {
+	if _, ok := OperationalCompletion(signal); !ok {
+		return false
+	}
+	for _, field := range []string{
+		"completion_merged_pr", "completion_merge_commit", "completion_branch_head",
+		"completion_branch",
+	} {
+		if strings.TrimSpace(signal.Fields[field]) == "" {
+			return false
+		}
+	}
+	return strings.TrimSpace(signal.Fields["completion_ancestry"]) == "verified"
+}
+
 func CurrentAttemptCompletion(signal *Signal, workAttemptID int64, generation uint64) bool {
 	if signal == nil || signal.Invalid != nil || signal.Source != SourceStructured ||
 		strings.TrimSpace(signal.Status) != StatusComplete ||

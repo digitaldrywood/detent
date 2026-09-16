@@ -169,8 +169,8 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 			return decision
 		}
 		operationalCompletionCandidate := false
-		if workpadCurrent && running.DispatchProgress.CompletionKind == workpad.CompletionOperational {
-			_, operationalCompletionCandidate = operationalCompletionFromIssue(issue)
+		if workpadCurrent {
+			_, operationalCompletionCandidate = operationalCompletionWithAuthorization(issue, running.DispatchProgress.CompletionKind == workpad.CompletionOperational)
 			if operationalCompletionCandidate && implementProgressOperationalWorkspaceClean(running.DiffStats) {
 				decision.WorkpadStatus = workpad.StatusComplete
 				decision.Reason = implementOperationalCompletion
@@ -552,7 +552,7 @@ func implementProgressHasNewString(current, previous []string) bool {
 
 func implementProgressFieldsAdvanced(previous, current map[string]string) bool {
 	for name, value := range current {
-		if name == workpad.FieldCompletionKind || name == workpad.FieldCompletionEvidence {
+		if strings.HasPrefix(name, "completion_") {
 			continue
 		}
 		if previousValue, ok := previous[name]; !ok || strings.TrimSpace(previousValue) != strings.TrimSpace(value) {

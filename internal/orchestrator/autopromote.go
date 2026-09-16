@@ -230,19 +230,30 @@ type operationalCompletion struct {
 }
 
 func operationalCompletionFromIssue(issue connector.Issue) (operationalCompletion, bool) {
+	return operationalCompletionWithAuthorization(issue, workpad.OperationalCompletionAuthorized(issue.Description))
+}
+
+func operationalCompletionWithAuthorization(issue connector.Issue, authorized bool) (operationalCompletion, bool) {
 	if issue.PullRequest != nil || workAttemptPRNumber(issue) != nil {
-		return operationalCompletion{}, false
-	}
-	if !workpad.OperationalCompletionAuthorized(issue.Description) {
 		return operationalCompletion{}, false
 	}
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
 	if !ok {
 		return operationalCompletion{}, false
 	}
+	if (!authorized || !workpad.OperationalCompletionAuthorized(issue.Description)) && !workpad.MergedCompletionEvidence(signal) {
+		return operationalCompletion{}, false
+	}
 	evidence, ok := workpad.OperationalCompletion(signal)
 	if !ok {
 		return operationalCompletion{}, false
+	}
+	if workpad.MergedCompletionEvidence(signal) {
+		parts := []string{evidence}
+		for _, field := range []string{"completion_merged_pr", "completion_merge_commit", "completion_branch", "completion_branch_head", "completion_ancestry"} {
+			parts = append(parts, field+": "+strings.TrimSpace(signal.Fields[field]))
+		}
+		evidence = strings.Join(parts, "\n")
 	}
 	return operationalCompletion{
 		evidence:   evidence,
