@@ -303,3 +303,32 @@ func (f *fakeUpdater) Apply(_ context.Context, opts update.ApplyOptions) (update
 	f.applyOptions = opts
 	return f.applyStatus, f.applyErr
 }
+
+func TestUpdateCommandPreservesVersionOnError(t *testing.T) {
+	for _, tt := range []struct{ name, version string }{{"empty coordination status", ""}, {"server version", "v0.114.15"}} {
+		t.Run(tt.name, func(t *testing.T) {
+			failure := errors.New("dashboard API is unreachable")
+			cmd := newUpdateCommand(t.Context(), func(context.Context) (updateRunner, error) {
+				return &fakeUpdater{applyStatus: update.Status{CurrentVersion: tt.version}, applyErr: failure}, nil
+			})
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--yes", "--json"})
+			if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, failure) {
+				t.Fatalf("error=%v", err)
+			}
+			var status update.Status
+			if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+				t.Fatal(err)
+			}
+			want := tt.version
+			if want == "" {
+				want = currentVersionInfo().Version
+			}
+			if status.CurrentVersion == "" || status.CurrentVersion != want {
+				t.Fatalf("version=%q want %q", status.CurrentVersion, want)
+			}
+		})
+	}
+}

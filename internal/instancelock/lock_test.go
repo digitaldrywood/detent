@@ -149,3 +149,47 @@ func TestAcquireHelperProcess(t *testing.T) {
 	}
 	t.Fatal("Acquire() succeeded while parent held lock")
 }
+
+func TestDashboardAddressMetadata(t *testing.T) {
+	for _, tt := range []struct {
+		address string
+		invalid bool
+	}{
+		{"100.111.222.33:4303", false}, {"[::1]:4303", false}, {"127.0.0.1:0", true}, {"host:65536", true}, {"host:123\npid=1", true}, {"missing-port", true},
+	} {
+		t.Run(tt.address, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "detent.db.lock")
+			lock, err := Acquire(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := lock.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			err = lock.SetDashboardAddress(tt.address)
+			if (err != nil) != tt.invalid {
+				t.Fatalf("SetDashboardAddress = %v", err)
+			}
+			inspection, err := Inspect(path)
+			if err != nil || inspection.MetadataError != nil {
+				t.Fatalf("Inspect = %+v, %v", inspection, err)
+			}
+			want := ""
+			if !tt.invalid {
+				want = tt.address
+			}
+			if inspection.Owner.DashboardAddress != want {
+				t.Fatalf("address=%q want %q", inspection.Owner.DashboardAddress, want)
+			}
+			if err := lock.Close(); err != nil {
+				t.Fatal(err)
+			}
+			inspection, err = Inspect(path)
+			if err != nil || inspection.Status != StatusClear || inspection.Owner.DashboardAddress != "" {
+				t.Fatalf("released: %+v %v", inspection, err)
+			}
+		})
+	}
+}

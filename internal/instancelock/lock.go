@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,9 +30,10 @@ type Lock struct {
 }
 
 type Owner struct {
-	PID       int
-	Hostname  string
-	StartedAt time.Time
+	DashboardAddress string
+	PID              int
+	Hostname         string
+	StartedAt        time.Time
 }
 
 type HeldError struct {
@@ -134,6 +137,23 @@ func (l *Lock) Close() error {
 		l.closeErr = errors.Join(clearErr, unlockErr, closeErr)
 	})
 	return l.closeErr
+}
+
+// SetDashboardAddress publishes the bound listener in the existing owner metadata.
+// Call once after binding, before closing the lock.
+func (l *Lock) SetDashboardAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	number, parseErr := strconv.Atoi(port)
+	if err != nil || parseErr != nil || host == "" || number <= 0 || number > 65535 || strings.ContainsAny(address, "\r\n") {
+		return fmt.Errorf("invalid dashboard address %q", address)
+	}
+	if _, err := l.file.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("seek instance metadata: %w", err)
+	}
+	if _, err := fmt.Fprintf(l.file, "dashboard_address=%s\n", address); err != nil {
+		return fmt.Errorf("write dashboard address: %w", err)
+	}
+	return l.file.Sync()
 }
 
 func (l *Lock) Recovery() (Recovery, bool) {
@@ -271,7 +291,7 @@ func scanOwner(file *os.File) (Owner, error) {
 	if err != nil {
 		return Owner{PID: pid, Hostname: hostname}, fmt.Errorf("invalid started_at %q: %w", values["started_at"], err)
 	}
-	return Owner{PID: pid, Hostname: hostname, StartedAt: startedAt}, nil
+	return Owner{PID: pid, Hostname: hostname, StartedAt: startedAt, DashboardAddress: values["dashboard_address"]}, nil
 }
 
 func claimLocal(path string) bool {

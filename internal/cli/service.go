@@ -344,6 +344,13 @@ func runningServiceArguments(ctx context.Context, configPath string, opts option
 	if err != nil || !status.Running() {
 		return nil
 	}
+	// Read the actual expanded command line before falling back to unit files,
+	// which may contain environment substitutions or have changed since startup.
+	if runtime.GOOS == "linux" {
+		if arguments := runningProcessArguments(status.PID, configPath, os.ReadFile); len(arguments) > 0 {
+			return arguments
+		}
+	}
 	switch status.ServiceManager {
 	case servicepkg.ManagerSystemd:
 		arguments := []string{"cat", status.Service}
@@ -364,6 +371,17 @@ func runningServiceArguments(ctx context.Context, configPath string, opts option
 		return serviceArgumentsForConfig(systemdDefinitionArguments(content), configPath)
 	}
 	return nil
+}
+
+func runningProcessArguments(pid int, configPath string, readFile func(string) ([]byte, error)) []string {
+	if pid <= 0 {
+		return nil
+	}
+	content, err := readFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return nil
+	}
+	return serviceArgumentsForConfig(strings.Split(strings.TrimRight(string(content), "\x00"), "\x00"), configPath)
 }
 
 func serviceArgumentsForConfig(arguments []string, configPath string) []string {
