@@ -1413,3 +1413,111 @@ func TestNativeMergeQueueCachedHeadChange(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeMergeQueueReviewReworkAfterEnqueue(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                                       string
+		refresh, observed, resolved, fail, restart bool
+		move                                       string
+	}{
+		{name: "cached review"},
+		{name: "refreshed review", refresh: true},
+		{name: "provider observed review", refresh: true, observed: true},
+		{name: "provider entry after restart", refresh: true, observed: true, restart: true},
+		{name: "resolved review", resolved: true},
+		{name: "dequeue failure", fail: true},
+		{name: "operator rework", move: "Rework"},
+		{name: "operator backlog", move: "Backlog"},
+		{name: "observed operator rework", move: "Rework", observed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now()
+			issue := nativeMergeQueueTestIssue(2822, "success")
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging", "Rework"}})
+			metrics := &workflowMetricsRecorderSpy{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics}
+			state := newState(cfg)
+			issues := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			entry := *issues[0].PullRequest.MergeQueueEntry
+			state.Pipeline = cloneIssues(issues)
+			if tt.observed {
+				tracker.entries = map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry}
+			}
+			if tt.restart {
+				delete(state.nativeMergeQueueEntries, issue.ID)
+				issues[0].PullRequest.MergeQueueEntry = nil
+			}
+			if tt.fail {
+				tracker.dequeueErr = errors.New("unavailable")
+			}
+			want := "Rework"
+			if tt.move != "" {
+				want = tt.move
+				if !tt.observed {
+					result := orch.applyOperatorMove(t.Context(), &state, OperatorMoveRequest{IssueID: issue.ID, FromState: "Merging", ToState: tt.move, WriteTracker: true}, now)
+					if result.err != nil {
+						t.Fatal(result.err)
+					}
+					found := false
+					for _, event := range metrics.events {
+						if event.PhaseName == tt.move && event.Reason == "operator_move" {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("operator transition not preserved: %+v", metrics.events)
+					}
+					issues = cloneIssues(state.Pipeline)
+				}
+				issues[0].State = tt.move
+			} else {
+				threads := []connector.PullRequestReviewThread{{Path: "merge.go", Line: 10}}
+				if tt.resolved {
+					threads = nil
+					want = "Merging"
+				}
+				tracker.hydratedThreads = &threads
+			}
+			if tt.fail {
+				want = "Merging"
+			}
+			next := now.Add(time.Minute)
+			if tt.refresh {
+				next = now.Add(nativeMergeQueueEntryRefresh)
+			}
+			issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, next)
+			if issues[0].State != want {
+				t.Fatalf("lane = %s, want %s", issues[0].State, want)
+			}
+			wantDequeues := 1
+			if tt.resolved {
+				wantDequeues = 0
+			}
+			if len(tracker.dequeued) != wantDequeues {
+				t.Fatalf("dequeues = %v, want %d", tracker.dequeued, wantDequeues)
+			}
+			if wantDequeues == 1 && tracker.dequeued[0].ID != entry.ID {
+				t.Fatalf("dequeued wrong entry: %v", tracker.dequeued)
+			}
+			if tt.move != "" && len(tracker.comments) != 0 {
+				t.Fatalf("operator move published review handoff: %v", tracker.comments)
+			}
+			if !tt.resolved && !tt.fail && nativeMergeQueueHasEntry(&state, issues[0]) {
+				t.Fatal("withdrawn entry retains ownership")
+			}
+			if tt.fail && !nativeMergeQueueHasEntry(&state, issues[0]) {
+				t.Fatal("failed dequeue discarded ownership")
+			}
+			if tt.fail {
+				tracker.dequeueErr = nil
+				issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, next.Add(time.Second))
+				if issues[0].State != "Rework" || nativeMergeQueueHasEntry(&state, issues[0]) {
+					t.Fatal("successful retry did not withdraw and hand off")
+				}
+			}
+		})
+	}
+}

@@ -654,11 +654,25 @@ revocation writer forwards those existing reasons without a `merge_revoked:`
 prefix; other revocations retain their existing vocabulary. No mechanism or
 reason is added.
 
+The shared lane writer withdraws native queue ownership before a departure
+from Merging (#2822). Its reviewed INV-3 dynamic-reason fingerprint changes
+without altering reason forwarding; operator destinations and reasons remain
+intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
 
 **Statement:** Merges go through the repository's merge queue when one exists.
+
+A queued PR with unresolved review threads must be withdrawn before the existing
+review Rework handoff. Thread hydration precedes every cached or provider-entry
+shortcut. A card departing Merging must withdraw its live provider entry before
+local ownership is discarded; other departures preserve the chosen destination
+and transition reason. Failed withdrawal retains ownership for the existing
+error/retry handling. Landed or closed PRs have no live entry to withdraw.
+`TestNativeMergeQueueReviewReworkAfterEnqueue` covers cached and refreshed
+reviews, resolved threads, withdrawal failure, and operator departures (#2822).
 
 **Why:** Competing speculative merge work and repeated head invalidations
 contributed to the measured rebase and CI loop.
