@@ -167,7 +167,7 @@ func TestBoardCardRendersCumulativeParkSummary(t *testing.T) {
 		}
 	}
 	html := renderBoardComponent(t, boardCardView2(boardCardView{DomID: "card-1773", Title: "Park summary", ParkSummary: summary, ParkDetail: detail}))
-	for _, want := range []string{"data-board-card-park-summary", "data-help-title=\"Park history\"", "no_progress_limit"} {
+	for _, want := range []string{"no_progress_limit", "7 attempts", "3 parks"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("card HTML missing %q:\n%s", want, html)
 		}
@@ -214,8 +214,8 @@ func TestBoardCardRendersCompletionProgressClassification(t *testing.T) {
 					t.Fatalf("card HTML missing %q:\n%s", want, html)
 				}
 			}
-			if !strings.Contains(html, "data-board-card-progress") {
-				t.Fatalf("card HTML missing progress marker:\n%s", html)
+			if strings.Contains(html, "data-board-card-progress") {
+				t.Fatalf("card HTML renders forbidden progress marker:\n%s", html)
 			}
 		})
 	}
@@ -269,7 +269,7 @@ func TestBoardCardAndDetailSheetRenderOrigin(t *testing.T) {
 		"detent",
 	)
 	cardHTML := renderBoardComponent(t, boardCardView2(view))
-	for _, want := range []string{`data-board-card-origin`, "via admission", "@ada"} {
+	for _, want := range []string{"via admission", "@ada"} {
 		if !strings.Contains(cardHTML, want) {
 			t.Fatalf("board card missing %q:\n%s", want, cardHTML)
 		}
@@ -721,7 +721,7 @@ func TestBoardCardRendersMergeLaneProgress(t *testing.T) {
 		t.Fatalf("CompactSignal = %q, want %q", view.Signals[0].Text, card.MergeLaneStatus)
 	}
 	html := renderBoardComponent(t, boardCardView2(view))
-	for _, want := range []string{`data-board-card-merge-lane`, "Draining #2", card.MergeLaneDetail, "text-ok"} {
+	for _, want := range []string{"Draining #2", card.MergeLaneDetail, "text-ok"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("merge-lane card missing %q:\n%s", want, html)
 		}
@@ -954,15 +954,9 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 
 	cardHTML := renderBoardComponent(t, boardCardView2(running))
 	for _, want := range []string{
-		`id="card-gopherguides-gopher-ai-185-runtime-badge"`,
-		`data-board-runtime-badge`,
-		`data-help-trigger`,
-		`data-help-scope="runtime-identity"`,
-		`data-help-description="Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185"`,
-		`data-runtime-density="cozy"`,
-		`>gpt-5.6-sol · xhigh<`,
-		`data-runtime-density="comfy"`,
-		`>Codex · gpt-5.6-sol · xhigh<`,
+		`Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185`,
+		`Codex · gpt-5.6-sol · xhigh`,
+		`>Running<`,
 	} {
 		if !strings.Contains(cardHTML, want) {
 			t.Fatalf("running card missing %q:\n%s", want, cardHTML)
@@ -1046,8 +1040,7 @@ func TestRunningBoardCardKeepsRuntimeBadgeWithOperationalStatus(t *testing.T) {
 
 			html := renderBoardComponent(t, boardCardView2(view))
 			for _, want := range []string{
-				`data-board-runtime-badge`,
-				`>` + tt.want + `<`,
+				tt.want,
 				`Awaiting tool result`,
 			} {
 				if !strings.Contains(html, want) {
@@ -1107,9 +1100,7 @@ func TestRunningBoardCardRuntimeBadgeFallsBackUntilIdentityKnown(t *testing.T) {
 
 	html := renderBoardComponent(t, boardCardView2(running))
 	for _, want := range []string{
-		`id="card-gopherguides-gopher-ai-185-runtime-badge"`,
-		`data-board-runtime-badge`,
-		`>agent working<`,
+		`>Running<`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("fallback running card missing %q:\n%s", want, html)
@@ -1166,13 +1157,7 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 		`data-board-card-signals`,
 		`data-board-card-priority-details`,
 		`data-board-card-content="comfy"`,
-		`data-board-card-labels`,
-		`data-board-card-author`,
-		`Filed by`,
 		`@corylanou`,
-		`data-board-card-effort`,
-		`data-board-card-activity`,
-		`data-board-card-pr-status`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("density card missing %q:\n%s", want, html)
@@ -1455,8 +1440,8 @@ func TestBoardSnapshotRendersAwaitingChecksOnlyForGatePendingCards(t *testing.T)
 	if strings.Contains(plain, "Awaiting checks") {
 		t.Fatalf("plain active card rendered awaiting checks badge:\n%s", plain)
 	}
-	if got := strings.Count(html, ">Awaiting checks<"); got != 2 {
-		t.Fatalf("density-specific Awaiting checks labels rendered %d times, want 2:\n%s", got, html)
+	if got := strings.Count(html, ">Awaiting checks<"); got != 1 {
+		t.Fatalf("Awaiting checks status rendered %d times, want 1:\n%s", got, html)
 	}
 }
 
@@ -2504,8 +2489,8 @@ func TestBoardCardSurfacesWorkpadBlockerResolution(t *testing.T) {
 					t.Fatalf("board card missing %q:\n%s", want, html)
 				}
 			}
-			if !strings.Contains(html, "data-board-card-blockers") {
-				t.Fatalf("board card missing blocker-ref annotation:\n%s", html)
+			if strings.Contains(html, "data-board-card-blockers") {
+				t.Fatalf("board card renders forbidden blocker body:\n%s", html)
 			}
 		})
 	}
@@ -4076,9 +4061,7 @@ func TestBoardSnapshotRendersActiveLaneAgeFooter(t *testing.T) {
 
 	activeCard := boardCardSection(t, html, "refactor(tmux-start): extract inline bash to scripts")
 	for _, want := range []string{
-		`data-board-card-age-footer`,
-		`title="In Progress since`,
-		"In lane",
+		`In Progress since`,
 		"3m",
 	} {
 		if !strings.Contains(activeCard, want) {
@@ -4129,9 +4112,7 @@ func TestBoardSnapshotRendersLocalSQLiteProductionLaneAgeFooter(t *testing.T) {
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	card := boardCardSection(t, html, "Render local artifact")
 	for _, want := range []string{
-		`data-board-card-age-footer`,
-		`title="Production since`,
-		"In lane",
+		`Production since`,
 		"42m",
 	} {
 		if !strings.Contains(card, want) {
@@ -4235,8 +4216,6 @@ func TestBoardSnapshotRendersKanbanDragAttributes(t *testing.T) {
 		`data-kanban-current-state="Human Review"`,
 		`data-kanban-move-disabled="true"`,
 		`data-kanban-move-disabled-reason="No linked issue is available for this PR-only card."`,
-		`data-kanban-move-disabled-label`,
-		`No issue`,
 	} {
 		if !strings.Contains(prOnly, want) {
 			t.Fatalf("PR-only card missing %q:\n%s", want, prOnly)
@@ -4320,9 +4299,7 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 				`data-kanban-current-state="Todo"`,
 				`data-kanban-move-disabled="true"`,
 				`data-kanban-move-disabled-reason="` + tt.wantReason + `"`,
-				`title="` + tt.wantReason + `"`,
-				`data-kanban-move-disabled-label`,
-				tt.wantLabel,
+				`title="` + tt.wantReason,
 			} {
 				if !strings.Contains(card, want) {
 					t.Fatalf("disabled card missing %q:\n%s", want, card)
@@ -4482,9 +4459,7 @@ func TestBoardSnapshotExplainsCardLevelMoveDisabledReasons(t *testing.T) {
 			for _, want := range []string{
 				`data-kanban-move-disabled="true"`,
 				`data-kanban-move-disabled-reason="` + tt.wantReason + `"`,
-				`title="` + tt.wantReason + `"`,
-				`data-kanban-move-disabled-label`,
-				tt.wantLabel,
+				`title="` + tt.wantReason,
 			} {
 				if !strings.Contains(card, want) {
 					t.Fatalf("disabled card missing %q:\n%s", want, card)
@@ -4665,30 +4640,30 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		card projectKanbanCard
 		want string
 	}{
-		{name: "running precedes historical blockers", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, card: projectKanbanCard{Blockers: []string{"repo#1", "repo#2"}}, want: "Running|model · high"},
+		{name: "running precedes historical blockers", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, card: projectKanbanCard{Blockers: []string{"repo#1", "repo#2"}}, want: "Running"},
 		{name: "running precedes retained hold", view: boardCardView{Running: true}, card: projectKanbanCard{BlockedRecoveryAction: "hold", Blockers: []string{"repo#1"}}, want: "Running"},
 		{name: "human recovery beats dependency count", card: projectKanbanCard{BlockedRecoveryReason: "human_blocker", BlockedReason: "operator must repair credentials", Blockers: []string{"repo#1"}}, want: "Needs you"},
 		{name: "human prerequisite", card: projectKanbanCard{HumanDependencyWait: "Needs you · human prerequisite owner/repo#1 · closure and completion evidence required", Blockers: []string{"human prerequisite owner/repo#1"}}, want: "Needs you"},
 		{name: "deferred dependencies retain count", card: projectKanbanCard{BlockedRecoveryAction: "defer", Blockers: []string{"repo#1"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies do not count", card: projectKanbanCard{Blockers: []string{"repo#1"}, ClearedBlockers: []string{"repo#2 (Done)"}}, want: "Blocked · 1"},
 		{name: "cleared dependencies alone are quiet", card: projectKanbanCard{ClearedBlockers: []string{"repo#2 (Done)"}}, want: ""},
-		{name: "sync error beats merge", view: boardCardView{Work: workItemMetadata{SyncKey: "error", Sync: "Error", SyncKind: primitives.KindErr}, MergeLaneStatus: "CI running"}, want: "Sync error|CI running"},
-		{name: "maximal actionable budget", view: boardCardView{Running: true, MergeLaneStatus: "CI running", Work: workItemMetadata{SyncKey: "error", Sync: "Error"}}, card: projectKanbanCard{Blockers: []string{"repo#1"}, WaitDetail: "artifact_status_wait"}, want: "Running|Sync error"},
-		{name: "stranded", view: boardCardView{ExtraText: "Stranded 18m · no worker", Waiting: true}, want: "Stranded · no worker|No live attempt"},
+		{name: "sync error beats merge", view: boardCardView{Work: workItemMetadata{SyncKey: "error", Sync: "Error", SyncKind: primitives.KindErr}, MergeLaneStatus: "CI running"}, want: "CI running"},
+		{name: "maximal actionable budget", view: boardCardView{Running: true, MergeLaneStatus: "CI running", Work: workItemMetadata{SyncKey: "error", Sync: "Error"}}, card: projectKanbanCard{Blockers: []string{"repo#1"}, WaitDetail: "artifact_status_wait"}, want: "Running"},
+		{name: "stranded", view: boardCardView{ExtraText: "Stranded 18m · no worker", Waiting: true}, want: "Stranded · no worker"},
 		{name: "stale", view: boardCardView{MoveDisabledLabel: "Stale", State: "Todo"}, want: "Stale"},
 		{name: "blocked lane", view: boardCardView{State: "Blocked"}, want: "Blocked"},
-		{name: "review", view: boardCardView{State: "Human Review"}, card: projectKanbanCard{HumanActionRequired: true, WaitDetail: "waiting for operator approval", CIStatus: "pass"}, want: "Needs you|CI pass"},
-		{name: "automated review wait", view: boardCardView{State: "Human Review"}, card: projectKanbanCard{WaitDetail: "waiting for auto-promote", CIStatus: "pass"}, want: "Waiting|CI pass"},
+		{name: "review", view: boardCardView{State: "Human Review"}, card: projectKanbanCard{HumanActionRequired: true, WaitDetail: "waiting for operator approval", CIStatus: "pass"}, want: "Needs you"},
+		{name: "automated review wait", view: boardCardView{State: "Human Review"}, card: projectKanbanCard{WaitDetail: "waiting for auto-promote", CIStatus: "pass"}, want: "Waiting"},
 		{name: "explicit human action in rework", view: boardCardView{State: "Rework"}, card: projectKanbanCard{HumanActionRequired: true}, want: "Needs you"},
 		{name: "explicit human action in merging", view: boardCardView{State: "Merging"}, card: projectKanbanCard{HumanActionRequired: true}, want: "Needs you"},
-		{name: "explicit human action reserves signal slot", view: boardCardView{State: "Merging", MergeLaneStatus: "CI running"}, card: projectKanbanCard{HumanActionRequired: true, CIStatus: "fail"}, want: "Needs you|CI failed"},
+		{name: "explicit human action reserves signal slot", view: boardCardView{State: "Merging", MergeLaneStatus: "CI running"}, card: projectKanbanCard{HumanActionRequired: true, CIStatus: "fail"}, want: "Needs you"},
 		{name: "merging", view: boardCardView{State: "Merging"}, want: "Merging"},
-		{name: "running", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, want: "Running|model · high"},
+		{name: "running", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, want: "Running"},
 		{name: "wait diagnostics stay in details", card: projectKanbanCard{WaitDetail: "auto-promote await_review: artifact_status_wait very long internal explanation"}, want: "Waiting"},
 		{name: "operator attention", card: projectKanbanCard{BlockedReason: "credentials require operator repair"}, want: "Needs you"},
 		{name: "gate", card: projectKanbanCard{GatePending: true}, want: "Awaiting checks"},
 		{name: "retry", view: boardCardView{Retrying: true}, want: "Awaiting retry"},
-		{name: "failed checks follow running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "Running|CI failed"},
+		{name: "failed checks follow running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "Running"},
 		{name: "done dependencies are historical", view: boardCardView{Done: true}, card: projectKanbanCard{Blockers: []string{"repo#1"}, CIStatus: "fail"}, want: ""},
 		{name: "terminal waits are historical", view: boardCardView{Terminal: true}, card: projectKanbanCard{WaitDetail: "former wait reason"}, want: ""},
 		{name: "idle lane does not repeat state", view: boardCardView{State: "Todo", AgeFooter: "12m", OriginDetail: "via human", ProgressSummary: "Last turn", ParkSummary: "2 parks"}, want: ""},
@@ -4813,7 +4788,7 @@ func TestBoardDispatchWaitingPreservesBlockerCount(t *testing.T) {
 			card := projectKanbanCard{Blockers: make([]string, count)}
 			view := boardCardView{DispatchStatus: "Waiting", Waiting: true}
 			signals := boardCardSignals(view, card)
-			want := "Waiting · " + strconv.Itoa(count)
+			want := "Waiting on dependency"
 			if len(signals) != 1 || signals[0].Text != want {
 				t.Fatalf("signals = %+v, want %q", signals, want)
 			}

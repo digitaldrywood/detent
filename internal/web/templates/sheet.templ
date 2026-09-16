@@ -162,6 +162,12 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 			if summary.ExtraText != "" {
 				@sheetRowValue("Current condition", summary.ExtraText, "")
 			}
+			if len(summary.Facts) > 0 {
+				@sheetRowValue("Facts", cardFactDetail(summary.Facts), "")
+			}
+			if summary.TrackerSummary != "" {
+				@sheetRowValue("Tracker snapshot", summary.TrackerSummary, "Observed " + summary.TrackerObservedAt)
+			}
 			if summary.MoveDisabledText != "" {
 				@sheetRowValue("Move availability", summary.MoveDisabledText, "")
 			}

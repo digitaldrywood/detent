@@ -1749,33 +1749,25 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 		case "running local validation":
 			label = "Validating"
 		}
-		signals := []boardCardSignal{{Text: label, Kind: primitives.KindOK}}
-		switch {
-		case view.Work.SyncKey == "error" || view.Work.SyncKey == "retrying":
-			signals = append(signals, boardCardSignal{Text: "Sync " + strings.ToLower(view.Work.Sync), Kind: view.Work.SyncKind})
-		case card.CIStatus == "fail" || card.CIStatus == "failure" || card.CIStatus == "error":
-			signals = append(signals, boardCardSignal{Text: "CI failed", Kind: primitives.KindErr})
-		case view.RuntimeBadge && view.RuntimeCozyText != "" && view.RuntimeCozyText != "agent working":
-			signals = append(signals, boardCardSignal{Text: view.RuntimeCozyText, Kind: primitives.KindOK})
-		}
-		return signals
+		return []boardCardSignal{{Text: label, Kind: primitives.KindOK}}
 	}
-	if view.DispatchStatus == "Ready" {
-		return []boardCardSignal{{Text: "Ready", Kind: primitives.KindInfo}}
-	}
+
 	if view.Done || view.Terminal {
 		return nil
 	}
-	signals := make([]boardCardSignal, 0, 2)
+	signals := make([]boardCardSignal, 0, 1)
 	add := func(text string, kind primitives.Kind) {
-		if text != "" && len(signals) < 2 {
-			for _, signal := range signals {
-				if signal.Text == text {
-					return
-				}
-			}
-			signals = append(signals, boardCardSignal{Text: text, Kind: kind})
+		if text != "" && len(signals) < 1 {
+			signals = append(signals, boardCardSignal{Text: boardCardStatusText(text), Kind: kind})
 		}
+	}
+	for _, fact := range view.Facts {
+		if fact.Name == "reason" && strings.HasPrefix(fact.Text, "waiting for a human reply · ") {
+			add(strings.Replace(fact.Text, "waiting for a human reply", "Needs your reply", 1), primitives.KindInfo)
+		}
+	}
+	if view.DispatchStatus == "Ready" {
+		add("Ready", primitives.KindInfo)
 	}
 	waiting := BlockedRecoveryWaiting(card.BlockedHumanAttention, card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedReason)
 	blockedDetail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryAction, card.BlockedRecoveryReason, card.BlockedRecoveryRemedy, card.BlockedReason)
@@ -1790,7 +1782,11 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	case view.DispatchStatus == "Waiting" && card.HumanDependencyWait != "":
 		add("Needs you", primitives.KindWarn)
 	case view.DispatchStatus == "Waiting" && len(card.Blockers) > 0:
-		add("Waiting · "+strconv.Itoa(len(card.Blockers)), primitives.KindWarn)
+		add(boardDependencyStatus(card.Blockers[0]), primitives.KindWarn)
+	case view.DispatchStatus == "Waiting" && strings.Contains(strings.ToLower(view.ExtraText), "waiting on ") && strings.Contains(view.ExtraText, "#"):
+		add(boardDependencyStatus(view.ExtraText), primitives.KindWarn)
+	case waiting && strings.Contains(card.BlockedReason, "#"):
+		add(boardDependencyStatus(card.BlockedReason), primitives.KindWarn)
 	case view.DispatchStatus != "":
 		add(view.DispatchStatus, view.ExtraKind)
 	case strings.HasPrefix(view.ExtraText, "Stranded "):
@@ -1812,32 +1808,35 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	case strings.EqualFold(view.State, "Blocked"):
 		add("Blocked", primitives.KindErr)
 	}
+
+	if card.CIStatus == "fail" || card.CIStatus == "failure" || card.CIStatus == "error" || card.CIStatus == "red" {
+		add("CI failed", primitives.KindErr)
+	}
+	if view.MergeLaneStatus != "" {
+		add(view.MergeLaneStatus, view.MergeLaneKind)
+	}
+	switch card.CIStatus {
+	case "pending", "running", "in_progress":
+		add("CI running", primitives.KindInfo)
+	case "queued":
+		add("CI queued", primitives.KindInfo)
+	}
 	if view.Work.SyncKey == "error" || view.Work.SyncKey == "retrying" || view.Work.SyncKey == "stale" {
 		add("Sync "+strings.ToLower(view.Work.Sync), view.Work.SyncKind)
 	}
 	if view.MoveDisabledLabel == "Stale" {
 		add("Stale", primitives.KindWarn)
 	}
-	if card.CIStatus == "fail" || card.CIStatus == "failure" || card.CIStatus == "error" {
-		add("CI failed", primitives.KindErr)
-	}
-	if view.MergeLaneStatus != "" {
-		add(view.MergeLaneStatus, view.MergeLaneKind)
-	}
 	switch {
 	case card.HumanActionRequired:
 	case card.GatePending:
 		add("Awaiting checks", primitives.KindInfo)
+	case strings.Contains(card.WaitDetail, "#"):
+		add(boardDependencyStatus(card.WaitDetail), primitives.KindInfo)
 	case card.WaitDetail != "":
 		add("Waiting", primitives.KindInfo)
 	case view.Retrying:
 		add("Awaiting retry", primitives.KindInfo)
-	case view.Running && view.ExtraText == "waiting for local validation":
-		add("Validation queued", primitives.KindInfo)
-	case view.Running && view.ExtraText == "running local validation":
-		add("Validating", primitives.KindInfo)
-	case view.Running:
-		add("Running", primitives.KindOK)
 	case view.Waiting && view.DispatchStatus == "":
 		add("No live attempt", primitives.KindNeutral)
 	case strings.EqualFold(view.State, "Rework"):
@@ -1848,10 +1847,44 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 	if card.CIStatus != "" {
 		add("CI "+card.CIStatus, primitives.KindInfo)
 	}
-	if view.RuntimeBadge && view.RuntimeCozyText != "agent working" {
-		add(view.RuntimeCozyText, primitives.KindOK)
-	}
 	return signals
+}
+
+// INV-13 bounds decoded Unicode characters independently of CSS truncation.
+func boardCardStatusText(text string) string {
+	runes := []rune(strings.Join(strings.Fields(text), " "))
+	if len(runes) > 48 {
+		return string(runes[:47]) + "…"
+	}
+	return string(runes)
+}
+
+func boardDependencyStatus(blocker string) string {
+	if _, suffix, ok := strings.Cut(blocker, "#"); ok {
+		end := 0
+		for end < len(suffix) && suffix[end] >= '0' && suffix[end] <= '9' {
+			end++
+		}
+		if end > 0 {
+			return "Waiting on #" + suffix[:end]
+		}
+	}
+	return "Waiting on dependency"
+}
+
+func boardCardHoverTitle(card boardCardView) string {
+	parts := []string{card.MoveDisabledText, card.ExtraText, card.TrackerSummary, card.TrackerObservedAt,
+		cardFactDetail(card.Facts), card.AgeFooter, card.AgeFooterTitle, card.RuntimeSummary, card.RuntimeDetail, card.RuntimeComfyText, card.RuntimeCozyText,
+		card.MergeLaneStatus, card.MergeLaneDetail, card.OriginDetail, card.Work.SyncTitle,
+		card.BlockerSummary, card.ParkSummary, card.ParkDetail, card.ProgressSummary, card.ProgressDetail, card.AuthorDetail,
+		strings.Join(card.Labels, ", "), card.Effort, card.Activity, card.PRStatus}
+	var details []string
+	for _, part := range parts {
+		if part != "" {
+			details = append(details, part)
+		}
+	}
+	return strings.Join(details, "\n")
 }
 
 func boardCardActivity(snapshot telemetry.Snapshot, card projectKanbanCard) string {
