@@ -1126,6 +1126,7 @@ func (d TrackerDrift) IsZero() bool {
 }
 
 type Issue struct {
+	WorkpadHumanAction    *BlockerEvidence       `json:"workpad_human_action,omitempty"`
 	AttemptsToday         *int64                 `json:"attempts_today"`
 	LaneReason            string                 `json:"lane_reason"`
 	LaneReasonAt          *time.Time             `json:"lane_reason_at"`

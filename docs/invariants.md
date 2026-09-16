@@ -153,7 +153,16 @@ variables absent against an isolated local HTTP fixture.
 Scheme-prefixed Workpad blocker refs (#2748) retain their reference and text as
 instance-owned, unverifiable evidence. Successful workers reporting them release
 their claim without issue no-progress strikes or lane changes. Existing live
-Workpad evaluation holds dispatch and promotion until the report clears;
+Workpad evaluation retains the promotion hold until the report clears;
+instance-owned reports do not veto issue dispatch (#2802). Infrastructure eligibility
+belongs to the existing instance controls, and the next eligible worker can
+re-verify the report. `TestRecordedBlockerDispatchOwnership` covers fresh and retry
+dispatch, mixed human-action holds, and preserved scheduler wait detail. Only
+explicit human actions in structured blocked Workpads share evaluated evidence
+with the existing Needs-you question projection, including PR-less cards and recorded age;
+`TestWorkpadHumanActionSnapshot` and `TestOperationsWorkpadHumanAction` cover that path.
+Legacy blocker prose does not become a human question or hide dependency decisions.
+No timer, recovery path, or reason code is added.
 `TestSymbolicBlockerCompletion` and `TestSymbolicBlockerPromotion` cover attribution,
 retained diagnostic detail, final usage/diff accounting, CI scheduling after a pushed head,
 and promotion after clearance. This replaces symbolic
