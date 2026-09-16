@@ -187,6 +187,10 @@ Update and restart draining (#2745) reuses the runtime dispatch pause and sessio
 limits. Manual runtime update requests use the same drain reservation as automatic
 updates; SIGTERM shutdown uses that duration ceiling, including model-selection
 levels. Managed restarts preserve child processes while the orchestrator drains.
+The shutdown drain uses the existing drain-budget timer rather than the five-second
+cleanup context (#2795); shorter parent deadlines emit an error with both budgets.
+`TestShutdownDrainBudget` covers delayed drain acknowledgment, and the live-session
+shutdown regression crosses the cleanup deadline before allowing completion.
 Startup no longer bulk-reclaims live work attempts as `service_restart`; the
 reclaim store API and query are removed. Historical restart rows remain readable
 for retry and accounting compatibility. Existing expired-lease recovery runs at startup and on normal refresh, including

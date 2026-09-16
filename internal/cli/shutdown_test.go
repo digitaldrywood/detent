@@ -694,6 +694,7 @@ func TestRunWithShutdownDoesNotTrustStaleEmptySnapshotOverLiveSession(t *testing
 			t.Fatalf("SnapshotHub.Publish() error = %v", err)
 		}
 
+		var logs bytes.Buffer
 		serveStarted := make(chan struct{})
 		errCh := make(chan error, 1)
 		go func() {
@@ -703,7 +704,8 @@ func TestRunWithShutdownDoesNotTrustStaleEmptySnapshotOverLiveSession(t *testing
 				SnapshotHub:      snapshotHub,
 				DrainTimeout:     time.Minute,
 				ProgressInterval: time.Hour,
-				HardTimeout:      time.Minute,
+				HardTimeout:      defaultShutdownHardTimeout,
+				Logger:           slog.New(slog.NewTextHandler(&logs, nil)),
 			}, func(ctx context.Context) error {
 				close(serveStarted)
 				<-ctx.Done()
@@ -715,7 +717,7 @@ func TestRunWithShutdownDoesNotTrustStaleEmptySnapshotOverLiveSession(t *testing
 		controller.RequestDrain()
 		// Check both the initial inventory and a subsequent poll while the
 		// runner is blocked. Fake time cannot expire under host scheduling load.
-		for _, elapsed := range []time.Duration{0, shutdownDrainPollInterval} {
+		for _, elapsed := range []time.Duration{0, defaultShutdownHardTimeout + time.Second} {
 			time.Sleep(elapsed)
 			synctest.Wait()
 			select {
@@ -727,6 +729,10 @@ func TestRunWithShutdownDoesNotTrustStaleEmptySnapshotOverLiveSession(t *testing
 			if !ok || !snapshot.Shutdown.Draining || snapshot.Shutdown.SessionsRemaining != 1 {
 				t.Fatalf("shutdown snapshot = %+v, available = %v, want draining with 1 live session", snapshot.Shutdown, ok)
 			}
+		}
+
+		if strings.Contains(logs.String(), "drain projects during shutdown failed") {
+			t.Fatalf("drain failed before its budget: %s", logs.String())
 		}
 
 		close(releaseRunner)
@@ -1553,5 +1559,70 @@ func waitForShutdownSession(t *testing.T, registry *projectpkg.Registry, ready f
 			t.Fatal("timed out waiting for shutdown session")
 		case <-time.After(time.Millisecond):
 		}
+	}
+}
+
+func TestShutdownDrainBudget(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		parentTimeout time.Duration
+		wantShort     bool
+	}{
+		{name: "full drain budget"},
+		{name: "short parent", parentTimeout: 10 * time.Second, wantShort: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				if tc.parentTimeout > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tc.parentTimeout)
+					defer cancel()
+				}
+				started := make(chan struct{}, 1)
+				release := make(chan struct{})
+				p := newRefreshProjectWithConnector(t, "detent", shutdownBlockingConnector{started: started, release: release})
+				if err := p.Start(ctx); err != nil {
+					t.Fatal(err)
+				}
+				defer p.Close()
+				<-started
+				registry := projectpkg.NewRegistry()
+				mustSetProject(t, registry, p)
+				controller := NewShutdownController()
+				var logs bytes.Buffer
+				done := make(chan error, 1)
+				go func() {
+					done <- runWithShutdown(ctx, runningShutdownConfig{
+						Controller: controller, Registry: registry, DrainTimeout: time.Minute,
+						Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+					}, func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+				}()
+				synctest.Wait()
+				controller.RequestDrain()
+				synctest.Wait()
+				time.Sleep(6 * time.Second)
+				synctest.Wait()
+				failedEarly := strings.Contains(logs.String(), "drain projects during shutdown failed")
+				close(release)
+				synctest.Wait()
+				time.Sleep(shutdownDrainPollInterval)
+				synctest.Wait()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				if failedEarly {
+					t.Fatalf("drain expired at hard cleanup timeout: %s", logs.String())
+				}
+				short := strings.Contains(logs.String(), "shutdown context shorter than drain budget")
+				if short != tc.wantShort {
+					t.Fatalf("short deadline diagnostic = %v, want %v: %s", short, tc.wantShort, logs.String())
+				}
+				if short && (!strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "shutdown_context_remaining=") || !strings.Contains(logs.String(), "drain_timeout=1m0s")) {
+					t.Fatalf("missing deadline values: %s", logs.String())
+				}
+			})
+		})
 	}
 }

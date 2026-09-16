@@ -258,6 +258,13 @@ func runDrainShutdown(
 ) error {
 	startedAt := shutdownNow(cfg)
 	drainTimeout := shutdownDrainTimeoutForConfig(cfg)
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < drainTimeout {
+			shutdownLogger(cfg).Error("shutdown context shorter than drain budget",
+				"shutdown_context_remaining", remaining, "drain_timeout", drainTimeout)
+		}
+	}
 	hardTimeout := cfg.HardTimeout
 	if hardTimeout <= 0 {
 		hardTimeout = defaultShutdownHardTimeout
@@ -280,7 +287,8 @@ func runDrainShutdown(
 	writeShutdownBanner(shutdownOutput(cfg), sessions, drainTimeout)
 	shutdownLogger(cfg).Info("shutdown requested", "sessions", len(sessions))
 
-	drainCtx, cancelDrain := context.WithTimeout(ctx, hardTimeout)
+	// The drain timer below owns this budget; HardTimeout only bounds cleanup.
+	drainCtx, cancelDrain := context.WithCancel(ctx)
 	defer cancelDrain()
 	drainErrs := make(chan error, 1)
 	go func() {
