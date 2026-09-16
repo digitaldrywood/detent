@@ -60,7 +60,7 @@ type Action struct {
 type Decision struct {
 	AskedAt    *time.Time `json:"asked_at"`
 	AgeSeconds *int64     `json:"age_seconds"`
-	// WorkFingerprint retains historical PR evidence; it does not answer a question.
+	// WorkFingerprint is internal evidence used to exclude superseded questions.
 	WorkFingerprint string `json:"-"`
 
 	Kind         string        `json:"kind,omitempty"`

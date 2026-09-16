@@ -61,6 +61,13 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 		if operationsDecisionSeen(seen, keys) {
 			continue
 		}
+		if current && operationsPullRequestSupersedesQuestion(issue.PullRequest) {
+			continue
+		}
+		// Match humanQuestionWaiting: only nonempty current evidence supersedes a question.
+		if current && issue.PullRequest != nil && issue.PullRequest.HumanQuestionWorkFingerprint != "" && issue.PullRequest.HumanQuestionWorkFingerprint != d.WorkFingerprint {
+			continue
+		}
 		d.Kind = "question"
 		if current {
 			d.Title = issue.Title

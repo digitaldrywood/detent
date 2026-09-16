@@ -102,13 +102,13 @@ func TestOperationsCurrentDecisionEvidence(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, stored, current, gate, prState, want string }{
 		{name: "current question", stored: "current", current: "current", gate: "New gate?", want: "Original question?"},
-		{name: "superseded question", stored: "old", current: "current", want: "Original question?"},
-		{name: "superseded question allows current gate", stored: "old", current: "current", gate: "New gate?", want: "Original question?"},
-		{name: "unfingerprinted question superseded", current: "current", gate: "New gate?", want: "Original question?"},
+		{name: "superseded question", stored: "old", current: "current"},
+		{name: "superseded question allows current gate", stored: "old", current: "current", gate: "New gate?", want: "New gate?"},
+		{name: "unfingerprinted question superseded", current: "current", gate: "New gate?", want: "New gate?"},
 		{name: "no new refusal evidence", stored: "old", want: "Original question?"},
-		{name: "closed pull request supersedes question", stored: "current", current: "current", prState: "CLOSED", want: "Original question?"},
-		{name: "merged pull request supersedes question", stored: "current", current: "current", prState: "MERGED", want: "Original question?"},
-		{name: "closed pull request preserves independent gate", stored: "current", current: "current", gate: "Restore deployment credentials.", prState: "CLOSED", want: "Original question?"},
+		{name: "closed pull request supersedes question", stored: "current", current: "current", prState: "CLOSED"},
+		{name: "merged pull request supersedes question", stored: "current", current: "current", prState: "MERGED"},
+		{name: "closed pull request preserves independent gate", stored: "current", current: "current", gate: "Restore deployment credentials.", prState: "CLOSED", want: "Restore deployment credentials."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -346,11 +346,11 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			}},
 		},
 		{
-			name:         "closed pull request retains unanswered question",
+			name:         "closed pull request supersedes published question",
 			recorded:     []operations.Decision{{ProjectID: "detent", Issue: "digitaldrywood/detent#2465", Question: "Choose a recovery?", WorkFingerprint: "same"}},
 			snapshot:     telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "closed", ProjectID: "detent", Identifier: "digitaldrywood/detent#2465", PullRequest: &telemetry.PullRequest{State: "CLOSED", HumanQuestionWorkFingerprint: "same"}}}},
-			wantKind:     "question",
-			wantQuestion: "Choose a recovery?",
+			wantKind:     "",
+			wantQuestion: "",
 		},
 		{
 			name: "duplicate durable questions",
@@ -598,5 +598,46 @@ func TestOperationsDecisionDedupeKeepsGitHubHostsSeparate(t *testing.T) {
 		if want := wantURLs[decision.Question]; decision.URL != want {
 			t.Errorf("decision %q URL = %q, want %q", decision.Question, decision.URL, want)
 		}
+	}
+}
+
+func TestOperationsQuestionAgeOrder(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	old, recent := now.Add(-10*time.Hour), now.Add(-time.Hour)
+	for _, tc := range []struct{ name, path string }{{"api", "/api/v1/operations"}, {"page", "/operations"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := testDeps(t)
+			deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{DataTime: now, Decisions: []operations.Decision{
+				{ProjectID: "a", Issue: "owner/repo#1", Question: "Recent question?", AskedAt: &recent},
+				{ProjectID: "z", Issue: "owner/repo#2", Question: "Old question?", AskedAt: &old},
+			}}}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "Old question?") || strings.Index(body, "Old question?") >= strings.Index(body, "Recent question?") {
+				t.Fatalf("question order: %s", body)
+			}
+			if tc.name == "api" {
+				var got operations.Report
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Decisions) != 2 || got.Decisions[0].AskedAt == nil || !got.Decisions[0].AskedAt.Equal(old) || got.Decisions[0].AgeSeconds == nil || *got.Decisions[0].AgeSeconds < 36000 {
+					t.Fatalf("decisions: %+v", got.Decisions)
+				}
+			} else if !strings.Contains(body, "Oldest: 10h") || !strings.Contains(body, "Open questions: 2") {
+				t.Fatalf("summary: %s", body)
+			}
+		})
 	}
 }

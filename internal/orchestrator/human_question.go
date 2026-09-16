@@ -129,6 +129,9 @@ func (o *Orchestrator) humanQuestionWaiting(ctx context.Context, issue *connecto
 			issue.Comments = append(issue.Comments, connector.IssueComment{ID: q.AnswerCommentID, Body: q.AnswerBody, AuthorAuthorized: true})
 			continue
 		}
+		if fingerprint := humanQuestionWorkFingerprint(*issue); fingerprint != "" && fingerprint != q.WorkFingerprint {
+			return false, nil
+		}
 		reader, ok := o.connector.(connector.IssueCommentReader)
 		if !ok {
 			return true, errors.New("human question comment reader unavailable")

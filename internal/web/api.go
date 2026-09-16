@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/explain"
-	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -655,7 +654,6 @@ func (s *Server) handleHTTPError(err error, c echo.Context) {
 func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedAt time.Time, instanceName string, build buildinfo.Info) stateAPIResponse {
 	snapshot = snapshot.WithFreshness(observedAt)
 	return stateAPIResponse{
-		OpenQuestions:      snapshot.OpenQuestions,
 		GeneratedAt:        generatedAt,
 		SnapshotAgeSeconds: snapshot.AgeSeconds(observedAt),
 		Enrichment:         readyStateEnrichment(snapshot.GeneratedAt),
@@ -1638,7 +1636,6 @@ func snapshotErrorResponse(generatedAt time.Time, code string, message string) s
 }
 
 type stateAPIResponse struct {
-	OpenQuestions      []operations.Decision         `json:"open_questions"`
 	GeneratedAt        time.Time                     `json:"generated_at"`
 	SnapshotAgeSeconds int64                         `json:"snapshot_age_seconds"`
 	Enrichment         stateEnrichmentAPIResponse    `json:"enrichment"`

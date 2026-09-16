@@ -46,6 +46,9 @@ func IssueCardFacts(snapshot Snapshot, issue Issue) CardFacts {
 		if projectID == "" {
 			projectID = snapshot.Project.ID
 		}
+		if pr := issue.PullRequest; pr != nil && (strings.EqualFold(pr.State, "CLOSED") || strings.EqualFold(pr.State, "MERGED") || pr.HumanQuestionWorkFingerprint != "" && pr.HumanQuestionWorkFingerprint != question.WorkFingerprint) {
+			continue
+		}
 		if question.ProjectID == projectID && question.Issue == issue.Identifier {
 			facts.Question = &question
 			facts.LaneReason = "waiting for a human reply"

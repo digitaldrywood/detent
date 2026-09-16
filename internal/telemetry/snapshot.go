@@ -16,7 +16,7 @@ import (
 )
 
 type Snapshot struct {
-	OpenQuestions      []operations.Decision       `json:"open_questions"`
+	OpenQuestions      []operations.Decision       `json:"-"`
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
 

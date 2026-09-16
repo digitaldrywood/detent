@@ -247,15 +247,6 @@ Missing audits run in Merging. `TestReworkLivePullRequestPromotion`,
 `TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
 consolidation; no new transition reason or recovery loop is introduced.
 
-Unanswered worker questions (#2777) use the existing durable question wait as the
-single dispatch decision. PR conflicts, review changes, and base updates no longer
-bypass that wait; an authorized reply releases it. The Operations list, board
-reason, and state API project those same records, retaining unanswered questions
-when a PR closes or merges. Original comment timestamps recover legacy ages;
-missing timestamps remain explicitly unknown. This removes the independent-rework
-bypass rather than adding a wait mechanism, lane, reason code, or escalation.
-`TestHumanQuestionUnansweredRework` preserves this dispatch boundary.
-
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
 Unknown constants, including concatenations, fail. Existing dynamic forwarding

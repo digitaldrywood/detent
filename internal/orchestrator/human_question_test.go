@@ -322,41 +322,46 @@ func TestHumanQuestionReplyAuthorization(t *testing.T) {
 	}
 }
 
-func TestHumanQuestionUnansweredRework(t *testing.T) {
+func TestHumanQuestionIndependentRework(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		pr   *connector.PullRequest
-	}{
-		{name: "no PR"},
-		{name: "new conflict", pr: &connector.PullRequest{HeadSHA: "head", BaseSHA: "base", MergeableState: "dirty"}},
-		{name: "changed base", pr: &connector.PullRequest{HeadSHA: "head", BaseSHA: "new-base", MergeableState: "dirty"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "questions.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			tracker := &questionTracker{Connector: memory.New(memory.Config{})}
-			o := &Orchestrator{connector: tracker, workAttempts: db}
-			request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#1", State: "Rework"}}
-			o.attachHumanQuestionTool(&request)
-			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "ask_human_question", Arguments: json.RawMessage(`{"key":"sender","question":"Use manual delivery?"}`)})
-			if err != nil || !result.Success {
-				t.Fatalf("question = %+v, %v", result, err)
-			}
-			request.Issue.PullRequest = tc.pr
-			for range 3 {
-				outcome := o.dispatchIssueWithGlobalGrant(t.Context(), &State{}, request.Issue, 1, time.Now(), "", false, false, nil, nil)
-				if outcome.reason != "human_question_wait" {
-					t.Fatalf("unanswered question allowed dispatch: %+v", outcome)
-				}
-			}
-			if tracker.posts != 1 {
-				t.Fatalf("question posted %d times", tracker.posts)
-			}
-		})
+	db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "questions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tracker := &questionTracker{Connector: memory.New(memory.Config{})}
+	o := &Orchestrator{connector: tracker, workAttempts: db}
+	request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#1", State: "Rework"}}
+	o.attachHumanQuestionTool(&request)
+	result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "ask_human_question", Arguments: json.RawMessage(`{"key":"sender","question":"Use manual delivery?"}`)})
+	if err != nil || !result.Success {
+		t.Fatalf("question = %+v, %v", result, err)
+	}
+	request.Issue.PullRequest = &connector.PullRequest{HeadSHA: "head", BaseSHA: "base", MergeableState: "dirty"}
+	if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || waiting {
+		t.Fatalf("independent rework blocked: %v, %v", waiting, err)
+	}
+	questions := db.(store.HumanQuestionStore)
+	records, err := questions.HumanQuestions(t.Context(), "", "issue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := records[0]
+	q.WorkFingerprint = humanQuestionWorkFingerprint(request.Issue)
+	if err := questions.RecordHumanQuestionWork(t.Context(), q); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || !waiting {
+			t.Fatalf("unchanged PR repeatedly dispatched: %v, %v", waiting, err)
+		}
+	}
+	if q.AnswerCommentID != "" {
+		t.Fatal("independent rework approved decision")
+	}
+	request.Issue.PullRequest.BaseSHA = "new-base"
+	if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || waiting {
+		t.Fatalf("new rework blocked: %v, %v", waiting, err)
 	}
 }
 
