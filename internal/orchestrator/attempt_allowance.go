@@ -81,9 +81,6 @@ func allowanceExternalWaitAttempt(attempt store.WorkAttempt) bool {
 }
 
 func allowanceExternalWait(issue connector.Issue) bool {
-	if issue.PullRequest != nil && strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "dirty") {
-		return true
-	}
 	_, humanAction := implementProgressBlockedHumanAction(issue)
 	return humanAction != ""
 }
