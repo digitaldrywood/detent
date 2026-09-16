@@ -98,6 +98,15 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if issueID == "" {
 			continue
 		}
+		if handled, changed, err := o.reconcileHumanWaitLane(ctx, state, &issue, now); handled {
+			if err != nil && o.logger != nil {
+				o.logger.Warn("check human wait before promotion failed", "issue_id", issue.ID, "error", err)
+			}
+			if changed {
+				result.transitioned[issueID] = struct{}{}
+			}
+			continue
+		}
 		if _, operational := operationalCompletionFromIssue(issue); !operational {
 			if handled, transitioned := o.parkRepeatedMergeRevocations(ctx, state, issue, now); handled {
 				if transitioned {

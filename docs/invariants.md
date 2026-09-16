@@ -191,6 +191,17 @@ and replace the old startup-reclaim regression in the invariant manifest.
 `TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled` also runs through
 the manifest to preserve CLI coordination when automatic updates are off.
 
+Human waits (#2779) consolidate dispatch-only question suppression into the existing
+lane transition and recovery paths. An unanswered worker question uses Human Review;
+a Workpad human-owned blocker with a human action uses Blocked. Existing lane
+metadata retains the source lane, and an authorized reply or cleared blocker returns
+only the matching current wait entry. Completion, refresh, dispatch, and promotion
+share this decision; unrelated Human Review cards retain their lane. The board
+receives the question and elapsed wait or the human action through its existing
+blocked-reason fields. No lane, reason code, storage schema, or recovery loop is added.
+`TestHumanWaitLaneReplay` replays the reported lanes and verifies clearance and
+return after restart; the existing question authorization tests remain authoritative.
+
 **Why:** The September 10 audit identified interactions among self-protection
 mechanisms as the main source of incidents; adding another conditional guard
 perpetuates that failure mode.

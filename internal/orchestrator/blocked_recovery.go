@@ -189,9 +189,21 @@ func (o *Orchestrator) recoverBlockedIssues(
 	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 	sourceStates := mergeStateLists([]string{blockedStatusState}, recoveryCfg.SourceStates)
-	for _, issue := range issuesInStates(issues, sourceStates) {
+	for _, issue := range issues {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
+			continue
+		}
+		if handled, changed, err := o.reconcileHumanWaitLane(ctx, state, &issue, now); handled {
+			if err != nil && o.logger != nil {
+				o.logger.Warn("refresh human wait failed", "issue_id", issue.ID, "error", err)
+			}
+			if changed {
+				transitioned[issueID] = struct{}{}
+			}
+			continue
+		}
+		if !stateIn(issue.State, normalizedStates(sourceStates)) {
 			continue
 		}
 		if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
