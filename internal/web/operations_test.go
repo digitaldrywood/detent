@@ -600,3 +600,44 @@ func TestOperationsDecisionDedupeKeepsGitHubHostsSeparate(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationsQuestionAgeOrder(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	old, recent := now.Add(-10*time.Hour), now.Add(-time.Hour)
+	for _, tc := range []struct{ name, path string }{{"api", "/api/v1/operations"}, {"page", "/operations"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := testDeps(t)
+			deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{DataTime: now, Decisions: []operations.Decision{
+				{ProjectID: "a", Issue: "owner/repo#1", Question: "Recent question?", AskedAt: &recent},
+				{ProjectID: "z", Issue: "owner/repo#2", Question: "Old question?", AskedAt: &old},
+			}}}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "Old question?") || strings.Index(body, "Old question?") >= strings.Index(body, "Recent question?") {
+				t.Fatalf("question order: %s", body)
+			}
+			if tc.name == "api" {
+				var got operations.Report
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Decisions) != 2 || got.Decisions[0].AskedAt == nil || !got.Decisions[0].AskedAt.Equal(old) || got.Decisions[0].AgeSeconds == nil || *got.Decisions[0].AgeSeconds < 36000 {
+					t.Fatalf("decisions: %+v", got.Decisions)
+				}
+			} else if !strings.Contains(body, "Oldest: 10h") || !strings.Contains(body, "Open questions: 2") {
+				t.Fatalf("summary: %s", body)
+			}
+		})
+	}
+}
