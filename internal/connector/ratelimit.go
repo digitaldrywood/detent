@@ -12,13 +12,15 @@ const (
 )
 
 type GraphQLRateLimit struct {
-	Limit      int64
-	Used       int64
-	Remaining  int64
-	Cost       int64
-	ResetAt    time.Time
-	RetryAfter time.Duration
-	UpdatedAt  time.Time
+	// BackoffUntil is the secondary throttle deadline, independent of quota refreshes.
+	BackoffUntil time.Time
+	Limit        int64
+	Used         int64
+	Remaining    int64
+	Cost         int64
+	ResetAt      time.Time
+	RetryAfter   time.Duration
+	UpdatedAt    time.Time
 }
 
 type GraphQLQueryCost struct {

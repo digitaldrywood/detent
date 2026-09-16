@@ -2330,3 +2330,49 @@ func TestGitHubRESTResourceReserveLookupRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubLookupBackoffSecondaryDeadline(t *testing.T) {
+	t.Parallel()
+	for _, delay := range []time.Duration{time.Minute, 2 * time.Minute, 20 * time.Minute} {
+		t.Run(delay.String(), func(t *testing.T) {
+			now := time.Date(2026, 9, 16, 22, 0, 0, 0, time.UTC)
+			deadline := now.Add(delay)
+			quota := connector.GraphQLRateLimit{Limit: 5000, Remaining: 3000, BackoffUntil: deadline, UpdatedAt: now}
+			tracker := &rateLimitConnector{rateLimitStatus: connector.GraphQLRateLimitStatusBackoff, hasRateLimit: true, rateLimit: quota, probeRateLimits: []connector.GraphQLRateLimit{quota}}
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 4})
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+			if !orch.githubLookupBackoffGate(t.Context(), &state, now) {
+				t.Fatal("missing backoff")
+			}
+			_, outage, _ := githubLookupBackoff(state.BackendOutages)
+			if !outage.NextProbeAt.Equal(deadline) {
+				t.Fatalf("probe deadline = %s, want %s", outage.NextProbeAt, deadline)
+			}
+			if !orch.githubLookupBackoffGate(t.Context(), &state, deadline.Add(-time.Nanosecond)) || tracker.probeCalls != 0 {
+				t.Fatal("probe before deadline")
+			}
+			if orch.githubLookupBackoffGate(t.Context(), &state, deadline) {
+				t.Fatal("did not recover at deadline")
+			}
+			if _, allowed, _ := tryReserveDispatchRecovery(&state, "issue-1", deadline); !allowed {
+				t.Fatal("recovery did not admit canary")
+			}
+			orch.advanceDispatchRecovery(&state, "issue-1", deadline.Add(time.Second))
+			before := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]
+			if before.Limit != 2 {
+				t.Fatalf("recovery limit = %d, want 2", before.Limit)
+			}
+			state.RateLimits = &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusBackoff, Limit: 5000, Remaining: 3000}}
+			for i := 1; i <= 3; i++ {
+				if orch.githubLookupBackoffGate(t.Context(), &state, deadline.Add(time.Duration(i)*time.Minute)) {
+					t.Fatal("expired throttle restarted backoff")
+				}
+			}
+			after := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]
+			if after.Limit != before.Limit || tracker.probeCalls != 1 {
+				t.Fatalf("recovery restarted: before %#v after %#v", before, after)
+			}
+		})
+	}
+}
