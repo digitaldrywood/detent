@@ -160,20 +160,26 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 		sessions int
 		infra    bool
 		wantMode string
-		metadata string
+		issue    connector.Issue
 		phase    string
 		message  string
 	}{
-		{"third code session permitted", 2, false, runpkg.RunModeImplement, "", "", ""},
-		{"fourth code session replaced by one triage", 3, false, runpkg.RunModeTriage, "", "", ""},
-		{"infra failure leaves a session", 3, true, runpkg.RunModeImplement, "", "", ""},
-		{"reported question-ending sequence", 3, false, runpkg.RunModeImplement, "", "waiting", "waiting for a human reply on the original issue"},
-		{"reported conflicted-session sequence", 3, false, runpkg.RunModeImplement, `{"dispatch_loop_start":{"allowance_external_wait":true}}`, "", ""},
-		{"reported human hardware wait sequence", 3, false, runpkg.RunModeImplement, `{"allowance_external_wait":true}`, "", ""},
+		{name: "third code session permitted", sessions: 2, wantMode: runpkg.RunModeImplement},
+		{name: "fourth code session replaced by one triage", sessions: 3, wantMode: runpkg.RunModeTriage},
+		{name: "infra failure leaves a session", sessions: 3, infra: true, wantMode: runpkg.RunModeImplement},
+		{name: "reported question-ending sequence", sessions: 3, wantMode: runpkg.RunModeImplement, phase: "waiting", message: "waiting for a human reply on the original issue"},
+		{name: "reported conflicted-session sequence", sessions: 3, wantMode: runpkg.RunModeTriage, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}}},
+		{name: "conflicted PR with human action", sessions: 3, wantMode: runpkg.RunModeImplement, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}},
+		{name: "reported human hardware wait sequence", sessions: 3, wantMode: runpkg.RunModeImplement, issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now().UTC()
-			issue := connector.Issue{ID: "stalled", Identifier: "owner/repo#2595", URL: "https://github.com/owner/repo/issues/2595", State: "Rework"}
+			issue := tt.issue
+			issue.ID = "stalled"
+			issue.Identifier = "owner/repo#2595"
+			issue.URL = "https://github.com/owner/repo/issues/2595"
+			issue.State = "Rework"
+			metadata := marshalWorkAttemptJSON(map[string]any{dispatchLoopStartMetadataKey: newDispatchLoopStartRecord(issue, runpkg.RunModeImplement)})
 			cfg := laneMutationTestConfig()
 			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now.Add(-time.Hour))
 			for i := range tt.sessions {
@@ -193,7 +199,10 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 					terminal = store.WorkAttemptTerminalFailure
 					class = "runner_error"
 				}
-				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: terminal, ErrorClass: class, WorkerMetadataJSON: tt.metadata, Phase: tt.phase, StatusMessage: tt.message}); err != nil {
+				if issue.PullRequest != nil {
+					class = "no_progress"
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: terminal, ErrorClass: class, WorkerMetadataJSON: metadata, Phase: tt.phase, StatusMessage: tt.message}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -785,7 +794,8 @@ func TestAttemptAllowanceExternalWaits(t *testing.T) {
 		want    int
 	}{
 		{name: "three question endings", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalSuccess, Phase: "waiting", StatusMessage: "waiting for a human reply on the original issue"}},
-		{name: "three conflicted sessions", attempt: store.WorkAttempt{WorkerMetadataJSON: `{"dispatch_loop_start":{"allowance_external_wait":true}}`}},
+		{name: "three conflicted sessions", attempt: store.WorkAttempt{ErrorClass: "no_progress", WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{dispatchLoopStartMetadataKey: newDispatchLoopStartRecord(connector.Issue{PullRequest: &connector.PullRequest{MergeableState: "dirty"}}, runpkg.RunModeImplement)})}, want: 3},
+		{name: "historical external wait remains excluded", attempt: store.WorkAttempt{WorkerMetadataJSON: `{"dispatch_loop_start":{"allowance_external_wait":true}}`}},
 		{name: "three failed sessions", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: "runner_error"}, want: 3},
 		{name: "unrelated wait still counts", attempt: store.WorkAttempt{Phase: "waiting", StatusMessage: "waiting for tests"}, want: 3},
 		{name: "failed question session counts", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, Phase: "waiting", StatusMessage: "waiting for a human reply on the original issue"}, want: 3},
@@ -812,7 +822,8 @@ func TestAttemptAllowanceExternalEvidencePersistence(t *testing.T) {
 		issue    connector.Issue
 		excluded bool
 	}{
-		{name: "conflicted PR", issue: connector.Issue{PullRequest: &connector.PullRequest{MergeableState: "dirty"}}, excluded: true},
+		{name: "conflicted PR", issue: connector.Issue{PullRequest: &connector.PullRequest{MergeableState: "dirty"}}},
+		{name: "conflicted PR with human action", issue: connector.Issue{PullRequest: &connector.PullRequest{MergeableState: "dirty"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}, excluded: true},
 		{name: "human blocker", issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerHuman, Reason: "check hardware"}}}}, excluded: true},
 		{name: "orchestrator blocker", issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerOrchestrator, Reason: "dependency"}}}}},
 		{name: "resolved human blocker", issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusComplete, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerHuman, Reason: "check hardware"}}}}},
@@ -852,10 +863,9 @@ func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			state := newState(cfg)
 			blocked := issue
+			blocked.PullRequest = &connector.PullRequest{MergeableState: "dirty"}
 			if human {
 				blocked.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerHuman, Reason: "hardware check"}}}
-			} else {
-				blocked.PullRequest = &connector.PullRequest{MergeableState: "dirty"}
 			}
 			for i := range 3 {
 				at := now.Add(time.Duration(i) * time.Minute)
@@ -865,10 +875,14 @@ func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
 					t.Fatal("start failed")
 				}
 				got, err := orch.issueAttemptAllowance(t.Context(), issue)
-				if err != nil || got.Sessions != 0 {
+				want := i + 1
+				if human {
+					want = 0
+				}
+				if err != nil || got.Sessions != want {
 					t.Fatalf("active allowance=%+v err=%v", got, err)
 				}
-				// A refreshed clean issue must not erase the wait recorded at dispatch.
+				// A refreshed clean issue preserves both chargeable sessions and human waits.
 				running := Running{Issue: issue, Mode: runpkg.RunModeImplement, WorkAttemptID: id, StartedAt: at, DispatchLoopStart: start}
 				if !orch.completeDurableWorkAttemptWithMetadata(t.Context(), &state, running, at.Add(time.Second), store.WorkAttemptTerminalSuccess, "", "", "completed", "", nil) {
 					t.Fatal("completion failed")
@@ -876,11 +890,15 @@ func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
 			}
 			restarted := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			got, err := restarted.issueAttemptAllowance(t.Context(), issue)
-			if err != nil || got.Sessions != 0 || got.exhausted() {
+			want := 3
+			if human {
+				want = 0
+			}
+			if err != nil || got.Sessions != want || got.exhausted() != !human {
 				t.Fatalf("restart allowance=%+v err=%v", got, err)
 			}
 			if len(tracker.updates) != 0 {
-				t.Fatalf("exclusion wrote lane: %+v", tracker.updates)
+				t.Fatalf("allowance accounting wrote lane: %+v", tracker.updates)
 			}
 		})
 	}
