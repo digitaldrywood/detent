@@ -585,6 +585,15 @@ on the signal (#2604), removing strict field rejection from the existing parser.
 Known predicate validation and completion authorization remain unchanged; no new
 reason code, gate, or recovery mechanism is introduced.
 
+ProjectV2 combined refresh (#2818) reuses the candidate page/item cursor contract
+inside the existing board scanner. Failed pages retain the private accumulator;
+only a completed enumeration publishes a snapshot. Thin board metadata supplies
+lane diagnostics, while selected nonterminal lanes receive batched scheduler
+and authoritative PR evidence. No retry loop, timer, configuration, or lane writer
+is added. `TestRefreshBoardResumesFailedPage` covers page failure and cancellation;
+`TestProjectRefreshHourlyWorkload` checks the large-board request and point budget
+using measured GraphQL response costs.
+
 Admission candidate scans consolidate REST label, repository, and issue-field
 pagination into one reader, retaining page/item continuation in the existing
 admission run ledger (#2574). Completed hydrated candidates remain usable when

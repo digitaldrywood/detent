@@ -492,7 +492,12 @@ func testIndependentRefreshEvidence(t *testing.T, entry string) {
 					t.Error(err)
 					return
 				}
+				if !strings.Contains(req.Query, "rateLimit {") || !strings.Contains(req.Query, "cost") {
+					t.Error("missing per-request GraphQL cost")
+				}
 				switch {
+				case strings.Contains(req.Query, "CandidateHydration"):
+					write(map[string]any{"data": map[string]any{"issue0": issue}})
 				case strings.Contains(req.Query, "CandidatePullRequestReferences"):
 					write(map[string]any{"data": map[string]any{"nodes": []any{map[string]any{"id": "I1", "closedByPullRequestsReferences": map[string]any{"totalCount": len(refs), "nodes": refs}}}, "repo0": map[string]any{"pullRequests": map[string]any{"nodes": discovered}}}})
 				case strings.Contains(req.Query, "CandidatePullRequestStatus"):

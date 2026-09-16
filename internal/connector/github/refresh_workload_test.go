@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ import (
 // Five isolated projects simulate an hour of normal refresh, not admission.
 // The fixture clock and serialized counters make request counts deterministic.
 func TestProjectRefreshHourlyWorkload(t *testing.T) {
+	t.Run("large board four refreshes hourly", testLargeProjectRefreshHourlyWorkload)
 	for _, workload := range []struct {
 		name                string
 		projects, refreshes int
@@ -76,6 +78,12 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 										return
 									}
 									switch {
+									case strings.Contains(req.Query, "CandidateHydration"):
+										data := map[string]any{}
+										for n := 1; n <= 3; n++ {
+											data[fmt.Sprintf("issue%d", n-1)] = candidatePRFixtureIssue(repo, n)
+										}
+										write(map[string]any{"data": data})
 									case strings.Contains(req.Query, "CandidatePullRequestReferences"):
 										if strings.Contains(mode, "fallback") {
 											write(map[string]any{"errors": []map[string]string{{"message": "legacy fixture"}}})
@@ -181,7 +189,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 						}
 						if !strings.Contains(mode, "fallback") {
 							wantREST := workload.projects * 6
-							wantGraphQL := workload.projects * workload.refreshes * 3
+							wantGraphQL := workload.projects * workload.refreshes * 4
 							if rest != wantREST || graphql != wantGraphQL || notModified != 0 {
 								t.Fatalf("want REST=%d GraphQL=%d 304=0", wantREST, wantGraphQL)
 							}
@@ -197,4 +205,116 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Costs measured against the Detent ProjectV2 board on 2026-09-16 using
+// data.rateLimit.cost: thin page(first:100)=2; scheduler aliases=22 for 100
+// issues, 11 for 52, and 1 for 3. These are response fixtures, not header deltas.
+func testLargeProjectRefreshHourlyWorkload(t *testing.T) {
+	const total, candidates, refreshes = 1500, 152, 4
+	var graphql, rest, points int
+	humanBody := strings.Replace(prerequisiteBody(t), "schema: 1", "schema: 1\ncompletion_evidence: Verified test tenant", 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			rest++
+			if !strings.HasSuffix(r.URL.Path, "/pulls") {
+				t.Errorf("unexpected REST %s", r.URL)
+			}
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		graphql++
+		var req struct {
+			Query     string
+			Variables map[string]any
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		if !strings.Contains(req.Query, "rateLimit {") || !strings.Contains(req.Query, "cost") {
+			t.Error("missing per-request cost")
+		}
+		data := map[string]any{}
+		cost := 2
+		if strings.Contains(req.Query, "CandidateHydration") {
+			count := 0
+			for key, value := range req.Variables {
+				if !strings.HasPrefix(key, "id") {
+					continue
+				}
+				var n int
+				fmt.Sscanf(value.(string), "I%d", &n)
+				if n < 1 || n > candidates {
+					t.Errorf("hydrated observed item %d", n)
+				}
+				data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": value, "body": "scheduler body", "comments": map[string]any{"totalCount": 0, "nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
+				if n == 1 {
+					data["issue"+strings.TrimPrefix(key, "id")].(map[string]any)["blockedBy"] = map[string]any{"nodes": []any{map[string]any{"id": "I1500", "number": 1500, "body": humanBody, "state": "CLOSED", "repository": map[string]string{"nameWithOwner": "fixture/large"}}}}
+				}
+				count++
+			}
+			switch count {
+			case 100:
+				cost = 22
+			case 52:
+				cost = 11
+			default:
+				t.Errorf("unexpected batch size %d", count)
+			}
+			if strings.Contains(req.Query, "labels(first: 100)") || strings.Contains(req.Query, "closedByPullRequestsReferences") {
+				t.Error("unbounded dependency labels or redundant PR preview")
+			}
+		} else {
+			for _, field := range []string{"blockedBy(", "comments(first:", "closedByPullRequestsReferences(", "commits("} {
+				if strings.Contains(req.Query, field) {
+					t.Errorf("board query carries %s", field)
+				}
+			}
+			start := 0
+			if after, ok := req.Variables["after"].(string); ok {
+				fmt.Sscanf(after, "page-%d", &start)
+			}
+			page := projectItemsConnection{TotalCount: total, PageInfo: pageInfo{HasNextPage: start+100 < total, EndCursor: fmt.Sprintf("page-%d", start+100)}}
+			for n := start + 1; n <= start+100; n++ {
+				state := "Done"
+				if n <= candidates {
+					state = "Todo"
+				}
+				page.Nodes = append(page.Nodes, projectItemNode{ID: fmt.Sprintf("P%d", n), StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
+			}
+			data["node"] = map[string]any{"items": page}
+		}
+		points += cost
+		data["rateLimit"] = map[string]any{"cost": cost, "remaining": 5000 - points, "limit": 5000}
+		// Concurrent credential users can move headers far beyond this request's cost.
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(5000-graphql*40))
+		w.Header().Set("X-RateLimit-Used", strconv.Itoa(graphql*40))
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/large", ActiveStates: []string{"Todo"}, ObservedStates: []string{"Done"}})
+	for range refreshes {
+		result := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, []string{"Done"}, connector.IssueFilterHint{})
+		if result.CandidateError != nil || result.StatusError != nil || len(result.Candidates) != candidates || len(result.Statuses) != total-candidates || len(result.LaneSignalCandidates) != total {
+			t.Fatalf("refresh errors=(%v,%v) candidates=%d observed=%d", result.CandidateError, result.StatusError, len(result.Candidates), len(result.Statuses))
+		}
+		for _, issue := range result.Candidates {
+			if issue.ID == "I1" && (len(issue.BlockedBy) != 1 || !issue.BlockedBy[0].HumanOwned || !issue.BlockedBy[0].HumanCompletionReady || issue.BlockedBy[0].State != "Done") {
+				t.Fatalf("thin board erased human evidence: %+v", issue.BlockedBy)
+			}
+			if issue.Description != "scheduler body" || issue.DependencySource != connector.BlockedRefSourceNative {
+				t.Fatalf("incomplete candidate %s", issue.Identifier)
+			}
+		}
+	}
+	usage := c.client.FlushGraphQLRateLimitUsage()
+	if graphql != 68 || rest > 4 || points != 252 || points >= 1000 || usage.TotalCost != int64(points) || usage.TotalQueries != int64(graphql) {
+		t.Fatalf("GraphQL=%d REST=%d points=%d accounting=%+v", graphql, rest, points, usage)
+	}
+	t.Logf("1500 items, 152 candidates, four refreshes/hour: GraphQL=%d REST=%d points=%d", graphql, rest, points)
 }

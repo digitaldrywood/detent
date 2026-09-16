@@ -111,6 +111,8 @@ type Config struct {
 }
 
 type Connector struct {
+	refreshMu           sync.Mutex
+	refreshScan         projectItemsScanProgress
 	machineIssueStore   coordination.Store
 	branchMergePolicies map[string]branchMergePolicySnapshot
 	client              *Client

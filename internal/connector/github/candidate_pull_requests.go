@@ -142,7 +142,7 @@ func (c *Connector) observeCandidatePullRequests(ctx context.Context, sources []
 		repo := repos[name]
 		fmt.Fprintf(&query, "repo%d: repository(owner:%q,name:%q) { pullRequests(first:100,orderBy:{field:UPDATED_AT,direction:DESC}) { pageInfo { hasNextPage } nodes { %s } } }", i, repo.Owner, repo.Name, candidatePRReferenceFields)
 	}
-	query.WriteString("}")
+	query.WriteString("rateLimit { limit used cost remaining resetAt } }")
 	ids := make([]string, 0, len(selected))
 	for _, source := range selected {
 		ids = append(ids, source.ID)
@@ -260,7 +260,7 @@ func (c *Connector) observeCandidatePullRequestStatus(ctx context.Context, byKey
 	for i, key := range keys {
 		fmt.Fprintf(&query, "pr%d: repository(owner:%q,name:%q) { pullRequest(number:%d) { %s } }", i, key.Repo.Owner, key.Repo.Name, key.Number, candidatePRFields)
 	}
-	query.WriteString("}")
+	query.WriteString("rateLimit { limit used cost remaining resetAt } }")
 	var response map[string]*struct {
 		PullRequest *candidatePRSnapshot `json:"pullRequest"`
 	}
