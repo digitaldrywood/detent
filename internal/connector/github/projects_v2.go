@@ -350,6 +350,47 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	limit int,
 	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
+	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil)
+}
+
+// queryProjectItemsPage retains board membership on schemas that lack scheduler
+// fields. Other failures keep their original error and must not trigger a retry.
+func (c *Connector) queryProjectItemsPage(ctx context.Context, queryType, query string, variables map[string]any, out any) error {
+	err := c.client.GraphQLWithType(ctx, queryType, query, variables, out)
+	if query != candidateProjectItemsQuery || !projectSchedulerFieldsUnavailable(err) {
+		return err
+	}
+	if fallbackErr := c.client.GraphQLWithType(ctx, queryType, observedStatusProjectItemsQuery, variables, out); fallbackErr != nil {
+		return errors.Join(err, fallbackErr)
+	}
+	return nil
+}
+
+func projectSchedulerFieldsUnavailable(err error) bool {
+	var graphqlErr *GraphQLErrorList
+	if !errors.Is(err, ErrGraphQLErrors) || !errors.As(err, &graphqlErr) || len(graphqlErr.Errors) == 0 {
+		return false
+	}
+	for _, fieldErr := range graphqlErr.Errors {
+		message := strings.ToLower(fieldErr.Message)
+		missingField := strings.Contains(message, "cannot query field") ||
+			strings.Contains(message, "field ") && strings.Contains(message, "doesn't exist on type")
+		if !missingField {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Connector) scanProjectItems(
+	ctx context.Context,
+	queryDocument string,
+	queryType string,
+	keepIssue func(connector.Issue) bool,
+	limit int,
+	repairBlankStatuses bool,
+	observePage func([]projectItemNode),
+) (connector.IssueStateScan, error) {
 	scanRevision := c.projectCache.Revision(c.projectID)
 	cacheProjectFields := queryDocument == projectItemsWithFieldsQuery
 	var after *string
@@ -367,7 +408,7 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 				Items projectItemsConnection `json:"items"`
 			} `json:"node"`
 		}
-		if err := c.client.GraphQLWithType(ctx, queryType, queryDocument, map[string]any{
+		if err := c.queryProjectItemsPage(ctx, queryType, queryDocument, map[string]any{
 			"projectId": c.projectID,
 			"first":     projectItemsPageSize,
 			"after":     after,
@@ -376,6 +417,9 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 		}
 		if response.Node == nil {
 			return connector.IssueStateScan{}, ErrProjectNotFound
+		}
+		if observePage != nil {
+			observePage(response.Node.Items.Nodes)
 		}
 		scan.ItemsFetched += len(response.Node.Items.Nodes)
 		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)

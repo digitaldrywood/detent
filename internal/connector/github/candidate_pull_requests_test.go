@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -238,6 +239,12 @@ func legacyCandidatePRRefresh(t *testing.T, c *Connector, mode string) (connecto
 }
 
 func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
+	for _, entry := range []string{"admission", "refresh candidates", "refresh observed", "refresh overlap"} {
+		t.Run(entry, func(t *testing.T) { testIndependentRefreshEvidence(t, entry) })
+	}
+}
+
+func testIndependentRefreshEvidence(t *testing.T, entry string) {
 	tests := []struct {
 		name   string
 		mutate func(map[string]any, map[string]any, *[]any)
@@ -500,7 +507,30 @@ func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
 			c.unstartedThreshold = time.Minute
 			refresh := func() connector.Issue {
 				t.Helper()
-				result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{lane}, Limit: 10, PageSize: 10})
+				var result connector.CandidateResult
+				var err error
+				if entry == "admission" {
+					result, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{lane}, Limit: 10, PageSize: 10})
+				} else {
+					candidates, observed := []string{lane}, []string(nil)
+					if entry == "refresh observed" {
+						candidates, observed = nil, candidates
+					}
+					if entry == "refresh overlap" {
+						observed = candidates
+					}
+					refreshed := c.FetchRefreshIssues(t.Context(), candidates, observed, connector.IssueFilterHint{})
+					if refreshed.StatusError != nil {
+						t.Fatal(refreshed.StatusError)
+					}
+					result.Issues, err = refreshed.Candidates, refreshed.CandidateError
+					if entry == "refresh observed" {
+						result.Issues = refreshed.Statuses
+					}
+					if entry == "refresh overlap" && (len(refreshed.Statuses) != 1 || !reflect.DeepEqual(refreshed.Candidates, refreshed.Statuses)) {
+						t.Fatalf("overlap=%+v", refreshed)
+					}
+				}
 				if err != nil || len(result.Issues) != 1 {
 					t.Fatalf("%+v %v", result, err)
 				}
@@ -509,6 +539,10 @@ func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
 			initial := refresh()
 			if test.name == "PR summary edited" && initial.PullRequest.LatestCodexReviewState != "COMMENTED" {
 				t.Fatal(initial.PullRequest)
+			}
+			for range 120 {
+				now = now.Add(30 * time.Second)
+				refresh()
 			}
 			before := restReads
 			test.mutate(issue, snapshot, &refs)

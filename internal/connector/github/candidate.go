@@ -236,15 +236,10 @@ func (c *Connector) readProjectCandidates(ctx context.Context, request connector
 		if position.After != "" {
 			after = &position.After
 		}
-		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, candidateProjectItemsQuery, map[string]any{
+		if err := c.queryProjectItemsPage(ctx, graphQLQueryCandidateIssues, candidateProjectItemsQuery, map[string]any{
 			"projectId": c.projectID, "first": min(request.EffectivePageSize(), projectItemsPageSize), "after": after,
 		}, &response); err != nil {
-			// Older schemas can still supply board membership. Hydration then uses REST.
-			if fallbackErr := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, observedStatusProjectItemsQuery, map[string]any{
-				"projectId": c.projectID, "first": min(request.EffectivePageSize(), projectItemsPageSize), "after": after,
-			}, &response); fallbackErr != nil {
-				return candidateReadResult(result, position, true, fmt.Errorf("fetch github project candidates: %w", errors.Join(err, fallbackErr)))
-			}
+			return candidateReadResult(result, position, true, fmt.Errorf("fetch github project candidates: %w", err))
 		}
 		result.PagesRead++
 		if response.Node == nil {

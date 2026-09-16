@@ -32,7 +32,7 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 							}
 							enhanced := strings.Contains(request.Query, "blockedBy(")
 							if enhanced && strings.Contains(mode, "fallback") {
-								fmt.Fprint(w, `{"errors":[{"message":"schema unavailable"}]}`)
+								fmt.Fprint(w, `{"errors":[{"message":"Field 'blockedBy' doesn't exist on type 'Issue'"}]}`)
 								return
 							}
 							if strings.Contains(request.Query, "DetentGitHubCandidateHydration") {
@@ -112,7 +112,7 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 }
 
 func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
-	for _, mode := range []string{"board", "labels"} {
+	for _, mode := range []string{"board", "labels", "refresh"} {
 		t.Run(mode, func(t *testing.T) {
 			var graphql, rest int
 			updated := "2026-09-15T01:02:03Z"
@@ -173,7 +173,17 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 				cfg.GitHubStatusSource = GitHubStatusSourceLabel
 			}
 			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, cfg)
-			result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: 10, PageSize: 10})
+			var result connector.CandidateResult
+			var err error
+			if mode == "refresh" {
+				refreshed := c.FetchRefreshIssues(t.Context(), nil, []string{"Backlog"}, connector.IssueFilterHint{})
+				result.Issues, err = refreshed.Statuses, refreshed.StatusError
+				if refreshed.CandidateError != nil {
+					t.Fatal(refreshed.CandidateError)
+				}
+			} else {
+				result, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: 10, PageSize: 10})
+			}
 			if err != nil || len(result.Issues) != 2 {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}

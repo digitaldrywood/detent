@@ -145,6 +145,20 @@ func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue conn
 		err := c.hydrateCandidateIssues(ctx, issues, states)
 		return issues[0], err
 	}
+	issue, err := c.applySchedulerEvidence(issue, node)
+	if err != nil {
+		return issue, err
+	}
+	issues[0] = issue
+	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		return issue, err
+	}
+	return c.hydratePullRequestWithEvidence(ctx, issues[0], node, true)
+}
+
+// applySchedulerEvidence is shared by admission and normal refresh. Callers
+// only supply complete observations, including an authoritative native relation.
+func (c *Connector) applySchedulerEvidence(issue connector.Issue, node githubIssueNode) (connector.Issue, error) {
 	ref, ok := issueRefFromIdentifier(issue.Identifier)
 	if !ok {
 		return issue, ErrInvalidResponse
@@ -156,7 +170,9 @@ func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue conn
 	issue.Comments = connectorIssueComments(node.Comments.Nodes)
 	issue.CommentCount = node.Comments.TotalCount
 	issue.WorkpadSignal = parseWorkpadSignal(node)
-	issue.BlockerReason = parseBlockerReason(node)
+	if reason := parseBlockerReason(node); reason != "" {
+		issue.BlockerReason = reason
+	}
 	native := make([]restIssueDependency, 0, len(node.BlockedBy.Nodes))
 	for _, blocker := range node.BlockedBy.Nodes {
 		native = append(native, restIssueDependency{NodeID: blocker.ID, Number: blocker.Number, Body: blocker.Body, State: blocker.State, HTMLURL: "https://github.com/" + blocker.Repository.NameWithOwner + fmt.Sprintf("/issues/%d", blocker.Number), Labels: blocker.Labels.Nodes})
@@ -164,10 +180,11 @@ func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue conn
 	refs := c.nativeBlockedRefsFromREST(ref, native)
 	c.recordNativeDependencyCapability(node.Repository.NameWithOwner, nativeDependencyStatusAvailable, "")
 	applyNativeDependencyEvidence(&issue, node.Repository.NameWithOwner, refs)
-	issues[0] = issue
-	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-		return issue, err
-	}
+	return issue, nil
+}
+
+func (c *Connector) hydratePullRequestWithEvidence(ctx context.Context, issue connector.Issue, node githubIssueNode, useStatusCache bool) (connector.Issue, error) {
+	issues := []connector.Issue{issue}
 	if node.CandidatePR != nil && node.CandidatePR.complete {
 		issues[0] = withoutPullRequestAssociation(issues[0])
 		issues[0].PRHeadSHA = ""
@@ -198,6 +215,6 @@ func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue conn
 			return issues[0], err
 		}
 	}
-	err := c.attachStatePullRequests(ctx, issues, node.CandidatePR == nil)
+	err := c.attachStatePullRequests(ctx, issues, useStatusCache && node.CandidatePR == nil)
 	return issues[0], err
 }

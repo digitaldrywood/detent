@@ -527,18 +527,52 @@ func (c *Connector) fetchProjectRefreshIssues(
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
 	wantedStates := normalizedStateSet(allStates)
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
-	issues, err := c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
+	evidence := make(map[string]githubIssueNode)
+	scan, err := c.scanProjectItems(ctx, candidateProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
 		return true
-	}, 0, repairBlankStatuses)
+	}, 0, repairBlankStatuses, func(items []projectItemNode) {
+		nodes := make([]githubIssueNode, 0, len(items))
+		for _, item := range items {
+			state, ok := c.projectItemBoardState(item)
+			if !ok {
+				continue
+			}
+			node := *item.Content
+			if _, wanted := wantedStates[normalizeStateName(state)]; wanted {
+				node.CandidateState = state
+			}
+			nodes = append(nodes, node)
+		}
+		for id, node := range c.candidateEvidence(ctx, nodes, false) {
+			evidence[id] = node
+		}
+	})
 	if err != nil {
 		return connector.RefreshIssueResult{CandidateError: err}
 	}
+	issues := scan.Issues
+	var fallback []connector.Issue
+	var fallbackIndexes []int
+	for i, issue := range issues {
+		if node, ok := evidence[issue.ID]; ok {
+			issues[i], err = c.applySchedulerEvidence(issue, node)
+			if err != nil {
+				return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+			}
+		} else {
+			fallback = append(fallback, issue)
+			fallbackIndexes = append(fallbackIndexes, i)
+		}
+	}
 
-	if err := c.populateBlockerReasons(ctx, issues); err != nil {
+	if err := c.populateBlockerReasons(ctx, fallback); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
 	}
-	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+	if err := c.hydrateBlockedByRefs(ctx, fallback); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	for i, index := range fallbackIndexes {
+		issues[index] = fallback[i]
 	}
 	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
@@ -549,7 +583,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 		Statuses:             issuesInStates(issues, observedStates),
 		LaneSignalCandidates: issues,
 	}
-	if err := c.attachPullRequests(ctx, result.Candidates); err != nil {
+	if err := c.hydrateRefreshPullRequests(ctx, result.Candidates, evidence, true); err != nil {
 		result.Candidates = nil
 		result.CandidateError = err
 		return result
@@ -557,8 +591,40 @@ func (c *Connector) fetchProjectRefreshIssues(
 	if len(result.Statuses) == 0 {
 		return result
 	}
-	result.StatusError = c.attachStatePullRequests(ctx, result.Statuses, false)
+	result.StatusError = c.hydrateRefreshPullRequests(ctx, result.Statuses, evidence, false)
 	return result
+}
+
+// Keep legacy batch fallback and candidate/observed freshness semantics when a
+// page lacks complete evidence. Complete observations validate cached revisions.
+func (c *Connector) hydrateRefreshPullRequests(ctx context.Context, issues []connector.Issue, evidence map[string]githubIssueNode, candidates bool) error {
+	var fallback []connector.Issue
+	var indexes []int
+	for i, issue := range issues {
+		if node, ok := evidence[issue.ID]; ok && node.CandidatePR != nil {
+			hydrated, err := c.hydratePullRequestWithEvidence(ctx, issue, node, candidates)
+			if err != nil {
+				return err
+			}
+			issues[i] = hydrated
+		} else {
+			fallback = append(fallback, issue)
+			indexes = append(indexes, i)
+		}
+	}
+	var err error
+	if candidates {
+		err = c.attachPullRequests(ctx, fallback)
+	} else {
+		err = c.attachStatePullRequests(ctx, fallback, false)
+	}
+	if err != nil {
+		return err
+	}
+	for i, index := range indexes {
+		issues[index] = fallback[i]
+	}
+	return nil
 }
 
 func issuesInStates(issues []connector.Issue, states []string) []connector.Issue {
