@@ -180,7 +180,7 @@ type codexRollout struct {
 	size int64
 }
 
-func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
+func detentRollouts(ctx context.Context, home string) (rollouts []codexRollout, err error) {
 	root := filepath.Join(home, "sessions")
 	resolved, err := filepath.EvalSymlinks(root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -189,8 +189,12 @@ func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
 	if err != nil {
 		return nil, err
 	}
-	var rollouts []codexRollout
-	err = filepath.WalkDir(resolved, func(path string, entry fs.DirEntry, walkErr error) error {
+	sessions, err := os.OpenRoot(resolved)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, sessions.Close()) }()
+	err = fs.WalkDir(sessions.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -200,7 +204,7 @@ func detentRollouts(ctx context.Context, home string) ([]codexRollout, error) {
 		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			return nil
 		}
-		f, err := os.Open(path)
+		f, err := sessions.Open(path)
 		if err != nil {
 			return err
 		}

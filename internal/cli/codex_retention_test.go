@@ -242,3 +242,69 @@ func TestDetentRolloutsReportingPreservesFiles(t *testing.T) {
 		})
 	}
 }
+
+// Err runs after WalkDir has inspected the entry and before file access.
+type rolloutSwapContext struct {
+	context.Context //nolint:containedctx // Wrap the caller context to replace a directory at the walk callback boundary.
+	swap            func()
+}
+
+func (c *rolloutSwapContext) Err() error {
+	if c.swap != nil {
+		swap := c.swap
+		c.swap = nil
+		swap()
+	}
+	return c.Context.Err()
+}
+
+func TestDetentRolloutsTraversalBoundaries(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replace root=%t", replacement), func(t *testing.T) {
+			home := t.TempDir()
+			root := filepath.Join(home, "sessions")
+			outside := filepath.Join(home, "outside")
+			for _, dir := range []string{root, outside} {
+				if err := os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			insideData := []byte(`{"type":"session_meta","payload":{"id":"inside","originator":"detent-orchestrator"}}` + "\n")
+			outsideData := append(append([]byte{}, insideData...), []byte("outside contents\n")...)
+			if err := os.WriteFile(filepath.Join(root, "inside.jsonl"), insideData, 0600); err != nil {
+				t.Fatal(err)
+			}
+			outsideFile := filepath.Join(outside, "outside.jsonl")
+			if err := os.WriteFile(outsideFile, outsideData, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "linked-dir")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outsideFile, filepath.Join(root, "linked.jsonl")); err != nil {
+				t.Fatal(err)
+			}
+			ctx := &rolloutSwapContext{Context: t.Context()}
+			if replacement {
+				ctx.swap = func() {
+					if err := os.Rename(root, filepath.Join(home, "moved")); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(outside, root); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			got, err := detentRollouts(ctx, home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0].size != int64(len(insideData)) {
+				t.Fatalf("rollouts=%+v; want only original inside file (%d bytes)", got, len(insideData))
+			}
+			if data, err := os.ReadFile(outsideFile); err != nil || string(data) != string(outsideData) {
+				t.Fatalf("outside file changed: %v", err)
+			}
+		})
+	}
+}
