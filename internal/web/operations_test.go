@@ -686,9 +686,11 @@ func TestOperationsWorkpadHumanAction(t *testing.T) {
 	for _, tc := range []struct {
 		name, state, status, reason string
 		existing                    bool
+		proseOnly                   bool
 		want                        int
 	}{
 		{name: "PR-less Rework", state: "Rework", status: "unverifiable", reason: "make skill available or waive it", want: 1},
+		{name: "prose-only card", state: "Rework", reason: "waiting on #123 to merge", proseOnly: true},
 		{name: "cleared", state: "Rework", status: "cleared", reason: "make skill available or waive it"},
 		{name: "empty action", state: "Rework", status: "unverifiable"},
 		{name: "terminal", state: "Done", status: "unverifiable", reason: "make skill available or waive it"},
@@ -705,6 +707,12 @@ func TestOperationsWorkpadHumanAction(t *testing.T) {
 			}
 			deps.Store = operationsStore{Store: openWebTestStore(t), report: report}
 			issue := telemetry.Issue{ID: "i", ProjectID: "p", Identifier: "owner/repo#1", Title: "Waiting card", State: tc.state, WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: tc.status, Reason: tc.reason, RecordedAt: &at}}
+			if tc.proseOnly {
+				// The snapshot excludes legacy prose from structured human-action evidence.
+				issue.WorkpadHumanAction = nil
+				issue.DependencyNotes = []string{tc.reason}
+				issue.StageUpdatedAt = &at
+			}
 			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}); err != nil {
 				t.Fatal(err)
 			}

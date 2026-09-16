@@ -128,7 +128,7 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 // recordedHumanActionEvidence is shared by dispatch evaluation and the Needs-you snapshot.
 func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.Time) *telemetry.BlockerEvidence {
 	signal, _ := rawIssueWorkpadSignal(issue)
-	if signal == nil || signal.Invalid != nil || (signal.Source == workpad.SourceStructured && strings.TrimSpace(signal.Status) != workpad.StatusBlocked) {
+	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured || strings.TrimSpace(signal.Status) != workpad.StatusBlocked {
 		return nil
 	}
 	action := strings.TrimSpace(signal.HumanAction)

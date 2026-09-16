@@ -257,14 +257,29 @@ func TestWorkpadHumanActionSnapshot(t *testing.T) {
 	for _, tc := range []struct {
 		name, status, action string
 		want                 bool
+		prose                bool
+		state                string
 	}{
-		{"outstanding", workpad.StatusBlocked, "make skill available or waive it", true},
-		{"resumed", workpad.StatusInProgress, "make skill available or waive it", false},
-		{"empty", workpad.StatusBlocked, "  ", false},
+		{name: "outstanding", status: workpad.StatusBlocked, action: "make skill available or waive it", want: true},
+		{name: "resumed", status: workpad.StatusInProgress, action: "make skill available or waive it"},
+		{name: "empty", status: workpad.StatusBlocked, action: "  "},
+		{name: "prose-only Rework", prose: true, state: "Rework"},
+		{name: "running with stale prose", prose: true, state: "In Progress"},
+		{name: "legacy prose Workpad", prose: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := dispatchTestIssue("2802", "Rework")
 			issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: tc.status, HumanAction: tc.action, RecordedAt: &at}
+			if tc.prose {
+				issue.StageUpdatedAt = &at
+				issue.BlockerReason = "waiting on #123 to merge"
+				issue.WorkpadSignal = nil
+				if tc.state != "" {
+					issue.State = tc.state
+				} else {
+					issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceProse, HumanAction: issue.BlockerReason}
+				}
+			}
 			o := Orchestrator{}
 			evaluated := o.evaluateRecordedBlockers(t.Context(), nil, issue, nil, now)
 			snapshot := telemetryIssue(issue, 0, 0, now, nil)
