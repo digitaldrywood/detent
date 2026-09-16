@@ -12,6 +12,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/operations"
 )
 
+// HumanQuestionResolvedByClosure distinguishes issue resolution from a human reply.
+const HumanQuestionResolvedByClosure = "detent:issue-closed"
+
 type HumanQuestion struct {
 	AskedAt           *time.Time
 	ProjectID         string
@@ -26,6 +29,8 @@ type HumanQuestion struct {
 }
 
 type HumanQuestionStore interface {
+	OpenHumanQuestionIssueIDs(context.Context, string) ([]string, error)
+	ResolveHumanQuestionsByClosure(context.Context, string, string) error
 	ReserveHumanQuestion(context.Context, HumanQuestion) (bool, error)
 	HumanQuestions(context.Context, string, string) ([]HumanQuestion, error)
 	RecordHumanQuestionComment(context.Context, HumanQuestion) error
@@ -128,4 +133,30 @@ func (s *sqliteStore) OpenHumanQuestions(ctx context.Context) ([]operations.Deci
 		decisions = append(decisions, d)
 	}
 	return decisions, rows.Err()
+}
+
+// OpenHumanQuestionIssueIDs includes unconfirmed posts so closure also releases
+// reservations that would otherwise prevent a new question after reopening.
+func (s *sqliteStore) OpenHumanQuestionIssueIDs(ctx context.Context, projectID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT issue_id FROM human_questions WHERE project_id = ? AND answer_comment_id = '' ORDER BY issue_id`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ResolveHumanQuestionsByClosure retains the question and any real human answer.
+// The reserved marker is not a comment ID and must never imply human approval.
+func (s *sqliteStore) ResolveHumanQuestionsByClosure(ctx context.Context, projectID, issueID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE human_questions SET answer_comment_id = ?, answer_body = ? WHERE project_id = ? AND issue_id = ? AND answer_comment_id = ''`, HumanQuestionResolvedByClosure, "Question resolved because the issue is closed or in a terminal tracker state. No human reply or approval was recorded.", projectID, issueID)
+	return err
 }

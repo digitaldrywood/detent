@@ -41,3 +41,32 @@ func TestSnapshotOpenQuestions(t *testing.T) {
 		t.Fatalf("URL = %s", response.OpenQuestions[0].URL)
 	}
 }
+
+func TestSnapshotOmitsClosureResolvedQuestions(t *testing.T) {
+	t.Parallel()
+	db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "questions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	questions := db.(store.HumanQuestionStore)
+	q := store.HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "target", Body: "Which target?", QuestionCommentID: "123"}
+	if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
+		t.Fatal(err)
+	}
+	if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: db, logger: slog.Default()}
+	snapshot := server.snapshotOpenQuestions(t.Context(), telemetry.Snapshot{})
+	if len(snapshot.OpenQuestions) != 1 {
+		t.Fatal("missing open question")
+	}
+	if err := questions.ResolveHumanQuestionsByClosure(t.Context(), q.ProjectID, q.IssueID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = server.snapshotOpenQuestions(t.Context(), snapshot)
+	if len(snapshot.OpenQuestions) != 0 {
+		t.Fatal("closure retained stale card question facts")
+	}
+}
