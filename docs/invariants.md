@@ -345,8 +345,12 @@ lossless expiry, and repeated removal failures. See
 
 The existing automated-review check retains stale and in-progress bot summary
 evidence (#2764): an established review cycle must complete at the current head
-before promotion, native queue admission, or programmatic merge. A disabled
-initial-review requirement or expired review deadline does not waive that cycle.
+before promotion, native queue admission, or programmatic merge when automated
+review is enabled. An expired review deadline does not waive that cycle. Projects
+with automated review off (including `require_automated_review: false`) do not
+wait for missing or stale reviews (#2780); unresolved threads and P1 findings
+still block. Promotion and merge checks share the configured review policy, and
+dispatch diagnostics report the effective review mode.
 The existing `automated_review_missing` wait and PR comment publication are reused;
 a per-head comment marker deduplicates `@codex review` requests across ticks and
 restarts. No new gate, reason, or reconciliation loop is introduced.

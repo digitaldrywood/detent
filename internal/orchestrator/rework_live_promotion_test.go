@@ -19,9 +19,19 @@ func TestReworkLivePullRequestPromotion(t *testing.T) {
 		change      func(*connector.Issue)
 		running     bool
 		completed   bool
+		required    bool
 		wantPromote bool
 	}{
 		{name: "clean without completion", wantPromote: true},
+		{name: "opted out stale review", wantPromote: true, change: func(i *connector.Issue) {
+			i.PullRequest.LatestCodexReviewState = "COMMENTED"
+			i.PullRequest.LatestCodexReviewCommitSHA = "previous-head"
+		}},
+		{name: "required stale review", required: true, change: func(i *connector.Issue) {
+			i.PullRequest.LatestCodexReviewState = "COMMENTED"
+			i.PullRequest.LatestCodexReviewCommitSHA = "previous-head"
+		}},
+		{name: "required absent review", required: true},
 		{name: "clean with completion", completed: true, wantPromote: true},
 		{name: "unresolved thread", change: func(i *connector.Issue) {
 			i.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{}}
@@ -31,7 +41,7 @@ func TestReworkLivePullRequestPromotion(t *testing.T) {
 		{name: "running worker", running: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(tt.required)}}})
 			issue := autoPromoteTickIssue("live-rework", nil, &connector.PullRequest{Number: 42, URL: "https://github.com/digitaldrywood/detent/pull/42", State: "OPEN", HeadSHA: "head", MergeableState: "CLEAN", CIStatus: "success"})
 			issue.State = "Rework"
 			if tt.change != nil {
@@ -48,6 +58,9 @@ func TestReworkLivePullRequestPromotion(t *testing.T) {
 			}
 			result := o.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, time.Now())
 			_, promoted := result.transitioned[issue.ID]
+			if tt.wantPromote && len(tracker.prComments) != 0 {
+				t.Fatal("opted-out promotion requested a review")
+			}
 			if promoted != tt.wantPromote {
 				t.Fatalf("promoted = %v, want %v; decisions = %#v", promoted, tt.wantPromote, state.AutoPromoteDecisions)
 			}
@@ -67,7 +80,7 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 		wantPromote bool
 	}{
 		{name: "draft marked ready then promotes", draft: true, wantReady: 1, wantPromote: true},
-		{name: "stale review draft marked ready but waits", draft: true, wantReady: 1, changeLive: func(i *connector.Issue) {
+		{name: "stale review opted out promotes", draft: true, wantReady: 1, wantPromote: true, changeLive: func(i *connector.Issue) {
 			i.PullRequest.LatestCodexReviewState = "COMMENTED"
 			i.PullRequest.LatestCodexReviewCommitSHA = "previous-head"
 		}},

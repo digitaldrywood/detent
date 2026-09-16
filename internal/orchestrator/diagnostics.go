@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -437,6 +438,7 @@ func (o *Orchestrator) schedulerDecisionAttrs(state *State, now time.Time, issue
 	pool := o.dispatchPoolSnapshot()
 	all := []any{
 		"lane", normalizeState(issue.State),
+		"gate_automated_review_mode", gate.AutomatedReviewMode(o.cfg.AutoPromote.Gate),
 		"pool", pool.Name,
 		"project_weight", o.cfg.Project.Weight,
 		"project_priority", o.cfg.Project.Priority,

@@ -808,9 +808,13 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 		mode       string
 		review     string
 		expired    bool
+		pending    bool
 		p1Findings []Finding
 		want       Decision
 	}{
+		{name: "off pending", mode: AutomatedReviewOff, pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required pending after deadline", mode: AutomatedReviewRequired, pending: true, expired: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "optional pending after deadline", mode: AutomatedReviewOptional, pending: true, expired: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
 		{name: "required absent", mode: AutomatedReviewRequired, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
 		{name: "required absent after deadline", mode: AutomatedReviewRequired, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required present", mode: AutomatedReviewRequired, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
@@ -834,6 +838,7 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 				PullRequestURL: "https://github.test/pull/1297",
 				CIStatus:       "green",
 				ReviewState:    tt.review,
+				ReviewPending:  tt.pending,
 				P1Findings:     tt.p1Findings,
 			}, now, EvaluationOptions{AutomatedReviewWaitExpired: tt.expired})
 			if got.Action != tt.want.Action || got.Reason != tt.want.Reason || !slices.Equal(got.Findings, tt.want.Findings) {

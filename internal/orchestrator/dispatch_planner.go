@@ -91,7 +91,7 @@ func (p dispatchPlanner) plan(
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 	dueRetries = dueRetriesByIssue(state, now)
-	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg.MergeFairnessAge)
+	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg.MergeFairnessAge, p.cfg)
 	logDecision := func(decision dispatchPlanDecision) {
 		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
 		p.logDecision(hooks, decision)

@@ -535,7 +535,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
-	if summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState) && !opts.AutomatedReviewWaitExpired) {
+	if AutomatedReviewPending(cfg, summary.ReviewPending) || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState) && !opts.AutomatedReviewWaitExpired) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
@@ -966,4 +966,10 @@ func normalizeLabel(label string) string {
 func automatedReviewWaits(cfg Config) bool {
 	cfg = Effective(cfg)
 	return cfg.Kind == KindCommand && cfg.AutomatedReview != AutomatedReviewOff
+}
+
+// AutomatedReviewPending applies the configured review policy to current-head evidence.
+// Projects that disable automated review do not wait for an existing review cycle.
+func AutomatedReviewPending(cfg Config, pending bool) bool {
+	return automatedReviewWaits(cfg) && pending
 }

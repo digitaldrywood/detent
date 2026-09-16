@@ -1708,7 +1708,7 @@ func staleMergingPullRequestDispatchActive(state *State, issueID string) bool {
 func staleMergingQueueIssues(issues []connector.Issue, cfg Config, state *State, now time.Time) []connector.Issue {
 	queue := issuesInStates(issues, []string{autoPromoteMergingState})
 	sortIssuesForDispatch(queue, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
-	prioritizeReadyMergingIssues(queue, state, now, cfg.MergeFairnessAge)
+	prioritizeReadyMergingIssues(queue, state, now, cfg.MergeFairnessAge, cfg)
 	return queue
 }
 
@@ -1806,7 +1806,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		laneAge := mergeWorkerIssueLaneAge(issue, now)
 		o.logMergeWorkerPickup(issue, "stale_merging",
 			"selection_position", len(out)+1,
-			"selection_reason", mergeWorkerSelectionReason(issue, state, now, o.cfg.MergeFairnessAge),
+			"selection_reason", mergeWorkerSelectionReason(issue, state, now, o.cfg.MergeFairnessAge, o.cfg),
 			"lane_age_seconds", int64(laneAge/time.Second),
 			"fairness_age_seconds", int64(o.cfg.MergeFairnessAge/time.Second),
 		)
@@ -1830,7 +1830,7 @@ func (o *Orchestrator) logMergeWorkerQueueCycle(state *State, issues []connector
 		}
 		queueDepth++
 		queueIssueIDs[strings.TrimSpace(issue.ID)] = struct{}{}
-		if mergeWorkerHeadReady(issue) {
+		if mergeWorkerHeadReady(issue, o.cfg) {
 			readyCount++
 		}
 		laneAge := mergeWorkerIssueLaneAge(issue, now)
@@ -1900,7 +1900,7 @@ func mergeWorkerLaneOccupant(state *State) (Running, int) {
 	return occupant, count
 }
 
-func prioritizeReadyMergingIssues(issues []connector.Issue, state *State, now time.Time, fairnessAge time.Duration) mergingIssuePriority {
+func prioritizeReadyMergingIssues(issues []connector.Issue, state *State, now time.Time, fairnessAge time.Duration, cfg Config) mergingIssuePriority {
 	priority := mergingIssuePriority{
 		reasons:       map[string]string{},
 		stickyIssueID: stickyMergingIssueID(state, issues, now, fairnessAge),
@@ -1964,7 +1964,7 @@ func prioritizeReadyMergingIssues(issues []connector.Issue, state *State, now ti
 		if repository != "" && repositoryHeads[repository] != index {
 			return false
 		}
-		return mergeWorkerHeadReady(issue)
+		return mergeWorkerHeadReady(issue, cfg)
 	})
 	appendMatching(mergeSelectionReasonQueue, func(_ int, _ connector.Issue) bool { return true })
 	if len(ordered) == 0 {
@@ -2019,14 +2019,14 @@ func stickyMergingIssueID(state *State, issues []connector.Issue, now time.Time,
 	return selectedID
 }
 
-func mergeWorkerSelectionReason(issue connector.Issue, state *State, now time.Time, fairnessAge time.Duration) string {
+func mergeWorkerSelectionReason(issue connector.Issue, state *State, now time.Time, fairnessAge time.Duration, cfg Config) string {
 	if strings.TrimSpace(issue.ID) == stickyMergingIssueID(state, []connector.Issue{issue}, now, fairnessAge) {
 		return mergeSelectionReasonStickyAged
 	}
 	if mergeWorkerIssueAged(issue, now, fairnessAge) {
 		return mergeSelectionReasonAged
 	}
-	if mergeWorkerHeadReady(issue) {
+	if mergeWorkerHeadReady(issue, cfg) {
 		return mergeSelectionReasonClean
 	}
 	return mergeSelectionReasonQueue
@@ -2047,11 +2047,11 @@ func mergeWorkerIssueLaneAge(issue connector.Issue, now time.Time) time.Duration
 	return now.Sub(enteredAt)
 }
 
-func mergeWorkerHeadReady(issue connector.Issue) bool {
+func mergeWorkerHeadReady(issue connector.Issue, cfg Config) bool {
 	if !mergeWorkerIssue(issue) || strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
 		return false
 	}
-	return mergeWorkerProgrammaticMergeReady(issue) &&
+	return mergeWorkerProgrammaticMergeReady(issue, cfg) &&
 		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean") &&
 		len(issue.PullRequest.RequiredCheckFailures) == 0
 }

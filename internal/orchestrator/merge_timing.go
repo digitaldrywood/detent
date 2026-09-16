@@ -148,7 +148,7 @@ func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now
 	timing.MergeStartedAt = now.UTC()
 	baseRefreshStarted := issue.PullRequest != nil &&
 		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") &&
-		(!mergeWorkerProgrammaticMergeReady(issue) || state.mergeReservations[issue.ID].RefreshHeadSHA == issue.PullRequest.HeadSHA)
+		(!mergeWorkerProgrammaticMergeReady(issue, o.cfg) || state.mergeReservations[issue.ID].RefreshHeadSHA == issue.PullRequest.HeadSHA)
 	if baseRefreshStarted {
 		timing.BaseRefreshStartedAt = timing.MergeStartedAt
 		timing.BaseRefreshFinishedAt = time.Time{}

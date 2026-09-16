@@ -1059,7 +1059,7 @@ func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
 	} else if signals.UnpushedCommits > 0 && strings.TrimSpace(signals.WorkspaceHeadSHA) != strings.TrimSpace(pullRequest.HeadSHA) {
 		return "workspace_pull_request_head_mismatch"
 	}
-	if !mergeWorkerProgrammaticMergeReady(issue) || !reworkBreakerCIGreen(pullRequest) || len(pullRequest.StaleSuccessfulChecks) > 0 {
+	if !mergeWorkerProgrammaticMergeReady(issue, o.cfg) || !reworkBreakerCIGreen(pullRequest) || len(pullRequest.StaleSuccessfulChecks) > 0 {
 		return "pull_request_not_merge_ready"
 	}
 	if !staleMergingIssueReadyForDispatch(issue, o.cfg) {

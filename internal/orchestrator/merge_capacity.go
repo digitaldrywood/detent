@@ -9,7 +9,7 @@ import (
 const mergeControlCheckedHeadOutput = "merge_control_checked_head"
 
 func (p dispatchPlanner) readyMergeControlCandidate(state *State, issue connector.Issue) bool {
-	if !p.mechanicalMergeAdmission(issue) || !mergeWorkerProgrammaticMergeReady(issue) || strings.TrimSpace(issue.PullRequest.BaseSHA) == "" {
+	if !p.mechanicalMergeAdmission(issue) || !mergeWorkerProgrammaticMergeReady(issue, p.cfg) || strings.TrimSpace(issue.PullRequest.BaseSHA) == "" {
 		return false
 	}
 	if retry, ok := state.Retry[issue.ID]; ok && retry.MergePrecheck != nil {

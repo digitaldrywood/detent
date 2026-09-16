@@ -15,22 +15,32 @@ import (
 
 func TestAutoPromoteReviewAtHead(t *testing.T) {
 	for _, tt := range []struct {
-		name, review string
-		threads      int
-		want         AutoPromoteReason
+		name           string
+		required       bool
+		review, latest string
+		threads        int
+		want           AutoPromoteReason
 	}{
-		{"stale review zero threads", "", 0, AutoPromoteReasonCodexReviewMissing},
-		{"current review zero threads", "COMMENTED", 0, AutoPromoteReasonReady},
-		{"current review unresolved thread", "COMMENTED", 1, AutoPromoteReasonUnresolvedReviewThreads},
+		{"opted out stale", false, "", "COMMENTED", 0, AutoPromoteReasonReady},
+		{"opted out absent", false, "", "", 0, AutoPromoteReasonReady},
+		{"opted out unresolved", false, "", "COMMENTED", 1, AutoPromoteReasonUnresolvedReviewThreads},
+		{"required stale", true, "", "COMMENTED", 0, AutoPromoteReasonCodexReviewMissing},
+		{"required absent", true, "", "", 0, AutoPromoteReasonCodexReviewMissing},
+		{"required current", true, "COMMENTED", "COMMENTED", 0, AutoPromoteReasonReady},
+		{"current unresolved", true, "COMMENTED", "COMMENTED", 1, AutoPromoteReasonUnresolvedReviewThreads},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := autoPromoteTestIssue("review-head", nil)
-			issue.PullRequest = &connector.PullRequest{State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", CodexReviewState: tt.review, LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300", UnresolvedReviewThreads: make([]connector.PullRequestReviewThread, tt.threads)}
+			issue.PullRequest = &connector.PullRequest{State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", CodexReviewState: tt.review, LatestCodexReviewState: tt.latest, LatestCodexReviewCommitSHA: "156b300", UnresolvedReviewThreads: make([]connector.PullRequestReviewThread, tt.threads)}
 			summary := AutoPromoteSummaryFromIssue(issue)
-			summary.AutomatedReviewWaitExpired = true
-			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
+			cfg := AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(tt.required)}}
+			got := EvaluateAutoPromote(issue, summary, cfg, time.Now())
 			if got.Reason != tt.want {
 				t.Fatalf("reason = %s, want %s", got.Reason, tt.want)
+			}
+			diagnostic := requiredGateFromSummary(issue, summary, cfg, time.Now())
+			if (diagnostic.State == "passed") != (tt.want == AutoPromoteReasonReady) {
+				t.Fatalf("required gate = %+v", diagnostic)
 			}
 		})
 	}
@@ -71,7 +81,7 @@ func TestReviewHeadRequestAndWait(t *testing.T) {
 		{name: "write failure keeps waiting", writeErr: errors.New("write unavailable")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := normalizeConfig(Config{PollInterval: time.Minute, MaxConcurrentAgents: 1, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}})
+			cfg := normalizeConfig(Config{PollInterval: time.Minute, MaxConcurrentAgents: 1, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(true)}}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}})
 			issue := autoPromoteTickIssue("review-head", nil, &connector.PullRequest{Number: 42, URL: "https://github.test/digitaldrywood/detent/pull/42", State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300"})
 			tracker := &reviewHeadConnector{autoPromoteTickConnector: autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}, readErr: tt.readErr, writeErr: tt.writeErr}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -103,21 +113,49 @@ func TestReviewHeadMergeAdmission(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, review string
+		required     bool
 		want         bool
 	}{
-		{"stale head", "", false},
-		{"pending current review", "PENDING", false},
-		{"completed current review", "COMMENTED", true},
+		{"required stale head", "", true, false},
+		{"opted out stale head", "", false, true},
+		{"opted out pending review", "PENDING", false, true},
+		{"pending current review", "PENDING", true, false},
+		{"completed current review", "COMMENTED", true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := autoPromoteTickIssue("merge-review", nil, &connector.PullRequest{Number: 42, URL: "https://github.test/digitaldrywood/detent/pull/42", State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", MergeableState: "clean", CodexReviewState: tt.review, LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300"})
 			issue.State = "Merging"
-			if got := nativeMergeQueueCandidate(issue, Config{}); got != tt.want {
+			cfg := Config{AutoPromote: AutoPromoteConfig{Gate: gate.Config{RequireAutomatedReview: new(tt.required)}}}
+			if got := nativeMergeQueueCandidate(issue, cfg); got != tt.want {
 				t.Fatalf("native queue admission = %v, want %v", got, tt.want)
 			}
-			if got := mergeWorkerProgrammaticMergeReady(issue); got != tt.want {
+			if got := mergeWorkerProgrammaticMergeReady(issue, cfg); got != tt.want {
 				t.Fatalf("programmatic merge ready = %v, want %v", got, tt.want)
 			}
+		})
+	}
+}
+
+func TestReviewPolicyDispatchDiagnostic(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		mode := gate.AutomatedReviewOff
+		if required {
+			mode = gate.AutomatedReviewRequired
+		}
+		t.Run(mode, func(t *testing.T) {
+			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Gate: gate.Config{RequireAutomatedReview: new(required)}}})
+			o := &Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			attrs := o.schedulerDecisionAttrs(&state, time.Now(), autoPromoteTestIssue("diagnostic", nil))
+			for i := 0; i+1 < len(attrs); i += 2 {
+				if attrs[i] == "gate_automated_review_mode" {
+					if attrs[i+1] != mode {
+						t.Fatalf("review mode = %v, want %s", attrs[i+1], mode)
+					}
+					return
+				}
+			}
+			t.Fatal("dispatch diagnostic lacks review policy")
 		})
 	}
 }
