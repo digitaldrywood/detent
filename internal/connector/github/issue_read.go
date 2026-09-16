@@ -527,12 +527,14 @@ func (c *Connector) fetchProjectRefreshIssues(
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
 	wantedStates := normalizedStateSet(allStates)
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
+	// Observed Backlog is metadata-only. Review and blocked routing still need
+	// PR, dependency, and Workpad evidence.
 	schedulerStates := make(map[string]struct{})
 	for _, state := range allStates {
-		if stateInList(state, c.terminalStates) {
+		if stateInList(state, c.terminalStates) || normalizeStateName(state) == normalizeStateName("Backlog") {
 			continue
 		}
-		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, c.observedStates) {
+		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, []string{"Human Review", "Blocked"}) {
 			schedulerStates[normalizeStateName(state)] = struct{}{}
 		}
 	}

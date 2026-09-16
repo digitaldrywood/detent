@@ -507,7 +507,7 @@ func testIndependentRefreshEvidence(t *testing.T, entry string) {
 				}
 			}))
 			defer server.Close()
-			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: repo, ActiveStates: []string{"Todo"}, ObservedStates: []string{lane}})
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: repo, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, ObservedStates: []string{lane}})
 			c.now = func() time.Time { return now }
 			c.unstartedThreshold = time.Minute
 			refresh := func() connector.Issue {
