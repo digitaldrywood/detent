@@ -1397,3 +1397,23 @@ func TestBuildPromptIgnoresFencedNoteHeadings(t *testing.T) {
 		})
 	}
 }
+
+func TestCompactFailedRunNotesPreservesPrefix(t *testing.T) {
+	t.Parallel()
+	const first = "## 2026-09-14T00:00:00Z - Failed run output tail\nold failure\n"
+	const last = "## 2026-09-14T00:01:00Z - Failed run output tail\nlatest failure\n"
+	for _, tt := range []struct{ name, input, want string }{
+		{"empty", "", ""},
+		{"no headings", "handoff\n", "handoff\n"},
+		{"no failures", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n"},
+		{"first heading is failure", first + last, strings.TrimRight(last, "\n")},
+		{"preamble before removed failure", "preamble\n\n" + first + last, "preamble\n\n" + strings.TrimRight(last, "\n")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := compactFailedRunNotes(tt.input); got != tt.want {
+				t.Fatalf("compactFailedRunNotes() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

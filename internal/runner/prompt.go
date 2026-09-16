@@ -873,8 +873,10 @@ func compactFailedRunNotes(content string) string {
 		return content
 	}
 	var b strings.Builder
-	b.WriteString(content[:headings[0][0]])
 	for i, heading := range headings {
+		if i == 0 {
+			b.WriteString(content[:heading[0]])
+		}
 		end := len(content)
 		if i+1 < len(headings) {
 			end = headings[i+1][0]

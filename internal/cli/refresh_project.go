@@ -1424,10 +1424,8 @@ func migrateProjectRefreshStateInstructions(existing string, root *yaml.Node, de
 			sharedLines = append(sharedLines, line)
 		}
 	}
-	extracted := &yaml.Node{Kind: yaml.MappingNode}
-	setOnboardingYAMLPath(extracted, []string{"agent", "instructions_by_state"}, bodies)
 	shared := strings.TrimSpace(strings.Join(sharedLines, "\n")) + "\n"
-	states := projectRefreshYAMLPathNode(extracted, "agent.instructions_by_state")
+	states := onboardingYAMLNode(bodies)
 	changed := false
 	for index := 0; index+1 < len(states.Content); index += 2 {
 		state, body := states.Content[index].Value, states.Content[index+1].Value
