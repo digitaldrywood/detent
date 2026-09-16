@@ -62,38 +62,39 @@ type RESTBudgetPolicy struct {
 }
 
 type Client struct {
-	endpoint               string
-	restEndpoint           string
-	tokenSource            TokenSource
-	httpClient             HTTPClient
-	graphQLMinReserve      int64
-	restPolicy             RESTBudgetPolicy
-	restDebugLogging       bool
-	logger                 *slog.Logger
-	mu                     sync.RWMutex
-	rateLimit              connector.GraphQLRateLimit
-	queryCosts             map[string]connector.GraphQLQueryCost
-	hasRateLimit           bool
-	hasRateLimitUsage      bool
-	graphQLRateLimitStatus string
-	restRateLimit          connector.RESTRateLimit
-	restRateLimits         map[string]connector.RESTRateLimit
-	restBudgets            map[string]connector.RESTRateLimitBudget
-	restDivergenceKeys     map[string]struct{}
-	restDivergences        *restDivergenceRegistry
-	restRequests           map[string]connector.RESTEndpointUsage
-	restFanoutUnits        int64
-	restReserveHeld        bool
-	restFanoutDeferred     bool
-	restCache              map[string]restCacheEntry
-	conditionalRequests    bool
-	restBackoffUntil       time.Time
-	restBackoffKey         string
-	restBackoffs           *restBackoffRegistry
-	restRateLimitStatus    bool
-	hasRestRateLimit       bool
-	authHealth             connector.AuthHealth
-	hasAuthHealth          bool
+	endpoint                 string
+	restEndpoint             string
+	tokenSource              TokenSource
+	httpClient               HTTPClient
+	graphQLMinReserve        int64
+	restPolicy               RESTBudgetPolicy
+	restDebugLogging         bool
+	logger                   *slog.Logger
+	mu                       sync.RWMutex
+	rateLimit                connector.GraphQLRateLimit
+	queryCosts               map[string]connector.GraphQLQueryCost
+	hasRateLimit             bool
+	hasRateLimitUsage        bool
+	graphQLRateLimitStatus   string
+	graphQLSecondaryFailures int
+	restRateLimit            connector.RESTRateLimit
+	restRateLimits           map[string]connector.RESTRateLimit
+	restBudgets              map[string]connector.RESTRateLimitBudget
+	restDivergenceKeys       map[string]struct{}
+	restDivergences          *restDivergenceRegistry
+	restRequests             map[string]connector.RESTEndpointUsage
+	restFanoutUnits          int64
+	restReserveHeld          bool
+	restFanoutDeferred       bool
+	restCache                map[string]restCacheEntry
+	conditionalRequests      bool
+	restBackoffUntil         time.Time
+	restBackoffKey           string
+	restBackoffs             *restBackoffRegistry
+	restRateLimitStatus      bool
+	hasRestRateLimit         bool
+	authHealth               connector.AuthHealth
+	hasAuthHealth            bool
 }
 
 type restProbeResult struct {
@@ -690,19 +691,25 @@ func (c *Client) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 func (c *Client) GraphQLRateLimitStatus() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	if c.rateLimit.BackoffUntil.After(time.Now()) {
+		return connector.GraphQLRateLimitStatusBackoff
+	}
+	if c.graphQLRateLimitStatus == connector.GraphQLRateLimitStatusBackoff {
+		return ""
+	}
 	return c.graphQLRateLimitStatus
 }
 
 func (c *Client) clearGraphQLRateLimitStatus() {
 	c.mu.Lock()
-	c.graphQLRateLimitStatus = ""
+	if !c.rateLimit.BackoffUntil.After(time.Now()) {
+		c.graphQLRateLimitStatus = ""
+		c.graphQLSecondaryFailures = 0
+	}
 	c.mu.Unlock()
 }
 
 func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now time.Time) error {
-	if !lookup || queryType == graphQLQueryRateLimitProbe {
-		return nil
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	status := c.graphQLRateLimitStatus
@@ -710,13 +717,7 @@ func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now ti
 	hasRateLimit := c.hasRateLimit
 	reserve := c.graphQLMinReserve
 
-	if status == connector.GraphQLRateLimitStatusBackoff {
-		backoffUntil := rateLimit.UpdatedAt.Add(rateLimit.RetryAfter)
-		if !backoffUntil.After(now) {
-			c.graphQLRateLimitStatus = ""
-			c.rateLimit.RetryAfter = 0
-			return nil
-		}
+	if backoffUntil := rateLimit.BackoffUntil; backoffUntil.After(now) {
 		return &StatusError{
 			StatusCode:    http.StatusTooManyRequests,
 			Body:          "GitHub GraphQL rate-limit response is in backoff",
@@ -724,6 +725,9 @@ func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now ti
 			RateLimitKind: restRateLimitKindSecondaryThrottled,
 			RetryAfter:    backoffUntil.Sub(now),
 		}
+	}
+	if !lookup || queryType == graphQLQueryRateLimitProbe {
+		return nil
 	}
 	if status == connector.GraphQLRateLimitStatusExhausted {
 		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
@@ -757,8 +761,10 @@ func (c *Client) ResetGraphQLRateLimitUsage() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if !c.rateLimit.BackoffUntil.After(time.Now()) {
+		c.graphQLRateLimitStatus = ""
+	}
 	c.queryCosts = nil
-	c.graphQLRateLimitStatus = ""
 	c.hasRateLimitUsage = false
 }
 
@@ -778,8 +784,10 @@ func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
 		usage.TotalQueries += cost.Count
 		usage.TotalCost += cost.Cost
 	}
+	if !c.rateLimit.BackoffUntil.After(time.Now()) {
+		c.graphQLRateLimitStatus = ""
+	}
 	c.queryCosts = nil
-	c.graphQLRateLimitStatus = ""
 	c.hasRateLimitUsage = false
 	return usage
 }
@@ -1404,6 +1412,7 @@ func (c *Client) setRateLimit(snapshot connector.GraphQLRateLimit) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	snapshot.BackoffUntil = c.rateLimit.BackoffUntil
 	c.rateLimit = snapshot
 	c.hasRateLimit = true
 	c.hasRateLimitUsage = true
@@ -1459,15 +1468,28 @@ func (c *Client) recordGraphQLRateLimitFailure(err error, snapshot graphQLHeader
 		var statusErr *StatusError
 		if errors.As(err, &statusErr) && statusErr.RetryAfter > 0 {
 			delay = statusErr.RetryAfter
-		} else if snapshot.Current.RetryAfter > 0 {
+		} else if snapshot.HasCurrent && snapshot.Current.RetryAfter > 0 {
 			delay = snapshot.Current.RetryAfter
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.graphQLSecondaryFailures++
+		if c.graphQLSecondaryFailures > 1 {
+			fallback := time.Minute
+			for i := 1; i < c.graphQLSecondaryFailures && fallback < 15*time.Minute; i++ {
+				fallback *= 2
+			}
+			fallback = min(fallback, 15*time.Minute)
+			delay = max(delay, fallback)
 		}
 		if statusErr != nil && statusErr.RetryAfter <= 0 {
 			statusErr.RetryAfter = delay
 		}
 
-		c.mu.Lock()
-		defer c.mu.Unlock()
+		deadline := now.Add(delay)
+		if deadline.After(c.rateLimit.BackoffUntil) {
+			c.rateLimit.BackoffUntil = deadline
+		}
 		c.rateLimit.RetryAfter = delay
 		c.rateLimit.UpdatedAt = now
 		c.hasRateLimit = true
