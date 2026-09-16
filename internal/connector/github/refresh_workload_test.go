@@ -20,7 +20,9 @@ import (
 // Five isolated projects simulate an hour of normal refresh, not admission.
 // The fixture clock and serialized counters make request counts deterministic.
 func TestProjectRefreshHourlyWorkload(t *testing.T) {
-	t.Run("large board four refreshes hourly", testLargeProjectRefreshHourlyWorkload)
+	for _, resumed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("large board four refreshes hourly/resumed=%t", resumed), func(t *testing.T) { testLargeProjectRefreshHourlyWorkload(t, resumed) })
+	}
 	for _, workload := range []struct {
 		name                string
 		projects, refreshes int
@@ -211,9 +213,10 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 // data.rateLimit.cost: thin page(first:100), including scalar bodies and the
 // project updatedAt revision, costs 2; scheduler aliases=22 for 100
 // issues, 11 for 52, and 1 for 3. These are response fixtures, not header deltas.
-func testLargeProjectRefreshHourlyWorkload(t *testing.T) {
+func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 	const total, candidates, refreshes = 1500, 152, 4
-	var graphql, rest, points int
+	var graphql, rest, points, preflights, failedPages int
+	failPage := resumed
 	humanBody := strings.Replace(prerequisiteBody(t), "schema: 1", "schema: 1\ncompletion_evidence: Verified test tenant", 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -239,7 +242,14 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T) {
 		}
 		data := map[string]any{}
 		cost := 2
-		if strings.Contains(req.Query, "CandidateHydration") {
+		if strings.Contains(req.Query, "RefreshProjectRevision") {
+			preflights++
+			cost = 1
+			if strings.Contains(req.Query, "items(") {
+				t.Error("revision query must read updatedAt without an items connection")
+			}
+			data["node"] = map[string]any{"updatedAt": "2026-09-16T20:00:00Z"}
+		} else if strings.Contains(req.Query, "CandidateHydration") {
 			count := 0
 			for key, value := range req.Variables {
 				if !strings.HasPrefix(key, "id") {
@@ -277,15 +287,23 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T) {
 			if after, ok := req.Variables["after"].(string); ok {
 				fmt.Sscanf(after, "page-%d", &start)
 			}
+			if start == 100 && failPage {
+				failPage = false
+				failedPages++
+				http.Error(w, "fixture interrupted refresh", http.StatusBadGateway)
+				return
+			}
 			page := projectItemsConnection{TotalCount: total, PageInfo: pageInfo{HasNextPage: start+100 < total, EndCursor: fmt.Sprintf("page-%d", start+100)}}
 			for n := start + 1; n <= start+100; n++ {
 				state := "Done"
 				if n <= candidates {
 					state = "Todo"
+				} else if n <= candidates+70 {
+					state = "Backlog"
 				}
 				page.Nodes = append(page.Nodes, projectItemNode{ID: fmt.Sprintf("P%d", n), StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
 			}
-			data["node"] = map[string]any{"items": page}
+			data["node"] = map[string]any{"updatedAt": "2026-09-16T20:00:00Z", "items": page}
 		}
 		points += cost
 		data["rateLimit"] = map[string]any{"cost": cost, "remaining": 5000 - points, "limit": 5000}
@@ -298,11 +316,23 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/large", ActiveStates: []string{"Todo"}, ObservedStates: []string{"Done"}})
+	c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/large", ActiveStates: []string{"Todo"}, ObservedStates: []string{"Backlog", "Human Review", "Blocked"}})
 	for range refreshes {
-		result := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, []string{"Done"}, connector.IssueFilterHint{})
+		failPage = resumed
+		if resumed {
+			interrupted := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, []string{"Done", "Backlog"}, connector.IssueFilterHint{})
+			if interrupted.CandidateError == nil || len(interrupted.LaneSignalCandidates) != 0 {
+				t.Fatalf("partial refresh published: %+v", interrupted)
+			}
+		}
+		result := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, []string{"Done", "Backlog"}, connector.IssueFilterHint{})
 		if result.CandidateError != nil || result.StatusError != nil || len(result.Candidates) != candidates || len(result.Statuses) != total-candidates || len(result.LaneSignalCandidates) != total {
 			t.Fatalf("refresh errors=(%v,%v) candidates=%d observed=%d", result.CandidateError, result.StatusError, len(result.Candidates), len(result.Statuses))
+		}
+		for _, issue := range result.Statuses {
+			if issue.State == "Backlog" && (issue.Description != "" || issue.PullRequest != nil || len(issue.Comments) != 0) {
+				t.Fatalf("Backlog enriched: %+v", issue)
+			}
 		}
 		for _, issue := range result.Candidates {
 			if issue.ID == "I1" && (len(issue.BlockedBy) != 1 || !issue.BlockedBy[0].HumanOwned || !issue.BlockedBy[0].HumanCompletionReady || issue.BlockedBy[0].State != "Done") {
@@ -314,7 +344,15 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T) {
 		}
 	}
 	usage := c.client.FlushGraphQLRateLimitUsage()
-	if graphql != 68 || rest > 4 || points != 252 || points >= 1000 || usage.TotalCost != int64(points) || usage.TotalQueries != int64(graphql) {
+	// Failed page requests have no response cost and are absent from usage.
+	wantQueries, wantPoints, wantPreflights := 68, 252, 0
+	if resumed {
+		wantQueries, wantPoints, wantPreflights = 76, 256, 4
+	}
+	if preflights != wantPreflights {
+		t.Fatalf("preflights=%d want=%d", preflights, wantPreflights)
+	}
+	if graphql != wantQueries || rest > 4 || points != wantPoints || points >= 1000 || usage.TotalCost != int64(points) || usage.TotalQueries != int64(graphql-failedPages) {
 		t.Fatalf("GraphQL=%d REST=%d points=%d accounting=%+v", graphql, rest, points, usage)
 	}
 	t.Logf("1500 items, 152 candidates, four refreshes/hour: GraphQL=%d REST=%d points=%d", graphql, rest, points)

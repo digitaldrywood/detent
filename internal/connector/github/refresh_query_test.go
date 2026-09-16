@@ -52,7 +52,10 @@ func TestRefreshBoardResumesFailedPage(t *testing.T) {
 					t.Error(err)
 				}
 				if strings.Contains(req.Query, "RefreshProjectRevision") {
-					fmt.Fprint(w, `{"data":{"node":{"updatedAt":"2026-09-16T20:00:00Z","items":{"totalCount":2}}}}`)
+					if strings.Contains(req.Query, "items(") || !strings.Contains(req.Query, "updatedAt") {
+						t.Error("revision preflight must read updatedAt only")
+					}
+					fmt.Fprint(w, `{"data":{"node":{"updatedAt":"2026-09-16T20:00:00Z"}}}`)
 					return
 				}
 				page := projectItemsConnection{TotalCount: 2}
@@ -191,12 +194,14 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 		state                      string
 		enrich                     bool
 	}{
+		{"human review", nil, nil, nil, "Human Review", true},
+		{"blocked", nil, nil, nil, "Blocked", true},
 		{"custom active", []string{"Queued"}, nil, []string{"Archived"}, "Queued", true},
-		{"custom observed", []string{"Queued"}, []string{"Review"}, []string{"Archived"}, "Review", true},
+		{"custom observed", []string{"Queued"}, []string{"Review"}, []string{"Archived"}, "Review", false},
 		{"custom terminal", []string{"Queued"}, []string{"Archived"}, []string{"Archived"}, "Archived", false},
 		{"unconfigured observed", []string{"Queued"}, []string{"Review"}, []string{"Archived"}, "Retired", false},
 		{"default name repurposed", []string{"Done"}, nil, []string{"Archived"}, "Done", true},
-		{"backlog repurposed", []string{"Queued"}, []string{"Backlog"}, []string{"Archived"}, "Backlog", true},
+		{"observed backlog", []string{"Queued"}, []string{"Backlog"}, []string{"Archived"}, "Backlog", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			hydrated := false
@@ -209,6 +214,10 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 				var req struct{ Query string }
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Error(err)
+				}
+				if strings.Contains(req.Query, "LabelIssuePullRequestReferences") {
+					fmt.Fprint(w, `{"data":{"nodes":[{"__typename":"Issue","id":"I1","number":1,"repository":{"nameWithOwner":"owner/repo"},"closedByPullRequestsReferences":{"nodes":[]}}]}}`)
+					return
 				}
 				if strings.Contains(req.Query, "CandidateHydration") {
 					hydrated = true
@@ -245,9 +254,7 @@ func TestRefreshBoardChangedBetweenAttempts(t *testing.T) {
 				}
 				revision, total := "2026-09-16T20:00:00Z", 2
 				if phase > 0 {
-					if change != "count" {
-						revision = "2026-09-16T20:01:00Z"
-					}
+					revision = "2026-09-16T20:01:00Z"
 					if change == "count" {
 						total = 3
 					}
@@ -275,6 +282,9 @@ func TestRefreshBoardChangedBetweenAttempts(t *testing.T) {
 							return
 						}
 						numbers = []int{1}
+						if change == "during resume" {
+							numbers = []int{2}
+						}
 						if change == "count" {
 							numbers = []int{1, 3}
 						}
@@ -298,16 +308,6 @@ func TestRefreshBoardChangedBetweenAttempts(t *testing.T) {
 			}
 			phase = 1
 			result = fetch()
-			if change == "during resume" {
-				if !errors.Is(result.CandidateError, ErrProjectItemsTruncated) || len(result.LaneSignalCandidates) != 0 {
-					t.Fatalf("changed resumed scan published: %+v", result)
-				}
-				if c.refreshScan.scan.BoardCounts != nil {
-					t.Fatal("invalid progress retained")
-				}
-				phase = 2
-				result = fetch()
-			}
 			want := 2
 			if change == "count" {
 				want = 3
@@ -316,8 +316,49 @@ func TestRefreshBoardChangedBetweenAttempts(t *testing.T) {
 			for _, issue := range result.LaneSignalCandidates {
 				ids[issue.ID] = true
 			}
-			if result.CandidateError != nil || result.StatusError != nil || len(ids) != want || !ids["I1"] || !ids["I2"] || first != 2 {
+			wantFirst := 2
+			if change == "during resume" {
+				wantFirst = 1
+			}
+			if result.CandidateError != nil || result.StatusError != nil || len(ids) != want || !ids["I1"] || !ids["I2"] || first != wantFirst {
 				t.Fatalf("first=%d second=%d ids=%v errors=(%v,%v)", first, second, ids, result.CandidateError, result.StatusError)
+			}
+		})
+	}
+}
+
+func TestRefreshBusyBoardCompletes(t *testing.T) {
+	for _, change := range []string{"timestamp", "count", "local revision"} {
+		t.Run(change, func(t *testing.T) {
+			pages := 0
+			var c *Connector
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pages++
+				total := 15
+				revision := "stable"
+				if change == "timestamp" {
+					revision = strconv.Itoa(pages)
+				}
+				if change == "count" {
+					total += pages
+				}
+				if change == "local revision" {
+					c.projectCache.InvalidateProjectFields("PVT_1", "I1")
+				}
+				page := projectItemsConnection{TotalCount: total, PageInfo: pageInfo{HasNextPage: pages%15 != 0, EndCursor: strconv.Itoa(pages)}}
+				page.Nodes = []projectItemNode{{ID: fmt.Sprintf("P%d", pages), StatusValue: &singleSelectValue{Name: "Done"}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", pages), Number: pages, Repository: repository{NameWithOwner: "owner/repo"}}}}
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"node": map[string]any{"updatedAt": revision, "items": page}}}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			c = newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo"})
+			for range 3 {
+				result := c.FetchRefreshIssues(t.Context(), nil, []string{"Done"}, connector.IssueFilterHint{})
+				if result.CandidateError != nil || len(result.Statuses) != 15 {
+					t.Fatalf("busy board failed: %+v", result)
+				}
 			}
 		})
 	}

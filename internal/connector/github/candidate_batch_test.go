@@ -138,6 +138,10 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 	for _, mode := range []string{"board", "labels", "refresh"} {
 		t.Run(mode, func(t *testing.T) {
+			lane := "Backlog"
+			if mode == "refresh" {
+				lane = "Todo"
+			}
 			var graphql, rest int
 			updated := "2026-09-15T01:02:03Z"
 			body := "Depends on: other/repo#7\n<!-- model: fixture-model -->"
@@ -168,7 +172,7 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 					t.Error(err)
 				}
 				if strings.Contains(request.Query, "ProjectItems") {
-					write(map[string]any{"data": map[string]any{"node": map[string]any{"items": projectItemsConnection{Nodes: []projectItemNode{{ID: "P1", Content: ptrCandidateNode(first("I1", 1)), StatusValue: &singleSelectValue{Name: "Backlog"}}, {ID: "P2", Content: ptrCandidateNode(first("I2", 2)), StatusValue: &singleSelectValue{Name: "Backlog"}}}}}}})
+					write(map[string]any{"data": map[string]any{"node": map[string]any{"items": projectItemsConnection{Nodes: []projectItemNode{{ID: "P1", Content: ptrCandidateNode(first("I1", 1)), StatusValue: &singleSelectValue{Name: lane}}, {ID: "P2", Content: ptrCandidateNode(first("I2", 2)), StatusValue: &singleSelectValue{Name: lane}}}}}}})
 					return
 				}
 				data := map[string]any{}
@@ -192,7 +196,7 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 				write(map[string]any{"data": data})
 			}))
 			defer server.Close()
-			cfg := Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: []string{"Todo"}, ObservedStates: []string{"Backlog"}}
+			cfg := Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: []string{"Todo"}, ObservedStates: []string{lane}}
 			if mode == "labels" {
 				cfg.GitHubStatusSource = GitHubStatusSourceLabel
 			}
@@ -200,13 +204,13 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 			var result connector.CandidateResult
 			var err error
 			if mode == "refresh" {
-				refreshed := c.FetchRefreshIssues(t.Context(), []string{"Backlog"}, []string{"Backlog"}, connector.IssueFilterHint{})
+				refreshed := c.FetchRefreshIssues(t.Context(), []string{lane}, []string{lane}, connector.IssueFilterHint{})
 				result.Issues, err = refreshed.Statuses, refreshed.StatusError
 				if refreshed.CandidateError != nil {
 					t.Fatal(refreshed.CandidateError)
 				}
 			} else {
-				result, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: 10, PageSize: 10})
+				result, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{lane}, Limit: 10, PageSize: 10})
 			}
 			if err != nil || len(result.Issues) != 2 {
 				t.Fatalf("result=%+v err=%v", result, err)

@@ -180,7 +180,7 @@ var thinRefreshProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery,
 	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt", 1)
 
 const refreshProjectRevisionQuery = `query DetentGitHubRefreshProjectRevision($projectId: ID!) {
-  node(id: $projectId) { ... on ProjectV2 { updatedAt items(first: 0) { totalCount } } }
+  node(id: $projectId) { ... on ProjectV2 { updatedAt } }
   rateLimit { cost remaining }
 }`
 
@@ -423,7 +423,6 @@ func (c *Connector) scanProjectItems(
 		var response struct {
 			Node *struct {
 				UpdatedAt string
-				Items     projectItemsConnection
 			}
 		}
 		if err := c.client.GraphQLWithType(ctx, queryType, refreshProjectRevisionQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
@@ -432,7 +431,7 @@ func (c *Connector) scanProjectItems(
 		if response.Node == nil {
 			return connector.IssueStateScan{}, ErrProjectNotFound
 		}
-		if progress.updatedAt == "" || response.Node.UpdatedAt != progress.updatedAt || response.Node.Items.TotalCount != progress.scan.TotalItems || c.projectCache.Revision(c.projectID) != progress.revision {
+		if progress.updatedAt == "" || response.Node.UpdatedAt != progress.updatedAt || c.projectCache.Revision(c.projectID) != progress.revision {
 			*progress = projectItemsScanProgress{}
 		}
 	}
@@ -470,11 +469,9 @@ func (c *Connector) scanProjectItems(
 		if response.Node == nil {
 			return connector.IssueStateScan{}, ErrProjectNotFound
 		}
-		if queryDocument == thinRefreshProjectItemsQuery {
-			if scan.ItemsFetched > 0 && (response.Node.UpdatedAt != progress.updatedAt || response.Node.Items.TotalCount != scan.TotalItems || c.projectCache.Revision(c.projectID) != scanRevision) {
-				*progress = projectItemsScanProgress{}
-				return connector.IssueStateScan{}, fmt.Errorf("%w: project changed during scan", ErrProjectItemsTruncated)
-			}
+		// Keep the initial revision so a later resumed attempt detects changes.
+		// Changes during this enumeration do not prevent snapshot publication.
+		if queryDocument == thinRefreshProjectItemsQuery && scan.ItemsFetched == 0 {
 			progress.updatedAt = response.Node.UpdatedAt
 		}
 		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
@@ -509,8 +506,12 @@ func (c *Connector) scanProjectItems(
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
-			if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
-				return connector.IssueStateScan{}, err
+			// A thin refresh completes at the final page, even if concurrent board
+			// edits changed totalCount. Other scanners retain their count contract.
+			if queryDocument != thinRefreshProjectItemsQuery {
+				if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
+					return connector.IssueStateScan{}, err
+				}
 			}
 			if cacheProjectFields {
 				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)
