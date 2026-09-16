@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
@@ -45,6 +46,7 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 		{name: "simultaneous merge and reset preserves merge boundary", attempts: base, mergedAt: now.Add(time.Minute), resetAt: now.Add(time.Minute), count: 1},
 		{name: "merge after all sessions", attempts: base, mergedAt: now.Add(3 * time.Minute)},
 		{name: "triage is recorded but not charged", attempts: append(append([]store.WorkAttempt{}, base...), store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, StartedAt: now.Add(3 * time.Minute)}), count: 3, exhausted: true, triage: 4},
+		{name: "external wait does not erase completed triage", attempts: append(append([]store.WorkAttempt{}, base...), store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, WorkerMetadataJSON: `{"allowance_external_wait":true}`}), count: 3, exhausted: true, triage: 4},
 		{name: "validator and merge runs are not code sessions", attempts: []store.WorkAttempt{{WorkerType: "validator"}, {WorkerType: "merge"}, {WorkerType: "planner"}}},
 	}
 	for _, tt := range tests {
@@ -158,10 +160,16 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 		sessions int
 		infra    bool
 		wantMode string
+		metadata string
+		phase    string
+		message  string
 	}{
-		{"third code session permitted", 2, false, runpkg.RunModeImplement},
-		{"fourth code session replaced by one triage", 3, false, runpkg.RunModeTriage},
-		{"infra failure leaves a session", 3, true, runpkg.RunModeImplement},
+		{"third code session permitted", 2, false, runpkg.RunModeImplement, "", "", ""},
+		{"fourth code session replaced by one triage", 3, false, runpkg.RunModeTriage, "", "", ""},
+		{"infra failure leaves a session", 3, true, runpkg.RunModeImplement, "", "", ""},
+		{"reported question-ending sequence", 3, false, runpkg.RunModeImplement, "", "waiting", "waiting for a human reply on the original issue"},
+		{"reported conflicted-session sequence", 3, false, runpkg.RunModeImplement, `{"dispatch_loop_start":{"allowance_external_wait":true}}`, "", ""},
+		{"reported human hardware wait sequence", 3, false, runpkg.RunModeImplement, `{"allowance_external_wait":true}`, "", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -180,7 +188,12 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 				if tt.infra && i == tt.sessions-1 {
 					class = "service_restart"
 				}
-				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess, ErrorClass: class}); err != nil {
+				terminal := store.WorkAttemptTerminalSuccess
+				if tt.wantMode == runpkg.RunModeTriage {
+					terminal = store.WorkAttemptTerminalFailure
+					class = "runner_error"
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: terminal, ErrorClass: class, WorkerMetadataJSON: tt.metadata, Phase: tt.phase, StatusMessage: tt.message}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -202,6 +215,9 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 				t.Fatalf("mode = %s, want %s", result.Request.Mode, tt.wantMode)
 			}
 			if tt.wantMode != runpkg.RunModeTriage {
+				if len(tracker.updates) != 0 {
+					t.Fatalf("external wait moved lane: %+v", tracker.updates)
+				}
 				return
 			}
 			if len(result.Request.AgentTools) != 0 || result.Request.AgentToolHandler != nil || !strings.Contains(result.Request.TriageContext, "PriorSessions") {
@@ -756,6 +772,115 @@ func TestAllowanceResetAnnotation(t *testing.T) {
 			}
 			if posted && !strings.Contains(tracker.refreshed.Comments[0].Body, "allowance reset by operator move at 2026-09-14T21:47:47Z") {
 				t.Fatal("missing reset explanation")
+			}
+		})
+	}
+}
+
+func TestAttemptAllowanceExternalWaits(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		attempt store.WorkAttempt
+		want    int
+	}{
+		{name: "three question endings", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalSuccess, Phase: "waiting", StatusMessage: "waiting for a human reply on the original issue"}},
+		{name: "three conflicted sessions", attempt: store.WorkAttempt{WorkerMetadataJSON: `{"dispatch_loop_start":{"allowance_external_wait":true}}`}},
+		{name: "three failed sessions", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: "runner_error"}, want: 3},
+		{name: "unrelated wait still counts", attempt: store.WorkAttempt{Phase: "waiting", StatusMessage: "waiting for tests"}, want: 3},
+		{name: "failed question session counts", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, Phase: "waiting", StatusMessage: "waiting for a human reply on the original issue"}, want: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			attempts := make([]store.WorkAttempt, 3)
+			for i := range attempts {
+				attempts[i] = tt.attempt
+				attempts[i].WorkerType = "agent"
+				attempts[i].ID = int64(i + 1)
+			}
+			got := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{})
+			if got.Sessions != tt.want || got.exhausted() != (tt.want == 3) {
+				t.Fatalf("sessions=%d exhausted=%v", got.Sessions, got.exhausted())
+			}
+		})
+	}
+}
+
+func TestAttemptAllowanceExternalEvidencePersistence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		issue    connector.Issue
+		excluded bool
+	}{
+		{name: "conflicted PR", issue: connector.Issue{PullRequest: &connector.PullRequest{MergeableState: "dirty"}}, excluded: true},
+		{name: "human blocker", issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerHuman, Reason: "check hardware"}}}}, excluded: true},
+		{name: "orchestrator blocker", issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerOrchestrator, Reason: "dependency"}}}}},
+		{name: "resolved human blocker", issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusComplete, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerHuman, Reason: "check hardware"}}}}},
+		{name: "clean PR", issue: connector.Issue{PullRequest: &connector.PullRequest{MergeableState: "clean"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			start := newDispatchLoopStartRecord(tt.issue, runpkg.RunModeImplement)
+			// Provider progress and completion refresh must not erase dispatch evidence.
+			running := Running{Mode: runpkg.RunModeImplement, DispatchLoopStart: start}
+			running.DispatchLoopStart = dispatchLoopStartRecordFromSnapshot(running, runpkg.DispatchLoopStartSnapshot{})
+			for _, metadata := range []string{
+				marshalWorkAttemptJSON(map[string]any{dispatchLoopStartMetadataKey: start}),
+				runningWorkAttemptMetadataJSON(running, nil),
+				runningWorkAttemptMetadataJSON(Running{Mode: runpkg.RunModeImplement, Issue: tt.issue}, nil),
+			} {
+				got := countSessionsWithoutMerge([]store.WorkAttempt{{WorkerType: "agent", WorkerMetadataJSON: metadata}}, time.Time{}, time.Time{})
+				if (got.Sessions == 0) != tt.excluded {
+					t.Fatalf("sessions=%d metadata=%s", got.Sessions, metadata)
+				}
+			}
+		})
+	}
+}
+
+func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
+	t.Parallel()
+	for _, human := range []bool{false, true} {
+		t.Run(fmt.Sprintf("human=%v", human), func(t *testing.T) {
+			now := time.Now().UTC()
+			issue := connector.Issue{ID: "external-wait", Identifier: "owner/repo#2789", State: "Rework"}
+			cfg := laneMutationTestConfig()
+			db, seed := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now.Add(-time.Hour))
+			if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: seed, CompletedAt: now.Add(-time.Hour), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: "service_restart"}); err != nil {
+				t.Fatal(err)
+			}
+			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: issue}}
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			state := newState(cfg)
+			blocked := issue
+			if human {
+				blocked.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Owner: workpad.BlockerOwnerHuman, Reason: "hardware check"}}}
+			} else {
+				blocked.PullRequest = &connector.PullRequest{MergeableState: "dirty"}
+			}
+			for i := range 3 {
+				at := now.Add(time.Duration(i) * time.Minute)
+				start := newDispatchLoopStartRecord(blocked, runpkg.RunModeImplement)
+				id, ok := orch.startDurableWorkAttempt(t.Context(), &state, blocked, i+1, at, "", runpkg.RunModeImplement, start)
+				if !ok {
+					t.Fatal("start failed")
+				}
+				got, err := orch.issueAttemptAllowance(t.Context(), issue)
+				if err != nil || got.Sessions != 0 {
+					t.Fatalf("active allowance=%+v err=%v", got, err)
+				}
+				// A refreshed clean issue must not erase the wait recorded at dispatch.
+				running := Running{Issue: issue, Mode: runpkg.RunModeImplement, WorkAttemptID: id, StartedAt: at, DispatchLoopStart: start}
+				if !orch.completeDurableWorkAttemptWithMetadata(t.Context(), &state, running, at.Add(time.Second), store.WorkAttemptTerminalSuccess, "", "", "completed", "", nil) {
+					t.Fatal("completion failed")
+				}
+			}
+			restarted := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			got, err := restarted.issueAttemptAllowance(t.Context(), issue)
+			if err != nil || got.Sessions != 0 || got.exhausted() {
+				t.Fatalf("restart allowance=%+v err=%v", got, err)
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("exclusion wrote lane: %+v", tracker.updates)
 			}
 		})
 	}

@@ -1091,6 +1091,9 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 		"issue_title":         strings.TrimSpace(running.Issue.Title),
 		"work_product_pushed": running.WorkProductPushed,
 	}
+	if allowanceExternalWait(running.Issue) {
+		out["allowance_external_wait"] = true
+	}
 	if running.ForgeWriteCompleted && strings.TrimSpace(running.ForgeProbeHost) != "" {
 		out["forge_write_completed_host"] = forgeavailability.NormalizeHost(running.ForgeProbeHost)
 	}
