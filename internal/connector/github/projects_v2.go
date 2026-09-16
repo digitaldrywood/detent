@@ -350,6 +350,18 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	limit int,
 	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
+	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil)
+}
+
+func (c *Connector) scanProjectItems(
+	ctx context.Context,
+	queryDocument string,
+	queryType string,
+	keepIssue func(connector.Issue) bool,
+	limit int,
+	repairBlankStatuses bool,
+	observePage func([]projectItemNode),
+) (connector.IssueStateScan, error) {
 	scanRevision := c.projectCache.Revision(c.projectID)
 	cacheProjectFields := queryDocument == projectItemsWithFieldsQuery
 	var after *string
@@ -372,10 +384,22 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 			"first":     projectItemsPageSize,
 			"after":     after,
 		}, &response); err != nil {
-			return connector.IssueStateScan{}, fmt.Errorf("fetch github project items: %w", err)
+			if queryDocument != candidateProjectItemsQuery {
+				return connector.IssueStateScan{}, fmt.Errorf("fetch github project items: %w", err)
+			}
+			// Older schemas still provide board membership; shared hydration
+			// falls back to REST when scheduler evidence is unavailable.
+			if fallbackErr := c.client.GraphQLWithType(ctx, queryType, observedStatusProjectItemsQuery, map[string]any{
+				"projectId": c.projectID, "first": projectItemsPageSize, "after": after,
+			}, &response); fallbackErr != nil {
+				return connector.IssueStateScan{}, fmt.Errorf("fetch github project items: %w", errors.Join(err, fallbackErr))
+			}
 		}
 		if response.Node == nil {
 			return connector.IssueStateScan{}, ErrProjectNotFound
+		}
+		if observePage != nil {
+			observePage(response.Node.Items.Nodes)
 		}
 		scan.ItemsFetched += len(response.Node.Items.Nodes)
 		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
