@@ -587,10 +587,17 @@ reason code, gate, or recovery mechanism is introduced.
 
 ProjectV2 combined refresh (#2818) reuses the candidate page/item cursor contract
 inside the existing board scanner. Failed pages retain the private accumulator;
-only a completed enumeration publishes a snapshot. Thin board metadata supplies
-lane diagnostics, while selected nonterminal lanes receive batched scheduler
-and authoritative PR evidence. No retry loop, timer, configuration, or lane writer
+only a completed enumeration publishes a snapshot. Retained progress is verified
+against the project update timestamp, item count, and local cache revision before
+resuming; changes during enumeration discard the private scan. Thin board metadata
+and scalar bodies supply lane diagnostics and avoid REST body fanout. Requested
+candidates and configured active/observed states receive batched scheduler and
+authoritative PR evidence, excluding configured terminal states. No retry loop, timer, configuration, or lane writer
 is added. `TestRefreshBoardResumesFailedPage` covers page failure and cancellation;
+`TestRefreshBoardChangedBetweenAttempts` covers shifted pages, count changes, and
+missing revisions. `TestRefreshConfiguredSchedulerStates` covers custom state
+sets, and `TestRefreshThinBodyFallback` checks 152 candidates under GraphQL
+backoff against the existing REST cap, without publishing partial results.
 `TestProjectRefreshHourlyWorkload` checks the large-board request and point budget
 using measured GraphQL response costs.
 

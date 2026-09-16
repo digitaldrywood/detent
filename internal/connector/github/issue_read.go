@@ -527,12 +527,14 @@ func (c *Connector) fetchProjectRefreshIssues(
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
 	wantedStates := normalizedStateSet(allStates)
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
-	schedulerStates := normalizedStateSet(candidateStates)
-	for _, state := range observedStates {
-		if stateInList(state, c.terminalStates) || normalizeStateName(state) == normalizeStateName("Backlog") || normalizeStateName(state) == normalizeStateName("Done") || normalizeStateName(state) == normalizeStateName("Cancelled") {
+	schedulerStates := make(map[string]struct{})
+	for _, state := range allStates {
+		if stateInList(state, c.terminalStates) {
 			continue
 		}
-		schedulerStates[normalizeStateName(state)] = struct{}{}
+		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, c.observedStates) {
+			schedulerStates[normalizeStateName(state)] = struct{}{}
+		}
 	}
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
@@ -577,20 +579,9 @@ func (c *Connector) fetchProjectRefreshIssues(
 				return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
 			}
 		} else {
-			ref, ok := issueRefFromIdentifier(issue.Identifier)
-			if !ok {
-				return connector.RefreshIssueResult{CandidateError: ErrInvalidResponse}
-			}
-			node, fetchErr := c.fetchRESTIssue(ctx, ref)
-			if fetchErr != nil {
-				return connector.RefreshIssueResult{CandidateError: fetchErr, StatusError: fetchErr}
-			}
-			issue.Description = node.Body
-			issue.UpdatedAt = parseGitHubTime(node.UpdatedAt)
-			issue.ModelOverride = parseModelOverride(node.Body)
-			issue.CommentCount = node.Comments.TotalCount
-			issue.WorkpadSignal = parseWorkpadSignal(node)
-			issue.BlockerReason = parseBlockerReason(node)
+			// Scalar bodies and comment counts come from the board page even
+			// when scheduler GraphQL is unavailable. Reuse the bounded legacy
+			// comment/dependency fallback without per-issue body GETs.
 			fallback = append(fallback, issue)
 			fallbackIndexes = append(fallbackIndexes, i)
 		}
@@ -605,8 +596,8 @@ func (c *Connector) fetchProjectRefreshIssues(
 	for i, index := range fallbackIndexes {
 		issues[index] = fallback[i]
 	}
-	// Thin board entries can supply lane state, but cannot overwrite native
-	// human-prerequisite evidence with their intentionally absent bodies.
+	// Thin board entries supply lane state, but only selected entries carry
+	// authoritative scheduler evidence for native human prerequisites.
 	selected := make([]connector.Issue, 0, len(nodes))
 	var selectedIndexes []int
 	board := make(map[string]connector.Issue, len(issues))
