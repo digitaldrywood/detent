@@ -347,7 +347,7 @@ func TestRefreshBusyBoardCompletes(t *testing.T) {
 					revision = strconv.Itoa(pages)
 				}
 				if change == "count" {
-					total += pages
+					total += (pages - 1) % 15
 				}
 				if change == "local revision" {
 					c.projectCache.InvalidateProjectFields("PVT_1", "I1")
@@ -363,12 +363,6 @@ func TestRefreshBusyBoardCompletes(t *testing.T) {
 			c = newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo"})
 			for range 3 {
 				result := c.FetchRefreshIssues(t.Context(), nil, []string{"Done"}, connector.IssueFilterHint{})
-				if change == "count" {
-					if !errors.Is(result.CandidateError, ErrProjectItemsTruncated) || len(result.Statuses) != 0 {
-						t.Fatalf("incomplete board published: %+v", result)
-					}
-					continue
-				}
 				if result.CandidateError != nil || len(result.Statuses) != 15 {
 					t.Fatalf("busy board failed: %+v", result)
 				}

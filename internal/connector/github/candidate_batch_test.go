@@ -232,8 +232,6 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 			}
 			wantGraphQL := 2
 			if mode == "refresh" {
-				// Both candidate and fresh observed reads now include Backlog PR evidence.
-				wantREST = 2
 				wantGraphQL = 3
 			}
 			if graphql != wantGraphQL || rest != wantREST {

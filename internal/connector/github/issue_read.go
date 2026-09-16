@@ -676,7 +676,7 @@ func (c *Connector) hydrateRefreshPullRequests(ctx context.Context, issues []con
 	if candidates {
 		err = c.attachPullRequests(ctx, fallback)
 	} else {
-		err = c.attachFreshPullRequests(ctx, fallback)
+		err = c.attachStatePullRequests(ctx, fallback, false)
 	}
 	if err != nil {
 		return err
