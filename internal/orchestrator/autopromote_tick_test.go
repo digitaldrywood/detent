@@ -385,6 +385,94 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteHumanReviewIssuesConflictParks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		reason    string
+		protected bool
+	}{
+		{"operator_move", true},
+		{"attempt_allowance_exhausted", true},
+		{"completed", false},
+	} {
+		t.Run(tt.reason, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			now := time.Date(2026, 9, 16, 15, 49, 5, 0, time.UTC)
+			issue := autoPromoteTickIssue("parked-conflict", nil, &connector.PullRequest{
+				Number: 49, URL: "https://github.test/digitaldrywood/detent/pull/49",
+				State: "OPEN", MergeableState: "dirty", CIStatus: "success",
+			})
+			cfg := normalizeConfig(Config{
+				PollInterval: time.Minute, MaxConcurrentAgents: 1,
+				AutoPromote:    AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff}},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			path := filepath.Join(t.TempDir(), "history.db")
+			open := func() store.Store {
+				t.Helper()
+				db, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return db
+			}
+			db := open()
+			defer func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			if _, err := db.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+				ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID, Identifier: issue.Identifier,
+				PhaseType: store.WorkflowPhaseTypeLane, PhaseName: issue.State, Status: "entered",
+				Reason: tt.reason, StartedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			for restart := range 2 {
+				if restart == 1 {
+					if err := db.Close(); err != nil {
+						t.Fatal(err)
+					}
+					db = open()
+				}
+				orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: db, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				state := newState(cfg)
+				for tick := range 3 {
+					orch.tick(ctx, &state, now.Add(time.Duration(5+restart*3+tick)*time.Minute))
+					if tt.protected {
+						if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+							t.Fatalf("restart %d tick %d: updates = %#v, comments = %#v; want untouched park", restart, tick, tracker.updates, tracker.comments)
+						}
+						if len(state.Running) != 0 || len(state.Claimed) != 0 {
+							t.Fatalf("park dispatched: running=%v claimed=%v", state.Running, state.Claimed)
+						}
+					} else {
+						if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" || len(tracker.comments) != 1 {
+							t.Fatalf("ordinary conflict routing: updates=%#v comments=%#v", tracker.updates, tracker.comments)
+						}
+						return
+					}
+				}
+			}
+			// A protected lane entry must not prevent a subsequently ready head promoting.
+			tracker.stateIssues[0].PullRequest.MergeableState = "clean"
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: db, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			// Keep the merge worker slot occupied; only the lane transition is under test.
+			slot := dispatchTestIssue("merge-slot", "Merging")
+			state.Running[slot.ID] = Running{Issue: slot}
+			orch.tick(ctx, &state, now.Add(20*time.Minute))
+			if len(tracker.updates) != 1 || tracker.updates[0].state != "Merging" {
+				t.Fatalf("ready park updates = %#v, want Merging", tracker.updates)
+			}
+		})
+	}
+}
+
 func TestApplyAutoPromoteDecisionArtifactReworkTicks(t *testing.T) {
 	t.Parallel()
 
