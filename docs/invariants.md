@@ -156,6 +156,14 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Question closure resolution (#2793) uses the existing transition refresh and
+answer columns. Durable unanswered issue IDs join that refresh so questions
+left behind across restart resolve when the tracker reports closure or a terminal
+lane. No separate reconciliation loop is introduced. Closure markers never become
+authorized human replies; reopening requires a new question key.
+`TestRefreshResolvesTerminalHumanQuestions` covers terminal states, reopening,
+tracker failure, and the distinction between closure and human authorization.
+
 Human-owned Workpad blockers route through the existing completion Blocked
 transition on the first report (#2779). The repeated-report threshold is removed:
 live blocker evaluation already suppresses the next dispatch, so a second

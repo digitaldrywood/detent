@@ -641,3 +641,42 @@ func TestOperationsQuestionAgeOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestOperationsClosureResolvedQuestions(t *testing.T) {
+	t.Parallel()
+	for _, resolved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "open", true: "resolved"}[resolved], func(t *testing.T) {
+			t.Parallel()
+			deps := testDeps(t)
+			db := openWebTestStore(t)
+			deps.Store = db
+			questions := db.(store.HumanQuestionStore)
+			q := store.HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "target", Body: "Which target?", QuestionCommentID: "123"}
+			if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if resolved {
+				if err := questions.ResolveHumanQuestionsByClosure(t.Context(), q.ProjectID, q.IssueID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), q.Body) == resolved {
+				t.Fatalf("resolved=%v body=%s", resolved, rec.Body.String())
+			}
+		})
+	}
+}
