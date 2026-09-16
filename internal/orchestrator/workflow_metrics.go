@@ -184,7 +184,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	}
 	if normalizeState(targetState) != normalizeState("Merging") {
 		if err := o.withdrawNativeMergeQueueEntry(ctx, state, issue); err != nil {
-			return err
+			o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
 		}
 		issue = cloneIssue(issue)
 		if issue.PullRequest != nil {

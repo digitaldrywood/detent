@@ -66,18 +66,26 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			continue
 		}
 		head := strings.TrimSpace(candidate.PullRequest.HeadSHA)
+		cachedEntry, entryCached := state.nativeMergeQueueEntries[issueID]
+		cacheFresh := entryCached && now.Sub(cachedEntry.CheckedAt) < nativeMergeQueueEntryRefresh && cachedEntry.HeadSHA == head
+		if cacheFresh && len(candidate.PullRequest.UnresolvedReviewThreads) == 0 {
+			applyNativeMergeQueueEntry(out, issueID, cachedEntry.Entry)
+			continue
+		}
+
 		var hydrated bool
 		candidate, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, candidate)
 		if !hydrated || candidate.PullRequest == nil || strings.TrimSpace(candidate.PullRequest.HeadSHA) != head {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			continue
 		}
-		if cached, ok := state.nativeMergeQueueEntries[issueID]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueEntryRefresh && cached.HeadSHA == strings.TrimSpace(candidate.PullRequest.HeadSHA) {
+
+		if cacheFresh {
 			if len(candidate.PullRequest.UnresolvedReviewThreads) > 0 {
 				o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
 				continue
 			}
-			applyNativeMergeQueueEntry(out, issueID, cached.Entry)
+			applyNativeMergeQueueEntry(out, issueID, cachedEntry.Entry)
 			continue
 		}
 
@@ -299,13 +307,13 @@ func nativeMergeQueueRepositoryKey(issue connector.Issue) string {
 	return mergeWorkerRepositoryKey(issue) + "@" + baseRef
 }
 
-// Withdrawal releases provider ownership before forgetting local ownership.
-// Missing cards are withdrawn as well: they are no longer merge candidates.
+// Withdrawal releases live provider ownership before forgetting local ownership.
+// Missing cards and PRs no longer provide a live entry to withdraw.
 func (o *Orchestrator) pruneNativeMergeQueueEntries(ctx context.Context, state *State, issues []connector.Issue) {
 	present := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
 		present[strings.TrimSpace(issue.ID)] = struct{}{}
-		if mergeWorkerIssue(issue) {
+		if mergeWorkerIssue(issue) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
 			continue
 		}
 		if err := o.withdrawNativeMergeQueueEntry(ctx, state, issue); err != nil {
@@ -344,16 +352,14 @@ func (o *Orchestrator) withdrawNativeMergeQueueEntry(ctx context.Context, state 
 	if entry == nil {
 		return nil
 	}
-	// A landed or closed PR no longer has a live provider entry.
-	if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) != "open" {
-		if state != nil {
-			delete(state.nativeMergeQueueEntries, strings.TrimSpace(issue.ID))
+	// Only a known open PR provides live ownership to withdraw. Missing cards
+	// and landed or closed PRs release the local snapshot without a mutation.
+	if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
+		if err := queue.DequeuePullRequest(ctx, *entry); err != nil {
+			return fmt.Errorf("withdraw native merge queue entry: %w", err)
 		}
-		return nil
 	}
-	if err := queue.DequeuePullRequest(ctx, *entry); err != nil {
-		return fmt.Errorf("withdraw native merge queue entry: %w", err)
-	}
+
 	if state != nil {
 		delete(state.nativeMergeQueueEntries, strings.TrimSpace(issue.ID))
 		clearNativeMergeQueueEntry(state.Pipeline, issue.ID)

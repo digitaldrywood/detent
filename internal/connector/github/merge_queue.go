@@ -291,7 +291,8 @@ func (c *Connector) DequeuePullRequest(ctx context.Context, entry connector.Pull
 		return fmt.Errorf("dequeue github pull request: %w", err)
 	}
 	if response.DequeuePullRequest == nil || response.DequeuePullRequest.MergeQueueEntry == nil {
-		return errors.New("dequeue github pull request: github returned no merge queue entry")
+		// GitHub may already have consumed the entry by merging or removing it.
+		return nil
 	}
 	dequeuedID := strings.TrimSpace(response.DequeuePullRequest.MergeQueueEntry.ID)
 	if dequeuedID != entryID {
