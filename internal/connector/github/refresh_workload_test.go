@@ -208,7 +208,8 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 }
 
 // Costs measured against the Detent ProjectV2 board on 2026-09-16 using
-// data.rateLimit.cost: thin page(first:100)=2; scheduler aliases=22 for 100
+// data.rateLimit.cost: thin page(first:100), including scalar bodies and the
+// project updatedAt revision, costs 2; scheduler aliases=22 for 100
 // issues, 11 for 52, and 1 for 3. These are response fixtures, not header deltas.
 func testLargeProjectRefreshHourlyWorkload(t *testing.T) {
 	const total, candidates, refreshes = 1500, 152, 4
