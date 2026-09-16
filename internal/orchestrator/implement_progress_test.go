@@ -256,6 +256,30 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:       true,
 		},
 		{
+			name:               "already merged completion needs no prior authorization",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         string(AutoPromoteReasonOperationalCompletion),
+			wantProgressKinds:  []string{"operational_completion"},
+			wantCompletionKind: workpad.CompletionOperational,
+			wantReview:         true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: mergedCompletionWorkpadBody(),
+		},
+		{
+			name:               "incomplete merged evidence cannot bypass authorization",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "completed_clean_diff_without_pull_request",
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: strings.Replace(mergedCompletionWorkpadBody(), "completion_ancestry: verified", "completion_ancestry: unknown", 1),
+		},
+		{
 			name: "preauthorized operational completion is deliverable progress",
 			runningIssue: func() connector.Issue {
 				issue := implementProgressIssueWithoutPR()

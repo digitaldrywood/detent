@@ -659,3 +659,26 @@ func TestSymbolicBlockerPreservesSchemaErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestMergedCompletionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, missing := range []string{"", FieldCompletionEvidence, "completion_merged_pr", "completion_merge_commit", "completion_branch", "completion_branch_head", "completion_ancestry"} {
+		t.Run("missing_"+missing, func(t *testing.T) {
+			t.Parallel()
+			signal := &Signal{Source: SourceStructured, Status: StatusComplete, Fields: map[string]string{
+				FieldCompletionKind: CompletionOperational, FieldCompletionEvidence: "Acceptance regression passed; merge-base exited 0.",
+				"completion_merged_pr": "https://github.com/example/repo/pull/12", "completion_merge_commit": "abc", "completion_branch": "origin/main", "completion_branch_head": "def", "completion_ancestry": "verified",
+			}}
+			if missing != "" {
+				signal.Fields[missing] = " "
+			}
+			if got := MergedCompletionEvidence(signal); got != (missing == "") {
+				t.Fatalf("accepted = %v", got)
+			}
+			signal.Fields["completion_ancestry"] = "failed"
+			if MergedCompletionEvidence(signal) {
+				t.Fatal("accepted failed ancestry")
+			}
+		})
+	}
+}

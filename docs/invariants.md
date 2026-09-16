@@ -465,6 +465,12 @@ duration expiry, token usage, and configuration changes during triage.
 This is the issue-authorized replacement reason and consolidation, not an
 additional breaker, configuration key, or recovery loop. Non-PR artifact and
 explicit operational completion workflows retain their own deliverable rules.
+Already-merged completion no longer requires pre-dispatch authorization (#2778):
+the worker records the merging PR, commit, tracked branch/head, successful ancestry
+check, and acceptance evidence. Existing operational completion and current-attempt
+checks persist and publish this evidence before Done; incomplete evidence retains
+the PR gate. `TestMergedCompletionEvidence` and
+`TestTransitionAlreadyMergedCompletion` cover this consolidation.
 `TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
 `TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
 `TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
