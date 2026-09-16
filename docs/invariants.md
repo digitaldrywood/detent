@@ -417,7 +417,19 @@ observation precedes dispatch in the same tick; merge boundaries remain exclusiv
 new PR heads, CI signatures, ordinary lane changes, and acknowledgements alone
 do not reset it. The existing triage comment receives a timestamped reset line
 when comment updates are supported; publication failure does not undo the move. Instance-attributed startup, transport, workspace and restart failures
-are excluded. Immutable PR merge times and merge observations in the durable lane timeline
+are excluded. Question-ending successful waits and sessions with a conflicted PR
+or a live structured human blocker are also excluded (#2789). The existing
+start record retains external-wait evidence through completion and restart;
+completion metadata can also record a wait observed at completion. This narrows
+the existing allowance rather than adding another brake or recovery path.
+Exclusions never synthesize operator moves or reset other chargeable sessions.
+Historical question receipts remain recognizable; pre-change conflict receipts
+without recorded conflict evidence cannot be retroactively classified from the
+PR's current state. `TestAttemptAllowanceExternalWaits`,
+`TestAttemptAllowanceExternalEvidencePersistence`,
+`TestAttemptAllowanceExternalWaitRestart`, and
+`TestAttemptAllowanceDispatchAndRestart` cover exclusions and unchanged failure
+exhaustion. Immutable PR merge times and merge observations in the durable lane timeline
 reset prior work; subsequent activity on a merged PR is not a reset.
 
 The fourth code dispatch becomes one read-only triage turn using the existing

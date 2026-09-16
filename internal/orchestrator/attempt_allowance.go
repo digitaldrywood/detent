@@ -27,8 +27,9 @@ type attemptAllowance struct {
 
 func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
 
-// Unlike progress accounting, every started code/rework attempt consumes the same
-// issue allowance. The window starts at the last merge or operator lane move;
+// Started code/rework attempts consume the issue allowance unless they were
+// infrastructure failures or could not merge because of an external wait.
+// The window starts at the last merge or operator lane move;
 // ordinary head, Detent lane, and diff changes do not replenish it.
 func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
 	var result attemptAllowance
@@ -56,10 +57,35 @@ func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt t
 		default:
 			continue
 		}
+		if allowanceExternalWaitAttempt(attempt) {
+			continue
+		}
 		result.Sessions++
 		result.Attempts = append(result.Attempts, attempt)
 	}
 	return result
+}
+
+// Keep historical question receipts readable without interpreting arbitrary wait phases.
+func allowanceExternalWaitAttempt(attempt store.WorkAttempt) bool {
+	if attempt.TerminalState == store.WorkAttemptTerminalSuccess && attempt.Phase == "waiting" &&
+		attempt.StatusMessage == "waiting for a human reply on the original issue" {
+		return true
+	}
+	var metadata struct {
+		Start        dispatchLoopStartRecord `json:"dispatch_loop_start"`
+		ExternalWait bool                    `json:"allowance_external_wait"`
+	}
+	return json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil &&
+		(metadata.Start.AllowanceExternalWait || metadata.ExternalWait)
+}
+
+func allowanceExternalWait(issue connector.Issue) bool {
+	if issue.PullRequest != nil && strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "dirty") {
+		return true
+	}
+	_, humanAction := implementProgressBlockedHumanAction(issue)
+	return humanAction != ""
 }
 
 func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {

@@ -382,7 +382,7 @@ func TestHumanQuestionWaitCompletesAttemptWithoutCompletingIssue(t *testing.T) {
 			o := newWorkAttemptRecoveryOrchestrator(t, db, nil)
 			issue := recoveryTestIssue()
 			issue.State = "Rework"
-			issue.PullRequest = &connector.PullRequest{HeadSHA: "head", MergeableState: "dirty"}
+			issue.PullRequest = &connector.PullRequest{HeadSHA: "head", MergeableState: "clean"}
 			now := time.Now()
 			attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now)
 			if tt.question {
@@ -416,6 +416,9 @@ func TestHumanQuestionWaitCompletesAttemptWithoutCompletingIssue(t *testing.T) {
 			}
 			if tt.waiting && (receipt.TerminalState != store.WorkAttemptTerminalSuccess || receipt.Phase != "waiting") {
 				t.Fatalf("waiting receipt = %+v", receipt)
+			}
+			if tt.waiting && !allowanceExternalWaitAttempt(receipt) {
+				t.Fatalf("question receipt consumes allowance: %+v", receipt)
 			}
 			if !tt.waiting && receipt.Status != store.WorkAttemptStatusActive {
 				t.Fatalf("ordinary completion intercepted: %+v", receipt)
