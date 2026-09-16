@@ -174,7 +174,15 @@ query DetentGitHubObservedStatusProjectItems(
 var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery,
 	"              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }\n", "", 1)
 
-var thinRefreshProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery, "              body\n", "", 1)
+// Body is a scalar: retaining it does not add priced connections and avoids
+// unbounded REST body fetches when enriched GraphQL is unavailable.
+var thinRefreshProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery,
+	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt", 1)
+
+const refreshProjectRevisionQuery = `query DetentGitHubRefreshProjectRevision($projectId: ID!) {
+  node(id: $projectId) { ... on ProjectV2 { updatedAt items(first: 0) { totalCount } } }
+  rateLimit { cost remaining }
+}`
 
 const statusFieldQuery = `
 query DetentGitHubStatusField($projectId: ID!) {
@@ -394,6 +402,7 @@ type projectItemsScanProgress struct {
 	position      candidateCursor
 	scan          connector.IssueStateScan
 	revision      uint64
+	updatedAt     string
 	fields        map[string]projectItemFields
 	blankStatuses []string
 }
@@ -409,6 +418,23 @@ func (c *Connector) scanProjectItems(
 ) (connector.IssueStateScan, error) {
 	if progress == nil {
 		progress = &projectItemsScanProgress{}
+	}
+	if progress.scan.BoardCounts != nil && queryDocument == thinRefreshProjectItemsQuery {
+		var response struct {
+			Node *struct {
+				UpdatedAt string
+				Items     projectItemsConnection
+			}
+		}
+		if err := c.client.GraphQLWithType(ctx, queryType, refreshProjectRevisionQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
+			return connector.IssueStateScan{}, fmt.Errorf("verify github project scan revision: %w", err)
+		}
+		if response.Node == nil {
+			return connector.IssueStateScan{}, ErrProjectNotFound
+		}
+		if progress.updatedAt == "" || response.Node.UpdatedAt != progress.updatedAt || response.Node.Items.TotalCount != progress.scan.TotalItems || c.projectCache.Revision(c.projectID) != progress.revision {
+			*progress = projectItemsScanProgress{}
+		}
 	}
 	if progress.scan.BoardCounts == nil {
 		progress.revision = c.projectCache.Revision(c.projectID)
@@ -426,7 +452,8 @@ func (c *Connector) scanProjectItems(
 	for {
 		var response struct {
 			Node *struct {
-				Items projectItemsConnection `json:"items"`
+				UpdatedAt string                 `json:"updatedAt"`
+				Items     projectItemsConnection `json:"items"`
 			} `json:"node"`
 		}
 		var after *string
@@ -442,6 +469,13 @@ func (c *Connector) scanProjectItems(
 		}
 		if response.Node == nil {
 			return connector.IssueStateScan{}, ErrProjectNotFound
+		}
+		if queryDocument == thinRefreshProjectItemsQuery {
+			if scan.ItemsFetched > 0 && (response.Node.UpdatedAt != progress.updatedAt || response.Node.Items.TotalCount != scan.TotalItems || c.projectCache.Revision(c.projectID) != scanRevision) {
+				*progress = projectItemsScanProgress{}
+				return connector.IssueStateScan{}, fmt.Errorf("%w: project changed during scan", ErrProjectItemsTruncated)
+			}
+			progress.updatedAt = response.Node.UpdatedAt
 		}
 		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
 
