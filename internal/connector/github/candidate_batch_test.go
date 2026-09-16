@@ -139,9 +139,6 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 	for _, mode := range []string{"board", "labels", "refresh"} {
 		t.Run(mode, func(t *testing.T) {
 			lane := "Backlog"
-			if mode == "refresh" {
-				lane = "Todo"
-			}
 			var graphql, rest int
 			updated := "2026-09-15T01:02:03Z"
 			body := "Depends on: other/repo#7\n<!-- model: fixture-model -->"

@@ -510,7 +510,7 @@ func (c *Connector) FetchRefreshIssues(
 		return result
 	}
 
-	return c.fetchProjectRefreshIssues(ctx, candidateStates, observedStates)
+	return c.fetchProjectRefreshIssues(ctx, candidateStates, observedStates, hint.SchedulerStates)
 }
 
 func (c *Connector) CombinedRefreshEnabled() bool {
@@ -521,20 +521,21 @@ func (c *Connector) fetchProjectRefreshIssues(
 	ctx context.Context,
 	candidateStates []string,
 	observedStates []string,
+	routingStates []string,
 ) connector.RefreshIssueResult {
 	candidateStates = normalizeStateList(candidateStates, nil)
 	observedStates = normalizeStateList(observedStates, nil)
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
 	wantedStates := normalizedStateSet(allStates)
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
-	// Observed Backlog is metadata-only. Review and blocked routing still need
-	// PR, dependency, and Workpad evidence.
+	// Routing readers supply the observed lanes needing PR, dependency, and
+	// Workpad evidence. Other observed lanes remain metadata-only.
 	schedulerStates := make(map[string]struct{})
 	for _, state := range allStates {
-		if stateInList(state, c.terminalStates) || normalizeStateName(state) == normalizeStateName("Backlog") {
+		if stateInList(state, c.terminalStates) {
 			continue
 		}
-		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, []string{"Human Review", "Blocked"}) {
+		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, routingStates) {
 			schedulerStates[normalizeStateName(state)] = struct{}{}
 		}
 	}
@@ -639,7 +640,18 @@ func (c *Connector) fetchProjectRefreshIssues(
 	if len(result.Statuses) == 0 {
 		return result
 	}
-	result.StatusError = c.hydrateRefreshPullRequests(ctx, result.Statuses, evidence, false)
+	var routingStatuses []connector.Issue
+	var routingIndexes []int
+	for i, issue := range result.Statuses {
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; wanted {
+			routingStatuses = append(routingStatuses, issue)
+			routingIndexes = append(routingIndexes, i)
+		}
+	}
+	result.StatusError = c.hydrateRefreshPullRequests(ctx, routingStatuses, evidence, false)
+	for i, index := range routingIndexes {
+		result.Statuses[index] = routingStatuses[i]
+	}
 	return result
 }
 

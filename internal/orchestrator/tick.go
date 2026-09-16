@@ -520,7 +520,7 @@ func (o *Orchestrator) fetchTickIssues(
 	if canRefresh {
 		// Hub owns candidate claims; reuse the project read for observed lanes
 		// and diagnostics, including when no configured lane has active work.
-		result := fetcher.FetchRefreshIssues(ctx, nil, observedStates, o.authorizationFilterHint())
+		result := fetcher.FetchRefreshIssues(ctx, nil, observedStates, o.refreshFilterHint())
 		statusErr = result.CandidateError
 		if statusErr == nil {
 			state.LaneSignalCandidates = cloneIssues(result.LaneSignalCandidates)
@@ -561,7 +561,7 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 		ctx,
 		o.candidateFetchStatesForTick(state),
 		observedStates,
-		o.authorizationFilterHint(),
+		o.refreshFilterHint(),
 	)
 	if result.CandidateError != nil {
 		err := result.CandidateError

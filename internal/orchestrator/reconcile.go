@@ -14,12 +14,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func (o *Orchestrator) observedStatusFetchStates() []string {
+func (o *Orchestrator) schedulerObservedStates() []string {
 	states := append([]string{blockedStatusState}, autoPromoteFetchStates(o.cfg.AutoPromote)...)
 	if cfg := gate.EffectivePlan(o.cfg.Plan); cfg.Enabled {
 		states = append(states, cfg.Stop)
 	}
-	states = append(states, o.cfg.ObservedStates...)
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if cfg.Enabled {
 		states = append(states, cfg.SourceStates...)
@@ -34,6 +33,16 @@ func (o *Orchestrator) observedStatusFetchStates() []string {
 		states = append(states, blockerCfg.BlockerStates...)
 	}
 	return displayStateNames(states)
+}
+
+func (o *Orchestrator) observedStatusFetchStates() []string {
+	return displayStateNames(append(o.schedulerObservedStates(), o.cfg.ObservedStates...))
+}
+
+func (o *Orchestrator) refreshFilterHint() connector.IssueFilterHint {
+	hint := o.authorizationFilterHint()
+	hint.SchedulerStates = o.schedulerObservedStates()
+	return hint
 }
 
 func (o *Orchestrator) observedStatusFetchStatesForTick(_ *State) []string {

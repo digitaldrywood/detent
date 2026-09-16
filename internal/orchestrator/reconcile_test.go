@@ -1443,3 +1443,28 @@ func TestResidualCleanupProtectsFinalizingTerminalWorkers(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshHintRoutingStates(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		cfg   Config
+		state string
+		want  bool
+	}{
+		{"custom review", Config{AutoPromote: AutoPromoteConfig{SourceState: "Review"}}, "Review", true},
+		{"custom recovery", Config{BlockedRecovery: BlockedRecoveryConfig{Enabled: true, SourceStates: []string{"Waiting"}}}, "Waiting", true},
+		{"custom dependency", Config{DependencyAutoUnblock: DependencyAutoUnblockConfig{Enabled: true, SourceStates: []string{"Dependencies"}}}, "Dependencies", true},
+		{"observed only", Config{ObservedStates: []string{"Intake"}}, "Intake", false},
+		{"observed backlog", Config{ObservedStates: []string{"Backlog"}}, "Backlog", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := &Orchestrator{cfg: normalizeConfig(tt.cfg)}
+			if got := slices.ContainsFunc(o.refreshFilterHint().SchedulerStates, func(state string) bool { return normalizeState(state) == normalizeState(tt.state) }); got != tt.want {
+				t.Fatalf("routing state %q included=%t, want %t", tt.state, got, tt.want)
+			}
+			if !slices.ContainsFunc(o.observedStatusFetchStates(), func(state string) bool { return normalizeState(state) == normalizeState(tt.state) }) {
+				t.Fatalf("observed state %q omitted from refresh", tt.state)
+			}
+		})
+	}
+}

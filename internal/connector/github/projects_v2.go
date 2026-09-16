@@ -471,10 +471,16 @@ func (c *Connector) scanProjectItems(
 		}
 		// Keep the initial revision so a later resumed attempt detects changes.
 		// Changes during this enumeration do not prevent snapshot publication.
-		if queryDocument == thinRefreshProjectItemsQuery && scan.ItemsFetched == 0 {
-			progress.updatedAt = response.Node.UpdatedAt
+		if queryDocument == thinRefreshProjectItemsQuery {
+			if progress.position.After == "" {
+				progress.updatedAt = response.Node.UpdatedAt
+				// Compare against the first page: later growth must not restart
+				// an otherwise complete enumeration of a busy board.
+				scan.TotalItems = response.Node.Items.TotalCount
+			}
+		} else {
+			scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
 		}
-		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
 
 		for progress.position.Offset < len(response.Node.Items.Nodes) {
 			item := response.Node.Items.Nodes[progress.position.Offset]
@@ -506,12 +512,10 @@ func (c *Connector) scanProjectItems(
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
-			// A thin refresh completes at the final page, even if concurrent board
-			// edits changed totalCount. Other scanners retain their count contract.
-			if queryDocument != thinRefreshProjectItemsQuery {
-				if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
-					return connector.IssueStateScan{}, err
-				}
+			if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
+				blankStatusItemIDs = nil
+				*progress = projectItemsScanProgress{}
+				return connector.IssueStateScan{}, err
 			}
 			if cacheProjectFields {
 				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)

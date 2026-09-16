@@ -524,7 +524,7 @@ func testIndependentRefreshEvidence(t *testing.T, entry string) {
 					if entry == "refresh overlap" {
 						observed = candidates
 					}
-					refreshed := c.FetchRefreshIssues(t.Context(), candidates, observed, connector.IssueFilterHint{})
+					refreshed := c.FetchRefreshIssues(t.Context(), candidates, observed, connector.IssueFilterHint{SchedulerStates: observed})
 					if refreshed.StatusError != nil {
 						t.Fatal(refreshed.StatusError)
 					}

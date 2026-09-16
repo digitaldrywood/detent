@@ -90,10 +90,12 @@ type Connector interface {
 }
 
 type IssueFilterHint struct {
-	Authors      []string
-	Assignees    []string
-	LabelInclude []string
-	LabelExclude []string
+	// SchedulerStates names observed lanes whose routing readers require evidence.
+	SchedulerStates []string
+	Authors         []string
+	Assignees       []string
+	LabelInclude    []string
+	LabelExclude    []string
 }
 
 type CandidateIssuesFilterFetcher interface {
