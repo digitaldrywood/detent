@@ -1109,13 +1109,28 @@ func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		remove  bool
+		inherit bool
 		token   string
 		wantErr bool
 	}{
+		{name: "inherited global token", token: "test-global-token", inherit: true},
+		{name: "inherited global token missing config", token: "test-global-token", inherit: true, remove: true, wantErr: true},
 		{name: "disabled"}, {name: "configured", token: "test-worker-token"}, {name: "missing config", token: "test-worker-token", remove: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := workerGitHubPolicy{Token: tc.token, Principal: connector.IssueActor{Login: "worker"}}
+			if tc.inherit {
+				cfg := config.Default().WithRuntimeGitHubToken(tc.token)
+				var err error
+				policy, err = newWorkerGitHubPolicy(t.Context(), cfg, "example", "#2794", func(string) string { return "" }, nil, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !policy.Enabled || policy.Token != tc.token {
+					t.Fatal("inherited credential policy was disabled or unresolved")
+				}
+			}
+			policy.Principal = connector.IssueActor{Login: "worker"}
 			request := AgentTurnRequest{TempDir: t.TempDir(), workerGitHub: policy}
 			if err := configureWorkerGitHubEnvironment(&request); err != nil {
 				t.Fatal(err)

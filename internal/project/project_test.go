@@ -992,6 +992,9 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 		t.Fatalf("New() error = %v", err)
 	}
 	initial := receiveConnectorConfig(t, connectorConfigs)
+	if initial.Worker.GitHubToken != "global-token" {
+		t.Fatal("initial worker credential did not inherit runtime token")
+	}
 	if initial.Tracker.APIKey != "global-token" {
 		t.Fatalf("initial Tracker.APIKey = %q, want runtime token", initial.Tracker.APIKey)
 	}
@@ -1011,6 +1014,9 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 	waitForProjectLog(t, &logs, "workflow reloaded")
 
 	reloaded := receiveConnectorConfig(t, connectorConfigs)
+	if reloaded.Worker.GitHubToken != "global-token" {
+		t.Fatal("reloaded worker credential did not inherit runtime token")
+	}
 	if reloaded.Tracker.APIKey != "global-token" {
 		t.Fatalf("reloaded Tracker.APIKey = %q, want runtime token", reloaded.Tracker.APIKey)
 	}

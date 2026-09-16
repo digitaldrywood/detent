@@ -613,8 +613,8 @@
 #   ssh_hosts: []
 #   # worker.max_concurrent_agents_per_host | type: integer | default: none | required: No | validation: must be greater than 0
 #   max_concurrent_agents_per_host: null
-#   # worker.github_token | type: string | default: none | required: No | validation: None
-#   github_token: null
+#   # worker.github_token | type: string | default: top-level github_token | required: No | validation: None
+#   github_token: ""
 #   # worker.github_token_resolution_timeout_ms | type: integer | default: 15000 | required: No | validation: must be greater than 0
 #   github_token_resolution_timeout_ms: 15000
 #   # worker.github_rest_min_remaining_reserve | type: integer | default: 1250 | required: No | validation: must be greater than 0

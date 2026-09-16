@@ -3861,3 +3861,19 @@ func (w *Workspace) validateCacheKeys(node *yaml.Node, path string, visiting map
 	}
 	return nil
 }
+
+// WithRuntimeGitHubToken applies the resolved instance credential to GitHub
+// consumers. An explicit worker credential always takes precedence.
+func (c Config) WithRuntimeGitHubToken(token string) Config {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return c
+	}
+	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal || c.ScheduleOwnership.Enabled {
+		c.Tracker.APIKey = token
+	}
+	if strings.TrimSpace(c.Worker.GitHubToken) == "" {
+		c.Worker.GitHubToken = token
+	}
+	return c
+}

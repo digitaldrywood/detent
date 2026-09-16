@@ -1355,7 +1355,10 @@ func TestCheckDoctorWorkerGitHubCredential(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := workflowconfig.Config{Worker: workflowconfig.Worker{GitHubToken: tt.token}}
-			got, ok := checkDoctorWorkerGitHubCredential("detent", cfg)
+			got, ok := checkDoctorWorkerGitHubCredential(t.Context(), "detent", cfg, doctorDeps{
+				lookupEnv:   func(string) string { return "test-token" },
+				ghAuthToken: func(context.Context) (string, error) { return "test-token", nil },
+			})
 			if ok != tt.wantOK {
 				t.Fatalf("checkDoctorWorkerGitHubCredential() ok = %t, want %t: %#v", ok, tt.wantOK, got)
 			}
@@ -6899,4 +6902,42 @@ func doctorPortFromAddr(t *testing.T, addr net.Addr) int {
 		t.Fatalf("Atoi(%q) error = %v", portText, err)
 	}
 	return port
+}
+
+func TestDoctorWorkerGitHubCredentialResolution(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, override, resolved string
+		err                      error
+		wantFailure              bool
+	}{
+		{name: "inherits global"},
+		{name: "empty environment override", override: "$MISSING_WORKER_TOKEN", wantFailure: true},
+		{name: "configured environment override", override: "$WORKER_TOKEN", resolved: "worker-secret"},
+		{name: "empty gh override", override: "gh", wantFailure: true},
+		{name: "failed gh override", override: "gh", err: errors.New("secret-in-command-output"), wantFailure: true},
+		{name: "resolved gh override", override: "gh", resolved: "worker-secret"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Default()
+			cfg.Worker.GitHubToken = tc.override
+			cfg = doctorWorkflowConfigWithRuntimeGitHubToken(cfg, "global-secret")
+			check, ok := checkDoctorWorkerGitHubCredential(t.Context(), "example", cfg, doctorDeps{
+				lookupEnv:   func(string) string { return tc.resolved },
+				ghAuthToken: func(context.Context) (string, error) { return tc.resolved, tc.err },
+			})
+			if !ok || check.Status != doctorWarn {
+				t.Fatalf("check = %#v, present = %v", check, ok)
+			}
+			if got := strings.Contains(check.Detail, "could not resolve"); got != tc.wantFailure {
+				t.Fatalf("resolution failure = %v, want %v: %#v", got, tc.wantFailure, check)
+			}
+			for _, secret := range []string{"global-secret", "worker-secret", "secret-in-command-output"} {
+				if strings.Contains(check.Detail+check.Hint, secret) {
+					t.Fatal("doctor disclosed a secret")
+				}
+			}
+		})
+	}
 }

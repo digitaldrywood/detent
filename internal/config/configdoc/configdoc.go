@@ -385,6 +385,9 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 	if node.synthetic {
 		return optionDefault(node.path)
 	}
+	if node.path == "worker.github_token" {
+		return "top-level github_token", `""`
+	}
 	if node.path == "workspace.root" {
 		return "OS temporary directory + /detent_workspaces", "null"
 	}

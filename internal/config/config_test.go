@@ -4621,3 +4621,29 @@ func TestKanbanReworkToMerging(t *testing.T) {
 		})
 	}
 }
+
+func TestWithRuntimeGitHubToken(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, kind, global, override, want string }{
+		{name: "github default", kind: TrackerGitHub, global: " global-token ", want: "global-token"},
+		{name: "local tracker default", kind: TrackerMemory, global: "global-token", want: "global-token"},
+		{name: "literal override", kind: TrackerGitHub, global: "global-token", override: "worker-token", want: "worker-token"},
+		{name: "environment override", kind: TrackerGitHub, global: "global-token", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
+		{name: "gh override", kind: TrackerGitHub, global: "global-token", override: "gh", want: "gh"},
+		{name: "no credentials", kind: TrackerMemory},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Tracker.Kind = tc.kind
+			cfg.Worker.GitHubToken = tc.override
+			got := cfg.WithRuntimeGitHubToken(tc.global)
+			if got.Worker.GitHubToken != tc.want {
+				t.Fatal("worker credential source did not match expected default or override")
+			}
+			if cfg.Worker.GitHubToken != tc.override {
+				t.Fatal("mutated original config")
+			}
+		})
+	}
+}
