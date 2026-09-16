@@ -2138,11 +2138,7 @@ func projectRelativePath(base string, path string) string {
 }
 
 func workflowConfigWithGitHubToken(workflow workflowconfig.Config, token string) workflowconfig.Config {
-	token = strings.TrimSpace(token)
-	if token != "" && (workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal || workflow.ScheduleOwnership.Enabled) {
-		workflow.Tracker.APIKey = token
-	}
-	return workflow
+	return workflow.WithRuntimeGitHubToken(token)
 }
 
 func combineAuthorizationSelectors(selectors ...selector.Selector) selector.Selector {

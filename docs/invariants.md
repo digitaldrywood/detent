@@ -141,7 +141,12 @@ Worker GitHub CLI preflight (#2741) checks that `gh auth token` can read the
 selected credential from its private per-attempt `hosts.yml`. Failures reuse
 `WorkerGitHubBudgetMonitorError` and its existing instance attribution; no issue
 question or lane writer is added. `TestWorkerGitHubCLIAuthenticationPreflight`
-checks missing credentials and secret-free diagnostics, and
+checks missing credentials and secret-free diagnostics, including credentials
+inherited from the top-level `github_token` (#2794). Startup, reload, and doctor
+share the same worker default, preserving project overrides; doctor reports
+overrides that resolve empty as an instance credential problem.
+`TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation` and
+`TestDoctorWorkerGitHubCredentialResolution` cover these paths, and
 `TestWorkerGitHubCLIAuthStatus` verifies authentication with token environment
 variables absent against an isolated local HTTP fixture.
 

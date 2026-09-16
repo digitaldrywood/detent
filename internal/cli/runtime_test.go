@@ -488,7 +488,7 @@ func TestResolveRuntimeSettingsDoesNotRequireTokenForGitHubApp(t *testing.T) {
 	}
 }
 
-func TestResolveRuntimeSettingsSkipsConfigTokenWhenNoProjectNeedsRuntimeToken(t *testing.T) {
+func TestResolveRuntimeSettingsResolvesGlobalTokenForWorkers(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -522,7 +522,7 @@ func TestResolveRuntimeSettingsSkipsConfigTokenWhenNoProjectNeedsRuntimeToken(t 
 				lookupEnv: mapLookup(tt.env),
 				ghAuthToken: func(context.Context) (string, error) {
 					ghCalls++
-					return "", errors.New("gh should not be called")
+					return "global-worker-token", nil
 				},
 				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 					return workflowconfig.Workflow{Config: tt.workflow}, nil
@@ -531,14 +531,14 @@ func TestResolveRuntimeSettingsSkipsConfigTokenWhenNoProjectNeedsRuntimeToken(t 
 			if err != nil {
 				t.Fatalf("resolveRuntimeSettings() error = %v", err)
 			}
-			if ghCalls != 0 {
-				t.Fatalf("gh calls = %d, want 0", ghCalls)
+			if ghCalls != 1 {
+				t.Fatalf("gh calls = %d, want 1", ghCalls)
 			}
-			if got.GitHubToken.Required {
-				t.Fatalf("GitHubToken.Required = true, want false")
+			if !got.GitHubToken.Required {
+				t.Fatalf("GitHubToken.Required = false, want true")
 			}
-			if got.GitHubToken.Value != "" {
-				t.Fatalf("GitHubToken.Value = %q, want empty", got.GitHubToken.Value)
+			if got.GitHubToken.Value != "global-worker-token" {
+				t.Fatalf("GitHubToken.Value = %q, want global-worker-token", got.GitHubToken.Value)
 			}
 		})
 	}
@@ -948,5 +948,38 @@ func (c *controlledRuntimeCommandContext) cancel(err error) {
 func mapLookup(values map[string]string) func(string) string {
 	return func(key string) string {
 		return values[key]
+	}
+}
+
+func TestGlobalGitHubTokenDefaultsWorkerCredential(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, override, want string }{
+		{name: "global gh default", want: "resolved-global-token"},
+		{name: "project override", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+			cfg.Worker.GitHubToken = tc.override
+			calls := 0
+			token, _, err := resolveRuntimeGitHubToken(t.Context(), &globalconfig.Config{
+				GitHubToken: "gh", Projects: []globalconfig.Project{{ID: "example", Workflow: "WORKFLOW.md"}},
+			}, runtimeDeps{
+				lookupEnv:    func(string) string { return "" },
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) { return workflowconfig.Workflow{Config: cfg}, nil },
+				ghAuthToken:  func(context.Context) (string, error) { calls++; return " resolved-global-token\n", nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("gh auth token calls = %d, want 1", calls)
+			}
+			effective := doctorWorkflowConfigWithRuntimeGitHubToken(cfg, runtimeGlobalGitHubToken(token))
+			if effective.Worker.GitHubToken != tc.want {
+				t.Fatal("effective worker credential does not match expected source")
+			}
+		})
 	}
 }

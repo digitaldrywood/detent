@@ -412,7 +412,7 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, billingCheck)
 	}
 	setDoctorCurrentCheck("Project " + id + " worker GitHub credential")
-	if workerGitHubCheck, ok := checkDoctorWorkerGitHubCredential(id, workflow.Config); ok {
+	if workerGitHubCheck, ok := checkDoctorWorkerGitHubCredential(ctx, id, workflow.Config, deps); ok {
 		checks = append(checks, workerGitHubCheck)
 	}
 	checks = append(checks, checkDoctorCodexInstructions(id, workflow.Config, deps.lookupEnv)...)
@@ -1060,7 +1060,35 @@ func checkDoctorBillingMode(id string, cfg workflowconfig.Config, subscriptionAu
 	}, true
 }
 
-func checkDoctorWorkerGitHubCredential(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
+func checkDoctorWorkerGitHubCredential(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) (doctorCheck, bool) {
+	raw := strings.TrimSpace(cfg.Worker.GitHubToken)
+	if raw != "" {
+		var token string
+		var err error
+		if workflowconfig.IsGitHubTokenSentinel(raw) {
+			timeout := time.Duration(cfg.Worker.GitHubTokenResolutionTimeoutMS) * time.Millisecond
+			if timeout <= 0 {
+				timeout = 15 * time.Second
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, timeout)
+			token, err = deps.ghAuthToken(probeCtx)
+			if probeCtx.Err() != nil {
+				err = probeCtx.Err()
+			}
+			cancel()
+		} else {
+			token, _ = resolveRuntimeSecret(raw, deps.lookupEnv)
+		}
+		if err != nil || strings.TrimSpace(token) == "" {
+			return doctorCheck{
+				Name:   "Project " + id + " worker GitHub credential",
+				Status: doctorWarn,
+				Detail: "instance worker.github_token could not resolve a non-empty credential; isolated workers cannot authenticate with GitHub",
+				Hint:   "Restore the configured instance credential source, or remove the worker.github_token override to inherit the top-level github_token.",
+			}, true
+		}
+	}
+
 	warnings := validationWarningsWithPrefix(cfg.ValidationWarnings(), "worker.github_token:")
 	if len(warnings) == 0 {
 		return doctorCheck{}, false

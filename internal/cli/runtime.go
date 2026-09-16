@@ -316,10 +316,6 @@ func resolveRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, de
 	}
 
 	token, requiresRuntimeToken := trackerGitHubToken(ctx, cfg, deps)
-	if token.Value == "" && !requiresRuntimeToken {
-		return RuntimeSecret{Required: false}, nil, nil
-	}
-
 	if cfg != nil {
 		if configuredToken := strings.TrimSpace(cfg.GitHubToken); configuredToken != "" {
 			resolved, err := resolveConfiguredGitHubToken(ctx, configuredToken, deps)
