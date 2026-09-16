@@ -263,6 +263,12 @@ checks three unchanged passes and a later genuine return move. Failed observatio
 preserve the prior cached entry and provenance without falling back to stale
 runtime snapshots; the next refresh retries the board observation.
 
+Human Review conflict routing preserves durable `operator_move` and
+`attempt_allowance_exhausted` lane entries (#2814). This narrows the existing
+Rework route rather than introducing a park mechanism; ordinary arrivals still
+route conflicts to Rework, and ready PRs can still promote. Repeated ticks and
+reopened history are covered by `TestTickAutoPromoteHumanReviewIssuesConflictParks`.
+
 Allowance triage publication reuses the auto-promote gate against freshly hydrated
 PR checks and review threads before moving an exhausted issue (#2685). A ready
 head enters the configured promotion lane without publishing the historical
