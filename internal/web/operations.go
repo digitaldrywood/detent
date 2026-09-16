@@ -101,6 +101,13 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 			}
 		}
 
+		if !decisionSeen && !operationsStateIn(issue.State, s.operationsProjectHumanReviewPolicy(issue, snapshot.Project.ID).terminalStates) {
+			if evidence := issue.WorkpadHumanAction; evidence != nil && evidence.Status != "cleared" && strings.TrimSpace(evidence.Reason) != "" {
+				report.Decisions = append(report.Decisions, operations.Decision{Kind: "question", ProjectID: projectID, Issue: issue.Identifier, Title: issue.Title, Question: evidence.Reason, URL: issue.URL, AskedAt: evidence.RecordedAt})
+				operationsMarkDecisionSeen(seen, keys)
+				decisionSeen = true
+			}
+		}
 		if !decisionSeen {
 			if d, ok := operationsHumanDependencyDecision(snapshot, issue, currentIssues); ok {
 				report.Decisions = append(report.Decisions, d)
