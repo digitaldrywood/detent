@@ -63,6 +63,6 @@
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByID": "072e7213f3009b9d2bea4458af718434a8f7f9497b306490e51ad4d20b26c8fd",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadata": "f9e2541bd1a2f834b30a364e7b18be5d8901d437f63ee1c0778c3f6b30669cb6",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDStrictWithMetadata": "656ee6ae67664fb30ab795a18a9fd010758063d68944674b69c9c1b603f63b13",
-    "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadataMode": "52d5f9287fe7a97893f4d57ffe07663bfafd000c742dd7de06150d9aad08a9f7"
+    "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadataMode": "a78cdb1b12a4e5b54fb0e535c5a93b131570ba9a33737bafc741b401f93c0897"
   }
 }
