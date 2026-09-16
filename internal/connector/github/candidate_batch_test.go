@@ -16,6 +16,7 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 	for _, mode := range []string{"board", "labels", "board fallback", "labels fallback"} {
 		t.Run(mode, func(t *testing.T) {
 			var graphql, rest int
+			var points int64
 			for project := range 10 {
 				t.Run(strconv.Itoa(project), func(t *testing.T) {
 					repo := fmt.Sprintf("fixture/project%d", project)
@@ -30,13 +31,19 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 							if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 								t.Error(err)
 							}
+							if !strings.Contains(request.Query, "rateLimit {") || !strings.Contains(request.Query, "cost") {
+								t.Error("missing request cost")
+							}
+							if strings.Contains(request.Query, "closedByPullRequestsReferences(") || strings.Contains(request.Query, "labels(first: 100)") {
+								t.Error("expensive candidate preview")
+							}
 							enhanced := strings.Contains(request.Query, "blockedBy(")
 							if enhanced && strings.Contains(mode, "fallback") {
 								fmt.Fprint(w, `{"errors":[{"message":"Field 'blockedBy' doesn't exist on type 'Issue'"}]}`)
 								return
 							}
 							if strings.Contains(request.Query, "DetentGitHubCandidateHydration") {
-								data := make(map[string]any)
+								data := map[string]any{"rateLimit": map[string]any{"cost": 1, "remaining": 4999}}
 								for i := range 3 {
 									data[fmt.Sprintf("issue%d", i)] = map[string]any{"id": fmt.Sprintf("I%d", i+1), "body": "scheduler body", "comments": map[string]any{"totalCount": 1, "nodes": []map[string]any{{"id": "1", "body": "Historical note"}}}, "blockedBy": map[string]any{"nodes": []any{}}}
 								}
@@ -53,7 +60,13 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 							if enhanced {
 								body = strings.ReplaceAll(body, `"comments":{"totalCount":1}`, `"comments":{"totalCount":1,"nodes":[{"id":"1","body":"Historical note"}]},"blockedBy":{"nodes":[]}`)
 							}
-							fmt.Fprint(w, body)
+							// Measured on 2026-09-16: first:10 enriched board page
+							// costs 2; the scalar fallback page costs 1.
+							cost := 1
+							if enhanced {
+								cost = 2
+							}
+							fmt.Fprint(w, strings.Replace(body, `"data":{`, fmt.Sprintf(`"data":{"rateLimit":{"cost":%d,"remaining":4999},`, cost), 1))
 							return
 						}
 						rest++
@@ -85,6 +98,7 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 					if err != nil || len(got.Issues) != 3 || got.Truncated {
 						t.Fatalf("result=%+v error=%v", got, err)
 					}
+					points += c.client.FlushGraphQLRateLimitUsage().TotalCost
 					for _, issue := range got.Issues {
 						if issue.DependencySource != connector.BlockedRefSourceNative || len(issue.BlockedBy) != 0 || issue.Description != "scheduler body" || len(issue.Comments) != 1 {
 							t.Errorf("scheduler evidence=%+v", issue)
@@ -103,6 +117,16 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 				wantREST = 70
 			}
 
+			wantPoints := int64(10)
+			if mode == "board" {
+				wantPoints = 20
+			}
+			if mode == "labels fallback" {
+				wantPoints = 0
+			}
+			if points != wantPoints {
+				t.Errorf("GraphQL points=%d want=%d", points, wantPoints)
+			}
 			t.Logf("ten cold projects: GraphQL=%d REST=%d billable REST=%d", graphql, rest, rest)
 			if graphql != wantGraphQL || rest != wantREST {
 				t.Fatalf("want GraphQL=%d REST=%d", wantGraphQL, wantREST)
@@ -176,7 +200,7 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 			var result connector.CandidateResult
 			var err error
 			if mode == "refresh" {
-				refreshed := c.FetchRefreshIssues(t.Context(), nil, []string{"Backlog"}, connector.IssueFilterHint{})
+				refreshed := c.FetchRefreshIssues(t.Context(), []string{"Backlog"}, []string{"Backlog"}, connector.IssueFilterHint{})
 				result.Issues, err = refreshed.Statuses, refreshed.StatusError
 				if refreshed.CandidateError != nil {
 					t.Fatal(refreshed.CandidateError)
@@ -202,10 +226,14 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 				}
 			}
 			wantREST := 0
-			if mode == "labels" {
+			if mode == "labels" || mode == "refresh" {
 				wantREST = 1
 			}
-			if graphql != 2 || rest != wantREST {
+			wantGraphQL := 2
+			if mode == "refresh" {
+				wantGraphQL = 3
+			}
+			if graphql != wantGraphQL || rest != wantREST {
 				t.Errorf("GraphQL=%d REST=%d", graphql, rest)
 			}
 		})
@@ -219,6 +247,7 @@ func TestCandidateEvidenceFallback(t *testing.T) {
 		{"rate limited", `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`},
 		{"missing native relation", `{"data":{"issue0":{"id":"I1","comments":{"totalCount":0}}}}`},
 		{"null issue", `{"data":{"issue0":null}}`},
+		{"truncated blocker labels", `{"data":{"issue0":{"id":"I1","comments":{"totalCount":0},"blockedBy":{"nodes":[{"id":"B1","labels":{"pageInfo":{"hasNextPage":true,"endCursor":"L20"}}}]}}}}`},
 		{"missing cursor", `{"data":{"issue0":{"id":"I1","blockedBy":{"pageInfo":{"hasNextPage":true}}}}}`},
 		{"repeated cursor", `{"data":{"issue0":{"id":"I1","blockedBy":{"pageInfo":{"hasNextPage":true,"endCursor":"D1"}}}}}`},
 	} {

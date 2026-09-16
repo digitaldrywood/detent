@@ -170,6 +170,12 @@ query DetentGitHubObservedStatusProjectItems(
   rateLimit { limit used remaining cost resetAt }
 }`
 
+// Whole-board refresh needs identity and lane metadata, not scheduler connections.
+var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery,
+	"              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }\n", "", 1)
+
+var thinRefreshProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery, "              body\n", "", 1)
+
 const statusFieldQuery = `
 query DetentGitHubStatusField($projectId: ID!) {
   node(id: $projectId) {
@@ -360,7 +366,7 @@ func (c *Connector) queryProjectItemsPage(ctx context.Context, queryType, query 
 	if query != candidateProjectItemsQuery || !projectSchedulerFieldsUnavailable(err) {
 		return err
 	}
-	if fallbackErr := c.client.GraphQLWithType(ctx, queryType, observedStatusProjectItemsQuery, variables, out); fallbackErr != nil {
+	if fallbackErr := c.client.GraphQLWithType(ctx, queryType, schedulerProjectItemsQuery, variables, out); fallbackErr != nil {
 		return errors.Join(err, fallbackErr)
 	}
 	return nil
@@ -382,6 +388,16 @@ func projectSchedulerFieldsUnavailable(err error) bool {
 	return true
 }
 
+// An unfinished refresh uses the admission cursor contract and retains its
+// private accumulator. Callers publish only the completed snapshot.
+type projectItemsScanProgress struct {
+	position      candidateCursor
+	scan          connector.IssueStateScan
+	revision      uint64
+	fields        map[string]projectItemFields
+	blankStatuses []string
+}
+
 func (c *Connector) scanProjectItems(
 	ctx context.Context,
 	queryDocument string,
@@ -389,24 +405,33 @@ func (c *Connector) scanProjectItems(
 	keepIssue func(connector.Issue) bool,
 	limit int,
 	repairBlankStatuses bool,
-	observePage func([]projectItemNode),
+	progress *projectItemsScanProgress,
 ) (connector.IssueStateScan, error) {
-	scanRevision := c.projectCache.Revision(c.projectID)
-	cacheProjectFields := queryDocument == projectItemsWithFieldsQuery
-	var after *string
-	blankStatusItemIDs := []string{}
-	projectFieldsByIssue := map[string]projectItemFields{}
-	scan := connector.IssueStateScan{
-		Issues:           []connector.Issue{},
-		BoardCounts:      map[string]int{},
-		EnumeratedCounts: map[string]int{},
+	if progress == nil {
+		progress = &projectItemsScanProgress{}
 	}
+	if progress.scan.BoardCounts == nil {
+		progress.revision = c.projectCache.Revision(c.projectID)
+		progress.position = candidateCursor{Page: 1}
+		progress.fields = map[string]projectItemFields{}
+		progress.scan = connector.IssueStateScan{Issues: []connector.Issue{}, BoardCounts: map[string]int{}, EnumeratedCounts: map[string]int{}}
+	}
+	scanRevision := progress.revision
+	cacheProjectFields := queryDocument == projectItemsWithFieldsQuery
+	blankStatusItemIDs := progress.blankStatuses
+	projectFieldsByIssue := progress.fields
+	scan := &progress.scan
+	defer func() { progress.blankStatuses = blankStatusItemIDs }()
 
 	for {
 		var response struct {
 			Node *struct {
 				Items projectItemsConnection `json:"items"`
 			} `json:"node"`
+		}
+		var after *string
+		if progress.position.After != "" {
+			after = &progress.position.After
 		}
 		if err := c.queryProjectItemsPage(ctx, queryType, queryDocument, map[string]any{
 			"projectId": c.projectID,
@@ -418,19 +443,18 @@ func (c *Connector) scanProjectItems(
 		if response.Node == nil {
 			return connector.IssueStateScan{}, ErrProjectNotFound
 		}
-		if observePage != nil {
-			observePage(response.Node.Items.Nodes)
-		}
-		scan.ItemsFetched += len(response.Node.Items.Nodes)
 		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
 
-		for _, item := range response.Node.Items.Nodes {
-			if state, ok := c.projectItemBoardState(item); ok {
-				scan.BoardCounts[state]++
-			}
+		for progress.position.Offset < len(response.Node.Items.Nodes) {
+			item := response.Node.Items.Nodes[progress.position.Offset]
 			issue, cachedFields, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
 			if err != nil {
 				return connector.IssueStateScan{}, err
+			}
+			progress.position.Offset++
+			scan.ItemsFetched++
+			if state, ok := c.projectItemBoardState(item); ok {
+				scan.BoardCounts[state]++
 			}
 			if !ok {
 				continue
@@ -458,13 +482,13 @@ func (c *Connector) scanProjectItems(
 				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)
 			}
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return scan, nil
+			return *scan, nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
 		if cursor == "" {
 			return connector.IssueStateScan{}, ErrInvalidResponse
 		}
-		after = &cursor
+		progress.position.After, progress.position.Offset = cursor, 0
 	}
 }
 

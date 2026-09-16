@@ -527,39 +527,70 @@ func (c *Connector) fetchProjectRefreshIssues(
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
 	wantedStates := normalizedStateSet(allStates)
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
-	evidence := make(map[string]githubIssueNode)
-	scan, err := c.scanProjectItems(ctx, candidateProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
+	schedulerStates := normalizedStateSet(candidateStates)
+	for _, state := range observedStates {
+		if stateInList(state, c.terminalStates) || normalizeStateName(state) == normalizeStateName("Backlog") || normalizeStateName(state) == normalizeStateName("Done") || normalizeStateName(state) == normalizeStateName("Cancelled") {
+			continue
+		}
+		schedulerStates[normalizeStateName(state)] = struct{}{}
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
 		return true
-	}, 0, repairBlankStatuses, func(items []projectItemNode) {
-		nodes := make([]githubIssueNode, 0, len(items))
-		for _, item := range items {
-			state, ok := c.projectItemBoardState(item)
-			if !ok {
-				continue
-			}
-			node := *item.Content
-			if _, wanted := wantedStates[normalizeStateName(state)]; wanted {
-				node.CandidateState = state
-			}
-			nodes = append(nodes, node)
-		}
-		for id, node := range c.candidateEvidence(ctx, nodes, false) {
-			evidence[id] = node
-		}
-	})
+	}, 0, repairBlankStatuses, &c.refreshScan)
 	if err != nil {
 		return connector.RefreshIssueResult{CandidateError: err}
 	}
+	c.refreshScan = projectItemsScanProgress{}
 	issues := scan.Issues
+	evidence := make(map[string]githubIssueNode)
+	var nodes []githubIssueNode
+	for _, issue := range issues {
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted {
+			continue
+		}
+		ref, ok := issueRefFromIdentifier(issue.Identifier)
+		if !ok {
+			continue
+		}
+		node := githubIssueNode{ID: issue.ID, Number: ref.Number, Title: issue.Title, CandidateState: issue.State, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}}
+		for _, name := range issue.Labels {
+			node.Labels.Nodes = append(node.Labels.Nodes, label{Name: name})
+		}
+		nodes = append(nodes, node)
+	}
+	for start := 0; start < len(nodes); start += projectItemsPageSize {
+		for id, node := range c.candidateEvidence(ctx, nodes[start:min(start+projectItemsPageSize, len(nodes))], true) {
+			evidence[id] = node
+		}
+	}
 	var fallback []connector.Issue
 	var fallbackIndexes []int
 	for i, issue := range issues {
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted {
+			continue
+		}
 		if node, ok := evidence[issue.ID]; ok {
 			issues[i], err = c.applySchedulerEvidence(issue, node)
 			if err != nil {
 				return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
 			}
 		} else {
+			ref, ok := issueRefFromIdentifier(issue.Identifier)
+			if !ok {
+				return connector.RefreshIssueResult{CandidateError: ErrInvalidResponse}
+			}
+			node, fetchErr := c.fetchRESTIssue(ctx, ref)
+			if fetchErr != nil {
+				return connector.RefreshIssueResult{CandidateError: fetchErr, StatusError: fetchErr}
+			}
+			issue.Description = node.Body
+			issue.UpdatedAt = parseGitHubTime(node.UpdatedAt)
+			issue.ModelOverride = parseModelOverride(node.Body)
+			issue.CommentCount = node.Comments.TotalCount
+			issue.WorkpadSignal = parseWorkpadSignal(node)
+			issue.BlockerReason = parseBlockerReason(node)
 			fallback = append(fallback, issue)
 			fallbackIndexes = append(fallbackIndexes, i)
 		}
@@ -574,8 +605,32 @@ func (c *Connector) fetchProjectRefreshIssues(
 	for i, index := range fallbackIndexes {
 		issues[index] = fallback[i]
 	}
-	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+	// Thin board entries can supply lane state, but cannot overwrite native
+	// human-prerequisite evidence with their intentionally absent bodies.
+	selected := make([]connector.Issue, 0, len(nodes))
+	var selectedIndexes []int
+	board := make(map[string]connector.Issue, len(issues))
+	for i, issue := range issues {
+		board[normalizedIssueIdentifier(issue.Identifier)] = issue
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; wanted {
+			selected = append(selected, issue)
+			selectedIndexes = append(selectedIndexes, i)
+		}
+	}
+	if err := c.resolveBlockedByProjectState(ctx, selected); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	for i, issue := range selected {
+		for j := range issue.BlockedBy {
+			ref := &issue.BlockedBy[j]
+			if blocker, ok := board[normalizedIssueIdentifier(ref.Identifier)]; ok {
+				ref.State = blocker.State
+				if blocker.Closed && !stateInList(blocker.State, c.terminalStates) {
+					ref.State = c.closedIssueState()
+				}
+			}
+		}
+		issues[selectedIndexes[i]] = issue
 	}
 
 	result := connector.RefreshIssueResult{

@@ -11,11 +11,11 @@ import (
 const candidateCommentFields = `totalCount pageInfo { hasNextPage endCursor }
  nodes { id body url author { login } authorAssociation createdAt updatedAt }`
 const candidateDependencyFields = `pageInfo { hasNextPage endCursor }
- nodes { id number body state repository { nameWithOwner } labels(first: 100) { pageInfo { hasNextPage endCursor } nodes { name } } }`
+ nodes { id number body state repository { nameWithOwner } labels(first: 20) { pageInfo { hasNextPage endCursor } nodes { name } } }`
 const candidateSchedulerFields = `comments(first: 100) { ` + candidateCommentFields + ` }
  blockedBy(first: 20) { ` + candidateDependencyFields + ` }`
 
-var candidateProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery, "comments { totalCount }", candidateSchedulerFields, 1)
+var candidateProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery, "comments { totalCount }", candidateSchedulerFields, 1)
 
 // candidateEvidence is scoped to one source page. Only complete snapshots can
 // replace REST hydration; nil native connections are not authoritative empties.
@@ -58,7 +58,7 @@ func (c *Connector) candidateEvidence(ctx context.Context, nodes []githubIssueNo
 				variables[fmt.Sprintf("dependencies%d", i)] = node.BlockedBy.PageInfo.EndCursor
 			}
 		}
-		query.WriteString(") {")
+		query.WriteString(") { rateLimit { limit used cost remaining resetAt }")
 		for i, node := range pending {
 			fmt.Fprintf(&query, "issue%d: node(id: $id%d) { ... on Issue { id body updatedAt ", i, i)
 			// Fetch no nodes from a finished connection while its sibling advances.

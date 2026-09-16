@@ -133,10 +133,18 @@ func (f *fleetWorkloadHTTP) Do(r *http.Request) (*http.Response, error) {
 			data["node"] = map[string]any{"field": map[string]any{"id": "STATUS", "options": []any{map[string]string{"id": "todo", "name": "Todo"}, map[string]string{"id": "progress", "name": "In Progress"}}}}
 		case strings.Contains(req.Query, "DetentGitHubProjectItemForIssue"):
 			data["node"] = map[string]any{"projectItems": map[string]any{"nodes": []any{map[string]any{"id": "ITEM_1", "project": map[string]string{"id": "PVT_1"}, "statusValue": map[string]string{"name": f.lane}}}}}
+		case strings.Contains(req.Query, "DetentGitHubCandidateHydration"):
+			data["issue0"] = f.issue()
 		case strings.Contains(req.Query, "DetentGitHubProjectItems"), strings.Contains(req.Query, "DetentGitHubObservedStatusProjectItems"):
 			items := []any{}
 			if f.active {
-				items = append(items, map[string]any{"id": "ITEM_1", "content": f.issue(), "statusValue": map[string]string{"name": f.lane}})
+				issue := f.issue()
+				if !strings.Contains(req.Query, "blockedBy(") {
+					delete(issue, "blockedBy")
+					delete(issue, "body")
+					delete(issue, "closedByPullRequestsReferences")
+				}
+				items = append(items, map[string]any{"id": "ITEM_1", "content": issue, "statusValue": map[string]string{"name": f.lane}})
 			}
 			data["node"] = map[string]any{"items": map[string]any{"totalCount": len(items), "nodes": items}}
 		default:

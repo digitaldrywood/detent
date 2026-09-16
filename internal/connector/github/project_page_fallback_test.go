@@ -48,7 +48,10 @@ func TestProjectPageSchemaFallback(t *testing.T) {
 					}
 					wantQuery := candidateProjectItemsQuery
 					if requests > 1 {
-						wantQuery = observedStatusProjectItemsQuery
+						wantQuery = schedulerProjectItemsQuery
+					}
+					if entry == "refresh" {
+						wantQuery = thinRefreshProjectItemsQuery
 					}
 					if payload.Query != wantQuery {
 						t.Errorf("unexpected query on request %d", requests)
@@ -68,6 +71,9 @@ func TestProjectPageSchemaFallback(t *testing.T) {
 				} else {
 					result := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, nil, connector.IssueFilterHint{})
 					err = result.CandidateError
+				}
+				if entry == "refresh" && tt.wantRequests == 2 {
+					tt.wantRequests, tt.wantErr = 1, ErrGraphQLErrors
 				}
 				if !errors.Is(err, tt.wantErr) {
 					t.Errorf("error = %v, want %v", err, tt.wantErr)
