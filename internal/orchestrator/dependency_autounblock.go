@@ -1197,6 +1197,8 @@ func stickyBlockReason(reason string) bool {
 	}
 	switch reason {
 	case "rework_limit",
+		attemptAllowanceExhaustedReason,
+		"workpad_blocker",
 		string(AutoPromoteReasonMergeRevocationLimit),
 		noProgressLimitReason,
 		dispatchLoopDetectedReason,
