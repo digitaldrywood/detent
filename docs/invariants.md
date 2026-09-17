@@ -943,7 +943,7 @@ home construction or instruction inheritance.
 
 ## INV-7 — Machine issue identity
 
-**Statement:** Machine-filed issues carry an origin block and a fingerprint, and duplicates comment instead of creating another issue. Intake findings whose durable marker matches a closed issue are already handled: they create no issue, comment, content update, or state change.
+**Statement:** Machine-filed issues carry an origin block and a fingerprint, and duplicates comment instead of creating another issue. Intake findings prefer an open issue when multiple issues match their durable marker; when all matches are closed, the newest issue (highest repository issue number) is already handled: they create no issue, comment, content update, or state change.
 
 **Why:** Repeated repairs and machine discoveries otherwise create duplicate
 work and obscure whether an issue came from an operator or automation.
@@ -954,6 +954,7 @@ contract through the manifest; `TestMachineIssueDuplicate`,
 exercise duplicate commenting, concurrent publishers, and durable origin stamping.
 `TestManagerPreservesClosedFinding` and
 `TestConnectorFindIntakeIssueSearchesDurableMarker` cover closed intake findings,
+and `TestConnectorFindIntakeIssuePrefersOpenDuplicate` covers duplicate selection across search pages,
 including completed and not-planned GitHub issues. Use `file_machine_issue`, with a stable problem key,
 for worker discoveries. Review must ensure a fingerprint describes the problem
 rather than a timestamp, attempt, or wording variation.

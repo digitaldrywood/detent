@@ -30,6 +30,7 @@ func (c *Connector) FindIntakeIssue(ctx context.Context, marker string) (intake.
 	if marker == "" {
 		return intake.Issue{}, false, nil
 	}
+	var closed intake.Issue
 	for page := 1; ; page++ {
 		var response restIssueSearchResponse
 		if err := c.client.REST(ctx, http.MethodGet, restIntakeIssueSearchPath(c.repository, marker, page), nil, &response); err != nil {
@@ -45,10 +46,17 @@ func (c *Connector) FindIntakeIssue(ctx context.Context, marker string) (intake.
 				continue
 			}
 			c.cacheIssueRef(node)
-			return intakeIssue(c.buildLabelIssue(node, "")), true, nil
+			issue := intakeIssue(c.buildLabelIssue(node, ""))
+			if !issue.Closed {
+				return issue, true, nil
+			}
+			// Repository issue numbers increase with creation order.
+			if issue.Number > closed.Number {
+				closed = issue
+			}
 		}
 		if len(response.Items) == 0 || page*intakeIssueSearchPageSize >= response.TotalCount {
-			return intake.Issue{}, false, nil
+			return closed, closed.ID != "", nil
 		}
 	}
 }

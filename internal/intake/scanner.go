@@ -22,7 +22,7 @@ var todoPattern = regexp.MustCompile(`(?:^|[^\w-])(TODO|FIXME)\b[\s:=-]*(.*)$`)
 
 // todoMarker requires an explicit marker delimiter or a marker immediately
 // following a comment leader, rather than a mention in prose.
-func todoMarker(line string) []string {
+func todoMarker(line, path string) []string {
 	indices := todoPattern.FindStringSubmatchIndex(line)
 	if indices == nil {
 		return nil
@@ -32,6 +32,9 @@ func todoMarker(line string) []string {
 	explicit := strings.HasPrefix(suffix, ":") || strings.HasPrefix(suffix, "(")
 	comment := false
 	for _, leader := range []string{"//", "/*", "*", "#", "<!--", "--"} {
+		if leader == "#" && strings.EqualFold(filepath.Ext(path), ".md") {
+			continue
+		}
 		if strings.HasSuffix(prefix, leader) {
 			comment = true
 			break
@@ -139,7 +142,7 @@ func scanTODOFiles(ctx context.Context, files []revisionFile, output *bufio.Read
 		for scanner.Scan() {
 			lineNumber++
 			line := strings.TrimSpace(scanner.Text())
-			matches := todoMarker(line)
+			matches := todoMarker(line, path)
 			if len(matches) != 3 {
 				continue
 			}
