@@ -243,11 +243,16 @@ func (c *Connector) observeCandidatePullRequestStatus(ctx context.Context, byKey
 	if len(keys) == 0 {
 		return
 	}
-	// Preserve the authoritative 100-item connections while bounding each
-	// request to one PR: 100 + 100 + 100 + 1 + 100 + 100*100 = 10,401 nodes.
-	if len(keys) > 1 {
-		for _, key := range keys {
-			c.observeCandidatePullRequestStatus(ctx, map[pullRequestKey][]string{key: byKey[key]}, evidence)
+	// Twenty PRs with the authoritative 100-item connections stay below
+	// GitHub's 500,000-node limit: 20 * 10,401 = 208,020 nodes.
+	const batchSize = 20
+	if len(keys) > batchSize {
+		for start := 0; start < len(keys); start += batchSize {
+			batch := make(map[pullRequestKey][]string, batchSize)
+			for _, key := range keys[start:min(start+batchSize, len(keys))] {
+				batch[key] = byKey[key]
+			}
+			c.observeCandidatePullRequestStatus(ctx, batch, evidence)
 		}
 		return
 	}

@@ -187,7 +187,7 @@ func TestCandidatePRStatusShape(t *testing.T) {
 				}
 				requests++
 				aliases := strings.Count(req.Query, ": repository(")
-				if aliases == 0 || aliases > 1 {
+				if aliases == 0 || aliases > 20 {
 					t.Errorf("PR aliases=%d", aliases)
 				}
 				for _, field := range []string{"contexts(first:100)", "annotations(first:100)", "labels(first:100)", "reviews(first:100)", "comments(first:100)"} {
@@ -195,8 +195,8 @@ func TestCandidatePRStatusShape(t *testing.T) {
 						t.Errorf("unbounded %s", field)
 					}
 				}
-				if aliases*(100+100+100+1+100+100*100) > 13000 {
-					t.Error("PR connection bound exceeds 13000")
+				if aliases*(100+100+100+1+100+100*100) > 500000 {
+					t.Error("PR connection bound exceeds 500000")
 				}
 				fmt.Fprint(w, `{"data":{}}`)
 			}))
@@ -207,7 +207,7 @@ func TestCandidatePRStatusShape(t *testing.T) {
 				keys[pullRequestKey{Repo: pullRequestRepo{Owner: "fixture", Name: "shape"}, Number: n}] = []string{fmt.Sprintf("I%d", n)}
 			}
 			c.observeCandidatePullRequestStatus(t.Context(), keys, make(map[string]githubIssueNode))
-			if requests != count {
+			if requests != (count+19)/20 {
 				t.Fatalf("requests=%d", requests)
 			}
 		})

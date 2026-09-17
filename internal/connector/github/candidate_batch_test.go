@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,60 @@ import (
 )
 
 func TestCandidateColdRequestCounts(t *testing.T) {
+	prAlias := regexp.MustCompile(`(pr[0-9]+): repository\(owner:"fixture",name:"project"\) \{ pullRequest\(number:([0-9]+)\)`)
+	for _, count := range []int{0, 1, 19, 20, 21, 40, 41} {
+		t.Run(fmt.Sprintf("PR status/%d", count), func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var request struct{ Query string }
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				if !strings.Contains(request.Query, "CandidatePullRequestStatus") {
+					t.Errorf("unexpected query: %s", request.Query)
+				}
+				if size := strings.Count(request.Query, "pullRequest(number:"); size > 20 {
+					t.Errorf("PR batch size=%d exceeds 20", size)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				data := map[string]any{}
+				for _, match := range prAlias.FindAllStringSubmatch(request.Query, -1) {
+					n, err := strconv.Atoi(match[2])
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					snapshot := candidatePRFixtureSnapshot("fixture/project", n-100)
+					candidateFixtureCommit(snapshot)["statusCheckRollup"] = nil
+					data[match[1]] = map[string]any{"pullRequest": snapshot}
+				}
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{Repository: "fixture/project"})
+			keys := make(map[pullRequestKey][]string, count)
+			evidence := make(map[string]githubIssueNode, count)
+			for n := range count {
+				evidence[fmt.Sprintf("I%d", n)] = githubIssueNode{CandidatePR: &candidatePullRequestEvidence{}}
+				keys[pullRequestKey{Repo: pullRequestRepo{Owner: "fixture", Name: "project"}, Number: n + 1}] = []string{fmt.Sprintf("I%d", n)}
+			}
+			c.observeCandidatePullRequestStatus(t.Context(), keys, evidence)
+			for n := range count {
+				observed := evidence[fmt.Sprintf("I%d", n)].CandidatePR
+				if !observed.complete || observed.pullRequest == nil || observed.pullRequest.Number != n+1 {
+					t.Errorf("PR %d not hydrated: %+v", n+1, observed)
+				}
+			}
+			if want := (count + 19) / 20; requests != want {
+				t.Fatalf("PR-status requests=%d want=%d", requests, want)
+			}
+		})
+	}
+
 	for _, mode := range []string{"board", "labels", "board fallback", "labels fallback"} {
 		t.Run(mode, func(t *testing.T) {
 			var graphql, rest int

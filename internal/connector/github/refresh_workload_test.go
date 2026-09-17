@@ -32,7 +32,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 			for _, mode := range []string{"no validators", "stable etag", "changing etag", "fallback etag", "schema fallback etag"} {
 				for _, observed := range []bool{false, true} {
 					t.Run(fmt.Sprintf("%s/observed=%t", mode, observed), func(t *testing.T) {
-						var details, graphql, fallbacks, notModified int
+						var details, graphql, fallbacks, notModified, prStatus int
 						var countsMu sync.Mutex
 						var reportedTotal, reportedBillable, reported304 int
 						for project := range workload.projects {
@@ -98,10 +98,11 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 										}
 										write(map[string]any{"data": map[string]any{"nodes": nodes, "repo0": map[string]any{"pullRequests": map[string]any{"nodes": []any{}}}}})
 									case strings.Contains(req.Query, "CandidatePullRequestStatus"):
+										prStatus++
 										data := map[string]any{}
 										for n := 1; n <= 3; n++ {
 											if strings.Contains(req.Query, fmt.Sprintf("pullRequest(number:%d)", 100+n)) {
-												data["pr0"] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+												data[fmt.Sprintf("pr%d", len(data))] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
 											}
 										}
 										write(map[string]any{"data": data})
@@ -165,7 +166,11 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 								if observed {
 									candidateStates, observedStates = nil, candidateStates
 								}
+								beforePRStatus := prStatus
 								result := c.FetchRefreshIssues(t.Context(), candidateStates, observedStates, connector.IssueFilterHint{SchedulerStates: observedStates})
+								if !strings.Contains(mode, "fallback") && prStatus-beforePRStatus != (3+19)/20 {
+									t.Fatalf("PR-status requests per refresh=%d want=%d", prStatus-beforePRStatus, (3+19)/20)
+								}
 								issues := result.Candidates
 								if observed {
 									issues = result.Statuses
@@ -194,7 +199,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 						}
 						if !strings.Contains(mode, "fallback") {
 							wantREST := workload.projects * 6
-							wantGraphQL := workload.projects * workload.refreshes * 6
+							wantGraphQL := workload.projects * workload.refreshes * 4
 							if rest != wantREST || graphql != wantGraphQL || notModified != 0 {
 								t.Fatalf("want REST=%d GraphQL=%d 304=0", wantREST, wantGraphQL)
 							}
