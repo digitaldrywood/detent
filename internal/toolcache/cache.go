@@ -152,6 +152,26 @@ func RemoveLegacy(workspaceRoot string) (reclaimed int64, resolvedRoot string, e
 	if err != nil {
 		return 0, resolved, err
 	}
+	// Go module caches contain read-only directories. Make them owner-writable
+	// before unlinking their contents, without following directory symlinks.
+	if err := fs.WalkDir(workspace.FS(), root, func(path string, entry fs.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return workspace.Chmod(path, info.Mode()|0200)
+	}); err != nil {
+		return 0, resolved, err
+	}
 	if err := workspace.RemoveAll(root); err != nil {
 		return 0, resolved, err
 	}
