@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -165,3 +167,50 @@ func (l *runtimePipeListener) Close() error {
 func (*runtimePipeListener) Addr() net.Addr {
 	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
 }
+
+// Use virtual time so the readiness deadline, rather than machine load, ends
+// each failing probe. The transport preserves the same HTTP/client boundary.
+func TestAwaitDashboardTimeoutEvidence(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		status     int
+		requestErr error
+		want       string
+	}{
+		{name: "startup not ready", status: http.StatusServiceUnavailable, want: "last HTTP status: 503"},
+		{name: "authentication rejected", status: http.StatusUnauthorized, want: "last HTTP status: 401"},
+		{name: "request timeout", requestErr: context.DeadlineExceeded, want: `last request error: Get "http://fixture.invalid/health": context deadline exceeded`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				calls := 0
+				client := &http.Client{Transport: readinessRoundTripper(func(req *http.Request) (*http.Response, error) {
+					calls++
+					if tt.requestErr != nil {
+						return nil, tt.requestErr
+					}
+					return &http.Response{StatusCode: tt.status, Body: io.NopCloser(strings.NewReader("private response body")), Header: make(http.Header), Request: req}, nil
+				})}
+				_, err := awaitDashboard(ctx, client, "http://fixture.invalid/health", make(chan error))
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("awaitDashboard() error = %v, want deadline exceeded", err)
+				}
+				if calls < 2 {
+					t.Fatalf("requests = %d, want retries before deadline", calls)
+				}
+				if !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("error = %v, want %q", err, tt.want)
+				}
+				if strings.Contains(err.Error(), "private response body") {
+					t.Fatal("timeout exposed response body")
+				}
+			})
+		})
+	}
+}
+
+type readinessRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f readinessRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

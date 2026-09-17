@@ -27,10 +27,19 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	output := &lockedBuffer{}
 	done := make(chan error, 1)
+	runtimeDone := make(chan struct{})
 	go func() {
 		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+		close(runtimeDone)
 	}()
-	t.Cleanup(cancel)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runtimeDone:
+		case <-time.After(10 * time.Second):
+			t.Error("timed out waiting for isolated runtime cleanup")
+		}
+	})
 
 	url := waitForIsolatedRuntimeURL(t, output, done)
 	if banner := output.String(); !strings.Contains(banner, "Mode: isolated dev runtime") || !strings.Contains(banner, "DB mode: memory") {
