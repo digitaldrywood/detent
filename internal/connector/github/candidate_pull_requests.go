@@ -243,15 +243,11 @@ func (c *Connector) observeCandidatePullRequestStatus(ctx context.Context, byKey
 	if len(keys) == 0 {
 		return
 	}
-	// Bound the schema's maximum node count, including nested annotations,
-	// below GitHub's 500,000-node query limit even for full connections.
-	if len(keys) > 20 {
-		for start := 0; start < len(keys); start += 20 {
-			batch := make(map[pullRequestKey][]string)
-			for _, key := range keys[start:min(start+20, len(keys))] {
-				batch[key] = byKey[key]
-			}
-			c.observeCandidatePullRequestStatus(ctx, batch, evidence)
+	// Preserve the authoritative 100-item connections while bounding each
+	// request to one PR: 100 + 100 + 100 + 1 + 100 + 100*100 = 10,401 nodes.
+	if len(keys) > 1 {
+		for _, key := range keys {
+			c.observeCandidatePullRequestStatus(ctx, map[pullRequestKey][]string{key: byKey[key]}, evidence)
 		}
 		return
 	}

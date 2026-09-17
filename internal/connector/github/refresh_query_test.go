@@ -168,6 +168,12 @@ func TestRefreshThinBodyFallback(t *testing.T) {
 					if bodies != 0 || rest > 40 {
 						t.Fatalf("body fetches=%d REST=%d", bodies, rest)
 					}
+					if failure == "graphql backoff" {
+						if !errors.Is(result.CandidateError, ErrRateLimited) || rest != 0 || len(result.Candidates) != 0 {
+							t.Fatalf("expected retained refresh without REST fallback: %+v REST=%d", result, rest)
+						}
+						return
+					}
 					if count == 152 {
 						if !errors.Is(result.CandidateError, ErrRESTFanoutDeferred) || len(result.Candidates) != 0 || len(result.LaneSignalCandidates) != 0 {
 							t.Fatalf("expected bounded, unpublished fallback: %+v", result)

@@ -34,6 +34,7 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 							if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 								t.Error(err)
 							}
+							assertCandidateQueryShape(t, request.Query, request.Variables)
 							if !strings.Contains(request.Query, "rateLimit {") || !strings.Contains(request.Query, "cost") {
 								t.Error("missing request cost")
 							}
@@ -171,6 +172,7 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
 				if strings.Contains(request.Query, "ProjectItems") {
 					write(map[string]any{"data": map[string]any{"node": map[string]any{"items": projectItemsConnection{Nodes: []projectItemNode{{ID: "P1", Content: ptrCandidateNode(first("I1", 1)), StatusValue: &singleSelectValue{Name: lane}}, {ID: "P2", Content: ptrCandidateNode(first("I2", 2)), StatusValue: &singleSelectValue{Name: lane}}}}}}})
 					return
@@ -322,6 +324,15 @@ func TestCandidateEvidenceIndependentConnections(t *testing.T) {
 				response.BlockedBy.Nodes = []githubIssueNode{{ID: "B2"}}
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Query     string
+					Variables map[string]any
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
 				w.Header().Set("Content-Type", "application/json")
 				if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issue0": response}}); err != nil {
 					t.Error(err)
@@ -358,10 +369,14 @@ func TestCandidateBoardBatchedCursor(t *testing.T) {
 					return
 				}
 				calls++
-				var request struct{ Variables map[string]any }
+				var request struct {
+					Query     string
+					Variables map[string]any
+				}
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
 				numbers := []int{1, 2}
 				page := projectItemsConnection{PageInfo: pageInfo{HasNextPage: true, EndCursor: "board-page-2"}}
 				if request.Variables["after"] != nil {
@@ -431,10 +446,14 @@ func TestCandidateBodyDependencyRefresh(t *testing.T) {
 					fmt.Fprintf(w, `{"node_id":"B99","number":99,"state":%q,"body":"","labels":[],"html_url":"https://github.com/owner/repo/issues/99"}`, state)
 					return
 				}
-				var request struct{ Query string }
+				var request struct {
+					Query     string
+					Variables map[string]any
+				}
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
 				if strings.Contains(request.Query, "projectItems(") {
 					fields++
 					if mode == "rate limited" {
@@ -516,5 +535,24 @@ func TestCandidateBodyDependencyRefresh(t *testing.T) {
 				t.Fatalf("want one aggregate warning: %s", logs.String())
 			}
 		})
+	}
+}
+
+func assertCandidateQueryShape(t *testing.T, query string, variables map[string]any) {
+	t.Helper()
+	aliases := strings.Count(query, ": node(id:")
+	if aliases > 25 {
+		t.Errorf("scheduler aliases=%d exceeds 25", aliases)
+	}
+	compact := strings.ReplaceAll(query, " ", "")
+	nodes := strings.Count(compact, "comments(first:100")*100 + strings.Count(compact, "blockedBy(first:20")*420
+	if first, ok := variables["first"].(float64); ok && strings.Contains(query, "blockedBy(") {
+		if first > 25 {
+			t.Errorf("enriched board first=%v exceeds 25", first)
+		}
+		nodes *= int(first)
+	}
+	if nodes > 13000 {
+		t.Errorf("scheduler connection nodes=%d exceeds 13000", nodes)
 	}
 }

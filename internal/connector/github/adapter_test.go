@@ -387,8 +387,8 @@ func TestConnectorFetchRefreshIssuesBoundsLargeProjectScan(t *testing.T) {
 		secondPageCount  int
 		wantGraphQLCalls int
 	}{
-		{name: "single page", total: 99, firstPageCount: 99, wantGraphQLCalls: 2},
-		{name: "pyroapex scale", total: 186, firstPageCount: 100, secondPageCount: 86, wantGraphQLCalls: 3},
+		{name: "single page", total: 99, firstPageCount: 99, wantGraphQLCalls: 5},
+		{name: "pyroapex scale", total: 186, firstPageCount: 100, secondPageCount: 86, wantGraphQLCalls: 6},
 	}
 
 	for _, tt := range tests {
@@ -403,25 +403,20 @@ func TestConnectorFetchRefreshIssuesBoundsLargeProjectScan(t *testing.T) {
 					projectIssueNodes(tt.firstPageCount, "Todo"),
 				),
 			}}
+			for start := 0; start < tt.firstPageCount; start += 25 {
+				data := map[string]any{}
+				for i := start; i < min(start+25, tt.firstPageCount); i++ {
+					data[fmt.Sprintf("issue%d", i-start)] = map[string]any{"id": fmt.Sprintf("I_%d", 1000+i), "comments": map[string]any{"totalCount": 0}, "blockedBy": map[string]any{"nodes": []any{}}}
+				}
+				body, err := json.Marshal(map[string]any{"data": data})
+				if err != nil {
+					t.Fatal(err)
+				}
+				responses = append(responses, graphqlTestResponse{body: string(body)})
+			}
 			if tt.secondPageCount > 0 {
-				responses = append(responses, graphqlTestResponse{
-					body: projectItemsPageResponseWithTotal(
-						tt.total,
-						false,
-						"",
-						projectIssueNodes(tt.secondPageCount, "Done"),
-					),
-				})
+				responses = append(responses, graphqlTestResponse{body: projectItemsPageResponseWithTotal(tt.total, false, "", projectIssueNodes(tt.secondPageCount, "Done"))})
 			}
-			data := map[string]any{}
-			for i := range tt.firstPageCount {
-				data[fmt.Sprintf("issue%d", i)] = map[string]any{"id": fmt.Sprintf("I_%d", 1000+i), "comments": map[string]any{"totalCount": 0}, "blockedBy": map[string]any{"nodes": []any{}}}
-			}
-			body, err := json.Marshal(map[string]any{"data": data})
-			if err != nil {
-				t.Fatal(err)
-			}
-			responses = append(responses, graphqlTestResponse{body: string(body)})
 			responses = append(responses, graphqlTestResponse{
 				method: http.MethodGet,
 				path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
