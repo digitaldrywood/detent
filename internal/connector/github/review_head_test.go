@@ -48,14 +48,16 @@ func TestUnavailableReviewReply(t *testing.T) {
 	for _, tt := range []struct {
 		name, body, author, requestHead string
 		want                            string
-		newRequest                      bool
+		newRequest, wantPending         bool
 	}{
-		{"quota", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false},
-		{"unavailable", "Codex code review is temporarily unavailable. Please try again later.", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false},
-		{"pending", "", "", "head", "", false},
-		{"untrusted", "You have reached your Codex usage limits for code reviews", "someone[bot]", "head", "", false},
-		{"old head", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "old", "", false},
-		{"reply precedes new request", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "old", "", true},
+		{"quota", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"unavailable", "Codex code review is temporarily unavailable. Please try again later.", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"reworded quota", "Sorry, the review usage limit has been exceeded.", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"reworded unavailable", "Sorry, this service is unavailable right now.", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"never answered", "", "", "head", "", false, false},
+		{"untrusted", "You have reached your Codex usage limits for code reviews", "someone[bot]", "head", "", false, false},
+		{"old head", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "old", "", false, true},
+		{"reply precedes new request", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "old", "", true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			start := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
@@ -74,7 +76,7 @@ func TestUnavailableReviewReply(t *testing.T) {
 				t.Fatalf("review = %q, want %q", got, tt.want)
 			}
 			pr := &connector.PullRequest{HeadSHA: "head", CodexReviewState: got, LatestCodexReviewState: pullRequestCodexReviewStateFromReviews(reviews.Latest)}
-			if pending := pr.AutomatedReviewPending(); pending != (tt.want == "") {
+			if pending := pr.AutomatedReviewPending(); pending != tt.wantPending {
 				t.Fatalf("pending = %v", pending)
 			}
 		})

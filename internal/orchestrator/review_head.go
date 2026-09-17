@@ -49,3 +49,7 @@ func requiresAutomatedReview(cfg Config) bool {
 	required := gate.Effective(cfg.AutoPromote.Gate).RequireAutomatedReview
 	return required != nil && *required
 }
+
+func automatedReviewPending(pr *connector.PullRequest, cfg Config) bool {
+	return requiresAutomatedReview(cfg) && pr.AutomatedReviewPending()
+}

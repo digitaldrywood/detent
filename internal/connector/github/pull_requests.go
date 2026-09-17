@@ -1653,20 +1653,19 @@ func codexRequestedReviewOutcome(comments []restComment) (pullRequestReview, boo
 	if head == "" {
 		return pullRequestReview{}, false
 	}
-	review := pullRequestReview{State: "PENDING", CommitID: head, Source: connector.PullRequestReviewSourceSummaryComment}
+	review := pullRequestReview{CommitID: head, Source: connector.PullRequestReviewSourceSummaryComment}
 	for _, comment := range comments {
 		if !trustedCodexSummaryAuthor(comment.User) || request.CreatedAt == nil || comment.CreatedAt == nil || !comment.CreatedAt.After(*request.CreatedAt) {
 			continue
 		}
 		body := strings.ToLower(strings.TrimSpace(comment.Body))
-		if !strings.HasPrefix(body, "you have reached your codex usage limits for code reviews") &&
-			!strings.HasPrefix(body, "codex code review is temporarily unavailable") {
+		if !strings.Contains(body, "usage limit") && !strings.Contains(body, "unavailable") {
 			continue
 		}
 		review.State = "COMMENTED"
 		review.Body, review.URL, review.Author, review.SubmittedAt = comment.Body, comment.HTMLURL, comment.User, comment.CreatedAt
 	}
-	return review, true
+	return review, review.State != ""
 }
 
 type pullRequestReference struct {

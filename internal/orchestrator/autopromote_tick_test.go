@@ -4978,7 +4978,7 @@ func TestPrioritizeReadyMergingIssuesFairness(t *testing.T) {
 			if tt.state != nil {
 				state = tt.state()
 			}
-			priority := prioritizeReadyMergingIssues(issues, state, now, threshold)
+			priority := prioritizeReadyMergingIssues(issues, state, now, Config{MergeFairnessAge: threshold})
 			gotOrder := make([]string, 0, len(issues))
 			for _, issue := range issues {
 				gotOrder = append(gotOrder, issue.ID)
@@ -5132,7 +5132,7 @@ func TestMergeWorkerHeadReady(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&issue)
 			}
-			if got := mergeWorkerHeadReady(issue); got != tt.want {
+			if got := mergeWorkerHeadReady(issue, Config{}); got != tt.want {
 				t.Fatalf("mergeWorkerHeadReady() = %t, want %t", got, tt.want)
 			}
 		})

@@ -1547,7 +1547,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 		return true
 	}
-	if issue.PullRequest.AutomatedReviewPending() {
+	if automatedReviewPending(issue.PullRequest, o.cfg) {
 		o.requestAutomatedReview(ctx, issue)
 		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt,
 			string(AutoPromoteReasonCodexReviewMissing), string(AutoPromoteReasonCodexReviewMissing), "Waiting for current-head review: ")
@@ -1577,7 +1577,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.refreshMergeWorkerBase(ctx, state, event, running, issue, "pull_request_base_behind")
 		return true
 	}
-	if !mergeWorkerProgrammaticMergeReady(issue) {
+	if !mergeWorkerProgrammaticMergeReady(issue, o.cfg) {
 		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
 			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
 			return true
@@ -2081,8 +2081,8 @@ func mergeFastPathResult(event runpkg.Completion) bool {
 	}
 }
 
-func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
-	return mergeWorkerCheckedPullRequest(issue) && !issue.PullRequest.AutomatedReviewPending() &&
+func mergeWorkerProgrammaticMergeReady(issue connector.Issue, cfg Config) bool {
+	return mergeWorkerCheckedPullRequest(issue) && !automatedReviewPending(issue.PullRequest, cfg) &&
 		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean")
 }
 
