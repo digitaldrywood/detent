@@ -4781,7 +4781,7 @@ func TestBoardTodoDispatchCards(t *testing.T) {
 	}
 }
 
-func TestBoardDispatchWaitingPreservesBlockerCount(t *testing.T) {
+func TestBoardDispatchWaitingUsesDependencyStatus(t *testing.T) {
 	t.Parallel()
 	for _, count := range []int{1, 2} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
