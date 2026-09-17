@@ -212,6 +212,10 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.logNativeMergeQueueExcluded(state, candidate)
 			continue
 		}
+		if autoPromoteMergeConflicts(candidate.PullRequest.MergeableState) {
+			o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonMergeConflicts, now)
+			continue
+		}
 		if status.AdmissionLimit <= 0 || status.Depth >= status.AdmissionLimit {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			continue
@@ -224,7 +228,10 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		if err != nil {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
 			message := strings.ToLower(err.Error())
-			if strings.Contains(message, "pull request has merge conflicts") || strings.Contains(message, "pull request not in mergeable state") {
+			// Unknown hydration may lag an explicit conflict rejection. Clean
+			// evidence takes precedence so an unchanged ready head cannot bounce.
+			mergeable := strings.ToLower(strings.TrimSpace(candidate.PullRequest.MergeableState))
+			if (mergeable == "" || mergeable == "unknown") && strings.Contains(message, "pull request has merge conflicts") {
 				o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonMergeConflicts, now)
 				continue
 			}
