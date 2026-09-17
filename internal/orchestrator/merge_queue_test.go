@@ -1342,6 +1342,83 @@ func TestNativeMergeQueueReviewRework(t *testing.T) {
 	}
 }
 
+func TestNativeMergeQueueConflictRework(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, message, mergeable string
+		rework                   bool
+		preflight                bool
+	}{
+		{"recorded rejection", "enqueue github pull request: github graphql errors: Pull request has merge conflicts and Pull request not in mergeable state", "dirty", true, true},
+		{"reworded rejection", "is not mergeable", "CONFLICTING", true, true},
+		{"dirty without rejection", "", "dirty", true, true},
+		{"not mergeable", "Pull request not in mergeable state", "unknown", false, false},
+		{"stale unknown conflicts", "Pull request has merge conflicts", "unknown", true, false},
+		{"clean conflicts", "Pull request has merge conflicts", "clean", false, false},
+		{"clean not mergeable", "Pull request not in mergeable state", "clean", false, false},
+		{"queue unavailable", "queue unavailable", "unknown", false, false},
+		{"secondary rate limit", "secondary rate limit", "clean", false, false},
+	} {
+		for _, rebased := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/rebased=%t", tt.name, rebased), func(t *testing.T) {
+				issue := nativeMergeQueueTestIssue(2861, "success")
+				issue.PullRequest.MergeableState = tt.mergeable
+				tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}, enqueueErr: errors.New(tt.message)}
+				if tt.message == "" {
+					tracker.enqueueErr = nil
+				}
+				cfg := normalizeConfig(Config{ActiveStates: []string{"Merging", "Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}})
+				orch := &Orchestrator{cfg: cfg, connector: tracker}
+				state := newState(cfg)
+				now := time.Now()
+				issues := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+				wantState, wantEnqueues := "Merging", 2
+				if tt.rework {
+					wantState, wantEnqueues = "Rework", 1
+					if tt.preflight {
+						wantEnqueues = 0
+					}
+				}
+				if issues[0].State != wantState {
+					t.Fatalf("first tick state = %s, want %s", issues[0].State, wantState)
+				}
+				issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, now.Add(time.Minute))
+				if len(tracker.enqueued) != wantEnqueues {
+					t.Fatalf("enqueues = %d, want %d", len(tracker.enqueued), wantEnqueues)
+				}
+				if tt.rework {
+					if len(tracker.updates) != 1 || len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "merge_conflicts") {
+						t.Fatalf("updates=%v comments=%v, want merge_conflicts handoff", tracker.updates, tracker.comments)
+					}
+					if rebased {
+						issues[0].PullRequest.HeadSHA = "rebased-head"
+					}
+					issues[0].PullRequest.MergeableState = "clean"
+					result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, issues, now.Add(2*time.Minute))
+					if _, promoted := result.transitioned[issue.ID]; !promoted {
+						t.Fatalf("rebased head did not promote: %v", state.AutoPromoteDecisions)
+					}
+					if len(tracker.updates) != 2 || tracker.updates[1].state != "Merging" || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "reason: ready") {
+						t.Fatalf("updates=%v comments=%v, want ready transition to Merging", tracker.updates, tracker.comments)
+					}
+					issues[0].State = "Merging"
+					tracker.enqueueErr = errors.New("Pull request has merge conflicts and Pull request not in mergeable state")
+					before := len(tracker.enqueued)
+					for tick := 3; tick <= 4; tick++ {
+						issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, now.Add(time.Duration(tick)*time.Minute))
+					}
+					if issues[0].State != "Merging" || len(tracker.updates) != 2 || len(tracker.comments) != 2 || len(tracker.enqueued) != before+2 {
+						t.Fatalf("clean head bounced after promotion: state=%s updates=%v comments=%v enqueues=%d", issues[0].State, tracker.updates, tracker.comments, len(tracker.enqueued))
+					}
+
+				} else if len(tracker.updates) != 0 {
+					t.Fatalf("transient failure changed lane: %v", tracker.updates)
+				}
+			})
+		}
+	}
+}
+
 func TestNativeMergeQueueHeadBudget(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
