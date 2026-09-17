@@ -19,6 +19,48 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+// Exercise both observations synchronously: the run loop may publish either
+// snapshot before a reader observes the park.
+func TestRepeatedFailureParkReasonAcrossRecovery(t *testing.T) {
+	t.Parallel()
+	tracker := &dependencyAutoUnblockConnector{}
+	orch := blockedCauseTestOrchestrator(tracker)
+	state := newState(orch.cfg)
+	issue := dependencyAutoUnblockIssue("repeated-failure-reason", "In Progress")
+	now := time.Now().UTC()
+	workerErr := errors.New("session token ceiling exceeded: total_tokens=2000005")
+	running := Running{Issue: issue, Mode: RunModeImplement}
+	event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Err: workerErr}
+	failure := RepeatedFailure{Count: 5, Error: workerErr.Error(), FirstFailureAt: now, LastFailureAt: now}
+	orch.parkRepeatedFailure(t.Context(), &state, event, running, failure, 5)
+
+	for _, tt := range []struct {
+		name       string
+		refresh    bool
+		wantReason string
+	}{
+		{name: "completion", wantReason: repeatedFailureBlockedReasonPrefix + workerErr.Error()},
+		{name: "recovery", refresh: true, wantReason: repeatedFailureCircuitBreakerCause},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.refresh {
+				parked := state.Blocked[issue.ID].Issue
+				orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{parked}, now.Add(time.Second))
+			}
+			blocked := state.Blocked[issue.ID]
+			if blocked.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", blocked.Reason, tt.wantReason)
+			}
+			if blocked.Recovery == nil || blocked.Recovery.Cause != repeatedFailureCircuitBreakerCause {
+				t.Fatalf("Recovery = %#v, want repeated failure cause", blocked.Recovery)
+			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatal("retry present after park")
+			}
+		})
+	}
+}
+
 func TestRecoverBlockedIssuesLogsDecisionForEveryBlockedIssue(t *testing.T) {
 	t.Parallel()
 
