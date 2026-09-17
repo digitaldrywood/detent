@@ -1609,6 +1609,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if resolvedOverride.Effort != "" {
 		effort = resolvedOverride.Effort
 	}
+	for _, rejection := range resolvedOverride.Rejections {
+		r.logger.Warn("ignored detent-agent override", "issue_id", req.Issue.ID, "field", rejection.Field, "value", rejection.Value, "reason", rejection.Reason)
+	}
 	if len(resolvedOverride.Rejections) > 0 && req.OnOverrideRejected != nil {
 		if err := req.OnOverrideRejected(resolvedOverride.Rejections); err != nil {
 			r.logger.Warn("report detent-agent override rejection failed", "issue_id", req.Issue.ID, "identifier", req.Issue.Identifier, "error", err)

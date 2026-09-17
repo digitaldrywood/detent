@@ -30,6 +30,7 @@ func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 				backend := &cleanupFailureBackend{t: t, failCleanup: failCleanup}
 				cfg := config.Default()
 				cfg.Agents.ModelSelection.Preset = new("sol_first")
+				cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: RoleCode, Backend: "codex", Model: "absent", Default: true}}
 				cfg.Gate.Validator.Model = "absent"
 				cfg.Gate.SecurityAudit.Model = "absent"
 				runner, err := NewRunner(Dependencies{
@@ -65,8 +66,8 @@ func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 					t.Fatalf("error = %v, catalog called = %v", err, backend.catalogCalled)
 				}
 				var configurationErr *IssueConfigurationError
-				if errors.As(err, &configurationErr) != !failCleanup {
-					t.Fatalf("configuration classification = %v, want %v: %v", configurationErr, !failCleanup, err)
+				if errors.As(err, &configurationErr) {
+					t.Fatalf("configuration classification = %v, want %v: %v", configurationErr, false, err)
 				}
 				if failCleanup {
 					if !strings.Contains(err.Error(), "cleanup agent preflight scratch") {
@@ -76,7 +77,7 @@ func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 					if strings.Contains(err.Error(), "agent override rejected:") {
 						t.Fatalf("cleanup failure retains configuration classification text: %v", err)
 					}
-					if !strings.Contains(logs.String(), "agent override rejected:") {
+					if !strings.Contains(logs.String(), "configured model") {
 						t.Fatalf("selection diagnostic missing from logs: %s", logs.String())
 					}
 				}
