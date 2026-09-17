@@ -214,8 +214,9 @@ mutations. Usage flushes and primary-budget refreshes cannot clear this deadline
 an expired secondary deadline alone cannot restart dispatch recovery or suppress
 a fresh connector/telemetry backoff signal. Clients sharing a credential identity
 (including rotated installation tokens) share the deadline and failure count.
-GraphQL mutations serialize through response accounting on that same state;
-blank-status repair batches run sequentially and stop on throttling. This consolidates
+Only blank-status repair batches serialize on that same state and stop on
+throttling (#2837). Ordinary mutations, including nested calls, proceed concurrently
+outside the shared cooldown; during it they return the remaining retry delay. This consolidates
 the two cooldown schedules without adding a timer or configuration surface.
 `TestClientGraphQLSecondaryBackoffExpires`, `TestClientGraphQLSecondaryRepeatedFailures`,
 `TestClientGraphQLSecondarySharedAcrossProjects`, `TestClientGraphQLSharedMutationAdmission`,
