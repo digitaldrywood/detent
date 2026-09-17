@@ -756,7 +756,7 @@ func withoutDependencyOnlyWorkpadLines(body string) string {
 	lines := strings.Split(body, "\n")
 	kept := lines[:0]
 	for _, line := range lines {
-		if text, ok := dependencyline.Match(line); ok {
+		if text, ok := dependencyline.MatchText(line); ok {
 			remainder := dependencyIssueURLPattern.ReplaceAllString(text, "")
 			remainder = dependencyIssueRefPattern.ReplaceAllString(remainder, "")
 			dependencyOnly := true

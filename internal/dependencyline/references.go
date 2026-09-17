@@ -69,6 +69,9 @@ func References(body, repository string) ([]string, error) {
 	var refs []string
 	for _, text := range declarations {
 		for _, value := range strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' }) {
+			if strings.EqualFold(value, "and") {
+				continue
+			}
 			ref, err := CanonicalReference(strings.Trim(value, "`"), repository)
 			if err != nil {
 				return nil, err

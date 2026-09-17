@@ -170,3 +170,46 @@ func (c dispatchEvidenceConnector) FetchIssueStatesByIdentifiers(ctx context.Con
 	}
 	return c.hydratingDispatchConnector.FetchIssueStatesByIdentifiers(ctx, refs)
 }
+
+func TestDispatchDependencyProseCycle(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, firstBody string
+		wantDispatches  int
+	}{
+		{name: "series order is prose", firstBody: "Depends on: none. First slice (#2 → #3 → #4; #2 → #5 → #6, #7).", wantDispatches: 1},
+		{name: "explicit cycle remains blocked", firstBody: "Depends on: #2", wantDispatches: 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 4, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			first := dispatchTestIssue("first", "Todo")
+			first.Identifier, first.Description = "owner/repo#1", tt.firstBody
+			second := dispatchTestIssue("second", "Todo")
+			second.Identifier, second.Description = "owner/repo#2", "Depends on: #1"
+			issues := []connector.Issue{first, second}
+			o := &Orchestrator{cfg: cfg, connector: hydratingDispatchConnector{blockers: issues}}
+			state := newState(cfg)
+			var decisions []dispatchPlanDecision
+			cache := make(map[string]dependencyBlocker)
+			plan := newDispatchPlanner(cfg).plan(&state, issues, time.Now(), dispatchPlanHooks{
+				hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+					return o.hydrateDispatchDependencies(t.Context(), issue, cache), true
+				},
+				decision: func(d dispatchPlanDecision) { decisions = append(decisions, d) },
+			})
+			if len(plan.Dispatches) != tt.wantDispatches {
+				t.Fatalf("dispatches = %+v, want %d; decisions = %+v", plan.Dispatches, tt.wantDispatches, decisions)
+			}
+			blocked := 0
+			for _, decision := range decisions {
+				if decision.SkipReason == dispatchSkipBlockedByDependency {
+					blocked++
+				}
+			}
+			if blocked != 2-tt.wantDispatches {
+				t.Fatalf("dependency waits = %d; decisions = %+v", blocked, decisions)
+			}
+		})
+	}
+}
