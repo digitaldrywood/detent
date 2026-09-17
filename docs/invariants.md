@@ -19,11 +19,15 @@ A passing test does not authorize weakening a rule.
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
-Closed-completed issues retain their non-terminal label snapshots in ordinary
-refresh reads, even without prior pipeline membership (#2865). The existing
+Closed issues with either `completed` or `not_planned` reasons retain their
+non-terminal label snapshots in ordinary refresh reads, even without prior pipeline membership (#2865). The existing
 `reconcileClosedCompletedIssueStatuses` owns their transition to Done; dispatch
 continues to exclude closed issues. `TestTickReconcilesClosedLabelsWithoutPreviousPipeline`
 covers first-refresh and between-refresh closure without direct-ID retention.
+Both closure reasons leave non-terminal lanes on the first successful reconciliation.
+Not-planned closures are also removed from the board, pipeline, and active-work
+tracking, including the lane writer’s pending publication overlays (#2869).
+Completed closures retain their existing immediate Done transition visibility.
 
 **Why:** Worker lane writes and lane revocation competed with the orchestrator's
 state accounting, requiring operator repairs after apparently valid moves.

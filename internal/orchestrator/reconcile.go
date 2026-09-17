@@ -187,13 +187,20 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 		}
 		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_status_reconciled"); err != nil {
 			if o.logger != nil {
-				o.logger.Warn("reconcile closed completed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+				o.logger.Warn("reconcile closed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
 			continue
 		}
 		reconciled[issueID] = struct{}{}
+		if !closedReasonCompleted(issue.ClosedReason) && state.tickTransitions != nil {
+			// Preserve completed-work transition visibility, but do not publish
+			// cancelled work back into the board or active pipeline.
+			removed := map[string]struct{}{issueID: {}}
+			state.tickTransitions.boardIssues = filterReconciledIssues(state.tickTransitions.boardIssues, removed)
+			state.tickTransitions.pipeline = filterReconciledIssues(state.tickTransitions.pipeline, removed)
+		}
 		if o.logger != nil {
-			o.logger.Info("reconciled closed completed issue status", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
+			o.logger.Info("reconciled closed issue status", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
 		}
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
@@ -209,7 +216,7 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 
 func closedCompletedIssueNeedsStatusReconciliation(issue connector.Issue, terminalStates []string) bool {
 	return issue.Closed &&
-		closedReasonCompleted(issue.ClosedReason) &&
+		(closedReasonCompleted(issue.ClosedReason) || strings.EqualFold(strings.TrimSpace(issue.ClosedReason), "not_planned")) &&
 		strings.TrimSpace(issue.State) != "" &&
 		!stateIn(issue.State, terminalStates)
 }
