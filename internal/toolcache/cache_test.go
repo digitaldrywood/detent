@@ -95,6 +95,49 @@ func TestRemoveLegacy(t *testing.T) {
 	}
 }
 
+func TestRemoveLegacyReadOnlyDirectories(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{"writable", 0755},
+		{"read-only module cache", 0555},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			cache := filepath.Join(root, ".detent", "cache")
+			module := filepath.Join(cache, "project", "go-mod", "example.com", "module@v1.0.0")
+			nested := filepath.Join(module, "pkg")
+			if err := os.MkdirAll(nested, 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, dir := range []string{module, nested} {
+				if err := os.WriteFile(filepath.Join(dir, "entry.go"), []byte("123"), 0444); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.Chmod(dir, 0755); err != nil && !os.IsNotExist(err) {
+						t.Error(err)
+					}
+				})
+				if err := os.Chmod(dir, tt.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reclaimed, _, err := RemoveLegacy(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reclaimed != 6 {
+				t.Fatalf("reclaimed = %d, want 6", reclaimed)
+			}
+			if _, err := os.Stat(cache); !os.IsNotExist(err) {
+				t.Fatalf("cache remains: %v", err)
+			}
+		})
+	}
+}
+
 func TestRemoveLegacySymlinks(t *testing.T) {
 	for _, tt := range []struct {
 		name, link string
