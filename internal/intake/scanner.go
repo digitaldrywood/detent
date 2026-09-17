@@ -2,16 +2,18 @@ package intake
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxScannedFileBytes = 1 << 20
@@ -65,37 +67,73 @@ func (scannerFactory) New(name string, root string) (Scanner, error) {
 }
 
 func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
-	paths, err := s.trackedPaths(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	files, err := s.revisionFiles(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	root := os.DirFS(s.root)
+	if len(files) == 0 {
+		return []Event{}, nil
+	}
+	var input strings.Builder
+	for _, file := range files {
+		input.WriteString(file.object + "\n")
+	}
+	cmd := s.gitCommand(ctx, "cat-file", "--batch")
+	cmd.Stdin = strings.NewReader(input.String())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	events, scanErr := scanTODOFiles(ctx, files, bufio.NewReader(output))
+	contextErr := ctx.Err()
+	if scanErr != nil {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if contextErr != nil {
+		return nil, contextErr
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("%w: %s", scanErr, strings.TrimSpace(stderr.String()))
+	}
+	if waitErr != nil {
+		return nil, gitScanError(ctx, "cat-file", waitErr, stderr.String())
+	}
+	return events, nil
+}
+
+func scanTODOFiles(ctx context.Context, files []revisionFile, output *bufio.Reader) ([]Event, error) {
 	events := []Event{}
-	for _, path := range paths {
+	for _, file := range files {
+		path := file.path
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !scannablePath(path) {
-			continue
-		}
 
-		info, err := os.Lstat(filepath.Join(s.root, filepath.FromSlash(path)))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
+		header, err := output.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("inspect tracked stale TODO file %q: %w", path, err)
+			return nil, fmt.Errorf("read stale TODO file %q: %w", path, err)
 		}
-		if !info.Mode().IsRegular() || info.Size() > maxScannedFileBytes {
-			continue
+		if header != fmt.Sprintf("%s blob %d\n", file.object, file.size) {
+			return nil, fmt.Errorf("unexpected stale TODO blob header for %q: %q", path, header)
 		}
-
-		file, err := root.Open(path)
-		if err != nil {
-			return nil, fmt.Errorf("open tracked stale TODO file %q: %w", path, err)
+		content := make([]byte, file.size+1)
+		if _, err := io.ReadFull(output, content); err != nil {
+			return nil, fmt.Errorf("read stale TODO file %q: %w", path, err)
 		}
-		scanner := bufio.NewScanner(file)
+		if content[file.size] != '\n' {
+			return nil, fmt.Errorf("invalid stale TODO blob delimiter for %q", path)
+		}
+		content = content[:file.size]
+		scanner := bufio.NewScanner(bytes.NewReader(content))
 		scanner.Buffer(make([]byte, 64*1024), maxScannedFileBytes)
 		lineNumber := 0
 		for scanner.Scan() {
@@ -121,42 +159,94 @@ func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
 				},
 			})
 		}
-		if err := errors.Join(scanner.Err(), file.Close()); err != nil {
+		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("scan tracked stale TODO file %q: %w", path, err)
 		}
 	}
 	return events, nil
 }
 
-func (s staleTODOScanner) trackedPaths(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git")
-	cmd.Args = []string{"git", "-C", s.root, "rev-parse", "--is-inside-work-tree"}
-	output, err := cmd.Output()
+type revisionFile struct {
+	path   string
+	object string
+	size   int64
+}
+
+// revisionFiles pins the remote default branch before reading any tree or blob.
+// Fetching by object ID without ref updates leaves the live checkout untouched.
+func (s staleTODOScanner) revisionFiles(ctx context.Context) ([]revisionFile, error) {
+	output, err := s.git(ctx, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		return nil, fmt.Errorf("validate stale TODO source root: %w; source root must be a Git worktree with git available", err)
+		return nil, fmt.Errorf("validate stale TODO source root: source root must be a Git worktree with git available: %w", err)
 	}
 	if strings.TrimSpace(string(output)) != "true" {
-		return nil, errors.New("validate stale TODO source root: source root must be a Git worktree")
+		return nil, errors.New("validate stale TODO source root: source root must be a Git worktree with git available")
 	}
-
-	cmd = exec.CommandContext(ctx, "git")
-	cmd.Args = []string{"git", "-C", s.root, "ls-files", "--cached", "-z", "--", "."}
-	output, err = cmd.Output()
+	output, err = s.git(ctx, "ls-remote", "--exit-code", "origin", "HEAD")
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+		return nil, fmt.Errorf("resolve stale TODO remote default branch: %w", err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 || fields[1] != "HEAD" {
+		return nil, errors.New("resolve stale TODO remote default branch: origin must advertise HEAD")
+	}
+	revision := fields[0]
+	if _, err := s.git(ctx, "fetch", "--no-tags", "--no-write-fetch-head", "--", "origin", revision); err != nil {
+		return nil, fmt.Errorf("fetch stale TODO default-branch revision: %w", err)
+	}
+	output, err = s.git(ctx, "ls-tree", "-r", "-l", "-z", revision, "--", ".")
+	if err != nil {
+		return nil, fmt.Errorf("list stale TODO revision files: %w", err)
+	}
+	var files []revisionFile
+	for entry := range strings.SplitSeq(string(output), "\x00") {
+		if entry == "" {
+			continue
 		}
-		return nil, fmt.Errorf("list git-tracked files for stale TODO scan: %w; source root must be a Git worktree with git available", err)
+		metadata, path, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(metadata)
+		if !ok || len(fields) != 4 {
+			return nil, errors.New("invalid stale TODO Git tree entry")
+		}
+		if fields[0] != "100644" && fields[0] != "100755" {
+			continue
+		}
+		size, err := strconv.ParseInt(fields[3], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse stale TODO blob size: %w", err)
+		}
+		if size > maxScannedFileBytes || !scannablePath(path) {
+			continue
+		}
+		files = append(files, revisionFile{path: path, object: fields[2], size: size})
 	}
+	return files, nil
+}
 
-	paths := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
-	if len(paths) == 1 && paths[0] == "" {
-		return nil, nil
+func (s staleTODOScanner) gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git")
+	cmd.Args = append([]string{"git", "-C", s.root}, args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+func gitScanError(ctx context.Context, operation string, err error, stderr string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	return paths, nil
+	return fmt.Errorf("git %s: %w: %s", operation, err, strings.TrimSpace(stderr))
+}
+
+func (s staleTODOScanner) git(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := s.gitCommand(ctx, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, gitScanError(ctx, args[0], err, stderr.String())
+	}
+	return output, nil
 }
 
 func scannablePath(path string) bool {
