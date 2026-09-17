@@ -60,6 +60,7 @@ type githubBackend interface {
 	connector.PullRequestCommentReader
 	connector.PullRequestReadyMarker
 	connector.PullRequestDraftCreator
+	connector.BranchHeadLookup
 	connector.PullRequestHeadLookup
 	connector.PullRequestHydrator
 	connector.PullRequestReviewThreadHydrator
@@ -1140,4 +1141,8 @@ func sortIssuesByIdentifiers(issues []connector.Issue, identifiers []string) []c
 
 func (c *Connector) MarkPullRequestReady(ctx context.Context, issue connector.Issue) error {
 	return c.github.MarkPullRequestReady(ctx, issue)
+}
+
+func (c *Connector) LookupBranchHead(ctx context.Context, repository, branch string) (string, error) {
+	return c.github.LookupBranchHead(ctx, repository, branch)
 }
