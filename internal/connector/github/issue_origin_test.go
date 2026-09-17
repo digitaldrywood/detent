@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -151,62 +152,96 @@ func (s *machineTestStore) CompareAndSwap(_ context.Context, key, version string
 
 func TestMachineIssueSeparateConnectors(t *testing.T) {
 	t.Parallel()
-	var mu sync.Mutex
-	var body string
-	creates, comments := 0, 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodGet:
-			if body == "" {
-				fmt.Fprint(w, `[]`)
-				return
-			}
-			fmt.Fprintf(w, `[{"node_id":"I_1","number":1,"state":"open","body":%q}]`, body)
-		case strings.HasSuffix(r.URL.Path, "/comments"):
-			comments++
-			fmt.Fprint(w, `{"node_id":"IC_1"}`)
-		default:
-			var draft struct{ Body string }
-			if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
-				t.Error(err)
-			}
-			body = draft.Body
-			creates++
-			fmt.Fprintf(w, `{"node_id":"I_1","number":1,"state":"open","body":%q}`, body)
-		}
-	}))
-	defer server.Close()
-	store := &machineTestStore{records: map[string]coordination.Record{}}
-	results := make(chan error, 2)
-	reused := make(chan bool, 2)
-	for _, kind := range []string{"worker", "routine"} {
-		c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.machineIssueStore = store
-		go func() {
-			issue, err := c.CreateIssue(t.Context(), connector.IssueDraft{Title: "Disk", Body: issueorigin.Stamp(kind, issueorigin.Origin{Kind: kind, Fingerprint: "disk"})})
-			if err == nil && issue.ID != "I_1" {
-				err = fmt.Errorf("issue ID = %q", issue.ID)
-			}
-			reused <- issue.PublicationReused
-			results <- err
-		}()
-	}
-	for range 2 {
-		if err := <-results; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if first, second := <-reused, <-reused; first == second {
-		t.Fatalf("reused = %v, %v", first, second)
-	}
-	if creates != 1 || comments != 1 {
-		t.Fatalf("creates=%d comments=%d", creates, comments)
+	for _, overlap := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overlap=%v", overlap), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var mu sync.Mutex
+				var body string
+				creates, comments := 0, 0
+				creating := make(chan struct{})
+				publish := make(chan struct{})
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodPost && r.URL.Path == "/repos/example/repo/issues" {
+						close(creating)
+						<-publish
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					switch {
+					case r.Method == http.MethodGet && r.URL.Path == "/repos/example/repo/issues":
+						if body == "" {
+							fmt.Fprint(w, `[]`)
+							return
+						}
+						fmt.Fprintf(w, `[{"node_id":"I_1","number":1,"state":"open","body":%q}]`, body)
+					case r.Method == http.MethodPost && r.URL.Path == "/repos/example/repo/issues/1/comments":
+						comments++
+						fmt.Fprint(w, `{"node_id":"IC_1"}`)
+					case r.Method == http.MethodPost && r.URL.Path == "/repos/example/repo/issues":
+						var draft struct{ Body string }
+						if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
+							t.Error(err)
+						}
+						body = draft.Body
+						creates++
+						fmt.Fprintf(w, `{"node_id":"I_1","number":1,"state":"open","body":%q}`, body)
+					default:
+						t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+						http.Error(w, "unexpected request", http.StatusNotFound)
+					}
+				})
+				// In-memory HTTP keeps all blocking inside the synctest bubble, so the
+				// production coordination retry advances virtual time instead of sleeping.
+				client := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					handler.ServeHTTP(response, r)
+					return response.Result(), nil
+				}}
+				store := &machineTestStore{records: map[string]coordination.Record{}}
+				results := make(chan error, 2)
+				reused := make(chan bool, 2)
+				for i, kind := range []string{"worker", "routine"} {
+					c, err := NewConnector(Config{Endpoint: "https://example.test", APIKey: "token", HTTPClient: client, Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+					if err != nil {
+						t.Fatal(err)
+					}
+					c.machineIssueStore = store
+					go func() {
+						issue, err := c.CreateIssue(t.Context(), connector.IssueDraft{Title: "Disk", Body: issueorigin.Stamp(kind, issueorigin.Origin{Kind: kind, Fingerprint: "disk"})})
+						if err == nil && issue.ID != "I_1" {
+							err = fmt.Errorf("issue ID = %q", issue.ID)
+						}
+						reused <- issue.PublicationReused
+						results <- err
+					}()
+					if i == 0 {
+						<-creating
+						if !overlap {
+							close(publish)
+						}
+						synctest.Wait()
+					}
+				}
+				if overlap {
+					// The second connector must observe the unpublished issue and enter
+					// its retry wait before the first connector completes publication.
+					synctest.Wait()
+					close(publish)
+				}
+				for range 2 {
+					if err := <-results; err != nil {
+						t.Fatal(err)
+					}
+				}
+				if first, second := <-reused, <-reused; first == second {
+					t.Fatalf("reused = %v, %v", first, second)
+				}
+				if creates != 1 || comments != 1 {
+					t.Fatalf("creates=%d comments=%d", creates, comments)
+				}
+			})
+		})
 	}
 }
 
