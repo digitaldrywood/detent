@@ -710,6 +710,8 @@ items. `retro` periodically mines completed work for recurring operational
 lessons. `routines` schedules arbitrary agent prompts against supported
 trackers.
 
+The `intake.sources[]` keys `enabled`, `paths`, and `exclude_paths` scope the scanner's sources and are not a workaround for a mechanism.
+
 `backlog_admission` is an opt-in scheduled pass that evaluates items from
 configured source states against a named criteria section in `WORKFLOW.md`,
 then proposes a bounded number for a target state. Its five-field cron,
