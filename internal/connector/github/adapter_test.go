@@ -7406,3 +7406,47 @@ func TestSecurityAuditDeltaSnapshot(t *testing.T) {
 		})
 	}
 }
+
+func TestConnectorLookupBranchHead(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, repository, branch, body, want string
+		wantErr                              bool
+	}{
+		{name: "branch with slash", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":{"ref":{"target":{"oid":"remote-head"}}}}}`, want: "remote-head"},
+		{name: "missing branch", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":{"ref":null}}}`},
+		{name: "missing repository", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":null}}`, wantErr: true},
+		{name: "empty head", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":{"ref":{"target":{"oid":""}}}}}`, wantErr: true},
+		{name: "API error", repository: "example/repo", branch: "detent/issue-2601", body: `{"errors":[{"message":"unavailable"}]}`, wantErr: true},
+		{name: "invalid repository", repository: "invalid", branch: "detent/issue-2601", wantErr: true},
+		{name: "empty branch", repository: "example/repo", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var responses []graphqlTestResponse
+			if tt.body != "" {
+				responses = append(responses, graphqlTestResponse{body: tt.body})
+			}
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{})
+			got, err := c.LookupBranchHead(t.Context(), tt.repository, tt.branch)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("LookupBranchHead() = %q, %v; want %q, error %v", got, err, tt.want, tt.wantErr)
+			}
+			requests := server.requests()
+			if tt.body == "" {
+				if len(requests) != 0 {
+					t.Fatalf("invalid input issued %d requests", len(requests))
+				}
+				return
+			}
+			if len(requests) != 1 {
+				t.Fatalf("requests = %d, want 1", len(requests))
+			}
+			variables := requests[0]["variables"].(map[string]any)
+			if variables["owner"] != "example" || variables["name"] != "repo" || variables["ref"] != "refs/heads/detent/issue-2601" {
+				t.Fatalf("variables = %#v", variables)
+			}
+		})
+	}
+}

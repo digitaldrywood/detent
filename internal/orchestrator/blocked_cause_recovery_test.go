@@ -2159,25 +2159,91 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 	readyPullRequest := *blockedReadyPullRequestIssue().PullRequest
 	readyPullRequest.BranchName = branch
 	tests := []struct {
-		name              string
-		cause             string
-		linked            bool
-		lookupPullRequest connector.PullRequest
-		lookupFound       bool
-		lookupErr         error
-		created           *connector.PullRequest
-		createErr         error
-		invalidWorkpad    bool
-		wantLookupCalls   int
-		wantCreateCalls   int
-		wantHydrateCalls  int
-		wantWaitCalls     int
-		wantAction        string
-		wantReason        string
-		wantMerging       bool
-		wantDone          bool
-		wantRework        bool
+		missingWorkspace        bool
+		unsupportedBranchLookup bool
+		remoteHead              string
+		remoteErr               error
+		wantRemoteCalls         int
+		causeBranchOnly         bool
+		name                    string
+		cause                   string
+		linked                  bool
+		lookupPullRequest       connector.PullRequest
+		lookupFound             bool
+		lookupErr               error
+		created                 *connector.PullRequest
+		createErr               error
+		invalidWorkpad          bool
+		wantLookupCalls         int
+		wantCreateCalls         int
+		wantHydrateCalls        int
+		wantWaitCalls           int
+		wantAction              string
+		wantReason              string
+		wantMerging             bool
+		wantDone                bool
+		wantRework              bool
 	}{
+		{
+			name:             "absent workspace creates draft from remote head",
+			cause:            deliverableRecoveryNeedsHumanReason + ": pushed branch " + branch + " has no recoverable pull request",
+			missingWorkspace: true,
+			remoteHead:       readyPullRequest.HeadSHA,
+			wantRemoteCalls:  1,
+			created:          &connector.PullRequest{Number: 1777, BranchName: branch, State: "OPEN", HeadSHA: readyPullRequest.HeadSHA, Draft: true},
+			wantLookupCalls:  1,
+			wantCreateCalls:  1,
+			wantRework:       true,
+		},
+		{
+			name:             "absent workspace resolves branch from park cause",
+			cause:            deliverableRecoveryNeedsHumanReason + ": pushed branch " + branch + " has no recoverable pull request",
+			missingWorkspace: true,
+			causeBranchOnly:  true,
+			remoteHead:       readyPullRequest.HeadSHA,
+			wantRemoteCalls:  1,
+			created:          &connector.PullRequest{Number: 1777, BranchName: branch, State: "OPEN", HeadSHA: readyPullRequest.HeadSHA, Draft: true},
+			wantLookupCalls:  1,
+			wantCreateCalls:  1,
+			wantRework:       true,
+		},
+		{
+			name:              "absent workspace adopts existing remote draft",
+			cause:             deliverableRecoveryNeedsHumanReason,
+			missingWorkspace:  true,
+			remoteHead:        readyPullRequest.HeadSHA,
+			wantRemoteCalls:   1,
+			lookupPullRequest: connector.PullRequest{Number: 1777, BranchName: branch, State: "OPEN", HeadSHA: readyPullRequest.HeadSHA, Draft: true},
+			lookupFound:       true,
+			wantLookupCalls:   1,
+			wantHydrateCalls:  1,
+			wantRework:        true,
+		},
+		{
+			name:                    "unsupported remote branch lookup defers",
+			cause:                   deliverableRecoveryNeedsHumanReason,
+			missingWorkspace:        true,
+			unsupportedBranchLookup: true,
+			wantAction:              "defer",
+			wantReason:              blockedReadyPullRequestLookupUnavailableReason,
+		},
+		{
+			name:             "remote branch unavailable defers",
+			cause:            deliverableRecoveryNeedsHumanReason,
+			missingWorkspace: true,
+			wantRemoteCalls:  1,
+			wantAction:       "defer",
+			wantReason:       blockedReadyPullRequestLookupUnavailableReason,
+		},
+		{
+			name:             "remote lookup outage defers",
+			cause:            deliverableRecoveryNeedsHumanReason,
+			missingWorkspace: true,
+			remoteErr:        errors.New("forge unavailable"),
+			wantRemoteCalls:  1,
+			wantAction:       "defer",
+			wantReason:       blockedReadyPullRequestLookupUnavailableReason,
+		},
 		{
 			name:              "unlinked exact-head open pull request reconciles",
 			lookupPullRequest: readyPullRequest,
@@ -2290,6 +2356,8 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 				pullRequest:                    tt.lookupPullRequest,
 				found:                          tt.lookupFound,
 				err:                            tt.lookupErr,
+				remoteHead:                     tt.remoteHead,
+				remoteErr:                      tt.remoteErr,
 				created:                        tt.created,
 				createErr:                      tt.createErr,
 			}
@@ -2315,10 +2383,19 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 					return true
 				},
 			}
+			if tt.unsupportedBranchLookup {
+				orch.connector = tracker.dependencyAutoUnblockConnector
+			}
+			if tt.missingWorkspace {
+				orch.recoveryInspector = staticBlockedRecoveryInspector{}
+			}
 			state := newState(cfg)
 			parkedAt := time.Date(2026, 8, 14, 13, 15, 0, 0, time.UTC)
 			blockedIssue := cloneIssue(issue)
 			blockedIssue.BranchName = branch
+			if tt.causeBranchOnly {
+				blockedIssue.BranchName = ""
+			}
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     blockedIssue,
 				Reason:    cause,
@@ -2333,8 +2410,19 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 				},
 			}
 
+			if strings.HasPrefix(cause, deliverableRecoveryNeedsHumanReason) {
+				state.Blocked[issue.ID].Recovery.Owner = blockedRecoveryOwnerHuman
+				state.Blocked[issue.ID].Recovery.Predicate = blockedRecoveryPredicateManaged
+			}
+
 			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, parkedAt.Add(time.Minute))
 
+			if tracker.remoteCalls != tt.wantRemoteCalls {
+				t.Fatalf("remote calls = %d, want %d", tracker.remoteCalls, tt.wantRemoteCalls)
+			}
+			if tracker.remoteCalls > 0 && (tracker.remoteRepository != repository || tracker.remoteBranch != branch) {
+				t.Fatalf("remote lookup = %q %q", tracker.remoteRepository, tracker.remoteBranch)
+			}
 			if tracker.lookupCalls != tt.wantLookupCalls {
 				t.Fatalf("lookup calls = %d, want %d", tracker.lookupCalls, tt.wantLookupCalls)
 			}
@@ -2418,6 +2506,11 @@ func blockedReadyPullRequestIssue() connector.Issue {
 }
 
 type blockedReadyPullRequestLookupConnector struct {
+	remoteHead       string
+	remoteErr        error
+	remoteCalls      int
+	remoteRepository string
+	remoteBranch     string
 	*dependencyAutoUnblockConnector
 	pullRequest  connector.PullRequest
 	found        bool
@@ -2493,4 +2586,10 @@ type staticBlockedRecoveryInspector struct {
 
 func (i staticBlockedRecoveryInspector) BlockedRecoverySnapshot(context.Context, runpkg.RunRequest) runpkg.BlockedRecoverySnapshot {
 	return i.snapshot
+}
+
+func (c *blockedReadyPullRequestLookupConnector) LookupBranchHead(_ context.Context, repository, branch string) (string, error) {
+	c.remoteCalls++
+	c.remoteRepository, c.remoteBranch = repository, branch
+	return c.remoteHead, c.remoteErr
 }

@@ -201,6 +201,13 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Pushed-branch deliverable recovery (#2601) resolves an absent workspace head from
+GitHub's remote branch, removing local workspace retention as a prerequisite for
+the existing exact-head draft creation and Rework transition. Remote lookup
+failures reuse the existing unavailable-lookup defer outcome. No recovery loop,
+reason code, or configuration is added. `TestRecoverBlockedReadyPullRequestExactHeadLookup`
+covers human-owned parks with missing workspaces and remote lookup failures.
+
 Heartbeat writes (#2871) share a bounded per-write context and one retry across
 dedicated, tick, and worker-progress paths, replacing the unreachable same-context
 retry. Caller cancellation and terminal attempts remain authoritative. Checkpoints
