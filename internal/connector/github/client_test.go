@@ -3244,27 +3244,27 @@ func TestClientGraphQLSharedMutationAdmission(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name             string
-		throttle, cancel bool
+		cooldown, nested bool
 	}{
-		{name: "success"}, {name: "secondary cooldown", throttle: true}, {name: "canceled waiter", cancel: true},
+		{name: "concurrent"}, {name: "cooldown", cooldown: true}, {name: "nested", nested: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				registry := newRESTBackoffRegistry()
 				release := make(chan struct{})
 				var calls atomic.Int64
+				var b *Client
 				transport := recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
-					status, body := http.StatusOK, `{"data":{}}`
-					header := http.Header{}
 					if calls.Add(1) == 1 {
-						<-release
-						if test.throttle {
-							status = http.StatusForbidden
-							body = `{"message":"secondary rate limit"}`
-							header.Set("Retry-After", "60")
+						if test.nested {
+							if err := b.GraphQL(r.Context(), "mutation { nested }", nil, nil); err != nil {
+								return nil, err
+							}
+						} else {
+							<-release
 						}
 					}
-					return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"data":{}}`))}, nil
 				})
 				makeClient := func(token string) *Client {
 					c, err := NewClient(ClientConfig{Endpoint: "https://shared-mutations.test/graphql", TokenSource: secondaryIdentityToken{token: token}, HTTPClient: transport})
@@ -3274,48 +3274,43 @@ func TestClientGraphQLSharedMutationAdmission(t *testing.T) {
 					c.restBackoffs = registry
 					return c
 				}
-				a, b := makeClient("installation-token-before-rotation"), makeClient("installation-token-after-rotation")
-				first, second := make(chan error, 1), make(chan error, 1)
-				go func() { first <- a.GraphQL(t.Context(), "mutation { repair }", nil, nil) }()
-				synctest.Wait()
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				go func() { second <- b.GraphQL(ctx, "mutation { repair }", nil, nil) }()
-				synctest.Wait()
-				if got := calls.Load(); got != 1 {
-					t.Errorf("requests before first response = %d, want 1", got)
-				}
-				if test.cancel {
-					cancel()
-					synctest.Wait()
-					if err := <-second; !errors.Is(err, context.Canceled) {
-						t.Errorf("waiter = %v", err)
+				a := makeClient("before-rotation")
+				b = makeClient("after-rotation")
+				if test.cooldown {
+					state := a.bindGraphQLSecondary("before-rotation")
+					state.until = time.Now().Add(time.Minute)
+					for _, c := range []*Client{a, b} {
+						err := c.GraphQL(t.Context(), "mutation { write }", nil, nil)
+						var status *StatusError
+						if !errors.As(err, &status) || !errors.Is(err, ErrRateLimited) || status.RetryAfter != time.Minute {
+							t.Fatalf("cooldown = %v", err)
+						}
 					}
-				}
-				close(release)
-				synctest.Wait()
-				if err := <-first; errors.Is(err, ErrRateLimited) != test.throttle {
-					t.Errorf("first request = %v", err)
-				}
-				if !test.cancel {
-					if err := <-second; errors.Is(err, ErrRateLimited) != test.throttle {
-						t.Errorf("queued request = %v", err)
-					}
-				}
-				if test.throttle {
-					if calls.Load() != 1 {
-						t.Fatal("queued mutation bypassed cooldown")
-					}
-					usage := b.FlushGraphQLRateLimitUsage()
-					if !usage.HasRateLimit || usage.RateLimitStatus != connector.GraphQLRateLimitStatusBackoff {
-						t.Fatal("shared throttle absent from usage")
+					if calls.Load() != 0 {
+						t.Fatal("mutation bypassed cooldown")
 					}
 					time.Sleep(time.Minute)
-					if err := b.GraphQL(t.Context(), "mutation { repair }", nil, nil); err != nil {
-						t.Fatalf("mutation after deadline = %v", err)
-					}
-					if calls.Load() != 2 {
-						t.Fatal("mutation did not resume after deadline")
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				results := make(chan error, 2)
+				go func() { results <- a.GraphQL(ctx, "mutation { first }", nil, nil) }()
+				synctest.Wait()
+				if !test.nested {
+					go func() { results <- b.GraphQL(ctx, "mutation { second }", nil, nil) }()
+					synctest.Wait()
+				}
+				if calls.Load() != 2 {
+					t.Errorf("concurrent/nested transport calls = %d, want 2", calls.Load())
+				}
+				close(release)
+				count := 2
+				if test.nested {
+					count = 1
+				}
+				for range count {
+					if err := <-results; err != nil {
+						t.Errorf("mutation = %v", err)
 					}
 				}
 			})
@@ -3328,4 +3323,65 @@ type secondaryIdentityToken struct{ token string }
 func (s secondaryIdentityToken) Token(context.Context) (string, error) { return s.token, nil }
 func (secondaryIdentityToken) CredentialIdentity(string) string {
 	return "github-app-installation:4242"
+}
+
+func TestRepairBatchAdmission(t *testing.T) {
+	t.Parallel()
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled=%v", canceled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				release := make(chan struct{})
+				var calls atomic.Int64
+				registry := newRESTBackoffRegistry()
+				makeConnector := func() *Connector {
+					client, err := NewClient(ClientConfig{TokenSource: secondaryIdentityToken{token: "token"}, HTTPClient: recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
+						if calls.Add(1) == 1 {
+							<-release
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"item"}}}}`))}, nil
+					})})
+					if err != nil {
+						t.Fatal(err)
+					}
+					client.restBackoffs = registry
+					cache := newStatusCache(time.Hour, nil)
+					cache.Set("project", statusMetadata{FieldID: "field", OptionIDsByName: map[string]string{"Backlog": "option"}})
+					return &Connector{client: client, projectID: "project", statusCache: cache}
+				}
+				a, b := makeConnector(), makeConnector()
+				first, second := make(chan error, 1), make(chan error, 1)
+				go func() { first <- a.writeDefaultProjectItemStatuses(t.Context(), []string{"one", "two"}, "Backlog") }()
+				synctest.Wait()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				go func() { second <- b.writeDefaultProjectItemStatuses(ctx, []string{"three"}, "Backlog") }()
+				synctest.Wait()
+				if calls.Load() != 1 {
+					t.Errorf("repair calls before release = %d", calls.Load())
+				}
+				// An ordinary mutation may nest under the repair slot.
+				if err := b.client.GraphQL(t.Context(), "mutation { unrelated }", nil, nil); err != nil {
+					t.Error(err)
+				}
+				if canceled {
+					cancel()
+					synctest.Wait()
+				}
+				close(release)
+				if err := <-first; err != nil {
+					t.Error(err)
+				}
+				if err := <-second; errors.Is(err, context.Canceled) != canceled {
+					t.Errorf("queued repair = %v", err)
+				}
+				want := int64(4)
+				if canceled {
+					want = 3
+				}
+				if calls.Load() != want {
+					t.Errorf("calls = %d, want %d", calls.Load(), want)
+				}
+			})
+		})
+	}
 }

@@ -638,6 +638,24 @@ func (c *Connector) writeDefaultProjectItemStatuses(ctx context.Context, itemIDs
 		return nil
 	}
 
+	token, err := c.client.tokenSource.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ErrMissingToken
+	}
+	secondary := c.client.bindGraphQLSecondary(token)
+	// Only repair fan-out is serialized; nested GraphQL mutations remain free
+	// to run and all requests still check the shared cooldown deadline.
+	select {
+	case secondary.repairs <- struct{}{}:
+		defer func() { <-secondary.repairs }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
 	var joined error
 	for _, itemID := range itemIDs {
 		if err := ctx.Err(); err != nil {

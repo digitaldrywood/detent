@@ -171,23 +171,8 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		return ErrMissingToken
 	}
 
-	// Resolve the credential before admission: projects and refreshed installation
-	// tokens must use the same cooldown and mutation serialization state.
-	secondary := c.bindGraphQLSecondary(token)
-	var release func()
-	if !lookup {
-		select {
-		case secondary.mutations <- struct{}{}:
-			release = func() { <-secondary.mutations }
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		defer func() {
-			if release != nil {
-				release()
-			}
-		}()
-	}
+	// Projects and refreshed installation tokens share the cooldown.
+	c.bindGraphQLSecondary(token)
 	if err := c.graphQLLookupBackoffError(queryType, lookup, time.Now()); err != nil {
 		return err
 	}
@@ -252,10 +237,6 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	if resp.StatusCode != http.StatusOK {
 		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
-			if release != nil {
-				release()
-				release = nil
-			}
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
 		c.recordGraphQLRateLimitFailure(err, headerRateLimit, receivedAt)
@@ -275,10 +256,6 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	if len(envelope.Errors) > 0 {
 		err := classifyGraphQLErrors(envelope.Errors)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
-			if release != nil {
-				release()
-				release = nil
-			}
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
 		c.recordGraphQLRateLimitFailure(err, headerRateLimit, receivedAt)
@@ -2252,17 +2229,17 @@ func (c *Client) logRESTUsageDivergence(ctx context.Context, divergence connecto
 }
 
 // graphQLSecondaryState is owned by the existing credential backoff registry.
-// Mutations hold admission through response accounting so queued writes observe
-// any cooldown returned by the preceding write.
+// Repair batches hold admission so queued repairs observe the preceding cooldown.
+// Ordinary mutations never acquire this slot, including nested mutation calls.
 type graphQLSecondaryState struct {
-	mu        sync.Mutex
-	until     time.Time
-	failures  int
-	mutations chan struct{}
+	mu       sync.Mutex
+	until    time.Time
+	failures int
+	repairs  chan struct{}
 }
 
 func newGraphQLSecondaryState() *graphQLSecondaryState {
-	return &graphQLSecondaryState{mutations: make(chan struct{}, 1)}
+	return &graphQLSecondaryState{repairs: make(chan struct{}, 1)}
 }
 
 func (s *graphQLSecondaryState) deadline() time.Time {
