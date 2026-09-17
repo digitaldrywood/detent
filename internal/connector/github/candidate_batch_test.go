@@ -250,6 +250,7 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 					node.BlockedBy = &issueNodesConnection{Nodes: []githubIssueNode{{ID: "B", Number: 8, State: "OPEN", Repository: repository{NameWithOwner: "third/repo"}}}}
 					data[fmt.Sprintf("issue%d", i)] = node
 				}
+				addHydratedProjectFields(data, request.Variables)
 				write(map[string]any{"data": data})
 			}))
 			defer server.Close()

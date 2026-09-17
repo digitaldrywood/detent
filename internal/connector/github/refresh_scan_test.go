@@ -71,6 +71,7 @@ func TestRefreshScanCredentials(t *testing.T) {
 						return
 					}
 				}
+				addHydratedProjectFields(response["data"].(map[string]any), request.Variables)
 				response["data"].(map[string]any)["rateLimit"] = map[string]any{"cost": 3}
 				if err := json.NewEncoder(w).Encode(response); err != nil {
 					t.Error(err)

@@ -69,6 +69,7 @@ func TestRefreshHydrationResumes(t *testing.T) {
 					}
 					data["node"] = map[string]any{"updatedAt": stamp, "items": map[string]any{"totalCount": 30, "nodes": items}}
 				}
+				addHydratedProjectFields(data, req.Variables)
 				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
 					t.Error(err)
 				}
@@ -145,6 +146,7 @@ func TestCandidateHydrationShape(t *testing.T) {
 					}
 					data["issue"+index] = map[string]any{"id": id, "comments": map[string]any{"totalCount": 2, "pageInfo": map[string]any{"hasNextPage": more, "endCursor": "next"}, "nodes": []any{map[string]any{"id": commentID}}}, "blockedBy": map[string]any{"nodes": []any{}}}
 				}
+				addHydratedProjectFields(data, req.Variables)
 				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
 					t.Error(err)
 				}

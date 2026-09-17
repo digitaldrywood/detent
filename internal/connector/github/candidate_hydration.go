@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -36,7 +37,7 @@ func (c *Connector) candidateEvidenceBatched(ctx context.Context, nodes []github
 	complete := make(map[string]githubIssueNode)
 	defer func() { c.observeCandidatePullRequests(ctx, nodes, complete) }()
 	for start := 0; start < len(nodes); start += candidateHydrationBatchSize {
-		batch, err := c.candidateEvidenceBatch(ctx, nodes[start:min(start+candidateHydrationBatchSize, len(nodes))], fetch)
+		batch, _, err := c.candidateEvidenceBatch(ctx, nodes[start:min(start+candidateHydrationBatchSize, len(nodes))], fetch)
 		for id, node := range batch {
 			complete[id] = node
 		}
@@ -47,8 +48,9 @@ func (c *Connector) candidateEvidenceBatched(ctx context.Context, nodes []github
 	return complete, nil
 }
 
-func (c *Connector) candidateEvidenceBatch(ctx context.Context, nodes []githubIssueNode, fetch bool) (map[string]githubIssueNode, error) {
+func (c *Connector) candidateEvidenceBatch(ctx context.Context, nodes []githubIssueNode, fetch bool) (map[string]githubIssueNode, map[string]projectItemFields, error) {
 	complete := make(map[string]githubIssueNode)
+	customFields := make(map[string]projectItemFields)
 	pending := make([]githubIssueNode, 0, len(nodes))
 	for _, node := range nodes {
 		if strings.TrimSpace(node.ID) == "" {
@@ -85,7 +87,17 @@ func (c *Connector) candidateEvidenceBatch(ctx context.Context, nodes []githubIs
 				variables[fmt.Sprintf("dependencies%d", i)] = node.BlockedBy.PageInfo.EndCursor
 			}
 		}
+		items := make(map[string]string)
+		if fetch {
+			for _, node := range pending {
+				if node.CandidateProjectItemID != "" {
+					items[node.ID] = node.CandidateProjectItemID
+				}
+			}
+		}
+		fieldIDs := appendProjectFieldVariables(&query, variables, items)
 		query.WriteString(") { rateLimit { limit used cost remaining resetAt }")
+		appendProjectFieldSelections(&query, fieldIDs)
 		for i, node := range pending {
 			fmt.Fprintf(&query, "issue%d: node(id: $id%d) { ... on Issue { id body updatedAt ", i, i)
 			// Fetch no nodes from a finished connection while its sibling advances.
@@ -102,16 +114,29 @@ func (c *Connector) candidateEvidenceBatch(ctx context.Context, nodes []githubIs
 			query.WriteString("} }")
 		}
 		query.WriteString("}")
-		var response map[string]*githubIssueNode
+		var response map[string]json.RawMessage
 		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, query.String(), variables, &response); err != nil {
-			return complete, err
+			return complete, customFields, err
+		}
+		fields, err := decodeProjectFields(response, fieldIDs, items)
+		if err != nil {
+			return complete, customFields, err
+		}
+		for id, item := range fields {
+			customFields[id] = item
 		}
 		next = nil
 		for i, previous := range pending {
-			node := response[fmt.Sprintf("issue%d", i)]
+			var node *githubIssueNode
+			if raw := response[fmt.Sprintf("issue%d", i)]; len(raw) > 0 {
+				if err := json.Unmarshal(raw, &node); err != nil {
+					return complete, customFields, err
+				}
+			}
 			if node == nil || node.ID != previous.ID || node.BlockedBy == nil {
 				continue
 			}
+			node.CandidateProjectItemID = previous.CandidateProjectItemID
 			if !fetch {
 				if previous.Comments.PageInfo.HasNextPage {
 					if node.Comments.PageInfo.HasNextPage && node.Comments.PageInfo.EndCursor == previous.Comments.PageInfo.EndCursor {
@@ -135,7 +160,7 @@ func (c *Connector) candidateEvidenceBatch(ctx context.Context, nodes []githubIs
 		pending = next
 		fetch = false
 	}
-	return complete, nil
+	return complete, customFields, nil
 }
 
 func candidateEvidenceComplete(node githubIssueNode) bool {

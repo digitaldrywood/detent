@@ -406,6 +406,7 @@ func TestConnectorFetchRefreshIssuesBoundsLargeProjectScan(t *testing.T) {
 			for start := 0; start < tt.firstPageCount; start += 25 {
 				data := map[string]any{}
 				for i := start; i < min(start+25, tt.firstPageCount); i++ {
+					data[fmt.Sprintf("item%d", i-start)] = map[string]any{"id": fmt.Sprintf("PVTI_%d", 1000+i), "fieldValues": map[string]any{"nodes": []any{}}}
 					data[fmt.Sprintf("issue%d", i-start)] = map[string]any{"id": fmt.Sprintf("I_%d", 1000+i), "comments": map[string]any{"totalCount": 0}, "blockedBy": map[string]any{"nodes": []any{}}}
 				}
 				body, err := json.Marshal(map[string]any{"data": data})
@@ -4298,12 +4299,8 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: projectItemsPageResponseWithTotal(2, false, "", []string{
-				`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":1,"title":"First","state":"OPEN","url":"https://github.com/example/repo/issues/1","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[]}}`,
-				`{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":2,"title":"Second","state":"OPEN","url":"https://github.com/example/repo/issues/2","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"No priority"},"fieldValues":{"nodes":[]}}`,
-			}),
-		},
+		{body: `{"data":{"issue0":{"id":"I_kw2","number":2,"repository":{"nameWithOwner":"example/repo"},"projectItems":{"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"}}]}},"issue1":{"id":"I_kw1","number":1,"repository":{"nameWithOwner":"example/repo"},"projectItems":{"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"item0":{"id":"PVTI_1","statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[]}},"item1":{"id":"PVTI_2","statusValue":{"name":"Reviewing"},"priorityValue":{"name":"No priority"},"fieldValues":{"nodes":[]}}}}`},
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/2",
@@ -4365,8 +4362,8 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 		t.Fatalf("warm FetchIssueStatesByIDs() = %#v, want cached project states", warm)
 	}
 	requests := server.requests()
-	if len(requests) != 6 {
-		t.Fatalf("request count = %d, want one project scan, four REST issues, and one dependency capability probe", len(requests))
+	if len(requests) != 7 {
+		t.Fatalf("request count = %d, want two bounded field reads, four REST issues, and one dependency capability probe", len(requests))
 	}
 	var projectQueries int
 	for _, request := range requests {
@@ -4378,8 +4375,8 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 			projectQueries++
 		}
 	}
-	if projectQueries != 1 {
-		t.Fatalf("project query count = %d, want one query across cold and warm passes", projectQueries)
+	if projectQueries != 0 {
+		t.Fatalf("project query count = %d, want zero board queries across cold and warm passes", projectQueries)
 	}
 }
 
@@ -4387,11 +4384,8 @@ func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: projectItemsPageResponseWithTotal(1, false, "", []string{
-				`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":1,"title":"First","state":"CLOSED","stateReason":"not_planned","url":"https://github.com/example/repo/issues/1","author":{"login":"author-1"},"assignees":{"nodes":[{"login":"worker-1"},{"login":"worker-2"}]},"repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Ready","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldTextValue","text":"team-a","field":{"name":"Owner"}},{"__typename":"ProjectV2ItemFieldNumberValue","number":3,"field":{"name":"Weight"}}]}}`,
-			}),
-		},
+		{body: `{"data":{"issue0":{"id":"I_kw1","number":1,"repository":{"nameWithOwner":"example/repo"},"projectItems":{"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data": {"item0": {"id": "PVTI_1", "statusValue": {"name": "Ready"}, "priorityValue": {"name": "P1"}, "fieldValues": {"nodes": [{"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Ready", "field": {"name": "Status"}}, {"__typename": "ProjectV2ItemFieldTextValue", "text": "team-a", "field": {"name": "Owner"}}, {"__typename": "ProjectV2ItemFieldNumberValue", "number": 3, "field": {"name": "Weight"}}]}}}}`},
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/1",
@@ -4460,16 +4454,9 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: projectItemsPageResponseWithTotal(2, true, "cursor-1", []string{
-				`{"id":"PVTI_other","content":{"__typename":"Issue","id":"I_other","number":2,"title":"Other","state":"OPEN","url":"https://github.com/example/repo/issues/2","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Open"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[]}}`,
-			}),
-		},
-		{
-			body: projectItemsPageResponseWithTotal(2, false, "", []string{
-				`{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":1,"title":"Later project","state":"OPEN","url":"https://github.com/example/repo/issues/1","repository":{"nameWithOwner":"example/repo"}},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"P2"},"fieldValues":{"nodes":[]}}`,
-			}),
-		},
+		{body: `{"data":{"issue0":{"id":"I_kw1","number":1,"repository":{"nameWithOwner":"example/repo"},"projectItems":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[{"id":"PVTI_other","project":{"id":"PVT_other"}}]}}}}`},
+		{body: `{"data":{"issue0":{"id":"I_kw1","number":1,"repository":{"nameWithOwner":"example/repo"},"projectItems":{"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"item0":{"id":"PVTI_1","statusValue":{"name":"Reviewing"},"priorityValue":{"name":"P2"},"fieldValues":{"nodes":[]}}}}`},
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/1",
@@ -4506,15 +4493,15 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want 2 project scan pages, REST issue, and dependency probe", len(requests))
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want 2 membership pages, field hydration, REST issue, and dependency probe", len(requests))
 	}
 	variables := requests[1]["variables"].(map[string]any)
-	if variables["after"] != "cursor-1" {
-		t.Fatalf("after = %v, want cursor-1", variables["after"])
+	if variables["after0"] != "cursor-1" {
+		t.Fatalf("after = %v, want cursor-1", variables["after0"])
 	}
-	if variables["projectId"] != "PVT_1" {
-		t.Fatalf("projectId = %v, want PVT_1", variables["projectId"])
+	if variables["id0"] != "I_kw1" {
+		t.Fatalf("membership issue = %v", variables["id0"])
 	}
 }
 
@@ -7192,7 +7179,7 @@ func projectIssueNode(itemID string, issueID string, number int, title string, s
 		statusValue = fmt.Sprintf(`{"name":%q}`, status)
 	}
 	return fmt.Sprintf(
-		`{"id":%q,"content":{"__typename":"Issue","id":%q,"number":%d,"title":%q,"body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/%d","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":%s,"priorityValue":null}`,
+		`{"id":%q,"updatedAt":"2026-09-16T20:00:00Z","content":{"__typename":"Issue","id":%q,"number":%d,"title":%q,"body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/%d","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":%s,"priorityValue":null}`,
 		itemID,
 		issueID,
 		number,
@@ -7283,7 +7270,7 @@ func githubIssueIDs(issues []connector.Issue) []string {
 
 func TestProjectFieldsRefreshUsesTargetedQueryOnlyForChangedCard(t *testing.T) {
 	t.Parallel()
-	server := newGraphQLTestServer(t, []graphqlTestResponse{{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"fieldValues":{"nodes":[]}}]}}}}`}})
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{body: `{"data":{"item0":{"id":"PVTI_1","statusValue":{"name":"Done"},"fieldValues":{"nodes":[]}}}}`}})
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 	c.projectCache.ReplaceProjectFields("PVT_1", map[string]projectItemFields{
 		"I_1": {itemID: "PVTI_1", statusName: "Todo"},
@@ -7309,7 +7296,7 @@ func TestProjectFieldsRefreshUsesTargetedQueryOnlyForChangedCard(t *testing.T) {
 		t.Fatalf("requests = %d, want one targeted refresh", len(requests))
 	}
 	query, _ := requests[0]["query"].(string)
-	if !strings.Contains(query, "DetentGitHubProjectItemForIssue") {
+	if !strings.Contains(query, "DetentGitHubProjectFieldHydration") {
 		t.Fatalf("query = %q, want targeted refresh", query)
 	}
 }
