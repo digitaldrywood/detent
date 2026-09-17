@@ -167,7 +167,6 @@ func TestSharedWorkRepresentationsKeepIssueHealthContextual(t *testing.T) {
 
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
-		`data-board-card-sync="error"`,
 		`data-work-sync-status="error"`,
 		`machine-a`,
 		`renewed 1m 30s ago`,

@@ -332,18 +332,6 @@
     opacity: 1;
   }
 
-  .runtime-badge-comfy {
-    display: none;
-  }
-
-  [data-density="comfy"] .runtime-badge-cozy {
-    display: none;
-  }
-
-  [data-density="comfy"] .runtime-badge-comfy {
-    display: inline;
-  }
-
   .help-tip-title {
     color: var(--color-text);
     display: block;
@@ -360,11 +348,6 @@
 
 [data-board-card-content="comfy"],
 [data-ai-debug-card-action] {
-  display: none;
-}
-
-[data-density="compact"] [data-board-card-signal]:nth-child(n + 2),
-[data-density="compact"] [data-board-card-age-footer] {
   display: none;
 }
 
@@ -401,32 +384,4 @@
 
 [data-density="comfy"] [data-ai-debug-card-action] {
   display: flex;
-}
-
-/* Active-card evidence adds one line at compact density. */
-[data-density="compact"] [data-board-card-facts] {
-  display: flex;
-  gap: 0.25rem;
-  padding-top: 0;
-  border-top: 0;
-  line-height: 1rem;
-}
-[data-density="compact"] [data-board-card-facts] > div {
-  display: contents;
-}
-[data-density="compact"] [data-card-fact] {
-  display: flex;
-  height: 1rem;
-  font-size: 0;
-}
-[data-density="compact"] [data-card-fact]::after {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  content: attr(data-compact);
-  font-size: var(--text-2xs);
-}
-[data-density="compact"] [data-card-fact]:not([data-card-fact="reason"]) {
-  flex-shrink: 0;
 }

@@ -38,6 +38,11 @@ func TestQuestionVisibility(t *testing.T) {
 				issue := telemetry.Issue{ID: "1", Identifier: q.Issue, ProjectID: "p", State: lane}
 				data := DashboardData{Snapshot: telemetry.Snapshot{GeneratedAt: now, BoardIssues: []telemetry.Issue{issue}, OpenQuestions: []operations.Decision{q}}}
 				facts := boardCardFacts(data, projectKanbanCard{IssueID: "1", Identifier: q.Issue, ProjectID: "p", Stage: lane})
+				view := boardCardViewFromCard(data, projectKanbanLane{Title: lane}, projectKanbanCard{IssueID: "1", Identifier: q.Issue, ProjectID: "p", Stage: lane}, false, "fleet", "p")
+				if len(view.Signals) != 1 || view.Signals[0].Text != "Needs your reply · "+tc.age {
+					t.Fatalf("question status = %+v", view.Signals)
+				}
+
 				if got := facts[4]; got.Text != "waiting for a human reply · "+tc.age || got.Detail != q.Question {
 					t.Fatalf("reason = %+v", got)
 				}

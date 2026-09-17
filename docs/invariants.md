@@ -1041,6 +1041,22 @@ cache volume. The existing reaper reuses its trim walk to publish retained build
 `host_cache` in `/api/v1/state` as the sole cache surface (#2742). It does not rescan
 the build cache or traverse the module cache; unmeasured module fields are omitted.
 
+## INV-13 — A board card is a title and one status line
+
+A board card renders exactly: the identity row (project, issue and PR references,
+origin), the title, at most one status line, and the existing priority controls.
+The status line is at most 48 Unicode characters and names the wait in words a
+human acts on, for example "Waiting on #2129", "CI running", "Needs your reply · 4h",
+"Blocked · 1", "Running". Scheduler evidence, tracker snapshot ages, timestamps,
+token counts, attempt counts, fact grids, and diagnostic text are not card
+content; they live in the detail sheet and hover titles. A change that adds a body
+element to the card, or lengthens the status line, must change this invariant in
+the same PR.
+
+`TestINV13BoardCardContent` and `TestINV13SheetObservations`, registered in the
+invariant manifest, enforce the content, character budget, and detail preservation. Playwright
+checks one-line status layout in compact, cozy, and comfy densities.
+
 ## Check boundaries
 
 The source walk covers non-test Go packages under `internal`, `cmd`, and `tools`

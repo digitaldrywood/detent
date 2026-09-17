@@ -29,12 +29,6 @@ test("card density changes rendered information and persists", async ({
   const reviewCard = page.locator("article", {
     hasText: "Review deterministic chart colors",
   });
-  const absentAuthorCard = page.locator("article", {
-    hasText: "Backlog observability fixture intake",
-  });
-  const matchingOriginActorCard = page.locator("article", {
-    hasText: "Add screenshot manifest smoke test",
-  });
   const aiDebugAction = runningCard.locator("[data-ai-debug-card-action]");
 
   await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
@@ -65,39 +59,13 @@ test("card density changes rendered information and persists", async ({
   await page.locator('[data-density-choice="comfy"]').click();
   await expect(page.locator("html")).toHaveAttribute("data-density", "comfy");
   await expect(runningCard.locator("[data-board-card-signals]")).toBeVisible();
-  await expect(runningCard.locator('[data-board-card-content="comfy"]')).toBeVisible();
-  await expect(aiDebugAction).toBeVisible();
-  await expect(runningCard.locator("[data-board-card-labels]")).toContainText("enhancement");
-  await expect(runningCard.locator("[data-board-card-effort]")).toContainText("xhigh");
-  await expect(runningCard.locator("[data-board-card-activity]")).toContainText(
-    "Rendered manifest and route smoke checks.",
-  );
-  await expect(reviewCard.locator("[data-board-card-pr-status]")).toContainText(
-    "PR #5290",
-  );
-  await expect(runningCard.locator("[data-board-card-author]")).toHaveText(
-    "Filed by @corylanou",
-  );
-  await expect(absentAuthorCard.locator("[data-board-card-author]")).toHaveCount(0);
-  await expect(matchingOriginActorCard.locator("[data-board-card-author]")).toHaveCount(0);
-  await expect(matchingOriginActorCard.locator("[data-board-card-origin]")).toContainText(
-    "via human · @corylanou",
-  );
-
-  const originalAuthor = await runningCard
-    .locator("[data-board-card-author]")
-    .elementHandle();
-  const snapshotHTML = await page.locator("#snapshot").evaluate(
-    (snapshot) => snapshot.innerHTML,
-  );
+  await expect(runningCard.locator("[data-board-card-details]")).toHaveCount(0);
+  await expect(aiDebugAction).toHaveCount(0);
+  await expect(runningCard).toHaveAttribute("title", /Rendered manifest and route smoke checks/);
+  await expect(runningCard.locator("[data-board-card-author]")).toHaveCount(0);
+  const snapshotHTML = await page.locator("#snapshot").evaluate(el => el.innerHTML);
   await morphSnapshot(page, snapshotHTML);
-  await expect(runningCard.locator("[data-board-card-author]")).toHaveCount(1);
-  expect(
-    await runningCard.locator("[data-board-card-author]").evaluate(
-      (author, original) => author === original,
-      originalAuthor,
-    ),
-  ).toBe(true);
+  await expect(runningCard.locator("[data-board-card-signal]")).toHaveText("Running");
 
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
@@ -294,28 +262,11 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
       await chooseDensity(page, density);
       await card.scrollIntoViewIfNeeded();
       await assertCardIdentity(card);
-      if (density === "comfy") {
-        await expect(blockers).toBeVisible();
-        await expect(blockers).toContainText("component-8#597 (In Progress)");
-        await expect(blockers).toContainText("completed#589 (Done)");
-        await expect(card.locator("[data-board-card-park-summary]")).toBeVisible();
-        const detailsGeometry = await card.evaluate(el => {
-          const box = el.getBoundingClientRect();
-          return [...el.querySelectorAll("[data-board-card-expanded]")].map(row => ({
-            lines: row.getBoundingClientRect().height / parseFloat(getComputedStyle(row).lineHeight),
-            contained: row.getBoundingClientRect().right <= box.right,
-          }));
-        });
-        for (const row of detailsGeometry) {
-          expect(row.lines).toBeLessThanOrEqual(2.05);
-          expect(row.contained).toBe(true);
-        }
-        expect((await card.boundingBox()).height).toBeLessThanOrEqual(680);
-      } else {
+      {
         await expect(blockers).toBeHidden();
         await expect(card.locator("[data-board-card-details]")).toBeHidden();
         // The fixture's live session takes precedence over its retained blockers.
-        await expect(signals).toHaveText(density === "compact" ? ["Running"] : ["Running", "Sync error"]);
+        await expect(signals).toHaveText(["Running"]);
         const geometry = await card.evaluate(el => {
           const identity = el.querySelector("[data-board-card-identity]");
           const title = el.querySelector("[data-board-card-title]");
@@ -327,9 +278,9 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
             signalLines: visibleSignals.map(x => x.getBoundingClientRect().height / parseFloat(getComputedStyle(x).lineHeight)),
           };
         });
-        // Active facts add one 16px line and the existing 4px card gap.
-        expect(geometry.supportingHeight).toBeLessThanOrEqual(density === "compact" ? 96 : 150);
-        expect(geometry.height).toBeLessThanOrEqual(density === "compact" ? 180 : 235);
+        // INV-13: identity, title, one status, and priority controls only.
+        expect(geometry.supportingHeight).toBeLessThanOrEqual(density === "compact" ? 76 : 130);
+        expect(geometry.height).toBeLessThanOrEqual(density === "compact" ? 160 : 215);
         expect(geometry.titleLines).toBeLessThanOrEqual(density === "compact" ? 1.05 : 2.05);
         for (const lines of geometry.signalLines) expect(lines).toBeLessThanOrEqual(1.05);
         if (density === "cozy") cozyHeight = geometry.height;
@@ -351,7 +302,7 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
     await expect(blockers).toBeHidden();
     await morphSnapshot(page, snapshot);
     await expect(blockers).toBeHidden();
-    await expect(signals).toHaveText(["Running", "Sync error"]);
+    await expect(signals).toHaveText(["Running"]);
     expect((await card.boundingBox()).height).toBe(cozyHeight);
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
@@ -381,7 +332,7 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
     await chooseDensity(page, "cozy");
     await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": "board-card-single-blocker" });
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(signals).toHaveText(["Running", "Sync error"]);
+    await expect(signals).toHaveText(["Running"]);
     expect((await card.boundingBox()).height).toBe(cozyHeight);
   });
 }

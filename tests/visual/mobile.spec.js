@@ -209,25 +209,8 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
   await page.locator('[data-density-choice="comfy"]').click();
   await page.getByRole("button", { name: "More topbar controls" }).click();
 
-  const tooltip = page.locator("body > #help-tooltip");
-  const runtimeBadge = page
-    .locator("[data-board-runtime-badge][data-help-trigger]")
-    .first();
-  const card = runtimeBadge.locator("xpath=ancestor::article");
-  const cardRequest = await card.getAttribute("hx-get");
-  await card.evaluate((element) => element.removeAttribute("hx-get"));
-  await runtimeBadge.tap();
-  await expect(tooltip).toBeVisible();
-  await runtimeBadge.tap();
-  await expect(tooltip).toBeHidden();
-  await runtimeBadge.tap();
-  await expect(tooltip).toBeVisible();
-  await page.locator("h1").first().tap();
-  await expect(tooltip).toBeHidden();
-  await card.evaluate(
-    (element, request) => element.setAttribute("hx-get", request),
-    cardRequest,
-  );
+  const card = page.locator("article").filter({ has: page.locator("[data-board-card-signal]", { hasText: "Running" }) }).first();
+  await expect(card.locator("[data-board-runtime-badge]")).toHaveCount(0);
   await card.locator("[data-board-card-title]").tap();
 
   const sheet = page.locator("[data-detail-sheet]");
@@ -296,7 +279,7 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
 
   await dialog.getByRole("button", { name: "Close details" }).tap();
   await expect(sheet).toHaveCount(0);
-  await expect(tooltip).toBeHidden();
+  await expect(page.locator("body > #help-tooltip")).toBeHidden();
 });
 
 test("settings exposes complete values and touch copy actions", async ({

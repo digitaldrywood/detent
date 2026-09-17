@@ -30,7 +30,8 @@ test("externally moved card keeps its tracker lane-entry timer", async ({
   });
   const footer = card.locator("[data-board-card-age-footer]");
   await expect(card).toBeVisible();
-  await expect(footer).toContainText("In lane");
-  await expect(footer).toContainText("1h");
-  await expect(footer).toHaveAttribute("title", /Blocked since .*1h 51m/);
+  await expect(footer).toHaveCount(0);
+  await expect(card).toHaveAttribute("title", /Blocked since .*1h 51m/);
+  await card.click();
+  await expect(page.locator('[data-sheet-row="Time in stage"]')).toContainText("1h 51m");
 });
