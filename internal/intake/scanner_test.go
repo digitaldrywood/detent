@@ -45,9 +45,22 @@ func TestStaleTODOScanner(t *testing.T) {
 				if output, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("git add error = %v, output = %s", err, output)
 				}
+				scannerGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
+				scannerGit(t, root, "remote", "add", "origin", root)
+
 			},
 			wantPaths: []string{"main.go"},
 		},
+		{
+			name: "missing origin fails without checkout fallback",
+			setup: func(t *testing.T, root string) {
+				scannerGit(t, root, "init")
+				writeScannerTestFile(t, root, "main.go", "// TODO: local only\n")
+				scannerGit(t, root, "add", ".")
+			},
+			wantErr: "resolve stale TODO remote default branch",
+		},
+
 		{
 			name: "non-Git root returns actionable error",
 			setup: func(t *testing.T, root string) {
@@ -128,6 +141,76 @@ func TestTODOMarkerShape(t *testing.T) {
 		t.Run(tt.line, func(t *testing.T) {
 			if got := (todoMarker(tt.line) != nil); got != tt.want {
 				t.Fatalf("match = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func scannerGit(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", root}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func TestStaleTODOScannerRevision(t *testing.T) {
+	for _, branch := range []string{"main", "trunk"} {
+		t.Run(branch, func(t *testing.T) {
+			remote, root := t.TempDir(), t.TempDir()
+			scannerGit(t, remote, "init", "-b", branch)
+			scannerGit(t, remote, "config", "user.email", "test@example.com")
+			scannerGit(t, remote, "config", "user.name", "Test")
+			writeScannerTestFile(t, remote, "removed.go", "// TODO: removed remotely\n")
+			scannerGit(t, remote, "add", ".")
+			scannerGit(t, remote, "commit", "-m", "old")
+			scannerGit(t, root, "clone", remote, ".")
+			scannerGit(t, root, "fetch", "origin")
+			scannerGit(t, remote, "rm", "removed.go")
+			writeScannerTestFile(t, remote, "new.go", "// TODO: current default branch\n")
+			writeScannerTestFile(t, remote, "large.go", "// TODO: oversized\n"+strings.Repeat("x", maxScannedFileBytes))
+			if err := os.Symlink("new.go", filepath.Join(remote, "link.go")); err != nil {
+				t.Fatal(err)
+			}
+			scannerGit(t, remote, "add", ".")
+			scannerGit(t, remote, "commit", "-m", "new")
+			writeScannerTestFile(t, root, "removed.go", "// TODO: dirty checkout\n")
+			beforeRefs := scannerGit(t, root, "show-ref")
+			beforeIndex := scannerGit(t, root, "ls-files", "--stage")
+			fetchHeadPath := filepath.Join(root, ".git", "FETCH_HEAD")
+			beforeFetch, err := os.ReadFile(fetchHeadPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeHead := scannerGit(t, root, "rev-parse", "HEAD")
+			beforeStatus := scannerGit(t, root, "status", "--porcelain")
+			events, err := (staleTODOScanner{root: root}).Scan(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 1 || events[0].Fields["path"] != "new.go" {
+				t.Fatalf("events = %+v, want only new.go", events)
+			}
+			afterFetch, err := os.ReadFile(fetchHeadPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(afterFetch) != string(beforeFetch) {
+				t.Fatal("FETCH_HEAD changed")
+			}
+			if scannerGit(t, root, "show-ref") != beforeRefs {
+				t.Fatal("refs changed")
+			}
+			if scannerGit(t, root, "ls-files", "--stage") != beforeIndex {
+				t.Fatal("index changed")
+			}
+			if got := scannerGit(t, root, "rev-parse", "HEAD"); got != beforeHead {
+				t.Fatal("checkout HEAD changed")
+			}
+			if got := scannerGit(t, root, "status", "--porcelain"); got != beforeStatus {
+				t.Fatal("checkout status changed")
 			}
 		})
 	}

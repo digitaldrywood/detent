@@ -113,9 +113,14 @@ configured starting status and then enter the existing label, issue-field, or
 ProjectV2 gate pipeline. ProjectV2 intake also requires `tracker.repository` so
 Detent knows where to create the repository issue before adding it to the board.
 
-The built-in `stale-todos` scanner asks Git for tracked files beneath the
-project source root, then scans eligible regular files for TODO and FIXME
-entries. Markers must be uppercase and either use `TODO:` / `TODO(owner)`
+The built-in `stale-todos` scanner resolves `origin`'s advertised `HEAD` at
+scan start and fetches that exact default-branch commit. It reads tracked trees
+and blobs beneath the project source root from that immutable revision, not
+from the checkout or index. Local edits and unmerged branch markers are ignored;
+the checkout, index, branches, and `FETCH_HEAD` are left unchanged. Each scan
+requires an accessible `origin` with a valid `HEAD`; resolution or fetch failures
+fail the scan instead of falling back to stale local content. Eligible regular
+files are scanned for TODO and FIXME entries. Markers must be uppercase and either use `TODO:` / `TODO(owner)`
 shape (also `FIXME`) or immediately follow a comment leader such as `//`,
 `#`, `/*`, `*`, `<!--`, or `--`. Board state names such as `Todo` and prose
 such as `stale-TODO scan` are ignored.
