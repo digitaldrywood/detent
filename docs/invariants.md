@@ -167,11 +167,16 @@ restores the base interval. Actual exhaustion, provider throttles, and connector
 REST write protection remain authoritative. `TestProjectRefreshColdFleetRequestCounts`
 and `TestProjectRefreshActiveFleetDispatch` cover cold five/ten-project reads,
 eventual refresh, reset recovery, free permits, and dispatch transition writes.
-Startup process reconciliation reuses the existing durable-attempt reclaim query
-across all projects before project loading (#2749), including removed projects.
-Project restarts without an instance restart retain the existing lease-based
-recovery, including exclusions for locally running attempts. Deferred completions retain their existing exclusion, and restart-abandoned
-attempts retain orphan-session resume eligibility. Recorded processless stops use
+Startup process reconciliation feeds confirmed-gone local attempts to the existing
+expired-lease query across all projects before project loading (#2749), including
+removed projects. The parallel bulk reclaim API/query is removed. Startup scopes
+expiry to local (including legacy empty-host) records; other hosts' attempts and
+processes are retained. Failed process termination prevents startup expiry.
+Project refresh retains lease criteria and running-attempt exclusions; deferred
+completions remain excluded in the shared query. Interrupted sessions retain
+orphan-session resume eligibility. `TestStartupRetainsOwnedWorkAttempts` covers
+live local processes whose termination fails and other hosts' live/expired leases.
+Recorded processless stops use
 the existing completion and pending operator-stop records without requiring a
 running project; live workers still require the orchestrator. Live and recorded
 stops share route normalization, validation, and completion construction. Configured
@@ -192,8 +197,8 @@ Update and restart draining (#2745) reuses the runtime dispatch pause and sessio
 limits. Manual runtime update requests use the same drain reservation as automatic
 updates; SIGTERM shutdown uses that duration ceiling, including model-selection
 levels. Managed restarts preserve child processes while the orchestrator drains.
-Startup no longer bulk-reclaims live work attempts as `service_restart`; the
-reclaim store API and query are removed. Historical restart rows remain readable
+Startup no longer unconditionally bulk-reclaims live work attempts as
+`service_restart`; the parallel reclaim store API and query are removed. Historical restart rows remain readable
 for retry and accounting compatibility. Existing expired-lease recovery runs at startup and on normal refresh, including
 tracker pauses. Its query excludes currently owned attempts and deferred completions;
 retained crash orphans expire without requiring another restart.

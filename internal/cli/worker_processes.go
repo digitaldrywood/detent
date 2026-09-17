@@ -67,9 +67,23 @@ func reapWorkerProcessesWithCleanup(
 	if err != nil {
 		return err
 	}
+	attemptStore, hasAttempts := processStore.(interface {
+		ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error)
+		TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error)
+	})
+	var attempts []store.WorkAttempt
+	if hasAttempts && strings.TrimSpace(reason) == "startup" {
+		attempts, err = attemptStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{})
+		if err != nil {
+			return err
+		}
+	}
 	var result error
 	terminationFailed := false
 	for _, process := range processes {
+		if host := strings.TrimSpace(process.WorkerHost); host != "" && host != "local" {
+			continue
+		}
 		identity := procgroup.Identity{
 			PID:       process.PID,
 			GroupID:   process.GroupID,
@@ -112,15 +126,21 @@ func reapWorkerProcessesWithCleanup(
 			terminationFailed = true
 		}
 	}
-	// Reuse startup's process reconciliation for durable attempts as well. Project
-	// initialization (or removal from config) must not delay reclaiming old rows.
-	if strings.TrimSpace(reason) == "startup" && !terminationFailed {
-		if attempts, ok := processStore.(interface {
-			ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error)
-		}); ok {
-			if _, err := attempts.ReclaimActiveWorkAttempts(ctx, store.WorkAttemptReclaim{Now: now().UTC()}); err != nil {
-				return errors.Join(result, err)
+	// Feed the existing expiry path only local attempts whose processes the
+	// startup reaper confirmed gone (including attempts with no process record).
+	if strings.TrimSpace(reason) == "startup" && !terminationFailed && hasAttempts {
+		gone := make([]int64, 0, len(attempts))
+		for _, attempt := range attempts {
+			if host := strings.TrimSpace(attempt.WorkerHost); host == "" || host == "local" {
+				gone = append(gone, attempt.ID)
 			}
+		}
+		if _, err := attemptStore.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
+			Now: now().UTC(), WorkerHost: "local", ConfirmedGoneAttemptIDs: gone,
+			TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart",
+			ErrorMessage: "active work attempt reclaimed after service restart",
+		}); err != nil {
+			return errors.Join(result, err)
 		}
 	}
 	if result != nil && !terminationFailed {

@@ -577,7 +577,7 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 			}
 			t.Cleanup(func() { backend.Close() })
 			now := time.Now().UTC()
-			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", StartedAt: now.Add(-46 * time.Hour)})
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", StartedAt: now.Add(-46 * time.Hour), LeaseExpiresAt: now.Add(-22 * time.Hour)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -611,6 +611,69 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 				t.Fatalf("reclaimed card did not dispatch: %+v", restartRecoveryState(t, orch).SchedulerDecisions)
 			}
 
+		})
+	}
+}
+
+func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, host string
+		expired    bool
+	}{
+		{name: "local live lease", host: "local"},
+		{name: "local expired lease with live process", host: "local", expired: true},
+		{name: "remote live lease", host: "other-host"},
+		{name: "remote expired lease", host: "other-host", expired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			now := time.Now().UTC()
+			lease := now.Add(time.Hour)
+			if tc.expired {
+				lease = now.Add(-time.Hour)
+			}
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+				ProjectID: "removed", IssueID: "retained", WorkerType: "agent", WorkerHost: tc.host,
+				StartedAt: now.Add(-2 * time.Hour), LeaseExpiresAt: lease,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{
+				ProjectID: "removed", IssueID: "retained", WorkAttemptID: id, StartedAt: now.Add(-2 * time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The test process is alive; inject a failed termination so it is never signalled.
+			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
+				WorkerProcessIdentity: store.WorkerProcessIdentity{PID: os.Getpid(), GroupID: os.Getpid(), StartedAt: now},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			terminationErr := errors.New("worker remains alive")
+			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now },
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					called = true
+					return "", terminationErr
+				}, func(store.WorkerProcess) error { t.Fatal("cleaned live worker"); return nil })
+			local := tc.host == "local"
+			if called != local || errors.Is(err, terminationErr) != local {
+				t.Fatalf("reap called=%v, err=%v", called, err)
+			}
+			attempt, err := backend.WorkAttempt(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempt.Status != store.WorkAttemptStatusActive {
+				t.Fatalf("live attempt was terminalized: %+v", attempt)
+			}
 		})
 	}
 }

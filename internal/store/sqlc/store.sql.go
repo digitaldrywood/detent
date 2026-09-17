@@ -2842,6 +2842,7 @@ func (q *Queries) ListActiveWorkAttempts(ctx context.Context, filterProjectID in
 const listActiveWorkerProcesses = `-- name: ListActiveWorkerProcesses :many
 SELECT
   id AS session_id,
+  CAST(COALESCE((SELECT worker_host FROM work_attempts WHERE work_attempts.id = codex_sessions.work_attempt_id), '') AS TEXT) AS process_host,
   CAST(COALESCE(issue_id, '') AS TEXT) AS issue_id,
   CAST(COALESCE(identifier, '') AS TEXT) AS identifier,
   CAST(COALESCE(issue_url, '') AS TEXT) AS issue_url,
@@ -2860,6 +2861,7 @@ ORDER BY started_at, id
 
 type ListActiveWorkerProcessesRow struct {
 	SessionID         int64  `json:"session_id"`
+	ProcessHost       string `json:"process_host"`
 	IssueID           string `json:"issue_id"`
 	Identifier        string `json:"identifier"`
 	IssueURL          string `json:"issue_url"`
@@ -2883,6 +2885,7 @@ func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWo
 		var i ListActiveWorkerProcessesRow
 		if err := rows.Scan(
 			&i.SessionID,
+			&i.ProcessHost,
 			&i.IssueID,
 			&i.Identifier,
 			&i.IssueURL,
@@ -4394,103 +4397,6 @@ func (q *Queries) RecentModelTokenQuantiles(ctx context.Context, arg RecentModel
 	return i, err
 }
 
-const reclaimActiveWorkAttempts = `-- name: ReclaimActiveWorkAttempts :many
-UPDATE work_attempts
-SET status = ?,
-    terminal_state = ?,
-    completed_at = ?,
-    heartbeat_at = ?,
-    error_class = ?,
-    error_message = ?,
-    phase = ?,
-    status_message = ?
-WHERE completed_at IS NULL
-  AND (?9 = '' OR project_id = ?9)
-  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
-`
-
-type ReclaimActiveWorkAttemptsParams struct {
-	Status          string         `json:"status"`
-	TerminalState   sql.NullString `json:"terminal_state"`
-	CompletedAt     sql.NullString `json:"completed_at"`
-	HeartbeatAt     sql.NullString `json:"heartbeat_at"`
-	ErrorClass      sql.NullString `json:"error_class"`
-	ErrorMessage    sql.NullString `json:"error_message"`
-	Phase           sql.NullString `json:"phase"`
-	StatusMessage   sql.NullString `json:"status_message"`
-	FilterProjectID interface{}    `json:"filter_project_id"`
-}
-
-func (q *Queries) ReclaimActiveWorkAttempts(ctx context.Context, arg ReclaimActiveWorkAttemptsParams) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, reclaimActiveWorkAttempts,
-		arg.Status,
-		arg.TerminalState,
-		arg.CompletedAt,
-		arg.HeartbeatAt,
-		arg.ErrorClass,
-		arg.ErrorMessage,
-		arg.Phase,
-		arg.StatusMessage,
-		arg.FilterProjectID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []WorkAttempt{}
-	for rows.Next() {
-		var i WorkAttempt
-		if err := rows.Scan(
-			&i.ID,
-			&i.ProjectID,
-			&i.IssueID,
-			&i.Identifier,
-			&i.IssueURL,
-			&i.PrNumber,
-			&i.Repo,
-			&i.WorkerType,
-			&i.WorkerHost,
-			&i.Lane,
-			&i.AttemptNumber,
-			&i.Status,
-			&i.StartedAt,
-			&i.LeaseExpiresAt,
-			&i.HeartbeatAt,
-			&i.CompletedAt,
-			&i.TerminalState,
-			&i.ErrorClass,
-			&i.ErrorMessage,
-			&i.Phase,
-			&i.StatusMessage,
-			&i.CurrentStep,
-			&i.TotalSteps,
-			&i.ProgressPercent,
-			&i.CurrentCommand,
-			&i.WaitReason,
-			&i.GithubRateSnapshotJson,
-			&i.CiState,
-			&i.CapacitySnapshotJson,
-			&i.WorkerMetadataJson,
-			&i.MetricsJson,
-			&i.NextAction,
-			&i.DetentSessionID,
-			&i.ProviderSessionID,
-			&i.RuntimeIdentityJson,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const revokeAPIKey = `-- name: RevokeAPIKey :execrows
 UPDATE api_keys
 SET revoked_at = ?1
@@ -4542,25 +4448,29 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND (?9 = '' OR project_id = ?9)
-  AND lease_expires_at IS NOT NULL
-  AND lease_expires_at <= ?10
+  AND (?10 = ''
+       OR COALESCE(NULLIF(trim(worker_host), ''), 'local') = ?10)
+  AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?11)
+       OR id IN (SELECT value FROM json_each(?12)))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-  AND id NOT IN (SELECT value FROM json_each(?11))
+  AND id NOT IN (SELECT value FROM json_each(?13))
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
 type TimeoutExpiredWorkAttemptsParams struct {
-	Status            string         `json:"status"`
-	TerminalState     sql.NullString `json:"terminal_state"`
-	CompletedAt       sql.NullString `json:"completed_at"`
-	HeartbeatAt       sql.NullString `json:"heartbeat_at"`
-	ErrorClass        sql.NullString `json:"error_class"`
-	ErrorMessage      sql.NullString `json:"error_message"`
-	Phase             sql.NullString `json:"phase"`
-	StatusMessage     sql.NullString `json:"status_message"`
-	FilterProjectID   interface{}    `json:"filter_project_id"`
-	LeaseExpiresAt    sql.NullString `json:"lease_expires_at"`
-	ExcludeAttemptIds interface{}    `json:"exclude_attempt_ids"`
+	Status                  string         `json:"status"`
+	TerminalState           sql.NullString `json:"terminal_state"`
+	CompletedAt             sql.NullString `json:"completed_at"`
+	HeartbeatAt             sql.NullString `json:"heartbeat_at"`
+	ErrorClass              sql.NullString `json:"error_class"`
+	ErrorMessage            sql.NullString `json:"error_message"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	FilterProjectID         interface{}    `json:"filter_project_id"`
+	FilterWorkerHost        interface{}    `json:"filter_worker_host"`
+	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
+	ConfirmedGoneAttemptIds interface{}    `json:"confirmed_gone_attempt_ids"`
+	ExcludeAttemptIds       interface{}    `json:"exclude_attempt_ids"`
 }
 
 func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExpiredWorkAttemptsParams) ([]WorkAttempt, error) {
@@ -4574,7 +4484,9 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 		arg.Phase,
 		arg.StatusMessage,
 		arg.FilterProjectID,
+		arg.FilterWorkerHost,
 		arg.LeaseExpiresAt,
+		arg.ConfirmedGoneAttemptIds,
 		arg.ExcludeAttemptIds,
 	)
 	if err != nil {

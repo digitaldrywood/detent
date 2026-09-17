@@ -316,6 +316,7 @@ func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerPr
 			}
 		}
 		processes = append(processes, WorkerProcess{
+			WorkerHost:  strings.TrimSpace(row.ProcessHost),
 			SessionID:   row.SessionID,
 			IssueID:     strings.TrimSpace(row.IssueID),
 			Identifier:  strings.TrimSpace(row.Identifier),
