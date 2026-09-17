@@ -557,3 +557,64 @@ type staticWorkerGitHubMonitorBackend struct {
 func (b staticWorkerGitHubMonitorBackend) Run(context.Context, runpkg.RunRequest) (runpkg.RunResult, error) {
 	return b.result, b.err
 }
+
+func TestWorkerGitHubMonitorCarrierEligibility(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 17, 1, 50, 52, 0, time.UTC)
+	for _, tt := range []struct {
+		name        string
+		carrier     bool
+		offset      time.Duration
+		wantBlocked bool
+		wantExpired bool
+	}{
+		{"carrier before deadline", true, -time.Second, true, false},
+		{"carrier at deadline", true, 0, false, false},
+		{"orphan before deadline", false, -time.Second, true, false},
+		{"orphan at deadline", false, 0, false, true},
+		{"orphan after restart deadline", false, time.Hour, false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newState(normalizeConfig(Config{}))
+			const credential = "github-rest:worker"
+			state.GitHubMonitors[credential] = GitHubMonitor{CredentialIdentity: credential, NextProbeAt: now}
+			if tt.carrier {
+				state.Retry["carrier"] = Retry{Issue: connector.Issue{ID: "carrier"}, GitHubMonitor: true, GitHubCredential: credential, DueAt: now}
+			}
+			if got := workerGitHubMonitorBlocks(&state, "carrier", Retry{}, now.Add(tt.offset)); got != tt.wantBlocked {
+				t.Fatalf("blocked = %v, want %v", got, tt.wantBlocked)
+			}
+			if got := len(state.GitHubMonitors) == 0; got != tt.wantExpired {
+				t.Fatalf("expired = %v, want %v", got, tt.wantExpired)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubMonitorRetainsOnlyOwnedConditions(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 17, 1, 50, 52, 0, time.UTC)
+	for _, tt := range []struct {
+		name        string
+		retry       Retry
+		probe       string
+		wantBlocked bool
+	}{
+		{name: "unrelated issue waits for carrier", retry: Retry{GitHubMonitor: true, GitHubCredential: "credential"}, wantBlocked: true},
+		{name: "replaced carrier expires", retry: Retry{Attempt: 3}},
+		{name: "different credential is not a carrier", retry: Retry{GitHubMonitor: true, GitHubCredential: "other"}},
+		{name: "running probe retains condition", probe: "carrier", wantBlocked: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newState(normalizeConfig(Config{}))
+			state.GitHubMonitors["credential"] = GitHubMonitor{CredentialIdentity: "credential", NextProbeAt: now, ProbeIssueID: tt.probe}
+			state.Retry["carrier"] = tt.retry
+			if got := workerGitHubMonitorBlocks(&state, "unrelated", Retry{}, now); got != tt.wantBlocked {
+				t.Fatalf("blocked = %v, want %v", got, tt.wantBlocked)
+			}
+			if got := len(state.GitHubMonitors) != 0; got != tt.wantBlocked {
+				t.Fatalf("condition retained = %v, want %v", got, tt.wantBlocked)
+			}
+		})
+	}
+}

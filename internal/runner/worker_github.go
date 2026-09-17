@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -711,6 +711,9 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 	if p.PrincipalID <= 0 || strings.TrimSpace(p.Principal.Login) == "" {
 		principalID, principal, err := p.authenticatedPrincipal(ctx, p.Token)
 		if err != nil {
+			if ctx.Err() != nil {
+				return workerGitHubPolicy{}, ctx.Err()
+			}
 			return workerGitHubPolicy{}, p.monitorError("credential_classification_worker", err)
 		}
 		p.PrincipalID = principalID
@@ -722,6 +725,9 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 	if p.CredentialMode == workerGitHubCredentialUnclassified {
 		orchestratorID, _, err := p.authenticatedPrincipal(ctx, p.OrchestratorToken)
 		if err != nil {
+			if ctx.Err() != nil {
+				return workerGitHubPolicy{}, ctx.Err()
+			}
 			return workerGitHubPolicy{}, p.monitorError("credential_classification_orchestrator", err)
 		}
 		if p.PrincipalID == orchestratorID {
@@ -756,49 +762,48 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 }
 
 func (p workerGitHubPolicy) authenticatedPrincipal(ctx context.Context, token string) (int64, connector.IssueActor, error) {
-	ctx, cancel := p.probeContext(ctx)
-	defer cancel()
-	body := bytes.NewBufferString(`{"query":"query WorkerCredentialIdentity { viewer { databaseId login __typename } }"}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.GraphQLURL, body)
+	client, err := githubconnector.NewClient(githubconnector.ClientConfig{
+		Endpoint:    p.GraphQLURL,
+		TokenSource: githubconnector.StaticTokenSource(token),
+		HTTPClient:  p.HTTPClient,
+		Logger:      p.Logger,
+	})
 	if err != nil {
 		return 0, connector.IssueActor{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-GitHub-Api-Version", "2026-03-10")
-	req.Header.Set("User-Agent", "detent-worker-github-governor")
-	resp, err := p.HTTPClient.Do(req)
-	if err != nil {
-		return 0, connector.IssueActor{}, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, workerGitHubRateLimitBodyMaxBytes))
-	if err != nil {
-		return 0, connector.IssueActor{}, err
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return 0, connector.IssueActor{}, fmt.Errorf("github authenticated user graphql probe returned HTTP %d", resp.StatusCode)
 	}
 	var payload struct {
-		Data struct {
-			Viewer struct {
-				DatabaseID int64  `json:"databaseId"`
-				Login      string `json:"login"`
-				TypeName   string `json:"__typename"`
-			} `json:"viewer"`
-		} `json:"data"`
-		Errors []json.RawMessage `json:"errors"`
+		Viewer struct {
+			DatabaseID int64  `json:"databaseId"`
+			Login      string `json:"login"`
+			TypeName   string `json:"__typename"`
+		} `json:"viewer"`
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return 0, connector.IssueActor{}, fmt.Errorf("decode github authenticated user graphql probe: %w", err)
+	for {
+		// Bound each HTTP probe, not the credential's shared cooldown wait.
+		probeCtx, cancel := p.probeContext(ctx)
+		err = client.GraphQL(probeCtx, "query WorkerCredentialIdentity { viewer { databaseId login __typename } }", nil, &payload)
+		cancel()
+		if !errors.Is(err, githubconnector.ErrRateLimited) {
+			break
+		}
+		var statusErr *githubconnector.StatusError
+		delay := time.Minute
+		if errors.As(err, &statusErr) && statusErr.RetryAfter > 0 {
+			delay = statusErr.RetryAfter
+		}
+		if err := sleepWorkerGitHubTokenResolution(ctx, delay); err != nil {
+			return 0, connector.IssueActor{}, err
+		}
 	}
-	if len(payload.Errors) > 0 || payload.Data.Viewer.DatabaseID <= 0 || strings.TrimSpace(payload.Data.Viewer.Login) == "" {
+	if err != nil {
+		return 0, connector.IssueActor{}, err
+	}
+	if payload.Viewer.DatabaseID <= 0 || strings.TrimSpace(payload.Viewer.Login) == "" {
 		return 0, connector.IssueActor{}, errors.New("github authenticated user graphql probe omitted the principal identity")
 	}
-	return payload.Data.Viewer.DatabaseID, connector.IssueActor{
-		Login: strings.TrimSpace(payload.Data.Viewer.Login),
-		Kind:  strings.TrimSpace(payload.Data.Viewer.TypeName),
+	return payload.Viewer.DatabaseID, connector.IssueActor{
+		Login: strings.TrimSpace(payload.Viewer.Login),
+		Kind:  strings.TrimSpace(payload.Viewer.TypeName),
 	}, nil
 }
 

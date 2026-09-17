@@ -230,6 +230,11 @@ func workerGitHubMonitorBlocks(state *State, issueID string, retry Retry, now ti
 	if state == nil || len(state.GitHubMonitors) == 0 {
 		return false
 	}
+	// Eligibility checks do not always carry the queued retry. Resolve its
+	// ownership before treating this issue as unrelated to the monitor.
+	if !retry.GitHubMonitor {
+		retry = state.Retry[issueID]
+	}
 	if retry.GitHubMonitor {
 		condition, ok := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]
 		if !ok || condition.ProbeIssueID == issueID {
@@ -237,12 +242,29 @@ func workerGitHubMonitorBlocks(state *State, issueID string, retry Retry, now ti
 		}
 		return condition.ProbeIssueID != "" || now.Before(condition.NextProbeAt)
 	}
-	for _, condition := range state.GitHubMonitors {
-		if condition.ProbeIssueID != issueID {
-			return true
+	blocked := false
+	for key, condition := range state.GitHubMonitors {
+		if condition.ProbeIssueID == issueID {
+			continue
 		}
+		if condition.ProbeIssueID == "" && !now.Before(condition.NextProbeAt) {
+			hasCarrier := false
+			for _, queued := range state.Retry {
+				if queued.GitHubMonitor && strings.TrimSpace(queued.GitHubCredential) == key {
+					hasCarrier = true
+					break
+				}
+			}
+			// A lost or replaced retry must not leave a permanent project hold.
+			// Keep the existing probe deadline as the orphan condition's expiry.
+			if !hasCarrier {
+				delete(state.GitHubMonitors, key)
+				continue
+			}
+		}
+		blocked = true
 	}
-	return false
+	return blocked
 }
 
 func reserveWorkerGitHubMonitorProbe(state *State, issueID string, retry Retry, now time.Time) (string, bool) {
