@@ -218,7 +218,7 @@ func TestDependencyAuthorityIgnoresFencedExamples(t *testing.T) {
 
 func TestTodoBodyDependencyLookupFailureDoesNotReturnCandidates(t *testing.T) {
 	t.Parallel()
-	for _, status := range []int{http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			t.Parallel()
 			server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -228,8 +228,32 @@ func TestTodoBodyDependencyLookupFailureDoesNotReturnCandidates(t *testing.T) {
 			})
 			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}})
 			result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
+			if status == http.StatusInternalServerError || status == http.StatusTooManyRequests {
+				if err != nil || len(result.Issues) != 1 || len(result.Issues[0].BlockedBy) != 1 || result.Issues[0].BlockedBy[0].State != "" {
+					t.Fatalf("retryable lookup = %+v, %v; want candidate with unresolved blocker", result.Issues, err)
+				}
+				return
+			}
 			if err == nil || len(result.Issues) != 0 {
 				t.Fatalf("candidates = %+v, err = %v; want no candidates and hydration error", result.Issues, err)
+			}
+		})
+	}
+}
+
+func TestTodoUnknownNativeDependencyListRejectsCandidates(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{method: http.MethodGet, body: `[{"node_id":"I_101","number":101,"state":"open","html_url":"https://github.com/owner/repo/issues/101","labels":[{"name":"detent:todo"}]}]`},
+				{method: http.MethodGet, path: "/repos/owner/repo/issues/101/dependencies/blocked_by?per_page=100", status: status, body: `{"message":"unavailable"}`},
+			})
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "owner/repo", ActiveStates: []string{"Todo"}})
+			got, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
+			if err == nil || len(got.Issues) != 0 {
+				t.Fatalf("unknown native list returned candidates: %+v, %v", got, err)
 			}
 		})
 	}

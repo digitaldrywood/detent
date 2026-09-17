@@ -1484,9 +1484,6 @@ func issueBlockedByNonTerminal(issue connector.Issue, terminalStates []string) b
 			}
 			continue
 		}
-		if blocker.Source == connector.BlockedRefSourceWorkpad && blocker.TrackerState == "" && strings.TrimSpace(blocker.State) == "" {
-			return true
-		}
 		if blocker.HumanOwned {
 			if !blocker.HumanCompletionReady {
 				return true
@@ -1494,7 +1491,9 @@ func issueBlockedByNonTerminal(issue connector.Issue, terminalStates []string) b
 			continue
 		}
 		if strings.TrimSpace(blocker.State) == "" {
-			continue
+			// An unresolved dependency is still waiting, including when its
+			// state lookup failed transiently during candidate refresh.
+			return true
 		}
 		if !dependencyBlockerReady(dependencyBlocker{Ref: blocker}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, terminalStates) {
 			return true

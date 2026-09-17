@@ -586,13 +586,13 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "todo unblocked by unknown dependency state",
+			name: "todo blocked by unknown dependency state",
 			issue: func() connector.Issue {
 				issue := dispatchTestIssue("issue-unknown-dependency", "Todo")
 				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#10"}}
 				return issue
 			}(),
-			want: true,
+			want: false,
 		},
 		{
 			name:  "already running",
@@ -4284,6 +4284,38 @@ func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
 			}
 			if tracker.identifierBatches != 1 {
 				t.Fatalf("blocker batches = %d, want one shared batch", tracker.identifierBatches)
+			}
+		})
+	}
+}
+
+func TestDispatchReadyIssuesUnresolvedDependencyDoesNotBlockUnrelated(t *testing.T) {
+	t.Parallel()
+	for _, dependencyState := range []string{"", "In Progress"} {
+		t.Run("dependency state "+dependencyState, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			dependent, unrelated := dispatchTestIssue("dependent", "Todo"), dispatchTestIssue("unrelated", "Todo")
+			dependent.DependencySource = connector.BlockedRefSourceNative
+			dependent.Description = "Depends on: owner/repo#99"
+			dependent.Fields = map[string]string{"Status": "Todo"}
+			unrelated.Fields = map[string]string{"Status": "Todo"}
+			dependent.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#99", State: dependencyState}}
+			candidates := []connector.Issue{dependent, unrelated}
+			tracker := &dependencyAutoUnblockConnector{hydratedIssues: candidates}
+			runner := newWorkerHostRunner()
+			orch := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion)}
+			state := newState(cfg)
+			orch.dispatchPlanner().trackBlockedCandidates(&state, candidates, time.Now())
+			orch.dispatchReadyIssues(t.Context(), &state, candidates, time.Now())
+			if len(state.Running) != 1 {
+				t.Fatalf("running=%+v", state.Running)
+			}
+			if _, ok := state.Running[unrelated.ID]; !ok {
+				t.Fatalf("unrelated candidate not dispatched: %+v", state.Running)
+			}
+			if _, ok := state.Blocked[dependent.ID]; !ok {
+				t.Fatalf("unresolved dependent not waiting: %+v", state.Blocked)
 			}
 		})
 	}

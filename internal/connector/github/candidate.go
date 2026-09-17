@@ -42,10 +42,22 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 			return connector.CandidateResult{}, fmt.Errorf("%w: invalid github cursor", connector.ErrInvalidCandidateRequest)
 		}
 	}
+	var result connector.CandidateResult
+	var err error
 	if request.Selector == connector.CandidateSelectorStates && !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
-		return c.readProjectCandidates(ctx, request, position)
+		result, err = c.readProjectCandidates(ctx, request, position)
+	} else {
+		result, err = c.readRESTCandidates(ctx, request, position)
 	}
-	return c.readRESTCandidates(ctx, request, position)
+	if err != nil {
+		return result, err
+	}
+	// Resolve against the complete current snapshot, deduplicating shared prose
+	// refs across pages. Native relation hydration must succeed first.
+	if err := c.resolveBlockedByProjectState(ctx, result.Issues); err != nil {
+		return connector.CandidateResult{}, err
+	}
+	return result, nil
 }
 
 func candidateReadResult(result connector.CandidateResult, position candidateCursor, more bool, err error) (connector.CandidateResult, error) {
@@ -313,10 +325,6 @@ func (c *Connector) hydrateCandidateIssues(ctx context.Context, issues []connect
 	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
 		return err
 	}
-	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-		return err
-	}
-
 	return c.attachStatePullRequests(ctx, issues, true)
 }
 

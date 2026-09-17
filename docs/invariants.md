@@ -948,6 +948,14 @@ candidates, immediate dispatch of the next eligible candidate, and release after
 terminal CI. `TestReworkCurrentHeadCIConfiguredLane` preserves configured lane
 selection. This consolidates CI classification with the merge worker (INV-3).
 
+Candidate refreshes retain unresolved blocker refs after retryable lookup failures
+(#2836). Dispatch treats an empty blocker state as waiting, consistent with ranking,
+while unrelated candidates remain eligible. This consolidates the dependency check
+and removes whole-refresh failure for transient individual state lookups; native
+relation failures, cancellation, and permanent lookup errors still fail the read.
+`TestDispatchReadyIssuesUnresolvedDependencyDoesNotBlockUnrelated` covers the mixed
+candidate dispatch behavior.
+
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.
 

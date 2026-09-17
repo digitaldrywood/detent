@@ -4175,7 +4175,7 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 func TestConnectorFetchIssuesByStatesRejectsBodyDependencyWhenHydrationFails(t *testing.T) {
 	t.Parallel()
 
-	for _, status := range []int{http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			t.Parallel()
 			server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -4192,6 +4192,12 @@ func TestConnectorFetchIssuesByStatesRejectsBodyDependencyWhenHydrationFails(t *
 			c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
 			got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
+			if status == http.StatusInternalServerError || status == http.StatusTooManyRequests {
+				if err != nil || len(got) != 1 || len(got[0].BlockedBy) != 1 || got[0].BlockedBy[0].State != "" {
+					t.Fatalf("retryable lookup = %+v, %v; want candidate with unresolved blocker", got, err)
+				}
+				return
+			}
 			if err == nil || len(got) != 0 {
 				t.Fatalf("FetchIssuesByStates() = %+v, %v; want error and no issues", got, err)
 			}
