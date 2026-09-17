@@ -731,6 +731,15 @@ If that budget also prevents a saved stale snapshot's early recheck, its
 eligibility check consolidates into the mandatory final revalidation; other
 completed candidates can still use the evaluation window.
 
+No Detent push may drop commits from a PR branch (#2874). Missing worktrees
+restore an existing published branch from a freshly fetched origin ref; only
+new branches start at the base. Both merge preparation push paths enforce the
+checkpoint ancestry rule: the observed remote head must be an ancestor of the
+head being pushed, and the existing lease rejects subsequent remote changes.
+A rebase that rewrites published commits therefore falls back as non-clean
+instead of force-pushing. `TestLocalGitMergePreservesRemoteHistory` covers
+recreation, stale local branches, resolved heads, and rewritten published history.
+
 Security audit verdict routing from Merging shares the existing auto-promote
 classifier and findings publisher with source-lane completion (#2642, #2726).
 The merge completion handler routes actionable findings through its existing
