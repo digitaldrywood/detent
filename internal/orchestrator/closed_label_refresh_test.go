@@ -29,6 +29,8 @@ func TestTickReconcilesClosedLabelsWithoutPreviousPipeline(t *testing.T) {
 		{"not planned in progress", "In Progress", "not_planned", false},
 		{"not planned human review", "Human Review", "not_planned", false},
 		{"not planned between ticks", "Merging", "not_planned", true},
+		{"empty reason todo", "Todo", "", false},
+		{"unknown reason todo", "Todo", "duplicate", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var visible atomic.Bool
@@ -95,7 +97,7 @@ func TestTickReconcilesClosedLabelsWithoutPreviousPipeline(t *testing.T) {
 			if len(state.Running) != 0 || len(state.SchedulerDecisions) != 0 || state.DispatchStatus.EligibleCandidateCount != 0 {
 				t.Fatalf("closed issue entered dispatch: %#v", state.DispatchStatus)
 			}
-			for tick := 0; tc.reason == "not_planned" && tick < 3; tick++ {
+			for tick := 0; tc.reason != "completed" && tick < 3; tick++ {
 				if len(state.Pipeline) != 0 || len(state.BoardIssues) != 0 {
 					t.Fatalf("tick %d retained closed issue: pipeline=%#v board=%#v", tick, state.Pipeline, state.BoardIssues)
 				}

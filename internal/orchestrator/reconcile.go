@@ -194,7 +194,7 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 		reconciled[issueID] = struct{}{}
 		if !closedReasonCompleted(issue.ClosedReason) && state.tickTransitions != nil {
 			// Preserve completed-work transition visibility, but do not publish
-			// cancelled work back into the board or active pipeline.
+			// other closed work back into the board or active pipeline.
 			removed := map[string]struct{}{issueID: {}}
 			state.tickTransitions.boardIssues = filterReconciledIssues(state.tickTransitions.boardIssues, removed)
 			state.tickTransitions.pipeline = filterReconciledIssues(state.tickTransitions.pipeline, removed)
@@ -216,7 +216,6 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 
 func closedCompletedIssueNeedsStatusReconciliation(issue connector.Issue, terminalStates []string) bool {
 	return issue.Closed &&
-		(closedReasonCompleted(issue.ClosedReason) || strings.EqualFold(strings.TrimSpace(issue.ClosedReason), "not_planned")) &&
 		strings.TrimSpace(issue.State) != "" &&
 		!stateIn(issue.State, terminalStates)
 }
