@@ -149,11 +149,7 @@ func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue conn
 	if err != nil {
 		return issue, err
 	}
-	issues[0] = issue
-	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-		return issue, err
-	}
-	return c.hydratePullRequestWithEvidence(ctx, issues[0], node, true)
+	return c.hydratePullRequestWithEvidence(ctx, issue, node, true)
 }
 
 // applySchedulerEvidence is shared by admission and normal refresh. Callers

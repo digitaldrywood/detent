@@ -1434,6 +1434,11 @@ func (c *Connector) fetchIssueByRef(ctx context.Context, ref issueRef) (connecto
 	c.cacheIssueRef(issue)
 
 	stateName, priorityName, statusUpdatedAt, fields, ok, known := c.cachedIssueProjectFields(issue.ID)
+	// REST is current evidence. A cached terminal project state must not hide
+	// a reopened issue; re-read the existing project fields in that case.
+	if known && ok && strings.EqualFold(issue.State, "OPEN") && stateInList(c.githubToDetentState(stateName), c.terminalStates) {
+		known = false
+	}
 	if !known {
 		var err error
 		stateName, priorityName, statusUpdatedAt, fields, ok, err = c.fetchProjectFieldsPage(ctx, issue.ID, nil)
