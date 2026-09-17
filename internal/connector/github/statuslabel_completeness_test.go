@@ -16,7 +16,11 @@ func TestActiveLabelDiscoveryComplete(t *testing.T) {
 		t.Run(fmt.Sprintf("closed_prefix_%d", closedCount), func(t *testing.T) {
 			t.Parallel()
 			var responses []graphqlTestResponse
-			want := []string{"digitaldrywood/detent#2659", "digitaldrywood/detent#2660", "digitaldrywood/detent#2663"}
+			var want []string
+			for n := 1; n <= closedCount; n++ {
+				want = append(want, fmt.Sprintf("digitaldrywood/detent#%d", n))
+			}
+			want = append(want, "digitaldrywood/detent#2659", "digitaldrywood/detent#2660", "digitaldrywood/detent#2663")
 			for range 2 {
 				for page := 1; page <= closedCount/100+1; page++ {
 					var items []string

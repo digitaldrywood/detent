@@ -108,9 +108,6 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 				if strings.TrimSpace(issue.ID) == "" {
 					continue
 				}
-				if githubIssueClosed(issue.State) && !stateInList(c.githubToDetentState(externalState), c.terminalStates) {
-					continue
-				}
 				if _, ok := seen[issue.ID]; ok {
 					continue
 				}
