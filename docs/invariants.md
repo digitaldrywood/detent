@@ -142,8 +142,11 @@ secondary cooldown, including Retry-After, instead of converting throttled probe
 into monitor failures. Cancellation during that wait does not register a monitor.
 Monitor eligibility resolves the issue's queued retry even when the caller supplies
 no retry; at `NextProbeAt` the carrier can reserve the existing single canary.
-An idle condition whose carrier was lost or replaced expires at `NextProbeAt`;
-an in-flight canary retains ownership. Durable attempt recovery restores both the
+An idle hold expires at `NextProbeAt` even when its carrier cannot dispatch;
+an in-flight canary retains ownership. Eligibility checks are read-only and retain
+the condition's attempt history, so a repeated failure after expiry increases
+backoff. Missing candidate batches preserve monitor carrier retries; only a
+dispatchable carrier reserves a probe and consumes an attempt. Durable attempt recovery restores both the
 condition and its carrier retry, and a successful budget observation clears it.
 `TestWorkerGitHubClassificationWaitsForSharedCooldown`,
 `TestWorkerGitHubMonitorCarrierEligibility`, and

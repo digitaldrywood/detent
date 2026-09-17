@@ -186,17 +186,23 @@ func (o *Orchestrator) registerGitHubMonitor(
 		}
 	}
 	probeFailed := condition.ProbeIssueID == running.Issue.ID
+	// An expired idle hold permits ordinary dispatch too. Count its next failure
+	// as another recovery attempt instead of resetting the credential backoff.
+	expired := exists && condition.ProbeIssueID == "" && !observedAt.Before(condition.NextProbeAt)
+	if expired {
+		condition.ProbeAttempts++
+	}
 	condition.Consumer = strings.TrimSpace(failure.Consumer)
 	condition.Operation = strings.TrimSpace(failure.Operation)
 	condition.LastObservedAt = observedAt
 	condition.LastError = strings.TrimSpace(failure.Message)
-	if probeFailed {
+	if probeFailed || expired {
 		condition.ProbeIssueID = ""
 		condition.LastProbeAt = observedAt
 		condition.LastProbeResult = "failed"
 		condition.LastProbeDetail = condition.LastError
 	}
-	if !exists || probeFailed || condition.NextProbeAt.IsZero() {
+	if !exists || probeFailed || expired || condition.NextProbeAt.IsZero() {
 		condition.NextProbeAt = observedAt.Add(backendCapacityProbeDelayForAttempt(condition.ProbeAttempts)).UTC()
 	}
 	state.GitHubMonitors[key] = condition
@@ -242,29 +248,18 @@ func workerGitHubMonitorBlocks(state *State, issueID string, retry Retry, now ti
 		}
 		return condition.ProbeIssueID != "" || now.Before(condition.NextProbeAt)
 	}
-	blocked := false
-	for key, condition := range state.GitHubMonitors {
+	// Eligibility is read-only. An idle hold expires at its deadline even if
+	// its carrier cannot dispatch. Retain the record until recovery so another
+	// failure preserves the credential's accumulated backoff.
+	for _, condition := range state.GitHubMonitors {
 		if condition.ProbeIssueID == issueID {
 			continue
 		}
-		if condition.ProbeIssueID == "" && !now.Before(condition.NextProbeAt) {
-			hasCarrier := false
-			for _, queued := range state.Retry {
-				if queued.GitHubMonitor && strings.TrimSpace(queued.GitHubCredential) == key {
-					hasCarrier = true
-					break
-				}
-			}
-			// A lost or replaced retry must not leave a permanent project hold.
-			// Keep the existing probe deadline as the orphan condition's expiry.
-			if !hasCarrier {
-				delete(state.GitHubMonitors, key)
-				continue
-			}
+		if condition.ProbeIssueID != "" || now.Before(condition.NextProbeAt) {
+			return true
 		}
-		blocked = true
 	}
-	return blocked
+	return false
 }
 
 func reserveWorkerGitHubMonitorProbe(state *State, issueID string, retry Retry, now time.Time) (string, bool) {
