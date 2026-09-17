@@ -56,7 +56,7 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 				attemptID = startRecoveryWorkAttempt(t, ctx, db, issue, store.WorkAttemptStatusActive, "", at)
 				if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: at.Add(time.Second),
 					Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure,
-					ErrorClass: "runner_error", ErrorMessage: "agent override rejected: effort: explicit effort is unsupported by the selected model"}); err != nil {
+					ErrorClass: "runner_error", ErrorMessage: "agent override rejected: block: detent-agent schema must be 1"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -389,7 +389,7 @@ func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
 		err  error
 		code WorkAttemptRecoveryErrorCode
 	}{
-		{name: "invalid effort", err: &runpkg.IssueConfigurationError{Field: "effort", Reason: "explicit effort is unsupported by the selected model"}, code: WorkAttemptRecoveryUnsupportedState},
+		{name: "invalid schema", err: &runpkg.IssueConfigurationError{Field: "block", Reason: "detent-agent schema must be 1"}, code: WorkAttemptRecoveryUnsupportedState},
 		{name: "catalog outage", err: errors.New("catalog unavailable"), code: WorkAttemptRecoveryUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,7 +434,7 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 				running.CompletionLane = issue.State
 				state.Running[issue.ID] = running
 			}
-			var failure error = &runpkg.IssueConfigurationError{Field: "effort", Reason: "explicit effort is unsupported by the selected model"}
+			var failure error = &runpkg.IssueConfigurationError{Field: "block", Reason: "detent-agent schema must be 1"}
 			switch form {
 			case "wrapped":
 				failure = fmt.Errorf("launch: %w", failure)
@@ -507,7 +507,7 @@ func TestConfigurationRecoveryOnlyClearsMatchingFailures(t *testing.T) {
 			state.FailureBreaker.Class = "runner_error"
 			state.FailureBreaker.ResumeAt = now.Add(time.Hour)
 			for range 6 {
-				state.FailureBreaker.Failures["runner_error"] = append(state.FailureBreaker.Failures["runner_error"], ProjectFailure{IssueID: "bad", At: now, ErrorMessage: "agent override rejected: effort: explicit effort is unsupported by the selected model"})
+				state.FailureBreaker.Failures["runner_error"] = append(state.FailureBreaker.Failures["runner_error"], ProjectFailure{IssueID: "bad", At: now, ErrorMessage: "agent override rejected: block: detent-agent schema must be 1"})
 			}
 			if unrelated {
 				for range 2 {
