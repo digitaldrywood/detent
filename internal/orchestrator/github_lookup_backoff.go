@@ -252,7 +252,7 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 	}
 	if reporter, ok := o.connector.(connector.GraphQLRateLimitStatusReporter); ok {
 		status := reporter.GraphQLRateLimitStatus()
-		if status == connector.GraphQLRateLimitStatusExhausted || (status == connector.GraphQLRateLimitStatusBackoff && secondaryDeadline.IsZero()) {
+		if status == connector.GraphQLRateLimitStatusExhausted || (status == connector.GraphQLRateLimitStatusBackoff && !secondaryDeadline.After(now)) {
 			return githubLookupSignal{trigger: githubLookupTriggerGraphQL, reason: "GitHub GraphQL returned a rate-limit response"}, true
 		}
 	}
@@ -305,7 +305,7 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 	}
 	if state != nil && state.RateLimits != nil {
 		bucket := state.RateLimits.GitHubGraphQL
-		if bucket != nil && ((bucket.Status == telemetry.RateLimitStatusBackoff && secondaryDeadline.IsZero()) || bucket.Status == telemetry.RateLimitStatusExhausted) {
+		if bucket != nil && ((bucket.Status == telemetry.RateLimitStatusBackoff && !secondaryDeadline.After(now)) || bucket.Status == telemetry.RateLimitStatusExhausted) {
 			return githubLookupSignal{
 				trigger: githubLookupTriggerGraphQL,
 				reason:  "GitHub GraphQL returned a rate-limit response",

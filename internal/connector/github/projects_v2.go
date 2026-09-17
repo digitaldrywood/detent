@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -639,43 +638,17 @@ func (c *Connector) writeDefaultProjectItemStatuses(ctx context.Context, itemIDs
 		return nil
 	}
 
-	workerCount := min(defaultProjectItemStatusWriteParallelism, len(itemIDs))
-	jobs := make(chan string)
-	errs := make(chan error, len(itemIDs))
-	var wg sync.WaitGroup
-	wg.Add(workerCount)
-	for range workerCount {
-		go func() {
-			defer wg.Done()
-			for itemID := range jobs {
-				if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
-					errs <- fmt.Errorf("%s: %w", itemID, err)
-				}
-			}
-		}()
-	}
-
-	for _, itemID := range itemIDs {
-		select {
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			close(errs)
-			return errors.Join(ctx.Err(), joinErrors(errs))
-		case jobs <- itemID:
-		}
-	}
-
-	close(jobs)
-	wg.Wait()
-	close(errs)
-	return joinErrors(errs)
-}
-
-func joinErrors(errs <-chan error) error {
 	var joined error
-	for err := range errs {
-		joined = errors.Join(joined, err)
+	for _, itemID := range itemIDs {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(joined, err)
+		}
+		if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("%s: %w", itemID, err))
+			if errors.Is(err, ErrRateLimited) {
+				return joined
+			}
+		}
 	}
 	return joined
 }
