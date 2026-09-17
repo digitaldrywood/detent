@@ -569,15 +569,23 @@ func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
 
 func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 	t.Parallel()
-	for _, projectID := range []string{"configured", "removed"} {
-		t.Run(projectID, func(t *testing.T) {
+	for _, tc := range []struct {
+		projectID, host string
+	}{
+		{projectID: "configured"},
+		{projectID: "removed"},
+		{projectID: "configured", host: "pool-a"},
+		{projectID: "removed", host: "pool-a"},
+	} {
+		projectID := tc.projectID
+		t.Run(projectID+"/"+tc.host, func(t *testing.T) {
 			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { backend.Close() })
 			now := time.Now().UTC()
-			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", StartedAt: now.Add(-46 * time.Hour), LeaseExpiresAt: now.Add(-22 * time.Hour)})
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", WorkerHost: tc.host, StartedAt: now.Add(-46 * time.Hour), LeaseExpiresAt: now.Add(-22 * time.Hour)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -623,8 +631,8 @@ func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
 	}{
 		{name: "local live lease", host: "local"},
 		{name: "local expired lease with live process", host: "local", expired: true},
-		{name: "remote live lease", host: "other-host"},
-		{name: "remote expired lease", host: "other-host", expired: true},
+		{name: "pool live lease", host: "pool-a"},
+		{name: "pool expired lease", host: "pool-a", expired: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
@@ -663,8 +671,7 @@ func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
 					called = true
 					return "", terminationErr
 				}, func(store.WorkerProcess) error { t.Fatal("cleaned live worker"); return nil })
-			local := tc.host == "local"
-			if called != local || errors.Is(err, terminationErr) != local {
+			if !called || !errors.Is(err, terminationErr) {
 				t.Fatalf("reap called=%v, err=%v", called, err)
 			}
 			attempt, err := backend.WorkAttempt(t.Context(), id)
@@ -673,6 +680,73 @@ func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
 			}
 			if attempt.Status != store.WorkAttemptStatusActive {
 				t.Fatalf("live attempt was terminalized: %+v", attempt)
+			}
+		})
+	}
+}
+
+// Pool names are scheduling labels; every registered worker belongs to this instance.
+func TestReapPoolWorkerProcesses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		reason, host string
+	}{
+		{reason: "startup", host: "local"},
+		{reason: "startup", host: "pool-a"},
+		{reason: "shutdown", host: "pool-a"},
+	} {
+		t.Run(tc.reason+"/"+tc.host, func(t *testing.T) {
+			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			now := time.Now().UTC()
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+				ProjectID: "removed", IssueID: "pool-worker", WorkerType: "agent", WorkerHost: tc.host,
+				StartedAt: now.Add(-time.Hour), LeaseExpiresAt: now.Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{
+				ProjectID: "removed", IssueID: "pool-worker", WorkAttemptID: id, StartedAt: now.Add(-time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
+				WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 4242, GroupID: 4242, StartedAt: now},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, tc.reason, time.Second, func() time.Time { return now },
+				func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+					called = true
+					if identity.PID != 4242 {
+						t.Fatalf("reaped PID = %d", identity.PID)
+					}
+					return procgroup.TerminationOutcomeAlreadyExited, nil
+				}, func(store.WorkerProcess) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			processes, err := backend.ListActiveWorkerProcesses(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !called || len(processes) != 0 {
+				t.Fatalf("reap called=%v, remaining processes=%d", called, len(processes))
+			}
+			if tc.reason == "startup" {
+				attempt, err := backend.WorkAttempt(t.Context(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalAbandoned {
+					t.Fatalf("reaped attempt = %+v, want abandoned", attempt)
+				}
 			}
 		})
 	}

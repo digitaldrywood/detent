@@ -464,7 +464,6 @@ type WorkerProcessRegistration struct {
 }
 
 type WorkerProcess struct {
-	WorkerHost  string
 	SessionID   int64
 	IssueID     string
 	Identifier  string
@@ -819,14 +818,12 @@ type ConcurrencyBucket struct {
 type WorkAttemptTimeout struct {
 	// ConfirmedGoneAttemptIDs permits recovery before lease expiry after local process reconciliation.
 	ConfirmedGoneAttemptIDs []int64
-	// WorkerHost optionally scopes recovery; local includes legacy empty host records.
-	WorkerHost        string
-	ExcludeAttemptIDs []int64
-	ProjectID         string
-	Now               time.Time
-	TerminalState     WorkAttemptTerminalState
-	ErrorClass        string
-	ErrorMessage      string
+	ExcludeAttemptIDs       []int64
+	ProjectID               string
+	Now                     time.Time
+	TerminalState           WorkAttemptTerminalState
+	ErrorClass              string
+	ErrorMessage            string
 }
 
 type MergeRequiredCheckEvaluation struct {

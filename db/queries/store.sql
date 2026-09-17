@@ -152,7 +152,6 @@ WHERE id = sqlc.arg(id);
 -- name: ListActiveWorkerProcesses :many
 SELECT
   id AS session_id,
-  CAST(COALESCE((SELECT worker_host FROM work_attempts WHERE work_attempts.id = codex_sessions.work_attempt_id), '') AS TEXT) AS process_host,
   CAST(COALESCE(issue_id, '') AS TEXT) AS issue_id,
   CAST(COALESCE(identifier, '') AS TEXT) AS identifier,
   CAST(COALESCE(issue_url, '') AS TEXT) AS issue_url,
@@ -991,8 +990,6 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
-  AND (sqlc.arg(filter_worker_host) = ''
-       OR COALESCE(NULLIF(trim(worker_host), ''), 'local') = sqlc.arg(filter_worker_host))
   AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= sqlc.arg(lease_expires_at))
        OR id IN (SELECT value FROM json_each(sqlc.arg(confirmed_gone_attempt_ids))))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'

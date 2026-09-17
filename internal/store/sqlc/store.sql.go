@@ -2842,7 +2842,6 @@ func (q *Queries) ListActiveWorkAttempts(ctx context.Context, filterProjectID in
 const listActiveWorkerProcesses = `-- name: ListActiveWorkerProcesses :many
 SELECT
   id AS session_id,
-  CAST(COALESCE((SELECT worker_host FROM work_attempts WHERE work_attempts.id = codex_sessions.work_attempt_id), '') AS TEXT) AS process_host,
   CAST(COALESCE(issue_id, '') AS TEXT) AS issue_id,
   CAST(COALESCE(identifier, '') AS TEXT) AS identifier,
   CAST(COALESCE(issue_url, '') AS TEXT) AS issue_url,
@@ -2861,7 +2860,6 @@ ORDER BY started_at, id
 
 type ListActiveWorkerProcessesRow struct {
 	SessionID         int64  `json:"session_id"`
-	ProcessHost       string `json:"process_host"`
 	IssueID           string `json:"issue_id"`
 	Identifier        string `json:"identifier"`
 	IssueURL          string `json:"issue_url"`
@@ -2885,7 +2883,6 @@ func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWo
 		var i ListActiveWorkerProcessesRow
 		if err := rows.Scan(
 			&i.SessionID,
-			&i.ProcessHost,
 			&i.IssueID,
 			&i.Identifier,
 			&i.IssueURL,
@@ -4448,12 +4445,10 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND (?9 = '' OR project_id = ?9)
-  AND (?10 = ''
-       OR COALESCE(NULLIF(trim(worker_host), ''), 'local') = ?10)
-  AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?11)
-       OR id IN (SELECT value FROM json_each(?12)))
+  AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?10)
+       OR id IN (SELECT value FROM json_each(?11)))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-  AND id NOT IN (SELECT value FROM json_each(?13))
+  AND id NOT IN (SELECT value FROM json_each(?12))
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
@@ -4467,7 +4462,6 @@ type TimeoutExpiredWorkAttemptsParams struct {
 	Phase                   sql.NullString `json:"phase"`
 	StatusMessage           sql.NullString `json:"status_message"`
 	FilterProjectID         interface{}    `json:"filter_project_id"`
-	FilterWorkerHost        interface{}    `json:"filter_worker_host"`
 	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
 	ConfirmedGoneAttemptIds interface{}    `json:"confirmed_gone_attempt_ids"`
 	ExcludeAttemptIds       interface{}    `json:"exclude_attempt_ids"`
@@ -4484,7 +4478,6 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 		arg.Phase,
 		arg.StatusMessage,
 		arg.FilterProjectID,
-		arg.FilterWorkerHost,
 		arg.LeaseExpiresAt,
 		arg.ConfirmedGoneAttemptIds,
 		arg.ExcludeAttemptIds,

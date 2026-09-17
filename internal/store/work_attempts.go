@@ -375,7 +375,6 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 	rows, err := s.queries.TimeoutExpiredWorkAttempts(ctx, sqlc.TimeoutExpiredWorkAttemptsParams{
 		ExcludeAttemptIds:       string(excluded),
 		ConfirmedGoneAttemptIds: string(confirmedGone),
-		FilterWorkerHost:        strings.TrimSpace(attrs.WorkerHost),
 		Status:                  string(WorkAttemptStatusTerminal),
 		TerminalState:           nullString(string(terminalState)),
 		CompletedAt:             sql.NullString{String: now, Valid: true},

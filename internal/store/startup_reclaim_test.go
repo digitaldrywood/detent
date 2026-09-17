@@ -62,8 +62,8 @@ func TestTimeoutWorkAttemptsProcessEvidence(t *testing.T) {
 		{name: "expired lease", host: "local", expired: true, terminal: true},
 		{name: "confirmed gone", host: "local", gone: true, terminal: true},
 		{name: "legacy local", gone: true, terminal: true},
-		{name: "remote expired", host: "remote", expired: true},
-		{name: "remote evidence cannot override host", host: "remote", gone: true},
+		{name: "pool expired", host: "pool-a", expired: true, terminal: true},
+		{name: "pool confirmed gone", host: "pool-a", gone: true, terminal: true},
 		{name: "running exclusion wins", host: "local", expired: true, gone: true, excluded: true},
 		{name: "deferred completion wins", host: "local", phase: "completion_deferred", expired: true, gone: true},
 	} {
@@ -81,7 +81,7 @@ func TestTimeoutWorkAttemptsProcessEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			attrs := WorkAttemptTimeout{Now: now, WorkerHost: "local"}
+			attrs := WorkAttemptTimeout{Now: now}
 			if tc.gone {
 				attrs.ConfirmedGoneAttemptIDs = []int64{id}
 			}

@@ -81,9 +81,6 @@ func reapWorkerProcessesWithCleanup(
 	var result error
 	terminationFailed := false
 	for _, process := range processes {
-		if host := strings.TrimSpace(process.WorkerHost); host != "" && host != "local" {
-			continue
-		}
 		identity := procgroup.Identity{
 			PID:       process.PID,
 			GroupID:   process.GroupID,
@@ -126,17 +123,16 @@ func reapWorkerProcessesWithCleanup(
 			terminationFailed = true
 		}
 	}
-	// Feed the existing expiry path only local attempts whose processes the
-	// startup reaper confirmed gone (including attempts with no process record).
+	// The store belongs to this instance; worker hosts are scheduling pool labels.
+	// Feed the existing expiry path attempts whose processes startup confirmed gone,
+	// including attempts with no process record.
 	if strings.TrimSpace(reason) == "startup" && !terminationFailed && hasAttempts {
 		gone := make([]int64, 0, len(attempts))
 		for _, attempt := range attempts {
-			if host := strings.TrimSpace(attempt.WorkerHost); host == "" || host == "local" {
-				gone = append(gone, attempt.ID)
-			}
+			gone = append(gone, attempt.ID)
 		}
 		if _, err := attemptStore.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
-			Now: now().UTC(), WorkerHost: "local", ConfirmedGoneAttemptIDs: gone,
+			Now: now().UTC(), ConfirmedGoneAttemptIDs: gone,
 			TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart",
 			ErrorMessage: "active work attempt reclaimed after service restart",
 		}); err != nil {

@@ -303,15 +303,22 @@ restores the base interval. Actual exhaustion, provider throttles, and connector
 REST write protection remain authoritative. `TestProjectRefreshColdFleetRequestCounts`
 and `TestProjectRefreshActiveFleetDispatch` cover cold five/ten-project reads,
 eventual refresh, reset recovery, free permits, and dispatch transition writes.
-Startup process reconciliation feeds confirmed-gone local attempts to the existing
-expired-lease query across all projects before project loading (#2749), including
-removed projects. The parallel bulk reclaim API/query is removed. Startup scopes
-expiry to local (including legacy empty-host) records; other hosts' attempts and
-processes are retained. Failed process termination prevents startup expiry.
+Startup process reconciliation feeds confirmed-gone instance-owned attempts to
+the existing expired-lease query across all projects before project loading
+(#2749), including removed projects. The parallel bulk reclaim API/query is
+removed. The store is per instance; `worker_host` values are scheduling pool
+labels, not instance identities, so all registered processes and attempts are
+reconciled regardless of their pool label. Failed process termination prevents
+startup expiry.
 Project refresh retains lease criteria and running-attempt exclusions; deferred
 completions remain excluded in the shared query. Interrupted sessions retain
 orphan-session resume eligibility. `TestStartupRetainsOwnedWorkAttempts` covers
-live local processes whose termination fails and other hosts' live/expired leases.
+processes whose termination fails with live/expired leases and local/pool labels.
+`TestReapPoolWorkerProcesses` covers startup/shutdown reaping of pool-labelled
+workers and startup reclamation before lease expiry. Historical abandoned
+`service_restart` sessions remain eligible for resume when their project is
+loaded and their issue is active; eligibility is intentionally not limited to
+the latest boot.
 Recorded processless stops use
 the existing completion and pending operator-stop records without requiring a
 running project; live workers still require the orchestrator. Live and recorded
