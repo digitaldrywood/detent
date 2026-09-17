@@ -1203,7 +1203,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `identity.owner_field` | `string` | `none` | No | must be blank when identity.ownership_mode is assignee |
 | `identity.ownership_mode` | `string` | `none` | No | identity.owner_field must be blank when identity.ownership_mode is assignee<br>must be one of assignee, field |
 | `intake` | `object` | `see child fields` | Conditional | tracker.repository is required for intake sources |
-| `intake.sources` | `list<object>` | `[]` | No | requires tracker.kind github |
+| `intake.sources` | `list<object>` | `[]` | No | requires tracker.kind github<br>values path filters require a scheduled source |
 | `intake.sources[].creates` | `object` | `see child fields` | No | None |
 | `intake.sources[].creates.body` | `string` | `"{details}" when configured` | No | None |
 | `intake.sources[].creates.labels` | `list<string>` | `[]` | No | None |
@@ -1211,9 +1211,12 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `intake.sources[].creates.title` | `string` | `"[{source}] {summary}" when configured` | No | None |
 | `intake.sources[].cron` | `string` | `none` | No | None |
 | `intake.sources[].dedupe_by` | `string` | `"fingerprint" when configured` | No | None |
+| `intake.sources[].enabled` | `boolean` | `true when configured` | No | None |
+| `intake.sources[].exclude_paths` | `list<string>` | `[]` | No | None |
 | `intake.sources[].kind` | `string` | `none` | Conditional | is required |
 | `intake.sources[].match` | `string` | `none` | No | must use field:value syntax |
 | `intake.sources[].name` | `string` | `none` | Conditional | is required<br>must contain only lowercase letters, numbers, dots, underscores, or hyphens |
+| `intake.sources[].paths` | `list<string>` | `[]` | No | None |
 | `intake.sources[].scan` | `string` | `none` | No | None |
 | `intake.sources[].secret` | `string` | `none` | Conditional | is required for webhook sources |
 | `observability` | `object` | `see child fields` | No | None |

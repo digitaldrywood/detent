@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -559,6 +560,20 @@ func TestMachineIssueFingerprint(t *testing.T) {
 			}
 			if !tt.reused && len(c.issues) != 2 {
 				t.Fatalf("issues=%+v", c.issues)
+			}
+		})
+	}
+}
+
+func TestFindIntakeIssueIncludesClosed(t *testing.T) {
+	t.Parallel()
+	for _, closed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(closed), func(t *testing.T) {
+			marker := "<!-- detent-intake:test -->"
+			c := New(Config{Issues: []connector.Issue{{ID: "match", Description: marker, Closed: closed}}})
+			issue, found, err := c.FindIntakeIssue(t.Context(), marker)
+			if err != nil || !found || issue.ID != "match" || issue.Closed != closed {
+				t.Fatalf("issue=%+v found=%t err=%v", issue, found, err)
 			}
 		})
 	}

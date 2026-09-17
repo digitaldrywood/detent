@@ -292,3 +292,94 @@ func (s *fakeIssueStore) CreateComment(_ context.Context, _, body string) error 
 	s.comments = append(s.comments, body)
 	return nil
 }
+
+func TestManagerPreservesClosedFinding(t *testing.T) {
+	for _, body := range []string{"dismissed", pendingStateMarker} {
+		t.Run(body, func(t *testing.T) {
+			store := &fakeIssueStore{found: Issue{ID: "closed", Closed: true, Body: body}}
+			manager := newWebhookManager(t, store, "")
+			result, err := manager.IngestWebhook(t.Context(), "alerts", []byte(`{"summary":"repeat","fingerprint":"same"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Created || result.Issue.ID != "closed" || !result.Issue.Closed {
+				t.Fatalf("result = %+v", result)
+			}
+			if len(store.created)+len(store.updated)+len(store.states)+len(store.comments) != 0 {
+				t.Fatal("closed finding was mutated")
+			}
+		})
+	}
+}
+
+func TestScheduledSourceControls(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		enabled         *bool
+		paths, excludes []string
+		want            bool
+	}{
+		{name: "default", want: true},
+		{name: "explicit enabled", enabled: new(true), want: true},
+		{name: "disabled", enabled: new(false)},
+		{name: "included", paths: []string{"*.go"}, want: true},
+		{name: "not included", paths: []string{"docs/*.md"}},
+		{name: "excluded wins", paths: []string{"*.go"}, excludes: []string{"main.go"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeIssueStore{}
+			cfg := Config{Sources: []Source{{Name: "todos", Kind: KindSchedule, Cron: "0 6 * * 1", Scan: "custom", Enabled: tt.enabled, Paths: tt.paths, ExcludePaths: tt.excludes}}}
+			manager, err := New(cfg, store, Dependencies{ScannerFactory: fakeScannerFactory{events: []Event{{Summary: "TODO: retry", Fingerprint: "same", Fields: map[string]string{"path": "main.go"}}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			results, err := manager.RunScheduled(t.Context(), "todos")
+			if tt.enabled != nil && !*tt.enabled {
+				if manager.Enabled() || err == nil || store.findCalls != 0 {
+					t.Fatalf("disabled source: enabled=%t err=%v calls=%d", manager.Enabled(), err, store.findCalls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || results[0].Matched != tt.want || results[0].Created != tt.want {
+				t.Fatalf("results = %+v", results)
+			}
+			if !tt.want && store.findCalls != 0 {
+				t.Fatal("filtered event reached store")
+			}
+		})
+	}
+}
+
+func TestManagerDisableSourceOnReload(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{KindWebhook, KindSchedule} {
+		t.Run(kind, func(t *testing.T) {
+			store := &fakeIssueStore{}
+			cfg := Config{Sources: []Source{{Name: "source", Kind: kind, Secret: "secret", Cron: "0 6 * * 1", Scan: "custom"}}}
+			manager, err := New(cfg, store, Dependencies{ScannerFactory: fakeScannerFactory{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Sources[0].Enabled = new(false)
+			if err := manager.Update(cfg, nil, ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := manager.Source("source"); ok || manager.Enabled() {
+				t.Fatal("disabled source remains registered")
+			}
+			_, err = manager.IngestWebhook(t.Context(), "source", nil)
+			if !errors.Is(err, ErrSourceNotFound) {
+				t.Fatalf("webhook error = %v", err)
+			}
+			if err := manager.Update(Config{Sources: []Source{{Name: "source", Kind: kind, Secret: "secret", Cron: "0 6 * * 1", Scan: "custom"}}}, store, ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := manager.Source("source"); !ok || !manager.Enabled() {
+				t.Fatal("reenabled source is not registered")
+			}
+		})
+	}
+}

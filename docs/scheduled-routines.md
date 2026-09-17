@@ -105,15 +105,31 @@ field and defaults to `fingerprint`.
 Templates can reference `{source}`, `{kind}`, `{summary}`, `{details}`,
 `{fingerprint}`, and flattened payload fields. Detent stores a hashed intake
 marker in the issue body. A later event with the same source and fingerprint
-updates that issue and adds configured labels without resetting its status, so
-an operator promotion from Backlog remains intact. New issues receive the
+comments on an open issue without resetting its status, so
+an operator promotion from Backlog remains intact. A matching closed issue is
+already handled, regardless of closure reason; intake does not recreate, reopen,
+comment on, or modify it. New issues receive the
 configured starting status and then enter the existing label, issue-field, or
 ProjectV2 gate pipeline. ProjectV2 intake also requires `tracker.repository` so
 Detent knows where to create the repository issue before adding it to the board.
 
 The built-in `stale-todos` scanner asks Git for tracked files beneath the
 project source root, then scans eligible regular files for TODO and FIXME
-entries. Untracked and gitignored files, including generated output, are not
+entries. Markers must be uppercase and either use `TODO:` / `TODO(owner)`
+shape (also `FIXME`) or immediately follow a comment leader such as `//`,
+`#`, `/*`, `*`, `<!--`, or `--`. Board state names such as `Todo` and prose
+such as `stale-TODO scan` are ignored.
+
+A source can set `enabled: false` to stop registering its webhook or schedule
+without deleting its configuration. Omitted `enabled` defaults to true;
+disabled configurations are still validated. Scheduled sources may set `paths`
+and `exclude_paths` lists of repository-relative, slash-separated Go `path.Match`
+globs. Empty `paths` includes all paths; exclusions win. `*` does not cross `/`
+and `**` has no special recursive meaning. For example,
+`exclude_paths: [detent.yaml, WORKFLOW.md, AGENTS.md]` suppresses findings from
+those control files. Filters apply to scanner event paths before deduplication.
+
+Untracked and gitignored files, including generated output, are not
 scanned. The source root must be inside a Git worktree and the `git` executable
 must be available; otherwise the scan returns an actionable error. Scanner
 schedules use standard five-field cron expressions.

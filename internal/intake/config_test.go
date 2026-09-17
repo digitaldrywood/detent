@@ -96,3 +96,24 @@ func TestEmptyConfigIsDisabledAndValid(t *testing.T) {
 		t.Fatalf("Validate() = %#v, want no problems", problems)
 	}
 }
+
+func TestSourcePathValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name, kind      string
+		paths, excludes []string
+		valid           bool
+	}{
+		{"include", KindSchedule, []string{"*.go"}, nil, true},
+		{"exclude", KindSchedule, nil, []string{"detent.yaml", "WORKFLOW.md", "AGENTS.md"}, true},
+		{"bad include", KindSchedule, []string{"["}, nil, false},
+		{"bad exclude", KindSchedule, nil, []string{"["}, false},
+		{"webhook", KindWebhook, []string{"*.go"}, nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Sources: []Source{{Kind: tt.kind, Cron: "0 6 * * 1", Scan: "stale-todos", Secret: "secret", Paths: tt.paths, ExcludePaths: tt.excludes}}}
+			if problems := cfg.Validate("intake", nil); (len(problems) == 0) != tt.valid {
+				t.Fatalf("problems = %v", problems)
+			}
+		})
+	}
+}
