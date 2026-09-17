@@ -588,7 +588,7 @@ func startupSnapshot(
 		DashboardURL:   cleanDashboardURL(dashboardURL),
 		Shutdown:       telemetry.Shutdown{Status: "running"},
 		Refresh:        refresh,
-		LifetimeTotals: lifetimeTotals(ctx, lifetimeSource),
+		LifetimeTotals: lifetimeTotals(ctx, lifetimeSource, telemetry.LifetimeTotals{}),
 		Update:         telemetryUpdateStatus(updateSources),
 	}
 	switch len(snapshot.Projects) {
@@ -749,7 +749,8 @@ func publishSnapshotOnce(
 	if trend != nil {
 		merged = trend.apply(merged)
 	}
-	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource)
+	previous, _ := snapshotPublisher.Latest()
+	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource, previous.LifetimeTotals)
 	merged.Update = telemetryUpdateStatus(updateSources)
 	if merged.Update.State == "draining" {
 		merged.Update.ActiveAttempts = len(merged.Running)
@@ -989,16 +990,22 @@ func (r *tokenTrendRecorder) throughput() telemetry.TokenThroughput {
 	return throughput
 }
 
-func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.LifetimeTotals {
+func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource, cached telemetry.LifetimeTotals) telemetry.LifetimeTotals {
 	if source == nil {
-		return telemetry.LifetimeTotals{DegradedReason: "runtime store unavailable"}
+		cached.Stale = cached.Available
+		cached.DegradedReason = "runtime store unavailable"
+		return cached
 	}
 	totals, err := readTelemetrySource(ctx, "lifetime_totals", "", source.LifetimeTotals)
 	if err != nil {
-		return telemetry.LifetimeTotals{DegradedReason: "read runtime store lifetime totals: " + err.Error()}
+		cached.Stale = cached.Available
+		cached.ReadFailures++
+		cached.DegradedReason = "read runtime store lifetime totals: " + err.Error()
+		return cached
 	}
 	return telemetry.LifetimeTotals{
 		Available:             true,
+		ReadFailures:          cached.ReadFailures,
 		InputTokens:           totals.InputTokens,
 		CachedInputTokens:     totals.CachedInputTokens,
 		OutputTokens:          totals.OutputTokens,
@@ -1022,7 +1029,11 @@ func readTelemetrySource[T any](ctx context.Context, source, projectID string, r
 	if err != nil {
 		err = fmt.Errorf("telemetry source %s: %w", source, err)
 		if ctx.Err() == nil {
-			slog.Default().Warn("telemetry source read failed",
+			level := slog.LevelWarn
+			if source == "lifetime_totals" {
+				level = slog.LevelDebug
+			}
+			slog.Default().Log(ctx, level, "telemetry source read failed",
 				"source", source,
 				"project_id", projectID,
 				"elapsed", time.Since(started),
