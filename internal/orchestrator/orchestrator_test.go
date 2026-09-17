@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -1557,54 +1558,64 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 func TestRunParksIssueAfterRepeatedInstantBackendFailuresTruncatesConfiguredOutput(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-instant-fail-truncated", "digitaldrywood/detent#978", "Todo")
-	tracker := newFakeConnector(issue)
-	backendBody := "0123456789abcdefghijklmnopqrstuvwxyz"
-	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
+	synctest.Test(t, func(t *testing.T) {
+		issue := testIssue("issue-instant-fail-truncated", "digitaldrywood/detent#978", "Todo")
+		tracker := &instantFailureCommentConnector{fakeConnector: newFakeConnector(issue), commented: make(chan struct{}, 1)}
+		backendBody := "0123456789abcdefghijklmnopqrstuvwxyz"
+		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
 
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:             time.Millisecond,
-		MaxConcurrentAgents:      1,
-		MaxRetryBackoff:          time.Millisecond,
-		FailureRetryBaseDelay:    time.Millisecond,
-		ActiveStates:             []string{"Todo", "In Progress"},
-		ObservedStates:           []string{"Blocked"},
-		TerminalStates:           []string{"Done", "Cancelled", "Canceled", "Closed"},
-		ContinuationRetryDelay:   time.Second,
-		OutputTruncationMaxBytes: len(runtimeoutput.Marker) + 10,
-	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
+		orch, err := orchestrator.New(orchestrator.Config{
+			PollInterval:             time.Millisecond,
+			MaxConcurrentAgents:      1,
+			MaxRetryBackoff:          time.Millisecond,
+			FailureRetryBaseDelay:    time.Millisecond,
+			ActiveStates:             []string{"Todo", "In Progress"},
+			ObservedStates:           []string{"Blocked"},
+			TerminalStates:           []string{"Done", "Cancelled", "Canceled", "Closed"},
+			ContinuationRetryDelay:   time.Second,
+			OutputTruncationMaxBytes: len(runtimeoutput.Marker) + 10,
+		}, orchestrator.Dependencies{
+			Connector: tracker,
+			Runner:    runner,
+		})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		stop := runOrchestrator(t, orch)
+		defer stop()
+
+		// Wait for the output under test, then let the completion handler publish
+		// its blocked state. Virtual time advances retries without a scheduler deadline.
+		select {
+		case <-tracker.commented:
+		case <-time.After(time.Minute): // Virtual-time guard for missing output.
+			t.Fatal("timed out waiting for instant failure comment")
+		}
+		synctest.Wait()
+		state, err := orch.State(t.Context())
+		if err != nil {
+			t.Fatalf("State() error = %v", err)
+		}
+
+		wantBody := "01234" + runtimeoutput.Marker + "vwxyz"
+		reason := state.Blocked[issue.ID].Reason
+		if !strings.Contains(reason, wantBody) {
+			t.Fatalf("Blocked[%q].Reason = %q, want truncated backend body %q", issue.ID, reason, wantBody)
+		}
+		if strings.Contains(reason, backendBody) {
+			t.Fatalf("Blocked[%q].Reason included unbounded backend body: %q", issue.ID, reason)
+		}
+		comments := tracker.commentCalls()
+		if len(comments) != 1 {
+			t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
+		}
+		if !strings.Contains(comments[0].body, wantBody) {
+			t.Fatalf("comment body missing truncated backend error:\n%s", comments[0].body)
+		}
+		if strings.Contains(comments[0].body, backendBody) {
+			t.Fatalf("comment body included unbounded backend error:\n%s", comments[0].body)
+		}
 	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
-
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		_, ok := state.Blocked[issue.ID]
-		return ok
-	})
-
-	wantBody := "01234" + runtimeoutput.Marker + "vwxyz"
-	reason := state.Blocked[issue.ID].Reason
-	if !strings.Contains(reason, wantBody) {
-		t.Fatalf("Blocked[%q].Reason = %q, want truncated backend body %q", issue.ID, reason, wantBody)
-	}
-	if strings.Contains(reason, backendBody) {
-		t.Fatalf("Blocked[%q].Reason included unbounded backend body: %q", issue.ID, reason)
-	}
-	comments := tracker.commentCalls()
-	if len(comments) != 1 {
-		t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
-	}
-	if !strings.Contains(comments[0].body, wantBody) {
-		t.Fatalf("comment body missing truncated backend error:\n%s", comments[0].body)
-	}
-	if strings.Contains(comments[0].body, backendBody) {
-		t.Fatalf("comment body included unbounded backend error:\n%s", comments[0].body)
-	}
 }
 
 func TestRunInstantFailureCircuitBreakerComparesFullBackendErrorKey(t *testing.T) {
@@ -3836,4 +3847,21 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 
 func cloneConnectorComments(comments []connector.IssueComment) []connector.IssueComment {
 	return append([]connector.IssueComment(nil), comments...)
+}
+
+// instantFailureCommentConnector signals that the breaker output was recorded.
+type instantFailureCommentConnector struct {
+	*fakeConnector
+	commented chan struct{}
+}
+
+func (c *instantFailureCommentConnector) CreateComment(ctx context.Context, issueID, body string) error {
+	if err := c.fakeConnector.CreateComment(ctx, issueID, body); err != nil {
+		return err
+	}
+	select {
+	case c.commented <- struct{}{}:
+	default:
+	}
+	return nil
 }
