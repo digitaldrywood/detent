@@ -12,6 +12,8 @@ func TestDependencyAppendPreservesBody(t *testing.T) {
 		name, body, ref string
 		invalid         bool
 	}{
+		{name: "empty declaration with prose", body: "Depends on: none. Order: #2, #3", ref: "#3"},
+		{name: "and separated sentence", body: "Depends on: #2 and #3. See #9", ref: "#3"},
 		{name: "append", body: "Acceptance criteria\n\nDepends on: #2\n", ref: "owner/repo#3"},
 		{name: "existing", body: "Text\n- **Depends on:** #3, owner/repo#2\n", ref: "https://github.com/owner/repo/issues/3"},
 		{name: "code example", body: "```text\nDepends on: #3\n```", ref: "owner/repo#3"},
@@ -61,14 +63,14 @@ func FuzzDependencyReferences(f *testing.F) {
 	})
 }
 
-func TestDeclarationsPreservesProseOutsideFences(t *testing.T) {
+func TestDeclarationsOutsideFences(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, body string
 		want       []string
 		wantErr    bool
 	}{
-		{name: "trailing prose", body: "**Depends on:** #1 so helpers exist", want: []string{"#1 so helpers exist"}},
+		{name: "trailing prose", body: "**Depends on:** #1 so helpers exist", want: []string{"#1"}},
 		{name: "surrounding declarations", body: "Depends on: #1\n~~~text\nDepends on: #2\n~~~\nBlocked by: #3", want: []string{"#1", "#3"}},
 		{name: "unfinished fence", body: "Depends on: #1\n```text\nDepends on: #2", want: []string{"#1"}, wantErr: true},
 	} {

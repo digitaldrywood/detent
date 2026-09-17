@@ -3560,7 +3560,11 @@ the Workpad `detent-status` block when the issue is actively blocked. During the
 deprecation window, issue-body `Depends on:` and `Blocked by:` lines remain a
 fallback for projects that have not migrated; same-repo `#A`, cross-repo
 `owner/repo#A`, and full `https://github.com/owner/repo/issues/A` issue URLs are
-supported there.
+supported there. A declaration reads only its leading comma/and-separated
+reference list and stops at the first sentence terminator (`.`, `!`, `?`), trailing
+prose, or end of line. Periods within repository names and URLs are preserved.
+`none`, `n/a`, and `-` explicitly declare no dependencies, even if references follow.
+The same boundary rules apply to both labels.
 
 If the project has opted into `tracker.dependency_auto_unblock.enabled`, issue B
 can sit in a configured waiting state such as `Blocked` with native dependency

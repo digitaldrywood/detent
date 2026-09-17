@@ -444,7 +444,12 @@ removed declarations. Public reads select dependencies before resolving blocker
 state; the orchestrator consumes that list through its existing dependency gate.
 Degraded native reads and unresolved blocker-state lookups propagate errors,
 preventing candidates with unknown blocker state from dispatching. Both parsers
-share fence-aware declaration scanning; fenced examples never add blockers. Workpad issue-state predicates
+share fence-aware declaration scanning; fenced examples never add blockers.
+Declaration reference lists stop at sentence boundaries, end of line, or trailing
+prose; explicit `none`, `n/a`, and `-` declarations add no blockers (#2873).
+Native relations remain authoritative even with an explicit empty body declaration.
+`TestDependencyDeclarationSentenceBoundary` and `TestDispatchDependencyProseCycle`
+cover prose-only cycles and preserve explicit dependency waits. Workpad issue-state predicates
 absent from the current combined list are explained and cleared as before;
 explicit human actions and non-dependency predicates retain their meaning.
 `TestDependencyAuthority` reproduces text-only hydration, including bold labels;
