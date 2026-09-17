@@ -145,3 +145,23 @@ func TestTurnSandboxPolicyTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyTurnSandboxPolicyOmitted(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		policy any
+	}{
+		{"nil", nil}, {"typed nil", map[string]any(nil)}, {"empty", map[string]any{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, roots := range [][]string{nil, {"/extra"}} {
+				params := map[string]any{}
+				setOptional(params, "sandboxPolicy", turnSandboxPolicyForWorkspace("", tt.policy, roots))
+				if _, exists := params["sandboxPolicy"]; exists {
+					t.Fatalf("sandboxPolicy should be omitted: %#v", params)
+				}
+			}
+		})
+	}
+}

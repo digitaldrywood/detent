@@ -46,7 +46,7 @@ func turnSandboxPolicyForWorkspace(threadSandbox string, policy any, extraWritab
 	if len(extraWritableRoots) > 0 && isWorkspaceWriteSandboxName(policyType(policyMap)) {
 		return mergeSandboxWritableRoots(policyMap, extraWritableRoots)
 	}
-	if policy == nil {
+	if original, ok := policy.(map[string]any); policy == nil || (ok && original == nil) || len(policyMap) == 0 {
 		return nil
 	}
 	return policyMap
