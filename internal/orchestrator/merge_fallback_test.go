@@ -15,14 +15,15 @@ import (
 func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	type testCase struct {
 		name              string
 		lane              string
 		result            runpkg.RunResult
 		runErr            error
 		wantReason        string
 		wantTerminalState store.WorkAttemptTerminalState
-	}{
+	}
+	tests := []testCase{
 		{
 			name: "structured review finding",
 			lane: "Merging",
@@ -37,10 +38,17 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 	}
 
 	for _, lane := range []string{"Rework", "In Progress"} {
-		test := tests[0]
-		test.name = lane + " review finding"
-		test.lane = lane
-		tests = append(tests, test)
+		tests = append(tests, testCase{
+			name: lane + " review finding",
+			lane: lane,
+			result: runpkg.RunResult{
+				FinalState:            runpkg.FinalStateCompleted,
+				Output:                runpkg.RunOutputMergeFallbackRework,
+				MergeFallbackFindings: "Found an unrelated authorization defect and stopped.",
+			},
+			wantReason:        mergeFallbackRequiresReworkReason,
+			wantTerminalState: store.WorkAttemptTerminalSuccess,
+		})
 	}
 
 	for _, tt := range tests {
@@ -104,6 +112,9 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 				!strings.Contains(tracker.comments[0].body, "validation still running") {
 				t.Fatalf("comment = %q, want preserved merge-fallback findings", tracker.comments[0].body)
 			}
+			if tt.lane == "Rework" && !strings.Contains(tracker.comments[0].body, "kept this issue in Rework") {
+				t.Fatalf("same-lane comment = %q", tracker.comments[0].body)
+			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != tt.wantTerminalState {
 				t.Fatalf("attempt completions = %#v, want terminal state %q", attempts.completions, tt.wantTerminalState)
 			}
@@ -130,15 +141,11 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 		{lane: "Merging", name: "resolved pushed head waits past resolution deadline", head: "validated-head", ci: "pending"},
 		{lane: "Merging", name: "validation failure", head: "validated-head", ci: "failure", wantRework: true},
 		{lane: "Merging", name: "replaced head with green CI", head: "replacement-head", ci: "success", wantRework: true},
+		{lane: "Rework", name: "Rework resolved", head: "validated-head", ci: "success"},
+		{lane: "In Progress", name: "In Progress resolved", head: "validated-head", ci: "success"},
+		{lane: "Rework", name: "Rework replaced head", head: "replacement-head", ci: "success", wantRework: true},
+		{lane: "In Progress", name: "In Progress replaced head", head: "replacement-head", ci: "success", wantRework: true},
 	}
-	for _, lane := range []string{"Rework", "In Progress"} {
-		resolved := tests[0]
-		resolved.name, resolved.lane, resolved.ci = lane+" resolved", lane, "success"
-		replaced := tests[2]
-		replaced.name, replaced.lane = lane+" replaced head", lane
-		tests = append(tests, resolved, replaced)
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

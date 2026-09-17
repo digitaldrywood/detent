@@ -2497,7 +2497,11 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 
 func mergeWorkerReworkComment(issue connector.Issue, reason string, missingChecks []string, findings string) string {
 	var b strings.Builder
-	b.WriteString("Merge worker routed this issue from " + issue.State + " to Rework.")
+	if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
+		b.WriteString("Merge worker kept this issue in Rework.")
+	} else {
+		b.WriteString("Merge worker routed this issue from " + issue.State + " to Rework.")
+	}
 	b.WriteString("\n\n- reason: ")
 	b.WriteString(reason)
 	if len(missingChecks) > 0 {

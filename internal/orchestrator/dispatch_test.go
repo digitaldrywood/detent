@@ -2380,16 +2380,18 @@ func TestDispatchModeMergingFastPathFlag(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name, lane, mergeable, want string
-		enabled                     bool
+		enabled, draft              bool
 	}{
-		{"merging disabled", "Merging", "clean", runpkg.RunModeImplement, false},
-		{"merging enabled", "Merging", "clean", runpkg.RunModeMerge, true},
-		{"dirty rework", "Rework", "dirty", runpkg.RunModeMerge, true},
-		{"dirty in progress", "In Progress", "dirty", runpkg.RunModeMerge, true},
-		{"dirty rework disabled", "Rework", "dirty", runpkg.RunModeMerge, false},
-		{"dirty in progress disabled", "In Progress", "dirty", runpkg.RunModeMerge, false},
-		{"clean rework", "Rework", "clean", runpkg.RunModeImplement, true},
-		{"clean in progress", "In Progress", "clean", runpkg.RunModeImplement, true},
+		{"merging disabled", "Merging", "clean", runpkg.RunModeImplement, false, false},
+		{"merging enabled", "Merging", "clean", runpkg.RunModeMerge, true, false},
+		{"dirty rework", "Rework", "dirty", runpkg.RunModeMerge, true, false},
+		{"dirty in progress", "In Progress", "dirty", runpkg.RunModeMerge, true, false},
+		{"dirty rework disabled", "Rework", "dirty", runpkg.RunModeMerge, false, false},
+		{"dirty in progress disabled", "In Progress", "dirty", runpkg.RunModeMerge, false, false},
+		{"clean rework", "Rework", "clean", runpkg.RunModeImplement, true, false},
+		{"clean in progress", "In Progress", "clean", runpkg.RunModeImplement, true, false},
+		{"draft dirty in progress", "In Progress", "dirty", runpkg.RunModeImplement, true, true},
+		{"draft dirty rework", "Rework", "dirty", runpkg.RunModeImplement, false, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2398,6 +2400,7 @@ func TestDispatchModeMergingFastPathFlag(t *testing.T) {
 			state := newState(cfg)
 			issue := dispatchTestIssueWithPullRequest("issue-repair", tt.lane, "OPEN")
 			issue.PullRequest.MergeableState = tt.mergeable
+			issue.PullRequest.Draft = tt.draft
 			orch := Orchestrator{cfg: cfg}
 			if got := orch.dispatchMode(t.Context(), &state, issue); got != tt.want {
 				t.Fatalf("dispatchMode = %q, want %q", got, tt.want)

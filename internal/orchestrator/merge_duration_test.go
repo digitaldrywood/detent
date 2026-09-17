@@ -607,3 +607,35 @@ func mergeDurationTestIssue(id string) connector.Issue {
 		AssignedToWorker: true,
 	}
 }
+
+func TestRepairDurationBound(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"Rework", "In Progress", "Merging"} {
+		t.Run(lane, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{lane}, MergeFastPathEnabled: true, MergeWorkerMaxDuration: time.Hour})
+			issue := dispatchTestIssueWithPullRequest("repair-duration", lane, "OPEN")
+			issue.PullRequest.MergeableState = "dirty"
+			runner := newWorkerHostRunner()
+			limit := &controlledMergeDurationLimit{}
+			orch := Orchestrator{cfg: cfg, supervisor: newTestSupervisor(t, runner, cfg), mergeWorkerLimit: limit.Context, runResults: make(chan runpkg.Completion, 1)}
+			state := newState(cfg)
+			if !orch.dispatchIssue(t.Context(), &state, issue, 1, time.Now(), "") {
+				t.Fatal("dispatch failed")
+			}
+			receiveWorkerHostRunRequest(t, runner.started)
+			if limit.duration != cfg.MergeWorkerMaxDuration {
+				t.Fatalf("duration = %s, want %s", limit.duration, cfg.MergeWorkerMaxDuration)
+			}
+			limit.Expire()
+			select {
+			case result := <-orch.runResults:
+				if !errors.Is(result.Err, runpkg.ErrMergeWorkerDurationExceeded) {
+					t.Fatalf("completion error = %v", result.Err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("duration expiry did not cancel repair")
+			}
+		})
+	}
+}

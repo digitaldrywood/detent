@@ -180,7 +180,7 @@ func ciUnavailableWaitingRun(running Running, state *State) bool {
 	if pullRequest == nil || max(pullRequest.UnstartedCheckCount, len(pullRequest.UnstartedChecks)) == 0 {
 		return false
 	}
-	if mergeWorkerIssue(running.Issue) || strings.TrimSpace(running.Mode) == runpkg.RunModeMerge {
+	if mergeWorkerIssue(running.Issue) {
 		return true
 	}
 	if strings.TrimSpace(running.Mode) == runpkg.RunModePlan {

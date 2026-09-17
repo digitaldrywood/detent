@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -230,5 +231,33 @@ func ciAvailabilityIssue(id string, number int, count int, checks []connector.Pu
 			UnstartedCheckCount: count,
 			UnstartedChecks:     checks,
 		},
+	}
+}
+
+func TestCIUnavailableRepairImplementParity(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"In Progress", "Rework", "Merging"} {
+		for _, mode := range []string{runpkg.RunModeImplement, runpkg.RunModeMerge, runpkg.RunModePlan} {
+			for _, tt := range []struct {
+				name    string
+				pushed  bool
+				message string
+				waiting bool
+			}{
+				{name: "implementing"},
+				{name: "pushed", pushed: true, waiting: true},
+				{name: "waiting phase", message: "waiting for CI", waiting: true},
+			} {
+				t.Run(fmt.Sprintf("%s/%s/%s", lane, mode, tt.name), func(t *testing.T) {
+					t.Parallel()
+					state := newState(normalizeConfig(Config{}))
+					running := Running{Issue: connector.Issue{State: lane, PullRequest: &connector.PullRequest{UnstartedCheckCount: 1}}, Mode: mode, WorkProductPushed: tt.pushed, LastMessage: tt.message}
+					want := lane == "Merging" || (mode != runpkg.RunModePlan && tt.waiting)
+					if got := ciUnavailableWaitingRun(running, &state); got != want {
+						t.Fatalf("waiting = %t, want %t", got, want)
+					}
+				})
+			}
+		}
 	}
 }
