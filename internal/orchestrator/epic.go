@@ -550,9 +550,8 @@ func mergeEpicChildRefs(issue connector.Issue, groups ...[]connector.BlockedRef)
 
 func parseEpicBodyChildRefs(body string, repo string) []connector.BlockedRef {
 	children := []connector.BlockedRef{}
-	for _, line := range strings.FieldsFunc(body, func(r rune) bool {
-		return r == '\n' || r == '\r'
-	}) {
+	lines, _ := dependencyline.LinesOutsideFences(body)
+	for _, line := range lines {
 		if text, ok := dependencyline.Match(line); ok {
 			children = append(children, parseEpicRefs(text, repo)...)
 			continue

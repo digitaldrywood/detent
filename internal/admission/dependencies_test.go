@@ -447,3 +447,26 @@ func TestAdmissionDependencyAliasesFailClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestAdmissionDependencyFencedExamples(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		body  string
+		ready bool
+	}{
+		{name: "backtick example", body: "```markdown\nDepends on: #10\n```", ready: true},
+		{name: "tilde example", body: "~~~markdown\nDepends on: #10\n~~~", ready: true},
+		{name: "real dependency", body: "Depends on: #10", ready: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := connector.Issue{Identifier: "owner/repo#20", State: "Backlog", Description: tt.body}
+			tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{}), issues: []connector.Issue{{Identifier: "owner/repo#10", State: "Todo"}}}
+			evidence := resolveAdmissionDependencies(t.Context(), Settings{Issues: tracker}, issue, time.Now())
+			evaluation := admissionDependencyFindings(AgentEvaluation{Findings: []admissionmodel.Finding{{Dimension: "Readiness", Matched: true}}}, evidence)
+			if got := evaluation.Findings[0].Matched; got != tt.ready {
+				t.Fatalf("readiness = %t, want %t; evidence = %+v", got, tt.ready, evidence)
+			}
+		})
+	}
+}
