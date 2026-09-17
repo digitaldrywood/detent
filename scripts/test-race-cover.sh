@@ -36,8 +36,9 @@ for package in "${packages[@]}"; do
     fi
 done
 bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
-env -u DETENT_API_TOKEN go test -race "${race_packages[@]}"
-env -u DETENT_API_TOKEN go test -coverprofile="$profile_dir/rest.out" "${packages[@]}"
+# Match Makefile GO_TEST: skip test-result caching, retaining native build caches.
+env -u DETENT_API_TOKEN go test -count=1 -race "${race_packages[@]}"
+env -u DETENT_API_TOKEN go test -count=1 -coverprofile="$profile_dir/rest.out" "${packages[@]}"
 bash scripts/test-workspace.sh -coverprofile "$profile_dir/workspace.out" -output tmp/workspace-cover-evidence
 go run ./tools/covermerge "$profile_dir/hub.out" "$profile_dir/workspace.out" "$profile_dir/rest.out" > "$profile_dir/merged.out"
 publish_path="$(mktemp "$3.XXXXXX")"
