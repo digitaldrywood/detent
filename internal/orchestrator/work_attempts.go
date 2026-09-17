@@ -422,7 +422,7 @@ func (o *Orchestrator) heartbeatRunningWorkAttempts(ctx context.Context, state *
 			continue
 		}
 		heartbeat := o.runningWorkAttemptHeartbeat(state, running, now)
-		if err := o.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
+		if err := recordWorkAttemptHeartbeat(ctx, o.workAttempts, heartbeat); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("work attempt heartbeat failed", "attempt_id", running.WorkAttemptID, "issue_id", issueID, "error", err)
 			}

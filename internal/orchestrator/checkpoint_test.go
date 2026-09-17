@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -87,8 +88,63 @@ func TestCheckpointValidator(t *testing.T) {
 				orch.latestRuntimeState.Store(state)
 			}
 			err := orch.checkpointValidator(issue.ID, 23, 5)(ctx)
-			if (err == nil) != (scenario == "owned") {
+			if (err == nil) != (scenario == "owned" || scenario == "expired lease" || scenario == "lease expires during lookup") {
 				t.Fatalf("checkpoint validation = %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckpointRenewsExpiredLease(t *testing.T) {
+	for _, scenario := range []string{"owned", "with progress", "wrong generation", "lane changed"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC().Truncate(time.Second)
+			db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			issue := connector.Issue{ID: "checkpoint", State: "In Progress"}
+			expired := now.Add(-3 * time.Minute)
+			id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "test", IssueID: issue.ID, WorkerType: "implement", StartedAt: now.Add(-13 * time.Minute), LeaseExpiresAt: expired})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := &Orchestrator{workAttempts: db, now: func() time.Time { return now }}
+			running := Running{Issue: issue, WorkAttemptID: id, Generation: 5, Mode: runner.RunModeImplement}
+			if scenario == "with progress" {
+				running.progress = newWorkerProgress(running, store.WorkAttemptHeartbeat{AttemptID: id, HeartbeatAt: now.Add(-13 * time.Minute), LeaseExpiresAt: expired}, db, 4096)
+			}
+			if scenario == "wrong generation" {
+				running.Generation++
+			}
+			o.latestRuntimeState.Store(&runtimeState{Running: map[string]Running{issue.ID: running}})
+			o.connector = &checkpointLaneConnector{read: func() ([]connector.Issue, error) {
+				if scenario == "lane changed" {
+					issue.State = "Backlog"
+				}
+				return []connector.Issue{issue}, nil
+			}}
+			err = o.checkpointValidator(issue.ID, id, 5)(t.Context())
+			wantOK := scenario == "owned" || scenario == "with progress"
+			if (err == nil) != wantOK {
+				t.Fatalf("checkpoint: %v", err)
+			}
+			attempt, err := db.WorkAttempt(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wantOK {
+				if !attempt.LeaseExpiresAt.Equal(o.workAttemptLeaseExpiresAt(now)) || !attempt.HeartbeatAt.Equal(now) {
+					t.Fatalf("lease not renewed: %+v", attempt)
+				}
+			} else if !attempt.LeaseExpiresAt.Equal(expired) {
+				t.Fatalf("unowned lease renewed: %v", attempt.LeaseExpiresAt)
 			}
 		})
 	}

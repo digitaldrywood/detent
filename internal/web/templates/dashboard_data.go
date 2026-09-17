@@ -9187,6 +9187,9 @@ func tokenRate(snapshot telemetry.Snapshot) string {
 }
 
 func lifetimeStatus(totals telemetry.LifetimeTotals) string {
+	if totals.Available && totals.Stale {
+		return "stale"
+	}
 	if totals.Available {
 		return "available"
 	}

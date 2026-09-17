@@ -197,6 +197,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Heartbeat writes (#2871) share a bounded per-write context and one retry across
+dedicated, tick, and worker-progress paths, replacing the unreachable same-context
+retry. Caller cancellation and terminal attempts remain authoritative. Checkpoints
+renew an expired lease only for the same active implementer attempt and generation
+in the current tracker lane, then recheck runtime ownership after the write.
+`TestHeartbeatWriteDeadlineRecovery` exercises real SQLite after a blocked write;
+`TestCheckpointValidator` and `TestCheckpointRenewsExpiredLease` preserve ownership
+and renewal behavior. This consolidates heartbeat persistence and removes elapsed
+lease time as an independent veto on a live owner's checkpoint; no new recovery
+loop, configuration, or reason code is added.
+
+
 ProjectV2 refresh pages include supported project fields and their timestamps
 (#2859), consolidating field retrieval into the board scan and removing dispatch's
 per-candidate REST hydration. Label-only authorization declines run before the

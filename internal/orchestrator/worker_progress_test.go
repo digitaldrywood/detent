@@ -41,7 +41,11 @@ func TestWorkerProgressCheckpointPersistence(t *testing.T) {
 			if got := progress.persisted.Load(); (got != nil) != (tt.err == nil) {
 				t.Fatalf("persisted heartbeat = %#v", got)
 			}
-			if len(attempts.heartbeats) != 1 || !strings.Contains(attempts.heartbeats[0].WorkerMetadataJSON, "dispatch_loop_start") {
+			wantWrites := 1
+			if tt.err != nil && !errors.Is(tt.err, store.ErrNotFound) {
+				wantWrites = 2
+			}
+			if len(attempts.heartbeats) != wantWrites || !strings.Contains(attempts.heartbeats[0].WorkerMetadataJSON, "dispatch_loop_start") {
 				t.Fatalf("checkpoint heartbeats = %#v", attempts.heartbeats)
 			}
 			progress.close()
