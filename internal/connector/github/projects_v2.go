@@ -94,7 +94,15 @@ query DetentGitHubProjectItems(
           priorityValue: fieldValueByName(name: "Priority") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
-          fieldValues(first: 100) {
+` + projectItemFieldValuesSelection + `
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+const projectItemFieldValuesSelection = `          fieldValues(first: 100) {
             nodes {
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue {
@@ -113,13 +121,7 @@ query DetentGitHubProjectItems(
                 field { ... on ProjectV2FieldCommon { name } }
               }
             }
-          }
-        }
-      }
-    }
-  }
-  rateLimit { limit used remaining cost resetAt }
-}`
+          }`
 
 const observedStatusProjectItemsQuery = `
 query DetentGitHubObservedStatusProjectItems(
@@ -173,10 +175,14 @@ query DetentGitHubObservedStatusProjectItems(
 var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery,
 	"              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }\n", "", 1)
 
+// Project fields serve dispatch selectors and artifact timestamps directly from
+// each refresh page. Scheduler connections remain in candidate hydration.
 // Body is a scalar: retaining it does not add priced connections and avoids
 // unbounded REST body fetches when enriched GraphQL is unavailable.
-var thinRefreshProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery,
-	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt", 1)
+var thinRefreshProjectItemsQuery = strings.NewReplacer(
+	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt",
+	"          priorityValue:", projectItemFieldValuesSelection+"\n          priorityValue:",
+).Replace(schedulerProjectItemsQuery)
 
 const refreshProjectRevisionQuery = `query DetentGitHubRefreshProjectRevision($projectId: ID!) {
   node(id: $projectId) { ... on ProjectV2 { updatedAt } }

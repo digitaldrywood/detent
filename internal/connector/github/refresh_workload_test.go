@@ -362,7 +362,11 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				} else if n <= candidates+70 {
 					state = "Backlog"
 				}
-				page.Nodes = append(page.Nodes, projectItemNode{ID: fmt.Sprintf("P%d", n), StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
+				var fields nodeConnection[projectFieldValue]
+				if strings.Contains(req.Query, "fieldValues(first: 100)") {
+					fields.Nodes = []projectFieldValue{{TypeName: "ProjectV2ItemFieldSingleSelectValue", Field: projectField{Name: "Status"}, Name: state}}
+				}
+				page.Nodes = append(page.Nodes, projectItemNode{ID: fmt.Sprintf("P%d", n), FieldValues: fields, StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
 			}
 			data["node"] = map[string]any{"updatedAt": "2026-09-16T20:00:00Z", "items": page}
 		}
@@ -417,6 +421,11 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 			}
 		}
 		for _, issue := range result.Candidates {
+			// Dispatch's hydration short-circuit requires project fields. The real
+			// dispatch-hook request assertion lives in the orchestrator regression.
+			if issue.Fields["Status"] != "Todo" {
+				t.Fatalf("candidate %s would require dispatch hydration: %+v", issue.ID, issue.Fields)
+			}
 			if issue.ID == "I1" && (len(issue.BlockedBy) != 1 || !issue.BlockedBy[0].HumanOwned || !issue.BlockedBy[0].HumanCompletionReady || issue.BlockedBy[0].State != "Done") {
 				t.Fatalf("thin board erased human evidence: %+v", issue.BlockedBy)
 			}
