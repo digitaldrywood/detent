@@ -371,11 +371,14 @@ func mergeRemoteAncestor(ctx context.Context, path, remote, remoteHead, head str
 	return nil
 }
 
-// rejectMergeHistory restores the observed PR head before handing off to Rework.
+// rejectMergeHistory attempts to restore the observed PR head before handing off to Rework.
 // --keep refuses to discard uncommitted changes if the workspace is dirty.
 func rejectMergeHistory(ctx context.Context, path, remoteHead string, cause error) (MergePrepareResult, error) {
+	if err := abortRebaseIfInProgress(ctx, path); err != nil {
+		cause = errors.Join(cause, err)
+	}
 	if _, err := runGitAt(ctx, path, "reset", "--keep", remoteHead); err != nil {
-		return MergePrepareResult{}, fmt.Errorf("restore remote PR head: %w", err)
+		cause = errors.Join(cause, fmt.Errorf("restore remote PR head: %w: %s", err, commandErrorOutput(err)))
 	}
 	return MergePrepareResult{Status: MergePrepareStatusConflict, Message: cause.Error()}, nil
 }

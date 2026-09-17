@@ -16,8 +16,12 @@ func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
 		advanceBase bool
 		ahead       bool
 		stale       bool
+		interrupted bool
+		untracked   bool
 	}{
 		{name: "recreated worktree", recreate: true},
+		{name: "unfinished conflicting rebase", interrupted: true},
+		{name: "untracked file blocks restoration", stale: true, untracked: true},
 		{name: "local head contains remote", ahead: true},
 		{name: "resolved head contains remote", ahead: true, resolved: true},
 		{name: "fresh local branch at base"},
@@ -78,11 +82,26 @@ func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
 				if tt.resolved {
 					runGit(t, info.Path, "merge", "--no-edit", "origin/main")
 				}
+			} else if tt.interrupted {
+				if err := os.WriteFile(filepath.Join(source, "first"), []byte("base conflict"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "first")
+				runGit(t, source, "commit", "-m", "conflict with published change")
+				runGit(t, source, "push", "origin", "main")
+				if _, err := runGitAt(t.Context(), info.Path, "rebase", "origin/main"); err == nil {
+					t.Fatal("expected conflicting rebase")
+				}
 			} else if !tt.ahead {
 				if tt.stale {
 					runGit(t, info.Path, "reset", "--hard", "HEAD~1")
 				} else {
 					runGit(t, info.Path, "reset", "--hard", base)
+				}
+			}
+			if tt.untracked {
+				if err := os.WriteFile(filepath.Join(info.Path, "second"), []byte("untracked work"), 0o600); err != nil {
+					t.Fatal(err)
 				}
 			}
 			result, err := backend.(MergePreparer).PrepareMerge(t.Context(), info, issue, MergePrepareOptions{
@@ -106,11 +125,23 @@ func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
 				}
 			}
 			for _, name := range []string{"first", "second"} {
-				if got := readFile(t, filepath.Join(info.Path, name)); got != name {
+				want := name
+				if tt.untracked && name == "second" {
+					want = "untracked work"
+				}
+				if got := readFile(t, filepath.Join(info.Path, name)); got != want {
 					t.Errorf("preserved %s = %q", name, got)
 				}
 			}
-			if result.Status == MergePrepareStatusConflict {
+			if tt.untracked && !strings.Contains(result.Message, "restore remote PR head") {
+				t.Errorf("missing restoration diagnostic: %q", result.Message)
+			}
+			if tt.interrupted {
+				if inProgress, err := rebaseInProgress(t.Context(), info.Path); err != nil || inProgress {
+					t.Fatalf("rebase remains in progress: %t, %v", inProgress, err)
+				}
+			}
+			if result.Status == MergePrepareStatusConflict && !tt.untracked {
 				if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != remoteHead {
 					t.Errorf("refused workspace head = %s, want remote %s", got, remoteHead)
 				}

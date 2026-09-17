@@ -737,11 +737,14 @@ new branches start at the base. Before the fast path rebases, the observed remot
 head must be an ancestor of the local head. The rebase may rewrite those commits,
 but the push uses the lease on that same observed remote head. Agent conflict
 resolution merges the target into the PR branch, preserving remote ancestry,
-which is checked before validation and publication. Unsafe local heads are
-restored to the observed PR head before returning conflict. No push may replace
-published work with a stale or freshly created base branch.
+which is checked before validation and publication. Unsafe local heads abort any
+unfinished rebase and attempt to restore the observed PR head without discarding
+uncommitted work. Restoration failures remain conflicts with diagnostic details,
+not runner failures. No push may replace published work with a stale or freshly
+created base branch.
 `TestLocalGitMergePreservesRemoteHistory` covers recreation, stale local branches,
-resolved heads, and rebasing published history.
+resolved heads, rebasing published history, unfinished rebases, and untracked
+files that prevent restoration.
 
 Security audit verdict routing from Merging shares the existing auto-promote
 classifier and findings publisher with source-lane completion (#2642, #2726).
