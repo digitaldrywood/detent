@@ -192,7 +192,15 @@ func TestProjectRefreshDispatchAvoidsIssueReads(t *testing.T) {
 }
 
 func TestDispatchLabelAuthorizationBeforeHydration(t *testing.T) {
-	for _, retry := range []bool{false, true} {
+	for _, mode := range []struct {
+		name    string
+		retry   bool
+		blocked bool
+	}{
+		{name: "fresh"},
+		{name: "retry", retry: true},
+		{name: "blocked retry", retry: true, blocked: true},
+	} {
 		for _, tc := range []struct {
 			name        string
 			auth        selector.Selector
@@ -206,15 +214,22 @@ func TestDispatchLabelAuthorizationBeforeHydration(t *testing.T) {
 			{"field alternative", selector.Selector{Or: []selector.Selector{{Labels: selector.Labels{Include: []string{"allowed"}}}, {Fields: []selector.FieldEquals{{Name: "Team", Value: "agents"}}}}}, true},
 			{"nested label", selector.Selector{And: []selector.Selector{{Labels: selector.Labels{Include: []string{"allowed"}}}}}, false},
 		} {
-			t.Run(fmt.Sprintf("%s/retry=%t", tc.name, retry), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/%s", tc.name, mode.name), func(t *testing.T) {
 				cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo"}, Authorization: tc.auth})
 				state := newState(cfg)
 				now := time.Now()
 				issue := dispatchTestIssue("candidate", "Todo")
 				issue.Labels = []string{"present"}
 				issue.Fields = nil
-				if retry {
+				if mode.retry {
 					state.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Second)}
+					state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+					if !tc.wantHydrate {
+						state.BudgetRefusals[issue.ID] = BudgetRefusal{}
+					}
+				}
+				if mode.blocked {
+					state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: "existing blocker", BlockedAt: now.Add(-time.Minute)}
 				}
 				calls := 0
 				declined := false
@@ -233,6 +248,18 @@ func TestDispatchLabelAuthorizationBeforeHydration(t *testing.T) {
 				})
 				if (calls > 0) != tc.wantHydrate || declined == tc.wantHydrate {
 					t.Fatalf("hydrate=%d declined=%t", calls, declined)
+				}
+				if mode.retry && !tc.wantHydrate {
+					_, retryRetained := state.Retry[issue.ID]
+					_, claimRetained := state.Claimed[issue.ID]
+					_, budgetRetained := state.BudgetRefusals[issue.ID]
+					if retryRetained || claimRetained || budgetRetained {
+						t.Errorf("declined retry retains ownership: retry=%t claim=%t budget=%t", retryRetained, claimRetained, budgetRetained)
+					}
+					_, blockedRetained := state.Blocked[issue.ID]
+					if blockedRetained != mode.blocked {
+						t.Errorf("blocked retained=%t, want %t", blockedRetained, mode.blocked)
+					}
 				}
 			})
 		}

@@ -199,6 +199,10 @@ hydrate hook, with field-dependent authorization still evaluated afterward.
 through the real connector and dispatch hydration hooks; nested selector and retry
 coverage preserves existing authorization semantics. No cache, configuration,
 reason code, or recovery mechanism is added.
+Early authorization declines of due retries use the existing release helpers to
+clear retry ownership and budget refusals while preserving blocked state.
+`TestDispatchLabelAuthorizationBeforeHydration` covers that cleanup for blocked
+and unblocked retries without hydration.
 
 Candidate hydration (#2844) consolidates completed scheduler evidence into the
 existing board refresh scan. Bounded hydration runs between board pages and

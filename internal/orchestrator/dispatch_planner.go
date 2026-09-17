@@ -119,6 +119,11 @@ func (p dispatchPlanner) plan(
 				AuthorizationDecision: &authorization}
 			if retry, ok := dueRetries[issue.ID]; ok {
 				decision.Retry, decision.Attempt, decision.WorkerHost = true, retry.Attempt, retry.WorkerHost
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					p.releaseClaim(state, issue.ID)
+				} else {
+					p.releaseIssue(state, issue.ID)
+				}
 			}
 			logDecision(decision)
 			continue

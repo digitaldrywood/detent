@@ -224,9 +224,10 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 	}
 }
 
-// Costs measured against the Detent ProjectV2 board on 2026-09-16 using
-// data.rateLimit.cost: thin page(first:100), including scalar bodies and the
-// project updatedAt revision, costs 2. Bounded scheduler costs below are
+// Costs measured against the Detent ProjectV2 board on 2026-09-17 using
+// data.rateLimit.cost: refresh page(first:100), including fieldValues(first:100),
+// scalar bodies and the project updatedAt revision, costs 3 (previously 2
+// without fieldValues). Bounded scheduler costs below are
 // synthetic response fixtures, not measurements or header deltas.
 func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidateState string, shared bool) {
 	t.Helper()
@@ -260,7 +261,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 			t.Error("missing per-request cost")
 		}
 		data := map[string]any{}
-		cost := 2
+		cost := 3
 		if strings.Contains(req.Query, "RefreshProjectRevision") {
 			preflights++
 			cost = 1
@@ -444,9 +445,9 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 	}
 	usage := c.client.FlushGraphQLRateLimitUsage()
 	// Failed page requests have no response cost and are absent from usage.
-	wantQueries, wantPoints, wantPreflights := 88, 268, 0
+	wantQueries, wantPoints, wantPreflights := 88, 328, 0
 	if resumed {
-		wantQueries, wantPoints, wantPreflights = 116, 292, 4
+		wantQueries, wantPoints, wantPreflights = 116, 352, 4
 	}
 	if candidateState == "Human Review" {
 		wantQueries += 40
