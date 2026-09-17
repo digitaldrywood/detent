@@ -1174,6 +1174,8 @@ func lifetimeTotalsResponseFromTelemetry(totals telemetry.LifetimeTotals) lifeti
 	}
 	return lifetimeTotalsResponse{
 		Available:             totals.Available,
+		Stale:                 totals.Stale,
+		ReadFailures:          totals.ReadFailures,
 		DegradedReason:        reason,
 		InputTokens:           totals.InputTokens,
 		CachedInputTokens:     totals.CachedInputTokens,
@@ -1855,6 +1857,8 @@ type throughputAPIResponse struct {
 }
 
 type lifetimeTotalsResponse struct {
+	Stale                 bool    `json:"stale,omitempty"`
+	ReadFailures          uint64  `json:"read_failures,omitempty"`
 	Available             bool    `json:"available"`
 	DegradedReason        string  `json:"degraded_reason,omitempty"`
 	InputTokens           int64   `json:"input_tokens"`

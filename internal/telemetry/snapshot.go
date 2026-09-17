@@ -1869,6 +1869,8 @@ type ConcurrencyBucket struct {
 }
 
 type LifetimeTotals struct {
+	Stale                 bool   `json:"stale,omitempty"`
+	ReadFailures          uint64 `json:"read_failures,omitempty"`
 	Available             bool   `json:"available"`
 	DegradedReason        string `json:"degraded_reason,omitempty"`
 	InputTokens           int64  `json:"input_tokens"`

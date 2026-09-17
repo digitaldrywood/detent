@@ -341,7 +341,13 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 		heartbeat = target.progress.heartbeat(heartbeat, now)
 	}
 	if settings.workAttempts != nil && heartbeat.AttemptID > 0 {
-		if err := settings.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
+		err := settings.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat)
+		// Retry a store-local deadline once while the heartbeat operation still
+		// has budget. Never detach shutdown cancellation or an expired operation.
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = settings.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat)
+		}
+		if err != nil {
 			return heartbeat, err
 		}
 		if target.progress != nil {
