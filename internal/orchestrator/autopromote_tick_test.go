@@ -5444,7 +5444,7 @@ func TestFetchTickIssuesIncludesMergingStatusHydrationWhenMergingLaneFull(t *tes
 		StartedAt: now.Add(-time.Minute),
 	}
 
-	fetched, ok := orch.fetchTickIssues(context.Background(), &state, now, githubBudgetReserveDecision{})
+	fetched, ok := orch.fetchTickIssues(context.Background(), &state, now, githubBudgetReserveDecision{}, nil)
 	if !ok {
 		t.Fatal("fetchTickIssues() ok = false, want true")
 	}

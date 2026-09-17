@@ -250,15 +250,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
-	var points struct {
-		RateLimit struct {
-			Cost int64 `json:"cost"`
-		} `json:"rateLimit"`
-	}
-	if json.Unmarshal(envelope.Data, &points) == nil {
-		connector.RecordGraphQLPoints(ctx, points.RateLimit.Cost)
-	}
-	if !c.recordRateLimitFromData(envelope.Data, queryType, receivedAt) {
+	if !c.recordRateLimitFromData(ctx, envelope.Data, queryType, receivedAt) {
 		c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
 	}
 	if len(envelope.Errors) > 0 {
@@ -1277,7 +1269,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	}
 }
 
-func (c *Client) recordRateLimitFromData(data json.RawMessage, queryType string, now time.Time) bool {
+func (c *Client) recordRateLimitFromData(ctx context.Context, data json.RawMessage, queryType string, now time.Time) bool {
 	if len(data) == 0 {
 		return false
 	}
@@ -1310,6 +1302,7 @@ func (c *Client) recordRateLimitFromData(data json.RawMessage, queryType string,
 		ResetAt:   resetAt,
 		UpdatedAt: now,
 	})
+	connector.RecordGraphQLPoints(ctx, envelope.RateLimit.Cost)
 	c.addGraphQLQueryCost(queryType, envelope.RateLimit.Cost)
 	return true
 }

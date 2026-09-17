@@ -145,7 +145,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		return
 	}
 	timing.next("tracker_fetch")
-	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve)
+	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve, timing)
 	if !ok {
 		return
 	}
@@ -458,9 +458,15 @@ func (o *Orchestrator) fetchTickIssues(
 	state *State,
 	now time.Time,
 	reserve githubBudgetReserveDecision,
+	timing *refreshTiming,
 ) (tickFetchedIssues, bool) {
 	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
+		finishWait := o.tickWatchdog.excludeScanWait()
 		release, err := scanner.BeginRefreshScan(ctx)
+		wait := finishWait()
+		if timing != nil {
+			timing.phases = append(timing.phases, "tracker_scan_wait_duration", wait)
+		}
 		if err != nil {
 			recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
 			if o.scheduling == nil {
