@@ -206,7 +206,7 @@ func TestHubSchedulingRetainsOutOfLaneDiagnostics(t *testing.T) {
 				t.Fatal(err)
 			}
 			state := newState(cfg)
-			fetched, ok := o.fetchTickIssues(t.Context(), &state, time.Now(), githubBudgetReserveDecision{})
+			fetched, ok := o.fetchTickIssues(t.Context(), &state, time.Now(), githubBudgetReserveDecision{}, nil)
 			if !ok {
 				t.Fatal("fetch failed")
 			}
