@@ -399,10 +399,11 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 			return err
 		}
 	}
-	if metadata.PreserveLane || normalizeState(issue.State) == normalizeState(autoPromoteSourceState) {
+	targetState := o.nonReviewDecisionTargetState(issue, autoPromoteSourceState)
+	if metadata.PreserveLane || normalizeState(issue.State) == normalizeState(targetState) {
 		return nil
 	}
-	return o.updateIssueState(ctx, state, issue, autoPromoteSourceState, now, attemptAllowanceExhaustedReason)
+	return o.updateIssueState(ctx, state, issue, targetState, now, attemptAllowanceExhaustedReason)
 }
 
 // Observation timestamps qualify the historical worker explanation without

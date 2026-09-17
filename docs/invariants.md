@@ -19,6 +19,15 @@ A passing test does not authorize weakening a rule.
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
+Human Review is entered only for PR-review outcomes or an explicit opt-out of
+an automated gate (including a configured `human_review` gate). Non-review
+human decisions, including attempt-allowance exhaustion and Workpad blockers,
+use the configured Blocked lane when the gate is not `human_review` and the
+issue has no auto-promote opt-out label. Projects without a configured Blocked
+lane retain their existing destination. Allowance triage notes and the
+`attempt_allowance_exhausted` reason are preserved; operator moves out of
+Blocked still reset the allowance and auto-promote decision memory (#2880).
+
 Any closed issue, regardless of its closure reason, retains its
 non-terminal label snapshots in ordinary refresh reads, even without prior pipeline membership (#2865). The existing
 `reconcileClosedCompletedIssueStatuses` owns their transition to Done; dispatch

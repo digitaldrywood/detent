@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -106,34 +107,58 @@ func (c *attemptTriageConnector) CreateComment(ctx context.Context, id, body str
 
 func TestAttemptAllowanceTriagePublication(t *testing.T) {
 	t.Parallel()
-	for _, interrupted := range []bool{false, true} {
-		t.Run(fmt.Sprintf("interrupted=%v", interrupted), func(t *testing.T) {
+	for _, tt := range []struct {
+		name                           string
+		kind                           string
+		interrupted, optout, noBlocked bool
+		want                           string
+	}{
+		{name: "command gate", kind: gate.KindCommand, want: "Blocked"},
+		{name: "interrupted command gate", kind: gate.KindCommand, interrupted: true, want: "Blocked"},
+		{name: "human review gate", kind: gate.KindHumanReview, want: "Human Review"},
+		{name: "explicit opt out", kind: gate.KindCommand, optout: true, want: "Human Review"},
+		{name: "no blocked lane", kind: gate.KindCommand, noBlocked: true, want: "Human Review"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "In Progress"}
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue}}
 			cfg := laneMutationTestConfig()
+			cfg.AutoPromote.Gate.Kind = tt.kind
+			cfg.AutoPromote.Gate.RequireAutomatedReview = new(false)
+			cfg.AutoPromote.OptoutLabel = "manual-review"
+			if tt.optout {
+				issue.Labels = []string{"manual-review"}
+			}
+			if tt.noBlocked {
+				cfg.ObservedStates = []string{"Human Review"}
+			}
+			tracker.refreshed = issue
 			db, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			state := newState(cfg)
 			note := "## Why this stalled\nThree sessions kept failing the same CI check.\n\n## What is blocking\n- [Failing check](https://github.com/owner/repo/pull/2/checks) needs a fix.\n\n## Options\n- Fix the failing check manually.\n- Close the PR and reduce the scope."
 			attempt := store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": note})}
-			if interrupted {
+			if tt.interrupted {
 				attempt.WorkerMetadataJSON = "{}"
 			}
 			for range 2 {
 				if err := orch.publishAttemptTriage(t.Context(), &state, issue, attempt, now); err != nil {
 					t.Fatal(err)
 				}
-				issue.State = autoPromoteSourceState
+				issue.State = tt.want
 			}
 			if len(tracker.comments) != 1 {
 				t.Fatalf("comments = %d, want exactly one", len(tracker.comments))
 			}
 			body := strings.Split(tracker.comments[0].body, "\n\n<!--")[0]
+			if !tt.interrupted && body != note {
+				t.Fatalf("triage note changed: %s", body)
+			}
 			if !validAttemptTriageNote(body) {
 				t.Fatalf("invalid note: %s", body)
 			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != "Human Review" {
+			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.want {
 				t.Fatalf("updates = %#v", tracker.updates)
 			}
 			timeline, err := db.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
@@ -259,10 +284,10 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 				t.Fatalf("triage request = %#v", result.Request)
 			}
 			orch.handleRunResult(t.Context(), &state, result)
-			if len(tracker.comments) != 1 || len(tracker.updates) != 1 || tracker.updates[0].state != "Human Review" {
+			if len(tracker.comments) != 1 || len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
 				t.Fatalf("tracker writes: comments=%#v updates=%#v", tracker.comments, tracker.updates)
 			}
-			issue.State = "Human Review"
+			issue.State = blockedStatusState
 			tracker.refreshed = issue
 			tracker.refreshed.Comments = []connector.IssueComment{{Body: tracker.comments[0].body}}
 			// New runtime, same durable attempt log: no repeat triage or fourth code session.
@@ -484,7 +509,7 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: id, Mode: runpkg.RunModeTriage}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: tt.result, Err: tt.err})
-			if len(tracker.comments) != 1 || len(tracker.updates) != 1 || tracker.updates[0].state != "Human Review" {
+			if len(tracker.comments) != 1 || len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
 				t.Fatalf("writes: comments=%+v updates=%+v", tracker.comments, tracker.updates)
 			}
 			note := strings.Split(tracker.comments[0].body, "<!--")[0]
@@ -514,12 +539,12 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		{name: "audit missing for non-merging destination", audit: true, pending: true, ci: "green", mergeable: "clean", passState: "Done"},
 		{name: "audit running", audit: true, auditRunning: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "green replacement head promotes", newHead: true, ci: "green", mergeable: "clean", want: "Merging"},
-		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Human Review"},
+		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Blocked"},
 		{name: "observed lane is preserved", preserve: true, ci: "green", mergeable: "clean", want: ""},
 		{name: "green head promotes", ci: "green", mergeable: "clean", want: "Merging"},
-		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Human Review"},
-		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Human Review"},
-		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Human Review"},
+		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Blocked"},
+		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Blocked"},
+		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Blocked"},
 		{name: "unavailable evidence waits", unavailable: "checks_unavailable", wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -737,7 +762,7 @@ func TestAttemptAllowanceOperatorMove(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("triage did not complete")
 			}
-			if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != "Human Review" {
+			if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != blockedStatusState {
 				t.Fatalf("did not park again: %+v", tracker.updates)
 			}
 		})

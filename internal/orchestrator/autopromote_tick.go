@@ -251,6 +251,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
+		if decision.Reason == AutoPromoteReasonWorkpadBlocker {
+			targetState = o.nonReviewDecisionTargetState(issue, targetState)
+		}
 		if targetState == "" {
 			recordAutoPromoteSnapshotDecision(state, issueID, decision)
 			o.logAutoPromoteDecision(issue, decision, "")
@@ -1233,6 +1236,9 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
 		}
 		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
+		if decision.Reason == AutoPromoteReasonWorkpadBlocker {
+			targetState = o.nonReviewDecisionTargetState(issue, targetState)
+		}
 		if autoPromoteActiveGatePendingIssue(issue, state, o.cfg, o.cfg.AutoPromote) &&
 			normalizeState(targetState) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState) &&
 			staleTodoPullRequestShouldStayActive(decision) {
@@ -3226,6 +3232,19 @@ func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 	default:
 		return false
 	}
+}
+
+// Non-review decisions use the configured Blocked lane unless the project or
+// issue explicitly requests human review. Preserve legacy routing without it.
+func (o *Orchestrator) nonReviewDecisionTargetState(issue connector.Issue, fallback string) string {
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	if gate.Effective(cfg.Gate).Kind == gate.KindHumanReview || autoPromoteOptoutLabel(issue, cfg) {
+		return fallback
+	}
+	if stateIn(blockedStatusState, o.cfg.ActiveStates) || stateIn(blockedStatusState, o.cfg.ObservedStates) {
+		return blockedStatusState
+	}
+	return fallback
 }
 
 func autoPromoteTargetState(action AutoPromoteAction, cfg AutoPromoteConfig) string {

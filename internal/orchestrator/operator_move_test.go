@@ -176,6 +176,7 @@ func TestHandleOperatorMoveReconcilesConfiguredNonBlockedTargets(t *testing.T) {
 		target      string
 		wantCleared bool
 	}{
+		{name: "active state", target: "Rework", wantCleared: true},
 		{name: "observed state", target: "Human Review", wantCleared: true},
 		{name: "terminal state", target: "Done", wantCleared: true},
 		{name: "unknown state", target: "Unconfigured", wantCleared: false},
@@ -192,6 +193,7 @@ func TestHandleOperatorMoveReconcilesConfiguredNonBlockedTargets(t *testing.T) {
 			})
 			state := newState(cfg)
 			state.BoardIssues = []connector.Issue{issue}
+			state.AutoPromoteDecisions[issue.ID] = AutoPromoteDecision{Reason: AutoPromoteReasonWorkpadBlocker}
 			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus}
 
 			result := (&Orchestrator{cfg: cfg}).handleOperatorMove(&state, OperatorMoveRequest{
@@ -206,6 +208,9 @@ func TestHandleOperatorMoveReconcilesConfiguredNonBlockedTargets(t *testing.T) {
 			_, blocked := state.Blocked[issue.ID]
 			if blocked == tt.wantCleared {
 				t.Fatalf("Blocked[%q] presence = %t, want %t", issue.ID, blocked, !tt.wantCleared)
+			}
+			if _, exists := state.AutoPromoteDecisions[issue.ID]; exists == tt.wantCleared {
+				t.Fatalf("auto-promote decision retained = %t, want %t", exists, !tt.wantCleared)
 			}
 			wantState := "Blocked"
 			if tt.wantCleared {
