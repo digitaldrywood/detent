@@ -778,8 +778,7 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	}
 	runGit(t, info.Path, "add", "feature.txt")
 	runGit(t, info.Path, "commit", "-m", "feature")
-	// Publish only the base; the feature commits are still local.
-	runGit(t, info.Path, "push", "origin", "HEAD~1:refs/heads/"+info.Branch)
+	runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/"+info.Branch)
 
 	if err := os.WriteFile(filepath.Join(source, "main.txt"), []byte("main\n"), 0o600); err != nil {
 		t.Fatalf("write main: %v", err)
@@ -879,8 +878,7 @@ func testLocalGitPrepareMergeUsesDevBranch(t *testing.T, remoteDefault string, o
 	}
 	runGit(t, info.Path, "add", "feature.txt")
 	runGit(t, info.Path, "commit", "-m", "feature")
-	// Publish only the base; the feature commits are still local.
-	runGit(t, info.Path, "push", "origin", "HEAD~1:refs/heads/"+info.Branch)
+	runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/"+info.Branch)
 
 	runGit(t, source, "switch", "main")
 	if err := os.WriteFile(filepath.Join(source, "main-latest.txt"), []byte("main\n"), 0o600); err != nil {

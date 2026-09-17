@@ -733,12 +733,15 @@ completed candidates can still use the evaluation window.
 
 No Detent push may drop commits from a PR branch (#2874). Missing worktrees
 restore an existing published branch from a freshly fetched origin ref; only
-new branches start at the base. Both merge preparation push paths enforce the
-checkpoint ancestry rule: the observed remote head must be an ancestor of the
-head being pushed, and the existing lease rejects subsequent remote changes.
-A rebase that rewrites published commits therefore falls back as non-clean
-instead of force-pushing. `TestLocalGitMergePreservesRemoteHistory` covers
-recreation, stale local branches, resolved heads, and rewritten published history.
+new branches start at the base. Before the fast path rebases, the observed remote
+head must be an ancestor of the local head. The rebase may rewrite those commits,
+but the push uses the lease on that same observed remote head. Agent conflict
+resolution merges the target into the PR branch, preserving remote ancestry,
+which is checked before validation and publication. Unsafe local heads are
+restored to the observed PR head before returning conflict. No push may replace
+published work with a stale or freshly created base branch.
+`TestLocalGitMergePreservesRemoteHistory` covers recreation, stale local branches,
+resolved heads, and rebasing published history.
 
 Security audit verdict routing from Merging shares the existing auto-promote
 classifier and findings publisher with source-lane completion (#2642, #2726).

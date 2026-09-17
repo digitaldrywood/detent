@@ -15,13 +15,16 @@ func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
 		resolved    bool
 		advanceBase bool
 		ahead       bool
+		stale       bool
 	}{
 		{name: "recreated worktree", recreate: true},
 		{name: "local head contains remote", ahead: true},
 		{name: "resolved head contains remote", ahead: true, resolved: true},
-		{name: "local branch behind remote"},
+		{name: "fresh local branch at base"},
+		{name: "local branch behind remote", stale: true},
 		{name: "resolved branch behind remote", resolved: true},
-		{name: "rebase rewrites published history", advanceBase: true},
+		{name: "rebase preserves published changes", advanceBase: true},
+		{name: "resolved merge preserves published history", advanceBase: true, resolved: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -66,10 +69,21 @@ func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
 					t.Errorf("recreated head = %s, want remote %s", got, head)
 				}
 			} else if tt.advanceBase {
-				runGit(t, source, "commit", "--allow-empty", "-m", "advance main")
+				if err := os.WriteFile(filepath.Join(source, "main-change"), []byte("main change"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "main-change")
+				runGit(t, source, "commit", "-m", "advance main")
 				runGit(t, source, "push", "origin", "main")
+				if tt.resolved {
+					runGit(t, info.Path, "merge", "--no-edit", "origin/main")
+				}
 			} else if !tt.ahead {
-				runGit(t, info.Path, "reset", "--hard", base)
+				if tt.stale {
+					runGit(t, info.Path, "reset", "--hard", "HEAD~1")
+				} else {
+					runGit(t, info.Path, "reset", "--hard", base)
+				}
 			}
 			result, err := backend.(MergePreparer).PrepareMerge(t.Context(), info, issue, MergePrepareOptions{
 				TargetBranch: "main", VerifyResolution: tt.resolved, ExpectedRemoteHead: head,
@@ -78,15 +92,28 @@ func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantStatus := MergePrepareStatusConflict
-			if tt.recreate || tt.ahead {
+			if tt.recreate || tt.ahead || tt.advanceBase {
 				wantStatus = MergePrepareStatusClean
 			}
-			if result.Status != wantStatus || result.HeadChanged != tt.ahead {
-				t.Errorf("PrepareMerge = %#v, want status %s, head changed %t", result, wantStatus, tt.ahead)
+			wantChanged := tt.ahead || tt.advanceBase
+			if result.Status != wantStatus || result.HeadChanged != wantChanged {
+				t.Errorf("PrepareMerge = %#v, want status %s, head changed %t", result, wantStatus, wantChanged)
 			}
-			if tt.ahead {
+			if wantChanged {
 				head = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
-				runGit(t, info.Path, "merge-base", "--is-ancestor", remoteHead, head)
+				if !tt.advanceBase || tt.resolved {
+					runGit(t, info.Path, "merge-base", "--is-ancestor", remoteHead, head)
+				}
+			}
+			for _, name := range []string{"first", "second"} {
+				if got := readFile(t, filepath.Join(info.Path, name)); got != name {
+					t.Errorf("preserved %s = %q", name, got)
+				}
+			}
+			if result.Status == MergePrepareStatusConflict {
+				if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != remoteHead {
+					t.Errorf("refused workspace head = %s, want remote %s", got, remoteHead)
+				}
 			}
 			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != head {
 				t.Errorf("remote head = %s, want preserved %s", got, head)

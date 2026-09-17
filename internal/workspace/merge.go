@@ -54,6 +54,32 @@ func (l *LocalGit) PrepareMerge(
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
+	branch := strings.TrimSpace(normalized.Branch)
+	if branch == "" {
+		return MergePrepareResult{}, errors.New("workspace branch is required for merge fast-path push")
+	}
+	remoteHead, remoteBranchExists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("inspect remote branch %s/%s: %w", remote, branch, err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	localHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("inspect local branch head: %w", err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	if remoteBranchExists {
+		if err := mergeRemoteAncestor(ctx, normalized.Path, remote, remoteHead, strings.TrimSpace(localHead)); err != nil {
+			if errors.Is(err, ErrMergeResolutionInvalid) {
+				return rejectMergeHistory(ctx, normalized.Path, remoteHead, err)
+			}
+			return MergePrepareResult{}, err
+		}
+	}
 	if _, err := runGitAt(ctx, normalized.Path, "rebase", targetRef); err != nil {
 		conflicts, conflictErr := runGitAt(ctx, normalized.Path, "diff", "--name-only", "--diff-filter=U", "-z")
 		var conflictPaths []string
@@ -85,31 +111,9 @@ func (l *LocalGit) PrepareMerge(
 		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diffStat}, nil
 	}
 
-	branch := strings.TrimSpace(normalized.Branch)
-	if branch == "" {
-		return MergePrepareResult{}, errors.New("workspace branch is required for merge fast-path push")
-	}
-	remoteHead, remoteBranchExists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+	localHead, err = runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
 	if err != nil {
-		return MergePrepareResult{}, errors.Join(
-			fmt.Errorf("inspect remote branch %s/%s: %w", remote, branch, err),
-			abortRebaseIfInProgress(ctx, normalized.Path),
-		)
-	}
-	localHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
-	if err != nil {
-		return MergePrepareResult{}, errors.Join(
-			fmt.Errorf("inspect local branch head: %w", err),
-			abortRebaseIfInProgress(ctx, normalized.Path),
-		)
-	}
-	if remoteBranchExists {
-		if err := mergeRemoteAncestor(ctx, normalized.Path, remote, remoteHead, strings.TrimSpace(localHead)); err != nil {
-			if errors.Is(err, ErrMergeResolutionInvalid) {
-				return MergePrepareResult{Status: MergePrepareStatusConflict, Message: err.Error()}, nil
-			}
-			return MergePrepareResult{}, err
-		}
+		return MergePrepareResult{}, fmt.Errorf("inspect rebased head: %w", err)
 	}
 	headChanged := !remoteBranchExists || !strings.EqualFold(strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
 	pushArgs := []string{"push"}
@@ -247,6 +251,12 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 	if remoteHead != strings.TrimSpace(opts.ExpectedRemoteHead) && remoteHead != head {
 		return MergePrepareResult{}, fmt.Errorf("%w: remote branch changed before merge-fallback validation", ErrMergeResolutionInvalid)
 	}
+	if err := mergeRemoteAncestor(ctx, info.Path, remote, remoteHead, head); err != nil {
+		if errors.Is(err, ErrMergeResolutionInvalid) {
+			return rejectMergeHistory(ctx, info.Path, remoteHead, err)
+		}
+		return MergePrepareResult{}, err
+	}
 	if err := l.validateMergeResolution(ctx, info, issue, opts.ValidationCommand); err != nil {
 		return MergePrepareResult{}, err
 	}
@@ -256,12 +266,6 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 	}
 	if currentHead != head || currentBase != base || currentRemote != remoteHead {
 		return MergePrepareResult{}, fmt.Errorf("%w: local head, target base, or remote branch changed during merge-fallback validation", ErrMergeResolutionInvalid)
-	}
-	if err := mergeRemoteAncestor(ctx, info.Path, remote, remoteHead, head); err != nil {
-		if errors.Is(err, ErrMergeResolutionInvalid) {
-			return MergePrepareResult{Status: MergePrepareStatusConflict, Message: err.Error()}, nil
-		}
-		return MergePrepareResult{}, err
 	}
 	if _, err := runGitAt(ctx, info.Path, "push", "--force-with-lease=refs/heads/"+info.Branch+":"+remoteHead, remote, head+":refs/heads/"+info.Branch); err != nil {
 		return MergePrepareResult{}, fmt.Errorf("push validated merge resolution: %w", err)
@@ -365,4 +369,13 @@ func mergeRemoteAncestor(ctx context.Context, path, remote, remoteHead, head str
 		return fmt.Errorf("inspect remote branch ancestry: %w", err)
 	}
 	return nil
+}
+
+// rejectMergeHistory restores the observed PR head before handing off to Rework.
+// --keep refuses to discard uncommitted changes if the workspace is dirty.
+func rejectMergeHistory(ctx context.Context, path, remoteHead string, cause error) (MergePrepareResult, error) {
+	if _, err := runGitAt(ctx, path, "reset", "--keep", remoteHead); err != nil {
+		return MergePrepareResult{}, fmt.Errorf("restore remote PR head: %w", err)
+	}
+	return MergePrepareResult{Status: MergePrepareStatusConflict, Message: cause.Error()}, nil
 }
