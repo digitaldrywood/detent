@@ -170,7 +170,7 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
-Dirty PRs in Rework or In Progress reuse the existing merge-mode precheck,
+Non-draft dirty PRs in Rework or In Progress reuse the existing merge-mode precheck,
 fallback rebase prompt, and deterministic verification (#2842), regardless of
 the programmatic merge fast-path flag. Verified repairs rejoin ordinary progress
 accounting with the changed PR head and retain their source lane without merge
@@ -182,7 +182,10 @@ its existing CI wait and merge behavior. `TestDispatchModeMergingFastPathFlag`,
 reason code, or recovery mechanism is added. Repair runs retain the existing
 code-session allowance and triage boundary, covered by
 `TestAttemptAllowanceDispatchAndRestart`; head progress does not replenish the
-sessions-without-merge allowance.
+sessions-without-merge allowance. Draft PRs retain implementation routing so their
+author can finish. Repairs share the existing merge duration bound and treat
+unstarted CI like implementation runs (waiting only after push or in waiting_ci).
+The dispatch, CI parity, and duration regressions cover these boundaries (#2845).
 
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
