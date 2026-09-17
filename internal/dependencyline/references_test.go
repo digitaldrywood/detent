@@ -83,3 +83,25 @@ func TestDeclarationsOutsideFences(t *testing.T) {
 		})
 	}
 }
+
+func TestLinesOutsideFences(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, body string
+		want       []string
+		complete   bool
+	}{
+		{name: "backticks", body: "before\n```go\nhidden\n```\nafter", want: []string{"before", "after"}, complete: true},
+		{name: "tildes and CRLF", body: "before\r\n~~~\r\nhidden\r\n~~~\r\nafter", want: []string{"before", "after"}, complete: true},
+		{name: "CR declarations", body: "Depends on: #1\rDepends on: #2", want: []string{"Depends on: #1", "Depends on: #2"}, complete: true},
+		{name: "mismatched and short closers", body: "````\n~~~\n```\nhidden\n`````\nafter", want: []string{"after"}, complete: true},
+		{name: "unfinished", body: "before\n~~~\nhidden", want: []string{"before"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, complete := LinesOutsideFences(tt.body)
+			if !reflect.DeepEqual(got, tt.want) || complete != tt.complete {
+				t.Fatalf("got %v, %v; want %v, %v", got, complete, tt.want, tt.complete)
+			}
+		})
+	}
+}
