@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -38,6 +39,45 @@ func TestReviewSummaryRetainsPendingHead(t *testing.T) {
 			}
 			if got := strings.TrimSpace(pr.CodexReviewState) != ""; got != tt.current {
 				t.Fatalf("current review = %v, want %v", got, tt.current)
+			}
+		})
+	}
+}
+
+func TestUnavailableReviewReply(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, author, requestHead string
+		want                            string
+		newRequest, wantPending         bool
+	}{
+		{"quota", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"unavailable", "Codex code review is temporarily unavailable. Please try again later.", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"reworded quota", "Sorry, the review usage limit has been exceeded.", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"reworded unavailable", "Sorry, this service is unavailable right now.", "chatgpt-codex-connector[bot]", "head", "COMMENTED", false, false},
+		{"never answered", "", "", "head", "", false, false},
+		{"untrusted", "You have reached your Codex usage limits for code reviews", "someone[bot]", "head", "", false, false},
+		{"old head", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "old", "", false, true},
+		{"reply precedes new request", "You have reached your Codex usage limits for code reviews", "chatgpt-codex-connector[bot]", "old", "", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+			end := start.Add(time.Minute)
+			comments := []restComment{{ID: 1, Body: "@codex review\n\n<!-- detent:automated-review-head:" + tt.requestHead + " -->", CreatedAt: &start, UpdatedAt: &start}}
+			if tt.body != "" {
+				comments = append(comments, restComment{ID: 2, Body: tt.body, User: &actor{Login: tt.author, Type: "Bot"}, CreatedAt: &end, UpdatedAt: &end})
+			}
+			if tt.newRequest {
+				later := end.Add(time.Minute)
+				comments = append(comments, restComment{ID: 3, Body: "@codex review\n\n<!-- detent:automated-review-head:head -->", CreatedAt: &later, UpdatedAt: &later})
+			}
+			reviews := pullRequestReviewsFromEvidence(nil, comments, "head")
+			got := pullRequestCodexReviewStateFromReviews(reviews.CurrentHead)
+			if got != tt.want {
+				t.Fatalf("review = %q, want %q", got, tt.want)
+			}
+			pr := &connector.PullRequest{HeadSHA: "head", CodexReviewState: got, LatestCodexReviewState: pullRequestCodexReviewStateFromReviews(reviews.Latest)}
+			if pending := pr.AutomatedReviewPending(); pending != tt.wantPending {
+				t.Fatalf("pending = %v", pending)
 			}
 		})
 	}

@@ -1055,7 +1055,7 @@ func TestMergeWorkerProgrammaticMergeDisposition(t *testing.T) {
 					RunningChecks:  tt.running,
 				},
 			}
-			if got := mergeWorkerProgrammaticMergeReady(issue); got != tt.wantReady {
+			if got := mergeWorkerProgrammaticMergeReady(issue, Config{}); got != tt.wantReady {
 				t.Fatalf("mergeWorkerProgrammaticMergeReady() = %t, want %t", got, tt.wantReady)
 			}
 			if got := mergeWorkerMergeabilityPending(issue); got != tt.wantPending {
