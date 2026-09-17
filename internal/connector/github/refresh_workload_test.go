@@ -22,7 +22,14 @@ import (
 // The fixture clock and serialized counters make request counts deterministic.
 func TestProjectRefreshHourlyWorkload(t *testing.T) {
 	for _, resumed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("large board four refreshes hourly/resumed=%t", resumed), func(t *testing.T) { testLargeProjectRefreshHourlyWorkload(t, resumed) })
+		t.Run(fmt.Sprintf("large board four refreshes hourly/resumed=%t", resumed), func(t *testing.T) { testLargeProjectRefreshHourlyWorkload(t, resumed, "Todo", false) })
+	}
+	for _, shared := range []bool{false, true} {
+		for _, resumed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("review board/shared=%t/resumed=%t", shared, resumed), func(t *testing.T) {
+				testLargeProjectRefreshHourlyWorkload(t, resumed, "Human Review", shared)
+			})
+		}
 	}
 	for _, workload := range []struct {
 		name                string
@@ -221,9 +228,11 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 // data.rateLimit.cost: thin page(first:100), including scalar bodies and the
 // project updatedAt revision, costs 2. Bounded scheduler costs below are
 // synthetic response fixtures, not measurements or header deltas.
-func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
+func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidateState string, shared bool) {
+	t.Helper()
 	const total, candidates, refreshes = 1500, 152, 4
-	var graphql, rest, points, preflights, failedPages int
+	var graphql, rest, points, preflights, failedPages, associations, statuses int
+	prReads := make(map[int]int)
 	var inFlight, maxInFlight atomic.Int32
 	hydrationCounts := make(map[string]int)
 	failPage := resumed
@@ -268,6 +277,30 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 				if strings.HasPrefix(key, "id") {
 					data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "updatedAt": "2026-09-16T20:00:00Z", "comments": map[string]any{"totalCount": 0, "nodes": []any{}}}
 				}
+			}
+		} else if strings.Contains(req.Query, "CandidatePullRequestReferences") {
+			associations++
+			nodes := []any{}
+			for _, id := range req.Variables["ids"].([]any) {
+				var n int
+				fmt.Sscanf(id.(string), "I%d", &n)
+				if shared && n == 26 {
+					n = 1 // Across the first two scheduler batches.
+				}
+				nodes = append(nodes, map[string]any{"id": id, "closedByPullRequestsReferences": map[string]any{"totalCount": 1, "nodes": []any{candidatePRFixtureReference("fixture/large", n)}}})
+			}
+			data["nodes"] = nodes
+			data["repo0"] = map[string]any{"pullRequests": map[string]any{"nodes": []any{}}}
+		} else if strings.Contains(req.Query, "CandidatePullRequestStatus") {
+			statuses++
+			for n := 1; n <= candidates; n++ {
+				if !strings.Contains(req.Query, fmt.Sprintf("pullRequest(number:%d)", 100+n)) {
+					continue
+				}
+				prReads[n]++
+				snapshot := candidatePRFixtureSnapshot("fixture/large", n)
+				snapshot["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"oid": fmt.Sprintf("head%d", n)}}}}
+				data[fmt.Sprintf("pr%d", len(data))] = map[string]any{"pullRequest": snapshot}
 			}
 		} else if strings.Contains(req.Query, "CandidateHydration") {
 			active := inFlight.Add(1)
@@ -325,7 +358,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 			for n := start + 1; n <= start+100; n++ {
 				state := "Done"
 				if n <= candidates {
-					state = "Todo"
+					state = candidateState
 				} else if n <= candidates+70 {
 					state = "Backlog"
 				}
@@ -346,16 +379,37 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 	defer server.Close()
 	c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/large", ActiveStates: []string{"Todo"}, ObservedStates: []string{"Backlog", "Human Review", "Blocked"}})
 	for range refreshes {
+		beforeAssociations, beforeStatuses := associations, statuses
+		clear(prReads)
 		failPage = resumed
 		if resumed {
-			interrupted := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, []string{"Done", "Backlog"}, connector.IssueFilterHint{})
+			interrupted := c.FetchRefreshIssues(t.Context(), []string{candidateState}, []string{"Done", "Backlog"}, connector.IssueFilterHint{})
 			if interrupted.CandidateError == nil || len(interrupted.LaneSignalCandidates) != 0 {
 				t.Fatalf("partial refresh published: %+v", interrupted)
 			}
 		}
-		result := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, []string{"Done", "Backlog"}, connector.IssueFilterHint{})
+		result := c.FetchRefreshIssues(t.Context(), []string{candidateState}, []string{"Done", "Backlog"}, connector.IssueFilterHint{})
 		if result.CandidateError != nil || result.StatusError != nil || len(result.Candidates) != candidates || len(result.Statuses) != total-candidates || len(result.LaneSignalCandidates) != total {
 			t.Fatalf("refresh errors=(%v,%v) candidates=%d observed=%d", result.CandidateError, result.StatusError, len(result.Candidates), len(result.Statuses))
+		}
+		if candidateState == "Human Review" {
+			if associations-beforeAssociations != 2 || statuses-beforeStatuses != 8 {
+				t.Fatalf("PR requests per refresh: associations=%d status=%d; want 2 and 8", associations-beforeAssociations, statuses-beforeStatuses)
+			}
+			for n := 1; n <= candidates; n++ {
+				want := 1
+				if shared && n == 26 {
+					want = 0
+				}
+				if prReads[n] != want {
+					t.Fatalf("PR %d fetched %d times, want %d", 100+n, prReads[n], want)
+				}
+			}
+			for _, issue := range result.Candidates {
+				if issue.PullRequest == nil {
+					t.Fatalf("missing PR for %s", issue.ID)
+				}
+			}
 		}
 		for _, issue := range result.Statuses {
 			if issue.State == "Backlog" && (issue.Description != "" || issue.PullRequest != nil || len(issue.Comments) != 0) {
@@ -384,6 +438,10 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 	wantQueries, wantPoints, wantPreflights := 88, 268, 0
 	if resumed {
 		wantQueries, wantPoints, wantPreflights = 116, 292, 4
+	}
+	if candidateState == "Human Review" {
+		wantQueries += 40
+		wantPoints += 80
 	}
 	if preflights != wantPreflights {
 		t.Fatalf("preflights=%d want=%d", preflights, wantPreflights)

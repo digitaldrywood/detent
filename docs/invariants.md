@@ -198,12 +198,16 @@ longer discard progress and fan out through REST. Resume validates all retained
 comment IDs and edit timestamps and each blocker's own updatedAt before reusing
 evidence. A completed scan retained after a status failure restarts board
 enumeration on the next refresh; project updatedAt alone cannot validate lanes.
-Scheduler queries have at most 25 aliases; PR snapshots keep 100-item connections
-and use one PR per request (10,401 connection nodes). No timer,
+Scheduler queries have at most 25 aliases. PR association and status observation
+run once per scan page over completed scheduler evidence, including partial
+progress on failure (#2860). PRs shared across scheduler batches are deduplicated
+within the page; snapshots keep 100-item connections and batch up to 20 PRs per
+request (208,020 connection nodes). No timer,
 pacer, configuration key, or recovery loop is added.
 `TestRefreshHydrationResumes`, `TestCandidateHydrationShape`, the large-board
 `TestProjectRefreshHourlyWorkload` scenarios, `TestRefreshAfterStatusFailure`,
-and `TestCandidatePRLargeCollectionsRemainAuthoritative` cover this consolidation.
+`TestCandidatePageObservation`, and
+`TestCandidatePRLargeCollectionsRemainAuthoritative` cover this consolidation.
 
 Non-draft dirty PRs in Rework or In Progress reuse the existing merge-mode precheck,
 fallback rebase prompt, and deterministic verification (#2842), regardless of

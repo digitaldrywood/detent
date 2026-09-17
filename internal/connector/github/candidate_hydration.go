@@ -34,6 +34,7 @@ func (c *Connector) candidateEvidence(ctx context.Context, nodes []githubIssueNo
 
 func (c *Connector) candidateEvidenceBatched(ctx context.Context, nodes []githubIssueNode, fetch bool) (map[string]githubIssueNode, error) {
 	complete := make(map[string]githubIssueNode)
+	defer func() { c.observeCandidatePullRequests(ctx, nodes, complete) }()
 	for start := 0; start < len(nodes); start += candidateHydrationBatchSize {
 		batch, err := c.candidateEvidenceBatch(ctx, nodes[start:min(start+candidateHydrationBatchSize, len(nodes))], fetch)
 		for id, node := range batch {
@@ -48,7 +49,6 @@ func (c *Connector) candidateEvidenceBatched(ctx context.Context, nodes []github
 
 func (c *Connector) candidateEvidenceBatch(ctx context.Context, nodes []githubIssueNode, fetch bool) (map[string]githubIssueNode, error) {
 	complete := make(map[string]githubIssueNode)
-	defer func() { c.observeCandidatePullRequests(ctx, nodes, complete) }()
 	pending := make([]githubIssueNode, 0, len(nodes))
 	for _, node := range nodes {
 		if strings.TrimSpace(node.ID) == "" {
