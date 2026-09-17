@@ -16,7 +16,30 @@ import (
 
 const maxScannedFileBytes = 1 << 20
 
-var todoPattern = regexp.MustCompile(`(?i)\b(TODO|FIXME)\b[\s:=-]*(.*)$`)
+var todoPattern = regexp.MustCompile(`(?:^|[^\w-])(TODO|FIXME)\b[\s:=-]*(.*)$`)
+
+// todoMarker requires an explicit marker delimiter or a marker immediately
+// following a comment leader, rather than a mention in prose.
+func todoMarker(line string) []string {
+	indices := todoPattern.FindStringSubmatchIndex(line)
+	if indices == nil {
+		return nil
+	}
+	prefix := strings.TrimSpace(line[:indices[2]])
+	suffix := strings.TrimSpace(line[indices[3]:])
+	explicit := strings.HasPrefix(suffix, ":") || strings.HasPrefix(suffix, "(")
+	comment := false
+	for _, leader := range []string{"//", "/*", "*", "#", "<!--", "--"} {
+		if strings.HasSuffix(prefix, leader) {
+			comment = true
+			break
+		}
+	}
+	if !explicit && !comment {
+		return nil
+	}
+	return todoPattern.FindStringSubmatch(line)
+}
 
 type scannerFactory struct{}
 
@@ -78,7 +101,7 @@ func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
 		for scanner.Scan() {
 			lineNumber++
 			line := strings.TrimSpace(scanner.Text())
-			matches := todoPattern.FindStringSubmatch(line)
+			matches := todoMarker(line)
 			if len(matches) != 3 {
 				continue
 			}

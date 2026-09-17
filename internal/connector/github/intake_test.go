@@ -14,28 +14,35 @@ import (
 func TestConnectorFindIntakeIssueSearchesDurableMarker(t *testing.T) {
 	t.Parallel()
 
-	marker := "<!-- detent-intake:abc123 -->"
-	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		method: http.MethodGet,
-		body:   fmt.Sprintf(`{"total_count":1,"items":[{"node_id":"I_42","number":42,"title":"Alert","body":%q,"state":"open","html_url":"https://github.com/example/repo/issues/42"}]}`, "Alert details\n\n"+marker),
-	}})
-	connector := newGitHubTestConnector(t, server, Config{Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+	for _, tt := range []struct{ state, reason string }{{"open", ""}, {"closed", "not_planned"}, {"closed", "completed"}} {
+		t.Run(tt.state+tt.reason, func(t *testing.T) {
+			marker := "<!-- detent-intake:abc123 -->"
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				method: http.MethodGet,
+				body:   fmt.Sprintf(`{"total_count":1,"items":[{"node_id":"I_42","number":42,"title":"Alert","body":%q,"state":%q,"state_reason":%q,"html_url":"https://github.com/example/repo/issues/42"}]}`, "Alert details\n\n"+marker, tt.state, tt.reason),
+			}})
+			connector := newGitHubTestConnector(t, server, Config{Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
 
-	issue, found, err := connector.FindIntakeIssue(context.Background(), marker)
-	if err != nil {
-		t.Fatalf("FindIntakeIssue() error = %v", err)
-	}
-	if !found || issue.ID != "I_42" || issue.Number != 42 {
-		t.Fatalf("FindIntakeIssue() = %#v, %t", issue, found)
-	}
-	requests := server.requests()
-	path, err := url.ParseRequestURI(requests[0]["path"].(string))
-	if err != nil {
-		t.Fatalf("ParseRequestURI() error = %v", err)
-	}
-	query := path.Query().Get("q")
-	if !strings.Contains(query, "repo:example/repo") || !strings.Contains(query, "detent-intake:abc123") {
-		t.Fatalf("search query = %q", query)
+			issue, found, err := connector.FindIntakeIssue(context.Background(), marker)
+			if err != nil {
+				t.Fatalf("FindIntakeIssue() error = %v", err)
+			}
+			if issue.Closed != (tt.state == "closed") {
+				t.Fatalf("closed = %t", issue.Closed)
+			}
+			if !found || issue.ID != "I_42" || issue.Number != 42 {
+				t.Fatalf("FindIntakeIssue() = %#v, %t", issue, found)
+			}
+			requests := server.requests()
+			path, err := url.ParseRequestURI(requests[0]["path"].(string))
+			if err != nil {
+				t.Fatalf("ParseRequestURI() error = %v", err)
+			}
+			query := path.Query().Get("q")
+			if strings.Contains(query, "is:open") || !strings.Contains(query, "repo:example/repo") || !strings.Contains(query, "detent-intake:abc123") {
+				t.Fatalf("search query = %q", query)
+			}
+		})
 	}
 }
 
