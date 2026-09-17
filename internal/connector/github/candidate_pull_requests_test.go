@@ -59,7 +59,7 @@ func TestCandidatePRRepeatedRefreshCounts(t *testing.T) {
 								data := map[string]any{}
 								for n := 1; n <= 3; n++ {
 									if strings.Contains(req.Query, fmt.Sprintf("pullRequest(number:%d)", 100+n)) {
-										data["pr0"] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+										data[fmt.Sprintf("pr%d", len(data))] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
 									}
 								}
 								write(map[string]any{"data": data})
@@ -673,7 +673,7 @@ func TestCandidatePRPartialCursor(t *testing.T) {
 					details[n]++
 					snapshot := candidatePRFixtureSnapshot(repo, n)
 					candidateFixtureCommit(snapshot)["statusCheckRollup"] = nil
-					data["pr0"] = map[string]any{"pullRequest": snapshot}
+					data[fmt.Sprintf("pr%d", len(data))] = map[string]any{"pullRequest": snapshot}
 				}
 			}
 		default:
