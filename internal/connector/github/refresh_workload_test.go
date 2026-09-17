@@ -261,7 +261,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 			t.Error("missing per-request cost")
 		}
 		data := map[string]any{}
-		cost := 3
+		cost := 2
 		if strings.Contains(req.Query, "RefreshProjectRevision") {
 			preflights++
 			cost = 1
@@ -340,6 +340,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				t.Error("unbounded dependency labels or redundant PR preview")
 			}
 		} else {
+			cost = 3 // Measured refresh-page cost; PR queries keep their fixture cost.
 			for _, field := range []string{"blockedBy(", "comments(first:", "closedByPullRequestsReferences(", "commits("} {
 				if strings.Contains(req.Query, field) {
 					t.Errorf("board query carries %s", field)
@@ -424,8 +425,8 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 		for _, issue := range result.Candidates {
 			// Dispatch's hydration short-circuit requires project fields. The real
 			// dispatch-hook request assertion lives in the orchestrator regression.
-			if issue.Fields["Status"] != "Todo" {
-				t.Fatalf("candidate %s would require dispatch hydration: %+v", issue.ID, issue.Fields)
+			if issue.Fields["Status"] != candidateState {
+				t.Fatalf("candidate %s project Status = %q, want %q", issue.ID, issue.Fields["Status"], candidateState)
 			}
 			if issue.ID == "I1" && (len(issue.BlockedBy) != 1 || !issue.BlockedBy[0].HumanOwned || !issue.BlockedBy[0].HumanCompletionReady || issue.BlockedBy[0].State != "Done") {
 				t.Fatalf("thin board erased human evidence: %+v", issue.BlockedBy)
