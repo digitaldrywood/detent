@@ -556,7 +556,7 @@ func TestManagerReconcileRemovesPendingConnectorRetry(t *testing.T) {
 
 	select {
 	case <-retryStarted:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for pending retry")
 	}
 	result, err := manager.Reconcile(ctx, project.ManagerConfig{})
@@ -617,12 +617,12 @@ func TestManagerRemoveDoesNotDeadlockWithActivatingConnectorRetry(t *testing.T) 
 	var retryCtx context.Context
 	select {
 	case retryCtx = <-retryContexts:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for retry delay")
 	}
 	select {
 	case <-factoryEntered:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for retry factory")
 	}
 
@@ -632,7 +632,7 @@ func TestManagerRemoveDoesNotDeadlockWithActivatingConnectorRetry(t *testing.T) 
 	}()
 	select {
 	case <-retryCtx.Done():
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for retry cancellation")
 	}
 	close(releaseFactory)
@@ -642,7 +642,7 @@ func TestManagerRemoveDoesNotDeadlockWithActivatingConnectorRetry(t *testing.T) 
 		if err != nil {
 			t.Fatalf("Remove() error = %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("Remove() deadlocked with activating connector retry")
 	}
 	manager.Wait()
@@ -795,7 +795,7 @@ func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
 	for range maxConcurrentStarts {
 		select {
 		case <-started:
-		case <-time.After(time.Second):
+		case <-time.After(projectTestWaitTimeout):
 			t.Fatal("timed out waiting for concurrent project startup")
 		}
 	}
@@ -811,7 +811,7 @@ func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start() error = %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for manager.Start")
 	}
 
@@ -829,7 +829,7 @@ func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
 func TestManagerStartCancellationWaitsForStartedProjectCleanup(t *testing.T) {
 	t.Parallel()
 
-	fixture := newBlockingStartupManager(t, time.Second)
+	fixture := newBlockingStartupManager(t, projectTestWaitTimeout)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -839,7 +839,7 @@ func TestManagerStartCancellationWaitsForStartedProjectCleanup(t *testing.T) {
 
 	select {
 	case <-fixture.refreshStarted:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for initial project refresh")
 	}
 	cancel()
@@ -855,7 +855,7 @@ func TestManagerStartCancellationWaitsForStartedProjectCleanup(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Manager.Start() error = %v, want %v", err, context.Canceled)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for manager startup rollback")
 	}
 	assertConnectorClosed(t, fixture.alphaConnector.closeTracker)
@@ -876,7 +876,7 @@ func TestManagerStartCancellationBoundsStalledProjectCleanup(t *testing.T) {
 
 	select {
 	case <-fixture.refreshStarted:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for initial project refresh")
 	}
 	cancel()
@@ -888,7 +888,7 @@ func TestManagerStartCancellationBoundsStalledProjectCleanup(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Manager.Start() error = %v, want %v", err, context.DeadlineExceeded)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for bounded manager startup rollback")
 	}
 	if fixture.manager.Registry().Len() != 2 {
@@ -1259,26 +1259,16 @@ func TestManagerReconcileAddedProjectBeginsPolling(t *testing.T) {
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	t.Cleanup(func() {
+		close(alphaRunner.release)
+		close(bravoRunner.release)
+		stopTestProjects(t, manager.Registry().List()...)
+	})
 	drainProjectEvents(t, sub.C(), 1)
 	alphaRequest := receiveRunRequest(t, alphaRunner.started)
 	if alphaRequest.Issue.ID != "issue-alpha" {
 		t.Fatalf("alpha dispatched issue ID = %q, want issue-alpha", alphaRequest.Issue.ID)
 	}
-	t.Cleanup(func() {
-		close(alphaRunner.release)
-		close(bravoRunner.release)
-		for _, item := range manager.Registry().List() {
-			if !item.Running() {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
-				cancel()
-				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
-			}
-			cancel()
-		}
-	})
 
 	got, err := manager.Reconcile(context.Background(), project.ManagerConfig{
 		Projects: []globalconfig.Project{
@@ -1605,17 +1595,7 @@ func TestManagerReconcileRecordsAddedProjectStartFailure(t *testing.T) {
 	}
 	drainProjectEvents(t, sub.C(), 1)
 	t.Cleanup(func() {
-		for _, item := range manager.Registry().List() {
-			if !item.Running() {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
-				cancel()
-				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
-			}
-			cancel()
-		}
+		stopTestProjects(t, manager.Registry().List()...)
 	})
 
 	got, err := manager.Reconcile(context.Background(), project.ManagerConfig{
@@ -1682,17 +1662,7 @@ func TestManagerReconcilePropagatesAddedProjectContextCancellation(t *testing.T)
 		t.Fatalf("Start() error = %v", err)
 	}
 	t.Cleanup(func() {
-		for _, item := range manager.Registry().List() {
-			if !item.Running() {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
-				cancel()
-				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
-			}
-			cancel()
-		}
+		stopTestProjects(t, manager.Registry().List()...)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2392,17 +2362,7 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 	t.Cleanup(func() {
-		for _, item := range manager.Registry().List() {
-			if !item.Running() {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
-				cancel()
-				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
-			}
-			cancel()
-		}
+		stopTestProjects(t, manager.Registry().List()...)
 	})
 
 	alphaRunner := runners["alpha"]
@@ -2573,7 +2533,7 @@ func receiveProvisionAttempt(t *testing.T, attempts <-chan int) int {
 	select {
 	case attempt := <-attempts:
 		return attempt
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for connector provisioning attempt")
 		return 0
 	}
@@ -2585,7 +2545,7 @@ func receiveRetryDelay(t *testing.T, delays <-chan time.Duration) time.Duration 
 	select {
 	case delay := <-delays:
 		return delay
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for connector retry delay")
 		return 0
 	}
@@ -2594,7 +2554,7 @@ func receiveRetryDelay(t *testing.T, delays <-chan time.Duration) time.Duration 
 func waitForProjectRunning(t *testing.T, trackedProject *project.Project) {
 	t.Helper()
 
-	timer := time.NewTimer(time.Second)
+	timer := time.NewTimer(projectTestWaitTimeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
@@ -2879,7 +2839,7 @@ func receiveFirstProjectRun(
 		return "alpha"
 	case <-bravo:
 		return "bravo"
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for first project dispatch")
 	}
 	return ""
@@ -2891,7 +2851,7 @@ func receiveRunRequest(t *testing.T, requests <-chan orchestrator.RunRequest) or
 	select {
 	case request := <-requests:
 		return request
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for runner request")
 	}
 	return orchestrator.RunRequest{}
