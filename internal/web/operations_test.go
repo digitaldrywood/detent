@@ -600,3 +600,150 @@ func TestOperationsDecisionDedupeKeepsGitHubHostsSeparate(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationsQuestionAgeOrder(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	old, recent := now.Add(-10*time.Hour), now.Add(-time.Hour)
+	for _, tc := range []struct{ name, path string }{{"api", "/api/v1/operations"}, {"page", "/operations"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := testDeps(t)
+			deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{DataTime: now, Decisions: []operations.Decision{
+				{ProjectID: "a", Issue: "owner/repo#1", Question: "Recent question?", AskedAt: &recent},
+				{ProjectID: "z", Issue: "owner/repo#2", Question: "Old question?", AskedAt: &old},
+			}}}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "Old question?") || strings.Index(body, "Old question?") >= strings.Index(body, "Recent question?") {
+				t.Fatalf("question order: %s", body)
+			}
+			if tc.name == "api" {
+				var got operations.Report
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Decisions) != 2 || got.Decisions[0].AskedAt == nil || !got.Decisions[0].AskedAt.Equal(old) || got.Decisions[0].AgeSeconds == nil || *got.Decisions[0].AgeSeconds < 36000 {
+					t.Fatalf("decisions: %+v", got.Decisions)
+				}
+			} else if !strings.Contains(body, "Oldest: 10h") || !strings.Contains(body, "Open questions: 2") {
+				t.Fatalf("summary: %s", body)
+			}
+		})
+	}
+}
+
+func TestOperationsClosureResolvedQuestions(t *testing.T) {
+	t.Parallel()
+	for _, resolved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "open", true: "resolved"}[resolved], func(t *testing.T) {
+			t.Parallel()
+			deps := testDeps(t)
+			db := openWebTestStore(t)
+			deps.Store = db
+			questions := db.(store.HumanQuestionStore)
+			q := store.HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "target", Body: "Which target?", QuestionCommentID: "123"}
+			if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if resolved {
+				if err := questions.ResolveHumanQuestionsByClosure(t.Context(), q.ProjectID, q.IssueID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), q.Body) == resolved {
+				t.Fatalf("resolved=%v body=%s", resolved, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestOperationsWorkpadHumanAction(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, state, status, reason string
+		existing                    bool
+		proseOnly                   bool
+		want                        int
+	}{
+		{name: "PR-less Rework", state: "Rework", status: "unverifiable", reason: "make skill available or waive it", want: 1},
+		{name: "prose-only card", state: "Rework", reason: "waiting on #123 to merge", proseOnly: true},
+		{name: "cleared", state: "Rework", status: "cleared", reason: "make skill available or waive it"},
+		{name: "empty action", state: "Rework", status: "unverifiable"},
+		{name: "terminal", state: "Done", status: "unverifiable", reason: "make skill available or waive it"},
+		{name: "existing question wins", state: "Rework", status: "unverifiable", reason: "make skill available or waive it", existing: true, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			at := now.Add(-2 * time.Hour)
+			deps := testDeps(t)
+			setOperationsTestProject(t, deps.Registry, "p", true, "", nil, "", "", "", "", []string{"Done"})
+			report := operations.Report{DataTime: now}
+			if tc.existing {
+				report.Decisions = []operations.Decision{{ProjectID: "p", Issue: "owner/repo#1", Question: "existing question", AskedAt: &at}}
+			}
+			deps.Store = operationsStore{Store: openWebTestStore(t), report: report}
+			issue := telemetry.Issue{ID: "i", ProjectID: "p", Identifier: "owner/repo#1", Title: "Waiting card", State: tc.state, WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: tc.status, Reason: tc.reason, RecordedAt: &at}}
+			if tc.proseOnly {
+				// The snapshot excludes legacy prose from structured human-action evidence.
+				issue.WorkpadHumanAction = nil
+				issue.DependencyNotes = []string{tc.reason}
+				issue.StageUpdatedAt = &at
+			}
+			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var got operations.Report
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Decisions) != tc.want {
+				t.Fatalf("decisions=%+v", got.Decisions)
+			}
+			if tc.want == 1 {
+				d := got.Decisions[0]
+				want := tc.reason
+				if tc.existing {
+					want = "existing question"
+				}
+				if d.Kind != "question" || d.Question != want || d.AskedAt == nil || !d.AskedAt.Equal(at) || d.AgeSeconds == nil || *d.AgeSeconds < 7200 {
+					t.Fatalf("decision=%+v", d)
+				}
+			}
+		})
+	}
+}

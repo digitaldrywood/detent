@@ -157,7 +157,7 @@ func (p *workerProgress) observe(ctx context.Context, update runpkg.UsageUpdate)
 	base.LeaseExpiresAt = now.Add(p.leaseTTL)
 	heartbeat := p.heartbeat(base, now)
 	heartbeat.WorkerMetadataJSON = runningWorkAttemptMetadataJSON(running, nil)
-	if err := p.attempts.RecordWorkAttemptHeartbeat(operationCtx, heartbeat); err != nil {
+	if err := recordWorkAttemptHeartbeat(operationCtx, p.attempts, heartbeat); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			p.closed = true
 		}

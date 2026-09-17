@@ -15,15 +15,18 @@ import (
 func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	type testCase struct {
 		name              string
+		lane              string
 		result            runpkg.RunResult
 		runErr            error
 		wantReason        string
 		wantTerminalState store.WorkAttemptTerminalState
-	}{
+	}
+	tests := []testCase{
 		{
 			name: "structured review finding",
+			lane: "Merging",
 			result: runpkg.RunResult{
 				FinalState:            runpkg.FinalStateCompleted,
 				Output:                runpkg.RunOutputMergeFallbackRework,
@@ -34,6 +37,20 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 		},
 	}
 
+	for _, lane := range []string{"Rework", "In Progress"} {
+		tests = append(tests, testCase{
+			name: lane + " review finding",
+			lane: lane,
+			result: runpkg.RunResult{
+				FinalState:            runpkg.FinalStateCompleted,
+				Output:                runpkg.RunOutputMergeFallbackRework,
+				MergeFallbackFindings: "Found an unrelated authorization defect and stopped.",
+			},
+			wantReason:        mergeFallbackRequiresReworkReason,
+			wantTerminalState: store.WorkAttemptTerminalSuccess,
+		})
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -42,7 +59,7 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 			issue := connector.Issue{
 				ID:           "issue-1809-" + strings.ReplaceAll(tt.name, " ", "-"),
 				Identifier:   "digitaldrywood/detent#1809",
-				State:        "Merging",
+				State:        tt.lane,
 				PRRepository: "digitaldrywood/detent",
 				PullRequest: &connector.PullRequest{
 					Number:         1810,
@@ -95,6 +112,9 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 				!strings.Contains(tracker.comments[0].body, "validation still running") {
 				t.Fatalf("comment = %q, want preserved merge-fallback findings", tracker.comments[0].body)
 			}
+			if tt.lane == "Rework" && !strings.Contains(tracker.comments[0].body, "kept this issue in Rework") {
+				t.Fatalf("same-lane comment = %q", tracker.comments[0].body)
+			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != tt.wantTerminalState {
 				t.Fatalf("attempt completions = %#v, want terminal state %q", attempts.completions, tt.wantTerminalState)
 			}
@@ -113,13 +133,18 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 
 	tests := []struct {
 		name       string
+		lane       string
 		head       string
 		ci         string
 		wantRework bool
 	}{
-		{name: "resolved pushed head waits past resolution deadline", head: "validated-head", ci: "pending"},
-		{name: "validation failure", head: "validated-head", ci: "failure", wantRework: true},
-		{name: "replaced head with green CI", head: "replacement-head", ci: "success", wantRework: true},
+		{lane: "Merging", name: "resolved pushed head waits past resolution deadline", head: "validated-head", ci: "pending"},
+		{lane: "Merging", name: "validation failure", head: "validated-head", ci: "failure", wantRework: true},
+		{lane: "Merging", name: "replaced head with green CI", head: "replacement-head", ci: "success", wantRework: true},
+		{lane: "Rework", name: "Rework resolved", head: "validated-head", ci: "success"},
+		{lane: "In Progress", name: "In Progress resolved", head: "validated-head", ci: "success"},
+		{lane: "Rework", name: "Rework replaced head", head: "replacement-head", ci: "success", wantRework: true},
+		{lane: "In Progress", name: "In Progress replaced head", head: "replacement-head", ci: "success", wantRework: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,18 +152,23 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 			now := time.Date(2026, 9, 7, 22, 2, 24, 0, time.UTC)
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents: 1, MergeFastPathEnabled: true,
-				ActiveStates: []string{"Rework", "Merging"}, ObservedStates: []string{"Merging"}, TerminalStates: []string{"Done"},
+				ActiveStates: []string{"In Progress", "Rework", "Merging"}, ObservedStates: []string{"Merging"}, TerminalStates: []string{"Done"},
 			})
 			issue := connector.Issue{
-				ID: "issue-2273", Identifier: "digitaldrywood/detent#2273", State: "Merging", PRRepository: "digitaldrywood/detent",
+				ID: "issue-2273", Identifier: "digitaldrywood/detent#2273", State: tt.lane, PRRepository: "digitaldrywood/detent",
 				PullRequest: &connector.PullRequest{
 					Number: 2274, State: "OPEN", MergeableState: "clean", HeadSHA: tt.head, CIStatus: tt.ci,
 				},
 			}
 			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}
-			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			dispatched := cloneIssue(issue)
+			dispatched.PullRequest.HeadSHA = "conflicted-head"
+			dispatched.PullRequest.MergeableState = "dirty"
+			previous := autoPromoteReworkSignatureFromIssue(dispatched, AutoPromoteSummaryFromIssue(dispatched))
+			attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{implementProgressHistoryAttempt(1, previous, store.WorkAttemptTerminalSuccess)}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			state := newState(cfg)
-			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, Mode: runpkg.RunModeMerge, StartedAt: now.Add(-21 * time.Minute)}
+			state.Running[issue.ID] = Running{Issue: dispatched, WorkAttemptID: 2, Attempt: 1, Mode: runpkg.RunModeMerge, StartedAt: now.Add(-21 * time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-21 * time.Minute)}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge},
@@ -159,6 +189,24 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 			if len(tracker.updates) != 0 {
 				t.Fatalf("updates = %#v, want passive CI wait", tracker.updates)
 			}
+			if tt.lane != "Merging" {
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+					t.Fatalf("completions = %#v, want success", attempts.completions)
+				}
+				progress := implementProgressRecordFromCompletion(t, attempts.completions[0])
+				if progress.Reason != "signature_changed" || progress.PreviousHeadSHA != "conflicted-head" || progress.CurrentHeadSHA != "validated-head" {
+					t.Fatalf("progress = %#v, want changed repaired head", progress)
+				}
+				completed, ok := state.Completed[issue.ID]
+				if !ok || completed.Issue.State != tt.lane || completed.Issue.PullRequest.HeadSHA != "validated-head" {
+					t.Fatalf("completion = %#v, want original lane and verified head", completed)
+				}
+				if len(state.Retry) != 0 || len(state.mergeReservations) != 0 {
+					t.Fatal("repair retained merge retry or reservation")
+				}
+				return
+			}
+
 			retry := state.Retry[issue.ID]
 			if retry.Wait.Kind != retryWaitCurrentHeadCI || retry.Attempt != 1 {
 				t.Fatalf("retry = %#v, want current-head CI wait without another implementation", retry)

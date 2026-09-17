@@ -256,6 +256,30 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:       true,
 		},
 		{
+			name:               "already merged completion needs no prior authorization",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         string(AutoPromoteReasonOperationalCompletion),
+			wantProgressKinds:  []string{"operational_completion"},
+			wantCompletionKind: workpad.CompletionOperational,
+			wantReview:         true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: mergedCompletionWorkpadBody(),
+		},
+		{
+			name:               "incomplete merged evidence cannot bypass authorization",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "completed_clean_diff_without_pull_request",
+			wantRetry:          true,
+			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
+			currentWorkpadBody: strings.Replace(mergedCompletionWorkpadBody(), "completion_ancestry: verified", "completion_ancestry: unknown", 1),
+		},
+		{
 			name: "preauthorized operational completion is deliverable progress",
 			runningIssue: func() connector.Issue {
 				issue := implementProgressIssueWithoutPR()
@@ -465,17 +489,18 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			workpadBlockerRef:  "digitaldrywood/detent#134",
 		},
 		{
-			name:         "tracker state change resets repeated blocked human action",
+			name:         "tracker state change does not defer a human blocker",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
 				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 1, AddedLines: 1, Fingerprint: "old-diff", Status: "changed"}, "Choose the review path.", "In Progress"),
 			},
 			diffStats:          DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "new-diff", Status: "changed"},
 			noProgressLimit:    3,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         implementProgressReasonMixed,
-			wantProgressKinds:  []string{"workspace_diff", "tracker_state_transition"},
-			wantRetry:          true,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         workpadBlockedUnactionedReason,
+			wantBlocked:        true,
+			wantBlockReason:    workpadBlockedUnactionedReason,
+			wantComment:        "> Choose the review path.",
 			workpadHumanAction: "Choose the review path.",
 			refreshedState:     "Rework",
 		},
@@ -666,6 +691,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				wantComments := 1
 				if tt.wantBlockReason == noProgressLimitReason || tt.wantBlockReason == dispatchLoopDetectedReason || tt.wantBlockReason == "workpad_blocked_unactioned" {
 					wantComments = 3
+				}
+				if tt.refreshedState != "" && tt.refreshedState != tt.runningIssue.State {
+					wantComments++
 				}
 				if len(tracker.comments) != wantComments || !strings.Contains(tracker.comments[wantComments-1].body, tt.wantComment) {
 					t.Fatalf("comments = %#v, want comment containing %q", tracker.comments, tt.wantComment)
@@ -1833,7 +1861,7 @@ func TestImplementProgressBlockComment(t *testing.T) {
 				FailedChecksRemoved:    []string{"lint"},
 				WorkspaceDiffStats:     DiffStats{Status: "clean"},
 			},
-			wantContains: []string{"workpad_blocked_unactioned", "pull/42", "head", "previous", "failed_checks_added", "0 files", "> Approve release", "> Confirm rollback"},
+			wantContains: []string{"Workpad requests human action", "workpad_blocked_unactioned", "pull/42", "head", "previous", "failed_checks_added", "0 files", "> Approve release", "> Confirm rollback"},
 		},
 		{
 			name: "dispatch loop stale carry",

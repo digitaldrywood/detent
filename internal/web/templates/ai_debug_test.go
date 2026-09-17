@@ -57,13 +57,13 @@ func TestAIDebugActionsRenderAtRequiredSurfaces(t *testing.T) {
 	}
 }
 
-func TestAIDebugCardActionIsComfyOnly(t *testing.T) {
+func TestAIDebugCardActionExcludedByINV13(t *testing.T) {
 	t.Parallel()
 
 	html := renderBoardComponent(t, boardCardView2(boardCardView{DomID: "card-2006", Project: "detent", Identity: "digitaldrywood/detent#2006", Title: "AI Debug"}))
 	marker := "data-ai-debug-card-action"
-	if !strings.Contains(html, marker) {
-		t.Fatalf("card action missing comfy marker:\n%s", html)
+	if strings.Contains(html, marker) {
+		t.Fatalf("card contains forbidden debug action:\n%s", html)
 	}
 	if strings.Contains(html, "data-ai-debug-privacy") {
 		t.Fatalf("card action contains the removed inline privacy notice:\n%s", html)

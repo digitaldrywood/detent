@@ -693,8 +693,11 @@ func (l *recordingCallLog) snapshot() []string {
 }
 
 type recordingGitHubBackend struct {
-	calls *recordingCallLog
-	errs  map[string]error
+	branchRepository string
+	branchName       string
+	branchErr        error
+	calls            *recordingCallLog
+	errs             map[string]error
 }
 
 type transitionGitHubBackend struct {
@@ -1087,4 +1090,37 @@ func writeGitHubLocalJSON(t *testing.T, w http.ResponseWriter, value any) {
 
 func (b *recordingGitHubBackend) MarkPullRequestReady(context.Context, connector.Issue) error {
 	panic("unexpected github MarkPullRequestReady")
+}
+
+func (b *recordingGitHubBackend) LookupBranchHead(_ context.Context, repository, branch string) (string, error) {
+	b.branchRepository, b.branchName = repository, branch
+	if b.branchErr != nil {
+		return "", b.branchErr
+	}
+	return "remote-head", nil
+}
+
+func TestLookupBranchHead(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "found", want: "remote-head"},
+		{name: "unavailable", err: errors.New("forge unavailable")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &recordingGitHubBackend{branchErr: tt.err}
+			conn := &Connector{github: backend}
+			head, err := conn.LookupBranchHead(t.Context(), "example/repo", "detent/issue-2601")
+			if !errors.Is(err, tt.err) || head != tt.want {
+				t.Fatalf("LookupBranchHead() = %q, %v", head, err)
+			}
+			if backend.branchRepository != "example/repo" || backend.branchName != "detent/issue-2601" {
+				t.Fatalf("branch lookup = %q %q", backend.branchRepository, backend.branchName)
+			}
+		})
+	}
 }

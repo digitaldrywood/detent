@@ -101,6 +101,13 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 			}
 		}
 
+		if !decisionSeen && !operationsStateIn(issue.State, s.operationsProjectHumanReviewPolicy(issue, snapshot.Project.ID).terminalStates) {
+			if evidence := issue.WorkpadHumanAction; evidence != nil && evidence.Status != "cleared" && strings.TrimSpace(evidence.Reason) != "" {
+				report.Decisions = append(report.Decisions, operations.Decision{Kind: "question", ProjectID: projectID, Issue: issue.Identifier, Title: issue.Title, Question: evidence.Reason, URL: issue.URL, AskedAt: evidence.RecordedAt})
+				operationsMarkDecisionSeen(seen, keys)
+				decisionSeen = true
+			}
+		}
 		if !decisionSeen {
 			if d, ok := operationsHumanDependencyDecision(snapshot, issue, currentIssues); ok {
 				report.Decisions = append(report.Decisions, d)
@@ -154,8 +161,20 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 			d.URL = "/api/v1/projects/" + url.PathEscape(d.ProjectID) + "/issues/explanation?reference=" + url.QueryEscape(d.Issue)
 		}
 	}
+	report.Decisions = operations.WithQuestionAges(report.Decisions, now)
 	sort.Slice(report.Decisions, func(i, j int) bool {
 		a, b := report.Decisions[i], report.Decisions[j]
+		if (a.Kind == "question") != (b.Kind == "question") {
+			return a.Kind == "question"
+		}
+		if a.Kind == "question" {
+			if (a.AskedAt == nil) != (b.AskedAt == nil) {
+				return a.AskedAt == nil
+			}
+			if a.AskedAt != nil && !a.AskedAt.Equal(*b.AskedAt) {
+				return a.AskedAt.Before(*b.AskedAt)
+			}
+		}
 		if a.ProjectID != b.ProjectID {
 			return a.ProjectID < b.ProjectID
 		}

@@ -7,10 +7,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type refreshTiming struct {
+	points       *connector.GraphQLPoints
+	phasePoints  int64
 	progress     *atomic.Pointer[telemetry.RefreshProgress]
 	logger       *slog.Logger
 	projectID    string
@@ -100,7 +103,9 @@ func (t *refreshTiming) finishPhase(now time.Time) {
 	if t.phase == "" {
 		return
 	}
-	t.phases = append(t.phases, t.phase+"_duration", now.Sub(t.phaseStarted))
+	points := t.points.Total()
+	t.phases = append(t.phases, t.phase+"_duration", now.Sub(t.phaseStarted), t.phase+"_graphql_points", points-t.phasePoints)
+	t.phasePoints = points
 	t.phase = ""
 }
 

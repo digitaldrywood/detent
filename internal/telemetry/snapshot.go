@@ -9,12 +9,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/observability"
+	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type Snapshot struct {
+	OpenQuestions      []operations.Decision       `json:"-"`
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
 
@@ -159,6 +161,7 @@ func (s Snapshot) AgeSeconds(now time.Time) int64 {
 }
 
 func (s Snapshot) WithFreshness(now time.Time) Snapshot {
+	s.OpenQuestions = operations.WithQuestionAges(s.OpenQuestions, now)
 	if len(s.Projects) == 0 {
 		s.Refresh = s.Refresh.WithFreshness(now)
 		return s
@@ -1123,6 +1126,7 @@ func (d TrackerDrift) IsZero() bool {
 }
 
 type Issue struct {
+	WorkpadHumanAction    *BlockerEvidence       `json:"workpad_human_action,omitempty"`
 	AttemptsToday         *int64                 `json:"attempts_today"`
 	LaneReason            string                 `json:"lane_reason"`
 	LaneReasonAt          *time.Time             `json:"lane_reason_at"`
@@ -1865,6 +1869,8 @@ type ConcurrencyBucket struct {
 }
 
 type LifetimeTotals struct {
+	Stale                 bool   `json:"stale,omitempty"`
+	ReadFailures          uint64 `json:"read_failures,omitempty"`
 	Available             bool   `json:"available"`
 	DegradedReason        string `json:"degraded_reason,omitempty"`
 	InputTokens           int64  `json:"input_tokens"`

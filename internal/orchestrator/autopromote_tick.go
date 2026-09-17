@@ -242,6 +242,14 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if decision.Reason == AutoPromoteReasonCodexReviewMissing {
 			o.requestAutomatedReview(ctx, issue)
 		}
+		if decision.Reason == AutoPromoteReasonMergeConflicts && normalizeState(issue.State) == normalizeState(cfg.SourceState) {
+			// Conflict routing must preserve deliberate review parks, while ready
+			// heads remain eligible for the normal promotion path.
+			if reason, ok := o.latestWorkflowLaneReason(ctx, issue, issue.State); ok &&
+				(reason == "operator_move" || reason == attemptAllowanceExhaustedReason) {
+				decision.Action = AutoPromoteActionSkip
+			}
+		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
 			recordAutoPromoteSnapshotDecision(state, issueID, decision)
@@ -763,6 +771,14 @@ func autoPromoteActiveGatePendingIssue(
 	cfg Config,
 	autoCfg AutoPromoteConfig,
 ) bool {
+	// An established review cycle waiting for this head cannot be advanced by
+	// another worker, including after a question wait without completion evidence.
+	if autoPromoteReworkGateWaitTrackedIssue(issue, cfg, autoCfg) &&
+		reworkGateWaitPullRequestReady(issue) &&
+		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean") &&
+		mergeWorkerCIGreen(issue.PullRequest.CIStatus) && issue.PullRequest.AutomatedReviewPending() {
+		return true
+	}
 	if state == nil {
 		return false
 	}

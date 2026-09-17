@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -56,6 +57,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	defer o.endGlobalProjectCycle()
 	completed := false
 	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, manual != nil)
+	ctx, timing.points = connector.WithGraphQLPoints(ctx)
 	timing.progress = &o.refreshProgress
 	timing.next("preflight")
 	defer func() {
@@ -143,7 +145,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		return
 	}
 	timing.next("tracker_fetch")
-	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve)
+	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve, timing)
 	if !ok {
 		return
 	}
@@ -456,7 +458,25 @@ func (o *Orchestrator) fetchTickIssues(
 	state *State,
 	now time.Time,
 	reserve githubBudgetReserveDecision,
+	timing *refreshTiming,
 ) (tickFetchedIssues, bool) {
+	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
+		finishWait := o.tickWatchdog.excludeScanWait()
+		release, err := scanner.BeginRefreshScan(ctx)
+		wait := finishWait()
+		if timing != nil {
+			timing.phases = append(timing.phases, "tracker_scan_wait_duration", wait)
+		}
+		if err != nil {
+			recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
+			if o.scheduling == nil {
+				o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+			}
+			markRefreshError(state, "begin tracker scan: "+err.Error(), now)
+			return tickFetchedIssues{}, false
+		}
+		defer release()
+	}
 	observedStates := o.observedStatusFetchStatesForTick(state)
 	fetcher, canRefresh := o.connector.(connector.RefreshIssueFetcher)
 	canRefresh = canRefresh && fetcher.CombinedRefreshEnabled()
@@ -519,7 +539,7 @@ func (o *Orchestrator) fetchTickIssues(
 	if canRefresh {
 		// Hub owns candidate claims; reuse the project read for observed lanes
 		// and diagnostics, including when no configured lane has active work.
-		result := fetcher.FetchRefreshIssues(ctx, nil, observedStates, o.authorizationFilterHint())
+		result := fetcher.FetchRefreshIssues(ctx, nil, observedStates, o.refreshFilterHint())
 		statusErr = result.CandidateError
 		if statusErr == nil {
 			state.LaneSignalCandidates = cloneIssues(result.LaneSignalCandidates)
@@ -560,7 +580,7 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 		ctx,
 		o.candidateFetchStatesForTick(state),
 		observedStates,
-		o.authorizationFilterHint(),
+		o.refreshFilterHint(),
 	)
 	if result.CandidateError != nil {
 		err := result.CandidateError
@@ -891,6 +911,40 @@ func (o *Orchestrator) refreshTransitionSets(
 		state.Pipeline = issuesInStates(fetched.status, autoPromoteFetchStates(o.cfg.AutoPromote))
 		if !pipelineRefreshOK || !o.mergeWorkerLocalSlotsAvailable(state) {
 			state.Pipeline = mergeIssueSlices(state.Pipeline, previous.pipeline)
+		}
+	}
+
+	// Durable questions can outlive the board snapshot (including across restart).
+	// Include their missing issues in the existing transition refresh.
+	if questions, ok := o.workAttempts.(store.HumanQuestionStore); ok {
+		ids, err := questions.OpenHumanQuestionIssueIDs(ctx, o.cfg.Project.ID)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("read open question issues failed", "error", err)
+			}
+		} else {
+			seen := make(map[string]bool, len(transitionIssues))
+			for _, issue := range transitionIssues {
+				seen[issue.ID] = true
+			}
+			var missing []connector.Issue
+			pending := make(map[string]bool, len(ids))
+			for _, id := range ids {
+				pending[id] = true
+				if !seen[id] {
+					missing = append(missing, connector.Issue{ID: id})
+				}
+			}
+			refreshed, _ := o.fetchEpicTransitionIssueStates(ctx, missing)
+			transitionIssues = append(transitionIssues, refreshed...)
+			for _, issue := range transitionIssues {
+				if !pending[issue.ID] || (!issue.Closed && !stateIn(issue.State, o.cfg.TerminalStates)) {
+					continue
+				}
+				if err := questions.ResolveHumanQuestionsByClosure(ctx, o.cfg.Project.ID, issue.ID); err != nil && o.logger != nil {
+					o.logger.Warn("resolve terminal issue questions failed", "issue_id", issue.ID, "error", err)
+				}
+			}
 		}
 	}
 

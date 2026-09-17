@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -244,12 +246,14 @@ func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		retryAfter string
-		wantDelay  time.Duration
+		name         string
+		retryAfter   string
+		wantDelay    time.Duration
+		graphQLError bool
 	}{
 		{name: "retry after", retryAfter: "120", wantDelay: 2 * time.Minute},
 		{name: "documented fallback", wantDelay: time.Minute},
+		{name: "GraphQL error with retry after", retryAfter: "120", wantDelay: 2 * time.Minute, graphQLError: true},
 	}
 
 	for _, tt := range tests {
@@ -265,6 +269,11 @@ func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
 				if calls.Add(1) == 1 {
 					if tt.retryAfter != "" {
 						w.Header().Set("Retry-After", tt.retryAfter)
+					}
+					if tt.graphQLError {
+						_, _ = w.Write([]byte(`{"errors":[{"type":"RATE_LIMITED","message":"secondary rate limit"}]}`))
+
+						return
 					}
 					w.WriteHeader(http.StatusForbidden)
 					_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit"}`))
@@ -285,7 +294,14 @@ func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
 
 			err = client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil)
 			var statusErr *StatusError
-			if !errors.As(err, &statusErr) || statusErr.RateLimitKind != restRateLimitKindSecondaryThrottled || statusErr.RetryAfter != tt.wantDelay {
+			if !errors.Is(err, ErrRateLimited) {
+				t.Fatalf("first GraphQL() error = %v", err)
+			}
+			quota, _ := client.GraphQLRateLimit()
+			if quota.BackoffUntil.Sub(quota.UpdatedAt) != tt.wantDelay {
+				t.Fatalf("deadline delay = %s, want %s", quota.BackoffUntil.Sub(quota.UpdatedAt), tt.wantDelay)
+			}
+			if !tt.graphQLError && (!errors.As(err, &statusErr) || statusErr.RateLimitKind != restRateLimitKindSecondaryThrottled || statusErr.RetryAfter != tt.wantDelay) {
 				t.Fatalf("first GraphQL() error = %#v, want secondary backoff %s", statusErr, tt.wantDelay)
 			}
 
@@ -297,8 +313,21 @@ func TestClientGraphQLSecondaryBackoffExpires(t *testing.T) {
 				t.Fatalf("HTTP calls during backoff = %d, want 1", got)
 			}
 
+			client.FlushGraphQLRateLimitUsage()
+			client.ResetGraphQLRateLimitUsage()
+			for _, query := range []struct{ kind, body string }{
+				{graphQLQueryRateLimitProbe, "query { rateLimit { remaining } }"},
+				{graphQLQueryUpdateField, "mutation { updateProjectV2ItemFieldValue { projectV2Item { id } } }"},
+			} {
+				if err := client.GraphQLWithType(t.Context(), query.kind, query.body, nil, nil); !errors.Is(err, ErrRateLimited) {
+					t.Fatalf("%s during cooldown = %v, want rate limited", query.kind, err)
+				}
+			}
+
 			client.mu.Lock()
-			client.rateLimit.UpdatedAt = time.Now().Add(-tt.wantDelay - time.Second)
+			client.graphQLSecondary.mu.Lock()
+			client.graphQLSecondary.until = time.Now().Add(-time.Second)
+			client.graphQLSecondary.mu.Unlock()
 			client.mu.Unlock()
 
 			if err := client.GraphQL(t.Context(), "query { viewer { login } }", nil, nil); err != nil {
@@ -383,10 +412,20 @@ func TestConnectorRateLimitProbesRequireFreshResponse(t *testing.T) {
 			if err := tt.seed(context.Background(), conn); !errors.Is(err, ErrRateLimited) {
 				t.Fatalf("seed error = %v, want ErrRateLimited", err)
 			}
+			if tt.name == "graphql" {
+				if err := tt.probe(t.Context(), conn); !errors.Is(err, ErrRateLimited) {
+					t.Fatalf("probe during cooldown = %v", err)
+				}
+				conn.client.mu.Lock()
+				conn.client.graphQLSecondary.mu.Lock()
+				conn.client.graphQLSecondary.until = time.Now().Add(-time.Second)
+				conn.client.graphQLSecondary.mu.Unlock()
+				conn.client.mu.Unlock()
+			}
 			if err := tt.probe(context.Background(), conn); !errors.Is(err, ErrInvalidResponse) {
 				t.Fatalf("probe error = %v, want ErrInvalidResponse", err)
 			}
-			if !tt.backedOff(conn) {
+			if tt.name != "graphql" && !tt.backedOff(conn) {
 				t.Fatal("rate limit backoff cleared without a fresh quota response")
 			}
 			if got := calls.Load(); got != 2 {
@@ -422,6 +461,14 @@ func TestClientGraphQLSuccessfulMutationClearsRateLimitResponse(t *testing.T) {
 	if err := client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("first GraphQL() error = %v, want ErrRateLimited", err)
 	}
+	if err := client.GraphQLWithType(t.Context(), graphQLQueryUpdateField, "mutation { updateProjectV2ItemFieldValue { projectV2Item { id } } }", nil, nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("mutation during cooldown = %v", err)
+	}
+	client.mu.Lock()
+	client.graphQLSecondary.mu.Lock()
+	client.graphQLSecondary.until = time.Now().Add(-time.Second)
+	client.graphQLSecondary.mu.Unlock()
+	client.mu.Unlock()
 	if err := client.GraphQLWithType(context.Background(), graphQLQueryUpdateField, "mutation { updateProjectV2ItemFieldValue { projectV2Item { id } } }", nil, nil); err != nil {
 		t.Fatalf("mutation GraphQL() error = %v", err)
 	}
@@ -518,6 +565,8 @@ func TestClientTrackerAvailabilityClassification(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewClient() error = %v", err)
 			}
+
+			client.restBackoffs = newRESTBackoffRegistry()
 
 			queryType := tt.queryType
 			if queryType == "" {
@@ -652,13 +701,15 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 			name:       "graphql rate limit",
 			statusCode: http.StatusOK,
 			body:       `{"errors":[{"type":"RATE_LIMITED","message":"slow down"}]}`,
-			want:       ErrRateLimited,
+
+			want: ErrRateLimited,
 		},
 		{
 			name:       "graphql generic",
 			statusCode: http.StatusOK,
 			body:       `{"errors":[{"message":"field error"}]}`,
-			want:       ErrGraphQLErrors,
+
+			want: ErrGraphQLErrors,
 		},
 	}
 
@@ -2266,6 +2317,7 @@ func TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`))
+
 	}))
 	t.Cleanup(server.Close)
 
@@ -2304,6 +2356,7 @@ func TestClientGraphQLRateLimitFailureDoesNotPublishStaleSnapshot(t *testing.T) 
 	responses := make(chan string, 2)
 	responses <- `{"data":{"rateLimit":{"limit":5000,"used":120,"remaining":4880,"cost":2,"resetAt":"` + resetAt.Format(time.RFC3339) + `"}}}`
 	responses <- `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -2596,6 +2649,19 @@ func TestClientGraphQLClearsRetryAfterOnHeaderRefresh(t *testing.T) {
 		t.Fatalf("GraphQLRateLimit().RetryAfter = %s, want 2m", rateLimit.RetryAfter)
 	}
 
+	deadline := rateLimit.BackoffUntil
+	// A response already in flight may still refresh primary headers.
+	client.recordRateLimitFromHeaders(http.Header{"X-Ratelimit-Remaining": {"4879"}}, time.Now())
+	client.clearGraphQLRateLimitStatus()
+	refreshed, _ := client.GraphQLRateLimit()
+	if refreshed.BackoffUntil != deadline || client.GraphQLRateLimitStatus() != connector.GraphQLRateLimitStatusBackoff {
+		t.Fatal("header refresh or unrelated success cleared secondary cooldown")
+	}
+	client.mu.Lock()
+	client.graphQLSecondary.mu.Lock()
+	client.graphQLSecondary.until = time.Now().Add(-time.Second)
+	client.graphQLSecondary.mu.Unlock()
+	client.mu.Unlock()
 	err = client.GraphQLWithType(context.Background(), graphQLQueryRateLimitProbe, "query { viewer { login } }", nil, nil)
 	if err != nil {
 		t.Fatalf("GraphQL() error = %v", err)
@@ -3092,6 +3158,230 @@ func TestConnectorRESTResourceReserveRecovery(t *testing.T) {
 			if held := conn.RESTRateLimitStatus().RateLimited; held != tt.wantHeld {
 				t.Fatalf("REST after recovery held = %v, want %v", held, tt.wantHeld)
 			}
+		})
+	}
+}
+
+func TestClientGraphQLSecondaryRepeatedFailures(t *testing.T) {
+	t.Parallel()
+	for _, retry := range []time.Duration{0, 3 * time.Minute} {
+		t.Run(retry.String(), func(t *testing.T) {
+			client, err := NewClient(ClientConfig{TokenSource: StaticTokenSource("test")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			for attempt := 1; attempt <= 3; attempt++ {
+				failure := &StatusError{Err: ErrRateLimited, RateLimitKind: restRateLimitKindSecondaryThrottled, RetryAfter: retry}
+				client.recordGraphQLRateLimitFailure(failure, graphQLHeaderRateLimit{}, now)
+				quota, _ := client.GraphQLRateLimit()
+				want := max(retry, time.Minute*time.Duration(1<<(attempt-1)))
+				if quota.BackoffUntil != now.Add(want) {
+					t.Fatalf("attempt %d deadline = %s, want %s", attempt, quota.BackoffUntil, now.Add(want))
+				}
+				client.FlushGraphQLRateLimitUsage()
+				client.clearGraphQLRateLimitStatus()
+				client.setRateLimit(connector.GraphQLRateLimit{Limit: 5000, Remaining: 3000, UpdatedAt: now})
+				current, _ := client.GraphQLRateLimit()
+				if current.BackoffUntil != quota.BackoffUntil {
+					t.Fatal("success changed deadline")
+				}
+				now = quota.BackoffUntil
+			}
+		})
+	}
+}
+
+func TestClientGraphQLSecondarySharedAcrossProjects(t *testing.T) {
+	t.Parallel()
+	for _, sameCredential := range []bool{true, false} {
+		t.Run(strconv.FormatBool(sameCredential), func(t *testing.T) {
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) == 1 {
+					w.Header().Set("Retry-After", "60")
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"message":"secondary rate limit"}`)
+					return
+				}
+				fmt.Fprint(w, `{"data":{}}`)
+			}))
+			defer server.Close()
+			makeClient := func(token string) *Client {
+				c, err := NewClient(ClientConfig{Endpoint: server.URL, TokenSource: StaticTokenSource(token), HTTPClient: server.Client()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return c
+			}
+			a := makeClient("account-a")
+			token := "account-b"
+			if sameCredential {
+				token = "account-a"
+			}
+			b := makeClient(token)
+			if err := a.GraphQL(t.Context(), "mutation { repair }", nil, nil); !errors.Is(err, ErrRateLimited) {
+				t.Fatal(err)
+			}
+			err := b.GraphQL(t.Context(), "mutation { repair }", nil, nil)
+			if sameCredential {
+				if !errors.Is(err, ErrRateLimited) || calls.Load() != 1 {
+					t.Fatalf("second project mutation = %v, HTTP calls = %d", err, calls.Load())
+				}
+				qa, _ := a.GraphQLRateLimit()
+				qb, ok := b.GraphQLRateLimit()
+				if !ok || !qb.BackoffUntil.Equal(qa.BackoffUntil) {
+					t.Fatal("shared cooldown missing from telemetry")
+				}
+			} else if err != nil || calls.Load() != 2 {
+				t.Fatalf("other credential blocked: %v", err)
+			}
+		})
+	}
+}
+
+func TestClientGraphQLSharedMutationAdmission(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name             string
+		cooldown, nested bool
+	}{
+		{name: "concurrent"}, {name: "cooldown", cooldown: true}, {name: "nested", nested: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				registry := newRESTBackoffRegistry()
+				release := make(chan struct{})
+				var calls atomic.Int64
+				var b *Client
+				transport := recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
+					if calls.Add(1) == 1 {
+						if test.nested {
+							if err := b.GraphQL(r.Context(), "mutation { nested }", nil, nil); err != nil {
+								return nil, err
+							}
+						} else {
+							<-release
+						}
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"data":{}}`))}, nil
+				})
+				makeClient := func(token string) *Client {
+					c, err := NewClient(ClientConfig{Endpoint: "https://shared-mutations.test/graphql", TokenSource: secondaryIdentityToken{token: token}, HTTPClient: transport})
+					if err != nil {
+						t.Fatal(err)
+					}
+					c.restBackoffs = registry
+					return c
+				}
+				a := makeClient("before-rotation")
+				b = makeClient("after-rotation")
+				if test.cooldown {
+					state := a.bindGraphQLSecondary("before-rotation")
+					state.until = time.Now().Add(time.Minute)
+					for _, c := range []*Client{a, b} {
+						err := c.GraphQL(t.Context(), "mutation { write }", nil, nil)
+						var status *StatusError
+						if !errors.As(err, &status) || !errors.Is(err, ErrRateLimited) || status.RetryAfter != time.Minute {
+							t.Fatalf("cooldown = %v", err)
+						}
+					}
+					if calls.Load() != 0 {
+						t.Fatal("mutation bypassed cooldown")
+					}
+					time.Sleep(time.Minute)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				results := make(chan error, 2)
+				go func() { results <- a.GraphQL(ctx, "mutation { first }", nil, nil) }()
+				synctest.Wait()
+				if !test.nested {
+					go func() { results <- b.GraphQL(ctx, "mutation { second }", nil, nil) }()
+					synctest.Wait()
+				}
+				if calls.Load() != 2 {
+					t.Errorf("concurrent/nested transport calls = %d, want 2", calls.Load())
+				}
+				close(release)
+				count := 2
+				if test.nested {
+					count = 1
+				}
+				for range count {
+					if err := <-results; err != nil {
+						t.Errorf("mutation = %v", err)
+					}
+				}
+			})
+		})
+	}
+}
+
+type secondaryIdentityToken struct{ token string }
+
+func (s secondaryIdentityToken) Token(context.Context) (string, error) { return s.token, nil }
+func (secondaryIdentityToken) CredentialIdentity(string) string {
+	return "github-app-installation:4242"
+}
+
+func TestRepairBatchAdmission(t *testing.T) {
+	t.Parallel()
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled=%v", canceled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				release := make(chan struct{})
+				var calls atomic.Int64
+				registry := newRESTBackoffRegistry()
+				makeConnector := func() *Connector {
+					client, err := NewClient(ClientConfig{TokenSource: secondaryIdentityToken{token: "token"}, HTTPClient: recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
+						if calls.Add(1) == 1 {
+							<-release
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"item"}}}}`))}, nil
+					})})
+					if err != nil {
+						t.Fatal(err)
+					}
+					client.restBackoffs = registry
+					cache := newStatusCache(time.Hour, nil)
+					cache.Set("project", statusMetadata{FieldID: "field", OptionIDsByName: map[string]string{"Backlog": "option"}})
+					return &Connector{client: client, projectID: "project", statusCache: cache}
+				}
+				a, b := makeConnector(), makeConnector()
+				first, second := make(chan error, 1), make(chan error, 1)
+				go func() { first <- a.writeDefaultProjectItemStatuses(t.Context(), []string{"one", "two"}, "Backlog") }()
+				synctest.Wait()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				go func() { second <- b.writeDefaultProjectItemStatuses(ctx, []string{"three"}, "Backlog") }()
+				synctest.Wait()
+				if calls.Load() != 1 {
+					t.Errorf("repair calls before release = %d", calls.Load())
+				}
+				// An ordinary mutation may nest under the repair slot.
+				if err := b.client.GraphQL(t.Context(), "mutation { unrelated }", nil, nil); err != nil {
+					t.Error(err)
+				}
+				if canceled {
+					cancel()
+					synctest.Wait()
+				}
+				close(release)
+				if err := <-first; err != nil {
+					t.Error(err)
+				}
+				if err := <-second; errors.Is(err, context.Canceled) != canceled {
+					t.Errorf("queued repair = %v", err)
+				}
+				want := int64(4)
+				if canceled {
+					want = 3
+				}
+				if calls.Load() != want {
+					t.Errorf("calls = %d, want %d", calls.Load(), want)
+				}
+			})
 		})
 	}
 }

@@ -12,6 +12,8 @@ func TestDependencyAppendPreservesBody(t *testing.T) {
 		name, body, ref string
 		invalid         bool
 	}{
+		{name: "empty declaration with prose", body: "Depends on: none. Order: #2, #3", ref: "#3"},
+		{name: "and separated sentence", body: "Depends on: #2 and #3. See #9", ref: "#3"},
 		{name: "append", body: "Acceptance criteria\n\nDepends on: #2\n", ref: "owner/repo#3"},
 		{name: "existing", body: "Text\n- **Depends on:** #3, owner/repo#2\n", ref: "https://github.com/owner/repo/issues/3"},
 		{name: "code example", body: "```text\nDepends on: #3\n```", ref: "owner/repo#3"},
@@ -61,14 +63,14 @@ func FuzzDependencyReferences(f *testing.F) {
 	})
 }
 
-func TestDeclarationsPreservesProseOutsideFences(t *testing.T) {
+func TestDeclarationsOutsideFences(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, body string
 		want       []string
 		wantErr    bool
 	}{
-		{name: "trailing prose", body: "**Depends on:** #1 so helpers exist", want: []string{"#1 so helpers exist"}},
+		{name: "trailing prose", body: "**Depends on:** #1 so helpers exist", want: []string{"#1"}},
 		{name: "surrounding declarations", body: "Depends on: #1\n~~~text\nDepends on: #2\n~~~\nBlocked by: #3", want: []string{"#1", "#3"}},
 		{name: "unfinished fence", body: "Depends on: #1\n```text\nDepends on: #2", want: []string{"#1"}, wantErr: true},
 	} {
@@ -77,6 +79,28 @@ func TestDeclarationsPreservesProseOutsideFences(t *testing.T) {
 			got, complete := Declarations(tt.body)
 			if !reflect.DeepEqual(got, tt.want) || !complete != tt.wantErr {
 				t.Fatalf("Declarations() = %v, %v; want %v, complete %v", got, complete, tt.want, !tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLinesOutsideFences(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, body string
+		want       []string
+		complete   bool
+	}{
+		{name: "backticks", body: "before\n```go\nhidden\n```\nafter", want: []string{"before", "after"}, complete: true},
+		{name: "tildes and CRLF", body: "before\r\n~~~\r\nhidden\r\n~~~\r\nafter", want: []string{"before", "after"}, complete: true},
+		{name: "CR declarations", body: "Depends on: #1\rDepends on: #2", want: []string{"Depends on: #1", "Depends on: #2"}, complete: true},
+		{name: "mismatched and short closers", body: "````\n~~~\n```\nhidden\n`````\nafter", want: []string{"after"}, complete: true},
+		{name: "unfinished", body: "before\n~~~\nhidden", want: []string{"before"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, complete := LinesOutsideFences(tt.body)
+			if !reflect.DeepEqual(got, tt.want) || complete != tt.complete {
+				t.Fatalf("got %v, %v; want %v, %v", got, complete, tt.want, tt.complete)
 			}
 		})
 	}

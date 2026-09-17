@@ -452,7 +452,7 @@ type CodexOptions struct {
 	ApprovalPolicy                  StringOrMap                  `yaml:"approval_policy"`
 	DeliverableElicitationAllowlist []DeliverableElicitationRule `yaml:"deliverable_elicitation_allowlist"`
 	ThreadSandbox                   string                       `yaml:"thread_sandbox"`
-	TurnSandboxPolicy               map[string]any               `yaml:"turn_sandbox_policy"`
+	TurnSandboxPolicy               map[string]any               `yaml:"turn_sandbox_policy,omitempty"`
 	TurnTimeoutMS                   int                          `yaml:"turn_timeout_ms"`
 	ReadTimeoutMS                   int                          `yaml:"read_timeout_ms"`
 	StallTimeoutMS                  int                          `yaml:"stall_timeout_ms"`
@@ -1364,6 +1364,9 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		cfg.configuredFields = configuredFieldPaths(root)
 	}
 	cfg.normalize()
+	if err := cfg.validateEffectiveSandboxPolicies(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -1671,6 +1674,9 @@ func (c *Config) Validate() error {
 	c.validateStopRun(&problems)
 	c.validateAgentInstructions(&problems)
 	c.Agents.validate(&problems)
+	if err := c.validateEffectiveSandboxPolicies(); err != nil {
+		problems = append(problems, err.Error())
+	}
 	c.Codex.validate(&problems)
 	problems = append(problems, gate.Validate("gate", c.Gate)...)
 	if c.Gate.SecurityAudit.Enabled {
@@ -2534,6 +2540,32 @@ func NormalizeTurnSandboxPolicy(threadSandbox string, policy map[string]any) map
 	return normalized
 }
 
+func (c Config) validateEffectiveSandboxPolicies() error {
+	if err := validateEffectiveTurnSandboxPolicy(c.Codex.ThreadSandbox, c.Codex.TurnSandboxPolicy); err != nil {
+		return fmt.Errorf("codex.%w", err)
+	}
+	for _, backend := range c.AgentBackendConfigs() {
+		if backend.Kind != AgentBackendCodex {
+			continue
+		}
+		options := backend.CodexOptions()
+		if err := validateEffectiveTurnSandboxPolicy(options.ThreadSandbox, options.TurnSandboxPolicy); err != nil {
+			return fmt.Errorf("agents.backends[%s].options.%w", backend.ID, err)
+		}
+	}
+	return nil
+}
+
+func validateEffectiveTurnSandboxPolicy(threadSandbox string, policy map[string]any) error {
+	policy = NormalizeTurnSandboxPolicy(threadSandbox, policy)
+	if len(policy) > 0 {
+		if _, exists := policy["type"]; !exists {
+			return fmt.Errorf("turn_sandbox_policy.type is required when thread_sandbox %q does not imply a sandbox type", threadSandbox)
+		}
+	}
+	return validateTurnSandboxPolicy(policy)
+}
+
 func validateTurnSandboxPolicy(policy map[string]any) error {
 	value, exists := policy["type"]
 	if !exists {
@@ -2552,7 +2584,8 @@ func validateSandboxPolicyNodes(node *yaml.Node) error {
 		return nil
 	}
 	type sandboxOptions struct {
-		Policy any `yaml:"turn_sandbox_policy"`
+		Policy        any     `yaml:"turn_sandbox_policy"`
+		ThreadSandbox *string `yaml:"thread_sandbox"`
 	}
 	var source struct {
 		Codex  sandboxOptions `yaml:"codex"`
@@ -2566,7 +2599,8 @@ func validateSandboxPolicyNodes(node *yaml.Node) error {
 	if err := node.Decode(&source); err != nil {
 		return err
 	}
-	validate := func(path string, value any) error {
+	validate := func(path string, options sandboxOptions) error {
+		value := options.Policy
 		if value == nil {
 			return nil
 		}
@@ -2577,9 +2611,15 @@ func validateSandboxPolicyNodes(node *yaml.Node) error {
 		if err := validateTurnSandboxPolicy(policy); err != nil {
 			return fmt.Errorf("%s.%w", path, err)
 		}
+		// Absent thread settings can inherit from the base file or global Codex options.
+		if options.ThreadSandbox != nil {
+			if err := validateEffectiveTurnSandboxPolicy(*options.ThreadSandbox, policy); err != nil {
+				return fmt.Errorf("%s.%w", path, err)
+			}
+		}
 		return nil
 	}
-	if err := validate("codex", source.Codex.Policy); err != nil {
+	if err := validate("codex", source.Codex); err != nil {
 		return err
 	}
 	for i, backend := range source.Agents.Backends {
@@ -2587,7 +2627,7 @@ func validateSandboxPolicyNodes(node *yaml.Node) error {
 		if kind != "" && kind != AgentBackendCodex {
 			continue
 		}
-		if err := validate(fmt.Sprintf("agents.backends[%d].options", i), backend.Options.Policy); err != nil {
+		if err := validate(fmt.Sprintf("agents.backends[%d].options", i), backend.Options); err != nil {
 			return err
 		}
 	}
@@ -2835,7 +2875,7 @@ func (b *Budget) validate(prefix string, problems *[]string) {
 }
 
 func (c *Codex) validate(problems *[]string) {
-	if err := validateTurnSandboxPolicy(c.TurnSandboxPolicy); err != nil {
+	if err := validateEffectiveTurnSandboxPolicy(c.ThreadSandbox, c.TurnSandboxPolicy); err != nil {
 		*problems = append(*problems, "codex."+err.Error())
 	}
 	validateDeliverableElicitationRules("codex.deliverable_elicitation_allowlist", c.DeliverableElicitationAllowlist, problems)
@@ -3860,4 +3900,20 @@ func (w *Workspace) validateCacheKeys(node *yaml.Node, path string, visiting map
 		}
 	}
 	return nil
+}
+
+// WithRuntimeGitHubToken applies the resolved instance credential to GitHub
+// consumers. An explicit worker credential always takes precedence.
+func (c Config) WithRuntimeGitHubToken(token string) Config {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return c
+	}
+	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal || c.ScheduleOwnership.Enabled {
+		c.Tracker.APIKey = token
+	}
+	if strings.TrimSpace(c.Worker.GitHubToken) == "" {
+		c.Worker.GitHubToken = token
+	}
+	return c
 }

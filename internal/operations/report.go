@@ -58,6 +58,8 @@ type Action struct {
 }
 
 type Decision struct {
+	AskedAt    *time.Time `json:"asked_at"`
+	AgeSeconds *int64     `json:"age_seconds"`
 	// WorkFingerprint is internal evidence used to exclude superseded questions.
 	WorkFingerprint string `json:"-"`
 
@@ -75,4 +77,16 @@ type Prerequisite struct {
 	Title    string `json:"title,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Evidence string `json:"evidence"`
+}
+
+// WithQuestionAges copies decisions so refreshing ages never mutates a cached snapshot.
+func WithQuestionAges(decisions []Decision, now time.Time) []Decision {
+	result := append([]Decision{}, decisions...)
+	for i := range result {
+		if at := result[i].AskedAt; at != nil {
+			age := max(int64(0), int64(now.Sub(*at).Seconds()))
+			result[i].AgeSeconds = &age
+		}
+	}
+	return result
 }

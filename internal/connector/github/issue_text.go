@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -42,9 +43,17 @@ func (c *Connector) resolveBlockedByProjectState(ctx context.Context, issues []c
 	}
 
 	resolved := make(map[string]connector.Issue, len(missing))
+	var unresolved []string
 	for _, identifier := range missing {
 		blocker, ok, err := c.fetchIssueByIdentifier(ctx, identifier)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if connector.IsRetryable(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				unresolved = append(unresolved, identifier)
+				continue
+			}
 			return fmt.Errorf("resolve blocked-by issue %s: %w", identifier, err)
 		}
 		if !ok {
@@ -56,9 +65,19 @@ func (c *Connector) resolveBlockedByProjectState(ctx context.Context, issues []c
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(unresolved) > 0 {
+		c.logger.WarnContext(ctx, "github blocked-by states unresolved", "identifiers", unresolved)
+	}
 	for issueIndex := range issues {
 		for blockerIndex := range issues[issueIndex].BlockedBy {
 			identifier := normalizedIssueIdentifier(issues[issueIndex].BlockedBy[blockerIndex].Identifier)
+			// Current snapshot/native evidence wins over an individual lookup.
+			if strings.TrimSpace(issues[issueIndex].BlockedBy[blockerIndex].State) != "" {
+				continue
+			}
 			blocker, ok := resolved[identifier]
 			if !ok {
 				continue

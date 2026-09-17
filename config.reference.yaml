@@ -613,8 +613,8 @@
 #   ssh_hosts: []
 #   # worker.max_concurrent_agents_per_host | type: integer | default: none | required: No | validation: must be greater than 0
 #   max_concurrent_agents_per_host: null
-#   # worker.github_token | type: string | default: none | required: No | validation: None
-#   github_token: null
+#   # worker.github_token | type: string | default: top-level github_token | required: No | validation: None
+#   github_token: ""
 #   # worker.github_token_resolution_timeout_ms | type: integer | default: 15000 | required: No | validation: must be greater than 0
 #   github_token_resolution_timeout_ms: 15000
 #   # worker.github_rest_min_remaining_reserve | type: integer | default: 1250 | required: No | validation: must be greater than 0
@@ -1244,9 +1244,15 @@
 #   max_clock_skew_seconds: 15
 # # intake | type: object | default: see child fields | required: Conditional | validation: tracker.repository is required for intake sources
 # intake:
-#   # intake.sources | type: list<object> | default: [] | required: No | validation: requires tracker.kind github
+#   # intake.sources | type: list<object> | default: [] | required: No | validation: requires tracker.kind github; values path filters require a scheduled source
 #   sources:
 #     -
+#       # intake.sources[].enabled | type: boolean | default: true when configured | required: No | validation: None
+#       enabled: true
+#       # intake.sources[].paths | type: list<string> | default: [] | required: No | validation: None
+#       paths: []
+#       # intake.sources[].exclude_paths | type: list<string> | default: [] | required: No | validation: None
+#       exclude_paths: []
 #       # intake.sources[].name | type: string | default: none | required: Conditional | validation: is required; must contain only lowercase letters, numbers, dots, underscores, or hyphens
 #       name: null
 #       # intake.sources[].kind | type: string | default: none | required: Conditional | validation: is required

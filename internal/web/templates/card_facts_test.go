@@ -28,21 +28,6 @@ func TestBoardCardFacts(t *testing.T) {
 	}
 }
 
-func TestCardFactCompact(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct{ name, text, want string }{{"push", "push 2h", "↑2h"}, {"ci", "CI queued", "◷"}, {"ci", "CI running", "↻"}, {"ci", "CI green", "✓"}, {"ci", "CI red", "✕"}, {"ci", "CI skipped", "–"}, {"session", "30m · 12345 tok · 75 today", "30m 12345t ×75"}, {"session", "no session · 0 today", "no session ×0"}, {"reason", "merge_conflict", "merge_conflict"}} {
-		t.Run(tt.text, func(t *testing.T) {
-			fact := cardFactView{Name: tt.name, Text: tt.text}
-			if got := cardFactCompact(fact); got != tt.want {
-				t.Fatalf("compact = %q, want %q", got, tt.want)
-			}
-			if cardFactTitle(fact) != tt.text {
-				t.Fatal("full evidence missing from title")
-			}
-		})
-	}
-}
-
 func TestBoardCardFactsCustomLane(t *testing.T) {
 	for _, tt := range []struct {
 		lane string

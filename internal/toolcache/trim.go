@@ -2,9 +2,11 @@ package toolcache
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -49,15 +51,23 @@ func TrimWithReport(ctx context.Context, root string, policy Policy, now time.Ti
 	return report, err
 }
 
-func trim(ctx context.Context, root string, policy Policy, now time.Time, report *Report) (int64, error) {
+func trim(ctx context.Context, root string, policy Policy, now time.Time, report *Report) (reclaimed int64, err error) {
 	policy = policy.Normalized()
 	if root == "" || root == "off" {
 		return 0, nil
 	}
 	root = filepath.Clean(root)
+	cache, err := os.OpenRoot(root)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer func() { err = errors.Join(err, cache.Close()) }()
 	marked := false
 	for _, name := range []string{"README", "trim.txt"} {
-		if info, err := os.Lstat(filepath.Join(root, name)); err == nil && info.Mode().IsRegular() {
+		if info, err := cache.Lstat(name); err == nil && info.Mode().IsRegular() {
 			marked = true
 			break
 		}
@@ -71,11 +81,11 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		info fs.FileInfo
 	}
 	var remaining []candidate
-	var reclaimed, total int64
+	var total int64
 	if report != nil {
 		defer func() { report.BuildBytes = total }()
 	}
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err = fs.WalkDir(cache.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -85,9 +95,9 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() && path != root {
-			if filepath.Dir(path) != root || !cacheShardName.MatchString(entry.Name()) {
-				return filepath.SkipDir
+		if entry.IsDir() && name != "." {
+			if path.Dir(name) != "." || !cacheShardName.MatchString(entry.Name()) {
+				return fs.SkipDir
 			}
 		}
 		if !entry.Type().IsRegular() {
@@ -101,15 +111,15 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			return err
 		}
 		total += info.Size()
-		if filepath.Dir(filepath.Dir(path)) != root || !cacheShardName.MatchString(filepath.Base(filepath.Dir(path))) || !cacheEntryName.MatchString(entry.Name()) {
+		if path.Dir(path.Dir(name)) != "." || !cacheShardName.MatchString(path.Base(path.Dir(name))) || !cacheEntryName.MatchString(entry.Name()) {
 			return nil
 		}
 		if !info.ModTime().Before(now.Add(-policy.MaxAge)) {
-			remaining = append(remaining, candidate{path, info})
+			remaining = append(remaining, candidate{name, info})
 			return nil
 		}
 		// Recheck immediately before removal in case a concurrent Go build touched it.
-		current, err := os.Lstat(path)
+		current, err := cache.Lstat(name)
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -120,10 +130,10 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			return nil
 		}
 		if !current.ModTime().Before(now.Add(-policy.MaxAge)) {
-			remaining = append(remaining, candidate{path, current})
+			remaining = append(remaining, candidate{name, current})
 			return nil
 		}
-		if err := os.Remove(path); err != nil {
+		if err := cache.Remove(name); err != nil {
 			if os.IsNotExist(err) {
 				return nil
 			}
@@ -149,7 +159,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		if total <= policy.MaxBytes {
 			break
 		}
-		if err := os.Remove(entry.path); err != nil {
+		if err := cache.Remove(entry.path); err != nil {
 			if os.IsNotExist(err) {
 				total -= entry.info.Size()
 				continue
@@ -160,11 +170,11 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		total -= entry.info.Size()
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
-	marker := filepath.Join(root, "detent-trim.txt")
-	if info, err := os.Lstat(marker); err == nil && info.Mode().IsRegular() {
+	marker := "detent-trim.txt"
+	if info, err := cache.Lstat(marker); err == nil && info.Mode().IsRegular() {
 		total -= info.Size()
 	}
-	err = os.WriteFile(marker, []byte(stamp+"\n"), 0o600)
+	err = cache.WriteFile(marker, []byte(stamp+"\n"), 0o600)
 	if err == nil {
 		total += int64(len(stamp) + 1)
 		if report != nil {

@@ -182,6 +182,15 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
+	if normalizeState(targetState) != normalizeState("Merging") {
+		if err := o.withdrawNativeMergeQueueEntry(ctx, state, issue); err != nil {
+			o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
+		}
+		issue = cloneIssue(issue)
+		if issue.PullRequest != nil {
+			issue.PullRequest.MergeQueueEntry = nil
+		}
+	}
 	write, err := o.prepareLaneWrite(ctx, issue, targetState, reason, at)
 	if err != nil {
 		return err

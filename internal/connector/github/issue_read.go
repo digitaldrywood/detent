@@ -510,7 +510,7 @@ func (c *Connector) FetchRefreshIssues(
 		return result
 	}
 
-	return c.fetchProjectRefreshIssues(ctx, candidateStates, observedStates)
+	return c.fetchProjectRefreshIssues(ctx, candidateStates, observedStates, hint.SchedulerStates)
 }
 
 func (c *Connector) CombinedRefreshEnabled() bool {
@@ -521,27 +521,111 @@ func (c *Connector) fetchProjectRefreshIssues(
 	ctx context.Context,
 	candidateStates []string,
 	observedStates []string,
+	routingStates []string,
 ) connector.RefreshIssueResult {
 	candidateStates = normalizeStateList(candidateStates, nil)
 	observedStates = normalizeStateList(observedStates, nil)
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
 	wantedStates := normalizedStateSet(allStates)
 	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
-	issues, err := c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
+	// Routing readers supply the observed lanes needing PR, dependency, and
+	// Workpad evidence. Other observed lanes remain metadata-only.
+	schedulerStates := make(map[string]struct{})
+	for _, state := range allStates {
+		if stateInList(state, c.terminalStates) {
+			continue
+		}
+		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, routingStates) {
+			schedulerStates[normalizeStateName(state)] = struct{}{}
+		}
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	resumed := c.refreshScan.scan.BoardCounts != nil
+	if c.refreshScan.complete {
+		// A completed enumeration is a snapshot, not a cursor to resume.
+		// Status failures may retain hydration, but every new refresh must
+		// observe board lanes even when the project updatedAt is unchanged.
+		c.refreshScan = projectItemsScanProgress{
+			evidence:  c.refreshScan.evidence,
+			hydrated:  c.refreshScan.hydrated,
+			updatedAt: c.refreshScan.updatedAt,
+			revision:  c.refreshScan.revision,
+		}
+	}
+	validated := false
+	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
 		return true
-	}, 0, repairBlankStatuses)
+	}, 0, repairBlankStatuses, &c.refreshScan, func(ctx context.Context, progress *projectItemsScanProgress) error {
+		if resumed && !validated {
+			if err := c.validateRefreshEvidence(ctx, progress); err != nil {
+				return err
+			}
+			validated = true
+		}
+		return c.hydrateRefreshPage(ctx, progress, schedulerStates)
+	})
 	if err != nil {
 		return connector.RefreshIssueResult{CandidateError: err}
 	}
+	issues := append([]connector.Issue(nil), scan.Issues...)
+	evidence := c.refreshScan.evidence
+	var fallback []connector.Issue
+	var fallbackIndexes []int
+	for i, issue := range issues {
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted {
+			continue
+		}
+		if node, ok := evidence[issue.ID]; ok {
+			issues[i], err = c.applySchedulerEvidence(issue, node)
+			if err != nil {
+				return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+			}
+		} else {
+			// Scalar bodies and comment counts come from the board page even
+			// when scheduler GraphQL is unavailable. Reuse the bounded legacy
+			// comment/dependency fallback without per-issue body GETs.
+			fallback = append(fallback, issue)
+			fallbackIndexes = append(fallbackIndexes, i)
+		}
+	}
 
-	if err := c.populateBlockerReasons(ctx, issues); err != nil {
+	if err := c.populateBlockerReasons(ctx, fallback); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
 	}
-	if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+	if err := c.hydrateBlockedByRefs(ctx, fallback); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
 	}
-	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+	for i, index := range fallbackIndexes {
+		issues[index] = fallback[i]
+	}
+	// Thin board entries supply lane state, but only selected entries carry
+	// authoritative scheduler evidence for native human prerequisites.
+	selected := make([]connector.Issue, 0, len(evidence))
+	var selectedIndexes []int
+	board := make(map[string]connector.Issue, len(issues))
+	for i, issue := range issues {
+		board[normalizedIssueIdentifier(issue.Identifier)] = issue
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; wanted {
+			selected = append(selected, issue)
+			selectedIndexes = append(selectedIndexes, i)
+		}
+	}
+	if err := c.resolveBlockedByProjectState(ctx, selected); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	for i, issue := range selected {
+		for j := range issue.BlockedBy {
+			ref := &issue.BlockedBy[j]
+			if blocker, ok := board[normalizedIssueIdentifier(ref.Identifier)]; ok {
+				ref.State = blocker.State
+				if blocker.Closed && !stateInList(blocker.State, c.terminalStates) {
+					ref.State = c.closedIssueState()
+				}
+			}
+		}
+		issues[selectedIndexes[i]] = issue
 	}
 
 	result := connector.RefreshIssueResult{
@@ -549,16 +633,63 @@ func (c *Connector) fetchProjectRefreshIssues(
 		Statuses:             issuesInStates(issues, observedStates),
 		LaneSignalCandidates: issues,
 	}
-	if err := c.attachPullRequests(ctx, result.Candidates); err != nil {
+	if err := c.hydrateRefreshPullRequests(ctx, result.Candidates, evidence, true); err != nil {
 		result.Candidates = nil
 		result.CandidateError = err
 		return result
 	}
 	if len(result.Statuses) == 0 {
+		c.refreshScan = projectItemsScanProgress{}
 		return result
 	}
-	result.StatusError = c.attachStatePullRequests(ctx, result.Statuses, false)
+	var routingStatuses []connector.Issue
+	var routingIndexes []int
+	for i, issue := range result.Statuses {
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; wanted {
+			routingStatuses = append(routingStatuses, issue)
+			routingIndexes = append(routingIndexes, i)
+		}
+	}
+	result.StatusError = c.hydrateRefreshPullRequests(ctx, routingStatuses, evidence, false)
+	for i, index := range routingIndexes {
+		result.Statuses[index] = routingStatuses[i]
+	}
+	if result.StatusError == nil {
+		c.refreshScan = projectItemsScanProgress{}
+	}
 	return result
+}
+
+// Keep legacy batch fallback and candidate/observed freshness semantics when a
+// page lacks complete evidence. Complete observations validate cached revisions.
+func (c *Connector) hydrateRefreshPullRequests(ctx context.Context, issues []connector.Issue, evidence map[string]githubIssueNode, candidates bool) error {
+	var fallback []connector.Issue
+	var indexes []int
+	for i, issue := range issues {
+		if node, ok := evidence[issue.ID]; ok && node.CandidatePR != nil {
+			hydrated, err := c.hydratePullRequestWithEvidence(ctx, issue, node, candidates)
+			if err != nil {
+				return err
+			}
+			issues[i] = hydrated
+		} else {
+			fallback = append(fallback, issue)
+			indexes = append(indexes, i)
+		}
+	}
+	var err error
+	if candidates {
+		err = c.attachPullRequests(ctx, fallback)
+	} else {
+		err = c.attachStatePullRequests(ctx, fallback, false)
+	}
+	if err != nil {
+		return err
+	}
+	for i, index := range indexes {
+		issues[index] = fallback[i]
+	}
+	return nil
 }
 
 func issuesInStates(issues []connector.Issue, states []string) []connector.Issue {
@@ -1308,6 +1439,11 @@ func (c *Connector) fetchIssueByRef(ctx context.Context, ref issueRef) (connecto
 	c.cacheIssueRef(issue)
 
 	stateName, priorityName, statusUpdatedAt, fields, ok, known := c.cachedIssueProjectFields(issue.ID)
+	// REST is current evidence. A cached terminal project state must not hide
+	// a reopened issue; re-read the existing project fields in that case.
+	if known && ok && strings.EqualFold(issue.State, "OPEN") && stateInList(c.githubToDetentState(stateName), c.terminalStates) {
+		known = false
+	}
 	if !known {
 		var err error
 		stateName, priorityName, statusUpdatedAt, fields, ok, err = c.fetchProjectFieldsPage(ctx, issue.ID, nil)

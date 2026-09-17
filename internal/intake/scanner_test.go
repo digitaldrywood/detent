@@ -32,6 +32,8 @@ func TestStaleTODOScanner(t *testing.T) {
 				writeScannerTestFile(t, root, "main.go", "package main\n\n// TODO: handle retries\n")
 				writeScannerTestFile(t, root, ".next/server/chunk.js", "// TODO: compiled vendor chunk\n")
 				writeScannerTestFile(t, root, "untracked.go", "// TODO: untracked source\n")
+				writeScannerTestFile(t, root, "detent.yaml", "target_state: Todo\n- Todo\n# config and stale-TODO scan\n")
+				writeScannerTestFile(t, root, "WORKFLOW.md", "For `Todo`:\nThe TODO markers are scanned weekly.\n")
 
 				cmd := exec.CommandContext(t.Context(), "git")
 				cmd.Args = []string{"git", "-C", root, "init", "--quiet"}
@@ -39,7 +41,7 @@ func TestStaleTODOScanner(t *testing.T) {
 					t.Fatalf("git init error = %v, output = %s", err, output)
 				}
 				cmd = exec.CommandContext(t.Context(), "git")
-				cmd.Args = []string{"git", "-C", root, "add", "--", ".gitignore", "main.go"}
+				cmd.Args = []string{"git", "-C", root, "add", "--", ".gitignore", "main.go", "detent.yaml", "WORKFLOW.md"}
 				if output, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("git add error = %v, output = %s", err, output)
 				}
@@ -107,5 +109,26 @@ func writeScannerTestFile(t *testing.T, root string, path string, contents strin
 	}
 	if err := os.WriteFile(fullPath, []byte(contents), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", fullPath, err)
+	}
+}
+
+func TestTODOMarkerShape(t *testing.T) {
+	for _, tt := range []struct {
+		line string
+		want bool
+	}{
+		{"target_state: Todo", false}, {"- Todo", false}, {"For `Todo`:", false},
+		{"# config and stale-TODO scan", false}, {"// todo: lowercase", false},
+		{"// TODO: retry", true}, {"# FIXME retry", true}, {"// TODO(owner): retry", true},
+		{"/* TODO retry */", true}, {"TODO: retry", true},
+		{"* FIXME retry", true}, {"<!-- TODO retry -->", true}, {"-- TODO retry", true},
+		{"value := 1 // TODO retry", true}, {"The TODO markers are scanned", false},
+		{"NOTTODO: prose", false}, {"stale-TODO: prose", false},
+	} {
+		t.Run(tt.line, func(t *testing.T) {
+			if got := (todoMarker(tt.line) != nil); got != tt.want {
+				t.Fatalf("match = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }

@@ -584,10 +584,12 @@ their review destination. `worker` distributes sessions across optional SSH
 hosts; per-state and global concurrency limits remain under `agent`.
 
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
-enterprise variants, or the host's GitHub CLI configuration. Leave
-`worker.github_token` empty to run workers with no GitHub credential policy.
-Set it to `gh` to resolve `gh auth token` in the Detent process and copy only
-the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
+enterprise variants, or the host's GitHub CLI configuration. When omitted or
+empty, `worker.github_token` defaults to the resolved top-level `github_token`
+(including `github_token: gh`). An explicit project worker credential overrides
+that default; with neither credential configured, the worker policy is disabled.
+Set the worker override to `gh` to resolve `gh auth token` in the Detent process
+and copy only the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
 reference remains available when permission or revocation isolation is useful:
 
 ```yaml
@@ -1201,7 +1203,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `identity.owner_field` | `string` | `none` | No | must be blank when identity.ownership_mode is assignee |
 | `identity.ownership_mode` | `string` | `none` | No | identity.owner_field must be blank when identity.ownership_mode is assignee<br>must be one of assignee, field |
 | `intake` | `object` | `see child fields` | Conditional | tracker.repository is required for intake sources |
-| `intake.sources` | `list<object>` | `[]` | No | requires tracker.kind github |
+| `intake.sources` | `list<object>` | `[]` | No | requires tracker.kind github<br>values path filters require a scheduled source |
 | `intake.sources[].creates` | `object` | `see child fields` | No | None |
 | `intake.sources[].creates.body` | `string` | `"{details}" when configured` | No | None |
 | `intake.sources[].creates.labels` | `list<string>` | `[]` | No | None |
@@ -1209,9 +1211,12 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `intake.sources[].creates.title` | `string` | `"[{source}] {summary}" when configured` | No | None |
 | `intake.sources[].cron` | `string` | `none` | No | None |
 | `intake.sources[].dedupe_by` | `string` | `"fingerprint" when configured` | No | None |
+| `intake.sources[].enabled` | `boolean` | `true when configured` | No | None |
+| `intake.sources[].exclude_paths` | `list<string>` | `[]` | No | None |
 | `intake.sources[].kind` | `string` | `none` | Conditional | is required |
 | `intake.sources[].match` | `string` | `none` | No | must use field:value syntax |
 | `intake.sources[].name` | `string` | `none` | Conditional | is required<br>must contain only lowercase letters, numbers, dots, underscores, or hyphens |
+| `intake.sources[].paths` | `list<string>` | `[]` | No | None |
 | `intake.sources[].scan` | `string` | `none` | No | None |
 | `intake.sources[].secret` | `string` | `none` | Conditional | is required for webhook sources |
 | `observability` | `object` | `see child fields` | No | None |
@@ -1578,7 +1583,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `worker` | `object` | `see child fields` | No | None |
 | `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0 |
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
-| `worker.github_token` | `string` | `none` | No | None |
+| `worker.github_token` | `string` | `top-level github_token` | No | None |
 | `worker.github_token_resolution_timeout_ms` | `integer` | `15000` | No | must be greater than 0 |
 | `worker.max_concurrent_agents_per_host` | `integer` | `none` | No | must be greater than 0 |
 | `worker.ssh_hosts` | `list<string>` | `[]` | No | None |

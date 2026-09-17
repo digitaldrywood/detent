@@ -4621,3 +4621,96 @@ func TestKanbanReworkToMerging(t *testing.T) {
 		})
 	}
 }
+
+func TestWithRuntimeGitHubToken(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, kind, global, override, want string }{
+		{name: "github default", kind: TrackerGitHub, global: " global-token ", want: "global-token"},
+		{name: "local tracker default", kind: TrackerMemory, global: "global-token", want: "global-token"},
+		{name: "literal override", kind: TrackerGitHub, global: "global-token", override: "worker-token", want: "worker-token"},
+		{name: "environment override", kind: TrackerGitHub, global: "global-token", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
+		{name: "gh override", kind: TrackerGitHub, global: "global-token", override: "gh", want: "gh"},
+		{name: "no credentials", kind: TrackerMemory},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Tracker.Kind = tc.kind
+			cfg.Worker.GitHubToken = tc.override
+			got := cfg.WithRuntimeGitHubToken(tc.global)
+			if got.Worker.GitHubToken != tc.want {
+				t.Fatal("worker credential source did not match expected default or override")
+			}
+			if cfg.Worker.GitHubToken != tc.override {
+				t.Fatal("mutated original config")
+			}
+		})
+	}
+}
+
+func TestClearedSandboxPolicyOverlay(t *testing.T) {
+	t.Parallel()
+	for _, policy := range []string{"null", "{networkAccess: false}"} {
+		for _, inherited := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/inherited=%t", policy, inherited), func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "WORKFLOW.md")
+				overlay := filepath.Join(dir, "detent.local.yaml")
+				for name, body := range map[string]string{
+					path:                              "Instructions.\n",
+					filepath.Join(dir, "detent.yaml"): "schema: 1\ntracker: {kind: memory}\ncodex:\n  thread_sandbox: danger-full-access\n  turn_sandbox_policy: {type: dangerFullAccess}\n",
+					overlay:                           "schema: 1\ncodex:\n  thread_sandbox: ''\n  turn_sandbox_policy: " + policy + "\n",
+				} {
+					if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				workflow, err := LoadProjectDefinition(path)
+				if policy != "null" {
+					if err == nil || !strings.Contains(err.Error(), overlay) || !strings.Contains(err.Error(), "turn_sandbox_policy.type") {
+						t.Fatalf("error = %v, want policy error naming %s", err, overlay)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defaults := Agents{}
+				if inherited {
+					defaults.ModelSelection = ModelSelection{NormalModel: new("example")}
+				}
+				cfg := workflow.Config.WithAgentDefaults(defaults, AgentBudgetDefaults{})
+				for _, backend := range cfg.AgentBackendConfigs() {
+					if got := backend.CodexOptions().TurnSandboxPolicy; got != nil {
+						t.Fatalf("policy = %#v, want nil", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestTypelessSandboxPolicyValidation(t *testing.T) {
+	t.Parallel()
+	for _, thread := range []string{"", "custom", "workspace-write", "danger-full-access", "read-only"} {
+		for _, backend := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/backend=%t", thread, backend), func(t *testing.T) {
+				body := "---\ntracker: {kind: memory}\ncodex:\n  thread_sandbox: " + fmt.Sprintf("%q", thread) + "\n"
+				if backend {
+					body += "agents:\n  backends:\n    - id: primary\n      kind: codex\n      options:\n        turn_sandbox_policy: {networkAccess: false}\n"
+				} else {
+					body += "  turn_sandbox_policy: {networkAccess: false}\n"
+				}
+				_, err := ParseWorkflow([]byte(body + "---\nInstructions.\n"))
+				wantError := thread == "" || thread == "custom"
+				if wantError {
+					if err == nil || !strings.Contains(err.Error(), "turn_sandbox_policy.type") {
+						t.Fatalf("error = %v, want missing type", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}

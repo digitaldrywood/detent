@@ -405,11 +405,7 @@ func doctorTrackerStateMap(value workflowconfig.StringOrMap) map[string]string {
 }
 
 func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token string) workflowconfig.Config {
-	token = strings.TrimSpace(token)
-	if token != "" && (doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) || cfg.ScheduleOwnership.Enabled) {
-		cfg.Tracker.APIKey = token
-	}
-	return cfg
+	return cfg.WithRuntimeGitHubToken(token)
 }
 
 func doctorTrackerUsesGitHubReads(kind string) bool {

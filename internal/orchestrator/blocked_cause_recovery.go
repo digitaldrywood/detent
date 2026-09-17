@@ -778,6 +778,28 @@ func (o *Orchestrator) reconcileBlockedReadyPullRequest(
 	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 	if !implementProgressLinkedPullRequest(issue) {
 		issue.BranchName = blockedReadyPullRequestBranch(state, issue)
+		if deliverableRecoveryPark(park) {
+			if issue.BranchName == "" {
+				_, suffix, found := strings.Cut(park.Cause, "pushed branch ")
+				if fields := strings.Fields(suffix); found && len(fields) > 0 {
+					issue.BranchName = fields[0]
+				}
+			}
+			if issue.BranchName != "" && strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
+				lookup, ok := o.connector.(connector.BranchHeadLookup)
+				var err error
+				if ok {
+					signals.WorkspaceHeadSHA, err = lookup.LookupBranchHead(ctx, pullRequestRepository(issue), issue.BranchName)
+				}
+				if err != nil || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
+					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
+					if err != nil && o.logger != nil {
+						o.logger.Warn("blocked deliverable branch lookup unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+					}
+					return true, false
+				}
+			}
+		}
 		if issue.BranchName == "" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
 			return false, false
 		}

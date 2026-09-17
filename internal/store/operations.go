@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operations"
@@ -48,26 +46,9 @@ func (s *sqliteStore) OperationsReport(ctx context.Context, now, since time.Time
 		return operations.Report{}, err
 	}
 	rows.Close()
-	rows, err = s.db.QueryContext(ctx, `SELECT project_id, issue_identifier, body, question_comment_id, work_fingerprint FROM human_questions WHERE answer_comment_id = '' AND question_comment_id <> '' ORDER BY project_id, issue_identifier`)
-	if err != nil {
-		return operations.Report{}, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var d operations.Decision
-		var comment string
-		if err := rows.Scan(&d.ProjectID, &d.Issue, &d.Question, &comment, &d.WorkFingerprint); err != nil {
-			return operations.Report{}, err
-		}
-		if repo, number, ok := strings.Cut(d.Issue, "#"); ok && strings.Count(repo, "/") == 1 {
-			d.URL = "https://github.com/" + repo + "/issues/" + number
-			if _, err := strconv.ParseUint(comment, 10, 64); err == nil {
-				d.URL += "#issuecomment-" + comment
-			}
-		}
-		report.Decisions = append(report.Decisions, d)
-	}
-	return report, rows.Err()
+	report.Decisions, err = s.OpenHumanQuestions(ctx)
+	report.Decisions = operations.WithQuestionAges(report.Decisions, now)
+	return report, err
 }
 
 func (s *sqliteStore) operationsWindow(ctx context.Context, from, to time.Time) (operations.Window, error) {

@@ -1,21 +1,80 @@
 package github
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestCandidateColdRequestCounts(t *testing.T) {
+	prAlias := regexp.MustCompile(`(pr[0-9]+): repository\(owner:"fixture",name:"project"\) \{ pullRequest\(number:([0-9]+)\)`)
+	for _, count := range []int{0, 1, 19, 20, 21, 40, 41} {
+		t.Run(fmt.Sprintf("PR status/%d", count), func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var request struct{ Query string }
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				if !strings.Contains(request.Query, "CandidatePullRequestStatus") {
+					t.Errorf("unexpected query: %s", request.Query)
+				}
+				if size := strings.Count(request.Query, "pullRequest(number:"); size > 20 {
+					t.Errorf("PR batch size=%d exceeds 20", size)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				data := map[string]any{}
+				for _, match := range prAlias.FindAllStringSubmatch(request.Query, -1) {
+					n, err := strconv.Atoi(match[2])
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					snapshot := candidatePRFixtureSnapshot("fixture/project", n-100)
+					candidateFixtureCommit(snapshot)["statusCheckRollup"] = nil
+					data[match[1]] = map[string]any{"pullRequest": snapshot}
+				}
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{Repository: "fixture/project"})
+			keys := make(map[pullRequestKey][]string, count)
+			evidence := make(map[string]githubIssueNode, count)
+			for n := range count {
+				evidence[fmt.Sprintf("I%d", n)] = githubIssueNode{CandidatePR: &candidatePullRequestEvidence{}}
+				keys[pullRequestKey{Repo: pullRequestRepo{Owner: "fixture", Name: "project"}, Number: n + 1}] = []string{fmt.Sprintf("I%d", n)}
+			}
+			c.observeCandidatePullRequestStatus(t.Context(), keys, evidence)
+			for n := range count {
+				observed := evidence[fmt.Sprintf("I%d", n)].CandidatePR
+				if !observed.complete || observed.pullRequest == nil || observed.pullRequest.Number != n+1 {
+					t.Errorf("PR %d not hydrated: %+v", n+1, observed)
+				}
+			}
+			if want := (count + 19) / 20; requests != want {
+				t.Fatalf("PR-status requests=%d want=%d", requests, want)
+			}
+		})
+	}
+
 	for _, mode := range []string{"board", "labels", "board fallback", "labels fallback"} {
 		t.Run(mode, func(t *testing.T) {
 			var graphql, rest int
+			var points int64
 			for project := range 10 {
 				t.Run(strconv.Itoa(project), func(t *testing.T) {
 					repo := fmt.Sprintf("fixture/project%d", project)
@@ -30,13 +89,20 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 							if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 								t.Error(err)
 							}
+							assertCandidateQueryShape(t, request.Query, request.Variables)
+							if !strings.Contains(request.Query, "rateLimit {") || !strings.Contains(request.Query, "cost") {
+								t.Error("missing request cost")
+							}
+							if strings.Contains(request.Query, "closedByPullRequestsReferences(") || strings.Contains(request.Query, "labels(first: 100)") {
+								t.Error("expensive candidate preview")
+							}
 							enhanced := strings.Contains(request.Query, "blockedBy(")
 							if enhanced && strings.Contains(mode, "fallback") {
-								fmt.Fprint(w, `{"errors":[{"message":"schema unavailable"}]}`)
+								fmt.Fprint(w, `{"errors":[{"message":"Field 'blockedBy' doesn't exist on type 'Issue'"}]}`)
 								return
 							}
 							if strings.Contains(request.Query, "DetentGitHubCandidateHydration") {
-								data := make(map[string]any)
+								data := map[string]any{"rateLimit": map[string]any{"cost": 1, "remaining": 4999}}
 								for i := range 3 {
 									data[fmt.Sprintf("issue%d", i)] = map[string]any{"id": fmt.Sprintf("I%d", i+1), "body": "scheduler body", "comments": map[string]any{"totalCount": 1, "nodes": []map[string]any{{"id": "1", "body": "Historical note"}}}, "blockedBy": map[string]any{"nodes": []any{}}}
 								}
@@ -53,7 +119,13 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 							if enhanced {
 								body = strings.ReplaceAll(body, `"comments":{"totalCount":1}`, `"comments":{"totalCount":1,"nodes":[{"id":"1","body":"Historical note"}]},"blockedBy":{"nodes":[]}`)
 							}
-							fmt.Fprint(w, body)
+							// Measured on 2026-09-16: first:10 enriched board page
+							// costs 2; the scalar fallback page costs 1.
+							cost := 1
+							if enhanced {
+								cost = 2
+							}
+							fmt.Fprint(w, strings.Replace(body, `"data":{`, fmt.Sprintf(`"data":{"rateLimit":{"cost":%d,"remaining":4999},`, cost), 1))
 							return
 						}
 						rest++
@@ -85,6 +157,7 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 					if err != nil || len(got.Issues) != 3 || got.Truncated {
 						t.Fatalf("result=%+v error=%v", got, err)
 					}
+					points += c.client.FlushGraphQLRateLimitUsage().TotalCost
 					for _, issue := range got.Issues {
 						if issue.DependencySource != connector.BlockedRefSourceNative || len(issue.BlockedBy) != 0 || issue.Description != "scheduler body" || len(issue.Comments) != 1 {
 							t.Errorf("scheduler evidence=%+v", issue)
@@ -103,6 +176,16 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 				wantREST = 70
 			}
 
+			wantPoints := int64(10)
+			if mode == "board" {
+				wantPoints = 20
+			}
+			if mode == "labels fallback" {
+				wantPoints = 0
+			}
+			if points != wantPoints {
+				t.Errorf("GraphQL points=%d want=%d", points, wantPoints)
+			}
 			t.Logf("ten cold projects: GraphQL=%d REST=%d billable REST=%d", graphql, rest, rest)
 			if graphql != wantGraphQL || rest != wantREST {
 				t.Fatalf("want GraphQL=%d REST=%d", wantGraphQL, wantREST)
@@ -112,8 +195,9 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 }
 
 func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
-	for _, mode := range []string{"board", "labels"} {
+	for _, mode := range []string{"board", "labels", "refresh"} {
 		t.Run(mode, func(t *testing.T) {
+			lane := "Backlog"
 			var graphql, rest int
 			updated := "2026-09-15T01:02:03Z"
 			body := "Depends on: other/repo#7\n<!-- model: fixture-model -->"
@@ -143,8 +227,9 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
 				if strings.Contains(request.Query, "ProjectItems") {
-					write(map[string]any{"data": map[string]any{"node": map[string]any{"items": projectItemsConnection{Nodes: []projectItemNode{{ID: "P1", Content: ptrCandidateNode(first("I1", 1)), StatusValue: &singleSelectValue{Name: "Backlog"}}, {ID: "P2", Content: ptrCandidateNode(first("I2", 2)), StatusValue: &singleSelectValue{Name: "Backlog"}}}}}}})
+					write(map[string]any{"data": map[string]any{"node": map[string]any{"items": projectItemsConnection{Nodes: []projectItemNode{{ID: "P1", Content: ptrCandidateNode(first("I1", 1)), StatusValue: &singleSelectValue{Name: lane}}, {ID: "P2", Content: ptrCandidateNode(first("I2", 2)), StatusValue: &singleSelectValue{Name: lane}}}}}}})
 					return
 				}
 				data := map[string]any{}
@@ -168,12 +253,22 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 				write(map[string]any{"data": data})
 			}))
 			defer server.Close()
-			cfg := Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: []string{"Todo"}, ObservedStates: []string{"Backlog"}}
+			cfg := Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: []string{"Todo"}, ObservedStates: []string{lane}}
 			if mode == "labels" {
 				cfg.GitHubStatusSource = GitHubStatusSourceLabel
 			}
 			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, cfg)
-			result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: 10, PageSize: 10})
+			var result connector.CandidateResult
+			var err error
+			if mode == "refresh" {
+				refreshed := c.FetchRefreshIssues(t.Context(), []string{lane}, []string{lane}, connector.IssueFilterHint{})
+				result.Issues, err = refreshed.Statuses, refreshed.StatusError
+				if refreshed.CandidateError != nil {
+					t.Fatal(refreshed.CandidateError)
+				}
+			} else {
+				result, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{lane}, Limit: 10, PageSize: 10})
+			}
 			if err != nil || len(result.Issues) != 2 {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
@@ -192,10 +287,14 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 				}
 			}
 			wantREST := 0
-			if mode == "labels" {
+			if mode == "labels" || mode == "refresh" {
 				wantREST = 1
 			}
-			if graphql != 2 || rest != wantREST {
+			wantGraphQL := 2
+			if mode == "refresh" {
+				wantGraphQL = 3
+			}
+			if graphql != wantGraphQL || rest != wantREST {
 				t.Errorf("GraphQL=%d REST=%d", graphql, rest)
 			}
 		})
@@ -209,6 +308,7 @@ func TestCandidateEvidenceFallback(t *testing.T) {
 		{"rate limited", `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`},
 		{"missing native relation", `{"data":{"issue0":{"id":"I1","comments":{"totalCount":0}}}}`},
 		{"null issue", `{"data":{"issue0":null}}`},
+		{"truncated blocker labels", `{"data":{"issue0":{"id":"I1","comments":{"totalCount":0},"blockedBy":{"nodes":[{"id":"B1","labels":{"pageInfo":{"hasNextPage":true,"endCursor":"L20"}}}]}}}}`},
 		{"missing cursor", `{"data":{"issue0":{"id":"I1","blockedBy":{"pageInfo":{"hasNextPage":true}}}}}`},
 		{"repeated cursor", `{"data":{"issue0":{"id":"I1","blockedBy":{"pageInfo":{"hasNextPage":true,"endCursor":"D1"}}}}}`},
 	} {
@@ -249,6 +349,12 @@ func TestCandidateEvidenceFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// ReadCandidates resolves body refs after all candidate evidence is collected.
+			resolved := []connector.Issue{got}
+			if err := c.resolveBlockedByProjectState(t.Context(), resolved); err != nil {
+				t.Fatal(err)
+			}
+			got = resolved[0]
 			if len(got.BlockedBy) != 1 || got.BlockedBy[0].Identifier != "owner/repo#90" || got.DependencySource != connector.BlockedRefSourceNative || len(got.Comments) != 2 || len(got.DependencyNotes) != 2 {
 				t.Fatalf("fallback evidence=%+v", got)
 			}
@@ -273,6 +379,15 @@ func TestCandidateEvidenceIndependentConnections(t *testing.T) {
 				response.BlockedBy.Nodes = []githubIssueNode{{ID: "B2"}}
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Query     string
+					Variables map[string]any
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
 				w.Header().Set("Content-Type", "application/json")
 				if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issue0": response}}); err != nil {
 					t.Error(err)
@@ -309,10 +424,14 @@ func TestCandidateBoardBatchedCursor(t *testing.T) {
 					return
 				}
 				calls++
-				var request struct{ Variables map[string]any }
+				var request struct {
+					Query     string
+					Variables map[string]any
+				}
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
 				numbers := []int{1, 2}
 				page := projectItemsConnection{PageInfo: pageInfo{HasNextPage: true, EndCursor: "board-page-2"}}
 				if request.Variables["after"] != nil {
@@ -359,5 +478,136 @@ func TestCandidateBoardBatchedCursor(t *testing.T) {
 				t.Errorf("board calls=%d want=%d", calls, wantCalls)
 			}
 		})
+	}
+}
+
+func TestCandidateBodyDependencyRefresh(t *testing.T) {
+	for _, mode := range []string{"shared prose", "native", "reopened", "closed", "expired", "snapshot", "rate limited"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+			var refresh, rest, fields int
+			var logs bytes.Buffer
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					rest++
+					if r.URL.Path != "/repos/owner/repo/issues/99" {
+						t.Errorf("unexpected REST %s", r.URL.Path)
+					}
+					state := "closed"
+					if (mode == "reopened" && refresh == 2) || (mode == "closed" && refresh == 1) {
+						state = "open"
+					}
+					fmt.Fprintf(w, `{"node_id":"B99","number":99,"state":%q,"body":"","labels":[],"html_url":"https://github.com/owner/repo/issues/99"}`, state)
+					return
+				}
+				var request struct {
+					Query     string
+					Variables map[string]any
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				assertCandidateQueryShape(t, request.Query, request.Variables)
+				if strings.Contains(request.Query, "projectItems(") {
+					fields++
+					if mode == "rate limited" {
+						w.WriteHeader(http.StatusTooManyRequests)
+						fmt.Fprint(w, `{"message":"rate limited"}`)
+						return
+					}
+					state := "Done"
+					if (mode == "reopened" && refresh == 2) || mode == "closed" {
+						state = "Todo"
+					}
+					fmt.Fprintf(w, `{"data":{"node":{"projectItems":{"nodes":[{"id":"PB99","project":{"id":"PVT_1"},"statusValue":{"name":%q}}]}}}}`, state)
+					return
+				}
+				refresh++
+				items := []string{}
+				for n := 1; n <= 3; n++ {
+					body, native := "Depends on: #99", `[]`
+					if n == 3 {
+						body = ""
+					}
+					if mode == "native" && n < 3 {
+						native = `[{"id":"B99","number":99,"state":"CLOSED","repository":{"nameWithOwner":"owner/repo"}}]`
+					}
+					items = append(items, fmt.Sprintf(`{"id":"P%d","content":{"__typename":"Issue","id":"I%d","number":%d,"title":"Candidate","body":%q,"state":"OPEN","repository":{"nameWithOwner":"owner/repo"},"comments":{"nodes":[]},"blockedBy":{"nodes":%s}},"statusValue":{"name":"Todo"}}`, n, n, n, body, native))
+				}
+				if mode == "snapshot" {
+					items = append(items, `{"id":"PB99","content":{"__typename":"Issue","id":"B99","number":99,"state":"OPEN","repository":{"nameWithOwner":"owner/repo"},"comments":{"nodes":[]},"blockedBy":{"nodes":[]}},"statusValue":{"name":"Todo"}}`)
+				}
+				fmt.Fprint(w, projectItemsPageResponseWithTotal(len(items), false, "", items))
+			}))
+			t.Cleanup(server.Close)
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: []string{"Todo"}, Now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			c.projectCache = newProjectCache(time.Minute, func() time.Time { return now })
+			passes := 2
+			if mode == "rate limited" {
+				passes = 1
+			}
+			for pass := 1; pass <= passes; pass++ {
+				if mode == "expired" && pass == 2 {
+					now = now.Add(2 * time.Minute)
+				}
+				got, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 10})
+				wantLen := 3
+				if mode == "snapshot" {
+					wantLen = 4
+				}
+				if err != nil || len(got.Issues) != wantLen {
+					t.Fatalf("pass %d: result=%+v err=%v", pass, got, err)
+				}
+				want := "Done"
+				if mode == "snapshot" || (mode == "reopened" && pass == 2) || (mode == "closed" && pass == 1) {
+					want = "Todo"
+				}
+				if mode == "rate limited" {
+					want = ""
+				}
+				for _, issue := range got.Issues {
+					if issue.ID == "I1" || issue.ID == "I2" {
+						if len(issue.BlockedBy) != 1 || issue.BlockedBy[0].State != want {
+							t.Fatalf("pass %d: blockers=%+v want %q", pass, issue.BlockedBy, want)
+						}
+					}
+				}
+			}
+			wantREST, wantFields := 2, 1
+			switch mode {
+			case "native", "snapshot":
+				wantREST, wantFields = 0, 0
+			case "reopened", "expired":
+				wantFields = 2
+			case "rate limited":
+				wantREST = 1
+			}
+			if rest != wantREST || fields != wantFields {
+				t.Fatalf("REST=%d fields=%d; want %d/%d", rest, fields, wantREST, wantFields)
+			}
+			if mode == "rate limited" && strings.Count(logs.String(), "github blocked-by states unresolved") != 1 {
+				t.Fatalf("want one aggregate warning: %s", logs.String())
+			}
+		})
+	}
+}
+
+func assertCandidateQueryShape(t *testing.T, query string, variables map[string]any) {
+	t.Helper()
+	aliases := strings.Count(query, ": node(id:")
+	if aliases > 25 {
+		t.Errorf("scheduler aliases=%d exceeds 25", aliases)
+	}
+	compact := strings.ReplaceAll(query, " ", "")
+	nodes := strings.Count(compact, "comments(first:100")*100 + strings.Count(compact, "blockedBy(first:20")*420
+	if first, ok := variables["first"].(float64); ok && strings.Contains(query, "blockedBy(") {
+		if first > 25 {
+			t.Errorf("enriched board first=%v exceeds 25", first)
+		}
+		nodes *= int(first)
+	}
+	if nodes > 13000 {
+		t.Errorf("scheduler connection nodes=%d exceeds 13000", nodes)
 	}
 }

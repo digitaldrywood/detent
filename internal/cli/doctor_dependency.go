@@ -1158,7 +1158,8 @@ func doctorDependencyTextBlockedRefs(issue connector.Issue) []connector.BlockedR
 		seen[key] = struct{}{}
 		refs = append(refs, connector.BlockedRef{Identifier: identifier, Source: connector.BlockedRefSourceProse})
 	}
-	for _, lineRef := range doctorDependencyLineReferences(issue.Description) {
+	declarations, _ := dependencyline.Declarations(issue.Description)
+	for _, lineRef := range declarations {
 		identifiers := doctorDependencyIssueIdentifiersInText(lineRef, repo)
 		if len(identifiers) == 0 {
 			appendIdentifier(lineRef)
@@ -1283,7 +1284,15 @@ func doctorDependencyBlockerIdentifier(refRepo string, number string, repo strin
 }
 
 func doctorDependencyLineReference(line string) (string, bool) {
-	return dependencyline.Match(line)
+	text, ok := dependencyline.MatchText(line)
+	if !ok || dependencyline.ExplicitEmpty(text) {
+		return "", false
+	}
+	if refs, _ := dependencyline.Match(line); refs != "" {
+		return refs, true
+	}
+	// Preserve malformed declaration text in diagnostics, never as issue refs.
+	return text, true
 }
 
 func doctorDependencyBlockerLabels(blockers []doctorDependencyBlocker) []string {

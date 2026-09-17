@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,7 +58,9 @@ func TestCandidatePRRepeatedRefreshCounts(t *testing.T) {
 							case strings.Contains(req.Query, "CandidatePullRequestStatus"):
 								data := map[string]any{}
 								for n := 1; n <= 3; n++ {
-									data[fmt.Sprintf("pr%d", n-1)] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+									if strings.Contains(req.Query, fmt.Sprintf("pullRequest(number:%d)", 100+n)) {
+										data[fmt.Sprintf("pr%d", len(data))] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+									}
 								}
 								write(map[string]any{"data": data})
 							case strings.Contains(req.Query, "LabelIssuePullRequestReferences"):
@@ -238,6 +241,12 @@ func legacyCandidatePRRefresh(t *testing.T, c *Connector, mode string) (connecto
 }
 
 func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
+	for _, entry := range []string{"admission", "refresh candidates", "refresh observed", "refresh overlap"} {
+		t.Run(entry, func(t *testing.T) { testIndependentRefreshEvidence(t, entry) })
+	}
+}
+
+func testIndependentRefreshEvidence(t *testing.T, entry string) {
 	tests := []struct {
 		name   string
 		mutate func(map[string]any, map[string]any, *[]any)
@@ -485,7 +494,12 @@ func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
 					t.Error(err)
 					return
 				}
+				if !strings.Contains(req.Query, "rateLimit {") || !strings.Contains(req.Query, "cost") {
+					t.Error("missing per-request GraphQL cost")
+				}
 				switch {
+				case strings.Contains(req.Query, "CandidateHydration"):
+					write(map[string]any{"data": map[string]any{"issue0": issue}})
 				case strings.Contains(req.Query, "CandidatePullRequestReferences"):
 					write(map[string]any{"data": map[string]any{"nodes": []any{map[string]any{"id": "I1", "closedByPullRequestsReferences": map[string]any{"totalCount": len(refs), "nodes": refs}}}, "repo0": map[string]any{"pullRequests": map[string]any{"nodes": discovered}}}})
 				case strings.Contains(req.Query, "CandidatePullRequestStatus"):
@@ -495,12 +509,35 @@ func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: repo, ActiveStates: []string{"Todo"}, ObservedStates: []string{lane}})
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: repo, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, ObservedStates: []string{lane}})
 			c.now = func() time.Time { return now }
 			c.unstartedThreshold = time.Minute
 			refresh := func() connector.Issue {
 				t.Helper()
-				result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{lane}, Limit: 10, PageSize: 10})
+				var result connector.CandidateResult
+				var err error
+				if entry == "admission" {
+					result, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{lane}, Limit: 10, PageSize: 10})
+				} else {
+					candidates, observed := []string{lane}, []string(nil)
+					if entry == "refresh observed" {
+						candidates, observed = nil, candidates
+					}
+					if entry == "refresh overlap" {
+						observed = candidates
+					}
+					refreshed := c.FetchRefreshIssues(t.Context(), candidates, observed, connector.IssueFilterHint{SchedulerStates: observed})
+					if refreshed.StatusError != nil {
+						t.Fatal(refreshed.StatusError)
+					}
+					result.Issues, err = refreshed.Candidates, refreshed.CandidateError
+					if entry == "refresh observed" {
+						result.Issues = refreshed.Statuses
+					}
+					if entry == "refresh overlap" && (len(refreshed.Statuses) != 1 || !reflect.DeepEqual(refreshed.Candidates, refreshed.Statuses)) {
+						t.Fatalf("overlap=%+v", refreshed)
+					}
+				}
 				if err != nil || len(result.Issues) != 1 {
 					t.Fatalf("%+v %v", result, err)
 				}
@@ -509,6 +546,10 @@ func TestCandidatePRIndependentRefreshEvidence(t *testing.T) {
 			initial := refresh()
 			if test.name == "PR summary edited" && initial.PullRequest.LatestCodexReviewState != "COMMENTED" {
 				t.Fatal(initial.PullRequest)
+			}
+			for range 120 {
+				now = now.Add(30 * time.Second)
+				refresh()
 			}
 			before := restReads
 			test.mutate(issue, snapshot, &refs)
@@ -632,7 +673,7 @@ func TestCandidatePRPartialCursor(t *testing.T) {
 					details[n]++
 					snapshot := candidatePRFixtureSnapshot(repo, n)
 					candidateFixtureCommit(snapshot)["statusCheckRollup"] = nil
-					data["pr0"] = map[string]any{"pullRequest": snapshot}
+					data[fmt.Sprintf("pr%d", len(data))] = map[string]any{"pullRequest": snapshot}
 				}
 			}
 		default:

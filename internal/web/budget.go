@@ -158,6 +158,7 @@ func (c *snapshotEnrichmentCache) enrichVersion(ctx context.Context, snapshot te
 }
 
 func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
+	snapshot = s.snapshotOpenQuestions(ctx, snapshot)
 	snapshot.AdmissionProposals = s.snapshotAdmissionProposals(ctx, snapshot.GeneratedAt)
 	snapshot = s.snapshotParkSummaries(ctx, snapshot)
 	snapshot = s.snapshotCardHistory(ctx, snapshot)

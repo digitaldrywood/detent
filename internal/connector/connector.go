@@ -90,10 +90,12 @@ type Connector interface {
 }
 
 type IssueFilterHint struct {
-	Authors      []string
-	Assignees    []string
-	LabelInclude []string
-	LabelExclude []string
+	// SchedulerStates names observed lanes whose routing readers require evidence.
+	SchedulerStates []string
+	Authors         []string
+	Assignees       []string
+	LabelInclude    []string
+	LabelExclude    []string
 }
 
 type CandidateIssuesFilterFetcher interface {
@@ -198,6 +200,12 @@ type PullRequestReferenceRefresher interface {
 
 type PullRequestAssociationRevalidator interface {
 	RevalidatePullRequestAssociation(context.Context, Issue) (Issue, error)
+}
+
+// BranchHeadLookup resolves a remote branch without requiring a local workspace.
+// An empty head with no error means the branch does not exist.
+type BranchHeadLookup interface {
+	LookupBranchHead(context.Context, string, string) (string, error)
 }
 
 type PullRequestHeadLookup interface {

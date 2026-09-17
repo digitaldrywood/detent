@@ -51,7 +51,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	if !ok {
 		return out
 	}
-	pruneNativeMergeQueueEntries(state, out)
+	o.pruneNativeMergeQueueEntries(ctx, state, out)
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
 		if ctx.Err() != nil {
@@ -65,8 +65,27 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		if candidate.PullRequest == nil || normalizePullRequestState(candidate.PullRequest.State) != "open" || staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
-		if cached, ok := state.nativeMergeQueueEntries[issueID]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueEntryRefresh && cached.HeadSHA == strings.TrimSpace(candidate.PullRequest.HeadSHA) {
-			applyNativeMergeQueueEntry(out, issueID, cached.Entry)
+		head := strings.TrimSpace(candidate.PullRequest.HeadSHA)
+		cachedEntry, entryCached := state.nativeMergeQueueEntries[issueID]
+		cacheFresh := entryCached && now.Sub(cachedEntry.CheckedAt) < nativeMergeQueueEntryRefresh && cachedEntry.HeadSHA == head
+		if cacheFresh && len(candidate.PullRequest.UnresolvedReviewThreads) == 0 {
+			applyNativeMergeQueueEntry(out, issueID, cachedEntry.Entry)
+			continue
+		}
+
+		var hydrated bool
+		candidate, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, candidate)
+		if !hydrated || candidate.PullRequest == nil || strings.TrimSpace(candidate.PullRequest.HeadSHA) != head {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			continue
+		}
+
+		if cacheFresh {
+			if len(candidate.PullRequest.UnresolvedReviewThreads) > 0 {
+				o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonUnresolvedReviewThreads, now)
+				continue
+			}
+			applyNativeMergeQueueEntry(out, issueID, cachedEntry.Entry)
 			continue
 		}
 
@@ -94,6 +113,11 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		state.nativeMergeQueueRepos[repositoryKey] = nativeMergeQueueRepository{
 			Available: status.Available,
 			CheckedAt: now,
+		}
+		if len(candidate.PullRequest.UnresolvedReviewThreads) > 0 && (status.Available || status.Entry != nil) {
+			candidate.PullRequest.MergeQueueEntry = status.Entry
+			o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonUnresolvedReviewThreads, now)
+			continue
 		}
 		if status.Entry != nil {
 			cacheNativeMergeQueueEntry(state, issueID, *status.Entry, now)
@@ -178,16 +202,6 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			applyNativeMergeQueueEntry(out, issueID, state.nativeMergeQueueEntries[issueID].Entry)
 			continue
 		}
-		var hydrated bool
-		candidate, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, candidate)
-		if !hydrated || candidate.PullRequest == nil || strings.TrimSpace(candidate.PullRequest.HeadSHA) != strings.TrimSpace(status.HeadSHA) {
-			state.nativeMergeQueueDeferred[issueID] = struct{}{}
-			continue
-		}
-		if len(candidate.PullRequest.UnresolvedReviewThreads) > 0 {
-			o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
-			continue
-		}
 		if candidate.PullRequest.AutomatedReviewPending() {
 			o.requestAutomatedReview(ctx, candidate)
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
@@ -196,6 +210,10 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		}
 		if !nativeMergeQueueCandidate(candidate, o.cfg) {
 			o.logNativeMergeQueueExcluded(state, candidate)
+			continue
+		}
+		if autoPromoteMergeConflicts(candidate.PullRequest.MergeableState) {
+			o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonMergeConflicts, now)
 			continue
 		}
 		if status.AdmissionLimit <= 0 || status.Depth >= status.AdmissionLimit {
@@ -209,8 +227,16 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		entry, err := queue.EnqueuePullRequest(ctx, enqueueIssue)
 		if err != nil {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
-			if strings.Contains(strings.ToLower(err.Error()), "a conversation must be resolved before this pull request can be merged") {
-				o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
+			message := strings.ToLower(err.Error())
+			// Unknown hydration may lag an explicit conflict rejection. Clean
+			// evidence takes precedence so an unchanged ready head cannot bounce.
+			mergeable := strings.ToLower(strings.TrimSpace(candidate.PullRequest.MergeableState))
+			if (mergeable == "" || mergeable == "unknown") && strings.Contains(message, "pull request has merge conflicts") {
+				o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonMergeConflicts, now)
+				continue
+			}
+			if strings.Contains(message, "a conversation must be resolved before this pull request can be merged") {
+				o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonUnresolvedReviewThreads, now)
 				continue
 			}
 			o.logNativeMergeQueueFailure(candidate, "enqueue_failed", err)
@@ -231,11 +257,18 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	return out
 }
 
-// reworkNativeMergeQueueReview uses the same review handoff as auto-promotion.
-func (o *Orchestrator) reworkNativeMergeQueueReview(ctx context.Context, state *State, issues []connector.Issue, issue connector.Issue, now time.Time) {
+// reworkNativeMergeQueueIssue uses the same Rework handoff as auto-promotion.
+func (o *Orchestrator) reworkNativeMergeQueueIssue(ctx context.Context, state *State, issues []connector.Issue, issue connector.Issue, reason AutoPromoteReason, now time.Time) {
 	state.nativeMergeQueueDeferred[strings.TrimSpace(issue.ID)] = struct{}{}
+	if err := o.withdrawNativeMergeQueueEntry(ctx, state, issue); err != nil {
+		o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
+		return
+	}
+	clearNativeMergeQueueEntry(issues, issue.ID)
+	issue = cloneIssue(issue)
+	issue.PullRequest.MergeQueueEntry = nil
 	summary := AutoPromoteSummaryFromIssue(issue)
-	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
+	decision := autoPromoteDecision(AutoPromoteActionRework, reason)
 	target := normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
 	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, target, now) {
 		return
@@ -286,21 +319,64 @@ func nativeMergeQueueRepositoryKey(issue connector.Issue) string {
 	return mergeWorkerRepositoryKey(issue) + "@" + baseRef
 }
 
-func pruneNativeMergeQueueEntries(state *State, issues []connector.Issue) {
-	active := make(map[string]struct{}, len(issues))
+// Withdrawal releases live provider ownership before forgetting local ownership.
+// Missing cards and PRs no longer provide a live entry to withdraw.
+func (o *Orchestrator) pruneNativeMergeQueueEntries(ctx context.Context, state *State, issues []connector.Issue) {
+	present := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
-		if mergeWorkerIssue(issue) {
-			active[strings.TrimSpace(issue.ID)] = struct{}{}
-		}
-	}
-	for issueID := range state.nativeMergeQueueEntries {
-		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
+		present[strings.TrimSpace(issue.ID)] = struct{}{}
+		if mergeWorkerIssue(issue) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
 			continue
 		}
-		if _, ok := active[issueID]; !ok {
-			delete(state.nativeMergeQueueEntries, issueID)
+		if err := o.withdrawNativeMergeQueueEntry(ctx, state, issue); err != nil {
+			state.nativeMergeQueueDeferred[strings.TrimSpace(issue.ID)] = struct{}{}
+			o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
+			continue
+		}
+		clearNativeMergeQueueEntry(issues, issue.ID)
+	}
+	for issueID := range state.nativeMergeQueueEntries {
+		if _, ok := present[issueID]; ok {
+			continue
+		}
+		issue := connector.Issue{ID: issueID}
+		if err := o.withdrawNativeMergeQueueEntry(ctx, state, issue); err != nil {
+			state.nativeMergeQueueDeferred[issueID] = struct{}{}
+			o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
 		}
 	}
+}
+
+func (o *Orchestrator) withdrawNativeMergeQueueEntry(ctx context.Context, state *State, issue connector.Issue) error {
+	queue, ok := o.connector.(connector.PullRequestMergeQueue)
+	if !ok {
+		return nil
+	}
+	var entry *connector.PullRequestMergeQueueEntry
+	if state != nil {
+		if cached, ok := state.nativeMergeQueueEntries[strings.TrimSpace(issue.ID)]; ok {
+			entry = &cached.Entry
+		}
+	}
+	if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
+		entry = issue.PullRequest.MergeQueueEntry
+	}
+	if entry == nil {
+		return nil
+	}
+	// Only a known open PR provides live ownership to withdraw. Missing cards
+	// and landed or closed PRs release the local snapshot without a mutation.
+	if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
+		if err := queue.DequeuePullRequest(ctx, *entry); err != nil {
+			return fmt.Errorf("withdraw native merge queue entry: %w", err)
+		}
+	}
+
+	if state != nil {
+		delete(state.nativeMergeQueueEntries, strings.TrimSpace(issue.ID))
+		clearNativeMergeQueueEntry(state.Pipeline, issue.ID)
+	}
+	return nil
 }
 
 func cacheNativeMergeQueueEntry(state *State, issueID string, entry connector.PullRequestMergeQueueEntry, now time.Time) {

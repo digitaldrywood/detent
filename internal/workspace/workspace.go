@@ -850,7 +850,7 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 
-		baseRef, err := l.newBranchBaseRef(ctx)
+		baseRef, err := l.newBranchStartRef(ctx, branch)
 		if err != nil {
 			return err
 		}
@@ -919,6 +919,28 @@ func withCommandOutput(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w\n%s", err, output)
+}
+
+// newBranchStartRef restores published work before considering a new branch base.
+func (l *LocalGit) newBranchStartRef(ctx context.Context, branch string) (string, error) {
+	remotes, err := l.runGit(ctx, "remote")
+	if err != nil {
+		return "", fmt.Errorf("list git remotes: %w", err)
+	}
+	if stringListContains(remotes, defaultGitRemote) {
+		_, exists, err := remoteBranchHead(ctx, l.sourceRoot, defaultGitRemote, branch)
+		if err != nil {
+			return "", fmt.Errorf("inspect published workspace branch: %w", err)
+		}
+		if exists {
+			ref := "refs/remotes/" + defaultGitRemote + "/" + branch
+			if _, err := l.runGit(ctx, "fetch", defaultGitRemote, "+refs/heads/"+branch+":"+ref); err != nil {
+				return "", fmt.Errorf("fetch published workspace branch: %w", err)
+			}
+			return ref, nil
+		}
+	}
+	return l.newBranchBaseRef(ctx)
 }
 
 func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {

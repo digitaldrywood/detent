@@ -311,8 +311,7 @@ test("board home renders lanes without page overflow", async ({
   await expect(page.locator("#board-figures")).toBeVisible();
   await expect(page.locator("[data-board-lane]").first()).toBeVisible();
   const ageFooter = page.locator("[data-board-card-age-footer]").first();
-  await expect(ageFooter).toBeVisible();
-  await expect(ageFooter).toContainText("In lane");
+  await expect(ageFooter).toHaveCount(0);
   await assertNoDocumentOverflow(page);
   await capturePageAndAttach(page, "board-home.png", testInfo);
 });
@@ -450,7 +449,7 @@ test("board keeps dependency waits on cards without global alerts", async ({
     hasText: "Dependency issue waiting on ledger migration",
   });
   await expect(waitingCard).toBeVisible();
-  await expect(waitingCard.locator("[data-board-card-signal]").first()).toHaveText("Waiting");
+  await expect(waitingCard.locator("[data-board-card-signal]")).toHaveText("Waiting on #5200");
   await capturePageAndAttach(page, "board-dependency-waits.png", testInfo);
 });
 
@@ -967,8 +966,8 @@ test("live session logs stay left aligned in sheet and full-page views", async (
     viewport: desktopViewport,
   });
 
-  const runningBadge = page.locator("[data-board-runtime-badge]", {
-    hasText: "agent working",
+  const runningBadge = page.locator("[data-board-card-signal]", {
+    hasText: "Running",
   }).first();
   await runningBadge.locator("xpath=ancestor::article").click();
 
@@ -1010,8 +1009,8 @@ test("detail sheet activity tabs survive morphs across display modes", async ({
 
   await page.locator('[data-density-choice="cozy"]').click();
 
-  const runningBadge = page.locator('[data-board-runtime-badge]', {
-    hasText: "agent working",
+  const runningBadge = page.locator('[data-board-card-signal]', {
+    hasText: "Running",
   }).first();
   await runningBadge.locator("xpath=ancestor::article").click();
 
@@ -1061,140 +1060,12 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
   });
 
   await page.locator('[data-density-choice="comfy"]').click();
-  const fallbackBadge = page
-    .locator('[data-board-runtime-badge]', { hasText: "agent working" })
-    .first();
-  const fallbackCard = fallbackBadge.locator("xpath=ancestor::article");
-  const fallbackID = await fallbackBadge.getAttribute("id");
-  const fallbackCardID = await fallbackCard.getAttribute("id");
-  expect(fallbackID).not.toBeNull();
-  expect(fallbackCardID).not.toBeNull();
-  await expect(fallbackBadge).toContainText("agent working");
-  expect(
-    await fallbackBadge.evaluate((element) =>
-      element.hasAttribute("data-help-trigger"),
-    ),
-  ).toBe(false);
-  const fallbackHeight = await fallbackCard.evaluate((element) =>
-    element.getBoundingClientRect().height,
-  );
-  await fallbackBadge.evaluate((element) => {
-    window.__detentRuntimeFallbackBadge = element;
-  });
-  const resolvedSnapshot = await page.locator("#snapshot").evaluate(
-    (snapshot, runtimeBadgeID) => {
-      const container = document.createElement("div");
-      container.innerHTML = snapshot.innerHTML;
-      const fallback = container.querySelector(`#${runtimeBadgeID}`);
-      const resolved = container.querySelector(
-        '[data-board-runtime-badge][data-help-description*="Provider session: thread-demo-core-5260"]',
-      );
-      const replacement = resolved.cloneNode(true);
-      replacement.id = runtimeBadgeID;
-      replacement.dataset.helpTerm = `${runtimeBadgeID}-runtime-identity`;
-      fallback.replaceWith(replacement);
-      return container.innerHTML;
-    },
-    fallbackID,
-  );
-  await morphSnapshot(page, "fallback-upgrade", resolvedSnapshot);
-  const upgradedBadge = page.locator(`#${fallbackID}`);
-  expect(
-    await upgradedBadge.evaluate(
-      (element) => window.__detentRuntimeFallbackBadge === element,
-    ),
-  ).toBe(true);
-  await expect(upgradedBadge).not.toContainText("agent working");
-  await expect(upgradedBadge).toContainText("gpt-5.6-sol · xhigh");
-  expect(
-    await page
-      .locator(`#${fallbackCardID}`)
-      .evaluate((element) => element.getBoundingClientRect().height),
-  ).toBe(fallbackHeight);
-
-  const card = page.locator("article", {
-    hasText: "Implement page-addressable screenshot scenarios",
-  });
-  const badge = card.locator(
-    '[data-board-runtime-badge][data-help-description*="Provider session: thread-demo-core-5260"]',
-  );
-  const cozyIdentity = badge.locator('[data-runtime-density="cozy"]');
-  const comfyIdentity = badge.locator('[data-runtime-density="comfy"]');
-  await expect(badge).toHaveAttribute(
-    "data-help-description",
-    "Provider: openai · Provider session: thread-demo-core-5260 · Role: code · Detent session: 5260",
-  );
-  await page.locator('[data-density-choice="cozy"]').click();
-  await expect(badge).toBeHidden();
-  await expect(cozyIdentity).toHaveText("gpt-5.6-sol · xhigh");
-  await page.locator('[data-density-choice="comfy"]').click();
-  await expect(cozyIdentity).toBeHidden();
-  await expect(comfyIdentity).toBeVisible();
-  await expect(comfyIdentity).toHaveText("Codex · gpt-5.6-sol · xhigh");
-  await card.evaluate((element) => element.scrollIntoView({ block: "start", inline: "nearest" }));
-  const initialHeight = await card.evaluate((element) =>
-    element.getBoundingClientRect().height,
-  );
-  await badge.hover();
-  const tooltip = page.locator("body > #help-tooltip");
-  await expect(tooltip).toBeVisible();
-  await expect(tooltip).toContainText("Provider: openai");
-  await expect(tooltip).toContainText(
-    "Provider session: thread-demo-core-5260",
-  );
-  await expect(tooltip).toContainText("Role: code");
-  await expect(tooltip).toContainText("Detent session: 5260");
-  await page.evaluate(() =>
-    document.documentElement.setAttribute("data-theme", "light"),
-  );
-  await expect(badge).toHaveCSS("color", "rgb(4, 108, 78)");
-  await expect(tooltip).toHaveCSS("background-color", "rgb(240, 242, 245)");
-  await page.evaluate(() =>
-    document.documentElement.removeAttribute("data-theme"),
-  );
-  await expect(page.locator("#snapshot #help-tooltip")).toHaveCount(0);
-  const initialTooltipBox = await tooltip.boundingBox();
-  const initialCardBox = await card.boundingBox();
-  expect(initialTooltipBox).not.toBeNull();
-  expect(initialCardBox).not.toBeNull();
-  expect(initialTooltipBox.x).toBeGreaterThanOrEqual(initialCardBox.x - 1);
-  expect(initialTooltipBox.x + initialTooltipBox.width).toBeLessThanOrEqual(
-    initialCardBox.x + initialCardBox.width + 1,
-  );
-  expect(initialTooltipBox.y).toBeGreaterThanOrEqual(initialCardBox.y - 1);
-  expect(initialTooltipBox.y + initialTooltipBox.height).toBeLessThanOrEqual(
-    initialCardBox.y + initialCardBox.height + 1,
-  );
-  await badge.focus();
-  await expect(badge).toBeFocused();
-
-  for (let index = 0; index < 3; index += 1) {
-    await morphCurrentSnapshot(page, `tooltip-${index}`);
-    await expect(badge).toBeFocused();
-    await expect(tooltip).toBeVisible();
-  }
-  const settledHeight = await card.evaluate((element) =>
-    element.getBoundingClientRect().height,
-  );
-  expect(settledHeight).toBe(initialHeight);
-  await attachScreenshotEvidence(
-    page,
-    "board-runtime-identity-desktop.png",
-    testInfo,
-  );
-
-  await card.focus();
-  await expect(tooltip).toBeHidden();
+  const card = page.locator("article", { hasText: "Implement page-addressable screenshot scenarios" });
+  await expect(card.locator("[data-board-runtime-badge]")).toHaveCount(0);
+  await expect(card).toHaveAttribute("title", /Provider session: thread-demo-core-5260/);
+  await expect(card).toHaveAttribute("title", /Codex · gpt-5.6-sol · xhigh/);
+  const narrowViewport = { width: 900, height: 1100 };
   await page.setViewportSize(narrowViewport);
-  await badge.scrollIntoViewIfNeeded();
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await badge.focus();
-  await expect(tooltip).toBeVisible();
-  await expect.poll(async () => {
-    const box = await tooltip.boundingBox();
-    return box !== null && box.x >= 0 && box.x + box.width <= narrowViewport.width;
-  }).toBe(true);
-
   let detailCoreRequests = 0;
   page.on("request", (request) => {
     if (request.url().includes("/api/v1/board/card/core?")) {

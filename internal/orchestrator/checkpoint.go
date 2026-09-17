@@ -28,7 +28,7 @@ func (o *Orchestrator) checkpointValidator(issueID string, attemptID int64, gene
 		if err != nil {
 			return err
 		}
-		if attempt.IssueID != issueID || attempt.Status != store.WorkAttemptStatusActive || !attempt.LeaseExpiresAt.After(o.clockNow()) {
+		if attempt.IssueID != issueID || attempt.Status != store.WorkAttemptStatusActive {
 			return runner.ErrExecutionAuthorityUnavailable
 		}
 		issue, err := o.refreshCompletionLane(ctx, running)
@@ -43,8 +43,36 @@ func (o *Orchestrator) checkpointValidator(issueID string, attemptID int64, gene
 			return runner.ErrExecutionAuthorityUnavailable
 		}
 		owned, ok := current.Running[issueID]
-		if !ok || owned.WorkAttemptID != attemptID || owned.Generation != generation || owned.Mode != runner.RunModeImplement || !attempt.LeaseExpiresAt.After(o.clockNow()) {
+		if !ok || owned.WorkAttemptID != attemptID || owned.Generation != generation || owned.Mode != runner.RunModeImplement {
 			return runner.ErrExecutionAuthorityUnavailable
+		}
+		if !attempt.LeaseExpiresAt.After(o.clockNow()) {
+			// Runtime ownership and the current lane, not a missed heartbeat, decide
+			// whether this live worker may checkpoint. Renew through the heartbeat
+			// writer, which only updates active attempts.
+			if owned.progress != nil {
+				owned.progress.mu.Lock()
+				defer owned.progress.mu.Unlock()
+				if owned.progress.closed {
+					return runner.ErrExecutionAuthorityUnavailable
+				}
+			}
+			heartbeat := o.runningWorkAttemptHeartbeat(nil, owned.withProgress(), o.clockNow())
+			if err := recordWorkAttemptHeartbeat(ctx, o.workAttempts, heartbeat); err != nil {
+				return err
+			}
+			if owned.progress != nil {
+				owned.progress.persisted.Store(&heartbeat)
+			}
+			// Ownership can change while storage is blocked.
+			current = o.latestRuntimeState.Load()
+			if current == nil {
+				return runner.ErrExecutionAuthorityUnavailable
+			}
+			latest, ok := current.Running[issueID]
+			if !ok || latest.WorkAttemptID != attemptID || latest.Generation != generation || latest.Mode != runner.RunModeImplement {
+				return runner.ErrExecutionAuthorityUnavailable
+			}
 		}
 		return ctx.Err()
 	}

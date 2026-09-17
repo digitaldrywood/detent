@@ -836,7 +836,7 @@ func checkDoctorDashboardAddress(configured BootConfig, running dashboardAddress
 
 func dashboardAddressFromRunningProcess(address dashboardAddress) bool {
 	for _, source := range []string{address.HostSource, address.PortSource} {
-		if source == dashboardAddressSourceWorkerEnvironment || source == dashboardAddressSourceServiceFlag {
+		if source == dashboardAddressSourceWorkerEnvironment || source == dashboardAddressSourceServiceFlag || source == dashboardAddressSourceListener {
 			return true
 		}
 	}

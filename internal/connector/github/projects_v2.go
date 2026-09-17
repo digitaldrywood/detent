@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -95,7 +94,15 @@ query DetentGitHubProjectItems(
           priorityValue: fieldValueByName(name: "Priority") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
-          fieldValues(first: 100) {
+` + projectItemFieldValuesSelection + `
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+const projectItemFieldValuesSelection = `          fieldValues(first: 100) {
             nodes {
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue {
@@ -114,13 +121,7 @@ query DetentGitHubProjectItems(
                 field { ... on ProjectV2FieldCommon { name } }
               }
             }
-          }
-        }
-      }
-    }
-  }
-  rateLimit { limit used remaining cost resetAt }
-}`
+          }`
 
 const observedStatusProjectItemsQuery = `
 query DetentGitHubObservedStatusProjectItems(
@@ -168,6 +169,24 @@ query DetentGitHubObservedStatusProjectItems(
     }
   }
   rateLimit { limit used remaining cost resetAt }
+}`
+
+// Whole-board refresh needs identity and lane metadata, not scheduler connections.
+var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery,
+	"              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }\n", "", 1)
+
+// Project fields serve dispatch selectors and artifact timestamps directly from
+// each refresh page. Scheduler connections remain in candidate hydration.
+// Body is a scalar: retaining it does not add priced connections and avoids
+// unbounded REST body fetches when enriched GraphQL is unavailable.
+var thinRefreshProjectItemsQuery = strings.NewReplacer(
+	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt",
+	"          priorityValue:", projectItemFieldValuesSelection+"\n          priorityValue:",
+).Replace(schedulerProjectItemsQuery)
+
+const refreshProjectRevisionQuery = `query DetentGitHubRefreshProjectRevision($projectId: ID!) {
+  node(id: $projectId) { ... on ProjectV2 { updatedAt } }
+  rateLimit { cost remaining }
 }`
 
 const statusFieldQuery = `
@@ -350,24 +369,118 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	limit int,
 	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
-	scanRevision := c.projectCache.Revision(c.projectID)
-	cacheProjectFields := queryDocument == projectItemsWithFieldsQuery
-	var after *string
-	blankStatusItemIDs := []string{}
-	projectFieldsByIssue := map[string]projectItemFields{}
-	scan := connector.IssueStateScan{
-		Issues:           []connector.Issue{},
-		BoardCounts:      map[string]int{},
-		EnumeratedCounts: map[string]int{},
-	}
+	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil, nil)
+}
 
+// queryProjectItemsPage retains board membership on schemas that lack scheduler
+// fields. Other failures keep their original error and must not trigger a retry.
+func (c *Connector) queryProjectItemsPage(ctx context.Context, queryType, query string, variables map[string]any, out any) error {
+	err := c.client.GraphQLWithType(ctx, queryType, query, variables, out)
+	if query != candidateProjectItemsQuery || !projectSchedulerFieldsUnavailable(err) {
+		return err
+	}
+	if fallbackErr := c.client.GraphQLWithType(ctx, queryType, schedulerProjectItemsQuery, variables, out); fallbackErr != nil {
+		return errors.Join(err, fallbackErr)
+	}
+	return nil
+}
+
+func projectSchedulerFieldsUnavailable(err error) bool {
+	var graphqlErr *GraphQLErrorList
+	if !errors.Is(err, ErrGraphQLErrors) || !errors.As(err, &graphqlErr) || len(graphqlErr.Errors) == 0 {
+		return false
+	}
+	for _, fieldErr := range graphqlErr.Errors {
+		message := strings.ToLower(fieldErr.Message)
+		missingField := strings.Contains(message, "cannot query field") ||
+			strings.Contains(message, "field ") && strings.Contains(message, "doesn't exist on type")
+		if !missingField {
+			return false
+		}
+	}
+	return true
+}
+
+// An unfinished refresh uses the admission cursor contract and retains its
+// private accumulator. Callers publish only the completed snapshot.
+type projectItemsScanProgress struct {
+	position      candidateCursor
+	scan          connector.IssueStateScan
+	revision      uint64
+	updatedAt     string
+	fields        map[string]projectItemFields
+	blankStatuses []string
+	evidence      map[string]githubIssueNode
+	hydrated      map[string]bool
+	complete      bool
+}
+
+func (c *Connector) scanProjectItems(
+	ctx context.Context,
+	queryDocument string,
+	queryType string,
+	keepIssue func(connector.Issue) bool,
+	limit int,
+	repairBlankStatuses bool,
+	progress *projectItemsScanProgress,
+	hydrate func(context.Context, *projectItemsScanProgress) error,
+) (connector.IssueStateScan, error) {
+	if progress == nil {
+		progress = &projectItemsScanProgress{}
+	}
+	if progress.scan.BoardCounts != nil && queryDocument == thinRefreshProjectItemsQuery {
+		var response struct {
+			Node *struct {
+				UpdatedAt string
+			}
+		}
+		if err := c.client.GraphQLWithType(ctx, queryType, refreshProjectRevisionQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
+			return connector.IssueStateScan{}, fmt.Errorf("verify github project scan revision: %w", err)
+		}
+		if response.Node == nil {
+			return connector.IssueStateScan{}, ErrProjectNotFound
+		}
+		if progress.updatedAt == "" || response.Node.UpdatedAt != progress.updatedAt || c.projectCache.Revision(c.projectID) != progress.revision {
+			*progress = projectItemsScanProgress{}
+		}
+	}
+	if progress.scan.BoardCounts == nil {
+		progress.revision = c.projectCache.Revision(c.projectID)
+		progress.position = candidateCursor{Page: 1}
+		progress.fields = map[string]projectItemFields{}
+		progress.scan = connector.IssueStateScan{Issues: []connector.Issue{}, BoardCounts: map[string]int{}, EnumeratedCounts: map[string]int{}}
+	}
+	scanRevision := progress.revision
+	cacheProjectFields := queryDocument == projectItemsWithFieldsQuery
+	blankStatusItemIDs := progress.blankStatuses
+	projectFieldsByIssue := progress.fields
+	scan := &progress.scan
+	defer func() { progress.blankStatuses = blankStatusItemIDs }()
+
+	hydratePage := func() error {
+		if hydrate == nil {
+			return nil
+		}
+		return hydrate(ctx, progress)
+	}
+	if err := hydratePage(); err != nil {
+		return connector.IssueStateScan{}, err
+	}
+	if progress.complete {
+		return *scan, nil
+	}
 	for {
 		var response struct {
 			Node *struct {
-				Items projectItemsConnection `json:"items"`
+				UpdatedAt string                 `json:"updatedAt"`
+				Items     projectItemsConnection `json:"items"`
 			} `json:"node"`
 		}
-		if err := c.client.GraphQLWithType(ctx, queryType, queryDocument, map[string]any{
+		var after *string
+		if progress.position.After != "" {
+			after = &progress.position.After
+		}
+		if err := c.queryProjectItemsPage(ctx, queryType, queryDocument, map[string]any{
 			"projectId": c.projectID,
 			"first":     projectItemsPageSize,
 			"after":     after,
@@ -377,16 +490,29 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 		if response.Node == nil {
 			return connector.IssueStateScan{}, ErrProjectNotFound
 		}
-		scan.ItemsFetched += len(response.Node.Items.Nodes)
-		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
-
-		for _, item := range response.Node.Items.Nodes {
-			if state, ok := c.projectItemBoardState(item); ok {
-				scan.BoardCounts[state]++
+		// Keep the initial revision so a later resumed attempt detects changes.
+		// Changes during this enumeration do not prevent snapshot publication.
+		if queryDocument == thinRefreshProjectItemsQuery {
+			if progress.position.After == "" {
+				progress.updatedAt = response.Node.UpdatedAt
+				// Compare against the first page: later growth must not restart
+				// an otherwise complete enumeration of a busy board.
+				scan.TotalItems = response.Node.Items.TotalCount
 			}
+		} else {
+			scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
+		}
+
+		for progress.position.Offset < len(response.Node.Items.Nodes) {
+			item := response.Node.Items.Nodes[progress.position.Offset]
 			issue, cachedFields, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
 			if err != nil {
 				return connector.IssueStateScan{}, err
+			}
+			progress.position.Offset++
+			scan.ItemsFetched++
+			if state, ok := c.projectItemBoardState(item); ok {
+				scan.BoardCounts[state]++
 			}
 			if !ok {
 				continue
@@ -406,21 +532,27 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 			}
 		}
 
+		if err := hydratePage(); err != nil {
+			return connector.IssueStateScan{}, err
+		}
 		if !response.Node.Items.PageInfo.HasNextPage {
 			if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
+				blankStatusItemIDs = nil
+				*progress = projectItemsScanProgress{}
 				return connector.IssueStateScan{}, err
 			}
 			if cacheProjectFields {
 				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)
 			}
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return scan, nil
+			progress.complete = true
+			return *scan, nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
 		if cursor == "" {
 			return connector.IssueStateScan{}, ErrInvalidResponse
 		}
-		after = &cursor
+		progress.position.After, progress.position.Offset = cursor, 0
 	}
 }
 
@@ -532,43 +664,35 @@ func (c *Connector) writeDefaultProjectItemStatuses(ctx context.Context, itemIDs
 		return nil
 	}
 
-	workerCount := min(defaultProjectItemStatusWriteParallelism, len(itemIDs))
-	jobs := make(chan string)
-	errs := make(chan error, len(itemIDs))
-	var wg sync.WaitGroup
-	wg.Add(workerCount)
-	for range workerCount {
-		go func() {
-			defer wg.Done()
-			for itemID := range jobs {
-				if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
-					errs <- fmt.Errorf("%s: %w", itemID, err)
-				}
-			}
-		}()
+	token, err := c.client.tokenSource.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ErrMissingToken
+	}
+	secondary := c.client.bindGraphQLSecondary(token)
+	// Only repair fan-out is serialized; nested GraphQL mutations remain free
+	// to run and all requests still check the shared cooldown deadline.
+	select {
+	case secondary.repairs <- struct{}{}:
+		defer func() { <-secondary.repairs }()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
-	for _, itemID := range itemIDs {
-		select {
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			close(errs)
-			return errors.Join(ctx.Err(), joinErrors(errs))
-		case jobs <- itemID:
-		}
-	}
-
-	close(jobs)
-	wg.Wait()
-	close(errs)
-	return joinErrors(errs)
-}
-
-func joinErrors(errs <-chan error) error {
 	var joined error
-	for err := range errs {
-		joined = errors.Join(joined, err)
+	for _, itemID := range itemIDs {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(joined, err)
+		}
+		if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("%s: %w", itemID, err))
+			if errors.Is(err, ErrRateLimited) {
+				return joined
+			}
+		}
 	}
 	return joined
 }

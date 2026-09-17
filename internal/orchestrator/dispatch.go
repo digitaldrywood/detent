@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,8 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		o.cancelPendingGlobalDispatches()
 		return
 	}
+	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
+	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
 	rankingIssues := issues
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
@@ -305,6 +308,11 @@ func dispatchFailureRetryReason(reason string) string {
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
+	if retry.GitHubMonitor {
+		if _, exists := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; exists {
+			return true
+		}
+	}
 	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
 		return false
 	}
@@ -611,7 +619,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	runMode := o.dispatchMode(ctx, state, issue)
 	var allowance attemptAllowance
 	var triageContext string
-	if runMode == runpkg.RunModeImplement && o.cfg.DeliverableKind != "artifact" {
+	if (runMode == runpkg.RunModeImplement || (runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue))) && o.cfg.DeliverableKind != "artifact" {
 		var err error
 		allowance, err = o.issueAttemptAllowance(ctx, issue)
 		if err != nil {
@@ -732,7 +740,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	runCtx := ctx
 	cancelDurationLimit := func() {}
-	if mergeWorkerIssue(slotIssue) {
+	if mergeWorkerIssue(slotIssue) || runMode == runpkg.RunModeMerge {
 		limit := o.mergeWorkerLimit
 		if limit == nil {
 			limit = context.WithTimeoutCause
@@ -1093,6 +1101,14 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
 	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && o.cfg.MergeFastPathEnabled {
 		return runpkg.RunModeMerge
+	}
+	// Conflict repair uses the merge precheck and verified fallback even before
+	// the card is ready for Merging, independently of programmatic merge policy.
+	switch normalizeState(issue.State) {
+	case "rework", "in progress":
+		if issue.PullRequest != nil && !issue.PullRequest.Draft && strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "dirty") {
+			return runpkg.RunModeMerge
+		}
 	}
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	if !cfg.Enabled {
@@ -1484,9 +1500,6 @@ func issueBlockedByNonTerminal(issue connector.Issue, terminalStates []string) b
 			}
 			continue
 		}
-		if blocker.Source == connector.BlockedRefSourceWorkpad && blocker.TrackerState == "" && strings.TrimSpace(blocker.State) == "" {
-			return true
-		}
 		if blocker.HumanOwned {
 			if !blocker.HumanCompletionReady {
 				return true
@@ -1494,7 +1507,9 @@ func issueBlockedByNonTerminal(issue connector.Issue, terminalStates []string) b
 			continue
 		}
 		if strings.TrimSpace(blocker.State) == "" {
-			continue
+			// An unresolved dependency is still waiting, including when its
+			// state lookup failed transiently during candidate refresh.
+			return true
 		}
 		if !dependencyBlockerReady(dependencyBlocker{Ref: blocker}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, terminalStates) {
 			return true

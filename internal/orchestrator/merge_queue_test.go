@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -257,30 +258,37 @@ func TestTickDelegatesNativeMergeQueueTrainWithoutAgentDispatch(t *testing.T) {
 
 func TestDelegateNativeMergeQueueIssuesCachesQueueEntries(t *testing.T) {
 	t.Parallel()
-
-	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
-	issue := nativeMergeQueueTestIssue(201, "success")
-	tracker := &nativeMergeQueueConnector{
-		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
-			autoPromoteTickConnector: &autoPromoteTickConnector{},
-		},
-	}
-	cfg := nativeMergeQueueTestConfig(Config{
-		MergeFastPathEnabled: true,
-		ActiveStates:         []string{"Merging"},
-		TerminalStates:       []string{"Done"},
-	})
-	orch := &Orchestrator{cfg: cfg, connector: tracker}
-	state := newState(cfg)
-
-	first := orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{issue}, now)
-	second := orch.delegateNativeMergeQueueIssues(context.Background(), &state, first, now.Add(10*time.Second))
-
-	if tracker.inspections != 1 || len(tracker.enqueued) != 1 {
-		t.Fatalf("queue calls = %d inspections and %d enqueues, want one each", tracker.inspections, len(tracker.enqueued))
-	}
-	if second[0].PullRequest == nil || second[0].PullRequest.MergeQueueEntry == nil {
-		t.Fatalf("cached queue entry missing from %#v", second[0].PullRequest)
+	for _, tt := range []struct {
+		name      string
+		elapsed   time.Duration
+		newHead   bool
+		wantCalls int
+	}{
+		{name: "cached", elapsed: 10 * time.Second, wantCalls: 1},
+		{name: "refresh", elapsed: nativeMergeQueueEntryRefresh, wantCalls: 2},
+		{name: "new head", elapsed: 10 * time.Second, newHead: true, wantCalls: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
+			issue := nativeMergeQueueTestIssue(201, "success")
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			first := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			tracker.entries = map[string]connector.PullRequestMergeQueueEntry{issue.ID: *first[0].PullRequest.MergeQueueEntry}
+			if tt.newHead {
+				first[0].PullRequest.HeadSHA = "replacement"
+			}
+			second := orch.delegateNativeMergeQueueIssues(t.Context(), &state, first, now.Add(tt.elapsed))
+			if tracker.inspections != tt.wantCalls || len(tracker.reviewThreadHydrations) != tt.wantCalls || len(tracker.enqueued) != 1 {
+				t.Fatalf("queue calls: inspections=%d hydrations=%d enqueues=%d, want %d, %d, 1", tracker.inspections, len(tracker.reviewThreadHydrations), len(tracker.enqueued), tt.wantCalls, tt.wantCalls)
+			}
+			if second[0].PullRequest.MergeQueueEntry == nil {
+				t.Fatal("cached queue entry missing")
+			}
+		})
 	}
 }
 
@@ -1334,6 +1342,83 @@ func TestNativeMergeQueueReviewRework(t *testing.T) {
 	}
 }
 
+func TestNativeMergeQueueConflictRework(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, message, mergeable string
+		rework                   bool
+		preflight                bool
+	}{
+		{"recorded rejection", "enqueue github pull request: github graphql errors: Pull request has merge conflicts and Pull request not in mergeable state", "dirty", true, true},
+		{"reworded rejection", "is not mergeable", "CONFLICTING", true, true},
+		{"dirty without rejection", "", "dirty", true, true},
+		{"not mergeable", "Pull request not in mergeable state", "unknown", false, false},
+		{"stale unknown conflicts", "Pull request has merge conflicts", "unknown", true, false},
+		{"clean conflicts", "Pull request has merge conflicts", "clean", false, false},
+		{"clean not mergeable", "Pull request not in mergeable state", "clean", false, false},
+		{"queue unavailable", "queue unavailable", "unknown", false, false},
+		{"secondary rate limit", "secondary rate limit", "clean", false, false},
+	} {
+		for _, rebased := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/rebased=%t", tt.name, rebased), func(t *testing.T) {
+				issue := nativeMergeQueueTestIssue(2861, "success")
+				issue.PullRequest.MergeableState = tt.mergeable
+				tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}, enqueueErr: errors.New(tt.message)}
+				if tt.message == "" {
+					tracker.enqueueErr = nil
+				}
+				cfg := normalizeConfig(Config{ActiveStates: []string{"Merging", "Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}})
+				orch := &Orchestrator{cfg: cfg, connector: tracker}
+				state := newState(cfg)
+				now := time.Now()
+				issues := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+				wantState, wantEnqueues := "Merging", 2
+				if tt.rework {
+					wantState, wantEnqueues = "Rework", 1
+					if tt.preflight {
+						wantEnqueues = 0
+					}
+				}
+				if issues[0].State != wantState {
+					t.Fatalf("first tick state = %s, want %s", issues[0].State, wantState)
+				}
+				issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, now.Add(time.Minute))
+				if len(tracker.enqueued) != wantEnqueues {
+					t.Fatalf("enqueues = %d, want %d", len(tracker.enqueued), wantEnqueues)
+				}
+				if tt.rework {
+					if len(tracker.updates) != 1 || len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "merge_conflicts") {
+						t.Fatalf("updates=%v comments=%v, want merge_conflicts handoff", tracker.updates, tracker.comments)
+					}
+					if rebased {
+						issues[0].PullRequest.HeadSHA = "rebased-head"
+					}
+					issues[0].PullRequest.MergeableState = "clean"
+					result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, issues, now.Add(2*time.Minute))
+					if _, promoted := result.transitioned[issue.ID]; !promoted {
+						t.Fatalf("rebased head did not promote: %v", state.AutoPromoteDecisions)
+					}
+					if len(tracker.updates) != 2 || tracker.updates[1].state != "Merging" || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "reason: ready") {
+						t.Fatalf("updates=%v comments=%v, want ready transition to Merging", tracker.updates, tracker.comments)
+					}
+					issues[0].State = "Merging"
+					tracker.enqueueErr = errors.New("Pull request has merge conflicts and Pull request not in mergeable state")
+					before := len(tracker.enqueued)
+					for tick := 3; tick <= 4; tick++ {
+						issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, now.Add(time.Duration(tick)*time.Minute))
+					}
+					if issues[0].State != "Merging" || len(tracker.updates) != 2 || len(tracker.comments) != 2 || len(tracker.enqueued) != before+2 {
+						t.Fatalf("clean head bounced after promotion: state=%s updates=%v comments=%v enqueues=%d", issues[0].State, tracker.updates, tracker.comments, len(tracker.enqueued))
+					}
+
+				} else if len(tracker.updates) != 0 {
+					t.Fatalf("transient failure changed lane: %v", tracker.updates)
+				}
+			})
+		}
+	}
+}
+
 func TestNativeMergeQueueHeadBudget(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -1409,6 +1494,180 @@ func TestNativeMergeQueueCachedHeadChange(t *testing.T) {
 			}
 			if len(state.nativeMergeQueueRemovals[nativeMergeQueueRemovalKey(issue)]) != 0 {
 				t.Fatal("old removal charged to current head")
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueReviewReworkAfterEnqueue(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                                       string
+		refresh, observed, resolved, fail, restart bool
+		absent, merged, missingPR                  bool
+		move                                       string
+	}{
+		{name: "cached review"},
+		{name: "absent card", absent: true},
+		{name: "merged PR", merged: true},
+		{name: "missing PR", missingPR: true},
+		{name: "refreshed review", refresh: true},
+		{name: "provider observed review", refresh: true, observed: true},
+		{name: "provider entry after restart", refresh: true, observed: true, restart: true},
+		{name: "resolved review", resolved: true},
+		{name: "dequeue failure", fail: true},
+		{name: "operator rework", move: "Rework"},
+		{name: "operator backlog", move: "Backlog"},
+		{name: "observed operator rework", move: "Rework", observed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now()
+			issue := nativeMergeQueueTestIssue(2822, "success")
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging", "Rework"}})
+			metrics := &workflowMetricsRecorderSpy{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics}
+			state := newState(cfg)
+			issues := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			entry := *issues[0].PullRequest.MergeQueueEntry
+			state.Pipeline = cloneIssues(issues)
+			if tt.absent || tt.merged || tt.missingPR {
+				if tt.absent {
+					issues = nil
+				}
+				if tt.merged {
+					issues[0].PullRequest.State = "MERGED"
+				}
+				if tt.missingPR {
+					issues[0].State = "Backlog"
+					issues[0].PullRequest = nil
+				}
+				tracker.dequeueErr = errors.New("github returned no merge queue entry")
+				for pass := range 2 {
+					issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, now.Add(time.Duration(pass+1)*time.Minute))
+					if len(tracker.dequeued) != 0 || len(state.nativeMergeQueueEntries) != 0 {
+						t.Fatalf("pass %d: dequeues=%v cached=%v", pass, tracker.dequeued, state.nativeMergeQueueEntries)
+					}
+				}
+				return
+			}
+			if tt.observed {
+				tracker.entries = map[string]connector.PullRequestMergeQueueEntry{issue.ID: entry}
+			}
+			if tt.restart {
+				delete(state.nativeMergeQueueEntries, issue.ID)
+				issues[0].PullRequest.MergeQueueEntry = nil
+			}
+			if tt.fail {
+				tracker.dequeueErr = errors.New("unavailable")
+			}
+			want := "Rework"
+			if tt.move != "" {
+				want = tt.move
+				if !tt.observed {
+					result := orch.applyOperatorMove(t.Context(), &state, OperatorMoveRequest{IssueID: issue.ID, FromState: "Merging", ToState: tt.move, WriteTracker: true}, now)
+					if result.err != nil {
+						t.Fatal(result.err)
+					}
+					found := false
+					for _, event := range metrics.events {
+						if event.PhaseName == tt.move && event.Reason == "operator_move" {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("operator transition not preserved: %+v", metrics.events)
+					}
+					issues = cloneIssues(state.Pipeline)
+				}
+				issues[0].State = tt.move
+			} else {
+				threads := []connector.PullRequestReviewThread{{Path: "merge.go", Line: 10}}
+				if tt.resolved {
+					threads = nil
+					want = "Merging"
+				}
+				tracker.hydratedThreads = &threads
+				if !tt.refresh {
+					issues[0].PullRequest.UnresolvedReviewThreads = threads
+				}
+			}
+			if tt.fail {
+				want = "Merging"
+			}
+			next := now.Add(time.Minute)
+			if tt.refresh {
+				next = now.Add(nativeMergeQueueEntryRefresh)
+			}
+			issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, next)
+			if issues[0].State != want {
+				t.Fatalf("lane = %s, want %s", issues[0].State, want)
+			}
+			wantDequeues := 1
+			if tt.resolved {
+				wantDequeues = 0
+			}
+			if len(tracker.dequeued) != wantDequeues {
+				t.Fatalf("dequeues = %v, want %d", tracker.dequeued, wantDequeues)
+			}
+			if wantDequeues == 1 && tracker.dequeued[0].ID != entry.ID {
+				t.Fatalf("dequeued wrong entry: %v", tracker.dequeued)
+			}
+			if tt.move != "" && len(tracker.comments) != 0 {
+				t.Fatalf("operator move published review handoff: %v", tracker.comments)
+			}
+			if !tt.resolved && !tt.fail && nativeMergeQueueHasEntry(&state, issues[0]) {
+				t.Fatal("withdrawn entry retains ownership")
+			}
+			if tt.fail && !nativeMergeQueueHasEntry(&state, issues[0]) {
+				t.Fatal("failed dequeue discarded ownership")
+			}
+			if tt.fail {
+				tracker.dequeueErr = nil
+				issues = orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, next.Add(time.Second))
+				if issues[0].State != "Rework" || nativeMergeQueueHasEntry(&state, issues[0]) {
+					t.Fatal("successful retry did not withdraw and hand off")
+				}
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueWithdrawalDoesNotBlockDone(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		dequeueErr error
+	}{
+		{name: "consumed entry"},
+		{name: "provider unavailable", dequeueErr: errors.New("provider unavailable")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := nativeMergeQueueTestIssue(2826, "success")
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}})
+			var logs bytes.Buffer
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			state := newState(cfg)
+			now := time.Now()
+			issues := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			issues[0].Closed, issues[0].ClosedReason = true, "completed"
+			// GitHub consumed the queue entry, but the tick still has an open PR snapshot.
+			tracker.dequeueErr = tt.dequeueErr
+			reconciled := orch.reconcileClosedCompletedIssueStatuses(t.Context(), &state, issues, now.Add(time.Second))
+			if _, ok := reconciled[issue.ID]; !ok || len(tracker.updates) != 1 || tracker.updates[0].state != "Done" {
+				t.Fatalf("reconciled=%v updates=%v", reconciled, tracker.updates)
+			}
+			if len(tracker.dequeued) != 1 {
+				t.Fatalf("dequeues=%v", tracker.dequeued)
+			}
+			if tt.dequeueErr == nil && strings.Contains(logs.String(), "error=") {
+				t.Fatalf("unexpected error: %s", &logs)
+			}
+			if tt.dequeueErr != nil && !strings.Contains(logs.String(), tt.dequeueErr.Error()) {
+				t.Fatalf("missing withdrawal error: %s", &logs)
 			}
 		})
 	}

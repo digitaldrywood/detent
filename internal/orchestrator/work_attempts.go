@@ -422,7 +422,7 @@ func (o *Orchestrator) heartbeatRunningWorkAttempts(ctx context.Context, state *
 			continue
 		}
 		heartbeat := o.runningWorkAttemptHeartbeat(state, running, now)
-		if err := o.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
+		if err := recordWorkAttemptHeartbeat(ctx, o.workAttempts, heartbeat); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("work attempt heartbeat failed", "attempt_id", running.WorkAttemptID, "issue_id", issueID, "error", err)
 			}
@@ -1090,6 +1090,9 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 		"run_mode":            strings.TrimSpace(running.Mode),
 		"issue_title":         strings.TrimSpace(running.Issue.Title),
 		"work_product_pushed": running.WorkProductPushed,
+	}
+	if allowanceExternalWait(running.Issue) {
+		out["allowance_external_wait"] = true
 	}
 	if running.ForgeWriteCompleted && strings.TrimSpace(running.ForgeProbeHost) != "" {
 		out["forge_write_completed_host"] = forgeavailability.NormalizeHost(running.ForgeProbeHost)

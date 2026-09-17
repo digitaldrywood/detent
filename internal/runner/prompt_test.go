@@ -113,13 +113,16 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
 		"## Blocked handoff",
-		"`status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid.",
+		"`in_progress`, `blocked`, or `complete`",
 		"dependencies/blocked_by",
 		"```detent-status",
 		"status: blocked",
 		"status: complete",
-		"Blocked by: #123",
-		"Narrative Workpad sentences are never read as blockers",
+		"Depends on: owner/repo#123",
+		"Prose is not a blocker.",
+		"Already-merged work needs no authorization.",
+		"completion_merged_pr", "completion_merge_commit", "completion_branch_head",
+		"completion_ancestry: verified", "Ask if evidence is missing.",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
 		"## Available skills",
@@ -1393,6 +1396,45 @@ func TestBuildPromptIgnoresFencedNoteHeadings(t *testing.T) {
 			}
 			if !strings.Contains(prompt, "keep neighboring note") {
 				t.Fatal("lost neighboring note")
+			}
+		})
+	}
+}
+
+func TestCompactFailedRunNotesPreservesPrefix(t *testing.T) {
+	t.Parallel()
+	const first = "## 2026-09-14T00:00:00Z - Failed run output tail\nold failure\n"
+	const last = "## 2026-09-14T00:01:00Z - Failed run output tail\nlatest failure\n"
+	for _, tt := range []struct{ name, input, want string }{
+		{"empty", "", ""},
+		{"no headings", "handoff\n", "handoff\n"},
+		{"no failures", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n"},
+		{"first heading is failure", first + last, strings.TrimRight(last, "\n")},
+		{"preamble before removed failure", "preamble\n\n" + first + last, "preamble\n\n" + strings.TrimRight(last, "\n")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := compactFailedRunNotes(tt.input); got != tt.want {
+				t.Fatalf("compactFailedRunNotes() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMergeFallbackPromptPreservesPublishedHistory(t *testing.T) {
+	t.Parallel()
+	prompt, err := BuildMergeFallbackPrompt(config.Workflow{}, connector.Issue{}, PromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"merge it into the PR branch",
+		"do not rebase published commits",
+		"Preserve the remote PR head as an ancestor",
+	} {
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("fallback prompt missing %q", want)
 			}
 		})
 	}

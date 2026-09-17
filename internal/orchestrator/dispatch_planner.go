@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type dispatchPlanner struct {
@@ -35,6 +36,8 @@ type dispatchPlanHooks struct {
 }
 
 type dispatchAction struct {
+	// skipDetail preserves the refusal evidence when no action is dispatched.
+	skipDetail          string
 	issue               connector.Issue
 	attempt             int
 	workerHost          string
@@ -97,6 +100,7 @@ func (p dispatchPlanner) plan(
 		p.logDecision(hooks, decision)
 	}
 
+	labelAuthorization := dispatchLabelSelector(p.cfg.Authorization)
 	plan := DispatchPlan{}
 	continuations := 0
 	mergeControlAvailable := true
@@ -107,6 +111,21 @@ func (p dispatchPlanner) plan(
 		}
 		if !mergeControlAvailable && p.hardAvailableSlots(state) == 0 && p.readyMergeControlCandidate(state, issue) {
 			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipMergeControlLimit})
+			continue
+		}
+		if authorization := selector.Decide(issue, labelAuthorization, p.cfg.SelectorContext); !authorization.Matched {
+			decision := dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition,
+				SkipReason: dispatchSkipAuthorizationSelector, SkipDetail: authorization.Detail,
+				AuthorizationDecision: &authorization}
+			if retry, ok := dueRetries[issue.ID]; ok {
+				decision.Retry, decision.Attempt, decision.WorkerHost = true, retry.Attempt, retry.WorkerHost
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					p.releaseClaim(state, issue.ID)
+				} else {
+					p.releaseIssue(state, issue.ID)
+				}
+			}
+			logDecision(decision)
 			continue
 		}
 		if retry, ok := dueRetries[issue.ID]; ok {
@@ -158,6 +177,7 @@ func (p dispatchPlanner) plan(
 					WorkerHost:    retry.WorkerHost,
 					Retry:         true,
 					SkipReason:    reason,
+					SkipDetail:    action.skipDetail,
 				})
 				continue
 			}
@@ -208,6 +228,7 @@ func (p dispatchPlanner) plan(
 				Issue:         issue,
 				QueuePosition: queuePosition,
 				SkipReason:    reason,
+				SkipDetail:    action.skipDetail,
 			})
 			continue
 		}
@@ -324,15 +345,6 @@ func (p dispatchPlanner) retryAction(
 			}
 		}
 	}
-	workerGitHubMonitorProbeReserved := false
-	if retry.GitHubMonitor {
-		if _, active := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; active {
-			_, workerGitHubMonitorProbeReserved = reserveWorkerGitHubMonitorProbe(state, issue.ID, retry, now)
-			if !workerGitHubMonitorProbeReserved {
-				return dispatchAction{}, false, dispatchSkipGitHubMonitor
-			}
-		}
-	}
 	delete(state.Retry, retry.Issue.ID)
 
 	modelPermitRequired := p.modelPermitRequiredAtDispatch(issue) || retry.MergePrecheck != nil
@@ -348,19 +360,16 @@ func (p dispatchPlanner) retryAction(
 		if forgeProbeReserved {
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", decision.reason, now)
 		}
-		if workerGitHubMonitorProbeReserved {
-			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", decision.reason, now)
-		}
 		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency || decision.reason == dispatchSkipTrackerUnavailable {
 			state.Retry[retry.Issue.ID] = retry
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if decision.reason == dispatchSkipProjectFailureBreaker {
 			if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
 				retry.DueAt = state.FailureBreaker.ResumeAt
 			}
 			state.Retry[retry.Issue.ID] = retry
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 			if reason == dispatchSkipBudgetCooldown {
@@ -368,19 +377,19 @@ func (p dispatchPlanner) retryAction(
 			} else {
 				p.parkBudgetHardHold(state, issue.ID)
 			}
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if !p.slotsAvailableForModelRequirement(issue, state, retry.WorkerHost, modelPermitRequired) {
 			p.rescheduleRetry(state, retry, now, "no available orchestrator slots", false)
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 		if _, blocked := state.Blocked[issue.ID]; blocked {
 			p.releaseClaim(state, issue.ID)
-			return dispatchAction{}, false, decision.reason
+			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
 
 		p.releaseIssue(state, issue.ID)
-		return dispatchAction{}, false, decision.reason
+		return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 	}
 
 	action, ok := p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true, modelPermitRequired, &retry)
@@ -388,10 +397,20 @@ func (p dispatchPlanner) retryAction(
 		if forgeProbeReserved {
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchSkipWorkerHostUnavailable, now)
 		}
-		if workerGitHubMonitorProbeReserved {
-			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchSkipWorkerHostUnavailable, now)
-		}
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
+	}
+	// Reserve only after eligibility and worker selection succeed. A carrier
+	// that cannot run must not consume attempts or renew an expired hold.
+	if retry.GitHubMonitor {
+		if _, active := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; active {
+			if _, reserved := reserveWorkerGitHubMonitorProbe(state, issue.ID, retry, now); !reserved {
+				state.Retry[retry.Issue.ID] = retry
+				if forgeProbeReserved {
+					releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchSkipGitHubMonitor, now)
+				}
+				return dispatchAction{}, false, dispatchSkipGitHubMonitor
+			}
+		}
 	}
 	return action, true, ""
 }
@@ -407,7 +426,7 @@ func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now
 				Source:    BlockedSourceDependency,
 			}
 		}
-		return dispatchAction{}, false, decision.reason
+		return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 	}
 
 	action, ok := p.newDispatchAction(state, issue, 0, "", false, p.modelPermitRequiredAtDispatch(issue), nil)
@@ -833,14 +852,18 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		if err != nil {
 			return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
 		}
+		// Instance reports are diagnostic evidence, not issue dispatch vetoes.
+		// Existing instance controls own infrastructure eligibility.
 		if evaluation.Holds || evaluation.Unverifiable || evaluation.HumanOwned {
 			parts := make([]string, 0, len(evaluation.Evidence))
 			for _, evidence := range evaluation.Evidence {
-				if evidence.Status != blockerEvidenceStatusCleared {
+				if evidence.Owner != workpad.BlockerOwnerInstance && evidence.Status != blockerEvidenceStatusCleared {
 					parts = append(parts, strings.TrimSpace(evidence.Owner+": "+evidence.Reference+" "+evidence.Reason))
 				}
 			}
-			return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: strings.Join(parts, "; ")}
+			if len(parts) > 0 {
+				return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: strings.Join(parts, "; ")}
+			}
 		}
 	}
 	return dispatchableDecision{dispatchable: true}
@@ -1287,4 +1310,18 @@ func (p dispatchPlanner) releaseClaim(state *State, issueID string) {
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+}
+
+// dispatchLabelSelector projects authorization onto labels. Other predicates
+// remain unknown until hydration; an OR branch without labels therefore matches
+// here and leaves the full decision to dispatch eligibility.
+func dispatchLabelSelector(auth selector.Selector) selector.Selector {
+	labels := selector.Selector{Labels: auth.Labels}
+	for _, child := range auth.And {
+		labels.And = append(labels.And, dispatchLabelSelector(child))
+	}
+	for _, child := range auth.Or {
+		labels.Or = append(labels.Or, dispatchLabelSelector(child))
+	}
+	return labels
 }

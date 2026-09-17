@@ -42,7 +42,9 @@ for (const closed of [false, true]) {
       await expect(card).not.toContainText("Waiting · 1");
       await expect(card).not.toContainText("Blocked · 1");
       await page.locator('[data-density-choice="comfy"]').click();
-      await expect(card).toContainText("human prerequisite owner/repo#10");
+      await expect(card).toHaveAttribute("title", /human prerequisite owner\/repo#10/);
+      await card.click();
+      await expect(page.locator("[data-detail-sheet-core]")).toContainText("human prerequisite owner/repo#10");
       await page.screenshot({ path: path.join("tmp", "playwright-evidence", `human-prerequisite-${closed}.png`) });
     } finally {
       await runtime.stop();

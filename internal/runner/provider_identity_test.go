@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -130,5 +131,38 @@ func TestProviderIdentityPersistenceDetachesCancellation(t *testing.T) {
 	case <-ss.writeDone:
 	default:
 		t.Fatal("write context was not released")
+	}
+}
+
+// Provider writes retain their existing ten-second budget even when the caller
+// supplies a telemetry-sized deadline.
+func TestProviderIdentityWriteOutlivesReadDeadline(t *testing.T) {
+	for _, delay := range []time.Duration{0, 600 * time.Millisecond} {
+		t.Run(delay.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+				defer cancel()
+				ss := &delayedProviderIdentityStore{fakeSessionStore: &fakeSessionStore{}, delay: delay}
+				r := &Runner{store: ss, logger: slog.Default()}
+				r.persistSessionProviderIdentity(ctx, 6004, AgentUpdate{ThreadID: "thread"})
+				if len(ss.providerUpdates) != 1 {
+					t.Fatal("provider write inherited short read deadline")
+				}
+			})
+		})
+	}
+}
+
+type delayedProviderIdentityStore struct {
+	*fakeSessionStore
+	delay time.Duration
+}
+
+func (s *delayedProviderIdentityStore) UpdateSessionProviderIdentity(ctx context.Context, id int64, identity store.SessionProviderIdentity) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(s.delay):
+		return s.fakeSessionStore.UpdateSessionProviderIdentity(ctx, id, identity)
 	}
 }

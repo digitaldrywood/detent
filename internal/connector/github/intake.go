@@ -36,7 +36,7 @@ func (c *Connector) FindIntakeIssue(ctx context.Context, marker string) (intake.
 			return intake.Issue{}, false, fmt.Errorf("find github intake issue: %w", err)
 		}
 		for _, item := range response.Items {
-			if item.PullRequest != nil || item.Body == nil || strings.EqualFold(item.State, "closed") || !strings.Contains(*item.Body, marker) {
+			if item.PullRequest != nil || item.Body == nil || !strings.Contains(*item.Body, marker) {
 				continue
 			}
 			ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
@@ -154,7 +154,7 @@ func (c *Connector) addIntakeIssueToProject(ctx context.Context, issueID string)
 func restIntakeIssueSearchPath(repo pullRequestRepo, marker string, page int) string {
 	token := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(marker), "<!--"), "-->"))
 	values := url.Values{}
-	values.Set("q", "repo:"+repo.Owner+"/"+repo.Name+" is:issue is:open in:body \""+token+"\"")
+	values.Set("q", "repo:"+repo.Owner+"/"+repo.Name+" is:issue in:body \""+token+"\"")
 	values.Set("per_page", strconv.Itoa(intakeIssueSearchPageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + values.Encode()

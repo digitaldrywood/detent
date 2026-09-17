@@ -365,6 +365,40 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 	return issue, nil
 }
 
+func (c *Connector) LookupBranchHead(ctx context.Context, repository, branch string) (string, error) {
+	repo, ok := pullRequestRepoFromName(repository)
+	branch = strings.TrimSpace(branch)
+	if !ok || branch == "" {
+		return "", errors.New("lookup github branch head: invalid repository or branch")
+	}
+	const query = `query BranchHead($owner: String!, $name: String!, $ref: String!) {
+  repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { target { oid } } }
+ }`
+	var response struct {
+		Repository *struct {
+			Ref *struct {
+				Target struct {
+					OID string `json:"oid"`
+				} `json:"target"`
+			} `json:"ref"`
+		} `json:"repository"`
+	}
+	if err := c.client.GraphQL(ctx, query, map[string]any{"owner": repo.Owner, "name": repo.Name, "ref": "refs/heads/" + branch}, &response); err != nil {
+		return "", fmt.Errorf("lookup github branch head: %w", err)
+	}
+	if response.Repository == nil {
+		return "", fmt.Errorf("lookup github branch head: %w", ErrInvalidResponse)
+	}
+	if response.Repository.Ref == nil {
+		return "", nil
+	}
+	head := strings.TrimSpace(response.Repository.Ref.Target.OID)
+	if head == "" {
+		return "", fmt.Errorf("lookup github branch head: %w", ErrInvalidResponse)
+	}
+	return head, nil
+}
+
 func (c *Connector) LookupPullRequestByHead(
 	ctx context.Context,
 	repository string,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +202,92 @@ func TestDispatchCommentFailureRecordsInstanceEvidence(t *testing.T) {
 			}
 			if len(state.Blocked) != 0 {
 				t.Fatal("tracker failure parked issue")
+			}
+		})
+	}
+}
+
+func TestRecordedBlockerDispatchOwnership(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, owner, action string
+			wantDispatch        bool
+		}{
+			{name: "instance report", owner: workpad.BlockerOwnerInstance, wantDispatch: true},
+			{name: "human report", owner: workpad.BlockerOwnerHuman},
+			{name: "instance and human action", owner: workpad.BlockerOwnerInstance, action: "make skill available or waive it"},
+		} {
+			t.Run(fmt.Sprintf("%s/retry=%t", tc.name, retry), func(t *testing.T) {
+				cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Rework"}})
+				issue := dispatchTestIssue("2802", "Rework")
+				issue.Fields = map[string]string{"Status": "Rework"}
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tc.action, Blockers: []workpad.Blocker{{Ref: "instance:ci-runner-hook", Owner: tc.owner, Reason: "runner hook unavailable", Unverifiable: true}}}
+				tracker := &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}}}
+				o := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
+				state := newState(cfg)
+				now := time.Now()
+				if retry {
+					state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now.Add(-time.Minute)}
+				}
+				o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+				if (len(state.Running) > 0) != tc.wantDispatch {
+					t.Fatalf("running=%d decisions=%+v", len(state.Running), state.SchedulerDecisions)
+				}
+				if !tc.wantDispatch {
+					if len(state.SchedulerDecisions) == 0 {
+						t.Fatal("missing scheduler decision")
+					}
+					d := state.SchedulerDecisions[0]
+					want := "runner hook unavailable"
+					if tc.action != "" {
+						want = tc.action
+					}
+					if d.Reason != dispatchSkipBlockedByDependency || !strings.Contains(d.WaitReason, want) {
+						t.Fatalf("decision=%+v, want evidence %q", d, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestWorkpadHumanActionSnapshot(t *testing.T) {
+	now := time.Now().UTC()
+	at := now.Add(-time.Hour)
+	for _, tc := range []struct {
+		name, status, action string
+		want                 bool
+		prose                bool
+		state                string
+	}{
+		{name: "outstanding", status: workpad.StatusBlocked, action: "make skill available or waive it", want: true},
+		{name: "resumed", status: workpad.StatusInProgress, action: "make skill available or waive it"},
+		{name: "empty", status: workpad.StatusBlocked, action: "  "},
+		{name: "prose-only Rework", prose: true, state: "Rework"},
+		{name: "running with stale prose", prose: true, state: "In Progress"},
+		{name: "legacy prose Workpad", prose: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := dispatchTestIssue("2802", "Rework")
+			issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: tc.status, HumanAction: tc.action, RecordedAt: &at}
+			if tc.prose {
+				issue.StageUpdatedAt = &at
+				issue.BlockerReason = "waiting on #123 to merge"
+				issue.WorkpadSignal = nil
+				if tc.state != "" {
+					issue.State = tc.state
+				} else {
+					issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceProse, HumanAction: issue.BlockerReason}
+				}
+			}
+			o := Orchestrator{}
+			evaluated := o.evaluateRecordedBlockers(t.Context(), nil, issue, nil, now)
+			snapshot := telemetryIssue(issue, 0, 0, now, nil)
+			if (snapshot.WorkpadHumanAction != nil) != tc.want {
+				t.Fatalf("snapshot=%+v", snapshot.WorkpadHumanAction)
+			}
+			if tc.want && (len(evaluated.Evidence) != 1 || !reflect.DeepEqual(*snapshot.WorkpadHumanAction, evaluated.Evidence[0]) || snapshot.WorkpadHumanAction.AgeSeconds != 3600) {
+				t.Fatalf("snapshot=%+v evaluation=%+v", snapshot.WorkpadHumanAction, evaluated)
 			}
 		})
 	}

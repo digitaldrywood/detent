@@ -121,6 +121,10 @@ func walkSize(ctx context.Context, walk func(fs.WalkDirFunc) error) (int64, erro
 // RemoveLegacy removes only the former Detent-owned cache root and returns
 // reclaimed bytes and the absolute, home-expanded workspace root.
 func RemoveLegacy(workspaceRoot string) (reclaimed int64, resolvedRoot string, err error) {
+	return removeLegacy(workspaceRoot, (*os.Root).Chmod)
+}
+
+func removeLegacy(workspaceRoot string, chmod func(*os.Root, string, os.FileMode) error) (reclaimed int64, resolvedRoot string, err error) {
 	if strings.TrimSpace(workspaceRoot) == "" {
 		return 0, "", nil
 	}
@@ -148,8 +152,34 @@ func RemoveLegacy(workspaceRoot string) (reclaimed int64, resolvedRoot string, e
 		err = errors.Join(err, workspace.Close())
 	}()
 	const root = ".detent/cache"
+	// Go module caches contain read-only directories. Restore owner access
+	// before unlinking their contents, without following directory symlinks.
+	if err := fs.WalkDir(workspace.FS(), root, func(path string, entry fs.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if err := chmod(workspace, path, info.Mode()|0700); err != nil {
+			slog.Warn("cannot repair legacy cache directory permissions; continuing removal", "path", path, "error", err)
+			return fs.SkipDir
+		}
+		return nil
+	}); err != nil {
+		return 0, resolved, err
+	}
+	// Measure after restoring traversal permissions. An inaccessible subtree
+	// must not prevent RemoveAll from removing accessible siblings.
 	size, err := sizeFS(context.Background(), workspace.FS(), root)
-	if err != nil {
+	if err != nil && !os.IsPermission(err) {
 		return 0, resolved, err
 	}
 	if err := workspace.RemoveAll(root); err != nil {

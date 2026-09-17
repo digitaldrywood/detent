@@ -2,6 +2,7 @@ package toolcache
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,127 @@ func TestRemoveLegacy(t *testing.T) {
 			}
 			if _, err := os.Stat(root); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRemoveLegacyReadOnlyDirectories(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{"writable", 0755},
+		{"read-only module cache", 0555},
+		{"read-only without search permission", 0444},
+		{"search-only", 0111},
+		{"no permissions", 0000},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			cache := filepath.Join(root, ".detent", "cache")
+			module := filepath.Join(cache, "project", "go-mod", "example.com", "module@v1.0.0")
+			nested := filepath.Join(module, "pkg")
+			if err := os.MkdirAll(nested, 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				for _, dir := range []string{module, nested} {
+					if err := os.Chmod(dir, 0755); err != nil && !os.IsNotExist(err) {
+						t.Error(err)
+					}
+				}
+			})
+			for _, dir := range []string{nested, module} {
+				if err := os.WriteFile(filepath.Join(dir, "entry.go"), []byte("123"), 0444); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, tt.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reclaimed, _, err := RemoveLegacy(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reclaimed != 6 {
+				t.Fatalf("reclaimed = %d, want 6", reclaimed)
+			}
+			if _, err := os.Stat(cache); !os.IsNotExist(err) {
+				t.Fatalf("cache remains: %v", err)
+			}
+		})
+	}
+}
+
+// Inject the ownership-related chmod failure without requiring another uid.
+func TestRemoveLegacyChmodFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		mode    os.FileMode
+		wantErr bool
+	}{
+		{"removable despite chmod failure", 0700, false},
+		{"read-only subtree", 0500, true},
+		{"inaccessible subtree", 0000, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			cache := filepath.Join(root, ".detent", "cache")
+			blocked := filepath.Join(cache, "a-blocked")
+			for _, name := range []string{"a-blocked", "z-removable"} {
+				dir := filepath.Join(cache, name)
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "entry"), []byte("123"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(blocked, 0700); err != nil && !os.IsNotExist(err) {
+					t.Error(err)
+				}
+			})
+			if err := os.Chmod(blocked, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantErr {
+				if err := os.Remove(filepath.Join(blocked, "entry")); err == nil {
+					t.Skip("filesystem does not enforce directory permissions")
+				} else if !os.IsPermission(err) {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			reclaimed, _, err := removeLegacy(root, func(workspace *os.Root, path string, mode os.FileMode) error {
+				if path == ".detent/cache/a-blocked" {
+					calls++
+					return &os.PathError{Op: "chmod", Path: path, Err: os.ErrPermission}
+				}
+				return workspace.Chmod(path, mode)
+			})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, want error %t", err, tt.wantErr)
+			}
+			if calls != 1 {
+				t.Fatalf("chmod failures = %d, want 1", calls)
+			}
+			if _, err := os.Stat(filepath.Join(cache, "z-removable")); !os.IsNotExist(err) {
+				t.Fatalf("removable sibling remains: %v", err)
+			}
+			if tt.wantErr {
+				if !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("error = %v, want permission error", err)
+				}
+				if _, err := os.Stat(blocked); err != nil {
+					t.Fatalf("blocked subtree missing: %v", err)
+				}
+				if reclaimed != 0 {
+					t.Fatalf("reported complete reclamation after partial failure: %d", reclaimed)
+				}
+			} else if reclaimed != 6 {
+				t.Fatalf("reclaimed = %d, want 6", reclaimed)
 			}
 		})
 	}

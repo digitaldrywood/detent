@@ -35,6 +35,7 @@ type githubLookupSignal struct {
 	trigger string
 	reason  string
 	resetAt time.Time
+	retryAt time.Time
 }
 
 func (o *Orchestrator) githubLookupBackoffGate(ctx context.Context, state *State, now time.Time) bool {
@@ -108,6 +109,9 @@ func (o *Orchestrator) githubLookupBackoffGate(ctx context.Context, state *State
 			trigger: outage.Trigger,
 			reason:  "GitHub GraphQL rate-limit probe failed: " + err.Error(),
 			resetAt: outage.ResetAt,
+		}
+		if current, active := o.currentGitHubLookupSignal(state, now); active {
+			signal = current
 		}
 		o.advanceGitHubLookupBackoff(state, outage, signal, now, time.Time{})
 		return true
@@ -237,13 +241,19 @@ func (o *Orchestrator) finalizeGitHubLookupProviderProbe(state *State, now time.
 }
 
 func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (githubLookupSignal, bool) {
+	var secondaryDeadline time.Time
+	if reporter, ok := o.connector.(connector.RateLimitReporter); ok {
+		if quota, exists := reporter.GraphQLRateLimit(); exists {
+			secondaryDeadline = quota.BackoffUntil
+		}
+	}
+	if secondaryDeadline.After(now) {
+		return githubLookupSignal{trigger: githubLookupTriggerGraphQL, reason: "GitHub GraphQL returned a secondary rate-limit response", resetAt: secondaryDeadline, retryAt: secondaryDeadline}, true
+	}
 	if reporter, ok := o.connector.(connector.GraphQLRateLimitStatusReporter); ok {
-		switch reporter.GraphQLRateLimitStatus() {
-		case connector.GraphQLRateLimitStatusBackoff, connector.GraphQLRateLimitStatusExhausted:
-			return githubLookupSignal{
-				trigger: githubLookupTriggerGraphQL,
-				reason:  "GitHub GraphQL returned a rate-limit response",
-			}, true
+		status := reporter.GraphQLRateLimitStatus()
+		if status == connector.GraphQLRateLimitStatusExhausted || status == connector.GraphQLRateLimitStatusBackoff {
+			return githubLookupSignal{trigger: githubLookupTriggerGraphQL, reason: "GitHub GraphQL returned a rate-limit response"}, true
 		}
 	}
 	if reporter, ok := o.connector.(connector.RateLimitReporter); ok {
@@ -475,6 +485,10 @@ func (o *Orchestrator) advanceGitHubLookupBackoff(
 	nextProbeAt := now.Add(delay).UTC()
 	if probeDeadline.After(now) && probeDeadline.Before(nextProbeAt) {
 		nextProbeAt = probeDeadline.UTC()
+		delay = nextProbeAt.Sub(now)
+	}
+	if signal.retryAt.After(now) {
+		nextProbeAt = signal.retryAt.UTC()
 		delay = nextProbeAt.Sub(now)
 	}
 	detectedAt := existing.DetectedAt

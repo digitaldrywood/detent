@@ -115,24 +115,28 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 		result.Unverifiable = result.Unverifiable || evidence.Unverifiable
 		result.HumanOwned = result.HumanOwned || evidence.Owner == workpad.BlockerOwnerHuman && evidence.Status != blockerEvidenceStatusCleared
 	}
-	if humanAction := strings.TrimSpace(signal.HumanAction); humanAction != "" {
+	if evidence := recordedHumanActionEvidence(state, issue, now); evidence != nil {
 		result.Found = true
 		result.Unverifiable = true
 		result.HumanOwned = true
-		result.Evidence = append(result.Evidence, newBlockerEvidence(
-			"free_text",
-			workpad.BlockerOwnerHuman,
-			blockerEvidenceStatusUnverifiable,
-			"",
-			humanAction,
-			"human_action has no live predicate",
-			recordedAt,
-			nil,
-			"",
-			now,
-		))
+		result.Evidence = append(result.Evidence, *evidence)
 	}
+
 	return result
+}
+
+// recordedHumanActionEvidence is shared by dispatch evaluation and the Needs-you snapshot.
+func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.Time) *telemetry.BlockerEvidence {
+	signal, _ := rawIssueWorkpadSignal(issue)
+	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured || strings.TrimSpace(signal.Status) != workpad.StatusBlocked {
+		return nil
+	}
+	action := strings.TrimSpace(signal.HumanAction)
+	if action == "" {
+		return nil
+	}
+	evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusUnverifiable, "", action, "human_action has no live predicate", recordedBlockerTime(state, issue, signal), nil, "", now)
+	return &evidence
 }
 
 func (o *Orchestrator) evaluateRecordedBlocker(

@@ -39,6 +39,7 @@ type dispatchLoopFingerprint struct {
 }
 
 type dispatchLoopStartRecord struct {
+	AllowanceExternalWait  bool                    `json:"allowance_external_wait,omitempty"`
 	Fingerprint            dispatchLoopFingerprint `json:"fingerprint"`
 	Captured               bool                    `json:"captured"`
 	Persisted              bool                    `json:"persisted"`
@@ -125,9 +126,10 @@ func newDispatchLoopStartRecord(issue connector.Issue, mode string) dispatchLoop
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
 	lane := normalizeState(issue.State)
 	return dispatchLoopStartRecord{
-		Fingerprint:          dispatchLoopFingerprintFromValues(lane, signature, implementProgressDiffStats{}),
-		LaneAvailable:        lane != "",
-		PullRequestAvailable: dispatchLoopPullRequestEvidenceAvailable(workAttemptPRNumber(issue), signature, ""),
+		Fingerprint:           dispatchLoopFingerprintFromValues(lane, signature, implementProgressDiffStats{}),
+		AllowanceExternalWait: allowanceExternalWait(issue),
+		LaneAvailable:         lane != "",
+		PullRequestAvailable:  dispatchLoopPullRequestEvidenceAvailable(workAttemptPRNumber(issue), signature, ""),
 	}
 }
 

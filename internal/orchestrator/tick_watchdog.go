@@ -15,14 +15,16 @@ const (
 )
 
 type tickWatchdog struct {
-	mu            sync.RWMutex
-	projectID     string
-	status        telemetry.TickLivenessStatus
-	lastTickAt    time.Time
-	nextRefreshAt time.Time
-	interval      time.Duration
-	frozenAt      time.Time
-	logger        *slog.Logger
+	mu               sync.RWMutex
+	scanWaiting      bool
+	scanWaitDuration time.Duration
+	projectID        string
+	status           telemetry.TickLivenessStatus
+	lastTickAt       time.Time
+	nextRefreshAt    time.Time
+	interval         time.Duration
+	frozenAt         time.Time
+	logger           *slog.Logger
 }
 
 func newTickWatchdog(projectID string, interval time.Duration, logger *slog.Logger) *tickWatchdog {
@@ -53,6 +55,7 @@ func (w *tickWatchdog) Advance(at time.Time, nextRefreshAt time.Time, interval t
 	recovered := w.status == telemetry.TickLivenessStatusNeedsAttention
 	w.lastTickAt = at
 	w.nextRefreshAt = nextRefreshAt
+	w.scanWaitDuration = 0
 	if interval > 0 {
 		w.interval = interval
 	}
@@ -74,6 +77,7 @@ func (w *tickWatchdog) Schedule(nextRefreshAt time.Time, interval time.Duration)
 	}
 	w.mu.Lock()
 	w.nextRefreshAt = nextRefreshAt
+	w.scanWaitDuration = 0
 	if interval > 0 {
 		w.interval = interval
 	}
@@ -168,11 +172,36 @@ func (w *tickWatchdog) livenessLocked(now time.Time) telemetry.TickLiveness {
 	}
 }
 
+// excludeScanWait removes only credential-slot queue time from the existing
+// watchdog clock. Work before and after the wait retains its elapsed time.
+func (w *tickWatchdog) excludeScanWait() func() time.Duration {
+	started := time.Now()
+	if w != nil {
+		w.mu.Lock()
+		w.scanWaiting = true
+		w.mu.Unlock()
+	}
+	return func() time.Duration {
+		duration := time.Since(started)
+		if w != nil {
+			w.mu.Lock()
+			w.scanWaitDuration += duration
+			w.scanWaiting = false
+			w.mu.Unlock()
+		}
+		return duration
+	}
+}
+
 func (w *tickWatchdog) intervalStartLocked() time.Time {
+	if w.scanWaiting {
+		return time.Time{}
+	}
+
 	if w.lastTickAt.IsZero() || w.nextRefreshAt.IsZero() || w.interval <= 0 {
 		return w.lastTickAt
 	}
-	return w.nextRefreshAt.Add(-w.interval)
+	return w.nextRefreshAt.Add(-w.interval).Add(w.scanWaitDuration)
 }
 
 func missedTickIntervals(lastTickAt time.Time, now time.Time, interval time.Duration) int64 {

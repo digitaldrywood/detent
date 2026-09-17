@@ -2,6 +2,7 @@ package intake
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 
@@ -28,14 +29,17 @@ type Config struct {
 }
 
 type Source struct {
-	Name     string  `yaml:"name,omitempty"`
-	Kind     string  `yaml:"kind"`
-	Secret   string  `yaml:"secret,omitempty"`
-	Match    string  `yaml:"match,omitempty"`
-	Cron     string  `yaml:"cron,omitempty"`
-	Scan     string  `yaml:"scan,omitempty"`
-	Creates  Creates `yaml:"creates"`
-	DedupeBy string  `yaml:"dedupe_by,omitempty"`
+	Enabled      *bool    `yaml:"enabled,omitempty"`
+	Paths        []string `yaml:"paths,omitempty"`
+	ExcludePaths []string `yaml:"exclude_paths,omitempty"`
+	Name         string   `yaml:"name,omitempty"`
+	Kind         string   `yaml:"kind"`
+	Secret       string   `yaml:"secret,omitempty"`
+	Match        string   `yaml:"match,omitempty"`
+	Cron         string   `yaml:"cron,omitempty"`
+	Scan         string   `yaml:"scan,omitempty"`
+	Creates      Creates  `yaml:"creates"`
+	DedupeBy     string   `yaml:"dedupe_by,omitempty"`
 }
 
 type Creates struct {
@@ -46,7 +50,26 @@ type Creates struct {
 }
 
 func (c Config) Enabled() bool {
-	return len(c.Sources) > 0
+	for _, source := range c.Sources {
+		if source.enabled() {
+			return true
+		}
+	}
+	return false
+}
+
+func (s Source) enabled() bool { return s.Enabled == nil || *s.Enabled }
+
+func (s Source) matchesPath(name string) bool {
+	matches := func(patterns []string) bool {
+		for _, pattern := range patterns {
+			if ok, err := path.Match(pattern, name); err == nil && ok {
+				return true
+			}
+		}
+		return false
+	}
+	return (len(s.Paths) == 0 || matches(s.Paths)) && !matches(s.ExcludePaths)
 }
 
 func (c *Config) Normalize() {
@@ -55,6 +78,9 @@ func (c *Config) Normalize() {
 	}
 	for index := range c.Sources {
 		source := &c.Sources[index]
+		if source.Enabled == nil {
+			source.Enabled = new(true)
+		}
 		source.Kind = strings.ToLower(strings.TrimSpace(source.Kind))
 		source.Name = strings.ToLower(strings.TrimSpace(source.Name))
 		source.Secret = strings.TrimSpace(source.Secret)
@@ -107,6 +133,16 @@ func (c Config) Validate(prefix string, states []string) []string {
 			seen[source.Name] = struct{}{}
 		}
 
+		for _, patterns := range [][]string{source.Paths, source.ExcludePaths} {
+			for _, pattern := range patterns {
+				if _, err := path.Match(pattern, ""); err != nil {
+					problems = append(problems, field+" has invalid path glob: "+pattern)
+				}
+			}
+		}
+		if (len(source.Paths) > 0 || len(source.ExcludePaths) > 0) && source.Kind != KindSchedule {
+			problems = append(problems, field+" path filters require a scheduled source")
+		}
 		switch source.Kind {
 		case KindSchedule:
 			if source.Cron == "" {
@@ -154,6 +190,12 @@ func cloneConfig(cfg Config) Config {
 	out := Config{Sources: make([]Source, len(cfg.Sources))}
 	copy(out.Sources, cfg.Sources)
 	for index := range out.Sources {
+		out.Sources[index].Paths = append([]string(nil), cfg.Sources[index].Paths...)
+		out.Sources[index].ExcludePaths = append([]string(nil), cfg.Sources[index].ExcludePaths...)
+		if cfg.Sources[index].Enabled != nil {
+			value := *cfg.Sources[index].Enabled
+			out.Sources[index].Enabled = &value
+		}
 		out.Sources[index].Creates.Labels = append([]string(nil), cfg.Sources[index].Creates.Labels...)
 	}
 	return out

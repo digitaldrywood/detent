@@ -25,6 +25,7 @@ func TestDependencyAuthority(t *testing.T) {
 		{name: "native empty retains body", body: "Depends on: #100", status: http.StatusOK, native: `[]`, wantSource: connector.BlockedRefSourceProse},
 		{name: "bold body duplicate", body: "**Depends on:** #100\n- Depends on #100 so the helpers exist.", status: http.StatusOK, native: `[]`, wantSource: connector.BlockedRefSourceProse},
 		{name: "native empty ignores old workpad", comment: "## Codex Workpad\nBlocked by: #100", status: http.StatusOK, native: `[]`},
+		{name: "native survives explicit empty body", body: "Depends on: none. See #999", status: http.StatusOK, native: `[{"node_id":"I_100","number":100,"state":"open"}]`, wantSource: connector.BlockedRefSourceNative},
 		{name: "native wins", body: "Depends on: #100", status: http.StatusOK, native: `[{"node_id":"I_100","number":100,"state":"open"}]`, wantSource: connector.BlockedRefSourceNative},
 		{name: "unsupported uses body", body: "Depends on: #100", status: http.StatusNotFound, native: `{"message":"Not Found"}`, wantSource: connector.BlockedRefSourceProse},
 		{name: "unsupported ignores old workpad", comment: "## Codex Workpad\nBlocked by: #100", status: http.StatusNotFound, native: `{"message":"Not Found"}`},
@@ -218,7 +219,7 @@ func TestDependencyAuthorityIgnoresFencedExamples(t *testing.T) {
 
 func TestTodoBodyDependencyLookupFailureDoesNotReturnCandidates(t *testing.T) {
 	t.Parallel()
-	for _, status := range []int{http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			t.Parallel()
 			server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -228,8 +229,32 @@ func TestTodoBodyDependencyLookupFailureDoesNotReturnCandidates(t *testing.T) {
 			})
 			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}})
 			result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
+			if status == http.StatusInternalServerError || status == http.StatusTooManyRequests {
+				if err != nil || len(result.Issues) != 1 || len(result.Issues[0].BlockedBy) != 1 || result.Issues[0].BlockedBy[0].State != "" {
+					t.Fatalf("retryable lookup = %+v, %v; want candidate with unresolved blocker", result.Issues, err)
+				}
+				return
+			}
 			if err == nil || len(result.Issues) != 0 {
 				t.Fatalf("candidates = %+v, err = %v; want no candidates and hydration error", result.Issues, err)
+			}
+		})
+	}
+}
+
+func TestTodoUnknownNativeDependencyListRejectsCandidates(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{method: http.MethodGet, body: `[{"node_id":"I_101","number":101,"state":"open","html_url":"https://github.com/owner/repo/issues/101","labels":[{"name":"detent:todo"}]}]`},
+				{method: http.MethodGet, path: "/repos/owner/repo/issues/101/dependencies/blocked_by?per_page=100", status: status, body: `{"message":"unavailable"}`},
+			})
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "owner/repo", ActiveStates: []string{"Todo"}})
+			got, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 1})
+			if err == nil || len(got.Issues) != 0 {
+				t.Fatalf("unknown native list returned candidates: %+v, %v", got, err)
 			}
 		})
 	}

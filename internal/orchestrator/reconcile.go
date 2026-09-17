@@ -14,12 +14,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func (o *Orchestrator) observedStatusFetchStates() []string {
+func (o *Orchestrator) schedulerObservedStates() []string {
 	states := append([]string{blockedStatusState}, autoPromoteFetchStates(o.cfg.AutoPromote)...)
 	if cfg := gate.EffectivePlan(o.cfg.Plan); cfg.Enabled {
 		states = append(states, cfg.Stop)
 	}
-	states = append(states, o.cfg.ObservedStates...)
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if cfg.Enabled {
 		states = append(states, cfg.SourceStates...)
@@ -34,6 +33,16 @@ func (o *Orchestrator) observedStatusFetchStates() []string {
 		states = append(states, blockerCfg.BlockerStates...)
 	}
 	return displayStateNames(states)
+}
+
+func (o *Orchestrator) observedStatusFetchStates() []string {
+	return displayStateNames(append(o.schedulerObservedStates(), o.cfg.ObservedStates...))
+}
+
+func (o *Orchestrator) refreshFilterHint() connector.IssueFilterHint {
+	hint := o.authorizationFilterHint()
+	hint.SchedulerStates = o.schedulerObservedStates()
+	return hint
 }
 
 func (o *Orchestrator) observedStatusFetchStatesForTick(_ *State) []string {
@@ -178,13 +187,20 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 		}
 		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_status_reconciled"); err != nil {
 			if o.logger != nil {
-				o.logger.Warn("reconcile closed completed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+				o.logger.Warn("reconcile closed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
 			continue
 		}
 		reconciled[issueID] = struct{}{}
+		if !closedReasonCompleted(issue.ClosedReason) && state.tickTransitions != nil {
+			// Preserve completed-work transition visibility, but do not publish
+			// other closed work back into the board or active pipeline.
+			removed := map[string]struct{}{issueID: {}}
+			state.tickTransitions.boardIssues = filterReconciledIssues(state.tickTransitions.boardIssues, removed)
+			state.tickTransitions.pipeline = filterReconciledIssues(state.tickTransitions.pipeline, removed)
+		}
 		if o.logger != nil {
-			o.logger.Info("reconciled closed completed issue status", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
+			o.logger.Info("reconciled closed issue status", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
 		}
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
@@ -200,7 +216,6 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 
 func closedCompletedIssueNeedsStatusReconciliation(issue connector.Issue, terminalStates []string) bool {
 	return issue.Closed &&
-		closedReasonCompleted(issue.ClosedReason) &&
 		strings.TrimSpace(issue.State) != "" &&
 		!stateIn(issue.State, terminalStates)
 }

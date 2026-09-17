@@ -142,7 +142,7 @@ func (c *Connector) observeCandidatePullRequests(ctx context.Context, sources []
 		repo := repos[name]
 		fmt.Fprintf(&query, "repo%d: repository(owner:%q,name:%q) { pullRequests(first:100,orderBy:{field:UPDATED_AT,direction:DESC}) { pageInfo { hasNextPage } nodes { %s } } }", i, repo.Owner, repo.Name, candidatePRReferenceFields)
 	}
-	query.WriteString("}")
+	query.WriteString("rateLimit { limit used cost remaining resetAt } }")
 	ids := make([]string, 0, len(selected))
 	for _, source := range selected {
 		ids = append(ids, source.ID)
@@ -243,12 +243,13 @@ func (c *Connector) observeCandidatePullRequestStatus(ctx context.Context, byKey
 	if len(keys) == 0 {
 		return
 	}
-	// Bound the schema's maximum node count, including nested annotations,
-	// below GitHub's 500,000-node query limit even for full connections.
-	if len(keys) > 20 {
-		for start := 0; start < len(keys); start += 20 {
-			batch := make(map[pullRequestKey][]string)
-			for _, key := range keys[start:min(start+20, len(keys))] {
+	// Twenty PRs with the authoritative 100-item connections stay below
+	// GitHub's 500,000-node limit: 20 * 10,401 = 208,020 nodes.
+	const batchSize = 20
+	if len(keys) > batchSize {
+		for start := 0; start < len(keys); start += batchSize {
+			batch := make(map[pullRequestKey][]string, batchSize)
+			for _, key := range keys[start:min(start+batchSize, len(keys))] {
 				batch[key] = byKey[key]
 			}
 			c.observeCandidatePullRequestStatus(ctx, batch, evidence)
@@ -260,7 +261,7 @@ func (c *Connector) observeCandidatePullRequestStatus(ctx context.Context, byKey
 	for i, key := range keys {
 		fmt.Fprintf(&query, "pr%d: repository(owner:%q,name:%q) { pullRequest(number:%d) { %s } }", i, key.Repo.Owner, key.Repo.Name, key.Number, candidatePRFields)
 	}
-	query.WriteString("}")
+	query.WriteString("rateLimit { limit used cost remaining resetAt } }")
 	var response map[string]*struct {
 		PullRequest *candidatePRSnapshot `json:"pullRequest"`
 	}

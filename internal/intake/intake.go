@@ -196,6 +196,9 @@ func (m *Manager) Prepare(cfg Config, store IssueStore, root string) (*Prepared,
 	root = strings.TrimSpace(root)
 	sources := make(map[string]runtimeSource, len(cfg.Sources))
 	for _, source := range cfg.Sources {
+		if !source.enabled() {
+			continue
+		}
 		runtime := runtimeSource{config: source}
 		var err error
 		if source.Kind == KindSchedule {
@@ -393,6 +396,9 @@ func (m *Manager) process(ctx context.Context, source Source, store IssueStore, 
 		return Result{Source: source.Name}, fmt.Errorf("%w: summary is required", ErrInvalidPayload)
 	}
 	result := Result{Matched: matches(source.Match, event.Fields), Source: source.Name}
+	if source.Kind == KindSchedule {
+		result.Matched = result.Matched && source.matchesPath(event.Fields["path"])
+	}
 	if !result.Matched {
 		return result, nil
 	}
@@ -425,7 +431,11 @@ func (m *Manager) process(ctx context.Context, source Source, store IssueStore, 
 	if err != nil {
 		return result, fmt.Errorf("find intake issue: %w", err)
 	}
-	if found && !issue.Closed {
+	if found && issue.Closed {
+		result.Issue = issue
+		return result, nil
+	}
+	if found {
 		return m.updateExisting(ctx, source, store, marker, issue, draft, pendingDraft, result)
 	}
 	created := true

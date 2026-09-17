@@ -92,6 +92,9 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 			if existing.Body != q.Body {
 				return fail(errors.New("question key already has different text; reuse the original question"))
 			}
+			if existing.AnswerCommentID == store.HumanQuestionResolvedByClosure {
+				return runner.AgentToolResult{Success: true, Content: existing.AnswerBody + " Ask a new question with a new key if input is still needed."}, nil
+			}
 			if existing.AnswerCommentID != "" {
 				return runner.AgentToolResult{Success: true, Content: "Authorized reply to interpret (not blanket approval):\n" + existing.AnswerBody}, nil
 			}
@@ -102,6 +105,7 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 			for _, comment := range comments {
 				if comment.ID != "" && strings.Contains(comment.Body, humanQuestionMarker(existing)) {
 					existing.QuestionCommentID = comment.ID
+					existing.AskedAt = comment.CreatedAt
 					if err := questions.RecordHumanQuestionComment(ctx, existing); err != nil {
 						return fail(err)
 					}
@@ -124,6 +128,9 @@ func (o *Orchestrator) humanQuestionWaiting(ctx context.Context, issue *connecto
 		return false, err
 	}
 	for _, q := range records {
+		if q.AnswerCommentID == store.HumanQuestionResolvedByClosure {
+			continue
+		}
 		if q.AnswerCommentID != "" {
 			issue.Comments = append(issue.Comments, connector.IssueComment{ID: q.AnswerCommentID, Body: q.AnswerBody, AuthorAuthorized: true})
 			continue
@@ -148,6 +155,7 @@ func (o *Orchestrator) humanQuestionWaiting(ctx context.Context, issue *connecto
 			if comment.ID != "" && (comment.ID == q.QuestionCommentID || strings.Contains(comment.Body, humanQuestionMarker(q))) {
 				questionIndex = i
 				q.QuestionCommentID = comment.ID
+				q.AskedAt = comment.CreatedAt
 				if err := questions.RecordHumanQuestionComment(ctx, q); err != nil {
 					return true, err
 				}

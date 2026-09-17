@@ -395,7 +395,11 @@ func parseSplitProjectDefinition(
 	}
 	cfg, err := decodeWorkflowConfig(sharedRoot)
 	if err != nil {
-		return Workflow{}, fmt.Errorf("decode project config: %w", err)
+		path := sources.ConfigPath
+		if sources.HasLocalConfig {
+			path = sources.LocalConfigPath
+		}
+		return Workflow{}, fmt.Errorf("decode project config %s: %w", path, err)
 	}
 
 	sharedPrompt := normalizeProjectDefinitionPrompt(shared.prompt)

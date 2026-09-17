@@ -353,7 +353,7 @@ func (c *Connector) FindIntakeIssue(_ context.Context, marker string) (intake.Is
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, issue := range c.issues {
-		if !issue.Closed && strings.Contains(issue.Description, marker) {
+		if strings.Contains(issue.Description, marker) {
 			return memoryIntakeIssue(issue), true, nil
 		}
 	}

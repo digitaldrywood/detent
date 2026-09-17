@@ -3,10 +3,14 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestRefreshTimingLogsEveryCompletedPhase(t *testing.T) {
@@ -82,6 +86,28 @@ func TestRefreshSubstepTiming(t *testing.T) {
 			}
 			if timing.stepName != "" {
 				t.Error("stage transition retained open step")
+			}
+		})
+	}
+}
+
+func TestRefreshTimingGraphQLPoints(t *testing.T) {
+	for _, cost := range []int64{0, 3, 12} {
+		t.Run(strconv.FormatInt(cost, 10), func(t *testing.T) {
+			var logs bytes.Buffer
+			timing := newRefreshTiming(slog.New(slog.NewTextHandler(&logs, nil)), "project", false)
+			ctx, points := connector.WithGraphQLPoints(t.Context())
+			timing.points = points
+			timing.next("tracker_fetch")
+			connector.RecordGraphQLPoints(ctx, cost)
+			connector.RecordGraphQLPoints(ctx, cost)
+			timing.next("reconciliation")
+			connector.RecordGraphQLPoints(ctx, 1)
+			timing.log(ctx, true, nil)
+			for _, want := range []string{fmt.Sprintf("tracker_fetch_graphql_points=%d", 2*cost), "reconciliation_graphql_points=1"} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("missing %s in %s", want, logs.String())
+				}
 			}
 		})
 	}

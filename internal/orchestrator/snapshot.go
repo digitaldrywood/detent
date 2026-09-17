@@ -1182,6 +1182,7 @@ func telemetryMergeTiming(issue connector.Issue, timing MergeTiming, now time.Ti
 func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration, now time.Time, laneEntries map[string]time.Time) telemetry.Issue {
 	laneEnteredAt := telemetryIssueLaneEnteredAt(issue, laneEntries)
 	return telemetry.Issue{
+		WorkpadHumanAction:    recordedHumanActionEvidence(nil, issue, now),
 		ID:                    issue.ID,
 		Identifier:            issue.Identifier,
 		Number:                issue.Number,

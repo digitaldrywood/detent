@@ -61,12 +61,16 @@ func TestReconcileClosedCompletedIssueStatusesLeavesOtherIssuesUnchanged(t *test
 		issue connector.Issue
 	}{
 		{
-			name:  "closed not planned",
-			issue: statusReconcileIssue("issue-not-planned", "In Progress", true, "not_planned"),
+			name:  "open not planned",
+			issue: statusReconcileIssue("issue-not-planned", "In Progress", false, "not_planned"),
 		},
 		{
 			name:  "open completed",
 			issue: statusReconcileIssue("issue-open", "In Progress", false, "completed"),
+		},
+		{
+			name:  "closed not planned terminal",
+			issue: statusReconcileIssue("issue-cancelled", "Cancelled", true, "not_planned"),
 		},
 		{
 			name:  "closed completed terminal",

@@ -387,8 +387,8 @@ func TestConnectorFetchRefreshIssuesBoundsLargeProjectScan(t *testing.T) {
 		secondPageCount  int
 		wantGraphQLCalls int
 	}{
-		{name: "single page", total: 99, firstPageCount: 99, wantGraphQLCalls: 1},
-		{name: "pyroapex scale", total: 186, firstPageCount: 100, secondPageCount: 86, wantGraphQLCalls: 2},
+		{name: "single page", total: 99, firstPageCount: 99, wantGraphQLCalls: 5},
+		{name: "pyroapex scale", total: 186, firstPageCount: 100, secondPageCount: 86, wantGraphQLCalls: 6},
 	}
 
 	for _, tt := range tests {
@@ -403,15 +403,19 @@ func TestConnectorFetchRefreshIssuesBoundsLargeProjectScan(t *testing.T) {
 					projectIssueNodes(tt.firstPageCount, "Todo"),
 				),
 			}}
+			for start := 0; start < tt.firstPageCount; start += 25 {
+				data := map[string]any{}
+				for i := start; i < min(start+25, tt.firstPageCount); i++ {
+					data[fmt.Sprintf("issue%d", i-start)] = map[string]any{"id": fmt.Sprintf("I_%d", 1000+i), "comments": map[string]any{"totalCount": 0}, "blockedBy": map[string]any{"nodes": []any{}}}
+				}
+				body, err := json.Marshal(map[string]any{"data": data})
+				if err != nil {
+					t.Fatal(err)
+				}
+				responses = append(responses, graphqlTestResponse{body: string(body)})
+			}
 			if tt.secondPageCount > 0 {
-				responses = append(responses, graphqlTestResponse{
-					body: projectItemsPageResponseWithTotal(
-						tt.total,
-						false,
-						"",
-						projectIssueNodes(tt.secondPageCount, "Done"),
-					),
-				})
+				responses = append(responses, graphqlTestResponse{body: projectItemsPageResponseWithTotal(tt.total, false, "", projectIssueNodes(tt.secondPageCount, "Done"))})
 			}
 			responses = append(responses, graphqlTestResponse{
 				method: http.MethodGet,
@@ -420,6 +424,7 @@ func TestConnectorFetchRefreshIssuesBoundsLargeProjectScan(t *testing.T) {
 			})
 
 			server := newGraphQLTestServer(t, responses)
+			server.candidateHydration = true
 			c := newGitHubTestConnector(t, server, Config{
 				ProjectSlug:  "PVT_1",
 				ActiveStates: []string{"Todo"},
@@ -4165,7 +4170,7 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 func TestConnectorFetchIssuesByStatesRejectsBodyDependencyWhenHydrationFails(t *testing.T) {
 	t.Parallel()
 
-	for _, status := range []int{http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusNotFound, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			t.Parallel()
 			server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -4182,6 +4187,12 @@ func TestConnectorFetchIssuesByStatesRejectsBodyDependencyWhenHydrationFails(t *
 			c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
 			got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
+			if status == http.StatusInternalServerError || status == http.StatusTooManyRequests {
+				if err != nil || len(got) != 1 || len(got[0].BlockedBy) != 1 || got[0].BlockedBy[0].State != "" {
+					t.Fatalf("retryable lookup = %+v, %v; want candidate with unresolved blocker", got, err)
+				}
+				return
+			}
 			if err == nil || len(got) != 0 {
 				t.Fatalf("FetchIssuesByStates() = %+v, %v; want error and no issues", got, err)
 			}
@@ -6972,12 +6983,13 @@ func TestConnectorSetFieldWritesTextProjectValue(t *testing.T) {
 
 type graphqlTestServer struct {
 	*httptest.Server
-	t                 *testing.T
-	mu                sync.Mutex
-	unsupportedNative bool
-	responses         []graphqlTestResponse
-	seen              []map[string]any
-	requestSeen       chan struct{}
+	t                  *testing.T
+	mu                 sync.Mutex
+	unsupportedNative  bool
+	candidateHydration bool
+	responses          []graphqlTestResponse
+	seen               []map[string]any
+	requestSeen        chan struct{}
 }
 
 type graphqlTestResponse struct {
@@ -7042,7 +7054,7 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	// Legacy scripts predate page hydration and exercise its REST fallback.
 	// Dedicated batching fixtures serve DetentGitHubCandidateHydration explicitly.
-	if query, _ := payload["query"].(string); strings.Contains(query, "DetentGitHubCandidateHydration") {
+	if query, _ := payload["query"].(string); strings.Contains(query, "DetentGitHubCandidateHydration") && !s.candidateHydration {
 		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"errors":[{"message":"candidate hydration unsupported by legacy fixture"}]}`))
@@ -7390,6 +7402,50 @@ func TestSecurityAuditDeltaSnapshot(t *testing.T) {
 				if next.FindingFiles[filePath] != "authorization now checked" {
 					t.Fatalf("next finding files = %#v", next.FindingFiles)
 				}
+			}
+		})
+	}
+}
+
+func TestConnectorLookupBranchHead(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, repository, branch, body, want string
+		wantErr                              bool
+	}{
+		{name: "branch with slash", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":{"ref":{"target":{"oid":"remote-head"}}}}}`, want: "remote-head"},
+		{name: "missing branch", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":{"ref":null}}}`},
+		{name: "missing repository", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":null}}`, wantErr: true},
+		{name: "empty head", repository: "example/repo", branch: "detent/issue-2601", body: `{"data":{"repository":{"ref":{"target":{"oid":""}}}}}`, wantErr: true},
+		{name: "API error", repository: "example/repo", branch: "detent/issue-2601", body: `{"errors":[{"message":"unavailable"}]}`, wantErr: true},
+		{name: "invalid repository", repository: "invalid", branch: "detent/issue-2601", wantErr: true},
+		{name: "empty branch", repository: "example/repo", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var responses []graphqlTestResponse
+			if tt.body != "" {
+				responses = append(responses, graphqlTestResponse{body: tt.body})
+			}
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{})
+			got, err := c.LookupBranchHead(t.Context(), tt.repository, tt.branch)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("LookupBranchHead() = %q, %v; want %q, error %v", got, err, tt.want, tt.wantErr)
+			}
+			requests := server.requests()
+			if tt.body == "" {
+				if len(requests) != 0 {
+					t.Fatalf("invalid input issued %d requests", len(requests))
+				}
+				return
+			}
+			if len(requests) != 1 {
+				t.Fatalf("requests = %d, want 1", len(requests))
+			}
+			variables := requests[0]["variables"].(map[string]any)
+			if variables["owner"] != "example" || variables["name"] != "repo" || variables["ref"] != "refs/heads/detent/issue-2601" {
+				t.Fatalf("variables = %#v", variables)
 			}
 		})
 	}

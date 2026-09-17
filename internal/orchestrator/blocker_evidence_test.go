@@ -397,12 +397,12 @@ func TestSymbolicBlockerCompletion(t *testing.T) {
 					t.Fatalf("instance blocker changed issue state: updates=%v blocked=%v retries=%v claims=%v", tracker.updates, state.Blocked, state.Retry, state.Claimed)
 				}
 				evidence := o.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now)
-				if !evidence.Unverifiable || evidence.HumanOwned || len(evidence.Evidence) != 1 || evidence.Evidence[0].Owner != workpad.BlockerOwnerInstance || evidence.Evidence[0].Reference != ref {
+				if !evidence.Unverifiable || evidence.HumanOwned || len(evidence.Evidence) != 1 || evidence.Evidence[0].Owner != workpad.BlockerOwnerInstance || evidence.Evidence[0].Reference != ref || !strings.Contains(evidence.Evidence[0].Reason, "tool unavailable") {
 					t.Fatalf("evidence = %#v", evidence)
 				}
 				planner := o.liveDispatchPlanner(t.Context())
 				decision := planner.dispatchableIssueDecision(issue, &state, false, now, "")
-				if decision.dispatchable || !strings.Contains(decision.detail, ref) || !strings.Contains(decision.detail, "tool unavailable") {
+				if !decision.dispatchable {
 					t.Fatalf("dispatch = %#v", decision)
 				}
 				tracker.refreshed.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\n```"}}

@@ -220,6 +220,14 @@ func TestRecoverStrandedActiveIssues(t *testing.T) {
 			workspace: runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"},
 		},
 		{
+			name: "live worker with thirteen minute delayed heartbeat is never routed",
+			mutate: func(issue *connector.Issue, state *State) {
+				delayed := now.Add(-13 * time.Minute)
+				state.Running[issue.ID] = Running{Issue: cloneIssue(*issue)}
+				state.WorkAttempts = []telemetry.WorkAttempt{{IssueID: issue.ID, Status: "active", Stale: true, HeartbeatAt: &delayed, LeaseExpiresAt: &delayed}}
+			},
+		},
+		{
 			name:      "unavailable workspace evidence holds active lane",
 			workspace: runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "unavailable"},
 		},

@@ -107,6 +107,14 @@ orchestrator-owned unverifiable parks are escalated for operator attention.
   issue out of dispatch while any referenced blocker is non-terminal, then
   dispatches it normally after blockers clear. This is the default behavior and
   needs no extra configuration.
+  Declarations read only the leading comma/and-separated reference list (legacy
+  semicolon separators also work). The first sentence terminator (`.`, `!`, or
+  `?`), other prose, or the end of the line ends the declaration. Periods inside
+  repository names and URLs remain part of the reference. `none`, `n/a`, and `-`
+  explicitly declare no dependencies, even when issue references follow. For
+  example, `Depends on: none. Order: #2, #3` declares no blockers, while
+  `Depends on: #2 and #3 — see #9 for context` declares only #2 and #3.
+  The same rules apply to `Blocked by:`.
 - **Legacy dependency waiting in `Blocked`.** Enable `tracker.dependency_auto_unblock` when
   your team wants dependency-waiting issues to sit in a waiting column. Detent
   only moves issues that have explicit `Depends on:` or `Blocked by:` references.

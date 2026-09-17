@@ -32,9 +32,22 @@ func CanonicalReference(value, repository string) (string, error) {
 // Declarations returns dependency text outside fenced examples. An unfinished
 // fence returns false so callers that append declarations cannot hide new text.
 func Declarations(body string) ([]string, bool) {
+	lines, complete := LinesOutsideFences(body)
 	var declarations []string
+	for _, line := range lines {
+		if text, ok := Match(line); ok {
+			declarations = append(declarations, text)
+		}
+	}
+	return declarations, complete
+}
+
+// LinesOutsideFences returns prose lines using the same fence rules as dependency
+// declarations. The boolean reports whether every opening fence was closed.
+func LinesOutsideFences(body string) ([]string, bool) {
+	var lines []string
 	fence := ""
-	for _, line := range strings.Split(body, "\n") {
+	for _, line := range strings.FieldsFunc(body, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			if fence == "" {
@@ -45,20 +58,11 @@ func Declarations(body string) ([]string, bool) {
 			}
 			continue
 		}
-		if fence != "" {
-			continue
+		if fence == "" {
+			lines = append(lines, line)
 		}
-		text, ok := Match(line)
-		if !ok {
-			continue
-		}
-
-		declarations = append(declarations, text)
 	}
-	if fence != "" {
-		return declarations, false
-	}
-	return declarations, true
+	return lines, fence == ""
 }
 
 func References(body, repository string) ([]string, error) {
@@ -69,6 +73,9 @@ func References(body, repository string) ([]string, error) {
 	var refs []string
 	for _, text := range declarations {
 		for _, value := range strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' }) {
+			if strings.EqualFold(value, "and") {
+				continue
+			}
 			ref, err := CanonicalReference(strings.Trim(value, "`"), repository)
 			if err != nil {
 				return nil, err
