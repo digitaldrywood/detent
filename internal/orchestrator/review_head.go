@@ -7,10 +7,11 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func (o *Orchestrator) requestAutomatedReview(ctx context.Context, issue connector.Issue) {
-	if issue.PullRequest == nil || strings.TrimSpace(issue.PullRequest.HeadSHA) == "" || issue.PullRequest.Draft {
+	if !requiresAutomatedReview(o.cfg) || issue.PullRequest == nil || strings.TrimSpace(issue.PullRequest.HeadSHA) == "" || issue.PullRequest.Draft {
 		return
 	}
 	if err := o.publishAutomatedReviewRequest(ctx, issue); err != nil && o.logger != nil {
@@ -42,4 +43,9 @@ func (o *Orchestrator) publishAutomatedReviewRequest(ctx context.Context, issue 
 		return fmt.Errorf("request automated review: %w", err)
 	}
 	return nil
+}
+
+func requiresAutomatedReview(cfg Config) bool {
+	required := gate.Effective(cfg.AutoPromote.Gate).RequireAutomatedReview
+	return required != nil && *required
 }

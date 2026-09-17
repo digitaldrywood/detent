@@ -71,7 +71,7 @@ func TestReviewHeadRequestAndWait(t *testing.T) {
 		{name: "write failure keeps waiting", writeErr: errors.New("write unavailable")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := normalizeConfig(Config{PollInterval: time.Minute, MaxConcurrentAgents: 1, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}})
+			cfg := normalizeConfig(Config{PollInterval: time.Minute, MaxConcurrentAgents: 1, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(true)}}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}})
 			issue := autoPromoteTickIssue("review-head", nil, &connector.PullRequest{Number: 42, URL: "https://github.test/digitaldrywood/detent/pull/42", State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300"})
 			tracker := &reviewHeadConnector{autoPromoteTickConnector: autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}, readErr: tt.readErr, writeErr: tt.writeErr}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -117,6 +117,44 @@ func TestReviewHeadMergeAdmission(t *testing.T) {
 			}
 			if got := mergeWorkerProgrammaticMergeReady(issue); got != tt.want {
 				t.Fatalf("programmatic merge ready = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewGateQueueAndRequest(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		gate             gate.Config
+		reviewed         bool
+		enqueue, request bool
+	}{
+		{"human pending", gate.Config{Kind: gate.KindHumanReview}, false, true, false},
+		{"human quota reply", gate.Config{Kind: gate.KindHumanReview}, true, true, false},
+		{"disabled", gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}, false, true, false},
+		{"optional", gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOptional}, false, true, false},
+		{"required pending", gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(true)}, false, false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Gate: tt.gate}, ActiveStates: []string{"Merging"}})
+			issue := nativeMergeQueueTestIssue(42, "success")
+			issue.Labels = append(issue.Labels, "human-approved")
+			issue.PullRequest.LatestCodexReviewState = "PENDING"
+			if tt.reviewed {
+				issue.PullRequest.CodexReviewState = "COMMENTED"
+			}
+			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+			if got := len(tracker.enqueued) > 0; got != tt.enqueue {
+				t.Fatalf("enqueued = %v, want %v", got, tt.enqueue)
+			}
+			requests := &reviewHeadConnector{}
+			orch.connector = requests
+			orch.requestAutomatedReview(t.Context(), issue)
+			if got := len(requests.prComments) > 0; got != tt.request {
+				t.Fatalf("requested = %v, want %v", got, tt.request)
 			}
 		})
 	}

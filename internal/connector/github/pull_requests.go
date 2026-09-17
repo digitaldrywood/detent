@@ -1613,7 +1613,60 @@ func pullRequestReviewsFromEvidence(response []restReview, comments []restCommen
 			reviews.Latest = []pullRequestReview{review}
 		}
 	}
+	// A terminal service reply covers only the head of the latest request.
+	if review, ok := codexRequestedReviewOutcome(comments); ok && len(reviews.CurrentHead) == 0 {
+		if len(reviews.Latest) == 0 {
+			reviews.Latest = []pullRequestReview{review}
+		}
+		if review.State == "COMMENTED" && review.CommitID == headSHA {
+			reviews.CurrentHead = []pullRequestReview{review}
+			reviews.Latest = []pullRequestReview{review}
+			return reviews
+		}
+	}
+
 	return reviews
+}
+
+// codexRequestedReviewOutcome reuses the existing request marker to associate
+// service notices with a head; unrelated or older replies cannot complete it.
+func codexRequestedReviewOutcome(comments []restComment) (pullRequestReview, bool) {
+	const prefix = "<!-- detent:automated-review-head:"
+	var request restComment
+	var head string
+	for _, comment := range comments {
+		if !strings.HasPrefix(strings.TrimSpace(comment.Body), "@codex review") {
+			continue
+		}
+		_, tail, ok := strings.Cut(comment.Body, prefix)
+		if !ok {
+			continue
+		}
+		sha, _, ok := strings.Cut(tail, " -->")
+		if !ok || strings.TrimSpace(sha) == "" {
+			continue
+		}
+		if head == "" || restCommentAfter(comment, request) {
+			request, head = comment, strings.TrimSpace(sha)
+		}
+	}
+	if head == "" {
+		return pullRequestReview{}, false
+	}
+	review := pullRequestReview{State: "PENDING", CommitID: head, Source: connector.PullRequestReviewSourceSummaryComment}
+	for _, comment := range comments {
+		if !trustedCodexSummaryAuthor(comment.User) || request.CreatedAt == nil || comment.CreatedAt == nil || !comment.CreatedAt.After(*request.CreatedAt) {
+			continue
+		}
+		body := strings.ToLower(strings.TrimSpace(comment.Body))
+		if !strings.HasPrefix(body, "you have reached your codex usage limits for code reviews") &&
+			!strings.HasPrefix(body, "codex code review is temporarily unavailable") {
+			continue
+		}
+		review.State = "COMMENTED"
+		review.Body, review.URL, review.Author, review.SubmittedAt = comment.Body, comment.HTMLURL, comment.User, comment.CreatedAt
+	}
+	return review, true
 }
 
 type pullRequestReference struct {
