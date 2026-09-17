@@ -534,6 +534,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
+	// Merge mode also repairs conflicts in active lanes; only Merging owns a merge.
+	repairRun := !mergeWorkerIssue(running.Issue) && (running.Mode == runpkg.RunModeMerge || event.Request.Mode == runpkg.RunModeMerge)
 	var dependencyProgress implementCompletionProgressDecision
 	if mergeWorkerIssue(running.Issue) && mergeWorkerTurnSucceeded(event) && !state.Draining {
 		if diffStatsPresent(event.Result.DiffStats) {
@@ -541,7 +543,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		dependencyProgress = o.evaluateCompletedDependencyDeferral(ctx, running)
 	}
-	if mergeWorkerIssue(running.Issue) && !dependencyProgress.DependencyDeferral {
+	if (mergeWorkerIssue(running.Issue) || repairRun) && !dependencyProgress.DependencyDeferral {
 		if o.completeLatestTerminalMergeWorkerResult(ctx, state, event, running) {
 			return
 		}
@@ -551,10 +553,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			o.cleanupDrainedRun(ctx, state, event.IssueID)
 			return
 		}
-		o.handleIncompleteMergeWorkerResult(ctx, state, event, running)
-		return
+		if !repairRun {
+			o.handleIncompleteMergeWorkerResult(ctx, state, event, running)
+			return
+		}
 	}
-	if o.completeRedundantGateWaitRun(ctx, state, event, running) {
+	if !repairRun && o.completeRedundantGateWaitRun(ctx, state, event, running) {
 		releaseProjectFailureBreakerCanary(state, event.IssueID)
 		return
 	}
@@ -735,6 +739,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 
 	if state.Draining {
 		o.cleanupDrainedRun(ctx, state, event.IssueID)
+		return
+	}
+	if repairRun && mergeFastPathResult(event) && terminalState == store.WorkAttemptTerminalSuccess && !completionRejected && !progress.DependencyDeferral {
+		o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
 		return
 	}
 	if terminalState == store.WorkAttemptTerminalSuccess &&
@@ -1479,7 +1487,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if state != nil && state.Draining {
 		return false
 	}
-	if nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
+	if mergeWorkerIssue(running.Issue) && mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
 		return true
 	}
@@ -1501,9 +1509,20 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	issue = refreshedIssue
-	if nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
+	if mergeWorkerIssue(running.Issue) && mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
 		return true
+	}
+	if event.Result.Output == runpkg.RunOutputMergeFallbackResolved &&
+		event.Result.MergePrecheck != nil && event.Result.MergePrecheck.HeadSHA != "" &&
+		(issue.PullRequest == nil || issue.PullRequest.HeadSHA != event.Result.MergePrecheck.HeadSHA) {
+		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, "Pull request head changed after deterministic merge-fallback validation.")
+		return true
+	}
+	// A pre-Merging repair rejoins ordinary completion so the changed head is
+	// recorded as progress, without merge reservations, CI waits, or a merge API call.
+	if !mergeWorkerIssue(running.Issue) || !mergeWorkerIssue(issue) {
+		return false
 	}
 	if issue.PullRequest != nil && issue.PullRequest.Draft {
 		var hydrated bool
@@ -1521,12 +1540,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	); revoked &&
 		mergeRevocationRequiresImmediateStop(revocation, event.Result) {
 		o.finishMergeRevocation(ctx, state, event, running, revocation)
-		return true
-	}
-	if event.Result.Output == runpkg.RunOutputMergeFallbackResolved &&
-		event.Result.MergePrecheck != nil && event.Result.MergePrecheck.HeadSHA != "" &&
-		(issue.PullRequest == nil || issue.PullRequest.HeadSHA != event.Result.MergePrecheck.HeadSHA) {
-		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, "Pull request head changed after deterministic merge-fallback validation.")
 		return true
 	}
 	if event.Result.Output == mergeControlCheckedHeadOutput && !sameMergeControlRevision(event.Request.Issue, issue) {
@@ -2484,7 +2497,7 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 
 func mergeWorkerReworkComment(issue connector.Issue, reason string, missingChecks []string, findings string) string {
 	var b strings.Builder
-	b.WriteString("Merge worker routed this issue from Merging to Rework.")
+	b.WriteString("Merge worker routed this issue from " + issue.State + " to Rework.")
 	b.WriteString("\n\n- reason: ")
 	b.WriteString(reason)
 	if len(missingChecks) > 0 {

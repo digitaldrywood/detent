@@ -168,8 +168,9 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 		{name: "fourth code session replaced by one triage", sessions: 3, wantMode: runpkg.RunModeTriage},
 		{name: "infra failure leaves a session", sessions: 3, infra: true, wantMode: runpkg.RunModeImplement},
 		{name: "reported question-ending sequence", sessions: 3, wantMode: runpkg.RunModeImplement, phase: "waiting", message: "waiting for a human reply on the original issue"},
+		{name: "third conflicted session repairs", sessions: 2, wantMode: runpkg.RunModeMerge, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}}},
 		{name: "reported conflicted-session sequence", sessions: 3, wantMode: runpkg.RunModeTriage, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}}},
-		{name: "conflicted PR with human action", sessions: 3, wantMode: runpkg.RunModeImplement, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}},
+		{name: "conflicted PR with human action", sessions: 3, wantMode: runpkg.RunModeMerge, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}},
 		{name: "reported human hardware wait sequence", sessions: 3, wantMode: runpkg.RunModeImplement, issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
