@@ -117,6 +117,9 @@ func TestDispatchCapacityMatchesAttemptModelScope(t *testing.T) {
 		body, base, label string
 	}{
 		{name: "automatic fallback", automatic: true, label: "complexity:complex"},
+		{name: "automatic unknown model", automatic: true, body: "```detent-agent\nschema: 1\nmodel: absent\n```"},
+		{name: "automatic unknown role and global models", automatic: true, body: "```detent-agent\nschema: 1\nmodel: absent\ncode:\n  model: missing\n```"},
+		{name: "automatic model outside report", automatic: true, body: "```detent-agent\nschema: 1\nmodel: gpt-6-astra\n```"},
 		{name: "legacy override outside report", base: "gpt-5.6-sol", body: "```detent-agent\nschema: 1\nmodel: gpt-6-astra\n```"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -142,6 +142,14 @@ reservation check. Reports advertise canonical backend model names; a stale
 report cannot authorize a different runtime model. Catalog and effort validation
 still run in the prepared workspace, where startup failures have attempt context.
 
+Invalid issue model and effort values reuse the existing override warning and
+project-default selection path (#2841); they no longer become terminal issue
+configuration errors. Malformed/schema blocks remain terminal. Pre-dispatch model
+fallback uses the existing provider report without launching a catalog process.
+`TestUnknownOverrideFallsBack`, `TestOverrideFallbackReachesAgent`, and
+`TestInvalidOverrideSchemaRemainsTerminal` cover this removal. Cleanup precedence
+continues to cover selection failures using an unavailable configured route model.
+
 Provider-identity bookkeeping failures during implementation, validator, and security-audit turns
 are logged without failing the turn (#2626). Persistence uses a bounded detached
 context and subsequent updates retry through the existing write path.

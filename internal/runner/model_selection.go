@@ -59,7 +59,8 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process A
 		if !policy.Active() || policy.BackendKinds == nil || !slices.Contains(*policy.BackendKinds, backendConfig.Kind) {
 			return result
 		}
-		override, _, err := agentoverride.FromIssueBody(req.Issue.Description)
+		override, rejections, err := selectionIssueOverride(req.Issue, role)
+		result.Rejections = rejections
 		if err != nil {
 			return result.rejectIssue("block", "", err.Error())
 		}
@@ -112,19 +113,13 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, process A
 		resolved, err := resolveAgentOverride(ctx, issue, process, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)
 		return agentSelection{resolvedAgentOverride: resolved, Err: err}
 	}
-	result := configuredAutomaticSelection(issue, baseModel, role, cfg, backendConfig)
-	if result.Err != nil {
-		return result
-	}
-	override, _, err := agentoverride.FromIssueBody(issue.Description)
+	override, rejections, err := selectionIssueOverride(issue, role)
 	if err != nil {
-		return result.rejectIssue("block", "", err.Error())
+		return (agentSelection{}).rejectIssue("block", "", err.Error())
 	}
-	explicitModel, modelField := override.ModelForRole(role)
-	explicitEffort, effortField := override.EffortForRole(role)
-	if explicitEffort == "" {
-		explicitEffort, effortField = override.Effort, "effort"
-	}
+	result := configuredOverrideSelection(issue, baseModel, role, cfg, backendConfig, override)
+	result.Rejections = rejections
+	explicitModel, _ := override.ModelForRole(role)
 	automaticModel := strings.TrimSpace(baseModel) == "" && explicitModel == ""
 	provider, ok := backend.(AgentModelCatalogProvider)
 	if !ok {
@@ -144,47 +139,75 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, process A
 		result.Selection.FallbackReason = "automatic model selection: model catalog unavailable: " + result.CatalogError
 		return result
 	}
-	model, available := availableSelectionModel(models, result.Model)
-	if !available && !automaticModel {
-		return result.rejectIssue(modelField, result.Model, "explicit model is unavailable or retired in the selected backend catalog")
-	}
-	if !available && policy.Unavailable != nil && *policy.Unavailable == "fallback" && policy.FallbackOrder != nil {
-		for _, candidate := range *policy.FallbackOrder {
-			if fallback, ok := availableSelectionModel(models, policy.Model(candidate)); ok {
-				model, available = fallback, true
-				result.Selection.FallbackReason = "automatic model unavailable or retired"
-				break
+	for {
+		result = configuredOverrideSelection(issue, baseModel, role, cfg, backendConfig, override)
+		result.Rejections = rejections
+		explicitModel, modelField := override.ModelForRole(role)
+		explicitEffort, effortField := override.EffortForRole(role)
+		if explicitEffort == "" {
+			explicitEffort, effortField = override.Effort, "effort"
+		}
+		model, available := availableSelectionModel(models, result.Model)
+		if !available && explicitModel != "" {
+			accepted := make([]string, 0, len(models))
+			for _, candidate := range models {
+				if strings.TrimSpace(candidate.Upgrade) == "" {
+					accepted = append(accepted, canonicalAgentModel(candidate, ""))
+				}
+			}
+			rejections = append(rejections, AgentOverrideRejection{Field: modelField, Value: explicitModel, Reason: fmt.Sprintf("model %q is unavailable or retired; available models: %s", explicitModel, strings.Join(accepted, ", "))})
+			clearAgentOverrideField(&override, modelField)
+			continue
+		}
+		if !available && strings.TrimSpace(baseModel) != "" {
+			result.Err = fmt.Errorf("configured model %q is unavailable or retired in the selected backend catalog", result.Model)
+			return result
+		}
+		if !available && policy.Unavailable != nil && *policy.Unavailable == "fallback" && policy.FallbackOrder != nil {
+			for _, candidate := range *policy.FallbackOrder {
+				if fallback, ok := availableSelectionModel(models, policy.Model(candidate)); ok {
+					model, available = fallback, true
+					result.Selection.FallbackReason = "automatic model unavailable or retired"
+					break
+				}
 			}
 		}
-	}
-	if !available {
-		result.Err = errors.New("automatic model selection: no configured model is available; update agents.model_selection models or fallback_order after checking the backend catalog")
-		return result
-	}
-	result.Model = canonicalAgentModel(model, result.Model)
-	if effort, ok := supportedAgentEffort(model, result.Effort); ok {
-		result.Effort = effort
-	} else {
-		if explicitEffort != "" {
-			return result.rejectIssue(effortField, explicitEffort, "explicit effort is unsupported by the selected model")
+		if !available {
+			result.Err = errors.New("automatic model selection: no configured model is available; update agents.model_selection models or fallback_order after checking the backend catalog")
+			return result
 		}
-		result.Err = fmt.Errorf("automatic model selection: effort default %q is unsupported by model %q; configure a supported effort", result.Effort, result.Model)
+		result.Model = canonicalAgentModel(model, result.Model)
+		if effort, ok := supportedAgentEffort(model, result.Effort); ok {
+			result.Effort = effort
+			return result
+		}
+		if explicitEffort == "" {
+			result.Err = fmt.Errorf("automatic model selection: effort default %q is unsupported by model %q; configure a supported effort", result.Effort, result.Model)
+			return result
+		}
+		rejections = append(rejections, AgentOverrideRejection{Field: effortField, Value: explicitEffort, Reason: unsupportedAgentEffortReason(model, explicitEffort)})
+		clearAgentOverrideField(&override, effortField)
 	}
-	return result
 }
 
 // configuredAutomaticSelection chooses requested model and effort without launching a
 // backend. Availability and effort support are validated in the attempt workspace.
 func configuredAutomaticSelection(issue connector.Issue, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend) agentSelection {
+	override, rejections, err := selectionIssueOverride(issue, role)
+	if err != nil {
+		return (agentSelection{}).rejectIssue("block", "", err.Error())
+	}
+	result := configuredOverrideSelection(issue, baseModel, role, cfg, backendConfig, override)
+	result.Rejections = rejections
+	return result
+}
+
+func configuredOverrideSelection(issue connector.Issue, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, override agentoverride.Override) agentSelection {
 	policy := cfg.EffectiveModelSelection()
 	projectEffort, field := cfg.Agent.Effort.Resolve(role)
 	result := agentSelection{Selection: agentidentity.Selection{Policy: "automatic", PolicySource: policy.Sources["enabled"]}}
 	if policy.Preset != nil && *policy.Preset != "" {
 		result.Selection.Policy = *policy.Preset
-	}
-	override, _, err := agentoverride.FromIssueBody(issue.Description)
-	if err != nil {
-		return result.rejectIssue("block", "", err.Error())
 	}
 	explicitModel, modelField := override.ModelForRole(role)
 	explicitEffort, effortField := override.EffortForRole(role)
@@ -403,4 +426,25 @@ func selectionComplexity(policy config.ModelSelection, issue connector.Issue, ro
 		}
 	}
 	return level, "default_complexity"
+}
+
+// Unknown effort words cannot influence policy selection, including catalog-outage
+// fallback and resumed attempts. Model-specific support is checked with the catalog.
+func selectionIssueOverride(issue connector.Issue, role string) (agentoverride.Override, []AgentOverrideRejection, error) {
+	override, _, err := agentoverride.FromIssueBody(issue.Description)
+	if err != nil {
+		return override, nil, err
+	}
+	var rejections []AgentOverrideRejection
+	for {
+		effort, field := override.EffortForRole(role)
+		if effort == "" {
+			effort, field = override.Effort, "effort"
+		}
+		if effort == "" || selectionEffortRank(effort) >= 0 {
+			return override, rejections, nil
+		}
+		rejections = append(rejections, AgentOverrideRejection{Field: field, Value: effort, Reason: fmt.Sprintf("effort %q is not one of low, medium, high, xhigh, max", effort)})
+		clearAgentOverrideField(&override, field)
+	}
 }
