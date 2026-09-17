@@ -17,9 +17,35 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 	if progress.hydrated == nil {
 		progress.hydrated = make(map[string]bool)
 	}
-	var nodes []githubIssueNode
+	// Refresh changed item fields without replaying retained comments/blockers.
+	var fieldIDs []string
 	for _, issue := range progress.scan.Issues {
-		if _, wanted := states[normalizeStateName(issue.State)]; !wanted || progress.hydrated[issue.ID] {
+		if _, wanted := states[normalizeStateName(issue.State)]; wanted && progress.hydrated[issue.ID] && progress.fields[issue.ID].fields == nil {
+			fieldIDs = append(fieldIDs, issue.ID)
+		}
+	}
+	for start := 0; start < len(fieldIDs); start += candidateHydrationBatchSize {
+		items := make(map[string]string)
+		for _, id := range fieldIDs[start:min(start+candidateHydrationBatchSize, len(fieldIDs))] {
+			items[id] = progress.fields[id].itemID
+		}
+		fields, err := c.hydrateProjectFields(ctx, items)
+		if err != nil {
+			return fmt.Errorf("hydrate github refresh project fields: %w", err)
+		}
+		for id := range items {
+			item := progress.fields[id]
+			// Null aliases are removed cards; discard their old fields.
+			item.fields = map[string]string{}
+			if fresh, ok := fields[id]; ok {
+				item.fields = fresh.fields
+			}
+			progress.fields[id] = item
+		}
+	}
+	var nodes, prNodes []githubIssueNode
+	for _, issue := range progress.scan.Issues {
+		if _, wanted := states[normalizeStateName(issue.State)]; !wanted {
 			continue
 		}
 		ref, ok := issueRefFromIdentifier(issue.Identifier)
@@ -30,15 +56,21 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 		for _, name := range issue.Labels {
 			node.Labels.Nodes = append(node.Labels.Nodes, label{Name: name})
 		}
-		nodes = append(nodes, node)
+		if !progress.hydrated[issue.ID] {
+			nodes = append(nodes, node)
+		}
+		if !progress.hydrated[issue.ID] || progress.evidence[issue.ID].CandidatePR == nil {
+			prNodes = append(prNodes, node)
+		}
 	}
 	// Observe only this page's completed evidence, including partial progress
 	// retained when a later scheduler batch fails.
-	defer func() { c.observeCandidatePullRequests(ctx, nodes, progress.evidence) }()
+	defer func() { c.observeCandidatePullRequests(ctx, prNodes, progress.evidence) }()
 	for start := 0; start < len(nodes); start += candidateHydrationBatchSize {
 		batch := nodes[start:min(start+candidateHydrationBatchSize, len(nodes))]
 		evidence, fields, err := c.candidateEvidenceBatch(ctx, batch, true)
 		for id, item := range fields {
+			item.updatedAt = progress.fields[id].updatedAt
 			progress.fields[id] = item
 		}
 		for id, node := range evidence {
@@ -58,10 +90,16 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 				return fmt.Errorf("hydrate github refresh project fields: %w", fieldErr)
 			}
 			for id, fields := range fields {
+				fields.updatedAt = progress.fields[id].updatedAt
 				progress.fields[id] = fields
 			}
 		}
 		for _, node := range batch {
+			if item := progress.fields[node.ID]; item.fields == nil {
+				// A removed card must not be retried on every remaining page.
+				item.fields = map[string]string{}
+				progress.fields[node.ID] = item
+			}
 			progress.hydrated[node.ID] = true
 		}
 	}

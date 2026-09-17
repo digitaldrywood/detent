@@ -47,6 +47,7 @@ type projectItemsConnection struct {
 }
 
 type projectItemNode struct {
+	UpdatedAt     string                            `json:"updatedAt"`
 	ID            string                            `json:"id"`
 	Content       *githubIssueNode                  `json:"content"`
 	Project       *projectRef                       `json:"project"`

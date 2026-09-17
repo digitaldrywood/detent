@@ -122,6 +122,8 @@ func (f *fleetWorkloadHTTP) Do(r *http.Request) (*http.Response, error) {
 		}
 		data := map[string]any{}
 		switch {
+		case strings.Contains(req.Query, "RefreshBlockerRevision"):
+			data["nodes"] = []any{}
 		case strings.Contains(req.Query, "updateProjectV2ItemFieldValue"):
 			if req.Variables["optionId"] != "progress" {
 				f.t.Errorf("unexpected transition: %v", req.Variables)

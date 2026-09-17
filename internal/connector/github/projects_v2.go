@@ -181,6 +181,7 @@ var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery
 // unbounded REST body fetches when enriched GraphQL is unavailable.
 var thinRefreshProjectItemsQuery = strings.NewReplacer(
 	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt",
+	"          id\n          content", "          id\n          updatedAt\n          content",
 ).Replace(schedulerProjectItemsQuery)
 
 const refreshProjectRevisionQuery = `query DetentGitHubRefreshProjectRevision($projectId: ID!) {
@@ -495,10 +496,6 @@ func (c *Connector) scanProjectItems(
 		// Changes during this enumeration do not prevent snapshot publication.
 		if queryDocument == thinRefreshProjectItemsQuery {
 			if progress.position.After == "" {
-				if progress.updatedAt != "" && progress.updatedAt != response.Node.UpdatedAt {
-					clear(progress.evidence)
-					clear(progress.hydrated)
-				}
 				progress.updatedAt = response.Node.UpdatedAt
 				// Compare against the first page: later growth must not restart
 				// an otherwise complete enumeration of a busy board.
@@ -523,8 +520,14 @@ func (c *Connector) scanProjectItems(
 				continue
 			}
 			if cacheProjectFields || queryDocument == thinRefreshProjectItemsQuery {
-				if progress.hydrated[issue.ID] && projectFieldsByIssue[issue.ID].itemID == cachedFields.itemID {
-					cachedFields.fields = projectFieldsByIssue[issue.ID].fields
+				previous := projectFieldsByIssue[issue.ID]
+				if queryDocument == thinRefreshProjectItemsQuery {
+					cachedFields.fields = nil
+				}
+				if previous.itemID == cachedFields.itemID {
+					if queryDocument == thinRefreshProjectItemsQuery && previous.updatedAt == cachedFields.updatedAt && cachedFields.updatedAt != "" {
+						cachedFields.fields = previous.fields
+					}
 				} else {
 					delete(progress.hydrated, issue.ID)
 					delete(progress.evidence, issue.ID)
@@ -608,6 +611,7 @@ func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue,
 	}
 	fields := projectItemFields{
 		itemID:          item.ID,
+		updatedAt:       item.UpdatedAt,
 		statusName:      statusName,
 		priorityName:    singleSelectName(item.PriorityValue),
 		statusUpdatedAt: statusUpdatedAt,

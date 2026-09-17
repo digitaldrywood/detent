@@ -7179,7 +7179,7 @@ func projectIssueNode(itemID string, issueID string, number int, title string, s
 		statusValue = fmt.Sprintf(`{"name":%q}`, status)
 	}
 	return fmt.Sprintf(
-		`{"id":%q,"content":{"__typename":"Issue","id":%q,"number":%d,"title":%q,"body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/%d","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":%s,"priorityValue":null}`,
+		`{"id":%q,"updatedAt":"2026-09-16T20:00:00Z","content":{"__typename":"Issue","id":%q,"number":%d,"title":%q,"body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/%d","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":%s,"priorityValue":null}`,
 		itemID,
 		issueID,
 		number,

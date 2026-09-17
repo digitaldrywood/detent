@@ -26,7 +26,7 @@ func appendProjectFieldVariables(query *strings.Builder, variables map[string]an
 
 func appendProjectFieldSelections(query *strings.Builder, ids []string) {
 	for i := range ids {
-		fmt.Fprintf(query, `item%d:node(id:$item%d) { ... on ProjectV2Item { id
+		fmt.Fprintf(query, `item%d:node(id:$item%d) { ... on ProjectV2Item { id updatedAt
    statusValue:fieldValueByName(name:"Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } }
    priorityValue:fieldValueByName(name:"Priority") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
    %s } }`, i, i, projectItemFieldValuesSelection)
@@ -44,10 +44,13 @@ func decodeProjectFields(response map[string]json.RawMessage, ids []string, item
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return nil, err
 		}
-		if item == nil || item.ID != items[id] || item.FieldValues.Nodes == nil {
+		if item == nil {
+			continue
+		}
+		if item.ID != items[id] || item.FieldValues.Nodes == nil {
 			return nil, ErrInvalidResponse
 		}
-		fields[id] = projectItemFields{itemID: item.ID, statusName: singleSelectName(item.StatusValue), priorityName: singleSelectName(item.PriorityValue), statusUpdatedAt: singleSelectUpdatedAt(item.StatusValue), fields: projectFieldValues(item.FieldValues)}
+		fields[id] = projectItemFields{itemID: item.ID, updatedAt: item.UpdatedAt, statusName: singleSelectName(item.StatusValue), priorityName: singleSelectName(item.PriorityValue), statusUpdatedAt: singleSelectUpdatedAt(item.StatusValue), fields: projectFieldValues(item.FieldValues)}
 	}
 	return fields, nil
 }

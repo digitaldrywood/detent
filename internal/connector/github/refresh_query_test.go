@@ -101,8 +101,8 @@ func TestRefreshBoardResumesFailedPage(t *testing.T) {
 			if result.CandidateError != nil || result.StatusError != nil || len(result.Statuses) != 2 || first != 1 || second != 2 {
 				t.Fatalf("first=%d second=%d result=%+v", first, second, result)
 			}
-			if c.refreshScan.scan.BoardCounts != nil {
-				t.Fatal("completed scan retained")
+			if !c.refreshScan.complete {
+				t.Fatal("completed scan not available for validated reuse")
 			}
 		})
 	}

@@ -59,6 +59,8 @@ func TestProjectRefreshDispatchAvoidsIssueReads(t *testing.T) {
 		}
 		data := map[string]any{}
 		switch {
+		case strings.Contains(req.Query, "RefreshBlockerRevision"):
+			data["nodes"] = []any{}
 		case strings.Contains(req.Query, "CandidateHydration"):
 			for key, value := range req.Variables {
 				if strings.HasPrefix(key, "item") {

@@ -23,6 +23,7 @@ type projectItemCacheEntry struct {
 }
 
 type projectItemFields struct {
+	updatedAt       string
 	itemID          string
 	statusName      string
 	priorityName    string

@@ -545,12 +545,26 @@ func (c *Connector) fetchProjectRefreshIssues(
 	resumed := c.refreshScan.scan.BoardCounts != nil
 	if c.refreshScan.complete {
 		// A completed enumeration is a snapshot, not a cursor to resume.
-		// Status failures may retain hydration, but every new refresh must
-		// observe board lanes even when the project updatedAt is unchanged.
+		// Every refresh observes board lanes. Retain only current consumers;
+		// comment/blocker revisions and item timestamps validate reuse.
+		fields := make(map[string]projectItemFields)
+		evidence := make(map[string]githubIssueNode)
+		hydrated := make(map[string]bool)
+		for _, issue := range c.refreshScan.scan.Issues {
+			if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted {
+				continue
+			}
+			fields[issue.ID] = c.refreshScan.fields[issue.ID]
+			if node, ok := c.refreshScan.evidence[issue.ID]; ok {
+				node.CandidatePR = nil // PR state is refreshed independently of scheduler evidence.
+				evidence[issue.ID] = node
+			}
+			hydrated[issue.ID] = c.refreshScan.hydrated[issue.ID]
+		}
 		c.refreshScan = projectItemsScanProgress{
-			fields:    c.refreshScan.fields,
-			evidence:  c.refreshScan.evidence,
-			hydrated:  c.refreshScan.hydrated,
+			fields:    fields,
+			evidence:  evidence,
+			hydrated:  hydrated,
 			updatedAt: c.refreshScan.updatedAt,
 			revision:  c.refreshScan.revision,
 		}
@@ -640,7 +654,6 @@ func (c *Connector) fetchProjectRefreshIssues(
 		return result
 	}
 	if len(result.Statuses) == 0 {
-		c.refreshScan = projectItemsScanProgress{}
 		return result
 	}
 	var routingStatuses []connector.Issue
@@ -654,9 +667,6 @@ func (c *Connector) fetchProjectRefreshIssues(
 	result.StatusError = c.hydrateRefreshPullRequests(ctx, routingStatuses, evidence, false)
 	for i, index := range routingIndexes {
 		result.Statuses[index] = routingStatuses[i]
-	}
-	if result.StatusError == nil {
-		c.refreshScan = projectItemsScanProgress{}
 	}
 	return result
 }

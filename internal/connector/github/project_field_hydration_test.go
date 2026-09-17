@@ -122,6 +122,7 @@ func TestActiveStatesAndRefreshEnumerateBoardOnce(t *testing.T) {
 				case strings.Contains(req.Query, "ProjectFieldHydration"):
 					addHydratedProjectFields(data, req.Variables)
 					data["item0"].(map[string]any)["statusValue"] = map[string]string{"name": "Todo"}
+				case strings.Contains(req.Query, "RefreshEvidenceRevision"):
 				case strings.Contains(req.Query, "CandidateHydration"):
 					addHydratedProjectFields(data, req.Variables)
 					data["issue0"] = map[string]any{"id": "I1", "body": "body", "comments": map[string]any{"totalCount": 0}, "blockedBy": map[string]any{"nodes": []any{}}}
@@ -179,7 +180,7 @@ func TestDecodeProjectFields(t *testing.T) {
 	}{
 		{"empty connection", `{"id":"P1","fieldValues":{"nodes":[]}}`, true},
 		{"missing alias", "", false},
-		{"null item", "null", false},
+		{"null item", "null", true},
 		{"different item", `{"id":"P2","fieldValues":{"nodes":[]}}`, false},
 		{"missing connection", `{"id":"P1"}`, false},
 		{"malformed item", `{`, false},
@@ -188,6 +189,43 @@ func TestDecodeProjectFields(t *testing.T) {
 			fields, err := decodeProjectFields(map[string]json.RawMessage{"item0": json.RawMessage(tt.body)}, []string{"I1"}, map[string]string{"I1": "P1"})
 			if (err == nil) != tt.valid {
 				t.Fatalf("fields=%v error=%v", fields, err)
+			}
+		})
+	}
+}
+
+func TestProjectFieldHydrationRemovedItem(t *testing.T) {
+	for _, removed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(removed), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct{ Variables map[string]any }
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					return
+				}
+				data := map[string]any{}
+				addHydratedProjectFields(data, req.Variables)
+				if removed {
+					data["item0"] = nil
+				}
+				for key, id := range req.Variables {
+					if strings.HasPrefix(key, "id") {
+						data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "comments": map[string]any{"nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
+					}
+				}
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/removed"})
+			evidence, fields, err := c.candidateEvidenceBatch(t.Context(), []githubIssueNode{{ID: "I1", CandidateProjectItemID: "P1"}, {ID: "I2", CandidateProjectItemID: "P2"}}, true)
+			want := 2
+			if removed {
+				want = 1
+			}
+			if err != nil || len(evidence) != 2 || len(fields) != want {
+				t.Fatalf("evidence=%d fields=%d err=%v", len(evidence), len(fields), err)
 			}
 		})
 	}
