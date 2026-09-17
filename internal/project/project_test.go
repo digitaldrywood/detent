@@ -121,7 +121,7 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 			cfg.Project.Weight != 2 || cfg.Project.Priority != 10 {
 			t.Fatalf("orchestrator Project = %#v, want detent in code pool with weight 2 priority 10", cfg.Project)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for orchestrator factory")
 	}
 
@@ -130,7 +130,7 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		if deps.GlobalDispatchGate != global {
 			t.Fatalf("orchestrator GlobalDispatchGate = %T, want shared gate", deps.GlobalDispatchGate)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for orchestrator dependencies")
 	}
 }
@@ -299,7 +299,7 @@ func TestScheduleOwnershipAcquisitionFailureDegradesRunningProject(t *testing.T)
 	t.Cleanup(func() { _ = got.Stop(context.Background()) })
 	select {
 	case <-coordinationStore.called:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for schedule ownership acquisition")
 	}
 	registry := project.NewRegistry()
@@ -615,7 +615,7 @@ func TestProjectReestablishesClosedWorkflowWatcher(t *testing.T) {
 
 	select {
 	case <-rearmed:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for workflow watcher re-establishment")
 	}
 	if !strings.Contains(logs.String(), "workflow watcher stopped") {
@@ -1285,15 +1285,7 @@ func TestProjectUnpauseRebuildsGlobalDispatchCandidate(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	t.Cleanup(func() {
-		if !got.Running() {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		if err := got.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
-			cancel()
-			t.Fatalf("Stop() error = %v", err)
-		}
-		cancel()
+		stopTestProjects(t, got)
 	})
 
 	if err := got.Start(context.Background()); !errors.Is(err, project.ErrProjectPaused) {
@@ -1308,7 +1300,7 @@ func TestProjectUnpauseRebuildsGlobalDispatchCandidate(t *testing.T) {
 		if request.Issue.ID != "issue-paused" {
 			t.Fatalf("RunRequest.Issue.ID = %q, want issue-paused", request.Issue.ID)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for unpaused project dispatch")
 	}
 }
@@ -1721,7 +1713,7 @@ func (c *pauseBlockingConnector) waitEntered(t *testing.T) {
 
 	select {
 	case <-c.entered:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for connector fetch")
 	}
 }
@@ -1786,7 +1778,7 @@ func waitForWorkflowWatcher(t *testing.T, ready <-chan struct{}) {
 
 	select {
 	case <-ready:
-	case <-time.After(10 * time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for workflow watcher")
 	}
 }
@@ -1796,7 +1788,7 @@ func waitForProjectLog(t *testing.T, logs *lockedBuffer, want string) {
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(projectTestWaitTimeout)
 
 	for {
 		if strings.Contains(logs.String(), want) {
@@ -1815,7 +1807,7 @@ func waitForWorkflowReloadError(t *testing.T, got *project.Project) {
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(projectTestWaitTimeout)
 
 	for {
 		status := got.WorkflowSourceStatus()
@@ -1835,7 +1827,7 @@ func waitForWorkflowWatcherArmed(t *testing.T, got *project.Project) {
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(projectTestWaitTimeout)
 
 	for {
 		if got.WorkflowSourceStatus().WatcherArmed {
@@ -1854,7 +1846,7 @@ func waitForWorkflowPrompt(t *testing.T, got *project.Project, want string) {
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(time.Second)
+	deadline := time.After(projectTestWaitTimeout)
 
 	for {
 		if got.Workflow().Prompt == want {
@@ -1873,7 +1865,7 @@ func waitForCoordinationCalls(t *testing.T, store *projectCoordinationStore, min
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(time.Second)
+	deadline := time.After(projectTestWaitTimeout)
 	for {
 		if calls := store.Calls(); calls >= minimum {
 			return
@@ -1891,7 +1883,7 @@ func waitForScheduleOwnershipFault(t *testing.T, registry *project.Registry) {
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(projectTestWaitTimeout)
 	for {
 		health := registry.Health()
 		if len(health) == 1 && health[0].Status == project.HealthStatusDegraded && strings.Contains(health[0].LastError, "coordination unavailable") {
@@ -1955,7 +1947,7 @@ func receiveOrchestratorConfig(t *testing.T, ch <-chan orchestrator.Config) orch
 	select {
 	case cfg := <-ch:
 		return cfg
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for orchestrator config")
 	}
 
@@ -1968,7 +1960,7 @@ func receiveConnectorConfig(t *testing.T, ch <-chan workflowconfig.Config) workf
 	select {
 	case cfg := <-ch:
 		return cfg
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for connector config")
 	}
 
@@ -1981,7 +1973,7 @@ func receiveConnector(t *testing.T, ch <-chan connector.Connector) connector.Con
 	select {
 	case got := <-ch:
 		return got
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for connector")
 	}
 
@@ -2119,7 +2111,7 @@ func assertConnectorClosed(t *testing.T, projectConnector *closeTrackingConnecto
 
 	select {
 	case <-projectConnector.closed:
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for connector close")
 	}
 }
@@ -2140,7 +2132,7 @@ func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {
 	select {
 	case event := <-ch:
 		return event
-	case <-time.After(time.Second):
+	case <-time.After(projectTestWaitTimeout):
 		t.Fatal("timed out waiting for project event")
 	}
 
