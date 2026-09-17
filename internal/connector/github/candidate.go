@@ -249,7 +249,7 @@ func (c *Connector) readProjectCandidates(ctx context.Context, request connector
 			after = &position.After
 		}
 		if err := c.queryProjectItemsPage(ctx, graphQLQueryCandidateIssues, candidateProjectItemsQuery, map[string]any{
-			"projectId": c.projectID, "first": min(request.EffectivePageSize(), projectItemsPageSize), "after": after,
+			"projectId": c.projectID, "first": min(request.EffectivePageSize(), candidateHydrationBatchSize), "after": after,
 		}, &response); err != nil {
 			return candidateReadResult(result, position, true, fmt.Errorf("fetch github project candidates: %w", err))
 		}

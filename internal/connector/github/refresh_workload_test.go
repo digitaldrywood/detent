@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -211,11 +212,13 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 
 // Costs measured against the Detent ProjectV2 board on 2026-09-16 using
 // data.rateLimit.cost: thin page(first:100), including scalar bodies and the
-// project updatedAt revision, costs 2; scheduler aliases=22 for 100
-// issues, 11 for 52, and 1 for 3. These are response fixtures, not header deltas.
+// project updatedAt revision, costs 2. Bounded scheduler costs below are
+// synthetic response fixtures, not measurements or header deltas.
 func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 	const total, candidates, refreshes = 1500, 152, 4
 	var graphql, rest, points, preflights, failedPages int
+	var inFlight, maxInFlight atomic.Int32
+	hydrationCounts := make(map[string]int)
 	failPage := resumed
 	humanBody := strings.Replace(prerequisiteBody(t), "schema: 1", "schema: 1\ncompletion_evidence: Verified test tenant", 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -249,28 +252,43 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 				t.Error("revision query must read updatedAt without an items connection")
 			}
 			data["node"] = map[string]any{"updatedAt": "2026-09-16T20:00:00Z"}
+		} else if strings.Contains(req.Query, "RefreshEvidenceRevision") {
+			cost = 1
+			for key, id := range req.Variables {
+				if strings.HasPrefix(key, "id") {
+					data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "updatedAt": "2026-09-16T20:00:00Z", "comments": map[string]any{"totalCount": 0, "nodes": []any{}}}
+				}
+			}
 		} else if strings.Contains(req.Query, "CandidateHydration") {
+			active := inFlight.Add(1)
+			defer inFlight.Add(-1)
+			for old := maxInFlight.Load(); active > old; old = maxInFlight.Load() {
+				if maxInFlight.CompareAndSwap(old, active) {
+					break
+				}
+			}
 			count := 0
 			for key, value := range req.Variables {
 				if !strings.HasPrefix(key, "id") {
 					continue
 				}
+				hydrationCounts[value.(string)]++
 				var n int
 				fmt.Sscanf(value.(string), "I%d", &n)
 				if n < 1 || n > candidates {
 					t.Errorf("hydrated observed item %d", n)
 				}
-				data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": value, "body": "scheduler body", "comments": map[string]any{"totalCount": 0, "nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
+				data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": value, "body": "scheduler body", "updatedAt": "2026-09-16T20:00:00Z", "comments": map[string]any{"totalCount": 0, "nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
 				if n == 1 {
 					data["issue"+strings.TrimPrefix(key, "id")].(map[string]any)["blockedBy"] = map[string]any{"nodes": []any{map[string]any{"id": "I1500", "number": 1500, "body": humanBody, "state": "CLOSED", "repository": map[string]string{"nameWithOwner": "fixture/large"}}}}
 				}
 				count++
 			}
 			switch count {
-			case 100:
-				cost = 22
-			case 52:
-				cost = 11
+			case 25:
+				cost = 6
+			case 2:
+				cost = 1
 			default:
 				t.Errorf("unexpected batch size %d", count)
 			}
@@ -343,11 +361,19 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 			}
 		}
 	}
+	if maxInFlight.Load() != 1 {
+		t.Fatalf("in-flight hydration=%d", maxInFlight.Load())
+	}
+	for id, count := range hydrationCounts {
+		if count != refreshes {
+			t.Errorf("%s hydrated %d times, want %d (no replay)", id, count, refreshes)
+		}
+	}
 	usage := c.client.FlushGraphQLRateLimitUsage()
 	// Failed page requests have no response cost and are absent from usage.
-	wantQueries, wantPoints, wantPreflights := 68, 252, 0
+	wantQueries, wantPoints, wantPreflights := 88, 268, 0
 	if resumed {
-		wantQueries, wantPoints, wantPreflights = 76, 256, 4
+		wantQueries, wantPoints, wantPreflights = 112, 288, 4
 	}
 	if preflights != wantPreflights {
 		t.Fatalf("preflights=%d want=%d", preflights, wantPreflights)

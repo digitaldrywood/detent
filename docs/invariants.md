@@ -170,6 +170,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Candidate hydration (#2844) consolidates completed scheduler evidence into the
+existing board refresh scan. Bounded hydration runs between board pages and
+retains completed batches across interruptions; transient hydration failures no
+longer discard progress and fan out through REST. Resume validates all retained
+comment IDs and edit timestamps before reusing bodies. Scheduler queries have at
+most 25 aliases; PR snapshots bound nested contexts and annotations. No timer,
+pacer, configuration key, or recovery loop is added.
+`TestRefreshHydrationResumes`, `TestCandidateHydrationShape`, and the large-board
+`TestProjectRefreshHourlyWorkload` scenarios cover this consolidation.
+
 Non-draft dirty PRs in Rework or In Progress reuse the existing merge-mode precheck,
 fallback rebase prompt, and deterministic verification (#2842), regardless of
 the programmatic merge fast-path flag. Verified repairs rejoin ordinary progress

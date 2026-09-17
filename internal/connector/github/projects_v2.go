@@ -363,7 +363,7 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	limit int,
 	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
-	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil)
+	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil, nil)
 }
 
 // queryProjectItemsPage retains board membership on schemas that lack scheduler
@@ -404,6 +404,9 @@ type projectItemsScanProgress struct {
 	updatedAt     string
 	fields        map[string]projectItemFields
 	blankStatuses []string
+	evidence      map[string]githubIssueNode
+	hydrated      map[string]bool
+	complete      bool
 }
 
 func (c *Connector) scanProjectItems(
@@ -414,6 +417,7 @@ func (c *Connector) scanProjectItems(
 	limit int,
 	repairBlankStatuses bool,
 	progress *projectItemsScanProgress,
+	hydrate func(context.Context, *projectItemsScanProgress) error,
 ) (connector.IssueStateScan, error) {
 	if progress == nil {
 		progress = &projectItemsScanProgress{}
@@ -447,6 +451,18 @@ func (c *Connector) scanProjectItems(
 	scan := &progress.scan
 	defer func() { progress.blankStatuses = blankStatusItemIDs }()
 
+	hydratePage := func() error {
+		if hydrate == nil {
+			return nil
+		}
+		return hydrate(ctx, progress)
+	}
+	if err := hydratePage(); err != nil {
+		return connector.IssueStateScan{}, err
+	}
+	if progress.complete {
+		return *scan, nil
+	}
 	for {
 		var response struct {
 			Node *struct {
@@ -510,6 +526,9 @@ func (c *Connector) scanProjectItems(
 			}
 		}
 
+		if err := hydratePage(); err != nil {
+			return connector.IssueStateScan{}, err
+		}
 		if !response.Node.Items.PageInfo.HasNextPage {
 			if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
 				blankStatusItemIDs = nil
@@ -520,6 +539,7 @@ func (c *Connector) scanProjectItems(
 				c.projectCache.ReplaceProjectFields(c.projectID, projectFieldsByIssue, scanRevision)
 			}
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
+			progress.complete = true
 			return *scan, nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)

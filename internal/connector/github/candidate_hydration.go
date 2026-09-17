@@ -8,6 +8,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
+// Each scheduler alias has at most 100 + 20 + 20*20 connection nodes.
+const candidateHydrationBatchSize = 25
+
 const candidateCommentFields = `totalCount pageInfo { hasNextPage endCursor }
  nodes { id body url author { login } authorAssociation createdAt updatedAt }`
 const candidateDependencyFields = `pageInfo { hasNextPage endCursor }
@@ -20,6 +23,29 @@ var candidateProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery, "co
 // candidateEvidence is scoped to one source page. Only complete snapshots can
 // replace REST hydration; nil native connections are not authoritative empties.
 func (c *Connector) candidateEvidence(ctx context.Context, nodes []githubIssueNode, fetch bool) map[string]githubIssueNode {
+	complete, err := c.candidateEvidenceBatched(ctx, nodes, fetch)
+	if err != nil {
+		// Preserve completed observations; admission hydrates missing entries through its legacy reader.
+		return complete
+	}
+	return complete
+}
+
+func (c *Connector) candidateEvidenceBatched(ctx context.Context, nodes []githubIssueNode, fetch bool) (map[string]githubIssueNode, error) {
+	complete := make(map[string]githubIssueNode)
+	for start := 0; start < len(nodes); start += candidateHydrationBatchSize {
+		batch, err := c.candidateEvidenceBatch(ctx, nodes[start:min(start+candidateHydrationBatchSize, len(nodes))], fetch)
+		for id, node := range batch {
+			complete[id] = node
+		}
+		if err != nil {
+			return complete, err
+		}
+	}
+	return complete, nil
+}
+
+func (c *Connector) candidateEvidenceBatch(ctx context.Context, nodes []githubIssueNode, fetch bool) (map[string]githubIssueNode, error) {
 	complete := make(map[string]githubIssueNode)
 	defer func() { c.observeCandidatePullRequests(ctx, nodes, complete) }()
 	pending := make([]githubIssueNode, 0, len(nodes))
@@ -77,7 +103,7 @@ func (c *Connector) candidateEvidence(ctx context.Context, nodes []githubIssueNo
 		query.WriteString("}")
 		var response map[string]*githubIssueNode
 		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, query.String(), variables, &response); err != nil {
-			return complete
+			return complete, err
 		}
 		next = nil
 		for i, previous := range pending {
@@ -108,7 +134,7 @@ func (c *Connector) candidateEvidence(ctx context.Context, nodes []githubIssueNo
 		pending = next
 		fetch = false
 	}
-	return complete
+	return complete, nil
 }
 
 func candidateEvidenceComplete(node githubIssueNode) bool {

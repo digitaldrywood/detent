@@ -32,12 +32,12 @@ const candidatePRReferenceFields = `number url state updatedAt headRefOid headRe
 // interpreted afresh, so their edits never depend on the check revision.
 const candidatePRFields = `id number url state mergeStateStatus isDraft updatedAt mergedAt
  headRefName baseRefName headRefOid baseRefOid
- labels(first:100) { totalCount pageInfo { hasNextPage } nodes { name } }
- reviews(first:100) { totalCount pageInfo { hasNextPage } nodes { body url state submittedAt author { login __typename } commit { oid } } }
- comments(first:100) { totalCount pageInfo { hasNextPage } nodes { id databaseId body url createdAt updatedAt author { login __typename } authorAssociation } }
- commits(last:1) { nodes { commit { oid committedDate statusCheckRollup { contexts(first:100) { totalCount pageInfo { hasNextPage } nodes {
+ labels(first:50) { totalCount pageInfo { hasNextPage } nodes { name } }
+ reviews(first:50) { totalCount pageInfo { hasNextPage } nodes { body url state submittedAt author { login __typename } commit { oid } } }
+ comments(first:50) { totalCount pageInfo { hasNextPage } nodes { id databaseId body url createdAt updatedAt author { login __typename } authorAssociation } }
+ commits(last:1) { nodes { commit { oid committedDate statusCheckRollup { contexts(first:20) { totalCount pageInfo { hasNextPage } nodes {
  __typename
- ... on CheckRun { databaseId name status conclusion startedAt completedAt detailsUrl title summary text annotations(first:100) { totalCount pageInfo { hasNextPage } nodes { path annotationLevel message rawDetails } } checkSuite { updatedAt workflowRun { databaseId updatedAt runAttempt } } }
+ ... on CheckRun { databaseId name status conclusion startedAt completedAt detailsUrl title summary text annotations(first:20) { totalCount pageInfo { hasNextPage } nodes { path annotationLevel message rawDetails } } checkSuite { updatedAt workflowRun { databaseId updatedAt runAttempt } } }
  ... on StatusContext { context state createdAt targetUrl }
  } } } } } }`
 
@@ -244,7 +244,7 @@ func (c *Connector) observeCandidatePullRequestStatus(ctx context.Context, byKey
 		return
 	}
 	// Bound the schema's maximum node count, including nested annotations,
-	// below GitHub's 500,000-node query limit even for full connections.
+	// to 20 * (50 + 50 + 50 + 1 + 20 + 20*20) = 11,420 nodes.
 	if len(keys) > 20 {
 		for start := 0; start < len(keys); start += 20 {
 			batch := make(map[pullRequestKey][]string)

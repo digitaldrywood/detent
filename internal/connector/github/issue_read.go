@@ -541,35 +541,25 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
+
+	resumed := c.refreshScan.scan.BoardCounts != nil
+	validated := false
 	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
 		return true
-	}, 0, repairBlankStatuses, &c.refreshScan)
+	}, 0, repairBlankStatuses, &c.refreshScan, func(ctx context.Context, progress *projectItemsScanProgress) error {
+		if resumed && !validated {
+			if err := c.validateRefreshEvidence(ctx, progress); err != nil {
+				return err
+			}
+			validated = true
+		}
+		return c.hydrateRefreshPage(ctx, progress, schedulerStates)
+	})
 	if err != nil {
 		return connector.RefreshIssueResult{CandidateError: err}
 	}
-	c.refreshScan = projectItemsScanProgress{}
-	issues := scan.Issues
-	evidence := make(map[string]githubIssueNode)
-	var nodes []githubIssueNode
-	for _, issue := range issues {
-		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted {
-			continue
-		}
-		ref, ok := issueRefFromIdentifier(issue.Identifier)
-		if !ok {
-			continue
-		}
-		node := githubIssueNode{ID: issue.ID, Number: ref.Number, Title: issue.Title, CandidateState: issue.State, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}}
-		for _, name := range issue.Labels {
-			node.Labels.Nodes = append(node.Labels.Nodes, label{Name: name})
-		}
-		nodes = append(nodes, node)
-	}
-	for start := 0; start < len(nodes); start += projectItemsPageSize {
-		for id, node := range c.candidateEvidence(ctx, nodes[start:min(start+projectItemsPageSize, len(nodes))], true) {
-			evidence[id] = node
-		}
-	}
+	issues := append([]connector.Issue(nil), scan.Issues...)
+	evidence := c.refreshScan.evidence
 	var fallback []connector.Issue
 	var fallbackIndexes []int
 	for i, issue := range issues {
@@ -601,7 +591,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 	// Thin board entries supply lane state, but only selected entries carry
 	// authoritative scheduler evidence for native human prerequisites.
-	selected := make([]connector.Issue, 0, len(nodes))
+	selected := make([]connector.Issue, 0, len(evidence))
 	var selectedIndexes []int
 	board := make(map[string]connector.Issue, len(issues))
 	for i, issue := range issues {
@@ -638,6 +628,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 		return result
 	}
 	if len(result.Statuses) == 0 {
+		c.refreshScan = projectItemsScanProgress{}
 		return result
 	}
 	var routingStatuses []connector.Issue
@@ -651,6 +642,9 @@ func (c *Connector) fetchProjectRefreshIssues(
 	result.StatusError = c.hydrateRefreshPullRequests(ctx, routingStatuses, evidence, false)
 	for i, index := range routingIndexes {
 		result.Statuses[index] = routingStatuses[i]
+	}
+	if result.StatusError == nil {
+		c.refreshScan = projectItemsScanProgress{}
 	}
 	return result
 }
