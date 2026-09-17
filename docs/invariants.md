@@ -736,6 +736,21 @@ If that budget also prevents a saved stale snapshot's early recheck, its
 eligibility check consolidates into the mandatory final revalidation; other
 completed candidates can still use the evaluation window.
 
+No Detent push may drop commits from a PR branch (#2874). Missing worktrees
+restore an existing published branch from a freshly fetched origin ref; only
+new branches start at the base. Before the fast path rebases, the observed remote
+head must be an ancestor of the local head. The rebase may rewrite those commits,
+but the push uses the lease on that same observed remote head. Agent conflict
+resolution merges the target into the PR branch, preserving remote ancestry,
+which is checked before validation and publication. Unsafe local heads abort any
+unfinished rebase and attempt to restore the observed PR head without discarding
+uncommitted work. Restoration failures remain conflicts with diagnostic details,
+not runner failures. No push may replace published work with a stale or freshly
+created base branch.
+`TestLocalGitMergePreservesRemoteHistory` covers recreation, stale local branches,
+resolved heads, rebasing published history, unfinished rebases, and untracked
+files that prevent restoration.
+
 Security audit verdict routing from Merging shares the existing auto-promote
 classifier and findings publisher with source-lane completion (#2642, #2726).
 The merge completion handler routes actionable findings through its existing

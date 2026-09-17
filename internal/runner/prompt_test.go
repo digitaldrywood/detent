@@ -1420,3 +1420,22 @@ func TestCompactFailedRunNotesPreservesPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeFallbackPromptPreservesPublishedHistory(t *testing.T) {
+	t.Parallel()
+	prompt, err := BuildMergeFallbackPrompt(config.Workflow{}, connector.Issue{}, PromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"merge it into the PR branch",
+		"do not rebase published commits",
+		"Preserve the remote PR head as an ancestor",
+	} {
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("fallback prompt missing %q", want)
+			}
+		})
+	}
+}
