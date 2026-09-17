@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,12 +19,18 @@ import (
 // hydration: closure alone must reach the existing reconciliation owner.
 func TestTickReconcilesClosedLabelsWithoutPreviousPipeline(t *testing.T) {
 	for _, tc := range []struct {
-		name, lane   string
-		previousTick bool
+		name, lane, reason string
+		previousTick       bool
 	}{
-		{"fresh merging", "Merging", false},
-		{"merging and closure between ticks", "Merging", true},
-		{"closed todo", "Todo", false},
+		{"fresh merging", "Merging", "completed", false},
+		{"merging and closure between ticks", "Merging", "completed", true},
+		{"closed todo", "Todo", "completed", false},
+		{"not planned todo", "Todo", "not_planned", false},
+		{"not planned in progress", "In Progress", "not_planned", false},
+		{"not planned human review", "Human Review", "not_planned", false},
+		{"not planned between ticks", "Merging", "not_planned", true},
+		{"empty reason todo", "Todo", "", false},
+		{"unknown reason todo", "Todo", "duplicate", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var visible atomic.Bool
@@ -35,18 +42,18 @@ func TestTickReconcilesClosedLabelsWithoutPreviousPipeline(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if !visible.Load() || r.URL.Query().Get("labels") != "detent:"+normalizeState(tc.lane) {
+				if !visible.Load() || r.URL.Query().Get("labels") != "detent:"+strings.ReplaceAll(normalizeState(tc.lane), " ", "-") {
 					fmt.Fprint(w, `[]`)
 					return
 				}
-				fmt.Fprintf(w, `[{"node_id":"I_2813","number":2813,"title":"Closed lane card","state":"closed","state_reason":"completed","labels":[{"name":"detent:%s"}]}]`, normalizeState(tc.lane))
+				fmt.Fprintf(w, `[{"node_id":"I_2813","number":2813,"title":"Closed lane card","state":"closed","state_reason":"%s","labels":[{"name":"detent:%s"}]}]`, tc.reason, strings.ReplaceAll(normalizeState(tc.lane), " ", "-"))
 			}))
 			defer server.Close()
 			reader, err := github.NewConnector(github.Config{
 				Endpoint:           server.URL + "/graphql",
 				Repository:         "digitaldrywood/detent",
 				GitHubStatusSource: github.GitHubStatusSourceLabel,
-				ActiveStates:       []string{"Todo", "Merging"},
+				ActiveStates:       []string{"Todo", "In Progress", "Human Review", "Merging"},
 				TerminalStates:     []string{"Done", "Cancelled"},
 				TokenSource:        github.StaticTokenSource("test"),
 				HTTPClient:         server.Client(),
@@ -57,7 +64,8 @@ func TestTickReconcilesClosedLabelsWithoutPreviousPipeline(t *testing.T) {
 			tracker := &closedLabelRefreshConnector{reader: reader}
 			orch := newStatusReconcileOrchestrator(&tracker.statusReconcileConnector)
 			orch.connector = tracker
-			orch.cfg.ActiveStates = []string{"Todo", "Merging"}
+			orch.cfg.ActiveStates = []string{"Todo", "In Progress", "Human Review", "Merging"}
+			orch.cfg.ObservedStates = []string{"In Progress", "Human Review", "Merging"}
 			state := newState(orch.cfg)
 			now := time.Date(2026, 9, 17, 6, 42, 30, 0, time.UTC)
 			if tc.previousTick {
@@ -88,6 +96,20 @@ func TestTickReconcilesClosedLabelsWithoutPreviousPipeline(t *testing.T) {
 			}
 			if len(state.Running) != 0 || len(state.SchedulerDecisions) != 0 || state.DispatchStatus.EligibleCandidateCount != 0 {
 				t.Fatalf("closed issue entered dispatch: %#v", state.DispatchStatus)
+			}
+			for tick := 0; tc.reason != "completed" && tick < 3; tick++ {
+				if len(state.Pipeline) != 0 || len(state.BoardIssues) != 0 {
+					t.Fatalf("tick %d retained closed issue: pipeline=%#v board=%#v", tick, state.Pipeline, state.BoardIssues)
+				}
+				if tickHasActiveWork(&state, nil) {
+					t.Fatalf("tick %d: closed issue alone keeps refresh active", tick)
+				}
+				visible.Store(false) // Terminal labels no longer appear in non-terminal reads.
+				now = now.Add(time.Hour)
+				orch.tick(t.Context(), &state, now)
+				if state.LastRefreshError != "" {
+					t.Fatal(state.LastRefreshError)
+				}
 			}
 			if tracker.fetchByIDCount != 0 {
 				t.Fatalf("direct-ID reads = %d, want no previous membership", tracker.fetchByIDCount)
