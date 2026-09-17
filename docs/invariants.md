@@ -27,6 +27,9 @@ issue has no auto-promote opt-out label. Projects without a configured Blocked
 lane retain their existing destination. Allowance triage notes and the
 `attempt_allowance_exhausted` reason are preserved; operator moves out of
 Blocked still reset the allowance and auto-promote decision memory (#2880).
+The dependency auto-unblock sweep retains these non-review decisions in Blocked
+even when an unconsumed body or native dependency is already Done; both reasons
+reuse the existing sticky-reason policy.
 
 Any closed issue, regardless of its closure reason, retains its
 non-terminal label snapshots in ordinary refresh reads, even without prior pipeline membership (#2865). The existing
