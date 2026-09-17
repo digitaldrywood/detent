@@ -224,9 +224,10 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 	}
 }
 
-// Costs measured against the Detent ProjectV2 board on 2026-09-16 using
-// data.rateLimit.cost: thin page(first:100), including scalar bodies and the
-// project updatedAt revision, costs 2. Bounded scheduler costs below are
+// Costs measured against the Detent ProjectV2 board on 2026-09-17 using
+// data.rateLimit.cost: refresh page(first:100), including fieldValues(first:100),
+// scalar bodies and the project updatedAt revision, costs 3 (previously 2
+// without fieldValues). Bounded scheduler costs below are
 // synthetic response fixtures, not measurements or header deltas.
 func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidateState string, shared bool) {
 	t.Helper()
@@ -339,6 +340,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				t.Error("unbounded dependency labels or redundant PR preview")
 			}
 		} else {
+			cost = 3 // Measured refresh-page cost; PR queries keep their fixture cost.
 			for _, field := range []string{"blockedBy(", "comments(first:", "closedByPullRequestsReferences(", "commits("} {
 				if strings.Contains(req.Query, field) {
 					t.Errorf("board query carries %s", field)
@@ -362,7 +364,11 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				} else if n <= candidates+70 {
 					state = "Backlog"
 				}
-				page.Nodes = append(page.Nodes, projectItemNode{ID: fmt.Sprintf("P%d", n), StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
+				var fields nodeConnection[projectFieldValue]
+				if strings.Contains(req.Query, "fieldValues(first: 100)") {
+					fields.Nodes = []projectFieldValue{{TypeName: "ProjectV2ItemFieldSingleSelectValue", Field: projectField{Name: "Status"}, Name: state}}
+				}
+				page.Nodes = append(page.Nodes, projectItemNode{ID: fmt.Sprintf("P%d", n), FieldValues: fields, StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
 			}
 			data["node"] = map[string]any{"updatedAt": "2026-09-16T20:00:00Z", "items": page}
 		}
@@ -417,6 +423,11 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 			}
 		}
 		for _, issue := range result.Candidates {
+			// Dispatch's hydration short-circuit requires project fields. The real
+			// dispatch-hook request assertion lives in the orchestrator regression.
+			if issue.Fields["Status"] != candidateState {
+				t.Fatalf("candidate %s project Status = %q, want %q", issue.ID, issue.Fields["Status"], candidateState)
+			}
 			if issue.ID == "I1" && (len(issue.BlockedBy) != 1 || !issue.BlockedBy[0].HumanOwned || !issue.BlockedBy[0].HumanCompletionReady || issue.BlockedBy[0].State != "Done") {
 				t.Fatalf("thin board erased human evidence: %+v", issue.BlockedBy)
 			}
@@ -435,9 +446,9 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 	}
 	usage := c.client.FlushGraphQLRateLimitUsage()
 	// Failed page requests have no response cost and are absent from usage.
-	wantQueries, wantPoints, wantPreflights := 88, 268, 0
+	wantQueries, wantPoints, wantPreflights := 88, 328, 0
 	if resumed {
-		wantQueries, wantPoints, wantPreflights = 116, 292, 4
+		wantQueries, wantPoints, wantPreflights = 116, 352, 4
 	}
 	if candidateState == "Human Review" {
 		wantQueries += 40

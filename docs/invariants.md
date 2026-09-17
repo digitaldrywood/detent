@@ -191,6 +191,19 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+ProjectV2 refresh pages include supported project fields and their timestamps
+(#2859), consolidating field retrieval into the board scan and removing dispatch's
+per-candidate REST hydration. Label-only authorization declines run before the
+hydrate hook, with field-dependent authorization still evaluated afterward.
+`TestProjectRefreshDispatchAvoidsIssueReads` exercises two 150-candidate cycles
+through the real connector and dispatch hydration hooks; nested selector and retry
+coverage preserves existing authorization semantics. No cache, configuration,
+reason code, or recovery mechanism is added.
+Early authorization declines of due retries use the existing release helpers to
+clear retry ownership and budget refusals while preserving blocked state.
+`TestDispatchLabelAuthorizationBeforeHydration` covers that cleanup for blocked
+and unblocked retries without hydration.
+
 Candidate hydration (#2844) consolidates completed scheduler evidence into the
 existing board refresh scan. Bounded hydration runs between board pages and
 retains completed batches across interruptions; transient hydration failures no

@@ -100,6 +100,7 @@ func (p dispatchPlanner) plan(
 		p.logDecision(hooks, decision)
 	}
 
+	labelAuthorization := dispatchLabelSelector(p.cfg.Authorization)
 	plan := DispatchPlan{}
 	continuations := 0
 	mergeControlAvailable := true
@@ -110,6 +111,21 @@ func (p dispatchPlanner) plan(
 		}
 		if !mergeControlAvailable && p.hardAvailableSlots(state) == 0 && p.readyMergeControlCandidate(state, issue) {
 			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipMergeControlLimit})
+			continue
+		}
+		if authorization := selector.Decide(issue, labelAuthorization, p.cfg.SelectorContext); !authorization.Matched {
+			decision := dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition,
+				SkipReason: dispatchSkipAuthorizationSelector, SkipDetail: authorization.Detail,
+				AuthorizationDecision: &authorization}
+			if retry, ok := dueRetries[issue.ID]; ok {
+				decision.Retry, decision.Attempt, decision.WorkerHost = true, retry.Attempt, retry.WorkerHost
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					p.releaseClaim(state, issue.ID)
+				} else {
+					p.releaseIssue(state, issue.ID)
+				}
+			}
+			logDecision(decision)
 			continue
 		}
 		if retry, ok := dueRetries[issue.ID]; ok {
@@ -1294,4 +1310,18 @@ func (p dispatchPlanner) releaseClaim(state *State, issueID string) {
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+}
+
+// dispatchLabelSelector projects authorization onto labels. Other predicates
+// remain unknown until hydration; an OR branch without labels therefore matches
+// here and leaves the full decision to dispatch eligibility.
+func dispatchLabelSelector(auth selector.Selector) selector.Selector {
+	labels := selector.Selector{Labels: auth.Labels}
+	for _, child := range auth.And {
+		labels.And = append(labels.And, dispatchLabelSelector(child))
+	}
+	for _, child := range auth.Or {
+		labels.Or = append(labels.Or, dispatchLabelSelector(child))
+	}
+	return labels
 }
