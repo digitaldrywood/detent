@@ -341,12 +341,7 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 		heartbeat = target.progress.heartbeat(heartbeat, now)
 	}
 	if settings.workAttempts != nil && heartbeat.AttemptID > 0 {
-		err := settings.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat)
-		// Retry a store-local deadline once while the heartbeat operation still
-		// has budget. Never detach shutdown cancellation or an expired operation.
-		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			err = settings.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat)
-		}
+		err := recordWorkAttemptHeartbeat(ctx, settings.workAttempts, heartbeat)
 		if err != nil {
 			return heartbeat, err
 		}
@@ -355,6 +350,25 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 		}
 	}
 	return heartbeat, nil
+}
+
+// Each write gets its own budget inside the caller's operation. A blocked write
+// can exhaust that budget without consuming the context needed by its retry.
+// Caller cancellation and retirement remain authoritative.
+func recordWorkAttemptHeartbeat(ctx context.Context, attempts store.WorkAttemptStore, heartbeat store.WorkAttemptHeartbeat) error {
+	var err error
+	for range 2 {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = attempts.RecordWorkAttemptHeartbeat(writeCtx, heartbeat)
+		cancel()
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
+	return err
 }
 
 func (m *heartbeatManager) settingsSnapshot() heartbeatSettings {
