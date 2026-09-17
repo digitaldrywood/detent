@@ -70,6 +70,7 @@ func TestProjectCandidateRepairsRemainBatched(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				c.client.restBackoffs = newRESTBackoffRegistry()
 				result, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: test.limit})
 				if (err != nil) != test.failNextPage {
 					t.Fatalf("ReadCandidates error = %v", err)
@@ -82,8 +83,8 @@ func TestProjectCandidateRepairsRemainBatched(t *testing.T) {
 					t.Fatalf("cursor = %q", result.NextCursor)
 				}
 				synctest.Wait()
-				if got := started.Load(); got != defaultProjectItemStatusWriteParallelism {
-					t.Errorf("concurrent repair writes = %d, want %d", got, defaultProjectItemStatusWriteParallelism)
+				if got := started.Load(); got != 1 {
+					t.Errorf("concurrent repair writes = %d, want %d", got, 1)
 				}
 				close(release)
 				synctest.Wait()

@@ -206,14 +206,21 @@ REST write protection remain authoritative. `TestProjectRefreshColdFleetRequestC
 and `TestProjectRefreshActiveFleetDispatch` cover cold five/ten-project reads,
 eventual refresh, reset recovery, free permits, and dispatch transition writes.
 
-GitHub secondary throttling (#2829) uses the client cooldown deadline for both
+GitHub secondary throttling (#2829, #2833) uses the credential-scoped cooldown
+deadline in the existing client backoff registry for both
 request admission and the existing scheduler lookup backoff. Retry-After (or a
 one-minute fallback, increasing on repeated failures) gates queries, probes, and
 mutations. Usage flushes and primary-budget refreshes cannot clear this deadline;
-an expired secondary response cannot restart dispatch recovery. This consolidates
+an expired secondary deadline alone cannot restart dispatch recovery or suppress
+a fresh connector/telemetry backoff signal. Clients sharing a credential identity
+(including rotated installation tokens) share the deadline and failure count.
+GraphQL mutations serialize through response accounting on that same state;
+blank-status repair batches run sequentially and stop on throttling. This consolidates
 the two cooldown schedules without adding a timer or configuration surface.
 `TestClientGraphQLSecondaryBackoffExpires`, `TestClientGraphQLSecondaryRepeatedFailures`,
-and `TestGitHubLookupBackoffSecondaryDeadline` cover these boundaries.
+`TestClientGraphQLSecondarySharedAcrossProjects`, `TestClientGraphQLSharedMutationAdmission`,
+`TestGitHubLookupBackoffDelayAfterSecondaryExpiry`, and
+`TestGitHubLookupBackoffSecondaryDeadline` cover these boundaries.
 
 Legacy worker caches are removed at project startup using an absolute, home-expanded
 workspace root (#2742). The obsolete per-project shared-cache sweep and its state
