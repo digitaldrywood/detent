@@ -548,6 +548,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 		// Status failures may retain hydration, but every new refresh must
 		// observe board lanes even when the project updatedAt is unchanged.
 		c.refreshScan = projectItemsScanProgress{
+			fields:    c.refreshScan.fields,
 			evidence:  c.refreshScan.evidence,
 			hydrated:  c.refreshScan.hydrated,
 			updatedAt: c.refreshScan.updatedAt,

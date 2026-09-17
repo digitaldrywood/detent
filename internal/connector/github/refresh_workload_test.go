@@ -88,11 +88,16 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 										return
 									}
 									switch {
+									case strings.Contains(req.Query, "ProjectFieldHydration"):
+										data := map[string]any{}
+										addHydratedProjectFields(data, req.Variables)
+										write(map[string]any{"data": data})
 									case strings.Contains(req.Query, "CandidateHydration"):
 										data := map[string]any{}
 										for n := 1; n <= 3; n++ {
 											data[fmt.Sprintf("issue%d", n-1)] = candidatePRFixtureIssue(repo, n)
 										}
+										addHydratedProjectFields(data, req.Variables)
 										write(map[string]any{"data": data})
 									case strings.Contains(req.Query, "CandidatePullRequestReferences"):
 										if strings.Contains(mode, "fallback") {
@@ -224,11 +229,9 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 	}
 }
 
-// Costs measured against the Detent ProjectV2 board on 2026-09-17 using
-// data.rateLimit.cost: refresh page(first:100), including fieldValues(first:100),
-// scalar bodies and the project updatedAt revision, costs 3 (previously 2
-// without fieldValues). Bounded scheduler costs below are
-// synthetic response fixtures, not measurements or header deltas.
+// Costs are synthetic response fixtures, not measurements or header deltas.
+// The historical refresh-page cost of 3 is retained conservatively after
+// removing its fieldValues connection; hydration now carries bounded fields.
 func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidateState string, shared bool) {
 	t.Helper()
 	const total, candidates, refreshes = 1500, 152, 4
@@ -311,6 +314,21 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 					break
 				}
 			}
+			fieldCount := 0
+			for key, value := range req.Variables {
+				if strings.HasPrefix(key, "item") {
+					var n int
+					fmt.Sscanf(value.(string), "P%d", &n)
+					if n < 1 || n > candidates {
+						t.Errorf("field hydration for unselected item %d", n)
+					}
+					data[key] = map[string]any{"id": value, "fieldValues": map[string]any{"nodes": []any{map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "field": map[string]string{"name": "Status"}, "name": candidateState}}}}
+					fieldCount++
+				}
+			}
+			if fieldCount == 0 || fieldCount > candidateHydrationBatchSize {
+				t.Errorf("field batch size %d", fieldCount)
+			}
 			count := 0
 			for key, value := range req.Variables {
 				if !strings.HasPrefix(key, "id") {
@@ -340,8 +358,8 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				t.Error("unbounded dependency labels or redundant PR preview")
 			}
 		} else {
-			cost = 3 // Measured refresh-page cost; PR queries keep their fixture cost.
-			for _, field := range []string{"blockedBy(", "comments(first:", "closedByPullRequestsReferences(", "commits("} {
+			cost = 3 // Conservative historical page cost; not a new measurement.
+			for _, field := range []string{"fieldValues(", "blockedBy(", "comments(first:", "closedByPullRequestsReferences(", "commits("} {
 				if strings.Contains(req.Query, field) {
 					t.Errorf("board query carries %s", field)
 				}

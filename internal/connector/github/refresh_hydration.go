@@ -26,7 +26,7 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 		if !ok {
 			continue
 		}
-		node := githubIssueNode{ID: issue.ID, Number: ref.Number, Title: issue.Title, CandidateState: issue.State, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}}
+		node := githubIssueNode{CandidateProjectItemID: progress.fields[issue.ID].itemID, ID: issue.ID, Number: ref.Number, Title: issue.Title, CandidateState: issue.State, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}}
 		for _, name := range issue.Labels {
 			node.Labels.Nodes = append(node.Labels.Nodes, label{Name: name})
 		}
@@ -37,7 +37,10 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 	defer func() { c.observeCandidatePullRequests(ctx, nodes, progress.evidence) }()
 	for start := 0; start < len(nodes); start += candidateHydrationBatchSize {
 		batch := nodes[start:min(start+candidateHydrationBatchSize, len(nodes))]
-		evidence, err := c.candidateEvidenceBatch(ctx, batch, true)
+		evidence, fields, err := c.candidateEvidenceBatch(ctx, batch, true)
+		for id, item := range fields {
+			progress.fields[id] = item
+		}
 		for id, node := range evidence {
 			progress.evidence[id] = node
 			progress.hydrated[id] = true
@@ -45,8 +48,27 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 		if err != nil && !projectSchedulerFieldsUnavailable(err) {
 			return fmt.Errorf("hydrate github refresh candidates: %w", err)
 		}
+		if err != nil {
+			items := make(map[string]string, len(batch))
+			for _, node := range batch {
+				items[node.ID] = node.CandidateProjectItemID
+			}
+			fields, fieldErr := c.hydrateProjectFields(ctx, items)
+			if fieldErr != nil {
+				return fmt.Errorf("hydrate github refresh project fields: %w", fieldErr)
+			}
+			for id, fields := range fields {
+				progress.fields[id] = fields
+			}
+		}
 		for _, node := range batch {
 			progress.hydrated[node.ID] = true
+		}
+	}
+	for i := range progress.scan.Issues {
+		issue := &progress.scan.Issues[i]
+		if progress.hydrated[issue.ID] {
+			issue.Fields, issue.FieldUpdatedAt = splitProjectFieldUpdatedAt(progress.fields[issue.ID].fields)
 		}
 	}
 	return nil

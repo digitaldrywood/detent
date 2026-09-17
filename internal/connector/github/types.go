@@ -56,6 +56,7 @@ type projectItemNode struct {
 }
 
 type githubIssueNode struct {
+	CandidateProjectItemID         string                        `json:"-"`
 	CandidateState                 string                        `json:"-"`
 	CandidatePR                    *candidatePullRequestEvidence `json:"-"`
 	BlockedBy                      *issueNodesConnection         `json:"blockedBy"`

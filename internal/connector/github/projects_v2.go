@@ -175,13 +175,12 @@ query DetentGitHubObservedStatusProjectItems(
 var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery,
 	"              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } } }\n", "", 1)
 
-// Project fields serve dispatch selectors and artifact timestamps directly from
-// each refresh page. Scheduler connections remain in candidate hydration.
+// Custom project fields and scheduler connections are read only for selected
+// consumers through bounded candidate hydration.
 // Body is a scalar: retaining it does not add priced connections and avoids
 // unbounded REST body fetches when enriched GraphQL is unavailable.
 var thinRefreshProjectItemsQuery = strings.NewReplacer(
 	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt",
-	"          priorityValue:", projectItemFieldValuesSelection+"\n          priorityValue:",
 ).Replace(schedulerProjectItemsQuery)
 
 const refreshProjectRevisionQuery = `query DetentGitHubRefreshProjectRevision($projectId: ID!) {
@@ -338,27 +337,27 @@ func (c *Connector) fetchProjectItemsWithLimit(
 }
 
 func (c *Connector) ensureProjectFieldsCached(ctx context.Context, issueIDs []string) error {
-	missing := false
-	for _, issueID := range issueIDs {
-		if _, _, known := c.projectCache.GetProjectFields(c.projectID, issueID); !known {
-			if c.projectCache.ProjectFieldsScanned(c.projectID) {
-				if _, _, _, _, _, err := c.fetchProjectFieldsPage(ctx, issueID, nil); err != nil {
-					return err
-				}
-				continue
-			}
-			missing = true
-			break
+	var missing []string
+	for _, id := range uniqueNonBlank(issueIDs) {
+		if _, _, known := c.projectCache.GetProjectFields(c.projectID, id); !known {
+			missing = append(missing, id)
 		}
 	}
-	if !missing {
-		return nil
+	for start := 0; start < len(missing); start += candidateHydrationBatchSize {
+		ids := missing[start:min(start+candidateHydrationBatchSize, len(missing))]
+		items, err := c.projectItemsForFieldHydration(ctx, ids)
+		if err != nil {
+			return err
+		}
+		fields, err := c.hydrateProjectFields(ctx, items)
+		if err != nil {
+			return err
+		}
+		for id, item := range fields {
+			c.projectCache.SetProjectFields(c.projectID, id, item)
+		}
 	}
-
-	_, err := c.fetchProjectItemsWithLimit(ctx, projectItemsWithFieldsQuery, graphQLQueryRunningStates, func(connector.Issue) bool {
-		return false
-	}, 0, false)
-	return err
+	return nil
 }
 
 func (c *Connector) fetchProjectItemsScanWithLimit(
@@ -447,7 +446,9 @@ func (c *Connector) scanProjectItems(
 	if progress.scan.BoardCounts == nil {
 		progress.revision = c.projectCache.Revision(c.projectID)
 		progress.position = candidateCursor{Page: 1}
-		progress.fields = map[string]projectItemFields{}
+		if progress.fields == nil {
+			progress.fields = map[string]projectItemFields{}
+		}
 		progress.scan = connector.IssueStateScan{Issues: []connector.Issue{}, BoardCounts: map[string]int{}, EnumeratedCounts: map[string]int{}}
 	}
 	scanRevision := progress.revision
@@ -494,6 +495,10 @@ func (c *Connector) scanProjectItems(
 		// Changes during this enumeration do not prevent snapshot publication.
 		if queryDocument == thinRefreshProjectItemsQuery {
 			if progress.position.After == "" {
+				if progress.updatedAt != "" && progress.updatedAt != response.Node.UpdatedAt {
+					clear(progress.evidence)
+					clear(progress.hydrated)
+				}
 				progress.updatedAt = response.Node.UpdatedAt
 				// Compare against the first page: later growth must not restart
 				// an otherwise complete enumeration of a busy board.
@@ -517,7 +522,13 @@ func (c *Connector) scanProjectItems(
 			if !ok {
 				continue
 			}
-			if cacheProjectFields {
+			if cacheProjectFields || queryDocument == thinRefreshProjectItemsQuery {
+				if progress.hydrated[issue.ID] && projectFieldsByIssue[issue.ID].itemID == cachedFields.itemID {
+					cachedFields.fields = projectFieldsByIssue[issue.ID].fields
+				} else {
+					delete(progress.hydrated, issue.ID)
+					delete(progress.evidence, issue.ID)
+				}
 				projectFieldsByIssue[issue.ID] = cachedFields
 			}
 			if blankStatusItemID != "" && repairBlankStatuses {

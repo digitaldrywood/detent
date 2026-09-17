@@ -65,6 +65,7 @@ func TestRefreshAfterStatusFailure(t *testing.T) {
 					}
 					data["node"] = map[string]any{"updatedAt": stamp, "items": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "P1", "statusValue": map[string]any{"name": lane}, "content": map[string]any{"__typename": "Issue", "id": "I1", "number": 1, "state": "OPEN", "repository": map[string]any{"nameWithOwner": "fixture/rework"}}}}}}
 				}
+				addHydratedProjectFields(data, req.Variables)
 				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
 					t.Error(err)
 				}

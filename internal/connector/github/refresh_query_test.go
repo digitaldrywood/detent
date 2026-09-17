@@ -123,9 +123,23 @@ func TestRefreshThinBodyFallback(t *testing.T) {
 							}
 						}
 						if r.Method == http.MethodPost {
-							var req struct{ Query string }
+							var req struct {
+								Query     string
+								Variables map[string]any
+							}
 							if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 								t.Error(err)
+							}
+							if strings.Contains(req.Query, "ProjectFieldHydration") {
+								data := map[string]any{}
+								addHydratedProjectFields(data, req.Variables)
+								for key := range req.Variables {
+									if strings.HasPrefix(key, "item") {
+										data[key].(map[string]any)["fieldValues"] = map[string]any{"nodes": []any{map[string]any{"__typename": "ProjectV2ItemFieldTextValue", "text": "agents", "field": map[string]string{"name": "Team"}}}}
+									}
+								}
+								write(map[string]any{"data": data})
+								return
 							}
 							if strings.Contains(req.Query, "CandidateHydration") {
 								switch failure {
@@ -134,7 +148,14 @@ func TestRefreshThinBodyFallback(t *testing.T) {
 								case "graphql backoff":
 									http.Error(w, "rate limit", http.StatusTooManyRequests)
 								default:
-									fmt.Fprint(w, `{"data":{"issue0":{"id":"I1","body":"partial"}}}`)
+									data := map[string]any{"issue0": map[string]any{"id": "I1", "body": "partial"}}
+									addHydratedProjectFields(data, req.Variables)
+									for key := range req.Variables {
+										if strings.HasPrefix(key, "item") {
+											data[key].(map[string]any)["fieldValues"] = map[string]any{"nodes": []any{map[string]any{"__typename": "ProjectV2ItemFieldTextValue", "text": "agents", "field": map[string]string{"name": "Team"}}}}
+										}
+									}
+									write(map[string]any{"data": data})
 								}
 								return
 							}
@@ -184,7 +205,7 @@ func TestRefreshThinBodyFallback(t *testing.T) {
 						t.Fatalf("result: %+v", result)
 					}
 					issue := result.Candidates[0]
-					if issue.Description != body || issue.ModelOverride != "fixture-model" || len(issue.Comments) != 1 || issue.DependencySource != connector.BlockedRefSourceNative {
+					if issue.Fields["Team"] != "agents" || issue.Description != body || issue.ModelOverride != "fixture-model" || len(issue.Comments) != 1 || issue.DependencySource != connector.BlockedRefSourceNative {
 						t.Fatalf("incomplete fallback: %+v", issue)
 					}
 				})
@@ -221,7 +242,10 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 					fmt.Fprint(w, `[]`)
 					return
 				}
-				var req struct{ Query string }
+				var req struct {
+					Query     string
+					Variables map[string]any
+				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Error(err)
 				}
@@ -231,7 +255,7 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 				}
 				if strings.Contains(req.Query, "CandidateHydration") {
 					hydrated = true
-					fmt.Fprint(w, `{"data":{"issue0":{"id":"I1","body":"scheduler body","blockedBy":{"nodes":[]},"comments":{"totalCount":0}}}}`)
+					fmt.Fprint(w, `{"data":{"item0":{"id":"P1","fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldTextValue","text":"agents","field":{"name":"Team"}}]}},"issue0":{"id":"I1","body":"scheduler body","blockedBy":{"nodes":[]},"comments":{"totalCount":0}}}}`)
 					return
 				}
 				page := projectItemsConnection{TotalCount: 1, Nodes: []projectItemNode{{ID: "P1", StatusValue: &singleSelectValue{Name: tt.state}, Content: &githubIssueNode{TypeName: "Issue", ID: "I1", Number: 1, Repository: repository{NameWithOwner: "owner/repo"}}}}}
@@ -244,6 +268,9 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 			result := c.FetchRefreshIssues(t.Context(), nil, []string{tt.state}, connector.IssueFilterHint{SchedulerStates: []string{"Review", "Human Review", "Blocked"}})
 			if result.CandidateError != nil || result.StatusError != nil || hydrated != tt.enrich {
 				t.Fatalf("hydrated=%t want=%t result=%+v", hydrated, tt.enrich, result)
+			}
+			if len(result.Statuses) != 1 || (result.Statuses[0].Fields["Team"] == "agents") != tt.enrich {
+				t.Fatalf("selected lane fields: %+v", result.Statuses)
 			}
 			if !tt.enrich && restCalls != 0 {
 				t.Fatalf("thin lane made %d REST evidence calls", restCalls)

@@ -133,7 +133,18 @@ func (f *fleetWorkloadHTTP) Do(r *http.Request) (*http.Response, error) {
 			data["node"] = map[string]any{"field": map[string]any{"id": "STATUS", "options": []any{map[string]string{"id": "todo", "name": "Todo"}, map[string]string{"id": "progress", "name": "In Progress"}}}}
 		case strings.Contains(req.Query, "DetentGitHubProjectItemForIssue"):
 			data["node"] = map[string]any{"projectItems": map[string]any{"nodes": []any{map[string]any{"id": "ITEM_1", "project": map[string]string{"id": "PVT_1"}, "statusValue": map[string]string{"name": f.lane}}}}}
+		case strings.Contains(req.Query, "DetentGitHubProjectFieldItems"):
+			node := f.issue()
+			node["projectItems"] = map[string]any{"nodes": []any{map[string]any{"id": "ITEM_1", "project": map[string]string{"id": "PVT_1"}}}}
+			data["issue0"] = node
+		case strings.Contains(req.Query, "DetentGitHubProjectFieldHydration"):
+			data["item0"] = map[string]any{"id": "ITEM_1", "statusValue": map[string]string{"name": f.lane}, "fieldValues": map[string]any{"nodes": []any{}}}
 		case strings.Contains(req.Query, "DetentGitHubCandidateHydration"):
+			for key, id := range req.Variables {
+				if strings.HasPrefix(key, "item") {
+					data[key] = map[string]any{"id": id, "fieldValues": map[string]any{"nodes": []any{}}}
+				}
+			}
 			data["issue0"] = f.issue()
 		case strings.Contains(req.Query, "DetentGitHubProjectItems"), strings.Contains(req.Query, "DetentGitHubObservedStatusProjectItems"):
 			items := []any{}

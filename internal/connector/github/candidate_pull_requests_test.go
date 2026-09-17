@@ -489,7 +489,10 @@ func testIndependentRefreshEvidence(t *testing.T, entry string) {
 					}
 					return
 				}
-				var req struct{ Query string }
+				var req struct {
+					Query     string
+					Variables map[string]any
+				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Error(err)
 					return
@@ -499,7 +502,9 @@ func testIndependentRefreshEvidence(t *testing.T, entry string) {
 				}
 				switch {
 				case strings.Contains(req.Query, "CandidateHydration"):
-					write(map[string]any{"data": map[string]any{"issue0": issue}})
+					data := map[string]any{"issue0": issue}
+					addHydratedProjectFields(data, req.Variables)
+					write(map[string]any{"data": data})
 				case strings.Contains(req.Query, "CandidatePullRequestReferences"):
 					write(map[string]any{"data": map[string]any{"nodes": []any{map[string]any{"id": "I1", "closedByPullRequestsReferences": map[string]any{"totalCount": len(refs), "nodes": refs}}}, "repo0": map[string]any{"pullRequests": map[string]any{"nodes": discovered}}}})
 				case strings.Contains(req.Query, "CandidatePullRequestStatus"):
