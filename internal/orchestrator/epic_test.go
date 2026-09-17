@@ -924,3 +924,21 @@ func epicTestIssue(id string, state string, closed bool, title string, labels []
 	issue.URL = "https://github.com/" + strings.ReplaceAll(issue.Identifier, "#", "/issues/")
 	return issue
 }
+
+func TestParseEpicBodyChildRefsFencedExamples(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{name: "prose", body: "Depends on: #10\n- [ ] #11"},
+		{name: "fenced examples", body: "```markdown\nDepends on: #90\n- [ ] #91\n```\nDepends on: #10\n- [ ] #11"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			want := []connector.BlockedRef{{Identifier: "owner/repo#10"}, {Identifier: "owner/repo#11"}}
+			if got := parseEpicBodyChildRefs(tt.body, "owner/repo"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("children = %+v, want %+v", got, want)
+			}
+		})
+	}
+}

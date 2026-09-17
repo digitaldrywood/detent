@@ -38,11 +38,8 @@ func admissionDependencyReferences(issue connector.Issue) []string {
 	for _, ref := range issue.BlockedBy {
 		add(ref.Identifier)
 	}
-	for _, line := range strings.Split(issue.Description, "\n") {
-		text, ok := dependencyline.Match(line)
-		if !ok {
-			continue
-		}
+	declarations, _ := dependencyline.Declarations(issue.Description)
+	for _, text := range declarations {
 		for _, ref := range issueReferencePattern.FindAllString(text, -1) {
 			add(ref)
 		}
