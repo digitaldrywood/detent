@@ -2378,24 +2378,31 @@ func TestDispatchPlanReportsMergedPullRequestReconciliationPending(t *testing.T)
 
 func TestDispatchModeMergingFastPathFlag(t *testing.T) {
 	t.Parallel()
-
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 1,
-		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates:      []string{"Done"},
-	})
-	state := newState(cfg)
-	issue := dispatchTestIssueWithPullRequest("issue-merging", "Merging", "OPEN")
-
-	off := Orchestrator{cfg: cfg}
-	if got := off.dispatchMode(context.Background(), &state, issue); got != runpkg.RunModeImplement {
-		t.Fatalf("flag off dispatchMode = %q, want implement", got)
+	tests := []struct {
+		name, lane, mergeable, want string
+		enabled                     bool
+	}{
+		{"merging disabled", "Merging", "clean", runpkg.RunModeImplement, false},
+		{"merging enabled", "Merging", "clean", runpkg.RunModeMerge, true},
+		{"dirty rework", "Rework", "dirty", runpkg.RunModeMerge, true},
+		{"dirty in progress", "In Progress", "dirty", runpkg.RunModeMerge, true},
+		{"dirty rework disabled", "Rework", "dirty", runpkg.RunModeMerge, false},
+		{"dirty in progress disabled", "In Progress", "dirty", runpkg.RunModeMerge, false},
+		{"clean rework", "Rework", "clean", runpkg.RunModeImplement, true},
+		{"clean in progress", "In Progress", "clean", runpkg.RunModeImplement, true},
 	}
-
-	cfg.MergeFastPathEnabled = true
-	on := Orchestrator{cfg: cfg}
-	if got := on.dispatchMode(context.Background(), &state, issue); got != runpkg.RunModeMerge {
-		t.Fatalf("flag on dispatchMode = %q, want merge", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: tt.enabled})
+			state := newState(cfg)
+			issue := dispatchTestIssueWithPullRequest("issue-repair", tt.lane, "OPEN")
+			issue.PullRequest.MergeableState = tt.mergeable
+			orch := Orchestrator{cfg: cfg}
+			if got := orch.dispatchMode(t.Context(), &state, issue); got != tt.want {
+				t.Fatalf("dispatchMode = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

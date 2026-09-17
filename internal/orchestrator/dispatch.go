@@ -611,7 +611,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	runMode := o.dispatchMode(ctx, state, issue)
 	var allowance attemptAllowance
 	var triageContext string
-	if runMode == runpkg.RunModeImplement && o.cfg.DeliverableKind != "artifact" {
+	if (runMode == runpkg.RunModeImplement || (runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue))) && o.cfg.DeliverableKind != "artifact" {
 		var err error
 		allowance, err = o.issueAttemptAllowance(ctx, issue)
 		if err != nil {
@@ -1093,6 +1093,14 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
 	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && o.cfg.MergeFastPathEnabled {
 		return runpkg.RunModeMerge
+	}
+	// Conflict repair uses the merge precheck and verified fallback even before
+	// the card is ready for Merging, independently of programmatic merge policy.
+	switch normalizeState(issue.State) {
+	case "rework", "in progress":
+		if issue.PullRequest != nil && strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "dirty") {
+			return runpkg.RunModeMerge
+		}
 	}
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	if !cfg.Enabled {
