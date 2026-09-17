@@ -64,13 +64,14 @@ else
         esac
     fi
     if [ "$group" = rest ]; then
+        [ "$2" = -count=1 ] || { echo 'direct tests must disable result caching' >&2; exit 12; }
         for argument in "$@"; do
             [ "$argument" != github.com/digitaldrywood/detent/internal/workspace ] || exit 11
         done
     fi
     profile_mode=set
     if [ "$group" != rest ]; then profile_mode=atomic; fi
-    if [ "$1 $2" = 'test -race' ]; then
+    if [ "$1 $2 ${3:-}" = 'test -count=1 -race' ]; then
         for argument in "$@"; do
             [ "$argument" != github.com/digitaldrywood/detent/internal/orchestrator ] || exit 7
         done
