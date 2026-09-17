@@ -250,6 +250,14 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
+	var points struct {
+		RateLimit struct {
+			Cost int64 `json:"cost"`
+		} `json:"rateLimit"`
+	}
+	if json.Unmarshal(envelope.Data, &points) == nil {
+		connector.RecordGraphQLPoints(ctx, points.RateLimit.Cost)
+	}
 	if !c.recordRateLimitFromData(envelope.Data, queryType, receivedAt) {
 		c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
 	}
@@ -2236,10 +2244,11 @@ type graphQLSecondaryState struct {
 	until    time.Time
 	failures int
 	repairs  chan struct{}
+	scans    chan struct{}
 }
 
 func newGraphQLSecondaryState() *graphQLSecondaryState {
-	return &graphQLSecondaryState{repairs: make(chan struct{}, 1)}
+	return &graphQLSecondaryState{repairs: make(chan struct{}, 1), scans: make(chan struct{}, 1)}
 }
 
 func (s *graphQLSecondaryState) deadline() time.Time {

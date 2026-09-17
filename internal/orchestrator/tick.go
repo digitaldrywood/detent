@@ -57,6 +57,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	defer o.endGlobalProjectCycle()
 	completed := false
 	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, manual != nil)
+	ctx, timing.points = connector.WithGraphQLPoints(ctx)
 	timing.progress = &o.refreshProgress
 	timing.next("preflight")
 	defer func() {
@@ -458,6 +459,18 @@ func (o *Orchestrator) fetchTickIssues(
 	now time.Time,
 	reserve githubBudgetReserveDecision,
 ) (tickFetchedIssues, bool) {
+	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
+		release, err := scanner.BeginRefreshScan(ctx)
+		if err != nil {
+			recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
+			if o.scheduling == nil {
+				o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+			}
+			markRefreshError(state, "begin tracker scan: "+err.Error(), now)
+			return tickFetchedIssues{}, false
+		}
+		defer release()
+	}
 	observedStates := o.observedStatusFetchStatesForTick(state)
 	fetcher, canRefresh := o.connector.(connector.RefreshIssueFetcher)
 	canRefresh = canRefresh && fetcher.CombinedRefreshEnabled()
