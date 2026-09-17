@@ -16,6 +16,12 @@ func TestFromIssueBody(t *testing.T) {
 		wantErr   string
 	}{
 		{name: "no block", body: "Ship the feature."},
+		{name: "nested backticks", body: "````markdown\n```detent-agent\nschema: 1\neffort: small\n```\n````"},
+		{name: "nested mixed fences", body: "~~~markdown\n```detent-agent\nschema: 1\neffort: small\n```\n~~~"},
+		{name: "unterminated outer fence", body: "````markdown\n```detent-agent\nschema: 1\neffort: small\n```"},
+		{name: "after example", body: "````\n```detent-agent\nschema: 1\neffort: small\n```\n````\n```detent-agent\nschema: 1\neffort: low\n```", want: Override{Effort: "low"}, wantFound: true},
+		{name: "example after override", body: "```detent-agent\nschema: 1\neffort: low\n```\n````\n```detent-agent\nschema: 1\neffort: small\n```\n````", want: Override{Effort: "low"}, wantFound: true},
+		{name: "unfinished example after override", body: "```detent-agent\nschema: 1\neffort: low\n```\n````\n```detent-agent\nschema: 1\neffort: small\n```", want: Override{Effort: "low"}, wantFound: true},
 		{
 			name:      "model only",
 			body:      "```detent-agent\nschema: 1\nmodel: gpt-5.5\n```",

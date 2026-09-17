@@ -518,9 +518,7 @@ func issueConfigurationFailure(err error, errorClass, message string) bool {
 		if !found {
 			continue
 		}
-		if strings.HasPrefix(detail, "block: parse detent-agent YAML:") || detail == "block: detent-agent schema must be 1" ||
-			strings.HasSuffix(detail, ": explicit effort is unsupported by the selected model") ||
-			strings.HasSuffix(detail, ": explicit model is unavailable or retired in the selected backend catalog") {
+		if strings.HasPrefix(detail, "block: parse detent-agent YAML:") || detail == "block: detent-agent schema must be 1" {
 			return true
 		}
 	}

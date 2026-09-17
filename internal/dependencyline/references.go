@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/markdownfence"
 )
 
 var referencePattern = regexp.MustCompile(`^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$`)
@@ -46,16 +48,9 @@ func Declarations(body string) ([]string, bool) {
 // declarations. The boolean reports whether every opening fence was closed.
 func LinesOutsideFences(body string) ([]string, bool) {
 	var lines []string
-	fence := ""
+	var fence markdownfence.Fence
 	for _, line := range strings.FieldsFunc(body, func(r rune) bool { return r == '\n' || r == '\r' }) {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			if fence == "" {
-				end := len(trimmed) - len(strings.TrimLeft(trimmed, trimmed[:1]))
-				fence = trimmed[:end]
-			} else if len(trimmed) >= len(fence) && strings.Trim(trimmed, fence[:1]) == "" {
-				fence = ""
-			}
+		if fence.Consume(line) {
 			continue
 		}
 		if fence == "" {

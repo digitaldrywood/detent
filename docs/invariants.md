@@ -161,6 +161,11 @@ fallback uses the existing provider report without launching a catalog process.
 `TestUnknownOverrideFallsBack`, `TestOverrideFallbackReachesAgent`, and
 `TestInvalidOverrideSchemaRemainsTerminal` cover this removal. Cleanup precedence
 continues to cover selection failures using an unavailable configured route model.
+Issue override parsing shares dependency fence boundaries and ignores nested
+fenced examples (#2893). The failure breaker no longer recognizes retired
+model/effort rejection strings; YAML and schema rejection remain terminal.
+`TestFromIssueBody` covers top-level overrides, fenced examples, and unfinished
+outer fences.
 
 Provider-identity bookkeeping failures during implementation, validator, and security-audit turns
 are logged without failing the turn (#2626). Persistence uses a bounded detached
