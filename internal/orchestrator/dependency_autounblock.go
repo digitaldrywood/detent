@@ -666,13 +666,9 @@ func dependencyRefsFromIssueText(issue connector.Issue) []connector.BlockedRef {
 
 func dependencyLineRefs(body string, repo string) []connector.BlockedRef {
 	refs := []connector.BlockedRef{}
-	for _, line := range strings.FieldsFunc(body, func(r rune) bool {
-		return r == '\n' || r == '\r'
-	}) {
-		text, ok := dependencyline.Match(line)
-		if !ok {
-			continue
-		}
+	// Read declarations preceding unfinished examples, just like the connector.
+	declarations, _ := dependencyline.Declarations(body)
+	for _, text := range declarations {
 		refs = append(refs, dependencyRefsInText(text, repo)...)
 	}
 	return refs
@@ -687,6 +683,8 @@ func dependencyRefsInText(text string, repo string) []connector.BlockedRef {
 }
 
 func dependencyReasonRefs(reason string, repo string) []connector.BlockedRef {
+	lines, _ := dependencyline.LinesOutsideFences(reason)
+	reason = strings.Join(lines, "\n")
 	refs := dependencyLineRefs(reason, repo)
 	if len(refs) > 0 {
 		return refs
@@ -769,7 +767,8 @@ func dependencyMarkdownSectionText(body string, title string) string {
 	want := dependencyNormalizeSectionTitle(title)
 	inSection := false
 	lines := []string{}
-	for line := range strings.SplitSeq(body, "\n") {
+	prose, _ := dependencyline.LinesOutsideFences(body)
+	for _, line := range prose {
 		heading, ok := dependencyMarkdownHeadingTitle(line)
 		if ok {
 			if inSection {
