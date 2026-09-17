@@ -82,7 +82,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 
 		if cacheFresh {
 			if len(candidate.PullRequest.UnresolvedReviewThreads) > 0 {
-				o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
+				o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonUnresolvedReviewThreads, now)
 				continue
 			}
 			applyNativeMergeQueueEntry(out, issueID, cachedEntry.Entry)
@@ -116,7 +116,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		}
 		if len(candidate.PullRequest.UnresolvedReviewThreads) > 0 && (status.Available || status.Entry != nil) {
 			candidate.PullRequest.MergeQueueEntry = status.Entry
-			o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
+			o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonUnresolvedReviewThreads, now)
 			continue
 		}
 		if status.Entry != nil {
@@ -223,8 +223,13 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		entry, err := queue.EnqueuePullRequest(ctx, enqueueIssue)
 		if err != nil {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
-			if strings.Contains(strings.ToLower(err.Error()), "a conversation must be resolved before this pull request can be merged") {
-				o.reworkNativeMergeQueueReview(ctx, state, out, candidate, now)
+			message := strings.ToLower(err.Error())
+			if strings.Contains(message, "pull request has merge conflicts") || strings.Contains(message, "pull request not in mergeable state") {
+				o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonMergeConflicts, now)
+				continue
+			}
+			if strings.Contains(message, "a conversation must be resolved before this pull request can be merged") {
+				o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonUnresolvedReviewThreads, now)
 				continue
 			}
 			o.logNativeMergeQueueFailure(candidate, "enqueue_failed", err)
@@ -245,8 +250,8 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	return out
 }
 
-// reworkNativeMergeQueueReview uses the same review handoff as auto-promotion.
-func (o *Orchestrator) reworkNativeMergeQueueReview(ctx context.Context, state *State, issues []connector.Issue, issue connector.Issue, now time.Time) {
+// reworkNativeMergeQueueIssue uses the same Rework handoff as auto-promotion.
+func (o *Orchestrator) reworkNativeMergeQueueIssue(ctx context.Context, state *State, issues []connector.Issue, issue connector.Issue, reason AutoPromoteReason, now time.Time) {
 	state.nativeMergeQueueDeferred[strings.TrimSpace(issue.ID)] = struct{}{}
 	if err := o.withdrawNativeMergeQueueEntry(ctx, state, issue); err != nil {
 		o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
@@ -256,7 +261,7 @@ func (o *Orchestrator) reworkNativeMergeQueueReview(ctx context.Context, state *
 	issue = cloneIssue(issue)
 	issue.PullRequest.MergeQueueEntry = nil
 	summary := AutoPromoteSummaryFromIssue(issue)
-	decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
+	decision := autoPromoteDecision(AutoPromoteActionRework, reason)
 	target := normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
 	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, target, now) {
 		return
