@@ -174,11 +174,15 @@ Candidate hydration (#2844) consolidates completed scheduler evidence into the
 existing board refresh scan. Bounded hydration runs between board pages and
 retains completed batches across interruptions; transient hydration failures no
 longer discard progress and fan out through REST. Resume validates all retained
-comment IDs and edit timestamps before reusing bodies. Scheduler queries have at
-most 25 aliases; PR snapshots bound nested contexts and annotations. No timer,
+comment IDs and edit timestamps and each blocker's own updatedAt before reusing
+evidence. A completed scan retained after a status failure restarts board
+enumeration on the next refresh; project updatedAt alone cannot validate lanes.
+Scheduler queries have at most 25 aliases; PR snapshots keep 100-item connections
+and use one PR per request (10,401 connection nodes). No timer,
 pacer, configuration key, or recovery loop is added.
-`TestRefreshHydrationResumes`, `TestCandidateHydrationShape`, and the large-board
-`TestProjectRefreshHourlyWorkload` scenarios cover this consolidation.
+`TestRefreshHydrationResumes`, `TestCandidateHydrationShape`, the large-board
+`TestProjectRefreshHourlyWorkload` scenarios, `TestRefreshAfterStatusFailure`,
+and `TestCandidatePRLargeCollectionsRemainAuthoritative` cover this consolidation.
 
 Non-draft dirty PRs in Rework or In Progress reuse the existing merge-mode precheck,
 fallback rebase prompt, and deterministic verification (#2842), regardless of

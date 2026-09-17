@@ -53,6 +53,9 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 // Read all comment identities and updatedAt values (without bodies) explicitly
 // before reusing an interrupted scan's complete scheduler observations.
 func (c *Connector) validateRefreshEvidence(ctx context.Context, progress *projectItemsScanProgress) error {
+	if err := c.validateRefreshBlockers(ctx, progress); err != nil {
+		return err
+	}
 	ids := make([]string, 0, len(progress.evidence))
 	for id := range progress.evidence {
 		ids = append(ids, id)
@@ -124,4 +127,50 @@ func sameRefreshCommentRevision(retained, current githubIssueNode) bool {
 		}
 	}
 	return true
+}
+
+// A dependency can change without changing its dependent or the project.
+// Check each retained blocker's own revision before reusing dependency evidence.
+func (c *Connector) validateRefreshBlockers(ctx context.Context, progress *projectItemsScanProgress) error {
+	blockers := make(map[string]struct{})
+	for _, node := range progress.evidence {
+		if node.BlockedBy != nil {
+			for _, blocker := range node.BlockedBy.Nodes {
+				if blocker.ID != "" {
+					blockers[blocker.ID] = struct{}{}
+				}
+			}
+		}
+	}
+	ids := make([]string, 0, len(blockers))
+	for id := range blockers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	revisions := make(map[string]string, len(ids))
+	for start := 0; start < len(ids); start += candidateHydrationBatchSize {
+		var response struct{ Nodes []githubIssueNode }
+		const query = "query DetentGitHubRefreshBlockerRevision($ids:[ID!]!) { nodes(ids:$ids) { ... on Issue { id updatedAt } } rateLimit { limit used cost remaining resetAt } }"
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, query, map[string]any{"ids": ids[start:min(start+candidateHydrationBatchSize, len(ids))]}, &response); err != nil {
+			return err
+		}
+		for _, node := range response.Nodes {
+			if node.UpdatedAt != nil {
+				revisions[node.ID] = *node.UpdatedAt
+			}
+		}
+	}
+	for id, node := range progress.evidence {
+		if node.BlockedBy == nil {
+			continue
+		}
+		for _, blocker := range node.BlockedBy.Nodes {
+			if blocker.UpdatedAt == nil || revisions[blocker.ID] == "" || revisions[blocker.ID] != *blocker.UpdatedAt {
+				delete(progress.evidence, id)
+				delete(progress.hydrated, id)
+				break
+			}
+		}
+	}
+	return nil
 }

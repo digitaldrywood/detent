@@ -100,7 +100,9 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 									case strings.Contains(req.Query, "CandidatePullRequestStatus"):
 										data := map[string]any{}
 										for n := 1; n <= 3; n++ {
-											data[fmt.Sprintf("pr%d", n-1)] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+											if strings.Contains(req.Query, fmt.Sprintf("pullRequest(number:%d)", 100+n)) {
+												data["pr0"] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+											}
 										}
 										write(map[string]any{"data": data})
 									case strings.Contains(req.Query, "LabelIssuePullRequestReferences"):
@@ -192,7 +194,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 						}
 						if !strings.Contains(mode, "fallback") {
 							wantREST := workload.projects * 6
-							wantGraphQL := workload.projects * workload.refreshes * 4
+							wantGraphQL := workload.projects * workload.refreshes * 6
 							if rest != wantREST || graphql != wantGraphQL || notModified != 0 {
 								t.Fatalf("want REST=%d GraphQL=%d 304=0", wantREST, wantGraphQL)
 							}
@@ -252,6 +254,9 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 				t.Error("revision query must read updatedAt without an items connection")
 			}
 			data["node"] = map[string]any{"updatedAt": "2026-09-16T20:00:00Z"}
+		} else if strings.Contains(req.Query, "RefreshBlockerRevision") {
+			cost = 1
+			data["nodes"] = []any{map[string]any{"id": "I1500", "updatedAt": "2026-09-16T20:00:00Z"}}
 		} else if strings.Contains(req.Query, "RefreshEvidenceRevision") {
 			cost = 1
 			for key, id := range req.Variables {
@@ -280,7 +285,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 				}
 				data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": value, "body": "scheduler body", "updatedAt": "2026-09-16T20:00:00Z", "comments": map[string]any{"totalCount": 0, "nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
 				if n == 1 {
-					data["issue"+strings.TrimPrefix(key, "id")].(map[string]any)["blockedBy"] = map[string]any{"nodes": []any{map[string]any{"id": "I1500", "number": 1500, "body": humanBody, "state": "CLOSED", "repository": map[string]string{"nameWithOwner": "fixture/large"}}}}
+					data["issue"+strings.TrimPrefix(key, "id")].(map[string]any)["blockedBy"] = map[string]any{"nodes": []any{map[string]any{"id": "I1500", "updatedAt": "2026-09-16T20:00:00Z", "number": 1500, "body": humanBody, "state": "CLOSED", "repository": map[string]string{"nameWithOwner": "fixture/large"}}}}
 				}
 				count++
 			}
@@ -373,7 +378,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool) {
 	// Failed page requests have no response cost and are absent from usage.
 	wantQueries, wantPoints, wantPreflights := 88, 268, 0
 	if resumed {
-		wantQueries, wantPoints, wantPreflights = 112, 288, 4
+		wantQueries, wantPoints, wantPreflights = 116, 292, 4
 	}
 	if preflights != wantPreflights {
 		t.Fatalf("preflights=%d want=%d", preflights, wantPreflights)

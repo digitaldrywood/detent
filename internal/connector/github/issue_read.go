@@ -543,6 +543,17 @@ func (c *Connector) fetchProjectRefreshIssues(
 	defer c.refreshMu.Unlock()
 
 	resumed := c.refreshScan.scan.BoardCounts != nil
+	if c.refreshScan.complete {
+		// A completed enumeration is a snapshot, not a cursor to resume.
+		// Status failures may retain hydration, but every new refresh must
+		// observe board lanes even when the project updatedAt is unchanged.
+		c.refreshScan = projectItemsScanProgress{
+			evidence:  c.refreshScan.evidence,
+			hydrated:  c.refreshScan.hydrated,
+			updatedAt: c.refreshScan.updatedAt,
+			revision:  c.refreshScan.revision,
+		}
+	}
 	validated := false
 	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
 		return true

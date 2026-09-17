@@ -66,7 +66,9 @@ func TestCandidateHourlyWorkload(t *testing.T) {
 									case strings.Contains(req.Query, "CandidatePullRequestStatus"):
 										data := map[string]any{}
 										for n := 1; n <= 3; n++ {
-											data[fmt.Sprintf("pr%d", n-1)] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+											if strings.Contains(req.Query, fmt.Sprintf("pullRequest(number:%d)", 100+n)) {
+												data["pr0"] = map[string]any{"pullRequest": candidatePRFixtureSnapshot(repo, n)}
+											}
 										}
 										write(map[string]any{"data": data})
 									case strings.Contains(req.Query, "LabelIssuePullRequestReferences"):

@@ -14,7 +14,7 @@ const candidateHydrationBatchSize = 25
 const candidateCommentFields = `totalCount pageInfo { hasNextPage endCursor }
  nodes { id body url author { login } authorAssociation createdAt updatedAt }`
 const candidateDependencyFields = `pageInfo { hasNextPage endCursor }
- nodes { id number body state repository { nameWithOwner } labels(first: 20) { pageInfo { hasNextPage endCursor } nodes { name } } }`
+ nodes { id number body state updatedAt repository { nameWithOwner } labels(first: 20) { pageInfo { hasNextPage endCursor } nodes { name } } }`
 const candidateSchedulerFields = `comments(first: 100) { ` + candidateCommentFields + ` }
  blockedBy(first: 20) { ` + candidateDependencyFields + ` }`
 
@@ -23,10 +23,11 @@ var candidateProjectItemsQuery = strings.Replace(schedulerProjectItemsQuery, "co
 // candidateEvidence is scoped to one source page. Only complete snapshots can
 // replace REST hydration; nil native connections are not authoritative empties.
 func (c *Connector) candidateEvidence(ctx context.Context, nodes []githubIssueNode, fetch bool) map[string]githubIssueNode {
+	// Admission preserves completed observations and hydrates missing entries
+	// through its legacy reader when batching fails.
 	complete, err := c.candidateEvidenceBatched(ctx, nodes, fetch)
-	if err != nil {
-		// Preserve completed observations; admission hydrates missing entries through its legacy reader.
-		return complete
+	if err != nil && c.logger != nil {
+		c.logger.DebugContext(ctx, "github candidate hydration incomplete; using legacy readers for missing evidence", "error", err)
 	}
 	return complete
 }
