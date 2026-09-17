@@ -32,6 +32,9 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 		}
 		nodes = append(nodes, node)
 	}
+	// Observe only this page's completed evidence, including partial progress
+	// retained when a later scheduler batch fails.
+	defer func() { c.observeCandidatePullRequests(ctx, nodes, progress.evidence) }()
 	for start := 0; start < len(nodes); start += candidateHydrationBatchSize {
 		batch := nodes[start:min(start+candidateHydrationBatchSize, len(nodes))]
 		evidence, err := c.candidateEvidenceBatch(ctx, batch, true)
