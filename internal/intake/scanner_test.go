@@ -33,7 +33,7 @@ func TestStaleTODOScanner(t *testing.T) {
 				writeScannerTestFile(t, root, ".next/server/chunk.js", "// TODO: compiled vendor chunk\n")
 				writeScannerTestFile(t, root, "untracked.go", "// TODO: untracked source\n")
 				writeScannerTestFile(t, root, "detent.yaml", "target_state: Todo\n- Todo\n# config and stale-TODO scan\n")
-				writeScannerTestFile(t, root, "WORKFLOW.md", "For `Todo`:\nThe TODO markers are scanned weekly.\n")
+				writeScannerTestFile(t, root, "WORKFLOW.md", "For `Todo`:\nThe TODO markers are scanned weekly.\n# TODO list\n## FIXME list\n")
 
 				cmd := exec.CommandContext(t.Context(), "git")
 				cmd.Args = []string{"git", "-C", root, "init", "--quiet"}
@@ -126,7 +126,29 @@ func TestTODOMarkerShape(t *testing.T) {
 		{"NOTTODO: prose", false}, {"stale-TODO: prose", false},
 	} {
 		t.Run(tt.line, func(t *testing.T) {
-			if got := (todoMarker(tt.line) != nil); got != tt.want {
+			if got := (todoMarker(tt.line, "main.go") != nil); got != tt.want {
+				t.Fatalf("match = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTODOMarkerMarkdownHeadings(t *testing.T) {
+	for _, tt := range []struct {
+		path, line string
+		want       bool
+	}{
+		{"README.md", "# TODO list", false},
+		{"README.MD", "## FIXME list", false},
+		{"README.md", "### TODO", false},
+		{"README.md", "# TODO: retry", true},
+		{"README.md", "## FIXME(owner): retry", true},
+		{"README.md", "<!-- TODO retry -->", true},
+		{"script.sh", "# TODO retry", true},
+		{"config.yaml", "# FIXME retry", true},
+	} {
+		t.Run(tt.path+tt.line, func(t *testing.T) {
+			if got := todoMarker(tt.line, tt.path) != nil; got != tt.want {
 				t.Fatalf("match = %t, want %t", got, tt.want)
 			}
 		})

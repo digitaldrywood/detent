@@ -216,3 +216,37 @@ func TestConnectorSetIntakeIssueStateResolvesUncachedProjectItem(t *testing.T) {
 		t.Fatalf("update variables = %#v", updateVariables)
 	}
 }
+
+func TestConnectorFindIntakeIssuePrefersOpenDuplicate(t *testing.T) {
+	marker := "<!-- detent-intake:duplicate -->"
+	item := func(number int, state string) string {
+		return fmt.Sprintf(`{"node_id":"I_%d","number":%d,"body":%q,"state":%q}`, number, number, marker, state)
+	}
+	for _, tt := range []struct {
+		name  string
+		pages [][]string
+		want  int
+	}{
+		{"closed before open", [][]string{{item(43, "closed"), item(42, "open")}}, 42},
+		{"open before closed", [][]string{{item(42, "open"), item(43, "closed")}}, 42},
+		{"newest closed last", [][]string{{item(42, "closed"), item(43, "closed")}}, 43},
+		{"newest closed first", [][]string{{item(43, "closed"), item(42, "closed")}}, 43},
+		{"open on later page", [][]string{{item(43, "closed")}, {item(42, "open")}}, 42},
+		{"newest closed on later page", [][]string{{item(42, "closed")}, {item(43, "closed")}}, 43},
+		{"no match", [][]string{{`{"node_id":"I_99","number":99,"body":"unrelated","state":"open"}`}}, 0},
+		{"invalid open matches", [][]string{{item(42, "closed"), `{"number":99,"body":"<!-- detent-intake:duplicate -->","state":"open"}`, `{"node_id":"PR_99","number":99,"body":"<!-- detent-intake:duplicate -->","state":"open","pull_request":{}}`}}, 42},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			responses := make([]graphqlTestResponse, len(tt.pages))
+			for i, items := range tt.pages {
+				responses[i] = graphqlTestResponse{method: http.MethodGet, body: fmt.Sprintf(`{"total_count":%d,"items":[%s]}`, (len(tt.pages)-1)*intakeIssueSearchPageSize+len(items), strings.Join(items, ","))}
+			}
+			server := newGraphQLTestServer(t, responses)
+			connector := newGitHubTestConnector(t, server, Config{Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+			issue, found, err := connector.FindIntakeIssue(t.Context(), marker)
+			if err != nil || found != (tt.want != 0) || issue.Number != tt.want {
+				t.Fatalf("FindIntakeIssue() = %#v, %t, %v; want number %d", issue, found, err, tt.want)
+			}
+		})
+	}
+}
