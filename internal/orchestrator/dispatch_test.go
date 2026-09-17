@@ -4330,3 +4330,77 @@ func TestDispatchReadyIssuesUnresolvedDependencyDoesNotBlockUnrelated(t *testing
 		})
 	}
 }
+
+func TestDispatchableWorkerGitHubMonitorCarrier(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 17, 1, 50, 52, 0, time.UTC)
+	for _, restored := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restored=%v", restored), func(t *testing.T) {
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 2, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			orch := Orchestrator{cfg: cfg, logger: slog.Default()}
+			state := newState(cfg)
+			issue := dispatchTestIssue("carrier", "In Progress")
+			const credential = "github-rest:worker"
+			metadata := workerGitHubMonitorWaitMetadata{CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool, Operation: "credential_classification_worker", DetectedAt: now.Add(-5 * time.Minute), LastObservedAt: now.Add(-5 * time.Minute), NextProbeAt: now}
+			if restored {
+				orch.connector = &rateLimitConnector{issuesByID: []connector.Issue{issue}}
+				orch.workAttempts = &recordingWorkAttemptStore{recent: []store.WorkAttempt{{
+					ID: 2846, IssueID: issue.ID, Identifier: issue.Identifier, Lane: issue.State,
+					AttemptNumber: 2, Status: store.WorkAttemptStatusTerminal, CompletedAt: metadata.LastObservedAt,
+					TerminalState: store.WorkAttemptTerminalCapacity, ErrorClass: workerGitHubMonitorErrorClass,
+					WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"worker_github_monitor_wait": metadata}),
+				}}}
+				orch.recoverDurableWorkAttempts(t.Context(), &state, now.Add(-time.Minute))
+			} else {
+				state.GitHubMonitors[credential] = GitHubMonitor{CredentialIdentity: credential, NextProbeAt: now}
+				state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now, GitHubMonitor: true, GitHubCredential: credential}
+			}
+			planner := newDispatchPlanner(cfg)
+			planner.plan(&state, nil, now, dispatchPlanHooks{preserveMissingDueRetry: func(retry Retry) bool { return orch.preserveMissingDueRetry(&state, retry) }})
+			if !state.Retry[issue.ID].GitHubMonitor {
+				t.Fatal("missing candidate batch discarded carrier")
+			}
+			decision := planner.dispatchableIssueDecisionForModelRequirement(issue, &state, true, now, "", true)
+			if decision.reason != dispatchSkipRetryPending {
+				t.Fatalf("carrier eligibility = %s, want normal retry queue ownership", decision.reason)
+			}
+			plan := planner.plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{})
+			if len(plan.Dispatches) != 1 || state.GitHubMonitors[credential].ProbeIssueID != issue.ID {
+				t.Fatalf("dispatches = %#v, monitor = %#v", plan.Dispatches, state.GitHubMonitors[credential])
+			}
+			orch.recoverWorkerGitHubMonitorFromUpdate(&state, state.Running[issue.ID], &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool, Remaining: 4200}}}, now.Add(time.Second))
+			if len(state.GitHubMonitors) != 0 {
+				t.Fatal("successful probe did not clear monitor")
+			}
+		})
+	}
+}
+
+func TestUnavailableMonitorCarrierDoesNotRenewHold(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"Backlog", "Done", "In Progress"} {
+		t.Run(lane, func(t *testing.T) {
+			now := time.Date(2026, 9, 17, 1, 50, 52, 0, time.UTC)
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			state := newState(cfg)
+			carrier := dispatchTestIssue("carrier", lane)
+			if lane == "In Progress" {
+				carrier.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#10", State: "Backlog"}}
+			}
+			original := GitHubMonitor{CredentialIdentity: "credential", NextProbeAt: now, ProbeAttempts: 2}
+			state.GitHubMonitors["credential"] = original
+			retry := Retry{Issue: carrier, DueAt: now, GitHubMonitor: true, GitHubCredential: "credential"}
+			state.Retry[carrier.ID] = retry
+			planner := newDispatchPlanner(cfg)
+			if _, dispatched, _ := planner.retryAction(&state, carrier, retry, now); dispatched {
+				t.Fatal("unavailable carrier dispatched")
+			}
+			if workerGitHubMonitorBlocks(&state, "unrelated", Retry{}, now) {
+				t.Fatal("unavailable carrier renewed expired hold")
+			}
+			if state.GitHubMonitors["credential"] != original {
+				t.Fatal("unavailable carrier consumed probe attempt")
+			}
+		})
+	}
+}

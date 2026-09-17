@@ -20,10 +20,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -1147,6 +1149,83 @@ func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
 			if tc.wantErr && (!errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !strings.Contains(err.Error(), "instance") || strings.Contains(err.Error(), tc.token)) {
 				t.Fatalf("unclassified or unsafe error: %v", err)
 			}
+		})
+	}
+}
+
+func TestWorkerGitHubClassificationSecondaryCooldown(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			defer server.Close()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+			policy.CredentialMode = workerGitHubCredentialUnclassified
+			policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+				cancel()
+				return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(`{"message":"You have exceeded a secondary rate limit"}`))}, nil
+			})
+			_, _, err := startWorkerGitHubGovernor(ctx, policy, nil)
+			if errors.Is(err, ErrWorkerGitHubBudgetMonitor) {
+				t.Fatalf("secondary throttle registered monitor failure: %v", err)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want canceled cooldown wait", err)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		status   int
+		body     string
+		existing bool
+	}{
+		{"secondary 403", 403, `{"message":"You have exceeded a secondary rate limit"}`, false},
+		{"secondary 429", 429, `{"message":"You have exceeded a secondary rate limit"}`, false},
+		{"graphql secondary error", 200, `{"errors":[{"type":"RATE_LIMITED","message":"secondary rate limit"}]}`, false},
+		{"existing shared cooldown", 403, `{"message":"You have exceeded a secondary rate limit"}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				started := time.Now()
+				calls := 0
+				client := workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if calls == 1 {
+						return &http.Response{StatusCode: tt.status, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(tt.body))}, nil
+					}
+					if time.Since(started) < time.Minute {
+						t.Errorf("probe bypassed shared cooldown after %s", time.Since(started))
+					}
+					return workerGitHubPrincipalResponse(), nil
+				})
+				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: t.Name(), GraphQLURL: "https://github.test/graphql", HTTPClient: client}
+				if tt.existing {
+					shared, err := githubconnector.NewClient(githubconnector.ClientConfig{Endpoint: policy.GraphQLURL, TokenSource: githubconnector.StaticTokenSource(policy.Token), HTTPClient: client})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := shared.GraphQL(t.Context(), "query { viewer { login } }", nil, nil); !errors.Is(err, githubconnector.ErrRateLimited) {
+						t.Fatalf("seed cooldown: %v", err)
+					}
+				}
+				classified, err := policy.classifyCredential(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if classified.PrincipalID <= 0 || calls != 2 {
+					t.Fatalf("principal = %#v, calls = %d", classified.Principal, calls)
+				}
+				if time.Since(started) != time.Minute {
+					t.Fatalf("cooldown = %s, want one minute", time.Since(started))
+				}
+			})
 		})
 	}
 }

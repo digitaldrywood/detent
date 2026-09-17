@@ -305,6 +305,11 @@ func dispatchFailureRetryReason(reason string) string {
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
+	if retry.GitHubMonitor {
+		if _, exists := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; exists {
+			return true
+		}
+	}
 	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
 		return false
 	}

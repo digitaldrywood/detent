@@ -329,15 +329,6 @@ func (p dispatchPlanner) retryAction(
 			}
 		}
 	}
-	workerGitHubMonitorProbeReserved := false
-	if retry.GitHubMonitor {
-		if _, active := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; active {
-			_, workerGitHubMonitorProbeReserved = reserveWorkerGitHubMonitorProbe(state, issue.ID, retry, now)
-			if !workerGitHubMonitorProbeReserved {
-				return dispatchAction{}, false, dispatchSkipGitHubMonitor
-			}
-		}
-	}
 	delete(state.Retry, retry.Issue.ID)
 
 	modelPermitRequired := p.modelPermitRequiredAtDispatch(issue) || retry.MergePrecheck != nil
@@ -352,9 +343,6 @@ func (p dispatchPlanner) retryAction(
 	if !decision.dispatchable {
 		if forgeProbeReserved {
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", decision.reason, now)
-		}
-		if workerGitHubMonitorProbeReserved {
-			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", decision.reason, now)
 		}
 		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency || decision.reason == dispatchSkipTrackerUnavailable {
 			state.Retry[retry.Issue.ID] = retry
@@ -393,10 +381,20 @@ func (p dispatchPlanner) retryAction(
 		if forgeProbeReserved {
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchSkipWorkerHostUnavailable, now)
 		}
-		if workerGitHubMonitorProbeReserved {
-			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchSkipWorkerHostUnavailable, now)
-		}
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
+	}
+	// Reserve only after eligibility and worker selection succeed. A carrier
+	// that cannot run must not consume attempts or renew an expired hold.
+	if retry.GitHubMonitor {
+		if _, active := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; active {
+			if _, reserved := reserveWorkerGitHubMonitorProbe(state, issue.ID, retry, now); !reserved {
+				state.Retry[retry.Issue.ID] = retry
+				if forgeProbeReserved {
+					releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchSkipGitHubMonitor, now)
+				}
+				return dispatchAction{}, false, dispatchSkipGitHubMonitor
+			}
+		}
 	}
 	return action, true, ""
 }

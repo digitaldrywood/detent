@@ -137,6 +137,23 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
+Worker credential classification (#2846) uses the connector's shared GraphQL
+secondary cooldown, including Retry-After, instead of converting throttled probes
+into monitor failures. Cancellation during that wait does not register a monitor.
+Monitor eligibility resolves the issue's queued retry even when the caller supplies
+no retry; at `NextProbeAt` the carrier can reserve the existing single canary.
+An idle hold expires at `NextProbeAt` even when its carrier cannot dispatch;
+an in-flight canary retains ownership. Eligibility checks are read-only and retain
+the condition's attempt history, so a repeated failure after expiry increases
+backoff. Missing candidate batches preserve monitor carrier retries; only a
+dispatchable carrier reserves a probe and consumes an attempt. Durable attempt recovery restores both the
+condition and its carrier retry, and a successful budget observation clears it.
+`TestWorkerGitHubClassificationWaitsForSharedCooldown`,
+`TestWorkerGitHubMonitorCarrierEligibility`, and
+`TestDispatchableWorkerGitHubMonitorCarrier` cover cooldown, expiry, and dispatch
+through restart. This consolidates classification with the existing cooldown and
+uses the existing backend-capacity probe delay; it adds no new recovery loop.
+
 Worker GitHub CLI preflight (#2741) checks that `gh auth token` can read the
 selected credential from its private per-attempt `hosts.yml`. Failures reuse
 `WorkerGitHubBudgetMonitorError` and its existing instance attribution; no issue
