@@ -59,7 +59,19 @@ func TestProjectRefreshDispatchAvoidsIssueReads(t *testing.T) {
 		}
 		data := map[string]any{}
 		switch {
+		case strings.Contains(req.Query, "RefreshBlockerRevision"):
+			data["nodes"] = []any{}
 		case strings.Contains(req.Query, "CandidateHydration"):
+			for key, value := range req.Variables {
+				if strings.HasPrefix(key, "item") {
+					data[key] = map[string]any{"id": value, "fieldValues": map[string]any{"nodes": []any{
+						map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Todo", "updatedAt": now.Format(time.RFC3339), "field": map[string]string{"name": "Status"}},
+						map[string]any{"__typename": "ProjectV2ItemFieldTextValue", "text": "agents", "updatedAt": now.Format(time.RFC3339), "field": map[string]string{"name": "Team"}},
+						map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "queued", "updatedAt": now.Add(time.Minute).Format(time.RFC3339), "field": map[string]string{"name": "render_status"}},
+						map[string]any{"__typename": "ProjectV2ItemFieldNumberValue", "number": 3, "updatedAt": now.Format(time.RFC3339), "field": map[string]string{"name": "Estimate"}},
+					}}}
+				}
+			}
 			for key, value := range req.Variables {
 				if strings.HasPrefix(key, "id") {
 					var n int
@@ -71,6 +83,9 @@ func TestProjectRefreshDispatchAvoidsIssueReads(t *testing.T) {
 			if strings.Contains(req.Query, "ObservedStatusProjectItems") {
 				pages++
 			}
+			if strings.Contains(req.Query, "fieldValues(") {
+				t.Error("enumeration contains custom fields")
+			}
 			start, end := 1, 100
 			if req.Variables["after"] != nil {
 				start, end = 101, count
@@ -78,14 +93,7 @@ func TestProjectRefreshDispatchAvoidsIssueReads(t *testing.T) {
 			nodes := []any{}
 			for n := start; n <= end; n++ {
 				item := map[string]any{"id": fmt.Sprintf("P%d", n), "content": issueNode(n), "statusValue": map[string]string{"name": "Todo", "updatedAt": now.Format(time.RFC3339)}}
-				if strings.Contains(req.Query, "fieldValues(first: 100)") {
-					item["fieldValues"] = map[string]any{"nodes": []any{
-						map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Todo", "updatedAt": now.Format(time.RFC3339), "field": map[string]string{"name": "Status"}},
-						map[string]any{"__typename": "ProjectV2ItemFieldTextValue", "text": "agents", "updatedAt": now.Format(time.RFC3339), "field": map[string]string{"name": "Team"}},
-						map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "queued", "updatedAt": now.Add(time.Minute).Format(time.RFC3339), "field": map[string]string{"name": "render_status"}},
-						map[string]any{"__typename": "ProjectV2ItemFieldNumberValue", "number": 3, "updatedAt": now.Format(time.RFC3339), "field": map[string]string{"name": "Estimate"}},
-					}}
-				}
+
 				nodes = append(nodes, item)
 			}
 			data["node"] = map[string]any{"items": map[string]any{"totalCount": count, "nodes": nodes, "pageInfo": map[string]any{"hasNextPage": end < count, "endCursor": "page2"}}}

@@ -88,11 +88,18 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 										return
 									}
 									switch {
+									case strings.Contains(req.Query, "RefreshEvidenceRevision"):
+										write(map[string]any{"data": map[string]any{}})
+									case strings.Contains(req.Query, "ProjectFieldHydration"):
+										data := map[string]any{}
+										addHydratedProjectFields(data, req.Variables)
+										write(map[string]any{"data": data})
 									case strings.Contains(req.Query, "CandidateHydration"):
 										data := map[string]any{}
 										for n := 1; n <= 3; n++ {
 											data[fmt.Sprintf("issue%d", n-1)] = candidatePRFixtureIssue(repo, n)
 										}
+										addHydratedProjectFields(data, req.Variables)
 										write(map[string]any{"data": data})
 									case strings.Contains(req.Query, "CandidatePullRequestReferences"):
 										if strings.Contains(mode, "fallback") {
@@ -206,7 +213,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 						}
 						if !strings.Contains(mode, "fallback") {
 							wantREST := workload.projects * 6
-							wantGraphQL := workload.projects * workload.refreshes * 4
+							wantGraphQL := workload.projects * (workload.refreshes*4 + workload.refreshes - 1)
 							if rest != wantREST || graphql != wantGraphQL || notModified != 0 {
 								t.Fatalf("want REST=%d GraphQL=%d 304=0", wantREST, wantGraphQL)
 							}
@@ -224,14 +231,13 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 	}
 }
 
-// Costs measured against the Detent ProjectV2 board on 2026-09-17 using
-// data.rateLimit.cost: refresh page(first:100), including fieldValues(first:100),
-// scalar bodies and the project updatedAt revision, costs 3 (previously 2
-// without fieldValues). Bounded scheduler costs below are
-// synthetic response fixtures, not measurements or header deltas.
-func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidateState string, shared bool) {
+// Costs are synthetic response fixtures, not measurements or header deltas.
+// The historical refresh-page cost of 3 is retained conservatively after
+// removing its fieldValues connection; hydration now carries bounded fields.
+func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidateState string, shared bool, incremental ...bool) {
 	t.Helper()
 	const total, candidates, refreshes = 1500, 152, 4
+	var tick, fieldReads int
 	var graphql, rest, points, preflights, failedPages, associations, statuses int
 	prReads := make(map[int]int)
 	var inFlight, maxInFlight atomic.Int32
@@ -303,6 +309,17 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				snapshot["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"oid": fmt.Sprintf("head%d", n)}}}}
 				data[fmt.Sprintf("pr%d", len(data))] = map[string]any{"pullRequest": snapshot}
 			}
+		} else if strings.Contains(req.Query, "ProjectFieldHydration") {
+			fieldReads += len(req.Variables)
+			if len(req.Variables) > 25 {
+				t.Error("unbounded field hydration")
+			}
+			for key, value := range req.Variables {
+				if value != "P1" {
+					t.Errorf("unchanged item hydrated: %v", value)
+				}
+				data[key] = map[string]any{"id": value, "updatedAt": strconv.Itoa(tick), "fieldValues": map[string]any{"nodes": []any{map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "field": map[string]string{"name": "Status"}, "name": candidateState}, map[string]any{"__typename": "ProjectV2ItemFieldTextValue", "field": map[string]string{"name": "Team"}, "text": strconv.Itoa(tick)}}}}
+			}
 		} else if strings.Contains(req.Query, "CandidateHydration") {
 			active := inFlight.Add(1)
 			defer inFlight.Add(-1)
@@ -310,6 +327,21 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				if maxInFlight.CompareAndSwap(old, active) {
 					break
 				}
+			}
+			fieldCount := 0
+			for key, value := range req.Variables {
+				if strings.HasPrefix(key, "item") {
+					var n int
+					fmt.Sscanf(value.(string), "P%d", &n)
+					if n < 1 || n > candidates {
+						t.Errorf("field hydration for unselected item %d", n)
+					}
+					data[key] = map[string]any{"id": value, "fieldValues": map[string]any{"nodes": []any{map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "field": map[string]string{"name": "Status"}, "name": candidateState}}}}
+					fieldCount++
+				}
+			}
+			if fieldCount == 0 || fieldCount > candidateHydrationBatchSize {
+				t.Errorf("field batch size %d", fieldCount)
 			}
 			count := 0
 			for key, value := range req.Variables {
@@ -340,8 +372,11 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				t.Error("unbounded dependency labels or redundant PR preview")
 			}
 		} else {
-			cost = 3 // Measured refresh-page cost; PR queries keep their fixture cost.
-			for _, field := range []string{"blockedBy(", "comments(first:", "closedByPullRequestsReferences(", "commits("} {
+			cost = 3 // Conservative historical page cost; not a new measurement.
+			if !strings.Contains(req.Query, "id\n          updatedAt\n          content") {
+				t.Error("missing item revision scalar")
+			}
+			for _, field := range []string{"fieldValues(", "blockedBy(", "comments(first:", "closedByPullRequestsReferences(", "commits("} {
 				if strings.Contains(req.Query, field) {
 					t.Errorf("board query carries %s", field)
 				}
@@ -368,9 +403,18 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 				if strings.Contains(req.Query, "fieldValues(first: 100)") {
 					fields.Nodes = []projectFieldValue{{TypeName: "ProjectV2ItemFieldSingleSelectValue", Field: projectField{Name: "Status"}, Name: state}}
 				}
-				page.Nodes = append(page.Nodes, projectItemNode{ID: fmt.Sprintf("P%d", n), FieldValues: fields, StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
+
+				itemStamp := "stable"
+				if len(incremental) > 0 && n == 1 {
+					itemStamp = strconv.Itoa(tick)
+				}
+				page.Nodes = append(page.Nodes, projectItemNode{UpdatedAt: itemStamp, ID: fmt.Sprintf("P%d", n), FieldValues: fields, StatusValue: &singleSelectValue{Name: state}, Content: &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, State: "OPEN", Title: "Fixture", Repository: repository{NameWithOwner: "fixture/large"}}})
 			}
-			data["node"] = map[string]any{"updatedAt": "2026-09-16T20:00:00Z", "items": page}
+			projectStamp := "2026-09-16T20:00:00Z"
+			if len(incremental) > 0 && incremental[0] {
+				projectStamp = strconv.Itoa(tick)
+			}
+			data["node"] = map[string]any{"updatedAt": projectStamp, "items": page}
 		}
 		points += cost
 		data["rateLimit"] = map[string]any{"cost": cost, "remaining": 5000 - points, "limit": 5000}
@@ -384,7 +428,7 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 	}))
 	defer server.Close()
 	c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/large", ActiveStates: []string{"Todo"}, ObservedStates: []string{"Backlog", "Human Review", "Blocked"}})
-	for range refreshes {
+	for tick = range refreshes {
 		beforeAssociations, beforeStatuses := associations, statuses
 		clear(prReads)
 		failPage = resumed
@@ -425,6 +469,9 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 		for _, issue := range result.Candidates {
 			// Dispatch's hydration short-circuit requires project fields. The real
 			// dispatch-hook request assertion lives in the orchestrator regression.
+			if len(incremental) > 0 && tick > 0 && issue.ID == "I1" && issue.Fields["Team"] != strconv.Itoa(tick) {
+				t.Fatalf("stale fields: %v", issue.Fields)
+			}
 			if issue.Fields["Status"] != candidateState {
 				t.Fatalf("candidate %s project Status = %q, want %q", issue.ID, issue.Fields["Status"], candidateState)
 			}
@@ -440,15 +487,22 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 		t.Fatalf("in-flight hydration=%d", maxInFlight.Load())
 	}
 	for id, count := range hydrationCounts {
-		if count != refreshes {
-			t.Errorf("%s hydrated %d times, want %d (no replay)", id, count, refreshes)
+		want := 1
+		if count != want {
+			t.Errorf("%s hydrated %d times, want %d (no replay)", id, count, want)
 		}
+	}
+	if len(incremental) > 0 {
+		if fieldReads != refreshes-1 {
+			t.Fatalf("field reads=%d", fieldReads)
+		}
+		return
 	}
 	usage := c.client.FlushGraphQLRateLimitUsage()
 	// Failed page requests have no response cost and are absent from usage.
-	wantQueries, wantPoints, wantPreflights := 88, 328, 0
+	wantQueries, wantPoints, wantPreflights := 91, 241, 0
 	if resumed {
-		wantQueries, wantPoints, wantPreflights = 116, 352, 4
+		wantQueries, wantPoints, wantPreflights = 128, 274, 4
 	}
 	if candidateState == "Human Review" {
 		wantQueries += 40
@@ -461,4 +515,12 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 		t.Fatalf("GraphQL=%d REST=%d points=%d accounting=%+v", graphql, rest, points, usage)
 	}
 	t.Logf("1500 items, 152 candidates, four refreshes/hour: GraphQL=%d REST=%d points=%d", graphql, rest, points)
+}
+
+func TestProjectRefreshIncrementalFields(t *testing.T) {
+	for _, changingProject := range []bool{false, true} {
+		t.Run(strconv.FormatBool(changingProject), func(t *testing.T) {
+			testLargeProjectRefreshHourlyWorkload(t, false, "Todo", false, changingProject)
+		})
+	}
 }
