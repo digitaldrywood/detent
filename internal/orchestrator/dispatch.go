@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,8 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		o.cancelPendingGlobalDispatches()
 		return
 	}
+	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
+	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
 	rankingIssues := issues
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
