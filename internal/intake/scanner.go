@@ -6,11 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxScannedFileBytes = 1 << 20
@@ -64,11 +67,50 @@ func (scannerFactory) New(name string, root string) (Scanner, error) {
 }
 
 func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	files, err := s.revisionFiles(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	if len(files) == 0 {
+		return []Event{}, nil
+	}
+	var input strings.Builder
+	for _, file := range files {
+		input.WriteString(file.object + "\n")
+	}
+	cmd := s.gitCommand(ctx, "cat-file", "--batch")
+	cmd.Stdin = strings.NewReader(input.String())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	events, scanErr := scanTODOFiles(ctx, files, bufio.NewReader(output))
+	contextErr := ctx.Err()
+	if scanErr != nil {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if contextErr != nil {
+		return nil, contextErr
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("%w: %s", scanErr, strings.TrimSpace(stderr.String()))
+	}
+	if waitErr != nil {
+		return nil, gitScanError(ctx, "cat-file", waitErr, stderr.String())
+	}
+	return events, nil
+}
+
+func scanTODOFiles(ctx context.Context, files []revisionFile, output *bufio.Reader) ([]Event, error) {
 	events := []Event{}
 	for _, file := range files {
 		path := file.path
@@ -76,10 +118,21 @@ func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
 			return nil, err
 		}
 
-		content, err := s.git(ctx, "cat-file", "blob", file.object)
+		header, err := output.ReadString('\n')
 		if err != nil {
 			return nil, fmt.Errorf("read stale TODO file %q: %w", path, err)
 		}
+		if header != fmt.Sprintf("%s blob %d\n", file.object, file.size) {
+			return nil, fmt.Errorf("unexpected stale TODO blob header for %q: %q", path, header)
+		}
+		content := make([]byte, file.size+1)
+		if _, err := io.ReadFull(output, content); err != nil {
+			return nil, fmt.Errorf("read stale TODO file %q: %w", path, err)
+		}
+		if content[file.size] != '\n' {
+			return nil, fmt.Errorf("invalid stale TODO blob delimiter for %q", path)
+		}
+		content = content[:file.size]
 		scanner := bufio.NewScanner(bytes.NewReader(content))
 		scanner.Buffer(make([]byte, 64*1024), maxScannedFileBytes)
 		lineNumber := 0
@@ -116,6 +169,7 @@ func (s staleTODOScanner) Scan(ctx context.Context) ([]Event, error) {
 type revisionFile struct {
 	path   string
 	object string
+	size   int64
 }
 
 // revisionFiles pins the remote default branch before reading any tree or blob.
@@ -164,20 +218,33 @@ func (s staleTODOScanner) revisionFiles(ctx context.Context) ([]revisionFile, er
 		if size > maxScannedFileBytes || !scannablePath(path) {
 			continue
 		}
-		files = append(files, revisionFile{path: path, object: fields[2]})
+		files = append(files, revisionFile{path: path, object: fields[2], size: size})
 	}
 	return files, nil
 }
 
-func (s staleTODOScanner) git(ctx context.Context, args ...string) ([]byte, error) {
+func (s staleTODOScanner) gitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = append([]string{"git", "-C", s.root}, args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+func gitScanError(ctx context.Context, operation string, err error, stderr string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("git %s: %w: %s", operation, err, strings.TrimSpace(stderr))
+}
+
+func (s staleTODOScanner) git(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := s.gitCommand(ctx, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("git %s: %w", args[0], err)
+		return nil, gitScanError(ctx, args[0], err, stderr.String())
 	}
 	return output, nil
 }

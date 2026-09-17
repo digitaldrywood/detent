@@ -2,11 +2,15 @@ package intake
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
@@ -57,6 +61,26 @@ func TestStaleTODOScanner(t *testing.T) {
 				scannerGit(t, root, "init")
 				writeScannerTestFile(t, root, "main.go", "// TODO: local only\n")
 				scannerGit(t, root, "add", ".")
+			},
+			wantErr: "resolve stale TODO remote default branch",
+		},
+
+		{
+			name: "unreachable origin includes Git diagnostic",
+			setup: func(t *testing.T, root string) {
+				scannerGit(t, root, "init")
+				scannerGit(t, root, "remote", "add", "origin", filepath.Join(root, "missing-remote"))
+			},
+			wantErr: "does not appear to be a git repository",
+		},
+		{
+			name: "remote without HEAD fails without checkout fallback",
+			setup: func(t *testing.T, root string) {
+				remote := t.TempDir()
+				scannerGit(t, remote, "init", "--bare")
+				scannerGit(t, root, "init")
+				scannerGit(t, root, "remote", "add", "origin", remote)
+				writeScannerTestFile(t, root, "local.go", "// TODO: local only\n")
 			},
 			wantErr: "resolve stale TODO remote default branch",
 		},
@@ -168,6 +192,9 @@ func TestStaleTODOScannerRevision(t *testing.T) {
 			scannerGit(t, remote, "commit", "-m", "old")
 			scannerGit(t, root, "clone", remote, ".")
 			scannerGit(t, root, "fetch", "origin")
+			writeScannerTestFile(t, root, "local.go", "// TODO: committed local only\n")
+			scannerGit(t, root, "add", "local.go")
+			scannerGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "local only")
 			scannerGit(t, remote, "rm", "removed.go")
 			writeScannerTestFile(t, remote, "new.go", "// TODO: current default branch\n")
 			writeScannerTestFile(t, remote, "large.go", "// TODO: oversized\n"+strings.Repeat("x", maxScannedFileBytes))
@@ -213,5 +240,53 @@ func TestStaleTODOScannerRevision(t *testing.T) {
 				t.Fatal("checkout status changed")
 			}
 		})
+	}
+}
+
+func TestScanTODOFilesBatch(t *testing.T) {
+	for _, count := range []int{0, 1, 2000} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			root := t.TempDir()
+			scannerGit(t, root, "init")
+			for i := range count {
+				writeScannerTestFile(t, root, fmt.Sprintf("file%04d.go", i), "// TODO: batch marker\n")
+			}
+			scannerGit(t, root, "add", ".")
+			scannerGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "batch")
+			scannerGit(t, root, "remote", "add", "origin", root)
+			events, err := (staleTODOScanner{root: root}).Scan(t.Context())
+			if err != nil || len(events) != count {
+				t.Fatalf("Scan() returned %d events, %v; want %d", len(events), err, count)
+			}
+		})
+	}
+}
+
+func TestScannerGitCancellation(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deadline), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			want := context.Canceled
+			if deadline {
+				cancel()
+				ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				want = context.DeadlineExceeded
+			} else {
+				cancel()
+			}
+			defer cancel()
+			_, err := (staleTODOScanner{root: t.TempDir()}).Scan(ctx)
+			if !errors.Is(err, want) {
+				t.Fatalf("Scan() error = %v, want %v", err, want)
+			}
+		})
+	}
+}
+
+func TestScannerGitDisablesTerminalPrompt(t *testing.T) {
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+	output, err := (staleTODOScanner{root: t.TempDir()}).git(t.Context(), "-c", "alias.detent-prompt=!printf '%s' \"$GIT_TERMINAL_PROMPT\"", "detent-prompt")
+	if err != nil || string(output) != "0" {
+		t.Fatalf("prompt setting = %q, error = %v", output, err)
 	}
 }
