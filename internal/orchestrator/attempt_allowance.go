@@ -14,6 +14,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const attemptAllowanceExhaustedReason = "attempt_allowance_exhausted"
@@ -102,12 +103,20 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	var metadata struct {
-		Fence struct {
+		BlockerEvidence []telemetry.BlockerEvidence `json:"blocker_evidence"`
+		Fence           struct {
 			Excluded bool `json:"excluded_from_worker_outcomes"`
 		} `json:"historical_completion_fence"`
 	}
-	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil && metadata.Fence.Excluded {
-		return true
+	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
+		if metadata.Fence.Excluded {
+			return true
+		}
+		for _, evidence := range metadata.BlockerEvidence {
+			if evidence.Owner == workpad.BlockerOwnerInstance {
+				return true
+			}
+		}
 	}
 	return false
 }

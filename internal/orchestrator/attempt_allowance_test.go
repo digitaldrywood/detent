@@ -61,6 +61,31 @@ func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 			}
 		})
 	}
+	for _, tt := range []struct {
+		name     string
+		metadata string
+		count    int
+	}{
+		{"instance blocker success", `{"blocker_evidence":[{"owner":"instance"}]}`, 2},
+		{"mixed ownership with instance", `{"blocker_evidence":[{"owner":"human"},{"owner":"instance"},{"owner":"orchestrator"}]}`, 2},
+		{"human blocker only", `{"blocker_evidence":[{"owner":"human"}]}`, 3},
+		{"orchestrator blocker only", `{"blocker_evidence":[{"owner":"orchestrator"}]}`, 3},
+		{"absent evidence", `{}`, 3},
+		{"empty evidence", `{"blocker_evidence":[]}`, 3},
+		{"missing owner", `{"blocker_evidence":[{}]}`, 3},
+		{"malformed metadata", `{"blocker_evidence":[{"owner":"instance"}]`, 3},
+		{"malformed evidence", `{"blocker_evidence":"instance"}`, 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			attempts := append([]store.WorkAttempt{}, base...)
+			attempts[0].TerminalState = store.WorkAttemptTerminalSuccess
+			attempts[0].WorkerMetadataJSON = tt.metadata
+			got := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{})
+			if got.Sessions != tt.count || got.exhausted() != (tt.count == 3) {
+				t.Fatalf("sessions = %d, exhausted = %v; want %d, %v", got.Sessions, got.exhausted(), tt.count, tt.count == 3)
+			}
+		})
+	}
 	for _, class := range []string{"backend_startup_failure", "backend_startup_timeout", "transport_error", "backend_protocol_error", "service_restart", "workspace_preparation", "tracker_unavailable", "forge_unavailable"} {
 		t.Run(class+" does not consume allowance", func(t *testing.T) {
 			attempts := append([]store.WorkAttempt{}, base...)
