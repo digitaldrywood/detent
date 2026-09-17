@@ -3523,7 +3523,8 @@ SELECT
 FROM codex_sessions s
 JOIN work_attempts w ON w.id = s.work_attempt_id
 WHERE w.project_id = ?1
-  AND lower(trim(COALESCE(w.status, ''))) = 'active'
+  AND (lower(trim(COALESCE(w.status, ''))) = 'active'
+       OR (w.terminal_state = 'abandoned' AND w.error_class = 'service_restart'))
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
@@ -4444,25 +4445,26 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND (?9 = '' OR project_id = ?9)
-  AND lease_expires_at IS NOT NULL
-  AND lease_expires_at <= ?10
+  AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?10)
+       OR id IN (SELECT value FROM json_each(?11)))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-  AND id NOT IN (SELECT value FROM json_each(?11))
+  AND id NOT IN (SELECT value FROM json_each(?12))
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
 type TimeoutExpiredWorkAttemptsParams struct {
-	Status            string         `json:"status"`
-	TerminalState     sql.NullString `json:"terminal_state"`
-	CompletedAt       sql.NullString `json:"completed_at"`
-	HeartbeatAt       sql.NullString `json:"heartbeat_at"`
-	ErrorClass        sql.NullString `json:"error_class"`
-	ErrorMessage      sql.NullString `json:"error_message"`
-	Phase             sql.NullString `json:"phase"`
-	StatusMessage     sql.NullString `json:"status_message"`
-	FilterProjectID   interface{}    `json:"filter_project_id"`
-	LeaseExpiresAt    sql.NullString `json:"lease_expires_at"`
-	ExcludeAttemptIds interface{}    `json:"exclude_attempt_ids"`
+	Status                  string         `json:"status"`
+	TerminalState           sql.NullString `json:"terminal_state"`
+	CompletedAt             sql.NullString `json:"completed_at"`
+	HeartbeatAt             sql.NullString `json:"heartbeat_at"`
+	ErrorClass              sql.NullString `json:"error_class"`
+	ErrorMessage            sql.NullString `json:"error_message"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	FilterProjectID         interface{}    `json:"filter_project_id"`
+	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
+	ConfirmedGoneAttemptIds interface{}    `json:"confirmed_gone_attempt_ids"`
+	ExcludeAttemptIds       interface{}    `json:"exclude_attempt_ids"`
 }
 
 func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExpiredWorkAttemptsParams) ([]WorkAttempt, error) {
@@ -4477,6 +4479,7 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 		arg.StatusMessage,
 		arg.FilterProjectID,
 		arg.LeaseExpiresAt,
+		arg.ConfirmedGoneAttemptIds,
 		arg.ExcludeAttemptIds,
 	)
 	if err != nil {
@@ -4562,17 +4565,19 @@ func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLast
 
 const updateCodexSessionFinalStateByWorkAttempt = `-- name: UpdateCodexSessionFinalStateByWorkAttempt :exec
 UPDATE codex_sessions
-SET final_state = ?1
-WHERE work_attempt_id = ?2
+SET final_state = ?1,
+    completed_at = COALESCE(completed_at, ?2)
+WHERE work_attempt_id = ?3
 `
 
 type UpdateCodexSessionFinalStateByWorkAttemptParams struct {
 	FinalState    sql.NullString `json:"final_state"`
+	CompletedAt   sql.NullString `json:"completed_at"`
 	WorkAttemptID sql.NullInt64  `json:"work_attempt_id"`
 }
 
 func (q *Queries) UpdateCodexSessionFinalStateByWorkAttempt(ctx context.Context, arg UpdateCodexSessionFinalStateByWorkAttemptParams) error {
-	_, err := q.db.ExecContext(ctx, updateCodexSessionFinalStateByWorkAttempt, arg.FinalState, arg.WorkAttemptID)
+	_, err := q.db.ExecContext(ctx, updateCodexSessionFinalStateByWorkAttempt, arg.FinalState, arg.CompletedAt, arg.WorkAttemptID)
 	return err
 }
 

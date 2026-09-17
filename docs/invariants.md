@@ -328,6 +328,32 @@ restores the base interval. Actual exhaustion, provider throttles, and connector
 REST write protection remain authoritative. `TestProjectRefreshColdFleetRequestCounts`
 and `TestProjectRefreshActiveFleetDispatch` cover cold five/ten-project reads,
 eventual refresh, reset recovery, free permits, and dispatch transition writes.
+Startup process reconciliation feeds confirmed-gone instance-owned attempts to
+the existing expired-lease query across all projects before project loading
+(#2749), including removed projects. The parallel bulk reclaim API/query is
+removed. The store is per instance; `worker_host` values are scheduling pool
+labels, not instance identities, so all registered processes and attempts are
+reconciled regardless of their pool label. Failed process termination prevents
+startup expiry.
+Project refresh retains lease criteria and running-attempt exclusions; deferred
+completions remain excluded in the shared query. Interrupted sessions retain
+orphan-session resume eligibility. `TestStartupRetainsOwnedWorkAttempts` covers
+processes whose termination fails with live/expired leases and local/pool labels.
+`TestReapPoolWorkerProcesses` covers startup/shutdown reaping of pool-labelled
+workers and startup reclamation before lease expiry. Historical abandoned
+`service_restart` sessions remain eligible for resume when their project is
+loaded and their issue is active; eligibility is intentionally not limited to
+the latest boot.
+Recorded processless stops use
+the existing completion and pending operator-stop records without requiring a
+running project; live workers still require the orchestrator. Live and recorded
+stops share route normalization, validation, and completion construction. Configured
+default/custom destinations survive project initialization. Unreadable or invalid pending
+workflows still permit record-only and canonical stops; removed projects reuse the
+standard Todo priority names through shared priority normalization. Linked session completion
+is atomic with attempt completion and preserves an existing finish timestamp. Covered by
+`TestStartupReclaimsProcesslessWorkAttempts`, `TestStopRecordedRunBeforeProjectStartup`,
+`TestStopRecordedRun`, and `TestReapWorkerProcessesPreservesInterruptedSession`.
 
 GitHub secondary throttling (#2829, #2833) uses the credential-scoped cooldown
 deadline in the existing client backoff registry for both
@@ -360,8 +386,8 @@ The shutdown drain uses the existing drain-budget timer rather than the five-sec
 cleanup context (#2795); shorter parent deadlines emit an error with both budgets.
 `TestShutdownDrainBudget` covers delayed drain acknowledgment, and the live-session
 shutdown regression crosses the cleanup deadline before allowing completion.
-Startup no longer bulk-reclaims live work attempts as `service_restart`; the
-reclaim store API and query are removed. Historical restart rows remain readable
+Startup no longer unconditionally bulk-reclaims live work attempts as
+`service_restart`; the parallel reclaim store API and query are removed. Historical restart rows remain readable
 for retry and accounting compatibility. Existing expired-lease recovery runs at startup and on normal refresh, including
 tracker pauses. Its query excludes currently owned attempts and deferred completions;
 retained crash orphans expire without requiring another restart.

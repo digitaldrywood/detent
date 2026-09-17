@@ -107,7 +107,8 @@ WHERE id = sqlc.arg(id);
 
 -- name: UpdateCodexSessionFinalStateByWorkAttempt :exec
 UPDATE codex_sessions
-SET final_state = sqlc.arg(final_state)
+SET final_state = sqlc.arg(final_state),
+    completed_at = COALESCE(completed_at, sqlc.arg(completed_at))
 WHERE work_attempt_id = sqlc.arg(work_attempt_id);
 
 -- name: UpdateCodexSessionIdentity :execrows
@@ -206,7 +207,8 @@ SELECT
 FROM codex_sessions s
 JOIN work_attempts w ON w.id = s.work_attempt_id
 WHERE w.project_id = sqlc.arg(project_id)
-  AND lower(trim(COALESCE(w.status, ''))) = 'active'
+  AND (lower(trim(COALESCE(w.status, ''))) = 'active'
+       OR (w.terminal_state = 'abandoned' AND w.error_class = 'service_restart'))
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
@@ -988,8 +990,8 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
-  AND lease_expires_at IS NOT NULL
-  AND lease_expires_at <= sqlc.arg(lease_expires_at)
+  AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= sqlc.arg(lease_expires_at))
+       OR id IN (SELECT value FROM json_each(sqlc.arg(confirmed_gone_attempt_ids))))
   AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
   AND id NOT IN (SELECT value FROM json_each(sqlc.arg(exclude_attempt_ids)))
 RETURNING *;

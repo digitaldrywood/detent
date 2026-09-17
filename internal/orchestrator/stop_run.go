@@ -125,12 +125,12 @@ func (o *Orchestrator) StopRun(ctx context.Context, request StopRunRequest) (Sto
 }
 
 func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, event stopRunRequest) {
-	request := o.normalizeStopRunRequest(event.request)
+	request := normalizeStopRunRequest(o.cfg, event.request)
 	if !o.validStopRunIdentity(request) {
 		event.reply <- stopRunReply{err: ErrStopRunInvalidIdentity}
 		return
 	}
-	if !o.validStopRunRoute(request) {
+	if !validStopRunRoute(o.cfg, request) {
 		event.reply <- stopRunReply{err: ErrStopRunInvalidRoute}
 		return
 	}
@@ -421,26 +421,10 @@ func (o *Orchestrator) completeOperatorStopAttempt(ctx context.Context, state *S
 	if o.workAttempts == nil || running.WorkAttemptID <= 0 {
 		return nil
 	}
-	metadata := operatorStopWorkAttemptMetadata(running, result, "pending", "")
-	completion := store.WorkAttemptCompletion{
-		AttemptID:              running.WorkAttemptID,
-		CompletedAt:            result.RequestedAt,
-		Status:                 store.WorkAttemptStatusTerminal,
-		TerminalState:          store.WorkAttemptTerminalOperatorStopped,
-		ErrorClass:             string(store.WorkAttemptTerminalOperatorStopped),
-		ErrorMessage:           "operator requested run stop",
-		Phase:                  "operator_stop_pending",
-		StatusMessage:          "operator stop requested; waiting for tracker transition",
-		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
-		CIState:                workAttemptCIState(running.Issue),
-		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, running.Issue),
-		WorkerMetadataJSON:     metadata,
-		MetricsJSON:            runningWorkAttemptMetricsJSON(running),
-		NextAction:             "move work item to " + result.Destination,
-		DetentSessionID:        running.DetentSessionID,
-		ProviderSessionID:      running.SessionID,
-		RuntimeIdentity:        running.RuntimeIdentity,
-	}
+	completion := operatorStopAttemptCompletion(running, result)
+	completion.GitHubRateSnapshotJSON = o.githubRateSnapshotJSON(state)
+	completion.CIState = workAttemptCIState(running.Issue)
+	completion.CapacitySnapshotJSON = o.capacitySnapshotJSON(state, running.Issue)
 	if err := o.workAttempts.CompleteWorkAttempt(ctx, completion); err != nil {
 		return err
 	}
@@ -580,13 +564,13 @@ func (o *Orchestrator) reconcileOperatorStopHolds(ctx context.Context, state *St
 	return transitioned
 }
 
-func (o *Orchestrator) normalizeStopRunRequest(request StopRunRequest) StopRunRequest {
+func normalizeStopRunRequest(cfg Config, request StopRunRequest) StopRunRequest {
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.IssueID = strings.TrimSpace(request.IssueID)
 	request.ProviderSessionID = strings.TrimSpace(request.ProviderSessionID)
 	request.Destination = strings.TrimSpace(request.Destination)
 	if request.Destination == "" {
-		request.Destination = strings.TrimSpace(o.cfg.StopRunTargetState)
+		request.Destination = strings.TrimSpace(cfg.StopRunTargetState)
 	}
 	if destination, ok := canonicalStopRunDestination(request.Destination); ok {
 		request.Destination = destination
@@ -602,14 +586,14 @@ func (o *Orchestrator) validStopRunIdentity(request StopRunRequest) bool {
 	return request.IssueID != "" && request.Attempt >= 0 && (request.ProjectID == "" || request.ProjectID == strings.TrimSpace(o.cfg.Project.ID))
 }
 
-func (o *Orchestrator) validStopRunRoute(request StopRunRequest) bool {
+func validStopRunRoute(cfg Config, request StopRunRequest) bool {
 	if utf8.RuneCountInString(request.Reason) > StopRunReasonMaxLength {
 		return false
 	}
 	if _, ok := canonicalStopRunDestination(request.Destination); ok {
 		return request.Destination != StopRunDestinationTodo || request.Priority >= 1 && request.Priority <= 4
 	}
-	return request.Destination != "" && strings.EqualFold(request.Destination, strings.TrimSpace(o.cfg.StopRunTargetState)) && request.Priority == 0
+	return request.Destination != "" && strings.EqualFold(request.Destination, strings.TrimSpace(cfg.StopRunTargetState)) && request.Priority == 0
 }
 
 func runningMatchesStopRequest(running Running, request StopRunRequest) bool {
@@ -772,4 +756,24 @@ func operatorStopAuditReason(result StopRunResult) string {
 		return result.Reason
 	}
 	return string(store.WorkAttemptTerminalOperatorStopped)
+}
+
+func operatorStopAttemptCompletion(running Running, result StopRunResult) store.WorkAttemptCompletion {
+	metadata := operatorStopWorkAttemptMetadata(running, result, "pending", "")
+	return store.WorkAttemptCompletion{
+		AttemptID:          running.WorkAttemptID,
+		CompletedAt:        result.RequestedAt,
+		Status:             store.WorkAttemptStatusTerminal,
+		TerminalState:      store.WorkAttemptTerminalOperatorStopped,
+		ErrorClass:         string(store.WorkAttemptTerminalOperatorStopped),
+		ErrorMessage:       "operator requested run stop",
+		Phase:              "operator_stop_pending",
+		StatusMessage:      "operator stop requested; waiting for tracker transition",
+		WorkerMetadataJSON: metadata,
+		MetricsJSON:        runningWorkAttemptMetricsJSON(running),
+		NextAction:         "move work item to " + result.Destination,
+		DetentSessionID:    running.DetentSessionID,
+		ProviderSessionID:  running.SessionID,
+		RuntimeIdentity:    running.RuntimeIdentity,
+	}
 }

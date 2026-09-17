@@ -816,12 +816,14 @@ type ConcurrencyBucket struct {
 }
 
 type WorkAttemptTimeout struct {
-	ExcludeAttemptIDs []int64
-	ProjectID         string
-	Now               time.Time
-	TerminalState     WorkAttemptTerminalState
-	ErrorClass        string
-	ErrorMessage      string
+	// ConfirmedGoneAttemptIDs permits recovery before lease expiry after local process reconciliation.
+	ConfirmedGoneAttemptIDs []int64
+	ExcludeAttemptIDs       []int64
+	ProjectID               string
+	Now                     time.Time
+	TerminalState           WorkAttemptTerminalState
+	ErrorClass              string
+	ErrorMessage            string
 }
 
 type MergeRequiredCheckEvaluation struct {

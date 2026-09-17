@@ -549,7 +549,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Refresher:           refresherForRegistry(manager.Registry()),
 		OperatorMoves:       registryRefresher{registry: manager.Registry()},
 		Recovery:            recoveryForRegistry(manager.Registry()),
-		RunStopper:          registryRefresher{registry: manager.Registry()},
+		RunStopper:          registryRefresher{registry: manager.Registry(), attempts: runtimeStore, processes: runtimeStore},
 		UpdateApplier:       updateScheduler,
 		Activity:            activityBroker,
 		Chat:                chatProvider,
@@ -1874,7 +1874,9 @@ func recoveryForRegistry(registry *project.Registry) web.WorkAttemptRecovery {
 }
 
 type registryRefresher struct {
-	registry *project.Registry
+	registry  *project.Registry
+	attempts  store.WorkAttemptStore
+	processes workerProcessStore
 }
 
 func (r registryRefresher) RequestRefresh(ctx context.Context) (web.RefreshResponse, error) {
@@ -1998,7 +2000,21 @@ func (r registryRefresher) RecoverWorkAttempt(ctx context.Context, request orche
 func (r registryRefresher) StopRun(ctx context.Context, request orchestrator.StopRunRequest) (orchestrator.StopRunResult, error) {
 	orch, err := r.projectOrchestrator(request.ProjectID)
 	if err != nil {
-		return orchestrator.StopRunResult{}, err
+		if r.attempts == nil || r.processes == nil {
+			return orchestrator.StopRunResult{}, err
+		}
+		cfg := orchestrator.Config{}
+		if tracked, ok := r.registry.Get(project.ID(request.ProjectID)); ok {
+			cfg = orchestrator.ConfigFromWorkflow(tracked.Workflow().Config)
+		} else if pending, ok := r.registry.Pending(project.ID(request.ProjectID)); ok && pending.Project.Workflow != "" {
+			workflow, loadErr := project.LoadWorkflowContext(ctx, pending.Project)
+			// Broken workflow settings must not prevent a processless record
+			// from being stopped. Canonical routes need no workflow config.
+			if loadErr == nil {
+				cfg = orchestrator.ConfigFromWorkflow(workflow.Config)
+			}
+		}
+		return orchestrator.StopRecordedRun(ctx, r.attempts, r.processes, request, cfg)
 	}
 	return orch.StopRun(ctx, request)
 }

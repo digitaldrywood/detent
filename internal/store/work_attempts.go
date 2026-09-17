@@ -195,6 +195,7 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 	}
 	if err := queries.UpdateCodexSessionFinalStateByWorkAttempt(ctx, sqlc.UpdateCodexSessionFinalStateByWorkAttemptParams{
 		FinalState:    nullString(attrs.SessionFinalState),
+		CompletedAt:   sql.NullString{String: completedAt, Valid: true},
 		WorkAttemptID: nullPositiveInt64(attrs.AttemptID),
 	}); err != nil {
 		return fmt.Errorf("updating work attempt session final state: %w", err)
@@ -367,18 +368,23 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 	if err != nil {
 		return nil, fmt.Errorf("encoding excluded work attempts: %w", err)
 	}
+	confirmedGone, err := json.Marshal(attrs.ConfirmedGoneAttemptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encoding processless work attempts: %w", err)
+	}
 	rows, err := s.queries.TimeoutExpiredWorkAttempts(ctx, sqlc.TimeoutExpiredWorkAttemptsParams{
-		ExcludeAttemptIds: string(excluded),
-		Status:            string(WorkAttemptStatusTerminal),
-		TerminalState:     nullString(string(terminalState)),
-		CompletedAt:       sql.NullString{String: now, Valid: true},
-		HeartbeatAt:       sql.NullString{String: now, Valid: true},
-		ErrorClass:        nullString(errorClass),
-		ErrorMessage:      nullString(errorMessage),
-		Phase:             nullString("recovered"),
-		StatusMessage:     nullString(errorMessage),
-		FilterProjectID:   strings.TrimSpace(attrs.ProjectID),
-		LeaseExpiresAt:    sql.NullString{String: now, Valid: true},
+		ExcludeAttemptIds:       string(excluded),
+		ConfirmedGoneAttemptIds: string(confirmedGone),
+		Status:                  string(WorkAttemptStatusTerminal),
+		TerminalState:           nullString(string(terminalState)),
+		CompletedAt:             sql.NullString{String: now, Valid: true},
+		HeartbeatAt:             sql.NullString{String: now, Valid: true},
+		ErrorClass:              nullString(errorClass),
+		ErrorMessage:            nullString(errorMessage),
+		Phase:                   nullString("recovered"),
+		StatusMessage:           nullString(errorMessage),
+		FilterProjectID:         strings.TrimSpace(attrs.ProjectID),
+		LeaseExpiresAt:          sql.NullString{String: now, Valid: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("timing out expired work attempts: %w", err)

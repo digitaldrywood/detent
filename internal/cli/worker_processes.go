@@ -67,6 +67,17 @@ func reapWorkerProcessesWithCleanup(
 	if err != nil {
 		return err
 	}
+	attemptStore, hasAttempts := processStore.(interface {
+		ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error)
+		TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error)
+	})
+	var attempts []store.WorkAttempt
+	if hasAttempts && strings.TrimSpace(reason) == "startup" {
+		attempts, err = attemptStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{})
+		if err != nil {
+			return err
+		}
+	}
 	var result error
 	terminationFailed := false
 	for _, process := range processes {
@@ -110,6 +121,22 @@ func reapWorkerProcessesWithCleanup(
 		}); err != nil {
 			result = errors.Join(result, err)
 			terminationFailed = true
+		}
+	}
+	// The store belongs to this instance; worker hosts are scheduling pool labels.
+	// Feed the existing expiry path attempts whose processes startup confirmed gone,
+	// including attempts with no process record.
+	if strings.TrimSpace(reason) == "startup" && !terminationFailed && hasAttempts {
+		gone := make([]int64, 0, len(attempts))
+		for _, attempt := range attempts {
+			gone = append(gone, attempt.ID)
+		}
+		if _, err := attemptStore.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
+			Now: now().UTC(), ConfirmedGoneAttemptIDs: gone,
+			TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart",
+			ErrorMessage: "active work attempt reclaimed after service restart",
+		}); err != nil {
+			return errors.Join(result, err)
 		}
 	}
 	if result != nil && !terminationFailed {
