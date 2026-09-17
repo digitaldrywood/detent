@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -193,9 +194,9 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 		{name: "catalog unavailable with empty fallback order", catalogErr: errors.New("catalog transport details"), clearFallbackOrder: true, failure: true, wantErrorDetail: "catalog transport details"},
 		{name: "catalog unavailable with explicit model", catalogErr: errors.New("catalog transport details"), body: "model: gpt-6-astra", failure: true, wantErrorDetail: "catalog transport details"},
 		{name: "fail configured", catalog: selectionCatalog()[:1], unavailable: "fail", failure: true},
-		{name: "invalid explicit model", catalog: selectionCatalog(), body: "model: absent", failure: true, rejected: true},
-		{name: "invalid explicit effort", catalog: selectionCatalog(), body: "effort: absent", failure: true, rejected: true},
-		{name: "invalid role does not downgrade", catalog: selectionCatalog(), body: "effort: low\ncode:\n  effort: absent", failure: true, rejected: true},
+		{name: "invalid explicit model", catalog: selectionCatalog(), body: "model: absent", rejected: true},
+		{name: "invalid explicit effort", catalog: selectionCatalog(), body: "effort: absent", rejected: true},
+		{name: "invalid role inherits global effort", catalog: selectionCatalog(), body: "effort: low\ncode:\n  effort: absent", rejected: true},
 		{name: "malformed override", catalog: selectionCatalog(), body: "unknown: value", failure: true, rejected: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -545,7 +546,7 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 		{name: "fallback stays bounded", catalog: selectionCatalog()[:1], body: "effort: xhigh", want: "medium"},
 		{name: "resume no issue override", resume: true, want: "medium"},
 		{name: "resume role override", resume: true, body: "code:\n  effort: low", want: "low"},
-		{name: "resume malformed override", resume: true, body: "effort: unknown", wantError: true},
+		{name: "resume unknown effort falls back", resume: true, body: "effort: unknown", want: "medium"},
 		{name: "resume changed effort catalog unavailable", resume: true, catalogErr: errors.New("initialize failed during resume"), wantDetail: "initialize failed during resume", wantError: true, wantNoRejection: true},
 		{name: "resume changed effort unsupported", resume: true, catalog: []AgentModel{{ID: "gpt-6-astra", Model: "gpt-6-astra", SupportedReasoningEfforts: []string{"xhigh"}}}, wantError: true},
 	} {
@@ -599,7 +600,7 @@ func TestIssueConfigurationErrorClassification(t *testing.T) {
 		wantConfiguration bool
 		wantError         bool
 	}{
-		{name: "invalid issue effort", effort: "normal", wantConfiguration: true, wantError: true},
+		{name: "invalid issue effort", effort: "normal"},
 		{name: "corrected effort", effort: "low"},
 		{name: "catalog unavailable falls back", effort: "low", catalogError: errors.New("catalog unavailable")},
 	} {
@@ -682,5 +683,86 @@ func TestResumeEffortClampProvenance(t *testing.T) {
 				t.Fatalf("resumed selection = %+v, want effort %s, clamped from %q", got, tt.want, tt.clamped)
 			}
 		})
+	}
+}
+
+func TestUnknownOverrideFallsBack(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, body, field, reason string }{
+		{"unknown effort", "effort: small", "effort", `effort "small" is not one of low, medium, high, xhigh, max`},
+		{"unknown role effort", "code:\n  effort: small", "code.effort", `effort "small" is not one of low, medium, high, xhigh, max`},
+		{"unknown model", "model: absent", "model", `absent`},
+		{"unknown role model", "code:\n  model: absent", "code.model", `absent`},
+		{"unsupported known effort", "effort: minimal", "effort", `effort "minimal" is not one of low, medium, high, xhigh, max`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6-astra"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}}}
+			backend := &catalogAgentBackend{models: selectionCatalog()}
+			issue := connector.Issue{Description: "```detent-agent\nschema: 1\n" + tt.body + "\n```"}
+			got := resolveAgentSelection(t.Context(), issue, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			if got.Err != nil || got.Model != "gpt-6-astra" || got.Effort != "low" {
+				t.Fatalf("selection = %+v; want Astra low without terminal error", got)
+			}
+			if len(got.Rejections) != 1 || got.Rejections[0].Field != tt.field || !strings.Contains(got.Rejections[0].Reason, tt.reason) {
+				t.Fatalf("rejections = %+v", got.Rejections)
+			}
+		})
+	}
+}
+
+func TestOverrideFallbackReachesAgent(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{"effort: small", "code:\n  effort: small", "model: absent"} {
+		t.Run(body, func(t *testing.T) {
+			backend := &overrideFallbackBackend{catalogAgentBackend: catalogAgentBackend{models: selectionCatalog()}}
+			cfg := config.Default()
+			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6-astra"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}}}
+			var logs bytes.Buffer
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var warnings []AgentOverrideRejection
+			_, err = r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "2841", Identifier: "detent#2841", Description: "```detent-agent\nschema: 1\n" + body + "\n```"}, OnOverrideRejected: func(got []AgentOverrideRejection) error { warnings = append(warnings, got...); return nil }})
+			if err != nil || backend.turn.Model != "gpt-6-astra" || backend.turn.ReasoningEffort != "low" || len(warnings) != 1 {
+				t.Fatalf("run error=%v turn=%+v warnings=%+v", err, backend.turn, warnings)
+			}
+			if !strings.Contains(logs.String(), "ignored detent-agent override") {
+				t.Fatalf("warning missing from logs: %s", logs.String())
+			}
+		})
+	}
+}
+
+type overrideFallbackBackend struct {
+	catalogAgentBackend
+	turn AgentTurnRequest
+}
+
+func (b *overrideFallbackBackend) RunTurn(_ context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.turn = req
+	return AgentTurnResult{}, nil
+}
+
+func TestInvalidOverrideSchemaRemainsTerminal(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{"effort: low", "schema: 2\neffort: low", "schema: ["} {
+		for _, resume := range []bool{false, true} {
+			t.Run(body+strconv.FormatBool(resume), func(t *testing.T) {
+				cfg := config.Default()
+				cfg.Agents.ModelSelection.Preset = new("sol_first")
+				req := RunRequest{Issue: connector.Issue{Description: "```detent-agent\n" + body + "\n```"}}
+				if resume {
+					req.RetryMode = RetryModeResume
+					req.ResumeState = store.AgentResumeState{ProviderThreadID: "thread", RuntimeIdentity: agentidentity.Configured("codex", "codex", "default", RoleCode, "gpt-6-astra", "", "low", "", time.Now())}
+				}
+				got := resolveRequestAgentSelection(t.Context(), req, AgentProcessRequest{}, "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, &catalogAgentBackend{models: selectionCatalog()})
+				var configurationErr *IssueConfigurationError
+				if !errors.As(got.Err, &configurationErr) || configurationErr.Field != "block" {
+					t.Fatalf("selection = %+v", got)
+				}
+			})
+		}
 	}
 }

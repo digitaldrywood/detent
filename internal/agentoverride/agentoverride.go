@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/markdownfence"
 )
 
 type Override struct {
@@ -164,62 +166,29 @@ func (o Override) RoleEfforts() []RoleEffort {
 func lastBlock(body string) (string, bool) {
 	var last string
 	found := false
-	inFence := false
-	fenceChar := byte(0)
-	fenceLen := 0
-	lines := []string{}
-
+	var fence markdownfence.Fence
+	capture := false
+	var lines []string
 	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !inFence {
-			char, length, ok := fenceOpening(trimmed)
-			if !ok {
-				continue
-			}
-			inFence = true
-			fenceChar = char
-			fenceLen = length
+		previous := fence
+		marker := fence.Consume(line)
+		if previous == "" && fence != "" {
+			fields := strings.Fields(strings.TrimSpace(line)[len(fence):])
+			capture = len(fields) > 0 && fields[0] == "detent-agent"
 			lines = lines[:0]
 			continue
 		}
-		if fenceClosing(trimmed, fenceChar, fenceLen) {
-			last = strings.Join(lines, "\n")
-			found = true
-			inFence = false
+		if marker && fence == "" {
+			if capture {
+				last = strings.Join(lines, "\n")
+				found = true
+			}
+			capture = false
 			continue
 		}
-		lines = append(lines, line)
+		if capture {
+			lines = append(lines, line)
+		}
 	}
-
 	return last, found
-}
-
-func fenceOpening(line string) (byte, int, bool) {
-	if len(line) < 3 || (line[0] != '`' && line[0] != '~') {
-		return 0, 0, false
-	}
-	char := line[0]
-	length := 0
-	for length < len(line) && line[length] == char {
-		length++
-	}
-	if length < 3 {
-		return 0, 0, false
-	}
-	fields := strings.Fields(strings.TrimSpace(line[length:]))
-	if len(fields) == 0 || fields[0] != "detent-agent" {
-		return 0, 0, false
-	}
-	return char, length, true
-}
-
-func fenceClosing(line string, char byte, length int) bool {
-	if len(line) < length {
-		return false
-	}
-	index := 0
-	for index < len(line) && line[index] == char {
-		index++
-	}
-	return index >= length && strings.TrimSpace(line[index:]) == ""
 }

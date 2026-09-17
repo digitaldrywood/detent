@@ -19,6 +19,18 @@ A passing test does not authorize weakening a rule.
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
+Human Review is entered only for PR-review outcomes or an explicit opt-out of
+an automated gate (including a configured `human_review` gate). Non-review
+human decisions, including attempt-allowance exhaustion and Workpad blockers,
+use the configured Blocked lane when the gate is not `human_review` and the
+issue has no auto-promote opt-out label. Projects without a configured Blocked
+lane retain their existing destination. Allowance triage notes and the
+`attempt_allowance_exhausted` reason are preserved; operator moves out of
+Blocked still reset the allowance and auto-promote decision memory (#2880).
+The dependency auto-unblock sweep retains these non-review decisions in Blocked
+even when an unconsumed body or native dependency is already Done; both reasons
+reuse the existing sticky-reason policy.
+
 Any closed issue, regardless of its closure reason, retains its
 non-terminal label snapshots in ordinary refresh reads, even without prior pipeline membership (#2865). The existing
 `reconcileClosedCompletedIssueStatuses` owns their transition to Done; dispatch
@@ -141,6 +153,19 @@ fallback and legacy override rejection without changing the exact execution
 reservation check. Reports advertise canonical backend model names; a stale
 report cannot authorize a different runtime model. Catalog and effort validation
 still run in the prepared workspace, where startup failures have attempt context.
+
+Invalid issue model and effort values reuse the existing override warning and
+project-default selection path (#2841); they no longer become terminal issue
+configuration errors. Malformed/schema blocks remain terminal. Pre-dispatch model
+fallback uses the existing provider report without launching a catalog process.
+`TestUnknownOverrideFallsBack`, `TestOverrideFallbackReachesAgent`, and
+`TestInvalidOverrideSchemaRemainsTerminal` cover this removal. Cleanup precedence
+continues to cover selection failures using an unavailable configured route model.
+Issue override parsing shares dependency fence boundaries and ignores nested
+fenced examples (#2893). The failure breaker no longer recognizes retired
+model/effort rejection strings; YAML and schema rejection remain terminal.
+`TestFromIssueBody` covers top-level overrides, fenced examples, and unfinished
+outer fences.
 
 Provider-identity bookkeeping failures during implementation, validator, and security-audit turns
 are logged without failing the turn (#2626). Persistence uses a bounded detached

@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
@@ -28,7 +27,7 @@ func (r *Runner) DispatchCapacity(_ context.Context, req RunRequest) (providerca
 	// catalog discovery belongs to the attempt, after workspace preparation.
 	policy := workflow.Config.EffectiveModelSelection()
 	automatic := policy.Active() && policy.BackendKinds != nil && slices.Contains(*policy.BackendKinds, backendConfig.Kind)
-	override, _, overrideErr := agentoverride.FromIssueBody(req.Issue.Description)
+	override, _, overrideErr := selectionIssueOverride(req.Issue, role)
 	explicitModel, _ := override.ModelForRole(role)
 	var models []string
 	for _, report := range req.ProviderReports {
@@ -45,6 +44,14 @@ func (r *Runner) DispatchCapacity(_ context.Context, req RunRequest) (providerca
 			requested := configuredAutomaticSelection(req.Issue, baseModel, role, workflow.Config, backendConfig)
 			if requested.Err != nil {
 				return providercapacity.Requirement{}, requested.Err
+			}
+			// Remove unavailable issue models using the existing provider report;
+			// the attempt publishes the rejection after catalog validation.
+			for models != nil && explicitModel != "" && !slices.Contains(models, explicitModel) {
+				_, field := override.ModelForRole(role)
+				clearAgentOverrideField(&override, field)
+				explicitModel, _ = override.ModelForRole(role)
+				requested = configuredOverrideSelection(req.Issue, baseModel, role, workflow.Config, backendConfig, override)
 			}
 			model = requested.Model
 			if models != nil && !slices.Contains(models, model) && baseModel == "" && explicitModel == "" && policy.Unavailable != nil && *policy.Unavailable == "fallback" && policy.FallbackOrder != nil {

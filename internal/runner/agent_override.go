@@ -101,7 +101,6 @@ func resolveAgentOverride(
 		return result, nil
 	}
 
-	model := canonicalAgentModel(effectiveModel, result.Model)
 	for _, candidate := range efforts {
 		if effort, ok := supportedAgentEffort(effectiveModel, candidate.Effort); ok {
 			result.Effort = effort
@@ -110,7 +109,7 @@ func resolveAgentOverride(
 		result.Rejections = append(result.Rejections, AgentOverrideRejection{
 			Field:  candidate.Field,
 			Value:  candidate.Effort,
-			Reason: fmt.Sprintf("effort is not supported by model %q", model),
+			Reason: unsupportedAgentEffortReason(effectiveModel, candidate.Effort),
 		})
 	}
 	return result, nil
@@ -200,4 +199,33 @@ func supportedAgentEffort(model AgentModel, want string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// clearAgentOverrideField removes a rejected value so normal inheritance applies.
+func clearAgentOverrideField(override *agentoverride.Override, field string) {
+	role, key, scoped := strings.Cut(field, ".")
+	if !scoped {
+		if field == "model" {
+			override.Model = ""
+		} else {
+			override.Effort = ""
+		}
+		return
+	}
+	roles := map[string]*agentoverride.RoleOverride{
+		"code": &override.Code, "rework": &override.Rework, "merge": &override.Merge,
+		"plan": &override.Plan, "routine": &override.Routine, "validator": &override.Validator,
+		"security_audit": &override.SecurityAudit,
+	}
+	if target := roles[role]; target != nil {
+		if key == "model" {
+			target.Model = ""
+		} else {
+			target.Effort = ""
+		}
+	}
+}
+
+func unsupportedAgentEffortReason(model AgentModel, effort string) string {
+	return fmt.Sprintf("effort %q is not one of %s for model %q", effort, strings.Join(model.SupportedReasoningEfforts, ", "), canonicalAgentModel(model, ""))
 }

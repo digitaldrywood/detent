@@ -6874,3 +6874,49 @@ func TestTickAutoPromoteMalformedRework(t *testing.T) {
 		})
 	}
 }
+
+func TestTickWorkpadHumanDecisionLane(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, kind, source, want string
+		optout, noBlocked        bool
+	}{
+		{name: "command todo", kind: gate.KindCommand, source: "Todo", want: "Blocked"},
+		{name: "command review", kind: gate.KindCommand, source: "Human Review", want: "Blocked"},
+		{name: "human gate", kind: gate.KindHumanReview, source: "Todo", want: "Human Review"},
+		{name: "opt out", kind: gate.KindCommand, source: "Todo", optout: true, want: "Human Review"},
+		{name: "no blocked lane", kind: gate.KindCommand, source: "Todo", noBlocked: true, want: "Human Review"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+			cfg := laneMutationTestConfig()
+			cfg.AutoPromote.Gate = gate.Config{Kind: tt.kind, RequireAutomatedReview: new(false)}
+			cfg.AutoPromote.OptoutLabel = "manual-review"
+			if tt.noBlocked {
+				cfg.ObservedStates = []string{"Human Review"}
+			}
+			issue := autoPromoteTickIssue("human-decision", nil, &connector.PullRequest{
+				Number: 180, URL: "https://github.test/owner/repo/pull/180", State: "OPEN", MergeableState: "clean", CIStatus: "pass",
+			})
+			issue.State = tt.source
+			if tt.optout {
+				issue.Labels = []string{"manual-review"}
+			}
+			tracker := &autoPromoteTickConnector{
+				stateIssues:   []connector.Issue{issue},
+				issueComments: map[string][]connector.IssueComment{issue.ID: {{Body: "## Codex Workpad\n\n### Blockers\n- Owner approval is required before assets can be copied."}}},
+			}
+			var logs strings.Builder
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			state := newState(cfg)
+			orch.tick(t.Context(), &state, now)
+			want := []autoPromoteTickUpdate{{issueID: issue.ID, state: tt.want}}
+			if !reflect.DeepEqual(tracker.updates, want) {
+				t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
+			}
+			if !tt.optout && tt.kind != gate.KindHumanReview && !strings.Contains(logs.String(), "reason=workpad_blocker") {
+				t.Fatalf("missing blocker reason: %s", logs.String())
+			}
+		})
+	}
+}

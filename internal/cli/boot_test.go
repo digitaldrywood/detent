@@ -1876,6 +1876,15 @@ func waitForDashboardContext(t *testing.T, ctx context.Context, url string, done
 }
 
 func awaitDashboard(ctx context.Context, client *http.Client, url string, done <-chan error) (string, error) {
+	var lastStatus int
+	var lastRequestErr error
+	timeoutError := func() error {
+		err := fmt.Errorf("timed out waiting for dashboard at %s: %w; last HTTP status: %d", url, ctx.Err(), lastStatus)
+		if lastRequestErr != nil {
+			return fmt.Errorf("%w; last request error: %w", err, lastRequestErr)
+		}
+		return err
+	}
 	retry := time.NewTicker(10 * time.Millisecond)
 	defer retry.Stop()
 
@@ -1884,7 +1893,7 @@ func awaitDashboard(ctx context.Context, client *http.Client, url string, done <
 		case err := <-done:
 			return "", dashboardExitError(err)
 		case <-ctx.Done():
-			return "", fmt.Errorf("timed out waiting for dashboard at %s: %w", url, ctx.Err())
+			return "", timeoutError()
 		default:
 		}
 
@@ -1893,7 +1902,10 @@ func awaitDashboard(ctx context.Context, client *http.Client, url string, done <
 			return "", fmt.Errorf("create dashboard readiness request: %w", err)
 		}
 		resp, err := client.Do(req)
-		if err == nil {
+		if err != nil {
+			lastRequestErr = err
+		} else {
+			lastStatus = resp.StatusCode
 			body, readErr := io.ReadAll(resp.Body)
 			closeErr := resp.Body.Close()
 			if readErr != nil {
@@ -1911,7 +1923,7 @@ func awaitDashboard(ctx context.Context, client *http.Client, url string, done <
 		case err := <-done:
 			return "", dashboardExitError(err)
 		case <-ctx.Done():
-			return "", fmt.Errorf("timed out waiting for dashboard at %s: %w", url, ctx.Err())
+			return "", timeoutError()
 		case <-retry.C:
 		}
 	}

@@ -81,12 +81,11 @@ func TestRunParksIssueAfterRepeatedCostlyWorkerFailures(t *testing.T) {
 	if got := runner.calls.Load(); got != 5 {
 		t.Fatalf("runner calls = %d, want 5", got)
 	}
-	reason := state.Blocked[issue.ID].Reason
-	if !strings.Contains(reason, "repeated failure circuit breaker: ") {
-		t.Fatalf("Blocked[%q].Reason = %q, want repeated failure circuit breaker prefix", issue.ID, reason)
-	}
-	if !strings.Contains(reason, "session token ceiling exceeded") {
-		t.Fatalf("Blocked[%q].Reason = %q, want last worker error", issue.ID, reason)
+	// Recovery refresh replaces the descriptive Reason with the persisted cause.
+	// Assert the stable cause here; the comment below retains the worker error.
+	blocked := state.Blocked[issue.ID]
+	if blocked.Recovery == nil || blocked.Recovery.Cause != "repeated_failure_circuit_breaker" {
+		t.Fatalf("Blocked[%q].Recovery = %#v, want repeated failure cause", issue.ID, blocked.Recovery)
 	}
 	if _, ok := state.Retry[issue.ID]; ok {
 		t.Fatalf("Retry[%q] present after circuit breaker", issue.ID)
