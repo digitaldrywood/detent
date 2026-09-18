@@ -29,7 +29,7 @@ type attemptAllowance struct {
 func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
 
 // Started code/rework attempts consume the issue allowance unless they were
-// infrastructure failures or could not merge because of an external wait.
+// merge-worker runs, infrastructure failures, or external waits.
 // The window starts at the last merge or operator lane move;
 // ordinary head, Detent lane, and diff changes do not replenish it.
 func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
@@ -41,6 +41,12 @@ func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt t
 		// Operator moves are observed before dispatch in the same tick, so a
 		// session at resetAt belongs to the renewed window. Merges stay exclusive.
 		if !resetAt.IsZero() && attempt.StartedAt.Before(resetAt) {
+			continue
+		}
+		// Merge runs can be stored as agent attempts when dispatched outside
+		// Merging. Older routing receipts may lack run-mode metadata.
+		if workAttemptRunMode(telemetry.WorkAttempt{WorkerMetadataJSON: attempt.WorkerMetadataJSON}) == runpkg.RunModeMerge ||
+			(attempt.Phase == "rework" && attempt.StatusMessage == "merge worker routed current head to Rework") {
 			continue
 		}
 		if allowanceInfrastructureAttempt(attempt) {
