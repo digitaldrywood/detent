@@ -299,6 +299,11 @@ predicate for clean, green PRs without actionable threads or findings. The exist
 case, so question waits cannot cause repeated sessions while a review is pending.
 `TestReworkLiveReviewGateDispatch` replays post-answer scheduler passes and checks
 that a current-head review or actionable PR state preserves dispatch eligibility.
+Failed current-head CI ends a completed gate wait when `ci_failure_action: rework`
+routes repair (#2909), including when the card is already in Rework. The existing
+`ci_not_green` decision clears completion dispatch memory and supplies the worker
+handoff without a redundant lane write. `TestCompletedReworkCIGateDispatch`
+covers immediate repair dispatch and preserves pending CI and review waits.
 
 Question closure resolution (#2793) uses the existing transition refresh and
 answer columns. Durable unanswered issue IDs join that refresh so questions

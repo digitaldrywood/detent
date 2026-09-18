@@ -3294,6 +3294,14 @@ func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
 	now time.Time,
 ) (string, bool) {
 	if normalizeState(issue.State) == normalizeState(targetState) {
+		// Failed CI ends a completed gate wait even when Rework routing does
+		// not change the lane. The existing dispatch pass can repair this head.
+		if decision.Action == AutoPromoteActionRework && decision.Reason == AutoPromoteReasonCINotGreen &&
+			autoPromoteIssueCompleted(state, strings.TrimSpace(issue.ID)) {
+			o.clearAutoPromotedIssueDispatchMemory(state, strings.TrimSpace(issue.ID))
+			o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, targetState)
+			o.logAutoPromoteDecision(issue, decision, targetState)
+		}
 		return "", false
 	}
 
