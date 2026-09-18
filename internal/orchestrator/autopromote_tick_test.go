@@ -6920,3 +6920,72 @@ func TestTickWorkpadHumanDecisionLane(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletedReworkCIGateDispatch(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		ci       string
+		wait     bool
+		noMarker bool
+	}{
+		{name: "failed head", ci: "failure"},
+		{name: "failed head without Rework marker", ci: "failure", noMarker: true},
+		{name: "pending CI", ci: "pending", wait: true},
+		{name: "green CI pending review", ci: "success", wait: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 18, 5, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates:      []string{"Done", "Cancelled"},
+				AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource,
+					Gate: gate.Config{Kind: gate.KindCommand, CIFailureAction: gate.CIFailureActionRework}},
+			})
+			issue := autoPromoteTickIssue("completed-rework", nil, &connector.PullRequest{
+				Number: 2909, State: "OPEN", HeadSHA: "completed-head", MergeableState: "clean", CIStatus: tt.ci,
+			})
+			issue.State = "Rework"
+			state := newState(cfg)
+			state.Completed[issue.ID] = Completed{Issue: cloneIssue(issue), FinalState: FinalStateCompleted,
+				CompletedAt: now.Add(-time.Minute), GateWaitReason: completedReworkGateWaitReason}
+			if tt.noMarker {
+				completed := state.Completed[issue.ID]
+				completed.GateWaitReason = ""
+				state.Completed[issue.ID] = completed
+			}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			var logs strings.Builder
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			var reason string
+			plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+				decision: func(d dispatchPlanDecision) { reason = d.SkipReason },
+			})
+			if tt.wait {
+				wantReason := dispatchSkipAwaitingGate
+				if tt.ci == "pending" {
+					wantReason = dispatchSkipCurrentHeadCIWait
+				}
+				if len(plan.Dispatches) != 0 || reason != wantReason {
+					t.Fatalf("dispatches = %v, reason = %q; want %s", plan.DispatchOrder(), reason, wantReason)
+				}
+			} else {
+				if len(plan.Dispatches) != 1 || reason == dispatchSkipAwaitingGate {
+					t.Fatalf("dispatches = %v, reason = %q; want Rework dispatch", plan.DispatchOrder(), reason)
+				}
+				if _, ok := state.Completed[issue.ID]; ok {
+					t.Fatal("failed head retains completion gate wait")
+				}
+				if got := state.PriorAttempts[issue.ID].Reason; got != string(AutoPromoteReasonCINotGreen) {
+					t.Fatalf("handoff reason = %q", got)
+				}
+				if !strings.Contains(logs.String(), "ci_not_green") {
+					t.Fatalf("missing CI routing: %s", logs.String())
+				}
+			}
+		})
+	}
+}
