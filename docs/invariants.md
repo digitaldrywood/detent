@@ -643,6 +643,9 @@ do not reset it. The existing triage comment receives a timestamped reset line
 when comment updates are supported; publication failure does not undo the move. Instance-attributed startup, transport, workspace and restart failures
 are excluded, as are successful reports with any instance-owned entry in recorded
 blocker evidence (#2813); other owners or evidence key presence alone do not suffice.
+Merge-worker attempts are excluded, including generic agent records with merge
+run-mode metadata and historical receipts routing the current head to Rework
+(#2907); those routing decisions are not implementation sessions.
 Question-ending successful waits and sessions with a live structured
 human blocker are also excluded (#2789). Conflicted PR sessions count toward the
 allowance because conflict resolution is worker-owned Rework (#2807); a conflict

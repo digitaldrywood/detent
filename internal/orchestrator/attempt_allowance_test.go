@@ -20,6 +20,45 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+func TestAttemptAllowanceExcludesMergeRouting(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		merge store.WorkAttempt
+		want  int
+	}{
+		{name: "merge worker type", merge: store.WorkAttempt{WorkerType: "merge"}, want: 1},
+		{name: "merge run mode stored as agent", merge: store.WorkAttempt{WorkerType: "agent", WorkerMetadataJSON: `{"run_mode":"merge"}`}, want: 1},
+		{name: "historical successful routing receipt", merge: store.WorkAttempt{WorkerType: "agent", Phase: "rework", StatusMessage: "merge worker routed current head to Rework"}, want: 1},
+		{name: "historical timed out routing receipt", merge: store.WorkAttempt{WorkerType: "agent", TerminalState: store.WorkAttemptTerminalTimedOut, Phase: "rework", StatusMessage: "merge worker routed current head to Rework", ErrorClass: mergeFallbackRequiresReworkReason}, want: 1},
+		{name: "three implementation sessions", merge: store.WorkAttempt{WorkerType: "agent", WorkerMetadataJSON: `{"run_mode":"implement"}`, ErrorClass: "no_progress"}, want: 3},
+		{name: "rework phase alone is implementation", merge: store.WorkAttempt{WorkerType: "agent", Phase: "rework"}, want: 3},
+		{name: "malformed metadata is not merge evidence", merge: store.WorkAttempt{WorkerType: "agent", WorkerMetadataJSON: `{`}, want: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 18, 2, 0, 0, 0, time.UTC)
+			attempts := []store.WorkAttempt{tt.merge, tt.merge,
+				{WorkerType: "agent", ErrorClass: "no_progress", StatusMessage: "worker completed without PR progress"},
+				{WorkerType: runpkg.RunModeTriage},
+			}
+			for i := range attempts {
+				attempts[i].ID = int64(9178 + i)
+				attempts[i].StartedAt = now.Add(time.Duration(i) * time.Minute)
+				if attempts[i].TerminalState == "" {
+					attempts[i].TerminalState = store.WorkAttemptTerminalSuccess
+				}
+			}
+			got := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{})
+			if got.Sessions != tt.want || len(got.Attempts) != tt.want || got.exhausted() != (tt.want == 3) {
+				t.Fatalf("sessions=%d retained=%d exhausted=%v; want %d sessions", got.Sessions, len(got.Attempts), got.exhausted(), tt.want)
+			}
+			if got.Triage == nil || got.Triage.ID != attempts[3].ID {
+				t.Fatal("read-only triage receipt was not preserved")
+			}
+		})
+	}
+}
+
 func TestAttemptAllowanceCountsIssueJourney(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
