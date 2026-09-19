@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -87,8 +88,12 @@ func TestTickAuthorizationBeforeRecovery(t *testing.T) {
 					declined++
 				}
 			}
-			if declined != 1 {
-				t.Errorf("authorization declines = %d, want 1", declined)
+			wantDeclined := 0
+			if tc.lane == "Todo" || tc.lane == "In Progress" {
+				wantDeclined = 1
+			}
+			if declined != wantDeclined {
+				t.Errorf("authorization declines = %d, want %d", declined, wantDeclined)
 			}
 			if !strings.Contains(logs.String(), "authorization_selector_declined") || !strings.Contains(logs.String(), "skipped_count=1") {
 				t.Error("missing aggregate skip log")
@@ -113,9 +118,9 @@ func TestTickAuthorizationSelectorSemantics(t *testing.T) {
 	} {
 		for _, blocked := range []bool{false, true} {
 			t.Run(tc.name+map[bool]string{false: "/retry", true: "/blocked_retry"}[blocked], func(t *testing.T) {
-				cfg := normalizeConfig(Config{Authorization: tc.auth, SelectorContext: selector.Context{InstanceLogin: "alice"}})
-				owned := connector.Issue{ID: "owned", Labels: []string{"detent:a"}, AuthorID: "alice", Fields: map[string]string{"Team": "a"}}
-				unowned := connector.Issue{ID: "unowned", Labels: []string{"detent:b"}, AuthorID: "bob", Fields: map[string]string{"Team": "b"}}
+				cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, Authorization: tc.auth, SelectorContext: selector.Context{InstanceLogin: "alice"}})
+				owned := connector.Issue{ID: "owned", State: "Todo", Labels: []string{"detent:a"}, AuthorID: "alice", Fields: map[string]string{"Team": "a"}}
+				unowned := connector.Issue{ID: "unowned", State: "Todo", Labels: []string{"detent:b"}, AuthorID: "bob", Fields: map[string]string{"Team": "b"}}
 				issues := []connector.Issue{owned, unowned}
 				state := newState(cfg)
 				state.Retry[unowned.ID] = Retry{Issue: unowned, Attempt: 2, DueAt: now.Add(-time.Minute)}
@@ -150,5 +155,62 @@ func TestTickAuthorizationSelectorSemantics(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestTickAuthorizationDeclineMixedLanes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		active []string
+		want   map[string]bool
+	}{
+		{"standard lanes", []string{"Todo", "In Progress", "Rework", "Merging"}, map[string]bool{"Todo": true, "In Progress": true, "Rework": true, "Merging": true}},
+		{"configured lane", []string{"Ready"}, map[string]bool{"Ready": true}},
+		{"terminal overlap", []string{"Todo", "Done", "Cancelled"}, map[string]bool{"Todo": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{ActiveStates: tc.active, TerminalStates: []string{"Done", "Cancelled"}, Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:a"}}}})
+			var issues []connector.Issue
+			for _, lane := range []string{"Todo", "In Progress", "Rework", "Merging", "Ready", "Done", "Cancelled", "Backlog", "Blocked", "Human Review", "Plan Review"} {
+				issue := dependencyAutoUnblockIssue(lane, lane)
+				issues = append(issues, issue)
+			}
+			closed := dependencyAutoUnblockIssue("closed", "Todo")
+			closed.Closed = true
+			issues = append(issues, closed)
+			owned := dependencyAutoUnblockIssue("owned", "Todo")
+			owned.Labels = []string{"detent:a"}
+			issues = append(issues, owned)
+			state := newState(cfg)
+			state.Pipeline = cloneIssues(issues)
+			state.LaneSignalCandidates = cloneIssues(issues)
+			state.Retry["closed"] = Retry{Issue: closed, Attempt: 2}
+			state.Claimed["closed"] = Claimed{Issue: closed}
+			previous := tickPreviousState{pipeline: cloneIssues(issues)}
+			var logs bytes.Buffer
+			orch := &Orchestrator{cfg: cfg, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			got := orch.filterAuthorizedTickIssues(t.Context(), &state, tickFetchedIssues{candidates: issues, status: issues}, &previous, time.Now())
+			for _, filtered := range [][]connector.Issue{got.candidates, got.status, state.Pipeline, state.LaneSignalCandidates, previous.pipeline} {
+				if len(filtered) != 1 || filtered[0].ID != "owned" {
+					t.Errorf("filtered = %+v, want only owned", filtered)
+				}
+			}
+			if len(state.SchedulerDecisions) != len(tc.want) {
+				t.Errorf("declines = %d, want %d", len(state.SchedulerDecisions), len(tc.want))
+			}
+			seen := map[string]bool{}
+			for _, d := range state.SchedulerDecisions {
+				if d.Reason != dispatchSkipAuthorizationSelector || !tc.want[d.IssueID] || seen[d.IssueID] {
+					t.Errorf("unexpected decision: %+v", d)
+				}
+				seen[d.IssueID] = true
+			}
+			if len(state.Retry) != 0 || len(state.Claimed) != 0 {
+				t.Error("closed excluded retry retains ownership")
+			}
+			if strings.Count(logs.String(), "authorization_selector_declined") != 1 || !strings.Contains(logs.String(), fmt.Sprintf("skipped_count=%d", len(issues)-1)) {
+				t.Errorf("aggregate log = %s", logs.String())
+			}
+		})
 	}
 }
