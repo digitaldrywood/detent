@@ -95,23 +95,13 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if o.trackerAvailabilityPaused(ctx, state, now) && o.scheduling == nil {
 		return
 	}
-	// Place the existing unblock scan before other consumers every other refresh.
-	// Only its starting identity is retained; readiness always comes from fresh reads.
+	// Give the existing dependency scan first use of the read budget every other
+	// refresh. Configured authorization requires the fresh filtered batch first.
 	earlyDependencyUnblock := state.dependencyUnblockEarly
 	state.dependencyUnblockEarly = !earlyDependencyUnblock
 	var earlyUnblocked map[string]struct{}
-	if earlyDependencyUnblock && o.cfg.DependencyAutoUnblock.Enabled && !state.Draining && !o.dispatchQuiesced() {
-		cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
-		issues := dependencyAutoUnblockOrder(mergeIssueSlices(state.BoardIssues, previous.blockedStatusIssues), cfg.SourceStates, state.dependencyUnblockCursor)
-		if len(issues) > 0 {
-			for i, issue := range issues {
-				issues[i] = connector.Issue{ID: issue.ID, Identifier: issue.Identifier, State: issue.State}
-			}
-			earlyUnblocked = o.operatorClearClosedDependencies(ctx, state, issues, now)
-			// Advance even if the first identity cannot fit inside the cap. The late
-			// scan never changes this cursor, so it cannot undo priority progress.
-			state.dependencyUnblockCursor = issues[0].ID
-		}
+	if earlyDependencyUnblock && !o.cfg.Authorization.Configured() {
+		earlyUnblocked = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(state.BoardIssues, previous.blockedStatusIssues), now)
 	}
 	if !o.retryDeferredCompletions(ctx, state, now) && o.scheduling == nil {
 		return
@@ -149,7 +139,11 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
+	fetched = o.filterAuthorizedTickIssues(ctx, state, fetched, &previous, now)
 	trackerCandidates := cloneIssues(fetched.candidates)
+	if earlyDependencyUnblock && o.cfg.Authorization.Configured() {
+		earlyUnblocked = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
+	}
 	fetched = filterReconciledTickIssues(state, fetched, earlyUnblocked)
 	for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
 		if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
@@ -1165,4 +1159,23 @@ func candidatesMissingFromBoard(candidates, board []connector.Issue) int {
 		}
 	}
 	return len(missing)
+}
+
+func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {
+	if !o.cfg.DependencyAutoUnblock.Enabled || state.Draining || o.dispatchQuiesced() {
+		return nil
+	}
+	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+	issues = dependencyAutoUnblockOrder(issues, cfg.SourceStates, state.dependencyUnblockCursor)
+	if len(issues) == 0 {
+		return nil
+	}
+	for i, issue := range issues {
+		issues[i] = connector.Issue{ID: issue.ID, Identifier: issue.Identifier, State: issue.State}
+	}
+	transitioned := o.operatorClearClosedDependencies(ctx, state, issues, now)
+	// Advance even if the first identity cannot fit inside the cap. The late
+	// scan never changes this cursor, so it cannot undo priority progress.
+	state.dependencyUnblockCursor = issues[0].ID
+	return transitioned
 }
