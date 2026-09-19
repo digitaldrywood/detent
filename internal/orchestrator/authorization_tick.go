@@ -38,7 +38,11 @@ func (o *Orchestrator) filterAuthorizedTickIssues(ctx context.Context, state *St
 							planner.releaseIssue(state, issue.ID)
 						}
 					}
-					o.recordSchedulerDecision(ctx, state, now, decision, "skipped", dispatchSkipAuthorizationSelector)
+					// Only dispatch lanes need per-card evidence; all exclusions still
+					// contribute to the aggregate and release retry ownership.
+					if !issue.Closed && stateIn(issue.State, o.cfg.ActiveStates) && !stateIn(issue.State, o.cfg.TerminalStates) {
+						o.recordSchedulerDecision(ctx, state, now, decision, "skipped", dispatchSkipAuthorizationSelector)
+					}
 				}
 			}
 			if matched {

@@ -45,8 +45,10 @@ Fetched candidates and observed lanes share the dispatch authorization selector
 before tick recovery and reconciliation (#2914). Declined cards are removed from
 retained transition inputs too; the configured-selector dependency sweep waits
 for this boundary instead of writing from an earlier board snapshot. Each
-excluded identity records one scheduler decision and logs only an aggregate
-count. `TestTickAuthorizationBeforeRecovery` covers mixed instance labels across
+excluded identity contributes to the aggregate skip count; only open cards in
+configured active, non-terminal lanes record a per-card scheduler decision
+(#2916). `TestTickAuthorizationDeclineMixedLanes` covers mixed lanes, custom
+active states, terminal overlap, closed cards, and duplicate retained inputs. `TestTickAuthorizationBeforeRecovery` covers mixed instance labels across
 stranded recovery, stale Todo PR reconciliation, blocked recovery, and both
 dependency sweep orderings. `TestTickAuthorizationSelectorSemantics` preserves
 nested selectors, identity/field predicates, and declined retry cleanup.
