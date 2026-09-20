@@ -992,9 +992,10 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			wantHydrations: 1,
 		},
 		{
-			name:         "redundant dispatch is superseded without breaker strike",
-			history:      []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
-			wantTerminal: store.WorkAttemptTerminalSuperseded,
+			name:           "redundant dispatch is superseded without breaker strike",
+			wantHydrations: 1,
+			history:        []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			wantTerminal:   store.WorkAttemptTerminalSuperseded,
 		},
 	}
 	for _, tt := range tests {

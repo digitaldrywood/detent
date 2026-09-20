@@ -86,14 +86,15 @@ type implementProgressRecord struct {
 }
 
 type implementProgressArtifactSnapshot struct {
-	TrackerState       string
-	NativeBlockers     []string
-	WorkpadRead        bool
-	WorkpadStatus      string
-	WorkpadReason      string
-	WorkpadFields      map[string]string
-	WorkpadReceiptHash string
-	CompletionKind     string
+	PullRequestDiffFingerprint string
+	TrackerState               string
+	NativeBlockers             []string
+	WorkpadRead                bool
+	WorkpadStatus              string
+	WorkpadReason              string
+	WorkpadFields              map[string]string
+	WorkpadReceiptHash         string
+	CompletionKind             string
 }
 
 type implementDependencyBlocker struct {
@@ -125,7 +126,7 @@ type implementProgressDiffStats struct {
 	Status                         string   `json:"status,omitempty"`
 }
 
-func (o *Orchestrator) evaluateImplementCompletionProgress(
+func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	ctx context.Context,
 	running Running,
 	finalState string,

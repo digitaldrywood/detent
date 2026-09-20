@@ -29,6 +29,12 @@ func TestReworkLivePullRequestPromotion(t *testing.T) {
 		{name: "failing CI", change: func(i *connector.Issue) { i.PullRequest.CIStatus = "failure" }},
 		{name: "unknown mergeability", change: func(i *connector.Issue) { i.PullRequest.MergeableState = "unknown" }},
 		{name: "running worker", running: true},
+		{name: "unfinished workpad", change: func(i *connector.Issue) {
+			i.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad("in_progress", "", nil) + "\nImplementation remains outstanding."}}
+		}},
+		{name: "unfinished completed worker", completed: true, change: func(i *connector.Issue) {
+			i.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad("in_progress", "", nil)}}
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}})
@@ -66,18 +72,23 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 		wantReady   int
 		wantPromote bool
 	}{
-		{name: "draft marked ready then promotes", draft: true, wantReady: 1, wantPromote: true},
-		{name: "stale review draft marked ready but waits", draft: true, wantReady: 1, changeLive: func(i *connector.Issue) {
+		{name: "draft stays draft", draft: true},
+		{name: "stale review draft stays draft", draft: true, changeLive: func(i *connector.Issue) {
 			i.PullRequest.LatestCodexReviewState = "COMMENTED"
 			i.PullRequest.LatestCodexReviewCommitSHA = "previous-head"
 		}},
-		{name: "ready mutation fails", draft: true, readyErr: errors.New("ready unavailable"), wantReady: 2},
-		{name: "credential denied", draft: true, readyErr: errors.New("Bad credentials"), wantReady: 1, wantForge: true},
-		{name: "write permission denied", draft: true, readyErr: errors.New("Resource not accessible by integration"), wantReady: 1, wantForge: true},
-		{name: "connector policy denied", draft: true, readyErr: errors.New("MCP tool call requires approval, but approval policy is never"), wantReady: 1, wantForge: true},
+		{name: "ready mutation fails", draft: true, readyErr: errors.New("ready unavailable")},
+		{name: "credential denied", draft: true, readyErr: errors.New("Bad credentials")},
+		{name: "write permission denied", draft: true, readyErr: errors.New("Resource not accessible by integration")},
+		{name: "connector policy denied", draft: true, readyErr: errors.New("MCP tool call requires approval, but approval policy is never")},
 		{name: "draft with thread stays", draft: true, changeLive: func(i *connector.Issue) {
 			i.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{}}
 		}},
+		{name: "ready control", wantPromote: true},
+		{name: "fresh unfinished workpad", changeLive: func(i *connector.Issue) {
+			i.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad("in_progress", "", nil) + "\nStill implementing."}}
+		}},
+		{name: "fresh draft", changeLive: func(i *connector.Issue) { i.PullRequest.Draft = true }},
 		{name: "fresh CI failure replaces cached green", changeLive: func(i *connector.Issue) { i.PullRequest.CIStatus = "failure" }},
 		{name: "fresh required check failure", changeLive: func(i *connector.Issue) {
 			i.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "verify"}}

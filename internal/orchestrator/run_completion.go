@@ -558,10 +558,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 	}
-	if !repairRun && o.completeRedundantGateWaitRun(ctx, state, event, running) {
-		releaseProjectFailureBreakerCanary(state, event.IssueID)
-		return
-	}
 
 	finalState := event.Result.FinalState
 	if finalState == "" {
@@ -595,6 +591,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		progress = dependencyProgress
 	} else {
 		progress = o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
+	}
+	// Classify current Workpad evidence before reusing a historical gate wait.
+	if !repairRun && !completionWorkpadUnfinished(progress.Issue) && progress.Reason != implementProgressOutcomeNoProgress && o.completeRedundantGateWaitRun(ctx, state, event, running) {
+		releaseProjectFailureBreakerCanary(state, event.IssueID)
+		return
 	}
 	progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
 	progress, gateWaitReason := completedReworkGateWaitProgress(running, progress, o.cfg, finalState)
@@ -692,6 +693,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		completionGateWaitMetadata(gateWaitReason, progress.Issue),
 	))
 
+	if terminalState == store.WorkAttemptTerminalNoProgress {
+		finalState = runpkg.FinalStateNoProgress
+	}
 	state.Completed[event.IssueID] = Completed{
 		Issue:                      cloneIssue(running.Issue),
 		SessionID:                  running.SessionID,
