@@ -200,6 +200,7 @@ type Running struct {
 	ModelPermitExempt           bool
 	CIStopRequested             bool
 	CompletionOwnershipReleased bool
+	PlanArtifactPublished       bool
 	CompletionLane              string
 	CompletionWorkpadURL        string
 	CompletionAcceptedAt        time.Time

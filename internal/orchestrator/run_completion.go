@@ -2730,17 +2730,19 @@ func (o *Orchestrator) completePlanRunning(
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	issueID := strings.TrimSpace(event.IssueID)
 	issue := cloneIssue(running.Issue)
-	body := planArtifactComment(issue, event.Result.Output)
-	if err := o.connector.CreateComment(ctx, issueID, body); err != nil {
-		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, "plan_comment_failed", err.Error())
-		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_comment_failed", err.Error(), "reviewing", "plan comment failed")
-		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
+	// Checkpoint the completed worker before any remote side effect. Recovery uses
+	// the existing completion fence, never another planner session.
+	record := newDeferredCompletion(event, running, nil, o.clockNow().UTC())
+	if !o.persistDeferredCompletion(ctx, state, record) {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist completed plan failed"))
+		return
+	}
+	if err := o.publishCompletedPlan(ctx, event, &running); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return
 	}
 	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
-		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, "plan_transition_failed", err.Error())
-		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_transition_failed", err.Error(), "reviewing", "plan review transition failed")
-		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
