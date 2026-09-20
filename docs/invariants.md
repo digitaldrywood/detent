@@ -157,6 +157,19 @@ credential waits across restart even after they leave the bounded general histor
 These execute through the invariant manifest. Runtime evidence is needed
 to classify a new failure correctly; do not infer issue fault merely from a failed attempt.
 
+Completed plans checkpoint their result before publication and reuse durable
+completion deferral when comment publication or the lane coordination fence
+fails (#2919). The original attempt stays in `tracker_unavailable` wait, honors
+typed GitHub retry/reset deadlines, and never charges project failure breakers
+or launches another planner. A durable publication receipt and completion marker
+reconcile retries and the crash window after a comment write. The existing shared
+schedule owner excludes a second host while completion waits; no new ownership
+mechanism is introduced. `TestPlanCompletionCoordinationDeferral` covers retries,
+SQLite restart, two-host coordination, artifact counts, and attempt attribution.
+`TestPlanCompletionPublicationRecovery` covers uncertain writes and the
+publication checkpoint. Both run through the invariant manifest. Lane writes
+remain in the existing orchestrator ledger (INV-1).
+
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when
 changing the first-turn boundary, in-turn infrastructure classification, or attribution.
 
