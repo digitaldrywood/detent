@@ -289,3 +289,28 @@ func TestRefreshCommentRevisionPagination(t *testing.T) {
 		})
 	}
 }
+
+// Empty refresh batches are valid for both candidate and observed-state reads.
+func TestRefreshPullRequestsEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		issues []connector.Issue
+	}{
+		{name: "nil"},
+		{name: "empty", issues: []connector.Issue{}},
+	} {
+		for _, candidates := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/candidates=%t", tc.name, candidates), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					t.Errorf("empty refresh made an unexpected request: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "unexpected request", http.StatusInternalServerError)
+				}))
+				t.Cleanup(server.Close)
+				c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/empty"})
+				if err := c.hydrateRefreshPullRequests(t.Context(), tc.issues, nil, candidates); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}

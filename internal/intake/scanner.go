@@ -241,13 +241,13 @@ func gitScanError(ctx context.Context, operation string, err error, stderr strin
 	return fmt.Errorf("git %s: %w: %s", operation, err, strings.TrimSpace(stderr))
 }
 
-func (s staleTODOScanner) git(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := s.gitCommand(ctx, args...)
+func (s staleTODOScanner) git(ctx context.Context, operation string, args ...string) ([]byte, error) {
+	cmd := s.gitCommand(ctx, append([]string{operation}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, gitScanError(ctx, args[0], err, stderr.String())
+		return nil, gitScanError(ctx, operation, err, stderr.String())
 	}
 	return output, nil
 }

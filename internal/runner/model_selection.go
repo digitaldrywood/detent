@@ -156,7 +156,7 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, process A
 				}
 			}
 			rejections = append(rejections, AgentOverrideRejection{Field: modelField, Value: explicitModel, Reason: fmt.Sprintf("model %q is unavailable or retired; available models: %s", explicitModel, strings.Join(accepted, ", "))})
-			clearAgentOverrideField(&override, modelField)
+			override = clearAgentOverrideField(override, modelField)
 			continue
 		}
 		if !available && strings.TrimSpace(baseModel) != "" {
@@ -186,7 +186,7 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, process A
 			return result
 		}
 		rejections = append(rejections, AgentOverrideRejection{Field: effortField, Value: explicitEffort, Reason: unsupportedAgentEffortReason(model, explicitEffort)})
-		clearAgentOverrideField(&override, effortField)
+		override = clearAgentOverrideField(override, effortField)
 	}
 }
 
@@ -445,6 +445,6 @@ func selectionIssueOverride(issue connector.Issue, role string) (agentoverride.O
 			return override, rejections, nil
 		}
 		rejections = append(rejections, AgentOverrideRejection{Field: field, Value: effort, Reason: fmt.Sprintf("effort %q is not one of low, medium, high, xhigh, max", effort)})
-		clearAgentOverrideField(&override, field)
+		override = clearAgentOverrideField(override, field)
 	}
 }
