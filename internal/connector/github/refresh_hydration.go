@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 // hydrateRefreshPage shares the board scan's lifetime. Successful batches survive
 // an interrupted page or later hydration request; unavailable schema fields still
 // use the existing legacy readers after enumeration.
-func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectItemsScanProgress, states map[string]struct{}) error {
+func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectItemsScanProgress, states map[string]struct{}, matches func(connector.Issue) bool) error {
 	if progress.evidence == nil {
 		progress.evidence = make(map[string]githubIssueNode)
 	}
@@ -20,7 +22,7 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 	// Refresh changed item fields without replaying retained comments/blockers.
 	var fieldIDs []string
 	for _, issue := range progress.scan.Issues {
-		if _, wanted := states[normalizeStateName(issue.State)]; wanted && progress.hydrated[issue.ID] && progress.fields[issue.ID].fields == nil {
+		if _, wanted := states[normalizeStateName(issue.State)]; wanted && matches(issue) && progress.hydrated[issue.ID] && progress.fields[issue.ID].fields == nil {
 			fieldIDs = append(fieldIDs, issue.ID)
 		}
 	}
@@ -45,7 +47,7 @@ func (c *Connector) hydrateRefreshPage(ctx context.Context, progress *projectIte
 	}
 	var nodes, prNodes []githubIssueNode
 	for _, issue := range progress.scan.Issues {
-		if _, wanted := states[normalizeStateName(issue.State)]; !wanted {
+		if _, wanted := states[normalizeStateName(issue.State)]; !wanted || !matches(issue) {
 			continue
 		}
 		ref, ok := issueRefFromIdentifier(issue.Identifier)

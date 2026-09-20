@@ -181,6 +181,8 @@ var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery
 // unbounded REST body fetches when enriched GraphQL is unavailable.
 var thinRefreshProjectItemsQuery = strings.NewReplacer(
 	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt",
+	"assignees(first: 10) { nodes { login } }", "assignees(first: 10) { totalCount pageInfo { hasNextPage endCursor } nodes { login } }",
+	"labels(first: 20) { nodes { name } }", "labels(first: 20) { totalCount pageInfo { hasNextPage endCursor } nodes { name } }",
 	"          id\n          content", "          id\n          updatedAt\n          content",
 ).Replace(schedulerProjectItemsQuery)
 
@@ -369,7 +371,7 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	limit int,
 	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
-	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil, nil)
+	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil, nil, nil, nil)
 }
 
 // queryProjectItemsPage retains board membership on schemas that lack scheduler
@@ -424,6 +426,8 @@ func (c *Connector) scanProjectItems(
 	repairBlankStatuses bool,
 	progress *projectItemsScanProgress,
 	hydrate func(context.Context, *projectItemsScanProgress) error,
+	prepare func(context.Context, []projectItemNode) error,
+	authorizeRepair func(connector.Issue) bool,
 ) (connector.IssueStateScan, error) {
 	if progress == nil {
 		progress = &projectItemsScanProgress{}
@@ -505,6 +509,11 @@ func (c *Connector) scanProjectItems(
 			scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
 		}
 
+		if prepare != nil {
+			if err := prepare(ctx, response.Node.Items.Nodes); err != nil {
+				return connector.IssueStateScan{}, err
+			}
+		}
 		for progress.position.Offset < len(response.Node.Items.Nodes) {
 			item := response.Node.Items.Nodes[progress.position.Offset]
 			issue, cachedFields, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
@@ -534,7 +543,7 @@ func (c *Connector) scanProjectItems(
 				}
 				projectFieldsByIssue[issue.ID] = cachedFields
 			}
-			if blankStatusItemID != "" && repairBlankStatuses {
+			if blankStatusItemID != "" && repairBlankStatuses && (authorizeRepair == nil || authorizeRepair(issue)) {
 				blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
 			}
 			if !keepIssue(issue) {

@@ -213,7 +213,7 @@ func TestProjectRefreshHourlyWorkload(t *testing.T) {
 						}
 						if !strings.Contains(mode, "fallback") {
 							wantREST := workload.projects * 6
-							wantGraphQL := workload.projects * (workload.refreshes*4 + workload.refreshes - 1)
+							wantGraphQL := workload.projects * (workload.refreshes * 4)
 							if rest != wantREST || graphql != wantGraphQL || notModified != 0 {
 								t.Fatalf("want REST=%d GraphQL=%d 304=0", wantREST, wantGraphQL)
 							}
@@ -337,6 +337,10 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 						t.Errorf("field hydration for unselected item %d", n)
 					}
 					data[key] = map[string]any{"id": value, "fieldValues": map[string]any{"nodes": []any{map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "field": map[string]string{"name": "Status"}, "name": candidateState}}}}
+					if len(incremental) > 0 && n == 1 {
+						data[key].(map[string]any)["fieldValues"].(map[string]any)["nodes"] = append(data[key].(map[string]any)["fieldValues"].(map[string]any)["nodes"].([]any), map[string]any{"__typename": "ProjectV2ItemFieldTextValue", "field": map[string]string{"name": "Team"}, "text": strconv.Itoa(tick)})
+					}
+
 					fieldCount++
 				}
 			}
@@ -487,22 +491,22 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 		t.Fatalf("in-flight hydration=%d", maxInFlight.Load())
 	}
 	for id, count := range hydrationCounts {
-		want := 1
+		want := refreshes
 		if count != want {
-			t.Errorf("%s hydrated %d times, want %d (no replay)", id, count, want)
+			t.Errorf("%s hydrated %d times, want %d (one hydration per refresh)", id, count, want)
 		}
 	}
 	if len(incremental) > 0 {
-		if fieldReads != refreshes-1 {
+		if fieldReads != 0 {
 			t.Fatalf("field reads=%d", fieldReads)
 		}
 		return
 	}
 	usage := c.client.FlushGraphQLRateLimitUsage()
 	// Failed page requests have no response cost and are absent from usage.
-	wantQueries, wantPoints, wantPreflights := 91, 241, 0
+	wantQueries, wantPoints, wantPreflights := 88, 328, 0
 	if resumed {
-		wantQueries, wantPoints, wantPreflights = 128, 274, 4
+		wantQueries, wantPoints, wantPreflights = 116, 352, 4
 	}
 	if candidateState == "Human Review" {
 		wantQueries += 40
