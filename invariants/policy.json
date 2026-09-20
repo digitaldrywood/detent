@@ -4,6 +4,7 @@
       "TestBehaviorEvidence"
     ],
     "./internal/orchestrator": [
+      "TestCompletedActiveReviewRequiresFinishedWork",
       "TestCompletedReworkCandidatesRemainVisible",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
       "TestAttemptMetadataRetainsApprovedPolicy",

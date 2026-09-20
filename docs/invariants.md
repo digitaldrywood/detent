@@ -19,6 +19,13 @@ A passing test does not authorize weakening a rule.
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
+Successful worker sessions share completion readiness with gate-wait evaluation:
+a structured Workpad reporting `in_progress` or a linked draft PR cannot enter
+Human Review (#2922). Such sessions retain the existing implementation
+continuation path. `TestCompletedActiveReviewRequiresFinishedWork` covers both
+active lanes, appended Workpad prose, and ready-PR controls. This consolidates
+existing completion evidence without adding a lane writer or recovery mechanism.
+
 Human Review is entered only for PR-review outcomes or an explicit opt-out of
 an automated gate (including a configured `human_review` gate). Non-review
 human decisions, including attempt-allowance exhaustion and Workpad blockers,

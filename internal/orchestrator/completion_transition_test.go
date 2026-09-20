@@ -20,6 +20,79 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+func TestCompletedActiveReviewRequiresFinishedWork(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		status     string
+		prose      string
+		draft      bool
+		wantReview bool
+	}{
+		{name: "unfinished workpad", status: workpad.StatusInProgress},
+		{name: "unfinished workpad with appended report", status: workpad.StatusInProgress, prose: "Rebased and lease-pushed draft PR. No production implementation added in this pass. Final validation remains outstanding."},
+		{name: "completed workpad with draft PR", status: workpad.StatusComplete, draft: true},
+		{name: "draft PR without workpad", draft: true},
+		{name: "completed ready PR", status: workpad.StatusComplete, wantReview: true},
+		{name: "legacy ready PR", wantReview: true},
+	} {
+		for _, lane := range []string{"In Progress", "Rework"} {
+			t.Run(tt.name+"/"+lane, func(t *testing.T) {
+				t.Parallel()
+				issue := completionTransitionIssue(lane, "OPEN")
+				issue.PullRequest.Draft = tt.draft
+				if tt.status != "" {
+					issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers: []\nhuman_action: null\n```\n\n" + tt.prose}}
+				}
+				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}})
+				tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+				orch := &Orchestrator{cfg: cfg, connector: tracker}
+				state := newState(cfg)
+				now := time.Date(2026, 9, 20, 15, 36, 5, 0, time.UTC)
+				state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted, CompletedAt: now.Add(-24 * time.Hour), successfulAttemptPersisted: true}
+				gateCfg := cfg
+				gateCfg.AutoPromote.Enabled = true
+				gateCfg.AutoPromote.Gate = gate.Config{Kind: gate.KindCommand}
+				wantGateWait := tt.wantReview && lane == "In Progress"
+				if got := autoPromoteActiveGatePendingIssue(issue, &state, gateCfg, gateCfg.AutoPromote); got != wantGateWait {
+					t.Fatalf("completed gate wait = %t, want %t", got, wantGateWait)
+				}
+				result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+				if got := len(result.transitioned) > 0; got != tt.wantReview {
+					t.Fatalf("review transition = %t, want %t", got, tt.wantReview)
+				}
+				if !tt.wantReview && len(tracker.updates) != 0 {
+					t.Fatalf("unfinished work changed lanes: %#v", tracker.updates)
+				}
+				if tt.wantReview {
+					return
+				}
+				// Exercise the successful-session boundary as well as tick recovery.
+				issue.PullRequest.Number = 17
+				issue.PullRequest.HeadSHA = "rebased-head"
+				tracker.stateIssues = []connector.Issue{issue}
+				attempts := &recordingWorkAttemptStore{}
+				orch.workAttempts = attempts
+				orch.scheduling = &hubSchedulingSource{}
+				state = newState(cfg)
+				state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement, DispatchSourceState: lane, StartedAt: now.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"}}
+				state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+				orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+					IssueID: issue.ID, CompletedAt: now,
+					Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+					Result:  runpkg.RunResult{FinalState: FinalStateCompleted, PullRequestUpdated: true, DiffStats: DiffStats{Status: "clean"}},
+				})
+				if len(tracker.updates) != 0 {
+					t.Fatalf("successful unfinished session changed lanes: %#v", tracker.updates)
+				}
+				if retry, ok := state.Retry[issue.ID]; !ok || retry.Issue.State != lane {
+					t.Fatalf("continuation = %#v, present=%t; want implementation in %s", retry, ok, lane)
+				}
+			})
+		}
+	}
+}
+
 func TestCompletedActiveReviewTargetState(t *testing.T) {
 	t.Parallel()
 
