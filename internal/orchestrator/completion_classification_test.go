@@ -23,7 +23,7 @@ func TestUnfinishedCompletionClassification(t *testing.T) {
 				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```\n" + prose}}
 				tracker := &implementProgressConnector{refreshed: issue, hydrated: issue}
 				attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "rebased-head"}, store.WorkAttemptTerminalSuccess)}}
-				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand}}})
+				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}})
 				orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 				state := newState(cfg)
 				now := time.Now()
@@ -74,17 +74,24 @@ func TestCompletionRebaseProgress(t *testing.T) {
 					after.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers: []\nhuman_action: null\n```"}}
 				}
 				tracker := &implementProgressConnector{refreshed: after, hydrated: after}
-				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
+				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}})
 				orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: &implementProgressAttemptStore{}}
 				running := Running{Issue: before, DispatchSourceState: lane, Mode: runpkg.RunModeImplement, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased", CommitsAhead: 2}}
 				running.DispatchProgress.PullRequestDiffFingerprint = orch.implementCompletionDiffFingerprint(t.Context(), before)
 				decision := orch.evaluateImplementCompletionProgress(t.Context(), running, FinalStateCompleted, true)
+				// Published commits ahead of main must not mask rebase-only classification.
+				// Also test routing with fully clean workspace evidence, so the gate
+				// would otherwise upgrade a complete Workpad into a successful wait.
+				decision.WorkspaceDiffStats.CommitsAhead = 0
 				decision, wait := completedReworkGateWaitProgress(running, decision, cfg, FinalStateCompleted)
 				if decision.Outcome != tt.want {
 					t.Fatalf("outcome = %s (%s), want %s", decision.Outcome, decision.Reason, tt.want)
 				}
 				if tt.want == store.WorkAttemptTerminalNoProgress && wait != "" {
 					t.Fatalf("no-progress session entered gate wait: %s", wait)
+				}
+				if lane == "Rework" && tt.status == "complete" && tt.want == store.WorkAttemptTerminalSuccess && wait == "" {
+					t.Fatal("ready control did not exercise successful gate wait")
 				}
 			})
 		}
