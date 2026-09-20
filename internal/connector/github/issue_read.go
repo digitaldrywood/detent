@@ -570,7 +570,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 	issues := append([]connector.Issue(nil), scan.Issues...)
 	evidence := c.refreshScan.evidence
-	var fallback []connector.Issue
+	fallback := make([]connector.Issue, 0, len(issues))
 	var fallbackIndexes []int
 	for i, issue := range issues {
 		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted || !matches(issue) {
@@ -602,7 +602,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	// Thin board entries supply lane state, but only selected entries carry
 	// authoritative scheduler evidence for native human prerequisites.
 	selected := make([]connector.Issue, 0, len(evidence))
-	var selectedIndexes []int
+	selectedIndexes := make([]int, 0, len(issues))
 	board := make(map[string]connector.Issue, len(issues))
 	for i, issue := range issues {
 		board[normalizedIssueIdentifier(issue.Identifier)] = issue
@@ -646,7 +646,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	if len(result.Statuses) == 0 {
 		return result
 	}
-	var routingStatuses []connector.Issue
+	routingStatuses := make([]connector.Issue, 0, len(result.Statuses))
 	var routingIndexes []int
 	for i, issue := range result.Statuses {
 		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; wanted {
@@ -664,7 +664,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 // Keep legacy batch fallback and candidate/observed freshness semantics when a
 // page lacks complete evidence. Complete observations validate cached revisions.
 func (c *Connector) hydrateRefreshPullRequests(ctx context.Context, issues []connector.Issue, evidence map[string]githubIssueNode, candidates bool) error {
-	var fallback []connector.Issue
+	fallback := make([]connector.Issue, 0, len(issues))
 	var indexes []int
 	for i, issue := range issues {
 		if node, ok := evidence[issue.ID]; ok && node.CandidatePR != nil {

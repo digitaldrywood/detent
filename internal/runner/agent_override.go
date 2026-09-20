@@ -202,7 +202,7 @@ func supportedAgentEffort(model AgentModel, want string) (string, bool) {
 }
 
 // clearAgentOverrideField removes a rejected value so normal inheritance applies.
-func clearAgentOverrideField(override *agentoverride.Override, field string) {
+func clearAgentOverrideField(override agentoverride.Override, field string) agentoverride.Override {
 	role, key, scoped := strings.Cut(field, ".")
 	if !scoped {
 		if field == "model" {
@@ -210,7 +210,7 @@ func clearAgentOverrideField(override *agentoverride.Override, field string) {
 		} else {
 			override.Effort = ""
 		}
-		return
+		return override
 	}
 	roles := map[string]*agentoverride.RoleOverride{
 		"code": &override.Code, "rework": &override.Rework, "merge": &override.Merge,
@@ -224,6 +224,7 @@ func clearAgentOverrideField(override *agentoverride.Override, field string) {
 			target.Effort = ""
 		}
 	}
+	return override
 }
 
 func unsupportedAgentEffortReason(model AgentModel, effort string) string {

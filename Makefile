@@ -196,7 +196,7 @@ check-unlocked: check-invariants check-migrations check-generated build lint vet
 .PHONY: check-fast
 check-fast: check-invariants check-migrations check-generated build lint vet
 	$(MAKE) test
-	@echo "Fast checks passed (race, coverage, and nilaway run in the merge queue)."
+	@echo "Fast checks passed (race, coverage, and NilAway are excluded; run make check for full local validation)."
 
 .PHONY: check-invariants
 check-invariants:

@@ -49,7 +49,7 @@ func (r *Runner) DispatchCapacity(_ context.Context, req RunRequest) (providerca
 			// the attempt publishes the rejection after catalog validation.
 			for models != nil && explicitModel != "" && !slices.Contains(models, explicitModel) {
 				_, field := override.ModelForRole(role)
-				clearAgentOverrideField(&override, field)
+				override = clearAgentOverrideField(override, field)
 				explicitModel, _ = override.ModelForRole(role)
 				requested = configuredOverrideSelection(req.Issue, baseModel, role, workflow.Config, backendConfig, override)
 			}
