@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/json"
 	"regexp"
 	"time"
 
@@ -122,9 +123,32 @@ type linkedIssue struct {
 }
 
 type nodeConnection[T any] struct {
-	TotalCount int      `json:"totalCount"`
-	PageInfo   pageInfo `json:"pageInfo"`
-	Nodes      []T      `json:"nodes"`
+	metadataPresent bool
+	TotalCount      int      `json:"totalCount"`
+	PageInfo        pageInfo `json:"pageInfo"`
+	Nodes           []T      `json:"nodes"`
+}
+
+// Selector reads distinguish a complete empty connection from omitted metadata.
+func (c *nodeConnection[T]) UnmarshalJSON(data []byte) error {
+	type connection nodeConnection[T]
+	var value struct {
+		*connection
+		Count *int      `json:"totalCount"`
+		Page  *pageInfo `json:"pageInfo"`
+	}
+	value.connection = (*connection)(c)
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	c.metadataPresent = value.Count != nil && value.Page != nil
+	if value.Count != nil {
+		c.TotalCount = *value.Count
+	}
+	if value.Page != nil {
+		c.PageInfo = *value.Page
+	}
+	return nil
 }
 
 type assignee struct {

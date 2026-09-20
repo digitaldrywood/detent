@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -271,5 +272,116 @@ func TestDispatchLabelAuthorizationBeforeHydration(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The incident board must deliver the exact selected identities all the way to
+// the dispatch hook, without dispatch hydration undoing the connector savings.
+func TestProjectRefreshInstanceSelectorCandidateDelivery(t *testing.T) {
+	numbers := []int{3531, 3485, 3481, 3480, 1604, 9001, 9002, 9003}
+	lanes := []string{"Todo", "Todo", "Todo", "Todo", "Todo", "Backlog", "Blocked", "Human Review"}
+	for _, lane := range []struct {
+		name string
+		n    int
+	}{{"Backlog", 247}, {"Todo", 127}, {"Blocked", 88}, {"Human Review", 5}, {"Rework", 6}, {"In Progress", 1}, {"Done", 1}, {"Cancelled", 1}} {
+		for range lane.n {
+			numbers = append(numbers, 10000+len(numbers))
+			lanes = append(lanes, lane.name)
+		}
+	}
+	issueNode := func(n int) map[string]any {
+		labels := []any{}
+		for _, selected := range numbers[:8] {
+			if selected == n {
+				labels = append(labels, map[string]string{"name": "detent:macbook-air-1"})
+			}
+		}
+		return map[string]any{"__typename": "Issue", "id": fmt.Sprintf("I%d", n), "number": n, "state": "OPEN", "title": "Task", "body": "Task", "repository": map[string]string{"nameWithOwner": "getparable/parable"}, "labels": map[string]any{"totalCount": len(labels), "pageInfo": map[string]any{"hasNextPage": false}, "nodes": labels}, "comments": map[string]any{"totalCount": 0, "nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
+	}
+	rest := map[string]int{}
+	hydratedIDs := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			rest[r.URL.Path]++
+			if strings.HasSuffix(r.URL.Path, "/pulls") {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			t.Errorf("unexpected issue enrichment: %s", r.URL)
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Query     string
+			Variables map[string]any
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		data := map[string]any{}
+		switch {
+		case strings.Contains(req.Query, "CandidateHydration"):
+			for key, value := range req.Variables {
+				if strings.HasPrefix(key, "id") {
+					var n int
+					fmt.Sscanf(value.(string), "I%d", &n)
+					hydratedIDs[value.(string)]++
+					data["issue"+strings.TrimPrefix(key, "id")] = issueNode(n)
+				}
+				if strings.HasPrefix(key, "item") {
+					data[key] = map[string]any{"id": value, "fieldValues": map[string]any{"nodes": []any{map[string]any{"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Todo", "field": map[string]string{"name": "Status"}}}}}
+				}
+			}
+		case strings.Contains(req.Query, "items(first:"):
+			start := 0
+			if after, ok := req.Variables["after"].(string); ok {
+				fmt.Sscanf(after, "%d", &start)
+			}
+			end := min(start+100, len(numbers))
+			items := []any{}
+			for i := start; i < end; i++ {
+				items = append(items, map[string]any{"id": fmt.Sprintf("P%d", numbers[i]), "statusValue": map[string]string{"name": lanes[i]}, "content": issueNode(numbers[i])})
+			}
+			data["node"] = map[string]any{"items": map[string]any{"totalCount": len(numbers), "nodes": items, "pageInfo": map[string]any{"hasNextPage": end < len(numbers), "endCursor": strconv.Itoa(end)}}}
+		default:
+			t.Errorf("unexpected query %s", req.Query)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	tracker, err := github.NewConnector(github.Config{Endpoint: server.URL + "/graphql", Repository: "getparable/parable", ProjectSlug: "PVT_1", TokenSource: github.StaticTokenSource("fixture"), HTTPClient: server.Client(), ActiveStates: []string{"Todo"}, RESTFanoutMaxRequests: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 5, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done", "Cancelled"}, Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:macbook-air-1"}}}})
+	orch := Orchestrator{cfg: cfg, connector: tracker}
+	result := tracker.FetchRefreshIssues(connector.WithRESTFanoutBudget(t.Context(), "refresh"), []string{"Todo"}, []string{"Backlog", "Blocked", "Human Review", "Rework", "In Progress", "Done", "Cancelled"}, orch.authorizationFilterHint())
+	if result.CandidateError != nil || result.StatusError != nil {
+		t.Fatalf("refresh errors: %v / %v", result.CandidateError, result.StatusError)
+	}
+	state := newState(cfg)
+	delivered := map[string]int{}
+	now := time.Now()
+	newDispatchPlanner(cfg).plan(&state, result.Candidates, now, dispatchPlanHooks{
+		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+			return orch.hydrateDispatchIssue(t.Context(), &state, issue, now)
+		},
+		dispatch: func(action dispatchAction) bool { delivered[action.issue.Identifier]++; return true },
+	})
+	if len(delivered) != 5 {
+		t.Fatalf("delivered=%v want exactly five", delivered)
+	}
+	for _, n := range numbers[:5] {
+		id := fmt.Sprintf("getparable/parable#%d", n)
+		if delivered[id] != 1 || hydratedIDs[fmt.Sprintf("I%d", n)] != 1 {
+			t.Errorf("%s delivered=%d hydration=%v", id, delivered[id], hydratedIDs)
+		}
+	}
+	if len(hydratedIDs) != 5 || len(rest) != 1 || rest["/repos/getparable/parable/pulls"] != 1 {
+		t.Fatalf("hydration=%v REST=%v; want five batched targets and one repository PR list", hydratedIDs, rest)
 	}
 }

@@ -41,6 +41,18 @@ Non-completed closures are also removed from the board, pipeline, and active-wor
 tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
 
+ProjectV2 combined refresh applies the instance author, assignee, and label
+predicates before scheduler enrichment (#2917), including fallback readers.
+Selector connections must be complete; excluded cards remain thin dependency
+lane evidence and diagnostics, never dispatch candidates or authorized status
+repair targets. Completed scans reread scheduler evidence even when issue
+and item timestamps are unchanged. Interrupted scans retain their existing
+resume validation. `TestProjectRefreshInstanceSelector`,
+`TestRefreshSelectorPredicatesAndMetadata`, and
+`TestRefreshSelectedEvidenceChangesWithoutIssueTimestamp` cover this boundary.
+`TestProjectRefreshInstanceSelectorCandidateDelivery` verifies the five incident
+identities reach the dispatch hook without additional issue reads.
+
 Fetched candidates and observed lanes share the dispatch authorization selector
 before tick recovery and reconciliation (#2914). Declined cards are removed from
 retained transition inputs too; the configured-selector dependency sweep waits

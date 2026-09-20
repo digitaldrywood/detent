@@ -87,8 +87,8 @@ func TestRefreshAfterStatusFailure(t *testing.T) {
 			if boardReads != 3 {
 				t.Errorf("board reads=%d want 3", boardReads)
 			}
-			wantHydrations := 1
-			if change == "blocker closed" {
+			wantHydrations := 3
+			if change == "lane changed" {
 				wantHydrations = 2
 			}
 			if hydrations != wantHydrations {

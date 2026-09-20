@@ -510,7 +510,7 @@ func (c *Connector) FetchRefreshIssues(
 		return result
 	}
 
-	return c.fetchProjectRefreshIssues(ctx, candidateStates, observedStates, hint.SchedulerStates)
+	return c.fetchProjectRefreshIssues(ctx, candidateStates, observedStates, hint)
 }
 
 func (c *Connector) CombinedRefreshEnabled() bool {
@@ -521,8 +521,9 @@ func (c *Connector) fetchProjectRefreshIssues(
 	ctx context.Context,
 	candidateStates []string,
 	observedStates []string,
-	routingStates []string,
+	hint connector.IssueFilterHint,
 ) connector.RefreshIssueResult {
+	matches := refreshSelector(hint)
 	candidateStates = normalizeStateList(candidateStates, nil)
 	observedStates = normalizeStateList(observedStates, nil)
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
@@ -535,40 +536,21 @@ func (c *Connector) fetchProjectRefreshIssues(
 		if stateInList(state, c.terminalStates) {
 			continue
 		}
-		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, routingStates) {
+		if stateInList(state, candidateStates) || stateInList(state, c.activeStates) || stateInList(state, hint.SchedulerStates) {
 			schedulerStates[normalizeStateName(state)] = struct{}{}
 		}
 	}
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 
-	resumed := c.refreshScan.scan.BoardCounts != nil
+	resumed := c.refreshScan.scan.BoardCounts != nil && !c.refreshScan.complete
 	if c.refreshScan.complete {
-		// A completed enumeration is a snapshot, not a cursor to resume.
-		// Every refresh observes board lanes. Retain only current consumers;
-		// comment/blocker revisions and item timestamps validate reuse.
-		fields := make(map[string]projectItemFields)
-		evidence := make(map[string]githubIssueNode)
-		hydrated := make(map[string]bool)
-		for _, issue := range c.refreshScan.scan.Issues {
-			if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted {
-				continue
-			}
-			fields[issue.ID] = c.refreshScan.fields[issue.ID]
-			if node, ok := c.refreshScan.evidence[issue.ID]; ok {
-				node.CandidatePR = nil // PR state is refreshed independently of scheduler evidence.
-				evidence[issue.ID] = node
-			}
-			hydrated[issue.ID] = c.refreshScan.hydrated[issue.ID]
-		}
-		c.refreshScan = projectItemsScanProgress{
-			fields:    fields,
-			evidence:  evidence,
-			hydrated:  hydrated,
-			updatedAt: c.refreshScan.updatedAt,
-			revision:  c.refreshScan.revision,
-		}
+		// Only interrupted scans can resume. Comments and native relations can
+		// change without updating the issue or project item, so a new refresh
+		// must obtain scheduler evidence again through the batched reader.
+		c.refreshScan = projectItemsScanProgress{}
 	}
+
 	validated := false
 	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
 		return true
@@ -579,8 +561,10 @@ func (c *Connector) fetchProjectRefreshIssues(
 			}
 			validated = true
 		}
-		return c.hydrateRefreshPage(ctx, progress, schedulerStates)
-	})
+		return c.hydrateRefreshPage(ctx, progress, schedulerStates, matches)
+	}, func(ctx context.Context, items []projectItemNode) error {
+		return c.completeRefreshSelectors(ctx, items, hint)
+	}, matches)
 	if err != nil {
 		return connector.RefreshIssueResult{CandidateError: err}
 	}
@@ -589,7 +573,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	var fallback []connector.Issue
 	var fallbackIndexes []int
 	for i, issue := range issues {
-		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted {
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; !wanted || !matches(issue) {
 			continue
 		}
 		if node, ok := evidence[issue.ID]; ok {
@@ -622,7 +606,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	board := make(map[string]connector.Issue, len(issues))
 	for i, issue := range issues {
 		board[normalizedIssueIdentifier(issue.Identifier)] = issue
-		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; wanted {
+		if _, wanted := schedulerStates[normalizeStateName(issue.State)]; wanted && matches(issue) {
 			selected = append(selected, issue)
 			selectedIndexes = append(selectedIndexes, i)
 		}
@@ -643,9 +627,15 @@ func (c *Connector) fetchProjectRefreshIssues(
 		issues[selectedIndexes[i]] = issue
 	}
 
+	eligible := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if matches(issue) {
+			eligible = append(eligible, issue)
+		}
+	}
 	result := connector.RefreshIssueResult{
-		Candidates:           issuesInStates(issues, candidateStates),
-		Statuses:             issuesInStates(issues, observedStates),
+		Candidates:           issuesInStates(eligible, candidateStates),
+		Statuses:             issuesInStates(eligible, observedStates),
 		LaneSignalCandidates: issues,
 	}
 	if err := c.hydrateRefreshPullRequests(ctx, result.Candidates, evidence, true); err != nil {
