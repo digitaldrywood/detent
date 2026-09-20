@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -15,35 +16,49 @@ import (
 func TestUnfinishedCompletionClassification(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{"In Progress", "Rework"} {
-		for _, prose := range []string{"", "Rebased and lease-pushed. No production implementation added in this pass."} {
-			t.Run(lane+"/"+prose, func(t *testing.T) {
-				t.Parallel()
-				issue := implementProgressIssue("rebased-head")
-				issue.State = lane
-				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```\n" + prose}}
-				tracker := &implementProgressConnector{refreshed: issue, hydrated: issue}
-				attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "rebased-head"}, store.WorkAttemptTerminalSuccess)}}
-				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}})
-				orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
-				state := newState(cfg)
-				now := time.Now()
-				state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 42, Attempt: 1, Mode: runpkg.RunModeImplement, DispatchSourceState: lane, StartedAt: now.Add(-time.Minute)}
-				state.Claimed[issue.ID] = Claimed{Issue: issue}
-				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased-head"}}})
-				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress {
-					t.Fatalf("completion = %#v; want no_progress", attempts.completions)
-				}
-				if attempts.completions[0].Phase == "awaiting_gate" || autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
-					t.Fatal("unfinished session entered gate wait")
-				}
-				orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
-				if len(tracker.updates) != 0 {
-					t.Fatalf("unexpected lane updates: %#v", tracker.updates)
-				}
-				if _, ok := state.Retry[issue.ID]; !ok {
-					t.Fatal("missing allowance-controlled continuation")
-				}
-			})
+		for _, changed := range []bool{false, true} {
+			for _, prose := range []string{"", "Rebased and lease-pushed. No production implementation added in this pass."} {
+				t.Run(fmt.Sprintf("%s/changed=%t/%s", lane, changed, prose), func(t *testing.T) {
+					t.Parallel()
+					issue := implementProgressIssue("rebased-head")
+					issue.State = lane
+					issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```\n" + prose}}
+					before := cloneIssue(issue)
+					before.PullRequest.HeadSHA = "before"
+					before.PullRequest.DiffFingerprint = "same-diff"
+					issue.PullRequest.DiffFingerprint = "same-diff"
+					want := store.WorkAttemptTerminalNoProgress
+					if changed {
+						issue.PullRequest.DiffFingerprint = "changed-diff"
+						want = store.WorkAttemptTerminalSuccess
+					}
+					tracker := &implementProgressConnector{refreshed: issue, hydrated: issue}
+					attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "before"}, store.WorkAttemptTerminalSuccess)}}
+					cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}})
+					orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+					state := newState(cfg)
+					now := time.Now()
+					state.Running[issue.ID] = Running{Issue: before, DispatchProgress: implementProgressArtifactSnapshot{PullRequestDiffFingerprint: "same-diff"}, WorkAttemptID: 42, Attempt: 1, Mode: runpkg.RunModeImplement, DispatchSourceState: lane, StartedAt: now.Add(-time.Minute)}
+					state.Claimed[issue.ID] = Claimed{Issue: issue}
+					orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased-head"}}})
+					if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != want {
+						t.Fatalf("completion = %#v; want %s", attempts.completions, want)
+					}
+					if attempts.completions[0].Phase == "awaiting_gate" || autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
+						t.Fatal("unfinished session entered gate wait")
+					}
+					orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+					if len(tracker.updates) != 0 {
+						t.Fatalf("unexpected lane updates: %#v", tracker.updates)
+					}
+					if changed && (len(state.FailureBreaker.Failures) != 0 || len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 || attempts.completions[0].ErrorClass != "") {
+						t.Fatal("genuine progress recorded failure evidence")
+					}
+					if _, ok := state.Retry[issue.ID]; !ok {
+						t.Fatal("missing allowance-controlled continuation")
+					}
+				})
+			}
 		}
 	}
 }
@@ -57,7 +72,7 @@ func TestCompletionRebaseProgress(t *testing.T) {
 		{"identical diff after rebase", "same-diff", "same-diff", "", store.WorkAttemptTerminalNoProgress},
 		{"identical diff with completion assertion", "same-diff", "same-diff", "complete", store.WorkAttemptTerminalNoProgress},
 		{"implementation changes", "old-diff", "new-diff", "complete", store.WorkAttemptTerminalSuccess},
-		{"unfinished despite changes", "old-diff", "new-diff", "in_progress", store.WorkAttemptTerminalNoProgress},
+		{"unfinished with genuine progress", "old-diff", "new-diff", "in_progress", store.WorkAttemptTerminalSuccess},
 		{"unavailable baseline", "", "new-diff", "", store.WorkAttemptTerminalSuccess},
 		{"unavailable current diff", "old-diff", "", "", store.WorkAttemptTerminalSuccess},
 	} {
@@ -105,6 +120,7 @@ func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC()
 			issue := implementProgressIssue("initial")
+			issue.PullRequest.DiffFingerprint = "unchanged-diff"
 			issue.State = lane
 			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```\nRebased only; implementation remains outstanding."}}
 			cfg := laneMutationTestConfig()
@@ -121,10 +137,11 @@ func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				before := cloneIssue(issue)
 				issue.PullRequest.HeadSHA += "-rebased"
 				tracker.refreshed = issue
 				tracker.hydrated = issue
-				state.Running[issue.ID] = Running{Issue: cloneIssue(issue), WorkAttemptID: id, Attempt: i + 1, Mode: runpkg.RunModeImplement, DispatchSourceState: lane, StartedAt: started}
+				state.Running[issue.ID] = Running{Issue: before, DispatchProgress: implementProgressArtifactSnapshot{PullRequestDiffFingerprint: "unchanged-diff"}, WorkAttemptID: id, Attempt: i + 1, Mode: runpkg.RunModeImplement, DispatchSourceState: lane, StartedAt: started}
 				state.Claimed[issue.ID] = Claimed{Issue: issue}
 				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: started.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, PullRequestUpdated: true, DiffStats: DiffStats{Status: "clean", HeadSHA: issue.PullRequest.HeadSHA}}})
 				attempt, err := db.WorkAttempt(t.Context(), id)

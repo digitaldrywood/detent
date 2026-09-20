@@ -419,8 +419,7 @@ func completedActiveIssueReadyForReview(issue connector.Issue, requirePullReques
 	// A successful worker session does not override its report that implementation
 	// is unfinished. Share the parsed Workpad authority with promotion evaluation,
 	// including status blocks followed by appended worker prose.
-	if signal, ok := autoPromoteIssueWorkpadSignal(issue); ok && signal != nil &&
-		signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress {
+	if completionWorkpadUnfinished(issue) {
 		return false
 	}
 	if issue.PullRequest != nil && issue.PullRequest.Draft {

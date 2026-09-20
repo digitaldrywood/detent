@@ -593,7 +593,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		progress = o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	}
 	// Classify current Workpad evidence before reusing a historical gate wait.
-	if !repairRun && progress.Reason != implementProgressOutcomeNoProgress && o.completeRedundantGateWaitRun(ctx, state, event, running) {
+	if !repairRun && !completionWorkpadUnfinished(progress.Issue) && progress.Reason != implementProgressOutcomeNoProgress && o.completeRedundantGateWaitRun(ctx, state, event, running) {
 		releaseProjectFailureBreakerCanary(state, event.IssueID)
 		return
 	}

@@ -16,11 +16,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 	if strings.TrimSpace(finalState) != FinalStateCompleted || decision.DependencyDeferral {
 		return decision
 	}
-	signal, ok := autoPromoteIssueWorkpadSignal(decision.Issue)
-	unfinished := ok && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress
-	if unfinished {
+	if completionWorkpadUnfinished(decision.Issue) {
 		decision.WorkpadStatus = workpad.StatusInProgress
-	} else if !o.implementCompletionRebaseOnly(ctx, running, decision) {
+	}
+	if !o.implementCompletionRebaseOnly(ctx, running, decision) {
 		return decision
 	}
 	decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -61,4 +60,10 @@ func (o *Orchestrator) implementCompletionDiffFingerprint(ctx context.Context, i
 		return ""
 	}
 	return strings.TrimSpace(fingerprint)
+}
+
+func completionWorkpadUnfinished(issue connector.Issue) bool {
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	return ok && signal != nil && signal.Invalid == nil &&
+		signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress
 }

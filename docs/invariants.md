@@ -19,13 +19,16 @@ A passing test does not authorize weakening a rule.
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
-Completion classification treats a structured Workpad reporting `in_progress`
-as no-progress, even when the worker reports success. A rebase with the same
-captured PR diff fingerprint is also no-progress; a changed head SHA alone is
-not implementation. These outcomes consume the existing issue attempt allowance,
+Completion classification preserves genuine diff progress even when a structured
+Workpad reports `in_progress`; unfinished work cannot promote on completion or
+the Rework tick. A rebase with the same captured PR diff fingerprint is
+no-progress; a changed head SHA alone is not implementation. No-progress
+outcomes consume the existing issue attempt allowance,
 cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
 Blocked handoff when the allowance is exhausted (#2922). Draft PRs remain
-ineligible for review. `TestUnfinishedCompletionClassification`,
+ineligible for review and the tick never marks them ready.
+`TestReworkLivePullRequestPromotion`, `TestReworkLiveDraftPromotion`,
+`TestUnfinishedCompletionClassification`,
 `TestCompletionRebaseProgress`, `TestUnfinishedSessionsExhaustAttemptAllowance`,
 and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
 appended prose, durable allowance accounting, and ready-PR controls. This
@@ -606,8 +609,8 @@ restarts. No new gate, reason, or reconciliation loop is introduced.
 `TestAutoPromoteReviewAtHead`, `TestReviewHeadRequestAndWait`, and
 `TestReviewSummaryRetainsPendingHead` cover decision, request failures/deduplication,
 and trusted summary evidence respectively.
-`TestReworkLiveDraftPromotion` preserves marking a clean draft ready to trigger
-review while keeping stale-review promotion pending.
+`TestReworkLiveDraftPromotion` keeps drafts out of promotion without marking
+them ready; the implementation worker owns publishing a reviewable head (#2922).
 
 Completed Rework cards with unresolved review threads use the existing same-lane
 handoff (#2721). The completion-specific thread park is removed: it previously
@@ -966,10 +969,9 @@ the Invariant Gate), and restricts portability, Windows core, installer, and
 snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;
-Rework can produce a new ready head. Detent also marks an idle Rework draft ready
-when its other promotion gates pass (#2688), then re-reads its ready state and
-current-head checks on a later tick before promotion. `TestReworkLiveDraftPromotion`
-covers ready marking, failure, and rechecking live evidence. Workflow assertions cannot deduplicate
+Rework can produce a new ready head. The promotion tick leaves drafts unchanged,
+even when their other gates pass (#2922). `TestReworkLiveDraftPromotion`
+covers draft exclusion and rechecking live evidence. Workflow assertions cannot deduplicate
 manual reruns or repeated ready/reopened events. Other projects may opt into
 label gating or their own CI convention.
 
