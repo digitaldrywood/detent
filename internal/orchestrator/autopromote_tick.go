@@ -726,7 +726,7 @@ func completedReworkGateWaitProgress(
 	if strings.TrimSpace(finalState) != FinalStateCompleted ||
 		normalizeState(dispatchState) != normalizeState(autoCfg.ReworkState) ||
 		!autoPromoteReworkGateWaitTrackedIssue(decision.Issue, cfg, autoCfg) ||
-		decision.Block || decision.DependencyDeferral ||
+		decision.Block || decision.DependencyDeferral || decision.Reason == implementProgressOutcomeNoProgress ||
 		decision.WorkpadStatus != workpad.StatusComplete || decision.HumanAction != "" || decision.Warning != "" ||
 		!reworkGateWaitWorkpadComplete(decision.Issue) || !reworkGateWaitPullRequestReady(decision.Issue) ||
 		!reworkGateWaitAuditReady(cfg.AutoPromote.Gate, decision.SecurityAudit) ||
@@ -774,6 +774,14 @@ func autoPromoteActiveGatePendingIssue(
 	cfg Config,
 	autoCfg AutoPromoteConfig,
 ) bool {
+	if !completedActiveIssueReadyForReview(issue, false, false) {
+		return false
+	}
+	if state != nil {
+		if completed, ok := state.Completed[strings.TrimSpace(issue.ID)]; ok && completed.FinalState == runpkg.FinalStateNoProgress {
+			return false
+		}
+	}
 	// An established review cycle waiting for this head cannot be advanced by
 	// another worker, including after a question wait without completion evidence.
 	if autoPromoteReworkGateWaitTrackedIssue(issue, cfg, autoCfg) &&

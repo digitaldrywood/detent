@@ -949,6 +949,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			dispatchProgress = o.implementProgressDispatchArtifactSnapshot(runCtx, issue)
 		}
 	}
+	if runMode == runpkg.RunModeImplement {
+		dispatchProgress.PullRequestDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
+	}
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	generation := o.workerGeneration.Add(1)
 	state.Running[issue.ID] = Running{

@@ -5,6 +5,9 @@
     ],
     "./internal/orchestrator": [
       "TestCompletedActiveReviewRequiresFinishedWork",
+      "TestUnfinishedCompletionClassification",
+      "TestCompletionRebaseProgress",
+      "TestUnfinishedSessionsExhaustAttemptAllowance",
       "TestCompletedReworkCandidatesRemainVisible",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
       "TestAttemptMetadataRetainsApprovedPolicy",
