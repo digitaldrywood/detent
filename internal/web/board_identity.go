@@ -1,6 +1,8 @@
 package web
 
 import (
+	"slices"
+
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -14,7 +16,13 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 	identities := make(map[string]agentidentity.Identity, len(snapshot.BoardIssues))
 	defaults := s.kanbanWorkflow.WithAgentDefaults(s.currentGlobalConfig().Global.Agents, workflowconfig.AgentBudgetDefaults{})
 	resolvers := make(map[string]*runner.BoardIdentityResolver)
-	for _, issue := range snapshot.BoardIssues {
+	seen := make(map[string]bool)
+	for _, issue := range slices.Concat(snapshot.Pipeline, snapshot.BoardIssues) {
+		key := issue.ProjectID + "\x00" + issue.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		resolver, exists := resolvers[issue.ProjectID]
 		if !exists {
 			cfg := defaults
@@ -42,7 +50,7 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 			continue
 		}
 		identity, err := resolver.Identity(connector.Issue{
-			ID: issue.ID, Identifier: issue.Identifier, Description: issue.Description,
+			ID: issue.ID, Identifier: issue.Identifier, Description: issue.Description, State: issue.State,
 			Labels: issue.Labels, AuthorID: issue.AuthorID, AssigneeID: issue.AssigneeID,
 			Assignees: issue.Assignees, Priority: issue.Priority, Fields: issue.Fields,
 		})

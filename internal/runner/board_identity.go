@@ -31,7 +31,10 @@ func NewBoardIdentityResolver(cfg config.Config, ctx selector.Context) (*BoardId
 // Identity resolves each issue independently; attempt identity remains authoritative.
 func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.Identity, error) {
 	cfg := r.cfg
-	route, err := r.router.RouteForRole(issue, r.ctx, RoleCode)
+	runtime := agentRuntime{router: r.router}
+	role := runRole(RunModeImplement, issue)
+	routeRole := runtime.effectiveRunRole(role)
+	route, err := r.router.RouteForRole(issue, r.ctx, routeRole)
 	if err != nil {
 		return agentidentity.Identity{}, err
 	}
@@ -39,11 +42,11 @@ func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.I
 		if backend.ID != route.BackendID {
 			continue
 		}
-		baseModel := effectiveModel(route.Model, (agentRuntime{router: r.router}).defaultModelForRole(RoleCode))
+		baseModel := effectiveModel(route.Model, runtime.defaultModelForRole(role))
 		policy := cfg.EffectiveModelSelection()
 		var selected agentSelection
 		if policy.Active() && policy.BackendKinds != nil && slices.Contains(*policy.BackendKinds, backend.Kind) {
-			selected = configuredAutomaticSelection(issue, baseModel, RoleCode, cfg, backend)
+			selected = configuredAutomaticSelection(issue, baseModel, role, cfg, backend)
 		} else {
 			// Preview configured candidates only; dispatch validates against the
 			// backend catalog before accepting issue overrides.
@@ -51,10 +54,10 @@ func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.I
 			if err != nil {
 				override = agentoverride.Override{}
 			}
-			model, _ := override.ModelForRole(RoleCode)
+			model, _ := override.ModelForRole(role)
 			selected.Model = effectiveModel(model, baseModel)
-			effort, field := cfg.Agent.Effort.Resolve(RoleCode)
-			efforts := agentEffortCandidates(override, RoleCode, agentEffortCandidate{Field: field, Effort: effort})
+			effort, field := cfg.Agent.Effort.Resolve(role)
+			efforts := agentEffortCandidates(override, role, agentEffortCandidate{Field: field, Effort: effort})
 			if len(efforts) > 0 {
 				selected.Effort = efforts[0].Effort
 			}
@@ -62,7 +65,7 @@ func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.I
 		if selected.Err != nil {
 			return agentidentity.Identity{}, selected.Err
 		}
-		identity := configuredRuntimeIdentity(route, backend, RoleCode, selected.Model, time.Time{})
+		identity := configuredRuntimeIdentity(route, backend, role, selected.Model, time.Time{})
 		if selected.Effort != "" {
 			identity.ReasoningEffort = agentidentity.NewValue(selected.Effort, agentidentity.ProvenanceConfigured)
 		}

@@ -77,3 +77,49 @@ func TestBoardConfiguredAgentsPreservesRoutingEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardConfiguredAgentsPipelineRoles(t *testing.T) {
+	for _, tt := range []struct {
+		name, state, model, effort string
+		roleRoute                  bool
+	}{
+		{"pipeline code", "Todo", "code-model", "low", true},
+		{"pipeline rework", "Rework", "rework-model", "medium", true},
+		{"pipeline merge", "Merging", "merge-model", "high", true},
+		{"role fallback", "Rework", "code-model", "medium", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := globalconfig.Config{}
+			cfg.Global.Agents = config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+				Routes:         []config.AgentRoute{{Name: "code", Backend: "codex", Default: true, Model: "code-model"}},
+				ModelSelection: config.ModelSelection{Enabled: new(false)},
+			}
+			if tt.roleRoute {
+				cfg.Global.Agents.Routes = append(cfg.Global.Agents.Routes,
+					config.AgentRoute{Name: "rework", Role: "rework", Backend: "codex", Default: true, Model: "rework-model"},
+					config.AgentRoute{Name: "merge", Role: "merge", Backend: "codex", Default: true, Model: "merge-model"})
+			}
+			workflow := config.Default()
+			workflow.Agent.Effort = config.AgentRoleEffort{Code: "low", Rework: "medium", Merge: "high"}
+			s := &Server{kanbanWorkflow: workflow, globalConfigSource: func() globalconfig.Config { return cfg }}
+			snapshot := telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{{ProjectID: "one", ID: "duplicate", State: "Todo"}, {ProjectID: "two", ID: "duplicate", State: "Todo"}},
+				Pipeline:    []telemetry.Issue{{ProjectID: "one", ID: "pipeline-only", State: tt.state}, {ProjectID: "one", ID: "duplicate", State: tt.state}},
+			}
+			got := s.boardConfiguredAgents(snapshot)
+			if len(got) != 3 {
+				t.Fatalf("got %d identities, want 3", len(got))
+			}
+			for _, id := range []string{"pipeline-only", "duplicate"} {
+				identity := got["one\x00"+id]
+				if identity.Model() != tt.model || identity.ReasoningEffort.Value != tt.effort {
+					t.Fatalf("%s identity = %+v, want %s/%s", id, identity, tt.model, tt.effort)
+				}
+			}
+			if got["two\x00duplicate"].Model() != "code-model" {
+				t.Fatal("identity crossed project boundary")
+			}
+		})
+	}
+}
