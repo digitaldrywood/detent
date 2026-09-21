@@ -142,6 +142,36 @@ test("every route keeps a usable landscape shell", async ({ page }) => {
   }
 });
 
+for (const connection of ["connected", "reconnecting"]) {
+  for (const density of ["compact", "cozy", "comfy"]) {
+    test(`read-only card opens without shifting at ${density} while ${connection}`, async ({ page }) => {
+      await openRoute(page, {
+        path: "/",
+        scenario: "fleet-healthy-parallel-work",
+        waitSelector: "#board-lanes",
+      });
+      await page.evaluate(({ connection, density }) => {
+        document.documentElement.setAttribute("data-detent-connection", connection);
+        document.documentElement.setAttribute("data-density", density);
+      }, { connection, density });
+
+      const card = page.locator("#board-lanes article[id^='card-']").first();
+      await expect(card).toHaveAttribute("data-kanban-move-disabled", "true");
+      const title = await card.locator("[data-board-card-title]").textContent();
+      const before = await card.boundingBox();
+      await card.tap();
+
+      const sheet = page.locator("[data-detail-sheet]");
+      await expect(sheet).toBeVisible();
+      await expect(sheet.getByRole("heading", { level: 2 })).toHaveText(title.trim());
+      await expect(page.locator("#board-feedback")).toBeHidden();
+      const after = await card.boundingBox();
+      expect(after.y).toBe(before.y);
+      await expectNoHorizontalScroll(page);
+    });
+  }
+}
+
 async function openRoute(page, route) {
   await page.setExtraHTTPHeaders(
     route.scenario ? { "X-Detent-Demo-Scenario": route.scenario } : {},

@@ -1688,14 +1688,10 @@ templ boardKanbanDragScript() {
 				if (active || event.button !== 0 || event.isPrimary === false) return;
 				var pressedElement = event.target instanceof Element ? event.target : null;
 				var pressedCard = pressedElement ? pressedElement.closest("[data-kanban-card]") : null;
-				if (pressedCard && !connectionAllowsMoves()) {
-					if (pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")) return;
-					feedback("Moves are disabled while the board reconnects. Reload if the connection does not recover.", "error");
-					return;
-				}
-				if (pressedCard && pressedCard.dataset.kanbanMoveDisabled === "true") {
-					if (pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")) return;
-					feedback(pressedCard.dataset.kanbanMoveDisabledReason || "This card cannot be moved.", "error");
+				if (pressedCard && (!connectionAllowsMoves() || pressedCard.dataset.kanbanMoveDisabled === "true")) {
+					// A press can still open the detail sheet. Showing drag feedback
+					// here shifts the card before touch-up and loses the tap target.
+					// Disabled move reasons remain available in the card's hover title.
 					return;
 				}
 				var card = pressedCard && pressedCard.dataset.kanbanAction === "move" ? pressedCard : null;
