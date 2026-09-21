@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]agentidentity.Identity {
@@ -16,7 +17,11 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 	resolvers := make(map[string]*runner.BoardIdentityResolver)
 	// Match board source precedence; runtime rows can exist before tracker rows.
 	issues := make(map[string]telemetry.Issue)
-	add := func(issue telemetry.Issue) { issues[issue.ProjectID+"\x00"+issue.ID] = issue }
+	add := func(issue telemetry.Issue) {
+		if key := templates.BoardIssueKey(issue); key != "" {
+			issues[key] = issue
+		}
+	}
 	for _, attempt := range snapshot.WorkAttempts {
 		add(telemetry.Issue{ProjectID: attempt.ProjectID, ID: attempt.IssueID, Identifier: attempt.Identifier})
 	}
@@ -73,7 +78,7 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 		if err != nil {
 			continue
 		}
-		identities[issue.ProjectID+"\x00"+issue.ID] = identity
+		identities[templates.BoardIssueKey(issue)] = identity
 	}
 	return identities
 }

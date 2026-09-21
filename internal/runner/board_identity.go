@@ -2,6 +2,7 @@ package runner
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentoverride"
@@ -32,7 +33,11 @@ func NewBoardIdentityResolver(cfg config.Config, ctx selector.Context) (*BoardId
 func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.Identity, error) {
 	cfg := r.cfg
 	runtime := agentRuntime{router: r.router}
-	role := runRole(RunModeImplement, issue)
+	mode := RunModeImplement
+	if cfg.Plan.Enabled && strings.EqualFold(strings.TrimSpace(issue.State), "todo") {
+		mode = RunModePlan
+	}
+	role := runRole(mode, issue)
 	routeRole := runtime.effectiveRunRole(role)
 	route, err := r.router.RouteForRole(issue, r.ctx, routeRole)
 	if err != nil {

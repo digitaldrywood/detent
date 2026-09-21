@@ -108,7 +108,7 @@ func TestBoardCardConfiguredIdentity(t *testing.T) {
 		{name: "attempt model unavailable", runtime: agentidentity.Identity{BackendID: "codex"}, wantModel: "unknown"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project\x00issue": agentidentity.Configured("codex", "codex", "", "code", "fleet-model", "", "low", "", time.Time{})}}
+			data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project:project:id:issue": agentidentity.Configured("codex", "codex", "", "code", "fleet-model", "", "low", "", time.Time{})}}
 			card := projectKanbanCard{ProjectID: "project", IssueID: "issue", RuntimeIdentity: tt.runtime}
 			view := boardCardViewFromCard(data, projectKanbanLane{}, card, false, "", "")
 			if view.Model != tt.wantModel || view.ModelDefault != tt.wantDefault || view.Effort != "low" {
@@ -137,7 +137,7 @@ func TestBoardCardRetainsAttemptModel(t *testing.T) {
 			t.Run(source+"/"+retained, func(t *testing.T) {
 				issue := telemetry.Issue{ProjectID: "project", ID: "issue", Identifier: "#1", State: "Todo"}
 				actual := agentidentity.RuntimeUpdate("actual-model", "", "high", "", time.Time{})
-				data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project\x00issue": agentidentity.Configured("codex", "codex", "", "code", "new-default", "", "low", "", time.Time{})}}
+				data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project:project:id:issue": agentidentity.Configured("codex", "codex", "", "code", "new-default", "", "low", "", time.Time{})}}
 				want := "actual-model"
 				switch retained {
 				case "tracker":
@@ -172,5 +172,31 @@ func TestBoardCardRetainsAttemptModel(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBoardCardIdentifierIdentity(t *testing.T) {
+	data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{
+		"project:project:identifier:repo#1": agentidentity.Configured("codex", "codex", "", "code", "first-default", "", "low", "", time.Time{}),
+		"project:project:identifier:repo#2": agentidentity.Configured("codex", "codex", "", "code", "second-default", "", "medium", "", time.Time{}),
+	}}
+	data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{
+		{ProjectID: "project", Identifier: "repo#2", AttemptID: 2, RuntimeIdentity: agentidentity.RuntimeUpdate("actual-second", "", "high", "", time.Time{})},
+		{ProjectID: "other", Identifier: "repo#1", AttemptID: 3, RuntimeIdentity: agentidentity.RuntimeUpdate("other-project", "", "high", "", time.Time{})},
+	}
+	for _, tt := range []struct {
+		identifier, model, effort string
+		defaultModel              bool
+	}{
+		{"repo#1", "first-default", "low", true},
+		{"repo#2", "actual-second", "medium", false},
+	} {
+		t.Run(tt.identifier, func(t *testing.T) {
+			card := projectKanbanCard{ProjectID: "project", Identifier: tt.identifier}
+			view := boardCardViewFromCard(data, projectKanbanLane{}, card, false, "", "")
+			if view.Model != tt.model || view.Effort != tt.effort || view.ModelDefault != tt.defaultModel {
+				t.Fatalf("identity = %s/%s default=%v", view.Model, view.Effort, view.ModelDefault)
+			}
+		})
 	}
 }

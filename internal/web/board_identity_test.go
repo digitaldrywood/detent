@@ -26,7 +26,7 @@ func TestBoardConfiguredAgents(t *testing.T) {
 			s := &Server{globalConfigSource: func() globalconfig.Config { return cfg }}
 			snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ProjectID: "one", ID: "1"}, {ProjectID: "two", ID: "1"}}}
 			got := s.boardConfiguredAgents(snapshot)
-			for _, key := range []string{"one\x001", "two\x001"} {
+			for _, key := range []string{"project:one:id:1", "project:two:id:1"} {
 				identity, ok := got[key]
 				if !ok || identity.Model() != tt.model || identity.ReasoningEffort.Value != tt.effort {
 					t.Fatalf("%q identity = %+v", key, identity)
@@ -70,8 +70,8 @@ func TestBoardConfiguredAgentsPreservesRoutingEvidence(t *testing.T) {
 			issue.ProjectID = "project"
 			issue.ID = "issue"
 			identities := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue, {ProjectID: "project", ID: "fallback"}}})
-			got := identities["project\x00issue"]
-			if fallback := identities["project\x00fallback"].Model(); fallback != "fallback-model" {
+			got := identities["project:project:id:issue"]
+			if fallback := identities["project:project:id:fallback"].Model(); fallback != "fallback-model" {
 				t.Fatalf("second issue selected %q, want fallback-model", fallback)
 			}
 			if got.Model() != "matched-model" {
@@ -115,12 +115,12 @@ func TestBoardConfiguredAgentsPipelineRoles(t *testing.T) {
 				t.Fatalf("got %d identities, want 3", len(got))
 			}
 			for _, id := range []string{"pipeline-only", "duplicate"} {
-				identity := got["one\x00"+id]
+				identity := got["project:one:id:"+id]
 				if identity.Model() != tt.model || identity.ReasoningEffort.Value != tt.effort {
 					t.Fatalf("%s identity = %+v, want %s/%s", id, identity, tt.model, tt.effort)
 				}
 			}
-			if got["two\x00duplicate"].Model() != "code-model" {
+			if got["project:two:id:duplicate"].Model() != "code-model" {
 				t.Fatal("identity crossed project boundary")
 			}
 		})
@@ -152,7 +152,7 @@ func TestBoardConfiguredAgentsAllCardSources(t *testing.T) {
 			s := &Server{kanbanWorkflow: workflow, globalConfigSource: func() globalconfig.Config { return cfg }}
 			snapshot := telemetry.Snapshot{}
 			tt.populate(&snapshot, telemetry.Issue{ProjectID: "project", ID: "issue", State: "Todo"})
-			got := s.boardConfiguredAgents(snapshot)["project\x00issue"]
+			got := s.boardConfiguredAgents(snapshot)["project:project:id:issue"]
 			if got.Model() != "configured-model" || got.ReasoningEffort.Value != "medium" {
 				t.Fatalf("identity = %+v", got)
 			}
@@ -173,7 +173,7 @@ func TestBoardConfiguredAgentsModelOverride(t *testing.T) {
 				ModelSelection: config.ModelSelection{Enabled: new(true), BackendKinds: &[]string{config.AgentBackendCodex}, DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Model: new("fleet-model"), Effort: new("low")}}},
 			}
 			s := &Server{globalConfigSource: func() globalconfig.Config { return cfg }}
-			got := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ProjectID: "project", ID: "issue", ModelOverride: "issue-model"}}})["project\x00issue"]
+			got := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ProjectID: "project", ID: "issue", ModelOverride: "issue-model"}}})["project:project:id:issue"]
 			if got.Model() != tt.want {
 				t.Fatalf("model = %q, want %q", got.Model(), tt.want)
 			}
@@ -211,5 +211,37 @@ func TestDemoConfiguredAgents(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBoardConfiguredAgentsIdentifierKeys(t *testing.T) {
+	cfg := globalconfig.Config{}
+	cfg.Global.Agents = config.Agents{
+		Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+		Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}},
+		ModelSelection: config.ModelSelection{Enabled: new(false)},
+	}
+	s := &Server{globalConfigSource: func() globalconfig.Config { return cfg }}
+	issues := []telemetry.Issue{
+		{ProjectID: "one", Identifier: "repo#1", ModelOverride: "first"},
+		{ProjectID: "one", Identifier: "repo#2", ModelOverride: "second"},
+		{ProjectID: "two", Identifier: "repo#1", ModelOverride: "other-project"},
+		{ProjectID: "one", ID: "repo#1", Identifier: "repo#3", ModelOverride: "id-distinct-from-identifier"},
+	}
+	got := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: issues})
+	for _, tt := range []struct{ key, model string }{
+		{"project:one:identifier:repo#1", "first"},
+		{"project:one:identifier:repo#2", "second"},
+		{"project:two:identifier:repo#1", "other-project"},
+		{"project:one:id:repo#1", "id-distinct-from-identifier"},
+	} {
+		t.Run(tt.key, func(t *testing.T) {
+			if model := got[tt.key].Model(); model != tt.model {
+				t.Fatalf("model = %q, want %q", model, tt.model)
+			}
+		})
+	}
+	if len(got) != len(issues) {
+		t.Fatalf("got %d identities for %d issues", len(got), len(issues))
 	}
 }

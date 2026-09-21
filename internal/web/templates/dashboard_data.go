@@ -2574,7 +2574,7 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		if state == "" {
 			return
 		}
-		key := projectKanbanIssueKey(issue)
+		key := BoardIssueKey(issue)
 		if key == "" {
 			key = "anonymous:" + strconv.Itoa(nextIndex)
 		}
@@ -2800,7 +2800,8 @@ func projectKanbanIssueStageTime(issue telemetry.Issue, fallback time.Time) time
 	return fallback.UTC()
 }
 
-func projectKanbanIssueKey(issue telemetry.Issue) string {
+// BoardIssueKey scopes an issue ID or identifier to its project for board lookups.
+func BoardIssueKey(issue telemetry.Issue) string {
 	scope := strings.TrimSpace(issue.ProjectID)
 	prefix := ""
 	if scope != "" {

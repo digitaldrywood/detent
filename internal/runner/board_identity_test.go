@@ -77,3 +77,38 @@ func TestBoardIdentitySelectionActivation(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardIdentityPlanRole(t *testing.T) {
+	for _, tt := range []struct {
+		name, state, model, effort string
+		enabled, planRoute         bool
+	}{
+		{"planning enabled", "Todo", "plan-model", "high", true, true},
+		{"normalized todo", "  tOdO ", "plan-model", "high", true, true},
+		{"planning disabled", "Todo", "code-model", "low", false, true},
+		{"already implementing", "In Progress", "code-model", "low", true, true},
+		{"plan route fallback", "Todo", "code-model", "high", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Plan.Enabled = tt.enabled
+			cfg.Agents.ModelSelection = config.ModelSelection{Enabled: new(true), BackendKinds: &[]string{config.AgentBackendCodex}, DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("high")}}, Stages: map[string]config.ModelSelectionStage{"plan": {Effort: new("high")}, "code": {Effort: new("low")}}}
+			cfg.Agents.Backends = []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}}
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "code", Backend: "codex", Default: true, Model: "code-model"}}
+			if tt.planRoute {
+				cfg.Agents.Routes = append(cfg.Agents.Routes, config.AgentRoute{Name: "plan", Role: RolePlan, Backend: "codex", Default: true, Model: "plan-model"})
+			}
+			resolver, err := NewBoardIdentityResolver(cfg, selector.Context{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolver.Identity(connector.Issue{State: tt.state})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Model() != tt.model || got.ReasoningEffort.Value != tt.effort {
+				t.Fatalf("identity = %+v, want %s/%s", got, tt.model, tt.effort)
+			}
+		})
+	}
+}
