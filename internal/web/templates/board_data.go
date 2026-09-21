@@ -1044,6 +1044,8 @@ type boardCardView struct {
 	ProgressKind      primitives.Kind
 	BlockerSummary    string
 	Labels            []string
+	Model             string
+	ModelDefault      bool
 	Effort            string
 	Activity          string
 	PRStatus          string
@@ -1525,6 +1527,21 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		Origin:            card.Origin,
 		Labels:            append([]string(nil), card.Labels...),
 		Effort:            strings.TrimSpace(card.RuntimeIdentity.ReasoningEffort.Value),
+	}
+	configured := data.ConfiguredAgents[card.ProjectID+"\x00"+card.IssueID]
+	view.Model = card.RuntimeIdentity.Model()
+	if configured.ReasoningEffort.Known() {
+		view.Effort = configured.ReasoningEffort.Value
+	}
+	if card.RuntimeIdentity.IsZero() {
+		view.Model = configured.Model()
+		view.ModelDefault = true
+	}
+	if view.Model == "" {
+		view.Model = "unknown"
+	}
+	if view.Effort == "" {
+		view.Effort = "unknown"
 	}
 	if canDrag {
 		view.AllowedTargets = projectKanbanMoveTargetKeys(data, card)

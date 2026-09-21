@@ -66,6 +66,7 @@ const (
 )
 
 type DashboardData struct {
+	ConfiguredAgents          map[string]agentidentity.Identity
 	RunnerFleetEnabled        bool
 	Title                     string
 	ApplicationName           string

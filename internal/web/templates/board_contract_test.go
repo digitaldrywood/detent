@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -33,6 +34,8 @@ func TestINV13BoardCardContent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			view := tt.view
 			view.Project = "detent"
+			view.Model = "gpt-6-astra"
+			view.Effort = "low"
 			view.Number = "#2805"
 			view.Title = "A readable card"
 			view.CreationOrigin = "operator"
@@ -69,7 +72,7 @@ func TestINV13BoardCardContent(t *testing.T) {
 			}
 			visible := html.UnescapeString(regexp.MustCompile(`<[^>]+>`).ReplaceAllString(rendered, " "))
 			visible = strings.Join(strings.Fields(visible), " ")
-			wantVisible := strings.TrimSpace("detent #2805 Operator A readable card " + tt.want)
+			wantVisible := strings.TrimSpace("detent #2805 Operator gpt-6-astra low A readable card " + tt.want)
 			if visible != wantVisible {
 				t.Errorf("card body = %q, want only identity, title and status %q", visible, wantVisible)
 			}
@@ -90,5 +93,38 @@ func TestINV13SheetObservations(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("sheet missing %q", want)
 		}
+	}
+}
+
+func TestBoardCardConfiguredIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		runtime     agentidentity.Identity
+		wantModel   string
+		wantDefault bool
+	}{
+		{name: "never dispatched", wantModel: "fleet-model", wantDefault: true},
+		{name: "actual attempt", runtime: agentidentity.RuntimeUpdate("actual-model", "", "high", "", time.Time{}), wantModel: "actual-model"},
+		{name: "attempt model unavailable", runtime: agentidentity.Identity{BackendID: "codex"}, wantModel: "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project\x00issue": agentidentity.Configured("codex", "codex", "", "code", "fleet-model", "", "low", "", time.Time{})}}
+			card := projectKanbanCard{ProjectID: "project", IssueID: "issue", RuntimeIdentity: tt.runtime}
+			view := boardCardViewFromCard(data, projectKanbanLane{}, card, false, "", "")
+			if view.Model != tt.wantModel || view.ModelDefault != tt.wantDefault || view.Effort != "low" {
+				t.Fatalf("identity = %s/%s default=%v", view.Model, view.Effort, view.ModelDefault)
+			}
+			rendered := renderBoardComponent(t, boardCardView2(view))
+			identityEnd := strings.Index(rendered, "data-board-card-title")
+			for _, marker := range []string{"data-board-card-model", "data-board-card-effort"} {
+				at := strings.Index(rendered, marker)
+				if at < 0 || at > identityEnd {
+					t.Fatalf("%s is outside identity row", marker)
+				}
+			}
+			if strings.Contains(rendered, ">default</span>") != tt.wantDefault {
+				t.Fatalf("default label mismatch: %s", rendered)
+			}
+		})
 	}
 }

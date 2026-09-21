@@ -1309,7 +1309,7 @@ the build cache or traverse the module cache; unmeasured module fields are omitt
 ## INV-13 — A board card is a title and one status line
 
 A board card renders exactly: the identity row (project, issue and PR references,
-origin), the title, at most one status line, and the existing priority controls.
+origin, model and configured effort), the title, at most one status line, and the existing priority controls.
 The status line is at most 48 Unicode characters and names the wait in words a
 human acts on, for example "Waiting on #2129", "CI running", "Needs your reply · 4h",
 "Blocked · 1", "Running". Scheduler evidence, tracker snapshot ages, timestamps,
