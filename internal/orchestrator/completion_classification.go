@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -30,8 +31,26 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 }
 
 func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, running Running, decision implementCompletionProgressDecision) bool {
+	if decision.WorkpadStatus == workpad.StatusComplete {
+		return false
+	}
 	before, after := running.Issue.PullRequest, decision.Issue.PullRequest
-	fingerprint := strings.TrimSpace(running.DispatchProgress.PullRequestDiffFingerprint)
+	baseline := running.DispatchLoopStart
+	if baseline.PRDiffFingerprint == "" && running.WorkAttemptID > 0 && o.workAttempts != nil {
+		attempt, err := o.workAttempts.WorkAttempt(ctx, running.WorkAttemptID)
+		if err == nil {
+			var metadata struct {
+				Start dispatchLoopStartRecord `json:"dispatch_loop_start"`
+			}
+			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
+				baseline = metadata.Start
+			}
+		}
+	}
+	if baseline.PRDiffFingerprint != "" {
+		before = &connector.PullRequest{Number: int(baseline.Fingerprint.PRNumber), HeadSHA: baseline.Fingerprint.PRHeadSHA, MergeableState: baseline.PRMergeableState}
+	}
+	fingerprint := strings.TrimSpace(firstNonBlank(baseline.PRDiffFingerprint, running.DispatchProgress.PullRequestDiffFingerprint))
 	if fingerprint == "" || before == nil || after == nil || before.Number != after.Number ||
 		strings.TrimSpace(before.HeadSHA) == "" || strings.TrimSpace(after.HeadSHA) == "" || before.HeadSHA == after.HeadSHA ||
 		pullRequestMerged(after) || !implementProgressDiffStatsClean(decision.WorkspaceDiffStats) {
@@ -39,6 +58,12 @@ func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, runnin
 	}
 	if stranded, unavailable := implementProgressUnpushedClassification(decision.WorkspaceDiffStats, after); stranded || unavailable != "" {
 		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(before.MergeableState), "dirty") {
+		switch strings.ToLower(strings.TrimSpace(after.MergeableState)) {
+		case "clean", "unstable", "has_hooks", "behind", "blocked":
+			return false
+		}
 	}
 	return fingerprint == o.implementCompletionDiffFingerprint(ctx, decision.Issue)
 }

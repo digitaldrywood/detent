@@ -811,6 +811,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	dispatchLoopStart := newDispatchLoopStartRecord(issue, runMode)
+	if runMode == runpkg.RunModeImplement && issue.PullRequest != nil {
+		dispatchLoopStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
+		dispatchLoopStart.PRMergeableState = issue.PullRequest.MergeableState
+	}
 	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, dispatchLoopStart)
 	if !ok {
 		if recovery {
@@ -950,7 +954,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	if runMode == runpkg.RunModeImplement {
-		dispatchProgress.PullRequestDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
+		dispatchProgress.PullRequestDiffFingerprint = dispatchLoopStart.PRDiffFingerprint
 	}
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	generation := o.workerGeneration.Add(1)

@@ -1088,10 +1088,6 @@ func writeGitHubLocalJSON(t *testing.T, w http.ResponseWriter, value any) {
 	}
 }
 
-func (b *recordingGitHubBackend) MarkPullRequestReady(context.Context, connector.Issue) error {
-	panic("unexpected github MarkPullRequestReady")
-}
-
 func (b *recordingGitHubBackend) LookupBranchHead(_ context.Context, repository, branch string) (string, error) {
 	b.branchRepository, b.branchName = repository, branch
 	if b.branchErr != nil {

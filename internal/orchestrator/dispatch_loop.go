@@ -39,6 +39,8 @@ type dispatchLoopFingerprint struct {
 }
 
 type dispatchLoopStartRecord struct {
+	PRDiffFingerprint      string                  `json:"pr_diff_fingerprint,omitempty"`
+	PRMergeableState       string                  `json:"pr_mergeable_state,omitempty"`
 	AllowanceExternalWait  bool                    `json:"allowance_external_wait,omitempty"`
 	Fingerprint            dispatchLoopFingerprint `json:"fingerprint"`
 	Captured               bool                    `json:"captured"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -67,23 +68,30 @@ func TestCompletionRebaseProgress(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, before, after, status string
+		mergeBefore, mergeAfter     string
 		want                        store.WorkAttemptTerminalState
 	}{
-		{"identical diff after rebase", "same-diff", "same-diff", "", store.WorkAttemptTerminalNoProgress},
-		{"identical diff with completion assertion", "same-diff", "same-diff", "complete", store.WorkAttemptTerminalNoProgress},
-		{"implementation changes", "old-diff", "new-diff", "complete", store.WorkAttemptTerminalSuccess},
-		{"unfinished with genuine progress", "old-diff", "new-diff", "in_progress", store.WorkAttemptTerminalSuccess},
-		{"unavailable baseline", "", "new-diff", "", store.WorkAttemptTerminalSuccess},
-		{"unavailable current diff", "old-diff", "", "", store.WorkAttemptTerminalSuccess},
+		{"identical diff after rebase", "same-diff", "same-diff", "", "", "", store.WorkAttemptTerminalNoProgress},
+		{"identical diff with completion assertion", "same-diff", "same-diff", "complete", "", "", store.WorkAttemptTerminalSuccess},
+		{"implementation changes", "old-diff", "new-diff", "complete", "", "", store.WorkAttemptTerminalSuccess},
+		{"unfinished with genuine progress", "old-diff", "new-diff", "in_progress", "", "", store.WorkAttemptTerminalSuccess},
+		{"unavailable baseline", "", "new-diff", "", "", "", store.WorkAttemptTerminalSuccess},
+		{"unavailable current diff", "old-diff", "", "", "", "", store.WorkAttemptTerminalSuccess},
+		{"conflict cleared", "same-diff", "same-diff", "in_progress", "dirty", "clean", store.WorkAttemptTerminalSuccess},
+		{"conflict remains", "same-diff", "same-diff", "in_progress", "dirty", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"mergeability unknown", "same-diff", "same-diff", "in_progress", "dirty", "unknown", store.WorkAttemptTerminalNoProgress},
+		{"already clean", "same-diff", "same-diff", "in_progress", "clean", "clean", store.WorkAttemptTerminalNoProgress},
 	} {
 		for _, lane := range []string{"In Progress", "Rework"} {
 			t.Run(tt.name+"/"+lane, func(t *testing.T) {
 				t.Parallel()
 				before := implementProgressIssue("before")
 				before.State = lane
+				before.PullRequest.MergeableState = tt.mergeBefore
 				before.PullRequest.DiffFingerprint = tt.before
 				after := implementProgressIssue("rebased")
 				after.State = lane
+				after.PullRequest.MergeableState = tt.mergeAfter
 				after.PullRequest.DiffFingerprint = tt.after
 				if tt.status != "" {
 					after.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers: []\nhuman_action: null\n```"}}
@@ -231,6 +239,82 @@ func TestCompletionDiffFingerprint(t *testing.T) {
 			}
 			if tracker.calls != tt.calls {
 				t.Fatalf("reads = %d, want %d", tracker.calls, tt.calls)
+			}
+		})
+	}
+}
+
+func TestCompletionRebaseAfterRestart(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, status, mergeAfter string
+		want                     store.WorkAttemptTerminalState
+	}{
+		{"unfinished unchanged", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"completed", "complete", "dirty", store.WorkAttemptTerminalSuccess},
+		{"conflict cleared", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dbConfig := store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempt.db")}
+			db, err := store.Open(t.Context(), dbConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := implementProgressIssue("before")
+			before.State = "Rework"
+			before.PullRequest.MergeableState = "dirty"
+			before.PullRequest.DiffFingerprint = "same-diff"
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
+			cfg.Project.ID = "detent"
+			orch := &Orchestrator{cfg: cfg, workAttempts: db}
+			state := newState(cfg)
+			start := newDispatchLoopStartRecord(before, runpkg.RunModeImplement)
+			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
+			start.PRMergeableState = before.PullRequest.MergeableState
+			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", runpkg.RunModeImplement, start)
+			if !ok {
+				t.Fatal("start attempt failed")
+			}
+			// Workspace snapshots and heartbeat serialization must preserve PR evidence.
+			running := Running{Issue: before, Mode: runpkg.RunModeImplement, DispatchLoopStart: start}
+			running.DispatchLoopStart = dispatchLoopStartRecordFromSnapshot(running, runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true})
+			persisted := dispatchLoopStartFromMetadata(t, runningWorkAttemptMetadataJSON(running, nil))
+			if persisted.PRDiffFingerprint != start.PRDiffFingerprint || persisted.PRMergeableState != "dirty" {
+				t.Fatalf("heartbeat baseline = %#v", persisted)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = store.Open(t.Context(), dbConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			after := cloneIssue(before)
+			after.PullRequest.HeadSHA = "rebased"
+			after.PullRequest.MergeableState = tt.mergeAfter
+			after.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad(tt.status, "", nil)}}
+			tracker := &implementProgressConnector{refreshed: after, hydrated: after}
+			orch = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: db}
+			state = newState(cfg)
+			// No in-memory dispatch baseline survives. Even the issue snapshot is current.
+			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: runpkg.RunModeImplement, DispatchSourceState: "Rework", StartedAt: time.Now().Add(-time.Minute)}
+			state.Claimed[after.ID] = Claimed{Issue: after}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: after.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}})
+			attempt, err := db.WorkAttempt(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempt.TerminalState != tt.want {
+				t.Fatalf("terminal state = %s, want %s", attempt.TerminalState, tt.want)
+			}
+			if tt.want == store.WorkAttemptTerminalSuccess && (attempt.ErrorClass != "" || len(state.FailureBreaker.Failures) != 0 || len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0) {
+				t.Fatalf("progress recorded failure evidence: %#v", attempt)
 			}
 		})
 	}
