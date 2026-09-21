@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -36,6 +37,8 @@ func TestBoardConfiguredAgents(t *testing.T) {
 }
 
 type boardIdentityConnector struct{ connector.Connector }
+
+func (boardIdentityConnector) Name() string { return "test" }
 
 func (boardIdentityConnector) InstanceLogin() string { return "worker" }
 
@@ -173,6 +176,39 @@ func TestBoardConfiguredAgentsModelOverride(t *testing.T) {
 			got := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ProjectID: "project", ID: "issue", ModelOverride: "issue-model"}}})["project\x00issue"]
 			if got.Model() != tt.want {
 				t.Fatalf("model = %q, want %q", got.Model(), tt.want)
+			}
+		})
+	}
+}
+
+func TestDemoConfiguredAgents(t *testing.T) {
+	for _, projectView := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fleet", true: "project"}[projectView], func(t *testing.T) {
+			cfg := globalconfig.Config{}
+			cfg.Global.Agents = config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: "demo-model"}},
+				ModelSelection: config.ModelSelection{Enabled: new(false)},
+			}
+			workflow := config.Default()
+			workflow.Agent.Effort = config.AgentRoleEffort{Code: "low", Rework: "low", Merge: "low"}
+			s := &Server{connector: boardIdentityConnector{}, kanbanWorkflow: workflow, globalConfigSource: func() globalconfig.Config { return cfg }}
+			scenario := demoScenario{ProjectID: demoPrimaryProjectID}
+			data := s.demoDashboardData(context.Background(), scenario)
+			if projectView {
+				var ok bool
+				data, ok = s.demoProjectDashboardData(context.Background(), scenario)
+				if !ok {
+					t.Fatal("demo project missing")
+				}
+			}
+			if len(data.ConfiguredAgents) == 0 {
+				t.Fatal("demo configured identities missing")
+			}
+			for key, identity := range data.ConfiguredAgents {
+				if identity.Model() != "demo-model" || identity.ReasoningEffort.Value != "low" {
+					t.Fatalf("%s identity = %+v", key, identity)
+				}
 			}
 		})
 	}
