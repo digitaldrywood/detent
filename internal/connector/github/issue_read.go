@@ -524,6 +524,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	hint connector.IssueFilterHint,
 ) connector.RefreshIssueResult {
 	matches := refreshSelector(hint)
+	filter := refreshProjectFilter(hint)
 	candidateStates = normalizeStateList(candidateStates, nil)
 	observedStates = normalizeStateList(observedStates, nil)
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
@@ -552,7 +553,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 
 	validated := false
-	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, func(connector.Issue) bool {
+	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, filter, func(connector.Issue) bool {
 		return true
 	}, 0, repairBlankStatuses, &c.refreshScan, func(ctx context.Context, progress *projectItemsScanProgress) error {
 		if resumed && !validated {
@@ -613,6 +614,11 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 	if err := c.resolveBlockedByProjectState(ctx, selected); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	if filter != "" {
+		if err := c.resolveFilteredRefreshBlockers(ctx, selected, board); err != nil {
+			return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+		}
 	}
 	for i, issue := range selected {
 		for j := range issue.BlockedBy {
