@@ -22,7 +22,10 @@ A passing test does not authorize weakening a rule.
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; unfinished work cannot promote on completion or
 the Rework tick. A rebase with the same captured PR diff fingerprint is
-no-progress; a changed head SHA alone is not implementation. No-progress
+no-progress unless the Workpad reports completion or a conflicting PR becomes
+mergeable. The dispatch fingerprint and mergeability baseline persist with the
+attempt across restart, including merge-mode conflict repairs in active lanes
+(#2929); a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance,
 cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
 Blocked handoff when the allowance is exhausted (#2922). Draft PRs remain
@@ -1322,9 +1325,5 @@ complement behavioral tests; they do not prove every natural-language rule,
 protect themselves against edits, or enforce live settings. See the
 [runner contract](../invariants/README.md) for the same limitations.
 
-Draft-ready credential and connector-policy failures (#2688) reuse the instance
-forge condition and existing worker write canary (INV-2/INV-3). The auto-promote
-writer waits for that recovery instead of resetting the probe on every tick;
-transient ready failures retain normal tick retries.
-`TestReworkLiveDraftPromotion` verifies this attribution without issue failure
-strikes or lane changes.
+The unused draft-ready connector capability is removed (#2929). Draft promotion
+checks retain read-only draft handling; workers own marking their PR ready.

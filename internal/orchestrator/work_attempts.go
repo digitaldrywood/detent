@@ -353,7 +353,7 @@ func (o *Orchestrator) startDurableWorkAttempt(
 	if o.cfg.Policy.ID != "" {
 		metadata["policy"] = o.cfg.Policy
 	}
-	if strings.TrimSpace(runMode) == runpkg.RunModeImplement {
+	if strings.TrimSpace(runMode) == runpkg.RunModeImplement || dispatchLoopStart.PRDiffFingerprint != "" {
 		metadata[dispatchLoopStartMetadataKey] = dispatchLoopStart
 	}
 	start := store.WorkAttemptStart{
@@ -1100,7 +1100,7 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 	if running.Cancellation != nil {
 		out["cancellation"] = running.Cancellation
 	}
-	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement {
+	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement || running.DispatchLoopStart.PRDiffFingerprint != "" {
 		out[dispatchLoopStartMetadataKey] = running.DispatchLoopStart
 	}
 	for key, value := range metadata {

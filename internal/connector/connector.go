@@ -212,11 +212,6 @@ type PullRequestHeadLookup interface {
 	LookupPullRequestByHead(context.Context, string, string, string) (PullRequest, bool, error)
 }
 
-// PullRequestReadyMarker marks an existing draft ready for review.
-type PullRequestReadyMarker interface {
-	MarkPullRequestReady(context.Context, Issue) error
-}
-
 type PullRequestDraftCreator interface {
 	CreateDraftPullRequest(context.Context, string, string, string, string) (PullRequest, error)
 }

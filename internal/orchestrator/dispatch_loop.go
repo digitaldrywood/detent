@@ -39,6 +39,8 @@ type dispatchLoopFingerprint struct {
 }
 
 type dispatchLoopStartRecord struct {
+	PRDiffFingerprint      string                  `json:"pr_diff_fingerprint,omitempty"`
+	PRMergeableState       string                  `json:"pr_mergeable_state,omitempty"`
 	AllowanceExternalWait  bool                    `json:"allowance_external_wait,omitempty"`
 	Fingerprint            dispatchLoopFingerprint `json:"fingerprint"`
 	Captured               bool                    `json:"captured"`
@@ -120,7 +122,7 @@ func resetDispatchLoopDecision(decision implementCompletionProgressDecision) imp
 }
 
 func newDispatchLoopStartRecord(issue connector.Issue, mode string) dispatchLoopStartRecord {
-	if strings.TrimSpace(mode) != RunModeImplement {
+	if strings.TrimSpace(mode) != RunModeImplement && (strings.TrimSpace(mode) != runpkg.RunModeMerge || mergeWorkerIssue(issue)) {
 		return dispatchLoopStartRecord{}
 	}
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
