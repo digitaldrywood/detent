@@ -9,14 +9,26 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
-// ConfiguredBoardIdentity previews configuration without starting a backend or
-// consulting its catalog. Attempt identity remains authoritative after dispatch.
-func ConfiguredBoardIdentity(cfg config.Config, issue connector.Issue, ctx selector.Context) (agentidentity.Identity, error) {
+// BoardIdentityResolver previews configured identities with a router shared by
+// all cards in a project snapshot. It never starts a backend or consults its catalog.
+type BoardIdentityResolver struct {
+	cfg    config.Config
+	router *Router
+	ctx    selector.Context
+}
+
+func NewBoardIdentityResolver(cfg config.Config, ctx selector.Context) (*BoardIdentityResolver, error) {
 	router, err := NewRouter(routesFromConfig(cfg.AgentRouteConfigs()))
 	if err != nil {
-		return agentidentity.Identity{}, err
+		return nil, err
 	}
-	route, err := router.RouteForRole(issue, selectorContext(ctx, config.Workflow{Config: cfg}), RoleCode)
+	return &BoardIdentityResolver{cfg: cfg, router: router, ctx: selectorContext(ctx, config.Workflow{Config: cfg})}, nil
+}
+
+// Identity resolves each issue independently; attempt identity remains authoritative.
+func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.Identity, error) {
+	cfg := r.cfg
+	route, err := r.router.RouteForRole(issue, r.ctx, RoleCode)
 	if err != nil {
 		return agentidentity.Identity{}, err
 	}

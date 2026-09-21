@@ -1819,20 +1819,20 @@ func boardCardView2(card boardCardView) templ.Component {
 				}
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 156, "><div class=\"flex min-w-0 items-center gap-1 whitespace-nowrap font-mono text-2xs text-sec\" data-board-card-identity><span class=\"min-w-0 truncate font-medium leading-tight text-text\" data-board-card-project>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 156, "><div class=\"flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs text-sec\" data-board-card-identity><span class=\"min-w-0 max-w-full break-words whitespace-normal font-medium leading-tight text-text\" data-board-card-project>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var87 string
 		templ_7745c5c3_Var87, templ_7745c5c3_Err = templ.JoinStringErrs(card.Project)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 658, Col: 108}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 658, Col: 140}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var87))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 157, "</span><div class=\"flex min-w-0 items-center gap-1 overflow-hidden\" data-board-card-references><span class=\"contents\" data-board-card-issue>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 157, "</span><div class=\"flex min-w-0 max-w-full flex-wrap items-center gap-1\" data-board-card-references><span class=\"contents\" data-board-card-issue>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

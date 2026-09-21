@@ -654,9 +654,9 @@ templ boardCardView2(card boardCardView) {
 			}
 		}
 	>
-		<div class="flex min-w-0 items-center gap-1 whitespace-nowrap font-mono text-2xs text-sec" data-board-card-identity>
-			<span class="min-w-0 truncate font-medium leading-tight text-text" data-board-card-project>{ card.Project }</span>
-			<div class="flex min-w-0 items-center gap-1 overflow-hidden" data-board-card-references>
+		<div class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs text-sec" data-board-card-identity>
+			<span class="min-w-0 max-w-full break-words whitespace-normal font-medium leading-tight text-text" data-board-card-project>{ card.Project }</span>
+			<div class="flex min-w-0 max-w-full flex-wrap items-center gap-1" data-board-card-references>
 				<span class="contents" data-board-card-issue>
 					@primitives.TrackerReferenceLinkIsolated(card.Number, card.URL, boardCardNumberClass(card))
 				</span>

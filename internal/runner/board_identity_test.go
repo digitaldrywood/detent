@@ -19,7 +19,11 @@ func TestConfiguredBoardIdentity(t *testing.T) {
 			cfg.Agents.Backends = []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}}
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: tt.routeModel}}
 			cfg.Agents.ModelSelection = config.ModelSelection{DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Model: new("fleet-model"), Effort: new("low")}}}
-			got, err := ConfiguredBoardIdentity(cfg, connector.Issue{Description: tt.description}, selector.Context{})
+			resolver, err := NewBoardIdentityResolver(cfg, selector.Context{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolver.Identity(connector.Issue{Description: tt.description})
 			if err != nil {
 				t.Fatal(err)
 			}

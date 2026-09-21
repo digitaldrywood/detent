@@ -66,7 +66,11 @@ func TestBoardConfiguredAgentsPreservesRoutingEvidence(t *testing.T) {
 			issue := tt.issue
 			issue.ProjectID = "project"
 			issue.ID = "issue"
-			got := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}})["project\x00issue"]
+			identities := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue, {ProjectID: "project", ID: "fallback"}}})
+			got := identities["project\x00issue"]
+			if fallback := identities["project\x00fallback"].Model(); fallback != "fallback-model" {
+				t.Fatalf("second issue selected %q, want fallback-model", fallback)
+			}
 			if got.Model() != "matched-model" {
 				t.Fatalf("preview selected %q, want matched-model", got.Model())
 			}

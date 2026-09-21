@@ -13,24 +13,39 @@ import (
 func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]agentidentity.Identity {
 	identities := make(map[string]agentidentity.Identity, len(snapshot.BoardIssues))
 	defaults := s.kanbanWorkflow.WithAgentDefaults(s.currentGlobalConfig().Global.Agents, workflowconfig.AgentBudgetDefaults{})
+	resolvers := make(map[string]*runner.BoardIdentityResolver)
 	for _, issue := range snapshot.BoardIssues {
-		cfg := defaults
-		tracker := s.connector
-		if s.registry != nil {
-			if tracked, ok := s.registry.Get(project.ID(issue.ProjectID)); ok {
-				cfg = tracked.Workflow().Config
-				tracker = tracked.Connector()
+		resolver, exists := resolvers[issue.ProjectID]
+		if !exists {
+			cfg := defaults
+			tracker := s.connector
+			if s.registry != nil {
+				if tracked, ok := s.registry.Get(project.ID(issue.ProjectID)); ok {
+					cfg = tracked.Workflow().Config
+					tracker = tracked.Connector()
+				}
 			}
+			ctx := selector.Context{Persona: cfg.Tracker.Assignee}
+			if identifier, ok := tracker.(connector.InstanceIdentifier); ok {
+				ctx.InstanceLogin = identifier.InstanceLogin()
+			}
+			var err error
+			resolver, err = runner.NewBoardIdentityResolver(cfg, ctx)
+			if err != nil {
+				// Remember invalid project configuration for this snapshot too.
+				resolvers[issue.ProjectID] = nil
+				continue
+			}
+			resolvers[issue.ProjectID] = resolver
 		}
-		ctx := selector.Context{Persona: cfg.Tracker.Assignee}
-		if identifier, ok := tracker.(connector.InstanceIdentifier); ok {
-			ctx.InstanceLogin = identifier.InstanceLogin()
+		if resolver == nil {
+			continue
 		}
-		identity, err := runner.ConfiguredBoardIdentity(cfg, connector.Issue{
+		identity, err := resolver.Identity(connector.Issue{
 			ID: issue.ID, Identifier: issue.Identifier, Description: issue.Description,
 			Labels: issue.Labels, AuthorID: issue.AuthorID, AssigneeID: issue.AssigneeID,
 			Assignees: issue.Assignees, Priority: issue.Priority, Fields: issue.Fields,
-		}, ctx)
+		})
 		if err != nil {
 			continue
 		}
