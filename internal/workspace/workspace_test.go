@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 		AutoBranch: true,
 		Hooks: Hooks{
 			AfterCreate: "printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \"$PWD\" \"$(git branch --show-current)\" \"$ISSUE_IDENTIFIER\" \"$WORKSPACE_KEY\" \"$BRANCH\" \"$DETENT_ISSUE_IDENTIFIER\" \"$DETENT_WORKSPACE_KEY\" \"$DETENT_BRANCH\" >> " + shellQuote(tracePath),
-			Timeout:     time.Second,
+			Timeout:     hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -1283,7 +1284,7 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 		AutoBranch: true,
 		Hooks: Hooks{
 			AfterCreate: "printf 'after-create\n' >> " + shellQuote(tracePath),
-			Timeout:     time.Second,
+			Timeout:     hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -1331,7 +1332,7 @@ func TestLocalGitCreateRecoversCleanDetachedWorktree(t *testing.T) {
 		AutoBranch: true,
 		Hooks: Hooks{
 			AfterCreate: "printf 'after-create\n' >> " + shellQuote(tracePath),
-			Timeout:     time.Second,
+			Timeout:     hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -1377,7 +1378,7 @@ func TestLocalGitCreateRecoversCleanWrongBranchWorktree(t *testing.T) {
 		AutoBranch: true,
 		Hooks: Hooks{
 			AfterCreate: "printf 'after-create\n' >> " + shellQuote(tracePath),
-			Timeout:     time.Second,
+			Timeout:     hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -1727,7 +1728,7 @@ func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 		Hooks: Hooks{
 			BeforeRun: "printf 'before:%s:%s\n' \"$PWD\" \"$WORKSPACE_KEY\" >> " + shellQuote(tracePath),
 			AfterRun:  "printf 'after:%s:%s\n' \"$PWD\" \"$WORKSPACE_KEY\" >> " + shellQuote(tracePath),
-			Timeout:   time.Second,
+			Timeout:   hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -1763,7 +1764,7 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 		AutoBranch: true,
 		Hooks: Hooks{
 			AfterCreate: hookCommand,
-			Timeout:     time.Second,
+			Timeout:     hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -2033,7 +2034,7 @@ func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
 				AutoBranch: true,
 				Hooks: Hooks{
 					AfterCreate: "printf 'ran\\n' > " + shellQuote(tracePath),
-					Timeout:     time.Second,
+					Timeout:     hookCompletionTimeout(),
 				},
 			})
 			if err != nil {
@@ -2204,7 +2205,7 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 		AutoBranch: true,
 		Hooks: Hooks{
 			BeforeRemove: "printf '%s\n' \"$WORKSPACE_KEY\" >> " + shellQuote(tracePath),
-			Timeout:      time.Second,
+			Timeout:      hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -2517,7 +2518,7 @@ func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 		AutoBranch: true,
 		Hooks: Hooks{
 			BeforeRemove: "printf 'ran\n' > " + shellQuote(tracePath),
-			Timeout:      time.Second,
+			Timeout:      hookCompletionTimeout(),
 		},
 	})
 	if err != nil {
@@ -3196,6 +3197,39 @@ func TestLocalGitStaleQuarantineReleasesBranch(t *testing.T) {
 			}
 			if got := strings.TrimSpace(runGit(t, quarantined, "branch", "--show-current")); got != "" {
 				t.Fatalf("quarantine branch = %q, want detached", got)
+			}
+		})
+	}
+}
+
+// hookCompletionTimeout is a deadlock budget for shell hooks, not a timeout
+// behavior assertion. Allow extra scheduling time when tests oversubscribe CPUs.
+func hookCompletionTimeout() time.Duration {
+	parallel, err := strconv.Atoi(flag.Lookup("test.parallel").Value.String())
+	if err != nil {
+		panic(err)
+	}
+	return hookCompletionBudget(parallel, runtime.GOMAXPROCS(0))
+}
+
+func hookCompletionBudget(parallel, procs int) time.Duration {
+	return 10 * time.Second * time.Duration(max(1, (parallel+procs-1)/procs))
+}
+
+func TestHookCompletionBudget(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		parallel, procs int
+		want            time.Duration
+	}{
+		{"serial", 1, 8, 10 * time.Second},
+		{"one per CPU", 8, 8, 10 * time.Second},
+		{"oversubscribed", 8, 2, 40 * time.Second},
+		{"round up", 5, 2, 30 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hookCompletionBudget(tt.parallel, tt.procs); got != tt.want {
+				t.Fatalf("budget = %v, want %v", got, tt.want)
 			}
 		})
 	}
