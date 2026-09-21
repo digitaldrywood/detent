@@ -811,7 +811,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	dispatchLoopStart := newDispatchLoopStartRecord(issue, runMode)
-	if runMode == runpkg.RunModeImplement && issue.PullRequest != nil {
+	if (runMode == runpkg.RunModeImplement || runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue)) && issue.PullRequest != nil {
 		dispatchLoopStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
 		dispatchLoopStart.PRMergeableState = issue.PullRequest.MergeableState
 	}

@@ -122,7 +122,7 @@ func resetDispatchLoopDecision(decision implementCompletionProgressDecision) imp
 }
 
 func newDispatchLoopStartRecord(issue connector.Issue, mode string) dispatchLoopStartRecord {
-	if strings.TrimSpace(mode) != RunModeImplement {
+	if strings.TrimSpace(mode) != RunModeImplement && (strings.TrimSpace(mode) != runpkg.RunModeMerge || mergeWorkerIssue(issue)) {
 		return dispatchLoopStartRecord{}
 	}
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))

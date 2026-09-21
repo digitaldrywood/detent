@@ -24,7 +24,8 @@ Workpad reports `in_progress`; unfinished work cannot promote on completion or
 the Rework tick. A rebase with the same captured PR diff fingerprint is
 no-progress unless the Workpad reports completion or a conflicting PR becomes
 mergeable. The dispatch fingerprint and mergeability baseline persist with the
-attempt across restart (#2929); a changed head SHA alone is not implementation. No-progress
+attempt across restart, including merge-mode conflict repairs in active lanes
+(#2929); a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance,
 cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
 Blocked handoff when the allowance is exhausted (#2922). Draft PRs remain

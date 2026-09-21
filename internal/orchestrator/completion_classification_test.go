@@ -269,15 +269,19 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			cfg.Project.ID = "detent"
 			orch := &Orchestrator{cfg: cfg, workAttempts: db}
 			state := newState(cfg)
-			start := newDispatchLoopStartRecord(before, runpkg.RunModeImplement)
+			mode := orch.dispatchMode(t.Context(), &state, before)
+			if mode != runpkg.RunModeMerge {
+				t.Fatalf("conflict repair mode = %s", mode)
+			}
+			start := newDispatchLoopStartRecord(before, mode)
 			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
 			start.PRMergeableState = before.PullRequest.MergeableState
-			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", runpkg.RunModeImplement, start)
+			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", mode, start)
 			if !ok {
 				t.Fatal("start attempt failed")
 			}
 			// Workspace snapshots and heartbeat serialization must preserve PR evidence.
-			running := Running{Issue: before, Mode: runpkg.RunModeImplement, DispatchLoopStart: start}
+			running := Running{Issue: before, Mode: mode, DispatchLoopStart: start}
 			running.DispatchLoopStart = dispatchLoopStartRecordFromSnapshot(running, runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true})
 			persisted := dispatchLoopStartFromMetadata(t, runningWorkAttemptMetadataJSON(running, nil))
 			if persisted.PRDiffFingerprint != start.PRDiffFingerprint || persisted.PRMergeableState != "dirty" {
@@ -303,9 +307,9 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			orch = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: db}
 			state = newState(cfg)
 			// No in-memory dispatch baseline survives. Even the issue snapshot is current.
-			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: runpkg.RunModeImplement, DispatchSourceState: "Rework", StartedAt: time.Now().Add(-time.Minute)}
+			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: "Rework", StartedAt: time.Now().Add(-time.Minute)}
 			state.Claimed[after.ID] = Claimed{Issue: after}
-			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: after.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}})
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: after.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: mode}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}})
 			attempt, err := db.WorkAttempt(t.Context(), id)
 			if err != nil {
 				t.Fatal(err)
