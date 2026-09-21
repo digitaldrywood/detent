@@ -1903,9 +1903,9 @@ func TestTelemetryIssuePreservesRoutingFields(t *testing.T) {
 		{name: "routing fields", assignee: "worker", fields: map[string]string{"team": "platform"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			issue := connector.Issue{AssigneeID: tt.assignee, Fields: tt.fields}
+			issue := connector.Issue{AssigneeID: tt.assignee, Fields: tt.fields, ModelOverride: "explicit-model"}
 			got := telemetryIssue(issue, 0, 0, time.Time{}, nil)
-			if got.AssigneeID != issue.AssigneeID || !reflect.DeepEqual(got.Fields, issue.Fields) {
+			if got.ModelOverride != issue.ModelOverride || got.AssigneeID != issue.AssigneeID || !reflect.DeepEqual(got.Fields, issue.Fields) {
 				t.Fatalf("routing evidence lost: %+v", got)
 			}
 			if issue.Fields != nil {

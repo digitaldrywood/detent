@@ -68,7 +68,7 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 		identity, err := resolver.Identity(connector.Issue{
 			ID: issue.ID, Identifier: issue.Identifier, Description: issue.Description, State: issue.State,
 			Labels: issue.Labels, AuthorID: issue.AuthorID, AssigneeID: issue.AssigneeID,
-			Assignees: issue.Assignees, Priority: issue.Priority, Fields: issue.Fields,
+			Assignees: issue.Assignees, Priority: issue.Priority, Fields: issue.Fields, ModelOverride: issue.ModelOverride,
 		})
 		if err != nil {
 			continue

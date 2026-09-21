@@ -156,3 +156,24 @@ func TestBoardConfiguredAgentsAllCardSources(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardConfiguredAgentsModelOverride(t *testing.T) {
+	for _, tt := range []struct{ name, route, want string }{
+		{"explicit issue model", "", "issue-model"},
+		{"route takes precedence", "route-model", "route-model"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := globalconfig.Config{}
+			cfg.Global.Agents = config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: tt.route}},
+				ModelSelection: config.ModelSelection{Enabled: new(true), BackendKinds: &[]string{config.AgentBackendCodex}, DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Model: new("fleet-model"), Effort: new("low")}}},
+			}
+			s := &Server{globalConfigSource: func() globalconfig.Config { return cfg }}
+			got := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ProjectID: "project", ID: "issue", ModelOverride: "issue-model"}}})["project\x00issue"]
+			if got.Model() != tt.want {
+				t.Fatalf("model = %q, want %q", got.Model(), tt.want)
+			}
+		})
+	}
+}
