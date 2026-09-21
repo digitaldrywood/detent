@@ -180,6 +180,8 @@ var schedulerProjectItemsQuery = strings.Replace(observedStatusProjectItemsQuery
 // Body is a scalar: retaining it does not add priced connections and avoids
 // unbounded REST body fetches when enriched GraphQL is unavailable.
 var thinRefreshProjectItemsQuery = strings.NewReplacer(
+	"  $after: String", "  $after: String\n  $filter: String",
+	"items(first: $first, after: $after,", "items(first: $first, after: $after, query: $filter,",
 	"    ... on ProjectV2 {", "    ... on ProjectV2 {\n      updatedAt",
 	"assignees(first: 10) { nodes { login } }", "assignees(first: 10) { totalCount pageInfo { hasNextPage endCursor } nodes { login } }",
 	"labels(first: 20) { nodes { name } }", "labels(first: 20) { totalCount pageInfo { hasNextPage endCursor } nodes { name } }",
@@ -371,7 +373,7 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	limit int,
 	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
-	return c.scanProjectItems(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses, nil, nil, nil, nil)
+	return c.scanProjectItems(ctx, queryDocument, queryType, "", keepIssue, limit, repairBlankStatuses, nil, nil, nil, nil)
 }
 
 // queryProjectItemsPage retains board membership on schemas that lack scheduler
@@ -406,6 +408,7 @@ func projectSchedulerFieldsUnavailable(err error) bool {
 // An unfinished refresh uses the admission cursor contract and retains its
 // private accumulator. Callers publish only the completed snapshot.
 type projectItemsScanProgress struct {
+	filter        string
 	position      candidateCursor
 	scan          connector.IssueStateScan
 	revision      uint64
@@ -421,6 +424,7 @@ func (c *Connector) scanProjectItems(
 	ctx context.Context,
 	queryDocument string,
 	queryType string,
+	filter string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
 	repairBlankStatuses bool,
@@ -431,6 +435,9 @@ func (c *Connector) scanProjectItems(
 ) (connector.IssueStateScan, error) {
 	if progress == nil {
 		progress = &projectItemsScanProgress{}
+	}
+	if progress.filter != filter {
+		*progress = projectItemsScanProgress{}
 	}
 	if progress.scan.BoardCounts != nil && queryDocument == thinRefreshProjectItemsQuery {
 		var response struct {
@@ -449,6 +456,7 @@ func (c *Connector) scanProjectItems(
 		}
 	}
 	if progress.scan.BoardCounts == nil {
+		progress.filter = filter
 		progress.revision = c.projectCache.Revision(c.projectID)
 		progress.position = candidateCursor{Page: 1}
 		if progress.fields == nil {
@@ -486,11 +494,11 @@ func (c *Connector) scanProjectItems(
 		if progress.position.After != "" {
 			after = &progress.position.After
 		}
-		if err := c.queryProjectItemsPage(ctx, queryType, queryDocument, map[string]any{
-			"projectId": c.projectID,
-			"first":     projectItemsPageSize,
-			"after":     after,
-		}, &response); err != nil {
+		variables := map[string]any{"projectId": c.projectID, "first": projectItemsPageSize, "after": after}
+		if queryDocument == thinRefreshProjectItemsQuery {
+			variables["filter"] = filter
+		}
+		if err := c.queryProjectItemsPage(ctx, queryType, queryDocument, variables, &response); err != nil {
 			return connector.IssueStateScan{}, fmt.Errorf("fetch github project items: %w", err)
 		}
 		if response.Node == nil {

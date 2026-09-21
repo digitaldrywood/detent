@@ -61,9 +61,16 @@ Completed closures retain their existing immediate Done transition visibility.
 
 ProjectV2 combined refresh applies the instance author, assignee, and label
 predicates before scheduler enrichment (#2917), including fallback readers.
-Selector connections must be complete; excluded cards remain thin dependency
-lane evidence and diagnostics, never dispatch candidates or authorized status
-repair targets. Completed scans reread scheduler evidence even when issue
+Selector connections must be complete. ProjectV2 refresh pushes representable
+label and assignee predicates into the board query (#2930); author predicates
+and search-syntax-sensitive values remain local. Excluded cards are never
+dispatch candidates or authorized status repair targets. Filtered scans obtain
+external blocker lanes through targeted project-item reads rather than whole-board
+enumeration; native closed and human-prerequisite evidence remains authoritative.
+Unfiltered scans retain thin excluded-card dependency evidence and diagnostics.
+`TestRefreshBoardFilterCost` checks that estimated query points grow with selected
+cards, not unrelated board size; `TestFilteredRefreshExternalBlocker` covers
+external lanes and human prerequisites. Completed scans reread scheduler evidence even when issue
 and item timestamps are unchanged. Interrupted scans retain their existing
 resume validation. `TestProjectRefreshInstanceSelector`,
 `TestRefreshSelectorPredicatesAndMetadata`, and

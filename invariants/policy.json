@@ -104,6 +104,10 @@
       "TestINV12DoctorWorkspaceKinds"
     ],
     "./internal/connector/github": [
+      "TestRefreshBoardFilterCost",
+      "TestFilteredRefreshExternalBlocker",
+      "TestFilteredRefreshBlockerLookupFailure",
+      "TestRefreshFilterChangeRestartsInterruptedScan",
       "TestMachineIssueDuplicate",
       "TestMachineIssueSeparateConnectors",
       "TestMachineOriginSurvivesBodyUpdates",

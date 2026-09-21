@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -83,4 +84,83 @@ func completeRefreshConnection[T any](ctx context.Context, c *Connector, id, fie
 			return nil
 		}
 	}
+}
+
+// Project filters narrow enumeration; the local selector remains authoritative.
+// Projects documents label and assignee filters, but not author filters. Values
+// whose search syntax could change exact matching stay local as well.
+func refreshProjectFilter(hint connector.IssueFilterHint) string {
+	var filters []string
+	quote := func(value string) (string, bool) {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.ContainsAny(value, "\"'\\,*@\r\n\t") {
+			return "", false
+		}
+		return `"` + value + `"`, true
+	}
+	var assignees []string
+	for _, value := range hint.Assignees {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		quoted, ok := quote(value)
+		if !ok {
+			assignees = nil
+			break
+		}
+		assignees = append(assignees, quoted)
+	}
+	if len(assignees) > 0 {
+		filters = append(filters, "assignee:"+strings.Join(assignees, ","))
+	}
+	for _, group := range []struct {
+		prefix string
+		values []string
+	}{{"label:", hint.LabelInclude}, {"-label:", hint.LabelExclude}} {
+		for _, value := range group.values {
+			if quoted, ok := quote(value); ok {
+				filters = append(filters, group.prefix+quoted)
+			}
+		}
+	}
+	return strings.Join(filters, " ")
+}
+
+// The filtered board no longer supplies lanes for unowned native blockers.
+// Read only those referenced cards through the existing project-item reader;
+// preserve native closed state and human-prerequisite evidence.
+func (c *Connector) resolveFilteredRefreshBlockers(ctx context.Context, issues []connector.Issue, board map[string]connector.Issue) error {
+	states := map[string]string{}
+	for i := range issues {
+		for j := range issues[i].BlockedBy {
+			ref := &issues[i].BlockedBy[j]
+			if _, ok := board[normalizedIssueIdentifier(ref.Identifier)]; ok || ref.ID == "" || stateInList(ref.State, c.terminalStates) {
+				continue
+			}
+			state, known := states[ref.ID]
+			if !known {
+				lane, _, _, _, found, err := c.fetchProjectFieldsPage(ctx, ref.ID, nil)
+				if err != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					if !connector.IsRetryable(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return fmt.Errorf("resolve filtered refresh blocker %s: %w", ref.Identifier, err)
+					}
+					// Match the existing dependency reader: an unavailable lane
+					// stays unresolved without withholding unrelated candidates.
+					states[ref.ID] = ""
+					ref.State = ""
+					continue
+				}
+				state = ref.State
+				if found {
+					state = c.githubToDetentState(lane)
+				}
+				states[ref.ID] = state
+			}
+			ref.State = state
+		}
+	}
+	return nil
 }
