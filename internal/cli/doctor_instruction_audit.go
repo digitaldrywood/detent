@@ -27,7 +27,7 @@ var doctorDirectReadPath = regexp.MustCompile(`(?i)\b(read|follow|consult|load|r
 // This is a static estimate: repository instructions at the configured workdir,
 // the effective workflow prompt, and literal files named by read directives.
 // Worker-specific template values and dynamically constructed paths are unknown.
-func doctorInstructionFiles(ctx context.Context, root, prompt string) ([]doctorInstructionFile, []string) {
+func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath string) ([]doctorInstructionFile, []string) {
 	var files []doctorInstructionFile
 	var problems []string
 	root, err := expandDoctorWorkspacePath(root)
@@ -56,6 +56,15 @@ func doctorInstructionFiles(ctx context.Context, root, prompt string) ([]doctorI
 	}
 	slices.Reverse(dirs)
 	seen := map[string]bool{}
+	// The effective prompt already accounts for its configured source. A bare
+	// WORKFLOW.md reference also denotes that source when no local file exists.
+	if workflowPath != "" {
+		seen[filepath.Clean(workflowPath)] = true
+		localWorkflow := filepath.Join(root, "WORKFLOW.md")
+		if _, statErr := os.Stat(localWorkflow); os.IsNotExist(statErr) {
+			seen[localWorkflow] = true
+		}
+	}
 	remaining := 32 * 1024
 	for _, dir := range dirs {
 		for _, name := range []string{"AGENTS.override.md", "AGENTS.md"} {

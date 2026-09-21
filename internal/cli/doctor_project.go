@@ -378,7 +378,11 @@ func checkDoctorProjectWithProgress(
 	checks = append(checks, workflowCheck)
 	setDoctorCurrentCheck("Project " + id + " workflow_source_drift")
 	checks = append(checks, checkDoctorWorkflowSourceDrift(ctx, id, project, workflow.Config, deps))
-	files, instructionProblems := doctorInstructionFiles(ctx, projectSourceRoot(project, workflow.Config), workflow.Prompt)
+	instructionWorkflowPath, instructionWorkflowErr := resolveDoctorProjectPath(project, project.Workflow)
+	files, instructionProblems := doctorInstructionFiles(ctx, projectSourceRoot(project, workflow.Config), workflow.Prompt, instructionWorkflowPath)
+	if instructionWorkflowErr != nil {
+		instructionProblems = append(instructionProblems, instructionWorkflowErr.Error())
+	}
 	checks = append(checks, checkDoctorInstructionBudget(id, files, instructionProblems))
 	checks = append(checks, checkDoctorGateInstructionConflict(id, workflow.Config.Gate.Run, files, instructionProblems))
 	setDoctorCurrentCheck("Project " + id + " model_policy")
