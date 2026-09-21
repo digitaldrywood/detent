@@ -123,3 +123,36 @@ func TestBoardConfiguredAgentsPipelineRoles(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardConfiguredAgentsAllCardSources(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		populate func(*telemetry.Snapshot, telemetry.Issue)
+	}{
+		{"queue", func(s *telemetry.Snapshot, i telemetry.Issue) { s.Queue = []telemetry.Queued{{Issue: i}} }},
+		{"blocked", func(s *telemetry.Snapshot, i telemetry.Issue) { s.Blocked = []telemetry.Blocked{{Issue: i}} }},
+		{"running", func(s *telemetry.Snapshot, i telemetry.Issue) { s.Running = []telemetry.Running{{Issue: i}} }},
+		{"completed", func(s *telemetry.Snapshot, i telemetry.Issue) { s.Completed = []telemetry.Completed{{Issue: i}} }},
+		{"attempt", func(s *telemetry.Snapshot, i telemetry.Issue) {
+			s.WorkAttempts = []telemetry.WorkAttempt{{ProjectID: i.ProjectID, IssueID: i.ID, Identifier: i.Identifier}}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := globalconfig.Config{}
+			cfg.Global.Agents = config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: "configured-model"}},
+				ModelSelection: config.ModelSelection{Enabled: new(false)},
+			}
+			workflow := config.Default()
+			workflow.Agent.Effort.Code = "medium"
+			s := &Server{kanbanWorkflow: workflow, globalConfigSource: func() globalconfig.Config { return cfg }}
+			snapshot := telemetry.Snapshot{}
+			tt.populate(&snapshot, telemetry.Issue{ProjectID: "project", ID: "issue", State: "Todo"})
+			got := s.boardConfiguredAgents(snapshot)["project\x00issue"]
+			if got.Model() != "configured-model" || got.ReasoningEffort.Value != "medium" {
+				t.Fatalf("identity = %+v", got)
+			}
+		})
+	}
+}

@@ -1,8 +1,6 @@
 package web
 
 import (
-	"slices"
-
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -16,13 +14,31 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 	identities := make(map[string]agentidentity.Identity, len(snapshot.BoardIssues))
 	defaults := s.kanbanWorkflow.WithAgentDefaults(s.currentGlobalConfig().Global.Agents, workflowconfig.AgentBudgetDefaults{})
 	resolvers := make(map[string]*runner.BoardIdentityResolver)
-	seen := make(map[string]bool)
-	for _, issue := range slices.Concat(snapshot.Pipeline, snapshot.BoardIssues) {
-		key := issue.ProjectID + "\x00" + issue.ID
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
+	// Match board source precedence; runtime rows can exist before tracker rows.
+	issues := make(map[string]telemetry.Issue)
+	add := func(issue telemetry.Issue) { issues[issue.ProjectID+"\x00"+issue.ID] = issue }
+	for _, attempt := range snapshot.WorkAttempts {
+		add(telemetry.Issue{ProjectID: attempt.ProjectID, ID: attempt.IssueID, Identifier: attempt.Identifier})
+	}
+	for _, row := range snapshot.Completed {
+		add(row.Issue)
+	}
+	for _, issue := range snapshot.BoardIssues {
+		add(issue)
+	}
+	for _, issue := range snapshot.Pipeline {
+		add(issue)
+	}
+	for _, row := range snapshot.Queue {
+		add(row.Issue)
+	}
+	for _, row := range snapshot.Running {
+		add(row.Issue)
+	}
+	for _, row := range snapshot.Blocked {
+		add(row.Issue)
+	}
+	for _, issue := range issues {
 		resolver, exists := resolvers[issue.ProjectID]
 		if !exists {
 			cfg := defaults

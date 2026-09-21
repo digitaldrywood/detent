@@ -116,6 +116,8 @@ func TestBoardCardConfiguredIdentity(t *testing.T) {
 			}
 			rendered := renderBoardComponent(t, boardCardView2(view))
 			identityEnd := strings.Index(rendered, "data-board-card-title")
+			// Both values remain in the identity DOM. INV-13 permits CSS to hide
+			// effort at Compact; density.spec.js enforces that visibility contract.
 			for _, marker := range []string{"data-board-card-model", "data-board-card-effort"} {
 				at := strings.Index(rendered, marker)
 				if at < 0 || at > identityEnd {
