@@ -1054,7 +1054,7 @@ func recordBlockedRecoveryReasonEvent(
 }
 
 func blockedRecoveryReasonCodeForIssue(issue connector.Issue) string {
-	if issue.PullRequest != nil && autoPromoteMergeConflicts(issue.PullRequest.MergeableState) {
+	if issue.PullRequest != nil && connector.PullRequestConflicts(issue.PullRequest.MergeableState) {
 		return blockedRecoveryReasonMergeConflict
 	}
 	return blockedRecoveryReasonStaleBase

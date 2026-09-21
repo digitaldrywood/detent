@@ -31,7 +31,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 }
 
 func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, running Running, decision implementCompletionProgressDecision) bool {
-	if decision.WorkpadStatus == workpad.StatusComplete {
+	signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
+	pr := decision.Issue.PullRequest
+	if workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) &&
+		pullRequestOpen(pr) && !pr.Draft && !connector.PullRequestConflicts(pr.MergeableState) && !mergeWorkerCIFailed(pr) {
 		return false
 	}
 	before, after := running.Issue.PullRequest, decision.Issue.PullRequest
@@ -59,12 +62,10 @@ func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, runnin
 	if stranded, unavailable := implementProgressUnpushedClassification(decision.WorkspaceDiffStats, after); stranded || unavailable != "" {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(before.MergeableState), "dirty") {
-		switch strings.ToLower(strings.TrimSpace(after.MergeableState)) {
-		case "clean", "unstable", "has_hooks", "behind", "blocked":
-			return false
-		}
+	if connector.PullRequestConflictCleared(before.MergeableState, after.MergeableState) {
+		return false
 	}
+
 	return fingerprint == o.implementCompletionDiffFingerprint(ctx, decision.Issue)
 }
 

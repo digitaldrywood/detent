@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestUnfinishedCompletionClassification(t *testing.T) {
@@ -72,14 +73,15 @@ func TestCompletionRebaseProgress(t *testing.T) {
 		want                        store.WorkAttemptTerminalState
 	}{
 		{"identical diff after rebase", "same-diff", "same-diff", "", "", "", store.WorkAttemptTerminalNoProgress},
-		{"identical diff with completion assertion", "same-diff", "same-diff", "complete", "", "", store.WorkAttemptTerminalSuccess},
+		{"identical diff with completion assertion", "same-diff", "same-diff", "complete", "", "", store.WorkAttemptTerminalNoProgress},
 		{"implementation changes", "old-diff", "new-diff", "complete", "", "", store.WorkAttemptTerminalSuccess},
 		{"unfinished with genuine progress", "old-diff", "new-diff", "in_progress", "", "", store.WorkAttemptTerminalSuccess},
 		{"unavailable baseline", "", "new-diff", "", "", "", store.WorkAttemptTerminalSuccess},
 		{"unavailable current diff", "old-diff", "", "", "", "", store.WorkAttemptTerminalSuccess},
 		{"conflict cleared", "same-diff", "same-diff", "in_progress", "dirty", "clean", store.WorkAttemptTerminalSuccess},
+		{"graphql conflict cleared", "same-diff", "same-diff", "in_progress", "conflicting", "draft", store.WorkAttemptTerminalSuccess},
 		{"conflict remains", "same-diff", "same-diff", "in_progress", "dirty", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"mergeability unknown", "same-diff", "same-diff", "in_progress", "dirty", "unknown", store.WorkAttemptTerminalNoProgress},
+		{"mergeability unknown", "same-diff", "same-diff", "in_progress", "dirty", "unknown", store.WorkAttemptTerminalSuccess},
 		{"already clean", "same-diff", "same-diff", "in_progress", "clean", "clean", store.WorkAttemptTerminalNoProgress},
 	} {
 		for _, lane := range []string{"In Progress", "Rework"} {
@@ -251,7 +253,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 		want                     store.WorkAttemptTerminalState
 	}{
 		{"unfinished unchanged", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"completed", "complete", "dirty", store.WorkAttemptTerminalSuccess},
+		{"stale completion", "complete", "dirty", store.WorkAttemptTerminalNoProgress},
 		{"conflict cleared", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -319,6 +321,44 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			}
 			if tt.want == store.WorkAttemptTerminalSuccess && (attempt.ErrorClass != "" || len(state.FailureBreaker.Failures) != 0 || len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0) {
 				t.Fatalf("progress recorded failure evidence: %#v", attempt)
+			}
+		})
+	}
+}
+
+func TestCompletionRebaseWorkpadIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, attempt, generation string
+		draft                     bool
+		ci, merge                 string
+		want                      store.WorkAttemptTerminalState
+	}{
+		{"current", "42", "3", false, "success", "clean", store.WorkAttemptTerminalSuccess},
+		{"pending CI after push", "42", "3", false, "pending", "clean", store.WorkAttemptTerminalSuccess},
+		{"stale attempt", "41", "3", false, "success", "clean", store.WorkAttemptTerminalNoProgress},
+		{"foreign generation", "42", "2", false, "success", "clean", store.WorkAttemptTerminalNoProgress},
+		{"missing identity", "", "", false, "success", "clean", store.WorkAttemptTerminalNoProgress},
+		{"draft", "42", "3", true, "success", "clean", store.WorkAttemptTerminalNoProgress},
+		{"failing CI", "42", "3", false, "failure", "clean", store.WorkAttemptTerminalNoProgress},
+		{"conflicts", "42", "3", false, "success", "conflicting", store.WorkAttemptTerminalNoProgress},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			before := implementProgressIssue("before")
+			before.PullRequest.DiffFingerprint = "same-diff"
+			after := implementProgressIssue("rebased")
+			after.PullRequest.DiffFingerprint = "same-diff"
+			after.PullRequest.Draft = tt.draft
+			after.PullRequest.CIStatus = tt.ci
+			after.PullRequest.MergeableState = tt.merge
+			after.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad("complete", "", map[string]string{workpad.FieldCompletionAttempt: tt.attempt, workpad.FieldCompletionGeneration: tt.generation})}}
+			tracker := &implementProgressConnector{refreshed: after, hydrated: after}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker, workAttempts: &implementProgressAttemptStore{}}
+			running := Running{Issue: before, WorkAttemptID: 42, Generation: 3, Mode: runpkg.RunModeImplement, DispatchProgress: implementProgressArtifactSnapshot{PullRequestDiffFingerprint: "same-diff"}, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}
+			decision := orch.evaluateImplementCompletionProgress(t.Context(), running, FinalStateCompleted, true)
+			if decision.Outcome != tt.want {
+				t.Fatalf("outcome = %s, want %s", decision.Outcome, tt.want)
 			}
 		})
 	}

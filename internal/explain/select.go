@@ -9,6 +9,7 @@ import (
 	"time"
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -1008,7 +1009,7 @@ func gateFromSnapshot(collected collectedEvidence) (Gate, bool) {
 		}
 		return gate, true
 	}
-	if strings.EqualFold(strings.TrimSpace(pr.MergeableState), "dirty") || strings.EqualFold(strings.TrimSpace(pr.MergeableState), "conflicting") {
+	if connector.PullRequestConflicts(pr.MergeableState) {
 		gate.State = GateFailed
 		gate.Reason = "merge_conflicts"
 		gate.Failures = append(gate.Failures, "merge_conflicts")

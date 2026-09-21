@@ -100,7 +100,7 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 				reason = "head_changed"
 			case mergeWorkerCIFailed(pr):
 				reason = "required_checks_failed"
-			case strings.EqualFold(pr.MergeableState, "dirty"):
+			case connector.PullRequestConflicts(pr.MergeableState):
 				reason = "conflict"
 			case pr.MergeQueueEntry != nil:
 				reason = "native_queue"

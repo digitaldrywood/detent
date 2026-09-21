@@ -134,7 +134,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			wantAdvance = "pull_request_created"
 		case leftFingerprint.HeadSHA != "" && rightFingerprint.HeadSHA != "" && leftFingerprint.HeadSHA != rightFingerprint.HeadSHA:
 			wantAdvance = "pull_request_head_changed"
-		case leftFingerprint.MergeableState == "dirty" && rightFingerprint.MergeableState == "clean":
+		case connector.PullRequestConflictCleared(leftFingerprint.MergeableState, rightFingerprint.MergeableState):
 			wantAdvance = "pull_request_mergeable"
 		case spendProgressCIFailing(leftFingerprint.CIStatus) && spendProgressCIPassing(rightFingerprint.CIStatus):
 			wantAdvance = "pull_request_ci_passing"

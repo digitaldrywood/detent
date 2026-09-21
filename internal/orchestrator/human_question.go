@@ -225,7 +225,7 @@ func (o *Orchestrator) completeHumanQuestionWait(ctx context.Context, state *Sta
 
 func humanQuestionWorkFingerprint(issue connector.Issue) string {
 	pr := issue.PullRequest
-	if pr == nil || (pr.MergeableState != "dirty" && len(pr.UnresolvedReviewThreads) == 0 && len(pr.RequiredCheckFailures) == 0) {
+	if pr == nil || (!connector.PullRequestConflicts(pr.MergeableState) && len(pr.UnresolvedReviewThreads) == 0 && len(pr.RequiredCheckFailures) == 0) {
 		return ""
 	}
 	data, err := json.Marshal(struct {

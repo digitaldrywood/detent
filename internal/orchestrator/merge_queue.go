@@ -212,7 +212,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			o.logNativeMergeQueueExcluded(state, candidate)
 			continue
 		}
-		if autoPromoteMergeConflicts(candidate.PullRequest.MergeableState) {
+		if connector.PullRequestConflicts(candidate.PullRequest.MergeableState) {
 			o.reworkNativeMergeQueueIssue(ctx, state, out, candidate, AutoPromoteReasonMergeConflicts, now)
 			continue
 		}

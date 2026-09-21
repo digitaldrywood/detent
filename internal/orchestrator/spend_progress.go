@@ -404,7 +404,7 @@ func spendProgressPRAdvance(previous *spendProgressPRFingerprint, current *spend
 	if previous.HeadSHA != "" && current.HeadSHA != "" && previous.HeadSHA != current.HeadSHA {
 		return "pull_request_head_changed"
 	}
-	if previous.MergeableState == "dirty" && current.MergeableState == "clean" {
+	if connector.PullRequestConflictCleared(previous.MergeableState, current.MergeableState) {
 		return "pull_request_mergeable"
 	}
 	if spendProgressCIFailing(previous.CIStatus) && spendProgressCIPassing(current.CIStatus) {

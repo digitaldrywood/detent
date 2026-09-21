@@ -22,9 +22,13 @@ A passing test does not authorize weakening a rule.
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; unfinished work cannot promote on completion or
 the Rework tick. A rebase with the same captured PR diff fingerprint is
-no-progress unless the Workpad reports completion or a conflicting PR becomes
-mergeable. The dispatch fingerprint and mergeability baseline persist with the
-attempt across restart, including merge-mode conflict repairs in active lanes
+no-progress unless a current-attempt Workpad completion claim is corroborated by
+an open, non-draft, conflict-free PR with no failing CI (pending is allowed), or
+the tracker stops reporting a known conflict in a recognized mergeability state.
+Unknown includes tracker recomputation and credits progress without granting merge
+readiness. Attempt identity prevents stale-claim replay; tracker evidence provides
+the independent corroboration. The dispatch fingerprint and mergeability baseline
+persist with the attempt across restart, including merge-mode conflict repairs in active lanes
 (#2929); a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance,
 cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
@@ -287,6 +291,16 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+PR conflict classification and conflict-cleared progress share connector helpers
+(#2934), replacing separate completion, spend, dispatch, and display checks.
+Both tracker conflict spellings are recognized. A transition to a reported
+non-conflict state, including draft or unknown during recomputation, credits
+progress without authorizing a merge. Rebase-only Workpad completion reuses the
+attempt-and-generation matcher and requires an open, non-draft, conflict-free PR
+with passing tracker CI. Stale completion assertions cannot credit later rebases.
+`TestCompletionRebaseWorkpadIdentity`, `TestCompletionRebaseProgress`, and
+`TestPullRequestConflictCleared` cover these consolidated decisions.
 
 Pushed-branch deliverable recovery (#2601) resolves an absent workspace head from
 GitHub's remote branch, removing local workspace retention as a prerequisite for
