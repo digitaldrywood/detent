@@ -130,3 +130,47 @@ func TestBoardCardConfiguredIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardCardRetainsAttemptModel(t *testing.T) {
+	for _, source := range []string{"queue", "blocked"} {
+		for _, retained := range []string{"tracker", "attempt", "unknown attempt"} {
+			t.Run(source+"/"+retained, func(t *testing.T) {
+				issue := telemetry.Issue{ProjectID: "project", ID: "issue", Identifier: "#1", State: "Todo"}
+				actual := agentidentity.RuntimeUpdate("actual-model", "", "high", "", time.Time{})
+				data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project\x00issue": agentidentity.Configured("codex", "codex", "", "code", "new-default", "", "low", "", time.Time{})}}
+				want := "actual-model"
+				switch retained {
+				case "tracker":
+					tracker := issue
+					tracker.RuntimeIdentity = actual
+					data.Snapshot.BoardIssues = []telemetry.Issue{tracker}
+				case "attempt", "unknown attempt":
+					identity := actual
+					if retained == "unknown attempt" {
+						identity = agentidentity.Identity{}
+						want = "unknown"
+					}
+					data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{
+						{AttemptID: 3, ProjectID: "other", IssueID: "issue", RuntimeIdentity: agentidentity.RuntimeUpdate("other-model", "", "", "", time.Time{})},
+						{AttemptID: 2, ProjectID: "project", IssueID: "issue", RuntimeIdentity: identity},
+						{AttemptID: 1, ProjectID: "project", IssueID: "issue", RuntimeIdentity: agentidentity.RuntimeUpdate("old-model", "", "", "", time.Time{})},
+					}
+				}
+				if source == "queue" {
+					data.Snapshot.Queue = []telemetry.Queued{{Issue: issue}}
+				} else {
+					data.Snapshot.Blocked = []telemetry.Blocked{{Issue: issue}}
+				}
+				cards := projectKanbanIssues(data)
+				if len(cards) != 1 {
+					t.Fatalf("cards = %d", len(cards))
+				}
+				card := projectKanbanCard{ProjectID: "project", IssueID: "issue", RuntimeIdentity: cards[0].issue.RuntimeIdentity}
+				view := boardCardViewFromCard(data, projectKanbanLane{}, card, false, "", "")
+				if view.Model != want || view.ModelDefault || view.Effort != "low" {
+					t.Fatalf("identity = %s/%s default=%v, want %s/low actual", view.Model, view.Effort, view.ModelDefault, want)
+				}
+			})
+		}
+	}
+}

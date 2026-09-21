@@ -1528,12 +1528,28 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		Labels:            append([]string(nil), card.Labels...),
 		Effort:            strings.TrimSpace(card.RuntimeIdentity.ReasoningEffort.Value),
 	}
+	runtimeIdentity := card.RuntimeIdentity
+	attempted := !runtimeIdentity.IsZero()
+	if !attempted {
+		var latest *telemetry.WorkAttempt
+		for i := range data.Snapshot.WorkAttempts {
+			attempt := &data.Snapshot.WorkAttempts[i]
+			if attempt.ProjectID == card.ProjectID && attempt.IssueID == card.IssueID && (latest == nil || attempt.AttemptID > latest.AttemptID) {
+				latest = attempt
+			}
+		}
+		if latest != nil {
+			runtimeIdentity = latest.RuntimeIdentity
+			attempted = true
+		}
+	}
+	view.Effort = strings.TrimSpace(runtimeIdentity.ReasoningEffort.Value)
 	configured := data.ConfiguredAgents[card.ProjectID+"\x00"+card.IssueID]
-	view.Model = card.RuntimeIdentity.Model()
+	view.Model = runtimeIdentity.Model()
 	if configured.ReasoningEffort.Known() {
 		view.Effort = configured.ReasoningEffort.Value
 	}
-	if card.RuntimeIdentity.IsZero() {
+	if !attempted {
 		view.Model = configured.Model()
 		view.ModelDefault = true
 	}

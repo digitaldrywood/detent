@@ -2585,6 +2585,9 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		if ok && rank < current.rank {
 			return
 		}
+		if issue.RuntimeIdentity.IsZero() && ok {
+			issue.RuntimeIdentity = current.issue.RuntimeIdentity
+		}
 		byIssue[key] = projectKanbanIssueCard{
 			issue:   issue,
 			state:   state,
@@ -2699,11 +2702,12 @@ func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCom
 		}
 		state := projectKanbanDoneStateForProject(data, attempt.ProjectID)
 		issue := telemetry.Issue{
-			ID:         strings.TrimSpace(attempt.IssueID),
-			Identifier: strings.TrimSpace(attempt.Identifier),
-			ProjectID:  strings.TrimSpace(attempt.ProjectID),
-			URL:        strings.TrimSpace(attempt.IssueURL),
-			Title:      recentWorkAttemptIssueTitle(attempt),
+			ID:              strings.TrimSpace(attempt.IssueID),
+			Identifier:      strings.TrimSpace(attempt.Identifier),
+			ProjectID:       strings.TrimSpace(attempt.ProjectID),
+			URL:             strings.TrimSpace(attempt.IssueURL),
+			Title:           recentWorkAttemptIssueTitle(attempt),
+			RuntimeIdentity: attempt.RuntimeIdentity,
 		}
 		if attempt.PRNumber != nil {
 			issue.PullRequest = &telemetry.PullRequest{Number: int(*attempt.PRNumber)}
