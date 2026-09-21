@@ -1323,7 +1323,7 @@ the build cache or traverse the module cache; unmeasured module fields are omitt
 ## INV-13 — A board card is a title and one status line
 
 A board card renders exactly: the identity row (project, issue and PR references,
-origin), the title, at most one status line, and the existing priority controls.
+origin, model and configured effort; Compact may hide effort before model), the title, at most one status line, and the existing priority controls.
 The status line is at most 48 Unicode characters and names the wait in words a
 human acts on, for example "Waiting on #2129", "CI running", "Needs your reply · 4h",
 "Blocked · 1", "Running". Scheduler evidence, tracker snapshot ages, timestamps,
@@ -1334,7 +1334,8 @@ the same PR.
 
 `TestINV13BoardCardContent` and `TestINV13SheetObservations`, registered in the
 invariant manifest, enforce the content, character budget, and detail preservation. Playwright
-checks one-line status layout in compact, cozy, and comfy densities.
+checks one-line status layout in compact, cozy, and comfy densities, and verifies
+that effort is visible at Cozy/Comfy and may be hidden before model at Compact.
 
 ## Check boundaries
 

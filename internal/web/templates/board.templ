@@ -654,9 +654,9 @@ templ boardCardView2(card boardCardView) {
 			}
 		}
 	>
-		<div class="grid min-w-0 gap-0.5 font-mono text-2xs text-sec" data-board-card-identity>
-			<span class="min-w-0 break-words font-medium leading-tight text-text" data-board-card-project>{ card.Project }</span>
-			<div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5" data-board-card-references>
+		<div class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs text-sec" data-board-card-identity>
+			<span class="min-w-0 max-w-full break-words whitespace-normal font-medium leading-tight text-text" data-board-card-project>{ card.Project }</span>
+			<div class="flex min-w-0 max-w-full flex-wrap items-center gap-1" data-board-card-references>
 				<span class="contents" data-board-card-issue>
 					@primitives.TrackerReferenceLinkIsolated(card.Number, card.URL, boardCardNumberClass(card))
 				</span>
@@ -665,7 +665,7 @@ templ boardCardView2(card boardCardView) {
 						@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "flex-none max-w-full break-all tabular-nums")
 					</span>
 				}
-				<span class="text-dim" data-board-creation-origin={ card.CreationOrigin }>
+				<span class="min-w-0 truncate text-dim" data-board-creation-origin={ card.CreationOrigin }>
 					if card.CreationOrigin == "operator" {
 						<span>Operator</span>
 					} else {
@@ -673,6 +673,13 @@ templ boardCardView2(card boardCardView) {
 					}
 				</span>
 			</div>
+			<span class="flex min-w-0 max-w-[55%] shrink-0 items-center gap-1 font-medium" title={ "Model: " + card.Model } data-board-card-model>
+				<span class="min-w-0 truncate">{ card.Model }</span>
+				if card.ModelDefault {
+					<span class="shrink-0 text-dim">default</span>
+				}
+			</span>
+			<span class="shrink-0 text-dim" title="Configured effort" data-board-card-effort>{ card.Effort }</span>
 		</div>
 		<span class="hidden" data-board-card-state>{ card.State }</span>
 		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
@@ -1681,14 +1688,10 @@ templ boardKanbanDragScript() {
 				if (active || event.button !== 0 || event.isPrimary === false) return;
 				var pressedElement = event.target instanceof Element ? event.target : null;
 				var pressedCard = pressedElement ? pressedElement.closest("[data-kanban-card]") : null;
-				if (pressedCard && !connectionAllowsMoves()) {
-					if (pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")) return;
-					feedback("Moves are disabled while the board reconnects. Reload if the connection does not recover.", "error");
-					return;
-				}
-				if (pressedCard && pressedCard.dataset.kanbanMoveDisabled === "true") {
-					if (pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")) return;
-					feedback(pressedCard.dataset.kanbanMoveDisabledReason || "This card cannot be moved.", "error");
+				if (pressedCard && (!connectionAllowsMoves() || pressedCard.dataset.kanbanMoveDisabled === "true")) {
+					// A press can still open the detail sheet. Showing drag feedback
+					// here shifts the card before touch-up and loses the tap target.
+					// Disabled move reasons remain available in the card's hover title.
 					return;
 				}
 				var card = pressedCard && pressedCard.dataset.kanbanAction === "move" ? pressedCard : null;

@@ -872,6 +872,7 @@ func demoBoardCardIdentitySnapshot() telemetry.Snapshot {
 	running.Identifier = "digitaldrywood/release-train-platform#5260"
 	running.URL = demoIssueURL(running.Identifier)
 	running.Title = "Keep project, issue, and pull request identity visible with maximal metadata"
+	running.RuntimeIdentity.ResolvedModel = agentidentity.NewValue("provider/long-model-identifier-release-2026-09", agentidentity.ProvenanceConfigured)
 	running.UnblockerCount = 12
 	running.Origin = "admission"
 	running.OriginActor = "release-operator"

@@ -385,3 +385,7 @@
 [data-density="comfy"] [data-ai-debug-card-action] {
   display: flex;
 }
+
+[data-density="compact"] [data-board-card-effort] {
+  display: none;
+}

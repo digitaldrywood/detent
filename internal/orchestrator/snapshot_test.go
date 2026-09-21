@@ -1893,3 +1893,27 @@ func TestTelemetryPullRequestHumanQuestionEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestTelemetryIssuePreservesRoutingFields(t *testing.T) {
+	for _, tt := range []struct {
+		name, assignee string
+		fields         map[string]string
+	}{
+		{name: "empty"},
+		{name: "routing fields", assignee: "worker", fields: map[string]string{"team": "platform"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := connector.Issue{AssigneeID: tt.assignee, Fields: tt.fields, ModelOverride: "explicit-model"}
+			got := telemetryIssue(issue, 0, 0, time.Time{}, nil)
+			if got.ModelOverride != issue.ModelOverride || got.AssigneeID != issue.AssigneeID || !reflect.DeepEqual(got.Fields, issue.Fields) {
+				t.Fatalf("routing evidence lost: %+v", got)
+			}
+			if issue.Fields != nil {
+				issue.Fields["team"] = "changed"
+				if got.Fields["team"] != "platform" {
+					t.Fatal("snapshot aliases connector fields")
+				}
+			}
+		})
+	}
+}

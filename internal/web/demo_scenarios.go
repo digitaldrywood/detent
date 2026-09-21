@@ -420,18 +420,19 @@ func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) t
 	instanceName := s.instanceName()
 	snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
 	data := templates.DashboardData{
-		Title:           instancePageTitle(instanceName, "Detent"),
-		ApplicationName: applicationName(instanceName),
-		InstanceName:    instanceName,
-		Version:         s.version,
-		Build:           s.build,
-		ConnectorName:   s.connector.Name(),
-		DashboardURL:    s.dashboardURL,
-		Snapshot:        snapshot,
-		Projects:        demofixtures.ProjectsForVariant(scenario.Variant),
-		Kanban:          demoKanbanData(scenario, ""),
-		Assets:          s.assets.templatePaths(),
-		ActiveNav:       "fleet",
+		Title:            instancePageTitle(instanceName, "Detent"),
+		ApplicationName:  applicationName(instanceName),
+		InstanceName:     instanceName,
+		Version:          s.version,
+		Build:            s.build,
+		ConnectorName:    s.connector.Name(),
+		DashboardURL:     s.dashboardURL,
+		Snapshot:         snapshot,
+		ConfiguredAgents: s.boardConfiguredAgents(snapshot),
+		Projects:         demofixtures.ProjectsForVariant(scenario.Variant),
+		Kanban:           demoKanbanData(scenario, ""),
+		Assets:           s.assets.templatePaths(),
+		ActiveNav:        "fleet",
 	}
 	data.EfficiencyReceipts = demoEfficiencyReceipts(snapshot)
 	return data
@@ -473,6 +474,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		ConnectorName:             s.connector.Name(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scoped,
+		ConfiguredAgents:          s.boardConfiguredAgents(scoped),
 		Projects:                  projects,
 		Kanban:                    demoKanbanData(scenario, project.ID),
 		Assets:                    s.assets.templatePaths(),

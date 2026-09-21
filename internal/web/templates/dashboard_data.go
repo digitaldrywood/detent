@@ -67,6 +67,7 @@ const (
 )
 
 type DashboardData struct {
+	ConfiguredAgents          map[string]agentidentity.Identity
 	RunnerFleetEnabled        bool
 	Title                     string
 	ApplicationName           string
@@ -2574,7 +2575,7 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		if state == "" {
 			return
 		}
-		key := projectKanbanIssueKey(issue)
+		key := BoardIssueKey(issue)
 		if key == "" {
 			key = "anonymous:" + strconv.Itoa(nextIndex)
 		}
@@ -2584,6 +2585,9 @@ func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
 		}
 		if ok && rank < current.rank {
 			return
+		}
+		if issue.RuntimeIdentity.IsZero() && ok {
+			issue.RuntimeIdentity = current.issue.RuntimeIdentity
 		}
 		byIssue[key] = projectKanbanIssueCard{
 			issue:   issue,
@@ -2699,11 +2703,12 @@ func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCom
 		}
 		state := projectKanbanDoneStateForProject(data, attempt.ProjectID)
 		issue := telemetry.Issue{
-			ID:         strings.TrimSpace(attempt.IssueID),
-			Identifier: strings.TrimSpace(attempt.Identifier),
-			ProjectID:  strings.TrimSpace(attempt.ProjectID),
-			URL:        strings.TrimSpace(attempt.IssueURL),
-			Title:      recentWorkAttemptIssueTitle(attempt),
+			ID:              strings.TrimSpace(attempt.IssueID),
+			Identifier:      strings.TrimSpace(attempt.Identifier),
+			ProjectID:       strings.TrimSpace(attempt.ProjectID),
+			URL:             strings.TrimSpace(attempt.IssueURL),
+			Title:           recentWorkAttemptIssueTitle(attempt),
+			RuntimeIdentity: attempt.RuntimeIdentity,
 		}
 		if attempt.PRNumber != nil {
 			issue.PullRequest = &telemetry.PullRequest{Number: int(*attempt.PRNumber)}
@@ -2796,7 +2801,8 @@ func projectKanbanIssueStageTime(issue telemetry.Issue, fallback time.Time) time
 	return fallback.UTC()
 }
 
-func projectKanbanIssueKey(issue telemetry.Issue) string {
+// BoardIssueKey scopes an issue ID or identifier to its project for board lookups.
+func BoardIssueKey(issue telemetry.Issue) string {
 	scope := strings.TrimSpace(issue.ProjectID)
 	prefix := ""
 	if scope != "" {

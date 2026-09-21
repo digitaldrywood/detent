@@ -104,7 +104,7 @@ test("maximal card keeps project, issue, and PR identity at every density", asyn
   for (const density of ["compact", "cozy", "comfy"]) {
     await setDensity(page, density);
     await card.scrollIntoViewIfNeeded();
-    await assertCardIdentity(card);
+    await assertCardIdentity(card, density);
     await expectCardIdentityScreenshot(
       page,
       card,
@@ -116,7 +116,7 @@ test("maximal card keeps project, issue, and PR identity at every density", asyn
   for (const density of ["compact", "cozy", "comfy"]) {
     await setDensity(page, density);
     await card.scrollIntoViewIfNeeded();
-    await assertCardIdentity(card);
+    await assertCardIdentity(card, density);
     await expectCardIdentityScreenshot(
       page,
       card,
@@ -151,7 +151,7 @@ async function setDensity(page, density) {
   await expect(page.locator("html")).toHaveAttribute("data-density", density);
 }
 
-async function assertCardIdentity(card) {
+async function assertCardIdentity(card, density) {
   const identity = card.locator("[data-board-card-identity]");
   const project = card.locator("[data-board-card-project]");
   const issue = card
@@ -162,6 +162,16 @@ async function assertCardIdentity(card) {
     .getByRole("link", { name: "PR #5260", exact: true });
 
   await expect(identity).toBeVisible();
+  const model = identity.locator("[data-board-card-model]");
+  await expect(model).toBeVisible();
+  await expect(model).toHaveAttribute("title", "Model: provider/long-model-identifier-release-2026-09");
+  const effort = identity.locator("[data-board-card-effort]");
+  if (density === "compact") {
+    await expect(effort).toBeHidden();
+  } else {
+    await expect(effort).toBeVisible();
+    await expect(effort).not.toHaveText("");
+  }
   await expect(project).toHaveText("digitaldrywood-release-train-platform");
   await expect(issue).toBeVisible();
   await expect(pullRequest).toBeVisible();
@@ -185,7 +195,7 @@ async function assertCardIdentity(card) {
     const cardRect = article.getBoundingClientRect();
     const identityRect = identityBlock.getBoundingClientRect();
     const projectRect = projectLabel.getBoundingClientRect();
-    const contained = [identityBlock, projectLabel, ...links].every((element) => {
+    const contained = [identityBlock, projectLabel, article.querySelector("[data-board-card-model]"), ...links].every((element) => {
       const rect = element.getBoundingClientRect();
       return (
         rect.left >= cardRect.left - 1 &&
@@ -261,7 +271,7 @@ for (const viewport of [desktopViewport, { width: 390, height: 844 }]) {
     for (const density of ["compact", "cozy", "comfy"]) {
       await chooseDensity(page, density);
       await card.scrollIntoViewIfNeeded();
-      await assertCardIdentity(card);
+      await assertCardIdentity(card, density);
       {
         await expect(blockers).toBeHidden();
         await expect(card.locator("[data-board-card-details]")).toBeHidden();

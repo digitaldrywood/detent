@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -33,6 +34,8 @@ func TestINV13BoardCardContent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			view := tt.view
 			view.Project = "detent"
+			view.Model = "gpt-6-astra"
+			view.Effort = "low"
 			view.Number = "#2805"
 			view.Title = "A readable card"
 			view.CreationOrigin = "operator"
@@ -69,7 +72,7 @@ func TestINV13BoardCardContent(t *testing.T) {
 			}
 			visible := html.UnescapeString(regexp.MustCompile(`<[^>]+>`).ReplaceAllString(rendered, " "))
 			visible = strings.Join(strings.Fields(visible), " ")
-			wantVisible := strings.TrimSpace("detent #2805 Operator A readable card " + tt.want)
+			wantVisible := strings.TrimSpace("detent #2805 Operator gpt-6-astra low A readable card " + tt.want)
 			if visible != wantVisible {
 				t.Errorf("card body = %q, want only identity, title and status %q", visible, wantVisible)
 			}
@@ -90,5 +93,110 @@ func TestINV13SheetObservations(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("sheet missing %q", want)
 		}
+	}
+}
+
+func TestBoardCardConfiguredIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		runtime     agentidentity.Identity
+		wantModel   string
+		wantDefault bool
+	}{
+		{name: "never dispatched", wantModel: "fleet-model", wantDefault: true},
+		{name: "actual attempt", runtime: agentidentity.RuntimeUpdate("actual-model", "", "high", "", time.Time{}), wantModel: "actual-model"},
+		{name: "attempt model unavailable", runtime: agentidentity.Identity{BackendID: "codex"}, wantModel: "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project:project:id:issue": agentidentity.Configured("codex", "codex", "", "code", "fleet-model", "", "low", "", time.Time{})}}
+			card := projectKanbanCard{ProjectID: "project", IssueID: "issue", RuntimeIdentity: tt.runtime}
+			view := boardCardViewFromCard(data, projectKanbanLane{}, card, false, "", "")
+			if view.Model != tt.wantModel || view.ModelDefault != tt.wantDefault || view.Effort != "low" {
+				t.Fatalf("identity = %s/%s default=%v", view.Model, view.Effort, view.ModelDefault)
+			}
+			rendered := renderBoardComponent(t, boardCardView2(view))
+			identityEnd := strings.Index(rendered, "data-board-card-title")
+			// Both values remain in the identity DOM. INV-13 permits CSS to hide
+			// effort at Compact; density.spec.js enforces that visibility contract.
+			for _, marker := range []string{"data-board-card-model", "data-board-card-effort"} {
+				at := strings.Index(rendered, marker)
+				if at < 0 || at > identityEnd {
+					t.Fatalf("%s is outside identity row", marker)
+				}
+			}
+			if strings.Contains(rendered, ">default</span>") != tt.wantDefault {
+				t.Fatalf("default label mismatch: %s", rendered)
+			}
+		})
+	}
+}
+
+func TestBoardCardRetainsAttemptModel(t *testing.T) {
+	for _, source := range []string{"queue", "blocked"} {
+		for _, retained := range []string{"tracker", "attempt", "unknown attempt"} {
+			t.Run(source+"/"+retained, func(t *testing.T) {
+				issue := telemetry.Issue{ProjectID: "project", ID: "issue", Identifier: "#1", State: "Todo"}
+				actual := agentidentity.RuntimeUpdate("actual-model", "", "high", "", time.Time{})
+				data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project:project:id:issue": agentidentity.Configured("codex", "codex", "", "code", "new-default", "", "low", "", time.Time{})}}
+				want := "actual-model"
+				switch retained {
+				case "tracker":
+					tracker := issue
+					tracker.RuntimeIdentity = actual
+					data.Snapshot.BoardIssues = []telemetry.Issue{tracker}
+				case "attempt", "unknown attempt":
+					identity := actual
+					if retained == "unknown attempt" {
+						identity = agentidentity.Identity{}
+						want = "unknown"
+					}
+					data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{
+						{AttemptID: 3, ProjectID: "other", IssueID: "issue", RuntimeIdentity: agentidentity.RuntimeUpdate("other-model", "", "", "", time.Time{})},
+						{AttemptID: 2, ProjectID: "project", IssueID: "issue", RuntimeIdentity: identity},
+						{AttemptID: 1, ProjectID: "project", IssueID: "issue", RuntimeIdentity: agentidentity.RuntimeUpdate("old-model", "", "", "", time.Time{})},
+					}
+				}
+				if source == "queue" {
+					data.Snapshot.Queue = []telemetry.Queued{{Issue: issue}}
+				} else {
+					data.Snapshot.Blocked = []telemetry.Blocked{{Issue: issue}}
+				}
+				cards := projectKanbanIssues(data)
+				if len(cards) != 1 {
+					t.Fatalf("cards = %d", len(cards))
+				}
+				card := projectKanbanCard{ProjectID: "project", IssueID: "issue", RuntimeIdentity: cards[0].issue.RuntimeIdentity}
+				view := boardCardViewFromCard(data, projectKanbanLane{}, card, false, "", "")
+				if view.Model != want || view.ModelDefault || view.Effort != "low" {
+					t.Fatalf("identity = %s/%s default=%v, want %s/low actual", view.Model, view.Effort, view.ModelDefault, want)
+				}
+			})
+		}
+	}
+}
+
+func TestBoardCardIdentifierIdentity(t *testing.T) {
+	data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{
+		"project:project:identifier:repo#1": agentidentity.Configured("codex", "codex", "", "code", "first-default", "", "low", "", time.Time{}),
+		"project:project:identifier:repo#2": agentidentity.Configured("codex", "codex", "", "code", "second-default", "", "medium", "", time.Time{}),
+	}}
+	data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{
+		{ProjectID: "project", Identifier: "repo#2", AttemptID: 2, RuntimeIdentity: agentidentity.RuntimeUpdate("actual-second", "", "high", "", time.Time{})},
+		{ProjectID: "other", Identifier: "repo#1", AttemptID: 3, RuntimeIdentity: agentidentity.RuntimeUpdate("other-project", "", "high", "", time.Time{})},
+	}
+	for _, tt := range []struct {
+		identifier, model, effort string
+		defaultModel              bool
+	}{
+		{"repo#1", "first-default", "low", true},
+		{"repo#2", "actual-second", "medium", false},
+	} {
+		t.Run(tt.identifier, func(t *testing.T) {
+			card := projectKanbanCard{ProjectID: "project", Identifier: tt.identifier}
+			view := boardCardViewFromCard(data, projectKanbanLane{}, card, false, "", "")
+			if view.Model != tt.model || view.Effort != tt.effort || view.ModelDefault != tt.defaultModel {
+				t.Fatalf("identity = %s/%s default=%v", view.Model, view.Effort, view.ModelDefault)
+			}
+		})
 	}
 }

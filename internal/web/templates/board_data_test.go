@@ -1251,7 +1251,7 @@ func TestBoardCardAlwaysRendersPullRequest(t *testing.T) {
 	}
 }
 
-func TestBoardCardIdentityWrapsBeforeTruncatingMetadata(t *testing.T) {
+func TestBoardCardIdentityStaysOnOneLine(t *testing.T) {
 	t.Parallel()
 
 	card := boardCardView{
@@ -1272,8 +1272,8 @@ func TestBoardCardIdentityWrapsBeforeTruncatingMetadata(t *testing.T) {
 		name string
 		want string
 	}{
-		{name: "project wraps", want: `<span class="min-w-0 break-words font-medium leading-tight text-text" data-board-card-project>digitaldrywood-release-train-platform</span>`},
-		{name: "references wrap", want: `class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5" data-board-card-references`},
+		{name: "project wraps without truncation", want: `<span class="min-w-0 max-w-full break-words whitespace-normal font-medium leading-tight text-text" data-board-card-project>digitaldrywood-release-train-platform</span>`},
+		{name: "references wrap without clipping", want: `class="flex min-w-0 max-w-full flex-wrap items-center gap-1" data-board-card-references`},
 		{name: "priority badge preserves an ellipsis", want: `class="inline-flex min-w-7 max-w-24 shrink items-center`},
 		{name: "priority text paints ellipsis", want: `<span class="min-w-0 truncate">priority-medium</span>`},
 		{name: "issue can wrap without truncation", want: `class="flex-none max-w-full break-all text-text"`},
@@ -1286,7 +1286,7 @@ func TestBoardCardIdentityWrapsBeforeTruncatingMetadata(t *testing.T) {
 			}
 		})
 	}
-	if strings.Contains(html, `<span class="min-w-0 truncate">digitaldrywood-release-train-platform</span>`) {
+	if strings.Contains(html, `truncate font-medium leading-tight text-text" data-board-card-project`) {
 		t.Fatalf("project identity must not truncate:\n%s", html)
 	}
 }
@@ -1477,7 +1477,7 @@ func TestLongLocalWorkItemIdentifiersPreserveSurfaceContracts(t *testing.T) {
 	boardHTML := renderBoardComponent(t, BoardSnapshot(data))
 	boardCard := boardCardSection(t, boardHTML, title)
 	for _, want := range []string{
-		`class="min-w-0 break-words font-medium leading-tight text-text" data-board-card-project>` + projectID,
+		`class="min-w-0 max-w-full break-words whitespace-normal font-medium leading-tight text-text" data-board-card-project>` + projectID,
 		`class="flex-none max-w-full break-all text-text">` + localID,
 	} {
 		if !strings.Contains(boardCard, want) {
@@ -4485,8 +4485,7 @@ func TestBoardKanbanDragScriptSubmitsAllowedDrop(t *testing.T) {
 		`lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";`,
 		`document.addEventListener("pointerdown"`,
 		`pressedCard.dataset.kanbanMoveDisabled === "true"`,
-		`pressedElement.closest("a, button, input, select, textarea, summary, label, [data-help-trigger]")`,
-		`feedback(pressedCard.dataset.kanbanMoveDisabledReason || "This card cannot be moved.", "error");`,
+		`!connectionAllowsMoves() || pressedCard.dataset.kanbanMoveDisabled === "true"`,
 		`document.addEventListener("pointermove"`,
 		`document.addEventListener("pointerup"`,
 		`feedback("Move blocked by transition policy.", "error");`,
