@@ -1,6 +1,6 @@
 # Validation queue
 
-`make check` passes the repository's Git common-directory lock to checklock,
+`make check` and `make check-fast` pass the repository's Git common-directory lock to checklock,
 so all worktrees share one validation gate. Checklock registers a FIFO ticket
 before attempting that existing lock. Once registered, a live waiter cannot be
 overtaken by later registrations, including when the head waiter is descheduled.

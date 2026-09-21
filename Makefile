@@ -163,7 +163,7 @@ visual-e2e-update: build
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
 
 lint: $(GOLANGCI_LINT)
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=5m
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=15m
 
 $(GOLANGCI_LINT):
 	@mkdir -p "$(GOLANGCI_LINT_DIR)"
@@ -185,16 +185,16 @@ security: security-gosec-determinism
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
-check: check-migrations check-generated
+check check-fast: check-migrations check-generated
 	@mkdir -p tmp
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
-	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) check-unlocked
+	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) $@-unlocked
 
 check-unlocked: check-invariants check-migrations check-generated build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
 
-.PHONY: check-fast
-check-fast: check-invariants check-migrations check-generated build lint vet
+.PHONY: check-fast check-fast-unlocked
+check-fast-unlocked: check-invariants check-migrations check-generated build lint vet
 	$(MAKE) test
 	@echo "Fast checks passed (race, coverage, and NilAway are excluded; run make check for full local validation)."
 
