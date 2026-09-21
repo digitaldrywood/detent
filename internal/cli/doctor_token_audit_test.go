@@ -89,7 +89,7 @@ func TestDoctorTokenAuditInstructionFiles(t *testing.T) {
 				writeDoctorWorkflowSourceFile(t, filepath.Join(sub, "CLAUDE.md"), "Run make check.")
 			}
 			prompt := "Follow AGENTS.md and CLAUDE.md.\nRead CLAUDE.md."
-			files, problems := doctorInstructionFiles(t.Context(), sub, prompt)
+			files, problems := doctorInstructionFiles(t.Context(), sub, prompt, "")
 			if (len(problems) > 0) != tt.missing {
 				t.Fatalf("problems %v", problems)
 			}
@@ -128,7 +128,7 @@ func TestDoctorTokenAuditTransitiveInstructions(t *testing.T) {
 				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), "ignored")
 			}
 			prompt := "Do not run make check."
-			files, problems := doctorInstructionFiles(t.Context(), root, prompt)
+			files, problems := doctorInstructionFiles(t.Context(), root, prompt, "")
 			if len(problems) != 0 {
 				t.Fatal(problems)
 			}
@@ -310,7 +310,7 @@ func TestDoctorTokenAuditNonGitInstructions(t *testing.T) {
 			t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
 			writeDoctorWorkflowSourceFile(t, filepath.Join(root, name), "Run make check.")
 			prompt := "Read `" + name + "`.\nReview the diff against `origin/main` for `Merging`; read `git diff origin/main...HEAD`.\nDo not run make check.\n" + strings.Repeat("x", 49*1024)
-			files, problems := doctorInstructionFiles(t.Context(), root, prompt)
+			files, problems := doctorInstructionFiles(t.Context(), root, prompt, "")
 			if len(files) != 2 {
 				t.Fatalf("file count %d; problems %v", len(files), problems)
 			}
@@ -394,5 +394,85 @@ func TestDoctorTokenAuditFastGateConflict(t *testing.T) {
 	got := checkDoctorGateInstructionConflict("p", "make check-fast", files, nil)
 	if got.Status != doctorWarn || !strings.Contains(got.Detail, "full gate:") {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
+	for _, tt := range []struct {
+		name, agents string
+		want         doctorStatus
+	}{
+		{"conflicting command", "Run make check.", doctorWarn},
+		{"configured command reference", "Use the configured gate.run.", doctorOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, _ := initDoctorWorkflowSourceRepository(t)
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), tt.agents+"\nFollow WORKFLOW.md.")
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "The validation gate is make check-fast.\nDo not run make check unless safety-critical files change.\nFollow AGENTS.md and WORKFLOW.md.")
+			files, problems := doctorInstructionFiles(t.Context(), root, "Follow AGENTS.md.", "")
+			if len(problems) != 0 {
+				t.Fatal(problems)
+			}
+			got := checkDoctorGateInstructionConflict("p", "make check-fast", files, problems)
+			if got.Status != tt.want {
+				t.Fatalf("got %+v; want %s", got, tt.want)
+			}
+			count := 0
+			for _, file := range files {
+				if file.path == filepath.Join(root, "WORKFLOW.md") {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("referenced workflow count = %d; want 1", count)
+			}
+		})
+	}
+}
+
+func TestDoctorEffectiveWorkflowDeduplicated(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		external, distinct bool
+		want               doctorStatus
+	}{
+		{"colocated", false, false, doctorOK},
+		{"external", true, false, doctorOK},
+		{"distinct local workflow", true, true, doctorWarn},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, _ := initDoctorWorkflowSourceRepository(t)
+			agents := "Follow WORKFLOW.md."
+			prompt := "The validation gate is make check-fast."
+			source := filepath.Join(root, "WORKFLOW.md")
+			if tt.external {
+				if err := os.Remove(source); err != nil {
+					t.Fatal(err)
+				}
+				source = filepath.Join(t.TempDir(), "WORKFLOW.md")
+			}
+			writeDoctorWorkflowSourceFile(t, source, prompt)
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), agents)
+			if tt.distinct {
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "Do not run make check-fast.")
+			}
+			files, problems := doctorInstructionFiles(t.Context(), root, prompt, source)
+			if len(problems) != 0 {
+				t.Fatal(problems)
+			}
+			got := checkDoctorGateInstructionConflict("p", "make check-fast", files, problems)
+			if got.Status != tt.want {
+				t.Fatalf("got %+v; want %s", got, tt.want)
+			}
+			if !tt.distinct {
+				total := 0
+				for _, file := range files {
+					total += file.bytes
+				}
+				if total != len(agents)+len(prompt) {
+					t.Fatalf("instruction bytes = %d; want %d", total, len(agents)+len(prompt))
+				}
+			}
+		})
 	}
 }

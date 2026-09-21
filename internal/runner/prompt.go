@@ -675,7 +675,11 @@ func appendGateBlock(prompt string, cfg config.Config) string {
 	if strings.TrimSpace(instructions) == "" {
 		return prompt
 	}
-	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Validation gate\n\n" + instructions
+	heading := "Validation gate"
+	if gate.Effective(cfg.Gate).Kind == gate.KindHumanReview {
+		heading = "Human approval"
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## " + heading + "\n\n" + instructions
 }
 
 func appendNativeIssueInstructions(prompt string, issue connector.Issue) string {

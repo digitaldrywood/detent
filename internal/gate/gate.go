@@ -412,7 +412,7 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 	cfg = Effective(cfg)
 	switch cfg.Kind {
 	case KindHumanReview:
-		return "The validation gate is human review. Keep the pull request in Human Review until a human applies label `" +
+		return "Human approval is required. Keep the pull request in Human Review until a human applies label `" +
 			cfg.ApprovalLabel + "`; do not move it to Merging before that label is present."
 	case KindArtifact:
 		return "The validation gate is artifact status. Detent evaluates `" + cfg.Artifact.StatusField +
