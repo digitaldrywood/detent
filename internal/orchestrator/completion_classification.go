@@ -34,7 +34,7 @@ func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, runnin
 	signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
 	pr := decision.Issue.PullRequest
 	if workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) &&
-		pullRequestOpen(pr) && !pr.Draft && !connector.PullRequestConflicts(pr.MergeableState) && mergeWorkerCIGreen(pr.CIStatus) {
+		pullRequestOpen(pr) && !pr.Draft && !connector.PullRequestConflicts(pr.MergeableState) && !mergeWorkerCIFailed(pr) {
 		return false
 	}
 	before, after := running.Issue.PullRequest, decision.Issue.PullRequest

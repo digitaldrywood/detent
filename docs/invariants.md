@@ -22,9 +22,13 @@ A passing test does not authorize weakening a rule.
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; unfinished work cannot promote on completion or
 the Rework tick. A rebase with the same captured PR diff fingerprint is
-no-progress unless the Workpad reports completion or a conflicting PR becomes
-mergeable. The dispatch fingerprint and mergeability baseline persist with the
-attempt across restart, including merge-mode conflict repairs in active lanes
+no-progress unless a current-attempt Workpad completion claim is corroborated by
+an open, non-draft, conflict-free PR with no failing CI (pending is allowed), or
+the tracker stops reporting a known conflict in a recognized mergeability state.
+Unknown includes tracker recomputation and credits progress without granting merge
+readiness. Attempt identity prevents stale-claim replay; tracker evidence provides
+the independent corroboration. The dispatch fingerprint and mergeability baseline
+persist with the attempt across restart, including merge-mode conflict repairs in active lanes
 (#2929); a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance,
 cannot enter Human Review or `awaiting_gate`, and reach the existing triage and

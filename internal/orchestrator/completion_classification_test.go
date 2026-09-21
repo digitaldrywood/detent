@@ -335,6 +335,7 @@ func TestCompletionRebaseWorkpadIdentity(t *testing.T) {
 		want                      store.WorkAttemptTerminalState
 	}{
 		{"current", "42", "3", false, "success", "clean", store.WorkAttemptTerminalSuccess},
+		{"pending CI after push", "42", "3", false, "pending", "clean", store.WorkAttemptTerminalSuccess},
 		{"stale attempt", "41", "3", false, "success", "clean", store.WorkAttemptTerminalNoProgress},
 		{"foreign generation", "42", "2", false, "success", "clean", store.WorkAttemptTerminalNoProgress},
 		{"missing identity", "", "", false, "success", "clean", store.WorkAttemptTerminalNoProgress},
