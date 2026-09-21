@@ -1196,6 +1196,8 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		AuthorID:              issue.AuthorID,
 		Labels:                append([]string(nil), issue.Labels...),
 		Assignees:             append([]string(nil), issue.Assignees...),
+		AssigneeID:            issue.AssigneeID,
+		Fields:                cloneStringMap(issue.Fields),
 		Comments:              telemetryIssueComments(issue.Comments),
 		DependencyNotes:       append([]string(nil), issue.DependencyNotes...),
 		BlockedBy:             telemetryBlockedRefs(issue.BlockedBy),

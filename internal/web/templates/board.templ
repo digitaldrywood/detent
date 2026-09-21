@@ -673,13 +673,13 @@ templ boardCardView2(card boardCardView) {
 					}
 				</span>
 			</div>
-            <span class="flex min-w-0 max-w-[55%] shrink-0 items-center gap-1 font-medium" title={ "Model: " + card.Model } data-board-card-model>
-                <span class="min-w-0 truncate">{ card.Model }</span>
-                if card.ModelDefault {
-                    <span class="shrink-0 text-dim">default</span>
-                }
-            </span>
-            <span class="shrink-0 text-dim" title="Configured effort" data-board-card-effort>{ card.Effort }</span>
+			<span class="flex min-w-0 max-w-[55%] shrink-0 items-center gap-1 font-medium" title={ "Model: " + card.Model } data-board-card-model>
+				<span class="min-w-0 truncate">{ card.Model }</span>
+				if card.ModelDefault {
+					<span class="shrink-0 text-dim">default</span>
+				}
+			</span>
+			<span class="shrink-0 text-dim" title="Configured effort" data-board-card-effort>{ card.Effort }</span>
 		</div>
 		<span class="hidden" data-board-card-state>{ card.State }</span>
 		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>

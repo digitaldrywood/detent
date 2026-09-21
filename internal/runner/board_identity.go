@@ -11,12 +11,12 @@ import (
 
 // ConfiguredBoardIdentity previews configuration without starting a backend or
 // consulting its catalog. Attempt identity remains authoritative after dispatch.
-func ConfiguredBoardIdentity(cfg config.Config, issue connector.Issue) (agentidentity.Identity, error) {
+func ConfiguredBoardIdentity(cfg config.Config, issue connector.Issue, ctx selector.Context) (agentidentity.Identity, error) {
 	router, err := NewRouter(routesFromConfig(cfg.AgentRouteConfigs()))
 	if err != nil {
 		return agentidentity.Identity{}, err
 	}
-	route, err := router.RouteForRole(issue, selector.Context{}, RoleCode)
+	route, err := router.RouteForRole(issue, selectorContext(ctx, config.Workflow{Config: cfg}), RoleCode)
 	if err != nil {
 		return agentidentity.Identity{}, err
 	}

@@ -1146,6 +1146,8 @@ type Issue struct {
 	OriginActor           string                 `json:"origin_actor,omitempty"`
 	OriginActorKind       string                 `json:"origin_actor_kind,omitempty"`
 	Labels                []string               `json:"labels,omitempty"`
+	AssigneeID            string                 `json:"assignee_id,omitempty"`
+	Fields                map[string]string      `json:"fields,omitempty"`
 	Assignees             []string               `json:"assignees,omitempty"`
 	Comments              []IssueComment         `json:"comments,omitempty"`
 	DependencyNotes       []string               `json:"dependency_notes,omitempty"`

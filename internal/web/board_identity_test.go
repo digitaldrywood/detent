@@ -5,6 +5,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -28,6 +30,45 @@ func TestBoardConfiguredAgents(t *testing.T) {
 				if !ok || identity.Model() != tt.model || identity.ReasoningEffort.Value != tt.effort {
 					t.Fatalf("%q identity = %+v", key, identity)
 				}
+			}
+		})
+	}
+}
+
+type boardIdentityConnector struct{ connector.Connector }
+
+func (boardIdentityConnector) InstanceLogin() string { return "worker" }
+
+func TestBoardConfiguredAgentsPreservesRoutingEvidence(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		route selector.Selector
+		issue telemetry.Issue
+	}{
+		{"author", selector.Selector{AuthorIn: []string{"author"}}, telemetry.Issue{AuthorID: "author"}},
+		{"assignees", selector.Selector{AssigneeIn: []string{"assignee"}}, telemetry.Issue{Assignees: []string{"assignee"}}},
+		{"legacy assignee", selector.Selector{AssigneeIn: []string{"assignee"}}, telemetry.Issue{AssigneeID: "assignee"}},
+		{"priority", selector.Selector{PriorityIn: []int{2}}, telemetry.Issue{Priority: new(2)}},
+		{"fields", selector.Selector{Fields: []selector.FieldEquals{{Name: "team", Value: "platform"}}}, telemetry.Issue{Fields: map[string]string{"team": "platform"}}},
+		{"instance login", selector.Selector{AssigneeIn: []string{"@me"}}, telemetry.Issue{Assignees: []string{"worker"}}},
+		{"persona", selector.Selector{AssigneeIn: []string{"@me"}}, telemetry.Issue{Assignees: []string{"reviewer"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := globalconfig.Config{}
+			cfg.Global.Agents = config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+				Routes:         []config.AgentRoute{{Name: "matched", Backend: "codex", Selector: tt.route, Model: "matched-model"}, {Name: "fallback", Backend: "codex", Default: true, Model: "fallback-model"}},
+				ModelSelection: config.ModelSelection{DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}}},
+			}
+			workflow := config.Default()
+			workflow.Tracker.Assignee = "reviewer"
+			s := &Server{kanbanWorkflow: workflow, connector: boardIdentityConnector{}, globalConfigSource: func() globalconfig.Config { return cfg }}
+			issue := tt.issue
+			issue.ProjectID = "project"
+			issue.ID = "issue"
+			got := s.boardConfiguredAgents(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}})["project\x00issue"]
+			if got.Model() != "matched-model" {
+				t.Fatalf("preview selected %q, want matched-model", got.Model())
 			}
 		})
 	}
