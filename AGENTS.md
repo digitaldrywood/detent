@@ -53,20 +53,25 @@ in the PR template.
 
 ## Validation
 
+Do not re-read AGENTS.md, CLAUDE.md, or an injected skill when its contents are already in the prompt.
+
 During the edit loop, run `go test ./<touched-package>/...` and `go vet` on
 those same packages; use focused regressions while iterating. After all edits
-and review fixes, run the full `make check` exactly once immediately before
-pushing, including the existing invariant gate. Never repeat a green gate unless
+and review fixes, run the configured `gate.run` exactly once immediately before
+pushing, following the command and scope in WORKFLOW.md’s Detent Protocol
+section, including the existing invariant checks. Never repeat a green gate unless
 files changed; after a failure, fix the cause before retrying.
 
 Keep gate output out of the conversation except for a short summary. Use Bash
-with `pipefail` so truncation cannot hide a failing exit status:
+with `pipefail` so truncation cannot hide a failing exit status. Set and export
+`gate_command` to the configured `gate.run` command before using this wrapper:
 
 ```bash
 bash -o pipefail -c '
+  : "${gate_command:?Set gate_command to the configured gate.run}"
   log=$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/detent-check.XXXXXX") || exit
   echo "Gate log: $log"
-  make check 2>&1 | tee "$log" | tail -40
+  bash -o pipefail -c "$gate_command" 2>&1 | tee "$log" | tail -40
 '
 ```
 

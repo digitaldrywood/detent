@@ -707,7 +707,7 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 
 	for _, want := range []string{
 		"Gate human_review label=approved-by-human trigger=ci:ready stagger=15 run= ci=skip max=65536 plan=plan-approved",
-		"## Validation gate",
+		"## Human approval",
 		"Keep the pull request in Human Review until a human applies label `approved-by-human`",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -1435,6 +1435,27 @@ func TestMergeFallbackPromptPreservesPublishedHistory(t *testing.T) {
 		t.Run(want, func(t *testing.T) {
 			if !strings.Contains(prompt, want) {
 				t.Errorf("fallback prompt missing %q", want)
+			}
+		})
+	}
+}
+
+func TestGateBlockSeparatesHumanApproval(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		kind, heading string
+	}{
+		{gate.KindHumanReview, "Human approval"},
+		{"human-review", "Human approval"},
+		{gate.KindCommand, "Validation gate"},
+	} {
+		t.Run(tt.kind, func(t *testing.T) {
+			got := appendGateBlock("Issue", config.Config{Gate: gate.Config{Kind: tt.kind, Run: "make check-fast"}})
+			if !strings.Contains(got, "## "+tt.heading+"\n") {
+				t.Fatalf("missing heading %q: %s", tt.heading, got)
+			}
+			if tt.heading == "Human approval" && strings.Contains(strings.ToLower(got), "validation gate") {
+				t.Fatalf("human approval conflates command validation: %s", got)
 			}
 		})
 	}

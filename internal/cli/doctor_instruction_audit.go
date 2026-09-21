@@ -103,7 +103,7 @@ func doctorInstructionFiles(ctx context.Context, root, prompt string) ([]doctorI
 				}
 			}
 			for _, name := range names {
-				if name == "WORKFLOW.md" || strings.Contains(filepath.Base(name), "..") {
+				if strings.Contains(filepath.Base(name), "..") {
 					continue
 				}
 				path := name

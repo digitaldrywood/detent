@@ -396,3 +396,36 @@ func TestDoctorTokenAuditFastGateConflict(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
+	for _, tt := range []struct {
+		name, agents string
+		want         doctorStatus
+	}{
+		{"conflicting command", "Run make check.", doctorWarn},
+		{"configured command reference", "Use the configured gate.run.", doctorOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, _ := initDoctorWorkflowSourceRepository(t)
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), tt.agents+"\nFollow WORKFLOW.md.")
+			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "The validation gate is make check-fast.\nDo not run make check unless safety-critical files change.\nFollow AGENTS.md and WORKFLOW.md.")
+			files, problems := doctorInstructionFiles(t.Context(), root, "Follow AGENTS.md.")
+			if len(problems) != 0 {
+				t.Fatal(problems)
+			}
+			got := checkDoctorGateInstructionConflict("p", "make check-fast", files, problems)
+			if got.Status != tt.want {
+				t.Fatalf("got %+v; want %s", got, tt.want)
+			}
+			count := 0
+			for _, file := range files {
+				if file.path == filepath.Join(root, "WORKFLOW.md") {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("referenced workflow count = %d; want 1", count)
+			}
+		})
+	}
+}
