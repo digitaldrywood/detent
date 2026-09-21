@@ -1113,7 +1113,7 @@ func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue con
 	// the card is ready for Merging, independently of programmatic merge policy.
 	switch normalizeState(issue.State) {
 	case "rework", "in progress":
-		if issue.PullRequest != nil && !issue.PullRequest.Draft && strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "dirty") {
+		if issue.PullRequest != nil && !issue.PullRequest.Draft && connector.PullRequestConflicts(issue.PullRequest.MergeableState) {
 			return runpkg.RunModeMerge
 		}
 	}

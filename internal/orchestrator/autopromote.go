@@ -186,7 +186,7 @@ func EvaluateAutoPromote(
 			issue.PullRequest.Draft {
 			return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonDraftPullRequest)
 		}
-		if autoPromoteMergeConflicts(summary.MergeableState) {
+		if connector.PullRequestConflicts(summary.MergeableState) {
 			return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
 		}
 		if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" ||
@@ -412,15 +412,6 @@ func normalizeLabels(labels []string) []string {
 		normalized = append(normalized, label)
 	}
 	return normalized
-}
-
-func autoPromoteMergeConflicts(mergeableState string) bool {
-	switch strings.ToLower(strings.TrimSpace(mergeableState)) {
-	case "dirty", "conflicting":
-		return true
-	default:
-		return false
-	}
 }
 
 func gateSummary(summary AutoPromoteSummary) gate.Summary {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -3379,9 +3380,7 @@ func projectKanbanPullRequestConflictReason(issue telemetry.Issue) string {
 		return ""
 	}
 	mergeableState := strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState))
-	switch mergeableState {
-	case "dirty", "conflicting":
-	default:
+	if !connector.PullRequestConflicts(mergeableState) {
 		return ""
 	}
 	return projectKanbanPullRequestLabel(issue) + " mergeStateStatus " + strings.ToUpper(mergeableState)

@@ -58,10 +58,10 @@ func requiredGateFromSummary(issue connector.Issue, summary AutoPromoteSummary, 
 		result.State = "failed"
 		result.Reason = string(auditDecision.Reason)
 	}
-	if len(summary.FailedChecks) > 0 || autoPromoteMergeConflicts(summary.MergeableState) || len(summary.UnresolvedReviewThreads) > 0 {
+	if len(summary.FailedChecks) > 0 || connector.PullRequestConflicts(summary.MergeableState) || len(summary.UnresolvedReviewThreads) > 0 {
 		result.State = "failed"
 		result.Reason = string(AutoPromoteReasonCINotGreen)
-		if autoPromoteMergeConflicts(summary.MergeableState) {
+		if connector.PullRequestConflicts(summary.MergeableState) {
 			result.Reason = string(AutoPromoteReasonMergeConflicts)
 		} else if len(summary.UnresolvedReviewThreads) > 0 {
 			result.Reason = string(AutoPromoteReasonUnresolvedReviewThreads)

@@ -123,7 +123,7 @@ func operatorMergeWedgedCandidate(issue connector.Issue, state *State, cfg Confi
 	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft || strings.TrimSpace(pullRequest.HeadSHA) == "" {
 		return false
 	}
-	if !mergeWorkerCIGreen(pullRequest.CIStatus) || len(pullRequest.UnresolvedReviewThreads) > 0 || strings.EqualFold(strings.TrimSpace(pullRequest.MergeableState), "dirty") {
+	if !mergeWorkerCIGreen(pullRequest.CIStatus) || len(pullRequest.UnresolvedReviewThreads) > 0 || connector.PullRequestConflicts(pullRequest.MergeableState) {
 		return false
 	}
 	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 {

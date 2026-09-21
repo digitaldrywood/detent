@@ -1139,3 +1139,25 @@ func (s *spendProgressStore) IssueProgressCredit(context.Context, store.IssueIde
 	}
 	return s.credit, nil
 }
+
+func TestSpendProgressConflictCleared(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ before, after, want string }{
+		{"dirty", "clean", "pull_request_mergeable"},
+		{"conflicting", "draft", "pull_request_mergeable"},
+		{" DIRTY ", "unknown", "pull_request_mergeable"},
+		{"dirty", "conflicting", ""},
+		{"conflicting", "dirty", ""},
+		{"dirty", "", ""},
+		{"unknown", "clean", ""},
+		{"clean", "clean", ""},
+	} {
+		t.Run(tt.before+"/"+tt.after, func(t *testing.T) {
+			previous := &spendProgressPRFingerprint{Number: 1, HeadSHA: "head", MergeableState: tt.before}
+			current := &spendProgressPRFingerprint{Number: 1, HeadSHA: "head", MergeableState: tt.after}
+			if got := spendProgressPRAdvance(previous, current); got != tt.want {
+				t.Fatalf("advance = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

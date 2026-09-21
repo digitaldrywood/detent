@@ -288,6 +288,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+PR conflict classification and conflict-cleared progress share connector helpers
+(#2934), replacing separate completion, spend, dispatch, and display checks.
+Both tracker conflict spellings are recognized. A transition to a reported
+non-conflict state, including draft or unknown during recomputation, credits
+progress without authorizing a merge. Rebase-only Workpad completion reuses the
+attempt-and-generation matcher and requires an open, non-draft, conflict-free PR
+with passing tracker CI. Stale completion assertions cannot credit later rebases.
+`TestCompletionRebaseWorkpadIdentity`, `TestCompletionRebaseProgress`, and
+`TestPullRequestConflictCleared` cover these consolidated decisions.
+
 Pushed-branch deliverable recovery (#2601) resolves an absent workspace head from
 GitHub's remote branch, removing local workspace retention as a prerequisite for
 the existing exact-head draft creation and Rework transition. Remote lookup

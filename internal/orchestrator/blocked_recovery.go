@@ -103,7 +103,7 @@ func evaluateBlockedRecovery(issue connector.Issue, cfg BlockedRecoveryConfig, t
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonPullRequestNotOpen, "")
 	}
 
-	if autoPromoteMergeConflicts(pr.MergeableState) {
+	if connector.PullRequestConflicts(pr.MergeableState) {
 		return blockedRecoveryDecisionWithTarget(BlockedRecoveryActionRework, BlockedRecoveryReasonMergeConflicts, cfg.TargetState, "linked PR has merge conflicts")
 	}
 	switch strings.ToLower(strings.TrimSpace(pr.MergeableState)) {

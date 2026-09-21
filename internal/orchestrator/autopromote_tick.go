@@ -880,7 +880,7 @@ func reworkGateWaitPullRequestReady(issue connector.Issue) bool {
 		return false
 	}
 	summary := AutoPromoteSummaryFromIssue(issue)
-	return !issue.PullRequest.Draft && !autoPromoteMergeConflicts(summary.MergeableState) && len(summary.P1Findings) == 0 &&
+	return !issue.PullRequest.Draft && !connector.PullRequestConflicts(summary.MergeableState) && len(summary.P1Findings) == 0 &&
 		len(summary.UnresolvedReviewThreads) == 0 && len(summary.FailedChecks) == 0
 }
 
@@ -2169,7 +2169,7 @@ func staleTodoPullRequestDecision(
 	cfg AutoPromoteConfig,
 	now time.Time,
 ) AutoPromoteDecision {
-	if autoPromoteMergeConflicts(summary.MergeableState) {
+	if connector.PullRequestConflicts(summary.MergeableState) {
 		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
 	}
 	cfg = normalizeAutoPromoteConfig(cfg)
