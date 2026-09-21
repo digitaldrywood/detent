@@ -1,7 +1,10 @@
 package runner
 
 import (
+	"slices"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentoverride"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
@@ -36,12 +39,33 @@ func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.I
 		if backend.ID != route.BackendID {
 			continue
 		}
-		selected := configuredAutomaticSelection(issue, route.Model, RoleCode, cfg, backend)
+		baseModel := effectiveModel(route.Model, (agentRuntime{router: r.router}).defaultModelForRole(RoleCode))
+		policy := cfg.EffectiveModelSelection()
+		var selected agentSelection
+		if policy.Active() && policy.BackendKinds != nil && slices.Contains(*policy.BackendKinds, backend.Kind) {
+			selected = configuredAutomaticSelection(issue, baseModel, RoleCode, cfg, backend)
+		} else {
+			// Preview configured candidates only; dispatch validates against the
+			// backend catalog before accepting issue overrides.
+			override, _, err := agentoverride.FromIssueBody(issue.Description)
+			if err != nil {
+				override = agentoverride.Override{}
+			}
+			model, _ := override.ModelForRole(RoleCode)
+			selected.Model = effectiveModel(model, baseModel)
+			effort, field := cfg.Agent.Effort.Resolve(RoleCode)
+			efforts := agentEffortCandidates(override, RoleCode, agentEffortCandidate{Field: field, Effort: effort})
+			if len(efforts) > 0 {
+				selected.Effort = efforts[0].Effort
+			}
+		}
 		if selected.Err != nil {
 			return agentidentity.Identity{}, selected.Err
 		}
 		identity := configuredRuntimeIdentity(route, backend, RoleCode, selected.Model, time.Time{})
-		identity.ReasoningEffort = agentidentity.NewValue(selected.Effort, agentidentity.ProvenanceConfigured)
+		if selected.Effort != "" {
+			identity.ReasoningEffort = agentidentity.NewValue(selected.Effort, agentidentity.ProvenanceConfigured)
+		}
 		return identity, nil
 	}
 	return agentidentity.Identity{}, ErrMissingAgentBackend

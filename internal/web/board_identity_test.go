@@ -20,7 +20,7 @@ func TestBoardConfiguredAgents(t *testing.T) {
 			cfg.Global.Agents = config.Agents{
 				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
 				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}},
-				ModelSelection: config.ModelSelection{DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Model: new(tt.model), Effort: new(tt.effort)}}},
+				ModelSelection: config.ModelSelection{Enabled: new(true), BackendKinds: &[]string{config.AgentBackendCodex}, DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Model: new(tt.model), Effort: new(tt.effort)}}},
 			}
 			s := &Server{globalConfigSource: func() globalconfig.Config { return cfg }}
 			snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ProjectID: "one", ID: "1"}, {ProjectID: "two", ID: "1"}}}
@@ -58,7 +58,7 @@ func TestBoardConfiguredAgentsPreservesRoutingEvidence(t *testing.T) {
 			cfg.Global.Agents = config.Agents{
 				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
 				Routes:         []config.AgentRoute{{Name: "matched", Backend: "codex", Selector: tt.route, Model: "matched-model"}, {Name: "fallback", Backend: "codex", Default: true, Model: "fallback-model"}},
-				ModelSelection: config.ModelSelection{DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}}},
+				ModelSelection: config.ModelSelection{Enabled: new(true), BackendKinds: &[]string{config.AgentBackendCodex}, DefaultLevel: new("normal"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}}},
 			}
 			workflow := config.Default()
 			workflow.Tracker.Assignee = "reviewer"
