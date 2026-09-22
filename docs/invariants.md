@@ -20,10 +20,21 @@ A passing test does not authorize weakening a rule.
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
 Completion classification preserves genuine diff progress even when a structured
-Workpad reports `in_progress`; unfinished work cannot promote on completion or
-the Rework tick. A rebase with the same captured PR diff fingerprint is
-no-progress unless a current-attempt Workpad completion claim is corroborated by
-an open, non-draft, conflict-free PR with no failing CI (pending is allowed), or
+Workpad reports `in_progress`; current unfinished work cannot promote on completion or
+the Rework tick. Completion and promotion use the same forge-over-assertion
+interpretation (#2949): a hydrated merged PR, or a non-draft open PR whose head
+commit is strictly newer than the recorded structured Workpad, supersedes an
+`in_progress` assertion without explicit blockers or human action. Missing or
+equal timestamps retain the open-PR assertion. This interpretation does not
+rewrite the parsed or stored Workpad, credit an artifact receipt to spend/progress,
+or manufacture a current-attempt completion claim for cleanliness accounting.
+`TestCompletionForgeEvidencePreservesReceipt` exercises these shared consumers.
+`TestCompletionForgeEvidence`, `TestCompletionForgeEvidenceClassification`, and
+`TestCompletionForgeEvidenceDispatch` cover classification and dispatch in both
+active lanes; no-PR work remains eligible for implementation. A rebase with the
+same captured PR diff fingerprint is no-progress unless a current-attempt Workpad
+completion claim or superseded stale assertion is corroborated by an open,
+non-draft, conflict-free PR with no failing CI (pending is allowed), or
 the tracker stops reporting a known conflict in a recognized mergeability state.
 Unknown includes tracker recomputation and credits progress without granting merge
 readiness. Attempt identity prevents stale-claim replay; tracker evidence provides
