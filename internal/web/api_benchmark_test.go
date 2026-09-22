@@ -64,9 +64,11 @@ func TestProjectStateAPIRepresentativeDataCompletesBeforeDeadline(t *testing.T) 
 		ctx, cancel = context.WithTimeout(ctx, projectStatePerformanceDeadline)
 	}
 	defer cancel()
+	requestStarted := time.Now()
 	recorder := projectStatePerformanceRequest(ctx, server, 1)
+	requestElapsed := time.Since(requestStarted)
 	if projectStatePerformanceDeadlineEnabled && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatalf("project state request exceeded %s", projectStatePerformanceDeadline)
+		t.Fatalf("project state request exceeded %s: elapsed %s", projectStatePerformanceDeadline, requestElapsed)
 	}
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
