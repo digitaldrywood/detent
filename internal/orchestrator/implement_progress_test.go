@@ -1739,7 +1739,7 @@ func TestImplementProgressMergedCompletionQualification(t *testing.T) {
 	}{
 		{name: "complete merged green clean", qualifies: true},
 		{name: "missing workpad", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal = nil }},
-		{name: "workpad still in progress", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.Status = workpad.StatusInProgress }},
+		{name: "merged forge supersedes in progress", qualifies: true, mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.Status = workpad.StatusInProgress }},
 		{name: "prose workpad", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.Source = workpad.SourceProse }},
 		{name: "human action remains", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.WorkpadSignal.HumanAction = "approve release" }},
 		{name: "blocker remains", mutate: func(issue *connector.Issue, _ *DiffStats) {

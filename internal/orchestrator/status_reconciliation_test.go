@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -155,6 +156,66 @@ func TestTerminalIssueClosure(t *testing.T) {
 
 			if got := len(tracker.closes); got != tt.wantCloses {
 				t.Fatalf("CloseIssue() calls = %d, want %d: %#v", got, tt.wantCloses, tracker.closes)
+			}
+		})
+	}
+}
+
+func TestCompletionTransitionClosesIssue(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		operational bool
+		closeError  bool
+		path        string
+	}{
+		{name: "operational completion", operational: true},
+		{name: "merged PR without closing keyword"},
+		{name: "operational close failure", operational: true, closeError: true},
+		{name: "merged PR close failure", closeError: true},
+		{name: "stale merged PR", path: "merged"},
+		{name: "stale operational completion", operational: true, path: "merging"},
+		{name: "stale merged PR close failure", path: "merged", closeError: true},
+		{name: "stale operational close failure", operational: true, path: "merging", closeError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := statusReconcileLandedIssue("completion", "In Progress", false)
+			issue.URL = "https://github.com/digitaldrywood/detent/issues/2911"
+			decision := autoPromoteDecision(AutoPromoteActionPromote, AutoPromoteReasonPullRequestMerged)
+			if tt.operational {
+				issue.PullRequest = nil
+				decision = autoPromoteDecision(AutoPromoteActionComplete, AutoPromoteReasonOperationalCompletion)
+			}
+			tracker := &statusReconcileConnector{}
+			if tt.closeError {
+				tracker.closeErr = errors.New("close failed")
+			}
+			orch := newStatusReconcileOrchestrator(tracker)
+			state := newState(orch.cfg)
+			var applied bool
+			switch tt.path {
+			case "merged":
+				applied = orch.applyStaleMergedPullRequestDecision(t.Context(), &state, issue, AutoPromoteSummaryFromIssue(issue), decision, "Done", time.Now())
+			case "merging":
+				applied = orch.applyStaleMergingPullRequestDecision(t.Context(), &state, issue, staleMergingPullRequestDecision{targetState: "Done", reason: string(decision.Reason)}, time.Now())
+			default:
+				_, applied = orch.applyAutoPromoteDecisionWithTarget(t.Context(), &state, issue, AutoPromoteSummaryFromIssue(issue), decision, "Done", time.Now())
+			}
+			if tt.closeError {
+				if applied || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+					t.Fatal("failed closure published completion")
+				}
+				return
+			}
+			if !applied {
+				t.Fatal("completion transition was not applied")
+			}
+			if len(tracker.closes) != 1 || tracker.closes[0] != issue.ID {
+				t.Fatalf("closes = %v, want issue closure", tracker.closes)
+			}
+			if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], "Closed [this issue]("+issue.URL+")") {
+				t.Fatalf("completion comment lacks closure link: %v", tracker.comments)
 			}
 		})
 	}
@@ -325,6 +386,7 @@ type statusReconcileConnector struct {
 	updates        []statusUpdate
 	comments       []string
 	closes         []string
+	closeErr       error
 	drift          connector.StatusDrift
 	fetchByStates  [][]string
 	fetchByIDCount int
@@ -355,7 +417,7 @@ func (c *statusReconcileConnector) CreateComment(_ context.Context, _ string, bo
 
 func (c *statusReconcileConnector) CloseIssue(_ context.Context, issueID string) error {
 	c.closes = append(c.closes, issueID)
-	return nil
+	return c.closeErr
 }
 
 func (c *statusReconcileConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {

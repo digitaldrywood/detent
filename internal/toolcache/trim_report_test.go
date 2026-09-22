@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +46,7 @@ func TestTrimWithReport(t *testing.T) {
 				cancel()
 			}
 			// A second pass verifies accounting when the trim timestamp already exists.
-			for range 2 {
+			for sweep := range 2 {
 				report, err := TrimWithReport(ctx, root, Policy{MaxBytes: tt.cap}, now)
 				if tt.cancel {
 					if !errors.Is(err, context.Canceled) || report.Error == "" || report.LastTrim != "" {
@@ -61,6 +63,21 @@ func TestTrimWithReport(t *testing.T) {
 				}
 				if report.BuildPath != root || report.BuildBytes != want || report.LastTrim != now.Format(time.RFC3339Nano) {
 					t.Fatalf("report = %+v, want %d bytes", report, want)
+				}
+				var age, size int64
+				if sweep == 0 {
+					if tt.age > 48*time.Hour {
+						age = 10
+					} else if tt.cap == 1 {
+						size = 10
+					}
+				}
+				if report.AgeExpiredBytes != age || report.SizeEvictedBytes != size || report.RetainedBytes != want {
+					t.Fatalf("sweep counters = %+v", report)
+				}
+				inspected := inspect(t.Context(), func(context.Context) (Paths, error) { return Paths{Build: root}, nil })
+				if inspected.AgeExpiredBytes != age || inspected.SizeEvictedBytes != size || inspected.RetainedBytes != want || inspected.Error != "" {
+					t.Fatalf("persisted sweep=%+v", inspected)
 				}
 				raw, err := json.Marshal(report)
 				if err != nil {
@@ -93,7 +110,11 @@ func TestTrimWithReportSkipsUnrelatedDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := int64(len(now.Format(time.RFC3339Nano)) + 1); report.BuildBytes != want {
+	marker, err := os.Stat(filepath.Join(root, "detent-trim.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := marker.Size(); report.BuildBytes != want {
 		t.Fatalf("build bytes = %d, want trim measurement %d", report.BuildBytes, want)
 	}
 }
@@ -104,6 +125,42 @@ func TestTrimWithReportSkipped(t *testing.T) {
 			report, err := TrimWithReport(t.Context(), root, Policy{}, time.Now())
 			if err != nil || report.LastTrim != "" || report.BuildBytes != 0 {
 				t.Fatalf("skipped trim = %+v, %v", report, err)
+			}
+		})
+	}
+}
+
+func TestTrimBothPhases(t *testing.T) {
+	for _, bound := range []int64{100, 1000} {
+		t.Run(strconv.FormatInt(bound, 10), func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Now().UTC()
+			if err := os.WriteFile(filepath.Join(root, "README"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "00"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for i, age := range []time.Duration{72 * time.Hour, time.Hour} {
+				path := filepath.Join(root, "00", fmt.Sprintf("%064x-d", i))
+				if err := os.WriteFile(path, make([]byte, 200), 0600); err != nil {
+					t.Fatal(err)
+				}
+				at := now.Add(-age)
+				if err := os.Chtimes(path, at, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report, err := TrimWithReport(t.Context(), root, Policy{MaxBytes: bound}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wantSize int64
+			if bound == 100 {
+				wantSize = 200
+			}
+			if report.AgeExpiredBytes != 200 || report.SizeEvictedBytes != wantSize {
+				t.Fatalf("report=%+v", report)
 			}
 		})
 	}

@@ -108,8 +108,10 @@ build: generate
 test:
 	bash scripts/test-workspace.sh
 	@packages="$$(go list ./...)" && \
-	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
+	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace" && $$0 != "github.com/digitaldrywood/detent/internal/web"')" && \
 	$(GO_TEST) $$packages
+	# Measure the 500ms request budget without competing package tests or builds.
+	$(GO_TEST) ./internal/web
 
 test-race: test-race-hub test-race-orchestrator
 	bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
@@ -132,9 +134,11 @@ test-cover:
 	@mkdir -p tmp
 	bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence
 	@packages="$$(go list ./...)" && \
-	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
+	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace" && $$0 != "github.com/digitaldrywood/detent/internal/web"')" && \
 	$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages
-	go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out > $(COVERPROFILE_RAW)
+	# Keep the web timing check isolated and coverage profiles disjoint.
+	$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web
+	go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out > $(COVERPROFILE_RAW)
 	@$(MAKE) coverage-check
 
 coverage-check:

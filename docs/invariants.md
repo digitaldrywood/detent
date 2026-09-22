@@ -20,17 +20,33 @@ A passing test does not authorize weakening a rule.
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
 Completion classification preserves genuine diff progress even when a structured
-Workpad reports `in_progress`; unfinished work cannot promote on completion or
-the Rework tick. A rebase with the same captured PR diff fingerprint is
-no-progress unless a current-attempt Workpad completion claim is corroborated by
-an open, non-draft, conflict-free PR with no failing CI (pending is allowed), or
+Workpad reports `in_progress`; current unfinished work cannot promote on completion or
+the Rework tick. Completion and promotion use the same forge-over-assertion
+interpretation (#2949): a hydrated merged PR, or a non-draft open PR whose head
+commit is strictly newer than the recorded structured Workpad, supersedes an
+`in_progress` assertion without explicit blockers or human action. Missing or
+equal timestamps retain the open-PR assertion. This interpretation does not
+rewrite the parsed or stored Workpad, credit an artifact receipt to spend/progress,
+or manufacture a current-attempt completion claim for cleanliness accounting.
+`TestCompletionForgeEvidencePreservesReceipt` exercises these shared consumers.
+`TestCompletionForgeEvidence`, `TestCompletionForgeEvidenceClassification`, and
+`TestCompletionForgeEvidenceDispatch` cover classification and dispatch in both
+active lanes; no-PR work remains eligible for implementation. A rebase with the
+same captured PR diff fingerprint is no-progress unless a current-attempt Workpad
+completion claim or superseded stale assertion is corroborated by an open,
+non-draft, conflict-free PR with no failing CI (pending is allowed), or
 the tracker stops reporting a known conflict in a recognized mergeability state.
 Unknown includes tracker recomputation and credits progress without granting merge
 readiness. Attempt identity prevents stale-claim replay; tracker evidence provides
 the independent corroboration. The dispatch fingerprint and mergeability baseline
 persist with the attempt across restart, including merge-mode conflict repairs in active lanes
 (#2929); a changed head SHA alone is not implementation. No-progress
-outcomes consume the existing issue attempt allowance,
+outcomes consume the existing issue attempt allowance, including merge-mode
+conflict repairs dispatched in active lanes. Successful repairs also consume a
+started code session without requiring failure evidence. Merging-lane runs,
+legacy merge-mode rows without a lane, and historical merge-routing receipts
+remain excluded (`TestAttemptAllowanceExcludesMergeRouting` and
+`TestAttemptAllowanceDispatchAndRestart`, #2933). No-progress outcomes
 cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
 Blocked handoff when the allowance is exhausted (#2922). Draft PRs remain
 ineligible for review and the tick never marks them ready.
@@ -62,6 +78,10 @@ Any closed issue leaves non-terminal lanes on the first successful reconciliatio
 Non-completed closures are also removed from the board, pipeline, and active-work
 tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
+Accepted operational completions also close the issue in the existing terminal
+transition; merged PR completion does not depend on a closing keyword (#2911).
+The existing completion comment links the issue closure.
+`TestCompletionTransitionClosesIssue` covers both completion paths.
 
 ProjectV2 combined refresh applies the instance author, assignee, and label
 predicates before scheduler enrichment (#2917), including fallback readers.
@@ -307,6 +327,13 @@ project referencing the unavailable tracker. `TestStartupInfrastructureFailureRe
 and `TestWorkflowLoadFailureClassification` preserve the infrastructure boundary
 (INV-2); no retry or recovery path is added.
 
+Operational completion (#2911) reuses the existing terminal issue closer and
+`operational_completion` reason. Closure precedes terminal lane publication so
+close failures leave the prior lane retryable; the existing completion comment
+links closure across direct completion and stale merged/Merging reconciliation.
+The reviewed transition fingerprints preserve existing reason
+selection and add no mechanism, reason code, or recovery path.
+
 Provider capacity retries use the existing provider resume deadline (including
 reset jitter) while it is in the future (#2912). Speculative probe backoff cannot
 shorten that pause; elapsed deadlines retain normal probe backoff and operator
@@ -426,6 +453,12 @@ lane. No separate reconciliation loop is introduced. Closure markers never becom
 authorized human replies; reopening requires a new question key.
 `TestRefreshResolvesTerminalHumanQuestions` covers terminal states, reopening,
 tracker failure, and the distinction between closure and human authorization.
+
+Question reporting (#2945) omits unanswered questions whose latest per-project,
+per-issue scheduler decision declines authorization. Operations and health share
+this read-only projection; stored questions and dispatch reply handling remain
+unchanged. `TestOpenHumanQuestionsAuthorization` covers declined and authorized
+waits, reauthorization, and project/issue isolation without a recovery mechanism.
 
 Human-owned Workpad blockers route through the existing completion Blocked
 transition on the first report (#2779). The repeated-report threshold is removed:
@@ -1347,14 +1380,19 @@ Codex and Claude Code backends and checks absent, inherited, and explicit values
 `TestINV12WorkspaceCacheKeys`, `TestINV12DoctorNativeCaches`,
 `TestINV12DoctorWorkspaceKinds`, and `TestINV12TrimReadout` enforce config rejection
 and read-only diagnostics. All are registered in the invariant manifest.
-Doctor reports native Go cache paths and sizes per project, the last completed
+Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
 under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
-The native build cache defaults to 20 GiB with the existing 48-hour age trim.
-Doctor warns when the effective bound exceeds 10% of available space on the
-cache volume. The existing reaper reuses its trim walk to publish retained build-cache bytes in
+The native build cache defaults to 10% of total cache-volume capacity with the
+existing 48-hour age trim; explicit bounds win, and unavailable capacity falls
+back to 20 GiB with a doctor diagnostic. Omitted size bounds remain omitted
+through config writes and are normalized only for runtime use. Doctor warns when the effective bound
+exceeds 10% of total volume capacity or the last sweep evicted any bytes for size.
+The existing trim marker also records age-expired bytes, size-evicted bytes, and
+retained size; timestamp-only markers remain readable. Legacy-root checks remain
+per project. The existing reaper reuses its trim walk to publish retained build-cache bytes and both removal counters plus last-sweep retained size in
 `host_cache` in `/api/v1/state` as the sole cache surface (#2742). It does not rescan
 the build cache or traverse the module cache; unmeasured module fields are omitted.
 

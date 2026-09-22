@@ -29,6 +29,10 @@ func TestAttemptAllowanceExcludesMergeRouting(t *testing.T) {
 	}{
 		{name: "merge worker type", merge: store.WorkAttempt{WorkerType: "merge"}, want: 1},
 		{name: "merge run mode stored as agent", merge: store.WorkAttempt{WorkerType: "agent", WorkerMetadataJSON: `{"run_mode":"merge"}`}, want: 1},
+		{name: "Merging lane agent", merge: store.WorkAttempt{WorkerType: "agent", Lane: "Merging", WorkerMetadataJSON: `{"run_mode":"merge"}`}, want: 1},
+		{name: "Rework conflict repair without progress", merge: store.WorkAttempt{WorkerType: "agent", Lane: "Rework", WorkerMetadataJSON: `{"run_mode":"merge"}`, ErrorClass: "no_progress"}, want: 3},
+		{name: "In Progress conflict repair without progress", merge: store.WorkAttempt{WorkerType: "agent", Lane: "In Progress", WorkerMetadataJSON: `{"run_mode":"merge"}`, ErrorClass: "no_progress"}, want: 3},
+		{name: "successful conflict repair", merge: store.WorkAttempt{WorkerType: "agent", Lane: "Rework", WorkerMetadataJSON: `{"run_mode":"merge"}`, TerminalState: store.WorkAttemptTerminalSuccess}, want: 3},
 		{name: "historical successful routing receipt", merge: store.WorkAttempt{WorkerType: "agent", Phase: "rework", StatusMessage: "merge worker routed current head to Rework"}, want: 1},
 		{name: "historical timed out routing receipt", merge: store.WorkAttempt{WorkerType: "agent", TerminalState: store.WorkAttemptTerminalTimedOut, Phase: "rework", StatusMessage: "merge worker routed current head to Rework", ErrorClass: mergeFallbackRequiresReworkReason}, want: 1},
 		{name: "three implementation sessions", merge: store.WorkAttempt{WorkerType: "agent", WorkerMetadataJSON: `{"run_mode":"implement"}`, ErrorClass: "no_progress"}, want: 3},
@@ -258,6 +262,7 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 		{name: "infra failure leaves a session", sessions: 3, infra: true, wantMode: runpkg.RunModeImplement},
 		{name: "reported question-ending sequence", sessions: 3, wantMode: runpkg.RunModeImplement, phase: "waiting", message: "waiting for a human reply on the original issue"},
 		{name: "third conflicted session repairs", sessions: 2, wantMode: runpkg.RunModeMerge, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}}},
+		{name: "In Progress conflicted sessions reach triage", sessions: 3, wantMode: runpkg.RunModeTriage, issue: connector.Issue{State: "In Progress", PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}}},
 		{name: "reported conflicted-session sequence", sessions: 3, wantMode: runpkg.RunModeTriage, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}}},
 		{name: "conflicted PR with human action", sessions: 3, wantMode: runpkg.RunModeMerge, issue: connector.Issue{PullRequest: &connector.PullRequest{State: "open", MergeableState: "dirty"}, WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}},
 		{name: "reported human hardware wait sequence", sessions: 3, wantMode: runpkg.RunModeImplement, issue: connector.Issue{WorkpadSignal: &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "check hardware"}}},
@@ -268,14 +273,19 @@ func TestAttemptAllowanceDispatchAndRestart(t *testing.T) {
 			issue.ID = "stalled"
 			issue.Identifier = "owner/repo#2595"
 			issue.URL = "https://github.com/owner/repo/issues/2595"
-			issue.State = "Rework"
-			metadata := marshalWorkAttemptJSON(map[string]any{dispatchLoopStartMetadataKey: newDispatchLoopStartRecord(issue, runpkg.RunModeImplement)})
+			if issue.State == "" {
+				issue.State = "Rework"
+			}
 			cfg := laneMutationTestConfig()
 			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now.Add(-time.Hour))
+			selector := newLaneMutationTestOrchestrator(cfg, nil, db, db, now)
+			selectionState := newState(cfg)
+			mode := selector.dispatchMode(t.Context(), &selectionState, issue)
+			metadata := marshalWorkAttemptJSON(map[string]any{dispatchLoopStartMetadataKey: newDispatchLoopStartRecord(issue, mode), "run_mode": mode})
 			for i := range tt.sessions {
 				if i > 0 {
 					var err error
-					id, err = db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: "Rework", AttemptNumber: i + 1, StartedAt: now.Add(-time.Duration(10-i) * time.Minute)})
+					id, err = db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: issue.State, AttemptNumber: i + 1, StartedAt: now.Add(-time.Duration(10-i) * time.Minute)})
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -30,8 +30,13 @@ and sizes.
 global:
   cache:
     max_age: 48h
-    max_bytes: 21474836480 # 20 GiB
+    # max_bytes: 53687091200 # optional explicit 50 GiB bound
 ```
+
+When omitted, `max_bytes` is 10% of the total capacity of the volume holding
+`GOCACHE` (20 GiB fallback if capacity is unavailable). Free space does not
+change this bound. Doctor reports the fallback and warns on last-sweep size
+eviction or a bound above 10% of total volume capacity.
 
 The existing workspace reaper expires build-cache entries older than `max_age`.
 It then evicts remaining build entries oldest-first until the cache fits

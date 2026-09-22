@@ -190,12 +190,15 @@ func removeLegacy(workspaceRoot string, chmod func(*os.Root, string, os.FileMode
 
 // Report describes the locally resolved caches for doctor and status.
 type Report struct {
-	BuildPath   string `json:"build_path"`
-	BuildBytes  int64  `json:"build_bytes"`
-	ModulePath  string `json:"module_path,omitempty"`
-	ModuleBytes int64  `json:"module_bytes,omitempty"`
-	Error       string `json:"error,omitempty"`
-	LastTrim    string `json:"last_trim,omitempty"`
+	AgeExpiredBytes  int64  `json:"age_expired_bytes"`
+	SizeEvictedBytes int64  `json:"size_evicted_bytes"`
+	RetainedBytes    int64  `json:"retained_bytes"`
+	BuildPath        string `json:"build_path"`
+	BuildBytes       int64  `json:"build_bytes"`
+	ModulePath       string `json:"module_path,omitempty"`
+	ModuleBytes      int64  `json:"module_bytes,omitempty"`
+	Error            string `json:"error,omitempty"`
+	LastTrim         string `json:"last_trim,omitempty"`
 }
 
 func Inspect(ctx context.Context) Report { return inspect(ctx, Resolve) }
@@ -209,7 +212,11 @@ func inspect(ctx context.Context, resolvePaths func(context.Context) (Paths, err
 	if paths.Build != "" && paths.Build != "off" {
 		data, readErr := os.ReadFile(filepath.Join(paths.Build, "detent-trim.txt"))
 		if readErr == nil {
-			at, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+			stamp, counts, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+			at, parseErr := time.Parse(time.RFC3339Nano, stamp)
+			if parseErr == nil && counts != "" {
+				_, parseErr = fmt.Sscanf(counts, "%d %d %d", &report.AgeExpiredBytes, &report.SizeEvictedBytes, &report.RetainedBytes)
+			}
 			if parseErr != nil {
 				report.Error = "read last reaper trim: " + parseErr.Error()
 			} else {
@@ -232,9 +239,24 @@ func inspect(ctx context.Context, resolvePaths func(context.Context) (Paths, err
 }
 
 func (r Report) String() string {
-	detail := fmt.Sprintf("GOCACHE=%s (%d bytes); GOMODCACHE=%s (%d bytes)", r.BuildPath, r.BuildBytes, r.ModulePath, r.ModuleBytes)
+	detail := fmt.Sprintf("GOCACHE=%s (%s); GOMODCACHE=%s (%s)", r.BuildPath, FormatBytes(r.BuildBytes), r.ModulePath, FormatBytes(r.ModuleBytes))
 	if r.Error != "" {
 		detail += "; " + r.Error
 	}
 	return detail
+}
+
+// FormatBytes formats cache sizes in binary units for operator diagnostics.
+func FormatBytes(n int64) string {
+	value := float64(n)
+	for _, unit := range []string{"bytes", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"} {
+		if value < 1024 || unit == "EiB" {
+			if unit == "bytes" {
+				return fmt.Sprintf("%d bytes", n)
+			}
+			return fmt.Sprintf("%.1f %s", value, unit)
+		}
+		value /= 1024
+	}
+	return ""
 }

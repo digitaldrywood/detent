@@ -752,7 +752,7 @@ func (o *Orchestrator) reconcileOpenTerminalIssueDrift(
 		if issue.Closed {
 			continue
 		}
-		closed, err := o.closeLandedTerminalIssue(ctx, issue)
+		closed, err := o.closeCompletedTerminalIssue(ctx, issue, "")
 		if err != nil {
 			o.logger.Warn("reconcile open terminal issue failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 			remaining = append(remaining, issue)

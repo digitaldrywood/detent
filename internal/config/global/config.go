@@ -1047,7 +1047,7 @@ func defaultConfig(path string) Config {
 
 func defaultSettings() Settings {
 	return Settings{
-		Cache:               (toolcache.Policy{}).Normalized(),
+		Cache:               toolcache.Policy{MaxAge: 48 * time.Hour},
 		MaxConcurrentAgents: 8,
 		RateWindowPacing:    workflowconfig.DefaultRateWindowPacing(),
 		Scheduling:          SchedulingWeighted,
@@ -2170,7 +2170,10 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 			return Settings{}, fmt.Errorf("global.cache: %w", err)
 		}
 	}
-	settings.Cache = settings.Cache.Normalized()
+	// Preserve an omitted size bound through config writes; derive it at runtime.
+	if settings.Cache.MaxAge == 0 {
+		settings.Cache.MaxAge = 48 * time.Hour
+	}
 	if attrs["agents"] != nil {
 		if err := decodeYAMLValue(attrs["agents"], &settings.Agents); err != nil {
 			return Settings{}, fmt.Errorf("global.agents: %w", err)

@@ -27,7 +27,7 @@ func TestCombinedCoveragePublishesOnlyCurrentSuccessfulRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"pass", "hub-fail", "rest-fail", "list-fail", "missing-hub", "overlap", "changed-selection", "rest-race-fail", "orchestrator-fail", "workspace-fail", "workspace-race-fail", "missing-workspace"} {
+	for _, mode := range []string{"pass", "hub-fail", "rest-fail", "web-fail", "list-fail", "missing-hub", "missing-web", "overlap", "changed-selection", "rest-race-fail", "orchestrator-fail", "workspace-fail", "workspace-race-fail", "missing-workspace"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -39,7 +39,7 @@ set -eu
 if [ "$1" = list ]; then
     [ "$FIXTURE_MODE" != list-fail ] || exit 1
     if [ "$2" = ./... ]; then
-        printf '%s\n' github.com/digitaldrywood/detent/internal/hubserver github.com/digitaldrywood/detent/internal/orchestrator github.com/digitaldrywood/detent/internal/workspace example.com/rest
+        printf '%s\n' github.com/digitaldrywood/detent/internal/hubserver github.com/digitaldrywood/detent/internal/orchestrator github.com/digitaldrywood/detent/internal/workspace github.com/digitaldrywood/detent/internal/web example.com/rest
     elif [ "$FIXTURE_MODE" = changed-selection ] && [ "$2" = -race ]; then
         printf '%s\n' changed.go
     else
@@ -58,7 +58,7 @@ else
     if [ "$1" = run ]; then group=hub; fi
     if [ "$1" = run ] && [ "${!#}" = ./internal/workspace ]; then
         group=workspace
-        case "$*" in *"-timeout 20m"*) ;; *) exit 10 ;; esac
+        case "$*" in *"-timeout 30m"*) ;; *) exit 10 ;; esac
         case " $* " in
             *" -race "*) [ "$FIXTURE_MODE" != workspace-race-fail ]; exit ;;
         esac
@@ -67,16 +67,22 @@ else
         [ "$2" = -count=1 ] || { echo 'direct tests must disable result caching' >&2; exit 12; }
         for argument in "$@"; do
             [ "$argument" != github.com/digitaldrywood/detent/internal/workspace ] || exit 11
+            [ "$argument" != github.com/digitaldrywood/detent/internal/web ] || exit 13
         done
     fi
     profile_mode=set
     if [ "$group" != rest ]; then profile_mode=atomic; fi
     if [ "$1 $2 ${3:-}" = 'test -count=1 -race' ]; then
+        case " $* " in *" ./internal/web "*) ;; *) exit 14 ;; esac
         for argument in "$@"; do
             [ "$argument" != github.com/digitaldrywood/detent/internal/orchestrator ] || exit 7
         done
         [ "$FIXTURE_MODE" != rest-race-fail ]
         exit
+    fi
+    if [ "${!#}" = ./internal/web ]; then
+        [ "$#" = 4 ] || exit 15
+        group=web
     fi
     profile=
     while [ "$#" -gt 0 ]; do
@@ -126,7 +132,7 @@ fi
 					t.Fatal(err)
 				}
 				if mode == "pass" {
-					if strings.Contains(string(profile), "stale") || strings.Count(string(profile), "/file"+input+".go:") != 3 {
+					if strings.Contains(string(profile), "stale") || strings.Count(string(profile), "/file"+input+".go:") != 4 {
 						t.Fatalf("published wrong input: %s", profile)
 					}
 				} else if string(profile) != "stale prior result" {

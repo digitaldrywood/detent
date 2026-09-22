@@ -21,6 +21,12 @@ func TestReworkLivePullRequestPromotion(t *testing.T) {
 		wantPromote bool
 	}{
 		{name: "clean without completion", wantPromote: true},
+		{name: "head newer than stale workpad", wantPromote: true, change: func(i *connector.Issue) {
+			recorded := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+			head := recorded.Add(time.Minute)
+			i.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad("in_progress", "", nil), UpdatedAt: &recorded}}
+			i.PullRequest.HeadCommittedAt = &head
+		}},
 		{name: "clean with completion", completed: true, wantPromote: true},
 		{name: "unresolved thread", change: func(i *connector.Issue) {
 			i.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{}}

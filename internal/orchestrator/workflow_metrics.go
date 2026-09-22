@@ -191,6 +191,18 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 			issue.PullRequest.MergeQueueEntry = nil
 		}
 	}
+	if stateIn(targetState, o.cfg.TerminalStates) {
+		// Close before publishing the terminal lane so a failed close remains retryable.
+		closed, err := o.closeCompletedTerminalIssue(ctx, issue, reason)
+		if err != nil {
+			return fmt.Errorf("close terminal issue %s: %w", issueID, err)
+		}
+		if closed {
+			issue.Closed = true
+			issue.ClosedReason = "completed"
+		}
+	}
+
 	write, err := o.prepareLaneWrite(ctx, issue, targetState, reason, at)
 	if err != nil {
 		return err
@@ -234,21 +246,9 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	observation := store.LaneObservation{State: targetState, EnteredAt: transitionAt, Origin: string(workflowLaneMutationAttribution(reason, metadata).Origin)}
 	receiptErr = errors.Join(receiptErr, o.saveLaneObservation(ctx, issueID, observation))
 	if stateIn(targetState, o.cfg.TerminalStates) {
-		terminalIssue := cloneIssue(issue)
-		if strings.TrimSpace(terminalIssue.ID) == "" {
-			terminalIssue.ID = issueID
-		}
-		terminalIssue.State = targetState
-		closed, err := o.closeLandedTerminalIssue(ctx, terminalIssue)
-		if err != nil {
-			return fmt.Errorf("close terminal issue %s: %w", issueID, err)
-		}
-		if closed {
-			issue.Closed = true
-			issue.ClosedReason = "completed"
-		}
-		o.clearMergeRequiredCheckStreaks(ctx, terminalIssue)
+		o.clearMergeRequiredCheckStreaks(ctx, issue)
 	}
+
 	updateIssueStateSnapshots(state, issueID, issue, targetState, transitionAt)
 	recordIssueStateMutationProvenance(state, issueID, issue, targetState, transitionAt, reason, metadata)
 	if strings.TrimSpace(issue.ID) == "" {
