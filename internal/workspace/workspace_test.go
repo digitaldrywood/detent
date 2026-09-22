@@ -2661,7 +2661,7 @@ func initSourceRepoAt(t *testing.T, dir string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir source repo: %v", err)
 	}
-	if err := os.CopyFS(dir, os.DirFS(sourceRepoSeedDir)); err != nil {
+	if err := copySourceRepoSeed(dir, os.DirFS(sourceRepoSeedDir)); err != nil {
 		t.Fatalf("copy source repo seed: %v", err)
 	}
 }
