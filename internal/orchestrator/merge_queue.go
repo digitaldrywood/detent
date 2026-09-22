@@ -311,7 +311,7 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 		pullRequestNumber(issue) > 0
 }
 
-// Queue admission accepts skipped checks; verification still belongs to the
+// Queue admission accepts skipped and neutral checks; verification still belongs to the
 // merge group. Do not confuse the connector's pending verification with a
 // check that is still running or has never reported.
 func nativeMergeQueueChecksReady(pr *connector.PullRequest) bool {
@@ -327,7 +327,7 @@ func nativeMergeQueueChecksReady(pr *connector.PullRequest) bool {
 			completed[check.Name] = true
 			continue
 		}
-		if check.Status != "completed" || (check.Conclusion != "success" && check.Conclusion != "skipped") {
+		if check.Status != "completed" || (check.Conclusion != "success" && check.Conclusion != "skipped" && check.Conclusion != "neutral") {
 			return false
 		}
 		completed[check.Name] = true

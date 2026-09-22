@@ -1007,9 +1007,10 @@ a dequeue. A consumed provider entry is already withdrawn.
 lane progress, and hydration request counts (#2826).
 
 Queue admission distinguishes verification from enqueue eligibility: completed
-skipped checks may enter the native queue, but missing, running, cancelled, or
+success, skipped, and neutral checks may enter the native queue, but missing, running, cancelled, or
 failed checks do not qualify through that path. The provider still enforces its
-required contexts. `TestNativeMergeQueueSkippedChecks` covers this distinction;
+required contexts. `TestNativeMergeQueueSkippedChecks` and
+`TestNativeMergeQueueNeutralChecks` cover this distinction;
 `TestAttemptTriageSkippedChecks` ensures triage describes skipped checks as not
 fully verified, even when the provider aggregate is green (#2948).
 

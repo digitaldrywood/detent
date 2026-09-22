@@ -1678,6 +1678,34 @@ func TestNativeMergeQueueWithdrawalDoesNotBlockDone(t *testing.T) {
 	}
 }
 
+func TestNativeMergeQueueNeutralChecks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		status     string
+		conclusion string
+		want       bool
+	}{
+		{name: "completed neutral permits enqueue", status: "completed", conclusion: "neutral", want: true},
+		{name: "running neutral does not permit enqueue", status: "in_progress", conclusion: "neutral"},
+		{name: "queued neutral does not permit enqueue", status: "queued", conclusion: "neutral"},
+		{name: "failed additional check", status: "completed", conclusion: "failure"},
+		{name: "cancelled additional check", status: "completed", conclusion: "cancelled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(401, "pending")
+			issue.PullRequest.Checks = []connector.PullRequestCheck{
+				{Name: "Test", Status: "completed", Conclusion: "skipped"},
+				{Name: "Review", Status: tt.status, Conclusion: tt.conclusion},
+			}
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "pending"}}
+			if got := nativeMergeQueueCandidate(issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
+				t.Fatalf("candidate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNativeMergeQueueSkippedChecks(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
