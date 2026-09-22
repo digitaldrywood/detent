@@ -2,10 +2,14 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -123,6 +127,106 @@ func TestSourceRepoFixturesAreIndependent(t *testing.T) {
 				if got := readFile(t, filepath.Join(dir, "README.md")); got != "source repo\n" {
 					t.Errorf("README.md = %q", got)
 				}
+			}
+		})
+	}
+}
+
+// Git may finish background maintenance after seed construction returns. Lock
+// files are coordination state, not repository contents; exclude them before
+// CopyFS asks for their metadata or opens them. Ordinary copy errors stay fatal.
+type seedCopyFS struct{ fs.FS }
+
+func (f seedCopyFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(f.FS, name)
+	if err != nil {
+		return nil, err
+	}
+	if name != ".git" && !strings.HasPrefix(name, ".git/") {
+		return entries, nil
+	}
+	filtered := make([]fs.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".lock") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered, nil
+}
+
+// removingSeedFS removes a file after enumeration but before CopyFS opens it.
+type removingSeedFS struct {
+	fs.FS
+	root    string
+	target  string
+	removed bool
+}
+
+func (f *removingSeedFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(f.FS, name)
+	if err == nil && name == path.Dir(f.target) && !f.removed {
+		err = os.Remove(filepath.Join(f.root, filepath.FromSlash(f.target)))
+		f.removed = err == nil
+	}
+	return entries, err
+}
+
+func copySourceRepoSeed(dir string, source fs.FS) error {
+	return os.CopyFS(dir, seedCopyFS{source})
+}
+
+func TestCopySourceRepoSeedTransientFiles(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		target     string
+		remove     bool
+		wantError  bool
+		wantCopied bool
+	}{
+		{name: "disappearing maintenance lock", target: ".git/objects/maintenance.lock", remove: true},
+		{name: "existing index lock", target: ".git/index.lock"},
+		{name: "existing ref lock", target: ".git/refs/heads/main.lock"},
+		{name: "tracked lock file", target: "dependencies.lock", wantCopied: true},
+		{name: "missing git object", target: ".git/objects/ab/object", remove: true, wantError: true},
+		{name: "missing tracked file", target: "README.md", remove: true, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source, destination := t.TempDir(), t.TempDir()
+			target := filepath.Join(source, filepath.FromSlash(tt.target))
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sourceFS := os.DirFS(source)
+			removing := &removingSeedFS{FS: sourceFS, root: source, target: tt.target}
+			if tt.remove {
+				sourceFS = removing
+			}
+			err := copySourceRepoSeed(destination, sourceFS)
+			if tt.remove && !removing.removed {
+				t.Fatal("file was not removed during directory enumeration")
+			}
+			if tt.wantError {
+				if !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("copy error = %v, want missing file", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(tt.target)))
+			if tt.wantCopied {
+				if err != nil || string(data) != "fixture" {
+					t.Fatalf("copied file = %q, %v", data, err)
+				}
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("Git lock copied: read error = %v", err)
 			}
 		})
 	}
