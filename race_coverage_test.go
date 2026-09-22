@@ -58,7 +58,7 @@ else
     if [ "$1" = run ]; then group=hub; fi
     if [ "$1" = run ] && [ "${!#}" = ./internal/workspace ]; then
         group=workspace
-        case "$*" in *"-timeout 20m"*) ;; *) exit 10 ;; esac
+        case "$*" in *"-timeout 30m"*) ;; *) exit 10 ;; esac
         case " $* " in
             *" -race "*) [ "$FIXTURE_MODE" != workspace-race-fail ]; exit ;;
         esac
