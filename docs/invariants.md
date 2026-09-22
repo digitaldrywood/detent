@@ -312,6 +312,21 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Startup workflow definition/validation failures use the project manager's existing terminal
+unavailable-project reporting (#2969), including loads performed by the runner
+factory. The optional historical-session attribution backfill defers when any
+workflow definition is invalid, preserving ambiguity checks without aborting host
+startup. Git execution and filesystem read failures remain instance-fatal, including
+when a preceding project has an invalid definition. Classification lives in the
+shared workflow loader instead of unconditional caller wrappers. The manager’s
+duplicate startup/reload pause-reference validator is removed; the existing pause
+monitor owns evaluation errors and keeps unresolved projects paused.
+`TestStartupIsolatesWorkflowLoadFailure` verifies healthy-project dispatch and
+unavailable-project dashboard snapshots in both project orders, including a paused
+project referencing the unavailable tracker. `TestStartupInfrastructureFailureRemainsFatal`
+and `TestWorkflowLoadFailureClassification` preserve the infrastructure boundary
+(INV-2); no retry or recovery path is added.
+
 Operational completion (#2911) reuses the existing terminal issue closer and
 `operational_completion` reason. Closure precedes terminal lane publication so
 close failures leave the prior lane retryable; the existing completion comment

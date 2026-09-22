@@ -940,3 +940,58 @@ func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkflowLoadFailureClassification(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		ref            string
+		content        string
+		wantDefinition bool
+	}{
+		{name: "plain parse", content: "---\ntracker: [\n---\n", wantDefinition: true},
+		{name: "ref parse", ref: "HEAD", content: "---\ntracker: [\n---\n", wantDefinition: true},
+		{name: "repository unavailable", ref: "HEAD"},
+		{name: "filesystem read failure"},
+		{name: "git executable unavailable", ref: "HEAD"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			workflowPath := filepath.Join(root, "WORKFLOW.md")
+			if tt.content != "" {
+				if err := os.WriteFile(workflowPath, []byte(tt.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if tt.ref != "" {
+					runWorkflowSourceGit(t, root, "init")
+					runWorkflowSourceGit(t, root, "add", "WORKFLOW.md")
+					runWorkflowSourceGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
+				}
+			} else if tt.ref != "" {
+				root = filepath.Join(root, "unavailable")
+				workflowPath = "WORKFLOW.md"
+			} else if tt.ref == "" {
+				if err := os.Mkdir(workflowPath, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.name == "git executable unavailable" {
+				t.Setenv("PATH", t.TempDir())
+			}
+			cfg := globalconfig.Project{ID: "test", Workdir: root, Workflow: workflowPath, WorkflowRef: tt.ref}
+			for _, load := range []struct {
+				name string
+				fn   func() error
+			}{
+				{"workflow", func() error { _, err := LoadWorkflow(cfg); return err }},
+				{"project", func() error { _, err := Load(cfg, Dependencies{}); return err }},
+			} {
+				t.Run(load.name, func(t *testing.T) {
+					err := load.fn()
+					if err == nil || errors.Is(err, ErrProjectDefinition) != tt.wantDefinition {
+						t.Fatalf("error = %v, want definition = %v", err, tt.wantDefinition)
+					}
+				})
+			}
+		})
+	}
+}

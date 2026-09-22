@@ -2212,12 +2212,15 @@ type bootProvisioningConnector struct {
 }
 
 type fakeSessionProjectBackfiller struct {
+	calls        int
+	err          error
 	attributions []store.SessionProjectAttribution
 }
 
 func (f *fakeSessionProjectBackfiller) BackfillSessionProjectIDs(_ context.Context, attributions []store.SessionProjectAttribution) (int64, error) {
+	f.calls++
 	f.attributions = append([]store.SessionProjectAttribution(nil), attributions...)
-	return int64(len(attributions)), nil
+	return int64(len(attributions)), f.err
 }
 
 func (bootProvisioningConnector) Name() string {
