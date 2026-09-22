@@ -867,7 +867,8 @@ func (o *Orchestrator) reworkGateWaitCurrent(ctx context.Context, issue connecto
 func reworkGateWaitWorkpadComplete(issue connector.Issue) bool {
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
 	return ok && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
-		strings.TrimSpace(signal.Status) == workpad.StatusComplete && len(signal.Blockers) == 0 && strings.TrimSpace(signal.HumanAction) == ""
+		(strings.TrimSpace(signal.Status) == workpad.StatusComplete || completionForgeSupersedesWorkpad(issue.PullRequest, signal)) &&
+		len(signal.Blockers) == 0 && strings.TrimSpace(signal.HumanAction) == ""
 }
 
 func reworkGateWaitWorkpadBlocked(issue connector.Issue) bool {

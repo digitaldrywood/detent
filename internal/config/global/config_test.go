@@ -645,7 +645,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		},
 		Projects: []Project{
 			{
-				GlobalCache:      defaultSettings().Cache,
+				GlobalCache:      defaultSettings().Cache.Normalized(),
 				ID:               "detent",
 				Pool:             "code",
 				Workflow:         paths.workflowPath,

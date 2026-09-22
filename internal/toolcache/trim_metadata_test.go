@@ -15,6 +15,8 @@ func TestINV12TrimReadout(t *testing.T) {
 	}{
 		{"never trimmed", "", false, false},
 		{"completed trim", "", true, false},
+		{"legacy timestamp", "2026-09-14T12:00:00Z", false, false},
+		{"invalid counters", "2026-09-14T12:00:00Z\ninvalid", false, true},
 		{"invalid timestamp", "invalid", false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -39,7 +41,7 @@ func TestINV12TrimReadout(t *testing.T) {
 				t.Fatalf("report = %+v", got)
 			}
 			want := ""
-			if tt.trim {
+			if tt.trim || tt.name == "legacy timestamp" {
 				want = now.Format(time.RFC3339Nano)
 			}
 			if got.LastTrim != want {

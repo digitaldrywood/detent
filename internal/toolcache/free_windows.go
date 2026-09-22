@@ -13,3 +13,15 @@ func volumeFreeBytes(root string) (uint64, error) {
 	}
 	return available, nil
 }
+
+func volumeCapacityBytes(root string) (uint64, error) {
+	path, err := windows.UTF16PtrFromString(root)
+	if err != nil {
+		return 0, err
+	}
+	var available uint64
+	if err := windows.GetDiskFreeSpaceEx(path, nil, &available, nil); err != nil {
+		return 0, err
+	}
+	return available, nil
+}

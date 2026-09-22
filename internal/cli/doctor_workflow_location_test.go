@@ -46,8 +46,8 @@ projects:
 		t.Fatal("checkDoctorProjects() returned no checks")
 	}
 	for _, want := range []string{foundPath, expectedPath} {
-		if !strings.Contains(checks[0].Detail, want) {
-			t.Fatalf("workflow check detail = %q, want containing %q", checks[0].Detail, want)
+		if !strings.Contains(checks[1].Detail, want) {
+			t.Fatalf("workflow check detail = %q, want containing %q", checks[1].Detail, want)
 		}
 	}
 }

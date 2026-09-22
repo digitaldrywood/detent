@@ -11,7 +11,7 @@ import (
 )
 
 func TestStateResponseHostCache(t *testing.T) {
-	for _, report := range []*toolcache.Report{nil, {BuildPath: "/native/build", BuildBytes: 47 << 30, ModuleBytes: 123}, {Error: "scan interrupted"}} {
+	for _, report := range []*toolcache.Report{nil, {BuildPath: "/native/build", BuildBytes: 47 << 30, ModuleBytes: 123, AgeExpiredBytes: 12, SizeEvictedBytes: 34, RetainedBytes: 47 << 30}, {Error: "scan interrupted"}} {
 		snapshot := telemetry.Snapshot{HostCache: report}
 		response := stateResponse(snapshot, time.Now(), time.Now(), "test", buildinfo.Info{})
 		data, err := json.Marshal(response)
