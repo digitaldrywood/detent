@@ -303,6 +303,14 @@ links closure across direct completion and stale merged/Merging reconciliation.
 The reviewed transition fingerprints preserve existing reason
 selection and add no mechanism, reason code, or recovery path.
 
+Provider capacity retries use the existing provider resume deadline (including
+reset jitter) while it is in the future (#2912). Speculative probe backoff cannot
+shorten that pause; elapsed deadlines retain normal probe backoff and operator
+capacity clear still removes the outage immediately. This consolidates retry
+scheduling without adding a pause or recovery mechanism.
+`TestBackendCapacityProviderResetWindow` covers the reported dispatch times,
+reset boundary, and operator clear; safety fuzz seeds retain resume arithmetic.
+
 Workspace cleanup (#2913) uses one cancellable background execution of the existing
 reaper instead of synchronous tick and completion sweeps. Each pass bounds tracker
 candidate attempts and workspace removals to ten, rotating retained candidates.
