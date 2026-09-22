@@ -1324,14 +1324,18 @@ Codex and Claude Code backends and checks absent, inherited, and explicit values
 `TestINV12WorkspaceCacheKeys`, `TestINV12DoctorNativeCaches`,
 `TestINV12DoctorWorkspaceKinds`, and `TestINV12TrimReadout` enforce config rejection
 and read-only diagnostics. All are registered in the invariant manifest.
-Doctor reports native Go cache paths and sizes per project, the last completed
+Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
 under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
-The native build cache defaults to 20 GiB with the existing 48-hour age trim.
-Doctor warns when the effective bound exceeds 10% of available space on the
-cache volume. The existing reaper reuses its trim walk to publish retained build-cache bytes in
+The native build cache defaults to 10% of total cache-volume capacity with the
+existing 48-hour age trim; explicit bounds win, and unavailable capacity falls
+back to 20 GiB with a doctor diagnostic. Doctor warns when the effective bound
+exceeds 10% of total volume capacity or the last sweep evicted any bytes for size.
+The existing trim marker also records age-expired bytes, size-evicted bytes, and
+retained size; timestamp-only markers remain readable. Legacy-root checks remain
+per project. The existing reaper reuses its trim walk to publish retained build-cache bytes and both removal counters plus last-sweep retained size in
 `host_cache` in `/api/v1/state` as the sole cache surface (#2742). It does not rescan
 the build cache or traverse the module cache; unmeasured module fields are omitted.
 

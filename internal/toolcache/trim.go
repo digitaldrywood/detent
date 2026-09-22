@@ -3,6 +3,7 @@ package toolcache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -21,11 +22,31 @@ type Policy struct {
 }
 
 func (p Policy) Normalized() Policy {
+	if p.MaxBytes != 0 {
+		return p.NormalizedForCapacity(0)
+	}
+	// Path discovery is host-wide and independently bounded by hostPaths.
+	paths, err := hostPaths()
+	if err != nil {
+		return p.NormalizedForCapacity(0)
+	}
+	capacity, err := CapacityBytes(paths.Build)
+	if err != nil {
+		return p.NormalizedForCapacity(0)
+	}
+	return p.NormalizedForCapacity(capacity)
+}
+
+// NormalizedForCapacity uses total volume capacity; zero selects the fallback.
+func (p Policy) NormalizedForCapacity(capacity uint64) Policy {
 	if p.MaxAge == 0 {
 		p.MaxAge = 48 * time.Hour
 	}
 	if p.MaxBytes == 0 {
-		p.MaxBytes = 20 * 1024 * 1024 * 1024
+		p.MaxBytes = int64(capacity / 10)
+		if p.MaxBytes == 0 {
+			p.MaxBytes = 20 << 30
+		}
 	}
 	return p
 }
@@ -52,7 +73,14 @@ func TrimWithReport(ctx context.Context, root string, policy Policy, now time.Ti
 }
 
 func trim(ctx context.Context, root string, policy Policy, now time.Time, report *Report) (reclaimed int64, err error) {
-	policy = policy.Normalized()
+	capacity, capacityErr := CapacityBytes(root)
+	if capacityErr != nil {
+		capacity = 0
+	}
+	policy = policy.NormalizedForCapacity(capacity)
+	if report == nil {
+		report = &Report{}
+	}
 	if root == "" || root == "off" {
 		return 0, nil
 	}
@@ -82,9 +110,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 	}
 	var remaining []candidate
 	var total int64
-	if report != nil {
-		defer func() { report.BuildBytes = total }()
-	}
+	defer func() { report.BuildBytes = total }()
 	err = fs.WalkDir(cache.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -139,6 +165,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			}
 			return err
 		}
+		report.AgeExpiredBytes += current.Size()
 		reclaimed += current.Size()
 		total -= info.Size()
 		return nil
@@ -166,6 +193,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			}
 			return reclaimed, err
 		}
+		report.SizeEvictedBytes += entry.info.Size()
 		reclaimed += entry.info.Size()
 		total -= entry.info.Size()
 	}
@@ -174,12 +202,16 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 	if info, err := cache.Lstat(marker); err == nil && info.Mode().IsRegular() {
 		total -= info.Size()
 	}
-	err = cache.WriteFile(marker, []byte(stamp+"\n"), 0o600)
+	// Fixed-width retained bytes keep metadata size independent of its value.
+	metadata := func(retained int64) string {
+		return fmt.Sprintf("%s\n%d %d %020d\n", stamp, report.AgeExpiredBytes, report.SizeEvictedBytes, retained)
+	}
+	data := metadata(total + int64(len(metadata(0))))
+	err = cache.WriteFile(marker, []byte(data), 0o600)
 	if err == nil {
-		total += int64(len(stamp) + 1)
-		if report != nil {
-			report.LastTrim = stamp
-		}
+		total += int64(len(data))
+		report.LastTrim = stamp
+		report.RetainedBytes = total
 	}
 	return reclaimed, err
 }

@@ -3,6 +3,8 @@ package global
 import (
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func TestParseGlobalCache(t *testing.T) {
@@ -12,7 +14,7 @@ func TestParseGlobalCache(t *testing.T) {
 		bytes      int64
 		bad        bool
 	}{
-		{"defaults", "", 48 * time.Hour, 20 * 1024 * 1024 * 1024, false},
+		{"defaults", "", 48 * time.Hour, (toolcache.Policy{}).Normalized().MaxBytes, false},
 		{"explicit", "  cache: {max_age: 12h, max_bytes: 123}\n", 12 * time.Hour, 123, false},
 		{"negative age", "  cache: {max_age: -1h}\n", 0, 0, true},
 		{"negative size", "  cache: {max_bytes: -1}\n", 0, 0, true},
