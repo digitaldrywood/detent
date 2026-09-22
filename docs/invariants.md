@@ -30,7 +30,12 @@ readiness. Attempt identity prevents stale-claim replay; tracker evidence provid
 the independent corroboration. The dispatch fingerprint and mergeability baseline
 persist with the attempt across restart, including merge-mode conflict repairs in active lanes
 (#2929); a changed head SHA alone is not implementation. No-progress
-outcomes consume the existing issue attempt allowance,
+outcomes consume the existing issue attempt allowance, including merge-mode
+conflict repairs dispatched in active lanes. Successful repairs also consume a
+started code session without requiring failure evidence. Merging-lane runs,
+legacy merge-mode rows without a lane, and historical merge-routing receipts
+remain excluded (`TestAttemptAllowanceExcludesMergeRouting` and
+`TestAttemptAllowanceDispatchAndRestart`, #2933). No-progress outcomes
 cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
 Blocked handoff when the allowance is exhausted (#2922). Draft PRs remain
 ineligible for review and the tick never marks them ready.
