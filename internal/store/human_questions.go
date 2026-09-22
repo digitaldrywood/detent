@@ -101,9 +101,17 @@ func questionTime(at *time.Time) sql.NullString {
 	return sql.NullString{String: at.UTC().Format(time.RFC3339Nano), Valid: true}
 }
 
-// OpenHumanQuestions reads the same durable unanswered records used by dispatch.
+// OpenHumanQuestions reports unanswered questions unless the latest scheduler
+// decision declines authorization. Reporting never resolves the stored wait.
 func (s *sqliteStore) OpenHumanQuestions(ctx context.Context) ([]operations.Decision, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT project_id, issue_identifier, body, question_comment_id, work_fingerprint, asked_at FROM human_questions WHERE answer_comment_id = '' AND question_comment_id <> '' ORDER BY julianday(asked_at), project_id, issue_identifier`)
+	rows, err := s.db.QueryContext(ctx, `SELECT project_id, issue_identifier, body, question_comment_id, work_fingerprint, asked_at FROM human_questions AS question
+WHERE answer_comment_id = '' AND question_comment_id <> ''
+  AND COALESCE((
+    SELECT reason FROM scheduler_decisions AS decision
+    WHERE decision.project_id = question.project_id AND decision.issue_id = question.issue_id
+    ORDER BY decision_at DESC, id DESC LIMIT 1
+  ), '') <> ?
+ORDER BY julianday(asked_at), project_id, issue_identifier`, "authorization_selector_declined")
 	if err != nil {
 		return nil, err
 	}

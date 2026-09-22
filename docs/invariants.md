@@ -404,6 +404,12 @@ authorized human replies; reopening requires a new question key.
 `TestRefreshResolvesTerminalHumanQuestions` covers terminal states, reopening,
 tracker failure, and the distinction between closure and human authorization.
 
+Question reporting (#2945) omits unanswered questions whose latest per-project,
+per-issue scheduler decision declines authorization. Operations and health share
+this read-only projection; stored questions and dispatch reply handling remain
+unchanged. `TestOpenHumanQuestionsAuthorization` covers declined and authorized
+waits, reauthorization, and project/issue isolation without a recovery mechanism.
+
 Human-owned Workpad blockers route through the existing completion Blocked
 transition on the first report (#2779). The repeated-report threshold is removed:
 live blocker evaluation already suppresses the next dispatch, so a second

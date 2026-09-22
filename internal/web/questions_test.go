@@ -70,3 +70,39 @@ func TestSnapshotOmitsClosureResolvedQuestions(t *testing.T) {
 		t.Fatal("closure retained stale card question facts")
 	}
 }
+
+func TestSnapshotQuestionAuthorization(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, reason string
+		want         int
+	}{
+		{name: "authorized waiting", reason: "human_question_waiting", want: 1},
+		{name: "authorization declined", reason: "authorization_selector_declined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "questions.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			questions := db.(store.HumanQuestionStore)
+			q := store.HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "target", Body: "Which target?", QuestionCommentID: "123"}
+			if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.RecordSchedulerDecision(t.Context(), store.SchedulerDecision{ProjectID: q.ProjectID, IssueID: q.IssueID, Reason: tc.reason, DecisionAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			server := &Server{store: db, logger: slog.Default()}
+			snapshot := server.snapshotOpenQuestions(t.Context(), telemetry.Snapshot{})
+			if len(snapshot.OpenQuestions) != tc.want {
+				t.Fatalf("snapshot questions = %v, want %d", snapshot.OpenQuestions, tc.want)
+			}
+		})
+	}
+}

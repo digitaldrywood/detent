@@ -223,3 +223,62 @@ func TestResolveHumanQuestionsByClosure(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenHumanQuestionsAuthorization(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		reasons []string
+		project string
+		issue   string
+		want    int
+	}{
+		{name: "no decision", want: 1},
+		{name: "authorized waiting", reasons: []string{"human_question_waiting"}, want: 1},
+		{name: "declined", reasons: []string{"human_question_waiting", "authorization_selector_declined"}},
+		{name: "reauthorized", reasons: []string{"authorization_selector_declined", "human_question_waiting"}, want: 1},
+		{name: "other project", reasons: []string{"authorization_selector_declined"}, project: "other", want: 1},
+		{name: "other issue", reasons: []string{"authorization_selector_declined"}, issue: "other", want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := openParkTestStore(t, filepath.Join(t.TempDir(), "questions.db"))
+			q := HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "target", Body: "Which target?", QuestionCommentID: "123"}
+			if _, err := db.ReserveHumanQuestion(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.RecordHumanQuestionComment(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			before, err := db.HumanQuestions(t.Context(), q.ProjectID, q.IssueID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			project, issue := q.ProjectID, q.IssueID
+			if tc.project != "" {
+				project = tc.project
+			}
+			if tc.issue != "" {
+				issue = tc.issue
+			}
+			now := time.Now().UTC()
+			for _, reason := range tc.reasons {
+				if _, err := db.RecordSchedulerDecision(t.Context(), SchedulerDecision{ProjectID: project, IssueID: issue, Reason: reason, DecisionAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := db.OpenHumanQuestions(t.Context())
+			if err != nil || len(got) != tc.want {
+				t.Fatalf("open questions = %v, %v; want %d", got, err, tc.want)
+			}
+			report, err := db.OperationsReport(t.Context(), now, now.Add(-time.Hour))
+			if err != nil || len(report.Decisions) != tc.want {
+				t.Fatalf("operations questions = %v, %v; want %d", report.Decisions, err, tc.want)
+			}
+			after, err := db.HumanQuestions(t.Context(), q.ProjectID, q.IssueID)
+			if err != nil || len(after) != 1 || after[0] != before[0] {
+				t.Fatalf("stored question changed: %v, %v", after, err)
+			}
+		})
+	}
+}
