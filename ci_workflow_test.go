@@ -688,7 +688,7 @@ list)
   ;;
 run)
   test -z "${DETENT_API_TOKEN:-}" || exit 99
-  case "$*" in *"-timeout 20m"*) ;; *) exit 97 ;; esac
+  case "$*" in *"-timeout 30m"*) ;; *) exit 97 ;; esac
   echo invoked > workspace-invoked
   exit "$TEST_EXIT"
   ;;
