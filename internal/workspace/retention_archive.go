@@ -16,6 +16,14 @@ import (
 )
 
 func (l *LocalGit) removeExpiredWorkspace(ctx context.Context, root *os.Root, record cleanupOwnershipRecord, total, ownership *RemovalTotal) (returnErr error) {
+	release, ok := l.uses.cleanup(record.Path)
+	if !ok {
+		return nil
+	}
+	defer release()
+	if !takeCleanupSlot(ctx) {
+		return nil
+	}
 	if !l.isSourceWorktree(ctx, record.Path) {
 		return fmt.Errorf("cannot archive unmanaged workspace %s", record.Path)
 	}

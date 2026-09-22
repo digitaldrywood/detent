@@ -1441,6 +1441,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	if usage, ok := runWorkspace.(workspace.Usage); ok {
+		release, err := usage.Use(ctx, workspaceIssue)
+		if err != nil {
+			return RunResult{}, err
+		}
+		defer release()
+	}
 	r.logWorkerEvent(req.Issue, "worker_workspace_create_started", telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 	if err := r.publishWorkspaceCreateStarted(req); err != nil {
 		return RunResult{}, err
@@ -2937,6 +2944,13 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	if usage, ok := r.workspace.(workspace.Usage); ok {
+		release, err := usage.Use(ctx, workspaceIssue)
+		if err != nil {
+			return gate.ValidatorResult{}, err
+		}
+		defer release()
+	}
 	r.logWorkerEvent(req.Issue, "worker_check_workspace_create_started")
 	info, err := r.workspace.Create(ctx, workspaceIssue)
 	if err != nil {

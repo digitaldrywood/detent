@@ -330,9 +330,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.markRefreshSucceeded(state, now)
 	}
 	state.Pipeline = overlayIssueStateSnapshots(state.Pipeline, state.tickTransitions.pipeline)
-	if refreshOK {
+	if refreshOK && !reserve.degraded {
 		timing.next("workspace_cleanup")
-		o.reapDueWorkspacesAfterRefresh(ctx, state, now)
+		o.startWorkspaceCleanup(ctx, state, now)
 	}
 	completed = true
 }
@@ -437,8 +437,6 @@ func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now 
 			"graphql_remaining", reserve.graphRemaining,
 			"graphql_reserve", reserve.graphReserve,
 		)
-	} else {
-		o.reapWorkspacesIfDue(ctx, state, now)
 	}
 	o.reconcileRunningIssues(ctx, state, now)
 	if o.heartbeats == nil || !o.heartbeats.Running() {

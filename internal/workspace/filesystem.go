@@ -29,6 +29,7 @@ type FilesystemOptions struct {
 }
 
 type Filesystem struct {
+	uses       workspaceUses
 	root       string
 	sourceRoot string
 	outputRoot string
@@ -139,6 +140,11 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 		return CleanupResult{}, err
 	}
 	result := CleanupResult{}
+	release, ok := f.uses.cleanup(info.Path)
+	if !ok {
+		return result, fmt.Errorf("%w: workspace in use", ErrWorkspacePreserved)
+	}
+	defer release()
 	exists, _, err := pathExists(info.Path)
 	if err != nil {
 		return CleanupResult{}, err
@@ -148,6 +154,9 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	}
 	if err := f.checkPreservedWorkspace(info); err != nil {
 		return result, err
+	}
+	if !takeCleanupSlot(ctx) {
+		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
 	result.Processes = reapWorkspaceProcesses(ctx, info.Path, f.logger)
 	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {

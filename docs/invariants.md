@@ -292,6 +292,17 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Workspace cleanup (#2913) uses one cancellable background execution of the existing
+reaper instead of synchronous tick and completion sweeps. Each pass bounds tracker
+candidate attempts and workspace removals to ten, rotating retained candidates.
+The event loop alone applies cleanup results; workspace use and removal share
+in-process synchronization so a stale sweep cannot delete a new worker's workspace.
+Shutdown cancels and joins cleanup. `TestWorkspaceCleanupBatch`,
+`TestStartupRefreshKeepsStateAndWorkerProgressObservable`,
+`TestWorkspaceUseAndCleanup`, and `TestFilesystemCleanupBatch` cover batch bounds,
+continued tick liveness, and workspace ownership. No configuration, lane writer,
+recovery path, or operator-facing reason is added.
+
 PR conflict classification and conflict-cleared progress share connector helpers
 (#2934), replacing separate completion, spend, dispatch, and display checks.
 Both tracker conflict spellings are recognized. A transition to a reported

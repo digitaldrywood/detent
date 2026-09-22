@@ -177,7 +177,7 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 	}
 	timing.step("reap_cleanup_issue_ids")
 	cleaned := false
-	for _, issue := range issues {
+	for _, issue := range cleanupIssueOrder(issues, state.workspaceCleanupCursor) {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
@@ -209,7 +209,7 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 		return false
 	}
 	timing.step("reap_cleanup_candidates")
-	for _, issue := range issues {
+	for _, issue := range cleanupIssueOrder(issues, state.workspaceCleanupCursor) {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
@@ -283,6 +283,20 @@ func workspaceCleanupIssueIDs(state *State) []string {
 	}
 	for _, blocked := range state.Blocked {
 		appendIssue(blocked.Issue)
+	}
+	// Completed workers join the same sweep instead of deleting inline on the
+	// event loop. Bound tracker lookups and rotate retained work across passes.
+	completed := make([]connector.Issue, 0, len(state.Completed))
+	for id, entry := range state.Completed {
+		if _, reaped := state.ReapedWorkspaces[id]; !reaped {
+			completed = append(completed, entry.Issue)
+		}
+	}
+	for _, issue := range cleanupIssueOrder(completed, state.workspaceCleanupCursor) {
+		if len(out) >= workspaceCleanupCandidateLimit {
+			break
+		}
+		appendIssue(issue)
 	}
 	return out
 }
@@ -398,6 +412,13 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 	}
 	if _, ok := state.ReapedWorkspaces[issue.ID]; ok {
 		return false
+	}
+	if o.workspaceCleanupRemaining != nil {
+		if *o.workspaceCleanupRemaining == 0 || ctx.Err() != nil {
+			return false
+		}
+		*o.workspaceCleanupRemaining--
+		state.workspaceCleanupCursor = issue.ID
 	}
 	result, err := o.reaper.ReapWorkspace(ctx, issue)
 	if errors.Is(err, workspace.ErrWorkspacePreserved) {

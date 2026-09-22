@@ -232,6 +232,7 @@ type LocalGitOptions struct {
 }
 
 type LocalGit struct {
+	uses               workspaceUses
 	root               string
 	sourceRoot         string
 	autoBranch         bool
@@ -558,8 +559,16 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 
 func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue) (CleanupResult, error) {
 	result := CleanupResult{Path: info.Path}
+	release, ok := l.uses.cleanup(info.Path)
+	if !ok {
+		return result, fmt.Errorf("%w: workspace in use", ErrWorkspacePreserved)
+	}
+	defer release()
 	if err := l.checkWorkspaceCleanup(ctx, info); err != nil {
 		return result, err
+	}
+	if !takeCleanupSlot(ctx) {
+		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {

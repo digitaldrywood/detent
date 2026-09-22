@@ -694,10 +694,12 @@ func TestTickCancelledRunningIssueAuditsWorkspaceCleanupAndReleasesLease(t *test
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 	if _, active := state.Running[issue.ID]; !active {
 		t.Fatal("lane observation stopped worker before completion")
 	}
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after cancellation cleanup", issue.ID)
@@ -779,6 +781,7 @@ func TestTickCancelledNonRunningIssueReapsWorkspaceEvenBeforeNextSweep(t *testin
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if len(reaper.issues) != 1 || reaper.issues[0].ID != cancelled.ID {
 		t.Fatalf("reaped issues = %#v, want cancelled non-running issue before next sweep", reaper.issues)
@@ -824,6 +827,7 @@ func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if _, ok := state.ReapedWorkspaces[cancelled.ID]; ok {
 		t.Fatalf("ReapedWorkspaces[%q] present after failed cleanup", cancelled.ID)
@@ -1016,10 +1020,12 @@ func TestTickMarksClosedCompletedRunningIssueDoneBeforeReaping(t *testing.T) {
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 	if _, active := state.Running[issue.ID]; !active {
 		t.Fatal("lane observation stopped worker before completion")
 	}
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if got, want := tracker.updates, []statusUpdate{{issueID: issue.ID, state: "Done"}}; !slices.Equal(got, want) {
 		t.Fatalf("updates = %#v, want %#v", got, want)
@@ -1088,10 +1094,12 @@ func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 	if _, active := state.Running[prior.ID]; !active {
 		t.Fatal("lane observation stopped worker before completion")
 	}
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: prior.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if _, ok := state.Running[prior.ID]; ok {
 		t.Fatalf("Running[%q] present after terminal cleanup sweep", prior.ID)
