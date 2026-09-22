@@ -1403,6 +1403,7 @@ func (o *Orchestrator) applyStaleMergingPullRequestDecision(
 	}
 
 	body := staleMergingPullRequestComment(issue, decision)
+	body = o.completedIssueClosureComment(body, issue, decision.targetState, decision.reason)
 	if strings.TrimSpace(body) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
 			o.logger.Warn(
@@ -2284,6 +2285,7 @@ func (o *Orchestrator) applyStaleMergedPullRequestDecision(
 	}
 
 	body := staleMergedPullRequestComment(summary, decision, displayStateName(issue.State), targetState)
+	body = o.completedIssueClosureComment(body, issue, targetState, string(decision.Reason))
 	if strings.TrimSpace(body) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
 			o.logger.Warn(
@@ -3310,6 +3312,8 @@ func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
 		return "", false
 	}
 
+	body = o.completedIssueClosureComment(body, issue, targetState, string(decision.Reason))
+
 	if strings.TrimSpace(body) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
 			o.logger.Warn(
@@ -3645,6 +3649,17 @@ func autoPromoteFindingText(finding AutoPromoteFinding) string {
 	}
 	if finding.URL != "" {
 		body = body + " " + finding.URL
+	}
+	return body
+}
+
+// completedIssueClosureComment annotates the existing comment after a successful transition.
+func (o *Orchestrator) completedIssueClosureComment(body string, issue connector.Issue, targetState, reason string) string {
+	if stateIn(targetState, o.cfg.TerminalStates) && !issue.Closed &&
+		(pullRequestMerged(issue.PullRequest) || reason == string(AutoPromoteReasonOperationalCompletion)) {
+		if _, ok := o.connector.(connector.IssueCloser); ok {
+			return body + "\n\nClosed [this issue](" + issue.URL + ") as completed."
+		}
 	}
 	return body
 }

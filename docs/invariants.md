@@ -78,6 +78,10 @@ Any closed issue leaves non-terminal lanes on the first successful reconciliatio
 Non-completed closures are also removed from the board, pipeline, and active-work
 tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
+Accepted operational completions also close the issue in the existing terminal
+transition; merged PR completion does not depend on a closing keyword (#2911).
+The existing completion comment links the issue closure.
+`TestCompletionTransitionClosesIssue` covers both completion paths.
 
 ProjectV2 combined refresh applies the instance author, assignee, and label
 predicates before scheduler enrichment (#2917), including fallback readers.
@@ -307,6 +311,13 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Operational completion (#2911) reuses the existing terminal issue closer and
+`operational_completion` reason. Closure precedes terminal lane publication so
+close failures leave the prior lane retryable; the existing completion comment
+links closure across direct completion and stale merged/Merging reconciliation.
+The reviewed transition fingerprints preserve existing reason
+selection and add no mechanism, reason code, or recovery path.
 
 Provider capacity retries use the existing provider resume deadline (including
 reset jitter) while it is in the future (#2912). Speculative probe backoff cannot
