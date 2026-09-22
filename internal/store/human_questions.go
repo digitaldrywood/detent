@@ -104,10 +104,12 @@ func questionTime(at *time.Time) sql.NullString {
 // OpenHumanQuestions reports unanswered questions unless the latest scheduler
 // decision declines authorization. Reporting never resolves the stored wait.
 func (s *sqliteStore) OpenHumanQuestions(ctx context.Context) ([]operations.Decision, error) {
+	// Restrict the lookup to this issue before sorting. The project/time index
+	// otherwise scans the whole project history when an issue has no decision.
 	rows, err := s.db.QueryContext(ctx, `SELECT project_id, issue_identifier, body, question_comment_id, work_fingerprint, asked_at FROM human_questions AS question
 WHERE answer_comment_id = '' AND question_comment_id <> ''
   AND COALESCE((
-    SELECT reason FROM scheduler_decisions AS decision
+    SELECT reason FROM scheduler_decisions AS decision INDEXED BY scheduler_decisions_issue_idx
     WHERE decision.project_id = question.project_id AND decision.issue_id = question.issue_id
     ORDER BY decision_at DESC, id DESC LIMIT 1
   ), '') <> ?
