@@ -121,6 +121,12 @@ complete, annotated reference instance to compare against as you work.
    headings for Todo, In Progress, Rework, and Merging. The onboarding builder
    moves those section bodies into `agent.instructions_by_state`; the runner
    appends only the current state's instructions to the shared worker prompt.
+   Downloading the raw template above does not perform that extraction. Follow
+   Project Onboarding to generate the project contract with
+   `detent onboarding build-workflow`, or manually move each state section's
+   body into the matching `agent.instructions_by_state` entry in `detent.yaml`
+   and remove those sections from `WORKFLOW.md`. Until that migration is done,
+   all state sections remain in the shared prompt.
    Keep shared validation and delivery rules in the prompt body. Reference the
    Detent-appended Blocked handoff for Workpad, dependency, and completion
    reporting instead of duplicating that contract. The orchestrator owns lane
