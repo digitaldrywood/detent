@@ -195,7 +195,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		}
 		probeAt := now.Add(backendCapacityProbeDelayForAttempt(filesChanged % 100))
 		wantProbeAt := probeAt
-		if wantResumeAt.After(now) && wantResumeAt.Before(wantProbeAt) {
+		if wantResumeAt.After(now) {
 			wantProbeAt = wantResumeAt
 		}
 		if got := backendCapacityBoundedProbeAt(wantResumeAt, probeAt, now); !got.Equal(wantProbeAt) {
