@@ -109,7 +109,9 @@ test:
 	bash scripts/test-workspace.sh
 	@packages="$$(go list ./...)" && \
 	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
-	$(GO_TEST) $$packages
+	$(GO_TEST) -skip '^TestProjectStateAPIRepresentativeDataCompletesBeforeDeadline$$' $$packages
+	# Measure the 500ms request budget without competing package tests or builds.
+	$(GO_TEST) ./internal/web -run '^TestProjectStateAPIRepresentativeDataCompletesBeforeDeadline$$'
 
 test-race: test-race-hub test-race-orchestrator
 	bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence

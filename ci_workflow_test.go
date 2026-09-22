@@ -204,7 +204,8 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 		name string
 		want string
 	}{
-		{name: "test", want: "$(GO_TEST) $$packages"},
+		{name: "test", want: "$(GO_TEST) -skip '^TestProjectStateAPIRepresentativeDataCompletesBeforeDeadline$$' $$packages"},
+		{name: "test-performance", want: "$(GO_TEST) ./internal/web -run '^TestProjectStateAPIRepresentativeDataCompletesBeforeDeadline$$'"},
 		{name: "test-race", want: "$(GO_TEST) -race $$packages"},
 		{name: "test-race-hub", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race"},
 		{name: "test-cover", want: "$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages"},
