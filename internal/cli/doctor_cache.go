@@ -31,7 +31,9 @@ func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolca
 			if err != nil {
 				check.Detail += ": " + err.Error()
 			}
-			check.Detail += "; default bound falls back to 20 GiB when capacity is unavailable"
+			if policy.MaxBytes == 0 {
+				check.Detail += "; using fallback build cache bound of 20 GiB"
+			}
 		} else {
 			check.Detail += "; cache volume capacity: " + toolcache.FormatBytes(int64(capacity))
 			if uint64(policy.NormalizedForCapacity(capacity).MaxBytes) > capacity/10 {

@@ -18,7 +18,7 @@ import (
 // Policy bounds build artifacts by age and total cache size.
 type Policy struct {
 	MaxAge   time.Duration `yaml:"max_age"`
-	MaxBytes int64         `yaml:"max_bytes"`
+	MaxBytes int64         `yaml:"max_bytes,omitempty"`
 }
 
 func (p Policy) Normalized() Policy {

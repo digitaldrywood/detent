@@ -124,6 +124,7 @@ func TestDoctorCacheBound(t *testing.T) {
 		{name: "explicit at ten percent", bound: 100, free: 1000, path: "/native/build", want: doctorOK},
 		{name: "explicit above ten percent", bound: 101, free: 1000, path: "/native/build", want: doctorWarn},
 		{name: "capacity unavailable", bound: 1, path: "/native/build", want: doctorWarn},
+		{name: "explicit lookup failure", bound: 50 << 30, path: "/native/build", err: errors.New("stat failed"), want: doctorWarn},
 		{name: "lookup failure", path: "/native/build", err: errors.New("stat failed"), want: doctorWarn},
 		{name: "disabled", path: "off", want: doctorOK},
 	} {
@@ -143,8 +144,10 @@ func TestDoctorCacheBound(t *testing.T) {
 			if got.Status != tt.want {
 				t.Fatalf("check = %+v", got)
 			}
-			if (tt.err != nil || tt.free == 0) && tt.path != "off" && !strings.Contains(got.Detail, "20 GiB") {
-				t.Fatalf("fallback missing: %+v", got)
+			if (tt.err != nil || tt.free == 0) && tt.path != "off" {
+				if wantFallback := tt.bound == 0; strings.Contains(got.Detail, "fallback") != wantFallback {
+					t.Fatalf("fallback diagnostic: %+v", got)
+				}
 			}
 			if tt.path == "off" && calls != 0 {
 				t.Fatal("inspected disabled cache")

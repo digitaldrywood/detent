@@ -1331,7 +1331,8 @@ under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
 The native build cache defaults to 10% of total cache-volume capacity with the
 existing 48-hour age trim; explicit bounds win, and unavailable capacity falls
-back to 20 GiB with a doctor diagnostic. Doctor warns when the effective bound
+back to 20 GiB with a doctor diagnostic. Omitted size bounds remain omitted
+through config writes and are normalized only for runtime use. Doctor warns when the effective bound
 exceeds 10% of total volume capacity or the last sweep evicted any bytes for size.
 The existing trim marker also records age-expired bytes, size-evicted bytes, and
 retained size; timestamp-only markers remain readable. Legacy-root checks remain
