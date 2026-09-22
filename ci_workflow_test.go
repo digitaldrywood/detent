@@ -556,13 +556,10 @@ func TestCIDraftAndVerifyDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review]") {
-		t.Fatal("pull_request events exist only to satisfy required checks with placeholders")
+		t.Fatal("pull_request events must report skipped required checks")
 	}
-	placeholders := workflowBetween(t, workflow, "  pr-required-placeholders:\n", "  invariants:\n")
-	for _, want := range []string{"if: github.event_name == 'pull_request'", `check: ["Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"]`, "name: ${{ matrix.check }}"} {
-		if !strings.Contains(placeholders, want) {
-			t.Errorf("placeholder job missing %q", want)
-		}
+	if strings.Contains(workflow, "  pr-required-placeholders:\n") {
+		t.Fatal("successful placeholder checks must not stand in for unrun jobs")
 	}
 	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual"} {
 		t.Run(job, func(t *testing.T) {
