@@ -10001,10 +10001,14 @@ func TestServerEventsSendsTickEvents(t *testing.T) {
 func TestServerEventsStreamsPastHTTPTimeouts(t *testing.T) {
 	t.Parallel()
 
+	// Header parsing needs a realistic scheduling budget even though this test
+	// exercises the established stream. Keep ticks farther apart than both
+	// HTTP timeouts so each read still proves the stream survives them.
+	const httpTimeout = 5 * time.Second
 	server, err := newServerWithLaneWriter(web.Config{
-		SSETickInterval:       75 * time.Millisecond,
-		HTTPReadHeaderTimeout: 25 * time.Millisecond,
-		HTTPIdleTimeout:       25 * time.Millisecond,
+		SSETickInterval:       httpTimeout + time.Second,
+		HTTPReadHeaderTimeout: httpTimeout,
+		HTTPIdleTimeout:       httpTimeout,
 	}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
