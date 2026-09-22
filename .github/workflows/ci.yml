@@ -95,7 +95,8 @@ jobs:
     if: github.event_name != 'pull_request'
     name: Verify build and vet
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -139,7 +140,8 @@ jobs:
     if: github.event_name != 'pull_request'
     name: Verify race (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -294,7 +296,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
+    # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
