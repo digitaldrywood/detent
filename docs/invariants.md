@@ -62,6 +62,10 @@ Any closed issue leaves non-terminal lanes on the first successful reconciliatio
 Non-completed closures are also removed from the board, pipeline, and active-work
 tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
+Accepted operational completions also close the issue in the existing terminal
+transition; merged PR completion does not depend on a closing keyword (#2911).
+The existing completion comment links the issue closure.
+`TestCompletionTransitionClosesIssue` covers both completion paths.
 
 ProjectV2 combined refresh applies the instance author, assignee, and label
 predicates before scheduler enrichment (#2917), including fallback readers.

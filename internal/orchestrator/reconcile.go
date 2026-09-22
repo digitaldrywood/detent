@@ -226,8 +226,8 @@ func closedReasonCompleted(reason string) bool {
 	return reason == "completed"
 }
 
-func (o *Orchestrator) closeLandedTerminalIssue(ctx context.Context, issue connector.Issue) (bool, error) {
-	if issue.Closed || !pullRequestMerged(issue.PullRequest) {
+func (o *Orchestrator) closeCompletedTerminalIssue(ctx context.Context, issue connector.Issue, reason string) (bool, error) {
+	if issue.Closed || (!pullRequestMerged(issue.PullRequest) && reason != string(AutoPromoteReasonOperationalCompletion)) {
 		return false, nil
 	}
 	closer, ok := o.connector.(connector.IssueCloser)

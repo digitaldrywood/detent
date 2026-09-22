@@ -3309,6 +3309,13 @@ func (o *Orchestrator) applyAutoPromoteDecisionWithTarget(
 		return "", false
 	}
 
+	if stateIn(targetState, o.cfg.TerminalStates) && !issue.Closed &&
+		(pullRequestMerged(issue.PullRequest) || decision.Reason == AutoPromoteReasonOperationalCompletion) {
+		if _, ok := o.connector.(connector.IssueCloser); ok {
+			body += "\n\nClosed [this issue](" + issue.URL + ") as completed."
+		}
+	}
+
 	if strings.TrimSpace(body) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
 			o.logger.Warn(
