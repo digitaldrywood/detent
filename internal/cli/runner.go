@@ -83,7 +83,7 @@ func withRunnerFactory(
 	return func(cfg globalconfig.Project) (*project.Project, error) {
 		workflow, err := project.LoadWorkflow(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)
+			return nil, fmt.Errorf("%w: load project workflow %s: %w", project.ErrProjectDefinition, cfg.ID, err)
 		}
 		if cfg.Identity.Configured() {
 			workflow.Config.Identity = cfg.Identity

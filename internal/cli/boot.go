@@ -753,7 +753,10 @@ func backfillRuntimeSessionProjects(
 	for _, configuredProject := range projects {
 		workflow, err := loadWorkflow(configuredProject)
 		if err != nil {
-			return fmt.Errorf("load project workflow %s for session attribution: %w", configuredProject.ID, err)
+			// The project manager reports invalid workflows as unavailable. Defer
+			// this optional migration: without every repository mapping we cannot
+			// exclude ambiguous attribution of historical sessions.
+			return nil
 		}
 		repository := strings.TrimSpace(workflow.Config.Tracker.Repository)
 		projectID := strings.TrimSpace(configuredProject.ID)

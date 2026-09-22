@@ -292,6 +292,14 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Startup workflow load failures use the project manager's existing terminal
+unavailable-project reporting (#2969), including loads performed by the runner
+factory. The optional historical-session attribution backfill defers when any
+workflow cannot load, preserving ambiguity checks without aborting host startup.
+`TestStartupIsolatesWorkflowLoadFailure` verifies healthy-project dispatch and
+unavailable-project dashboard snapshots in both project orders; no retry or
+recovery path is added.
+
 Provider capacity retries use the existing provider resume deadline (including
 reset jitter) while it is in the future (#2912). Speculative probe backoff cannot
 shorten that pause; elapsed deadlines retain normal probe backoff and operator
