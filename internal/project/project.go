@@ -246,7 +246,7 @@ func (s *scheduleFaultState) current() RuntimeError {
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
 	workflow, err := LoadWorkflow(cfg)
 	if err != nil {
-		return nil, projectDefinitionError{err: fmt.Errorf("load project workflow: %w", err)}
+		return nil, fmt.Errorf("load project workflow: %w", err)
 	}
 
 	return New(Config{Project: cfg, Workflow: workflow}, deps)

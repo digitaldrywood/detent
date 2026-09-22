@@ -47,6 +47,16 @@ func LoadWorkflow(cfg globalconfig.Project) (workflowconfig.Workflow, error) {
 
 func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflow workflowconfig.Workflow, err error) {
 	defer func() {
+		if err != nil {
+			// Definition parsing errors are project-local. Read failures retain
+			// their infrastructure ownership even when the config loader attaches
+			// definition metadata to them.
+			var definitionErr *workflowconfig.ProjectDefinitionError
+			var pathErr *os.PathError
+			if errors.As(err, &definitionErr) && !errors.As(err, &pathErr) {
+				err = projectDefinitionError{err: err}
+			}
+		}
 		if err == nil {
 			workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
 		}
@@ -54,7 +64,7 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 	if strings.TrimSpace(cfg.WorkflowRef) == "" {
 		workflowPath, err := plainWorkflowPath(cfg.Workflow)
 		if err != nil {
-			return workflowconfig.Workflow{}, err
+			return workflowconfig.Workflow{}, projectDefinitionError{err: err}
 		}
 		return workflowconfig.LoadWorkflow(workflowPath)
 	}
@@ -64,7 +74,7 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 
 	source, err := newWorkflowGitRefSource(cfg)
 	if err != nil {
-		return workflowconfig.Workflow{}, err
+		return workflowconfig.Workflow{}, projectDefinitionError{err: err}
 	}
 	workflow, _, err = source.load(ctx)
 	return workflow, err

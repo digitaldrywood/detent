@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -407,10 +408,13 @@ func TestManagerStartIsolatesProjectDefinitionFailures(t *testing.T) {
 			name: "load",
 			invalidProject: func(t *testing.T, cfg globalconfig.Project, deps project.Dependencies) (*project.Project, error) {
 				t.Helper()
-				cfg.Workflow = filepath.Join(t.TempDir(), "missing-workflow.md")
+				cfg.Workflow = filepath.Join(t.TempDir(), "invalid-workflow.md")
+				if err := os.WriteFile(cfg.Workflow, []byte("---\ntracker: [\n---\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
 				return project.Load(cfg, deps)
 			},
-			wantError: "missing-workflow.md",
+			wantError: "parse legacy workflow config",
 		},
 		{
 			name: "validation",
@@ -498,7 +502,10 @@ func TestManagerStartRollsBackPendingProjectDefinitionFailure(t *testing.T) {
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			if cfg.ID == "invalid" {
-				cfg.Workflow = filepath.Join(t.TempDir(), "missing-workflow.md")
+				cfg.Workflow = filepath.Join(t.TempDir(), "invalid-workflow.md")
+				if err := os.WriteFile(cfg.Workflow, []byte("---\ntracker: [\n---\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
 				return project.Load(cfg, project.Dependencies{})
 			}
 			return nil, factoryErr
@@ -2449,17 +2456,16 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 	}
 }
 
-func TestManagerValidatesPauseExitTrackerCompatibility(t *testing.T) {
+func TestManagerLeavesPauseExitEvaluationToMonitor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		projects []globalconfig.Project
 		trackers map[string]workflowconfig.Tracker
-		wantErr  string
 	}{
 		{
-			name: "local sqlite project rejects unmatched GitHub reference",
+			name: "local sqlite project remains paused with unmatched GitHub reference",
 			projects: []globalconfig.Project{{
 				ID:               "video",
 				Paused:           true,
@@ -2468,7 +2474,6 @@ func TestManagerValidatesPauseExitTrackerCompatibility(t *testing.T) {
 			trackers: map[string]workflowconfig.Tracker{
 				"video": {Kind: workflowconfig.TrackerLocalSQLite, LocalSQLite: workflowconfig.LocalSQLite{Path: "work-items.db"}},
 			},
-			wantErr: "no configured project tracker can resolve GitHub pause exit issue",
 		},
 		{
 			name: "cross project reference uses GitHub owner",
@@ -2514,15 +2519,18 @@ func TestManagerValidatesPauseExitTrackerCompatibility(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			err = manager.Start(ctx)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("Start() error = %v, want containing %q", err, tt.wantErr)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("Start() error = %v", err)
 			}
+			for _, p := range manager.Registry().List() {
+				if !p.Config().Paused {
+					t.Errorf("project %s lost its pause", p.ID())
+				}
+				if err := p.Close(); err != nil {
+					t.Error(err)
+				}
+			}
+			manager.Wait()
 		})
 	}
 }

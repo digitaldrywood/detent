@@ -750,13 +750,19 @@ func backfillRuntimeSessionProjects(
 ) error {
 	attributions := make(map[string]store.SessionProjectAttribution, len(projects))
 	ambiguous := make(map[string]struct{})
+	invalidDefinition := false
 	for _, configuredProject := range projects {
 		workflow, err := loadWorkflow(configuredProject)
 		if err != nil {
+			if !errors.Is(err, project.ErrProjectDefinition) {
+				return fmt.Errorf("load project workflow %s for session attribution: %w", configuredProject.ID, err)
+			}
 			// The project manager reports invalid workflows as unavailable. Defer
 			// this optional migration: without every repository mapping we cannot
-			// exclude ambiguous attribution of historical sessions.
-			return nil
+			// exclude ambiguous attribution of historical sessions. Continue loading
+			// to ensure a later infrastructure failure still aborts startup.
+			invalidDefinition = true
+			continue
 		}
 		repository := strings.TrimSpace(workflow.Config.Tracker.Repository)
 		projectID := strings.TrimSpace(configuredProject.ID)
@@ -772,6 +778,10 @@ func backfillRuntimeSessionProjects(
 		if _, ok := ambiguous[key]; !ok {
 			attributions[key] = store.SessionProjectAttribution{ProjectID: projectID, Repository: repository}
 		}
+	}
+
+	if invalidDefinition {
+		return nil
 	}
 
 	keys := make([]string, 0, len(attributions))
