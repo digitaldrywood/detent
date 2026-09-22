@@ -36,6 +36,11 @@ func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t
 			CIStatus:       "success",
 			HeadSHA:        fmt.Sprintf("head-%d", number),
 		})
+		if index == 0 {
+			issues[index].PullRequest.CIStatus = "pending"
+			issues[index].PullRequest.Checks = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "skipped"}}
+			issues[index].PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "pending"}}
+		}
 		issues[index].State = "Merging"
 		issues[index].Identifier = fmt.Sprintf("digitaldrywood/detent#%d", number)
 		issues[index].PRRepository = "digitaldrywood/detent"
@@ -1668,6 +1673,66 @@ func TestNativeMergeQueueWithdrawalDoesNotBlockDone(t *testing.T) {
 			}
 			if tt.dequeueErr != nil && !strings.Contains(logs.String(), tt.dequeueErr.Error()) {
 				t.Fatalf("missing withdrawal error: %s", &logs)
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueSkippedChecks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		status     string
+		conclusion string
+		missing    bool
+		want       bool
+	}{
+		{name: "skipped required checks permit enqueue", status: "completed", conclusion: "skipped", want: true},
+		{name: "running required check", status: "in_progress"},
+		{name: "failed required check", status: "completed", conclusion: "failure"},
+		{name: "cancelled required check", status: "completed", conclusion: "cancelled"},
+		{name: "missing required context", status: "completed", conclusion: "skipped", missing: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(401, "pending")
+			issue.PullRequest.Checks = []connector.PullRequestCheck{
+				{Name: "Test", Status: tt.status, Conclusion: tt.conclusion},
+				{Name: "Review", Status: "completed", Conclusion: "success"},
+				{Name: "external", Status: "success", Conclusion: "success"},
+			}
+			name := "Test"
+			if tt.missing {
+				name = "Missing"
+			}
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: name, Status: "pending"}}
+			if got := nativeMergeQueueCandidate(issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
+				t.Fatalf("candidate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAttemptTriageSkippedChecks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		aggregate  string
+		conclusion string
+		want       string
+	}{
+		{"unrun head with green aggregate", "pass", "skipped", "CI: `not fully verified (checks skipped; aggregate: pass)`"},
+		{"unrun required head", "pending", "skipped", "CI: `not fully verified (checks skipped; aggregate: pending)`"},
+		{"real successful run", "pass", "success", "CI: `pass`"},
+		{"real failed run", "fail", "failure", "CI: `fail`"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(401, tt.aggregate)
+			for _, name := range []string{"Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"} {
+				issue.PullRequest.Checks = append(issue.PullRequest.Checks, connector.PullRequestCheck{Name: name, Status: "completed", Conclusion: tt.conclusion})
+			}
+			evidence := attemptTriageObservedEvidence(issue, time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC))
+			if !strings.Contains(evidence, tt.want) {
+				t.Fatalf("evidence = %s, want %s", evidence, tt.want)
 			}
 		})
 	}

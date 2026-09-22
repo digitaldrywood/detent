@@ -982,6 +982,13 @@ a dequeue. A consumed provider entry is already withdrawn.
 `TestDelegateNativeMergeQueueIssuesCachesQueueEntries` cover withdrawal,
 lane progress, and hydration request counts (#2826).
 
+Queue admission distinguishes verification from enqueue eligibility: completed
+skipped checks may enter the native queue, but missing, running, cancelled, or
+failed checks do not qualify through that path. The provider still enforces its
+required contexts. `TestNativeMergeQueueSkippedChecks` covers this distinction;
+`TestAttemptTriageSkippedChecks` ensures triage describes skipped checks as not
+fully verified, even when the provider aggregate is green (#2948).
+
 **Why:** Competing speculative merge work and repeated head invalidations
 contributed to the measured rebase and CI loop.
 
@@ -1022,14 +1029,14 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — CI once per ready head
 
-**Statement:** Real CI never runs on pull_request events. Pull requests carry only instant placeholder checks so the merge queue can accept them; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
+**Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
 
 **Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
 Verify job; draft iteration avoids paying this cost before local review ends.
 
 **Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
-requires the PR activity allowlist and draft exclusion on every PR job (including
-the Invariant Gate), and restricts portability, Windows core, installer, and
+requires the PR activity allowlist and excludes every real job from PR execution (including
+the Invariant Gate), rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
 snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;

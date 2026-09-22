@@ -20,19 +20,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  pr-required-placeholders:
-    # Required checks are enforced in the merge queue (merge_group) and on main.
-    # GitHub refuses to enqueue a pull request whose required checks never
-    # reported, so pull_request events satisfy the four names instantly here.
-    if: github.event_name == 'pull_request'
-    strategy:
-      matrix:
-        check: ["Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"]
-    name: ${{ matrix.check }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - run: echo "Required checks run in the merge queue; nothing to do on pull requests."
+  # Real jobs report skipped on pull requests. GitHub accepts skipped required
+  # checks for enqueueing; only merge-group runs provide test evidence.
   invariants:
     if: github.event_name != 'pull_request'
     name: Invariant Gate

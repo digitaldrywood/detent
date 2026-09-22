@@ -306,9 +306,38 @@ func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	return normalizePullRequestState(pullRequest.State) == "open" &&
 		!pullRequest.Draft &&
 		strings.TrimSpace(pullRequest.HeadSHA) != "" &&
-		mergeWorkerCIGreen(pullRequest.CIStatus) &&
+		nativeMergeQueueChecksReady(pullRequest) &&
 		pullRequestRepository(issue) != "" &&
 		pullRequestNumber(issue) > 0
+}
+
+// Queue admission accepts skipped checks; verification still belongs to the
+// merge group. Do not confuse the connector's pending verification with a
+// check that is still running or has never reported.
+func nativeMergeQueueChecksReady(pr *connector.PullRequest) bool {
+	if mergeWorkerCIGreen(pr.CIStatus) {
+		return true
+	}
+	if pr.CIStatus != "pending" || len(pr.Checks) == 0 {
+		return false
+	}
+	completed := make(map[string]bool, len(pr.Checks))
+	for _, check := range pr.Checks {
+		if check.Status == "success" && check.Conclusion == "success" {
+			completed[check.Name] = true
+			continue
+		}
+		if check.Status != "completed" || (check.Conclusion != "success" && check.Conclusion != "skipped") {
+			return false
+		}
+		completed[check.Name] = true
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		if !completed[check.Name] {
+			return false
+		}
+	}
+	return true
 }
 
 func nativeMergeQueueRepositoryKey(issue connector.Issue) string {
