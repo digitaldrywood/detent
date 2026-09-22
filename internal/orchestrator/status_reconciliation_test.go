@@ -167,11 +167,16 @@ func TestCompletionTransitionClosesIssue(t *testing.T) {
 		name        string
 		operational bool
 		closeError  bool
+		path        string
 	}{
 		{name: "operational completion", operational: true},
 		{name: "merged PR without closing keyword"},
 		{name: "operational close failure", operational: true, closeError: true},
 		{name: "merged PR close failure", closeError: true},
+		{name: "stale merged PR", path: "merged"},
+		{name: "stale operational completion", operational: true, path: "merging"},
+		{name: "stale merged PR close failure", path: "merged", closeError: true},
+		{name: "stale operational close failure", operational: true, path: "merging", closeError: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -188,7 +193,15 @@ func TestCompletionTransitionClosesIssue(t *testing.T) {
 			}
 			orch := newStatusReconcileOrchestrator(tracker)
 			state := newState(orch.cfg)
-			_, applied := orch.applyAutoPromoteDecisionWithTarget(t.Context(), &state, issue, AutoPromoteSummaryFromIssue(issue), decision, "Done", time.Now())
+			var applied bool
+			switch tt.path {
+			case "merged":
+				applied = orch.applyStaleMergedPullRequestDecision(t.Context(), &state, issue, AutoPromoteSummaryFromIssue(issue), decision, "Done", time.Now())
+			case "merging":
+				applied = orch.applyStaleMergingPullRequestDecision(t.Context(), &state, issue, staleMergingPullRequestDecision{targetState: "Done", reason: string(decision.Reason)}, time.Now())
+			default:
+				_, applied = orch.applyAutoPromoteDecisionWithTarget(t.Context(), &state, issue, AutoPromoteSummaryFromIssue(issue), decision, "Done", time.Now())
+			}
 			if tt.closeError {
 				if applied || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
 					t.Fatal("failed closure published completion")

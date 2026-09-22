@@ -299,7 +299,8 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 Operational completion (#2911) reuses the existing terminal issue closer and
 `operational_completion` reason. Closure precedes terminal lane publication so
 close failures leave the prior lane retryable; the existing completion comment
-links closure. The reviewed transition fingerprints preserve existing reason
+links closure across direct completion and stale merged/Merging reconciliation.
+The reviewed transition fingerprints preserve existing reason
 selection and add no mechanism, reason code, or recovery path.
 
 Workspace cleanup (#2913) uses one cancellable background execution of the existing
