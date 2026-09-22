@@ -15,6 +15,9 @@ func TestFreeBytes(t *testing.T) {
 			if missing {
 				root = filepath.Join(root, "not-created", "go-build")
 			}
+			if capacity, err := CapacityBytes(root); err != nil || capacity == 0 {
+				t.Fatalf("capacity=%d error=%v", capacity, err)
+			}
 			if _, err := FreeBytes(root); err != nil {
 				t.Fatal(err)
 			}

@@ -1116,7 +1116,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "GOCACHE=/cache/build (0 bytes)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "inherited spend breaker warns about billing ambiguity",
@@ -1125,7 +1125,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "GOCACHE=/cache/build (0 bytes)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -1135,7 +1135,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "GOCACHE=/cache/build (0 bytes)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "all progress brakes disabled",
@@ -1144,7 +1144,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledProgressWorkflow},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "GOCACHE=/cache/build (0 bytes)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -1153,7 +1153,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "GOCACHE=/cache/build (0 bytes)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -1162,8 +1162,12 @@ func TestCheckDoctorProjects(t *testing.T) {
 			t.Parallel()
 
 			codexHome := t.TempDir()
+			if len(tt.projects) > 0 {
+				tt.wantStatus = append([]doctorStatus{doctorOK}, tt.wantStatus...)
+				tt.wantDetail = append([]string{"GOCACHE=/cache/build"}, tt.wantDetail...)
+			}
 			got := checkDoctorProjects(context.Background(), globalconfig.Config{Projects: tt.projects}, doctorDeps{
-				cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
+				cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
 				inspectCaches: func(context.Context) toolcache.Report {
 					return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 				},
@@ -1185,8 +1189,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			}
 			if len(tt.wantStatus) > 10 {
 				for i, name := range []string{"workflow_source_drift", "instruction_budget", "gate_instruction_conflict", "model_policy", "token_accounting", "ci_trigger_shape"} {
-					if got[i+1].Name != "Project alpha "+name {
-						t.Fatalf("check %d name = %q, want %s", i+1, got[i+1].Name, name)
+					if got[i+2].Name != "Project alpha "+name {
+						t.Fatalf("check %d name = %q, want %s", i+1, got[i+2].Name, name)
 					}
 				}
 			}
@@ -6194,7 +6198,7 @@ func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
 	}, doctorDeps{
 		// Project progress must not wait for a scan of the host toolchain caches.
-		cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
+		cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 		},
@@ -6220,13 +6224,13 @@ func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
 		},
 	}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
-	if len(jobs) != 1 {
-		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	if len(jobs) != 2 {
+		t.Fatalf("jobs len = %d, want 2", len(jobs))
 	}
 
 	checksDone := make(chan []doctorCheck, 1)
 	go func() {
-		checksDone <- jobs[0].Run(context.Background())
+		checksDone <- jobs[1].Run(context.Background())
 	}()
 	stuck := time.NewTimer(doctorTestSafetyTimeout)
 	defer stuck.Stop()
@@ -6237,7 +6241,7 @@ func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 	}
 	for {
 		select {
-		case <-jobs[0].Progress:
+		case <-jobs[1].Progress:
 		default:
 			goto progressDrained
 		}
@@ -6252,7 +6256,7 @@ progressDrained:
 			t.Fatal("timed out waiting for connector progress report")
 		}
 		select {
-		case <-jobs[0].Progress:
+		case <-jobs[1].Progress:
 		case <-stuck.C:
 			t.Fatal("timed out waiting for connector progress signal")
 		}
@@ -6325,7 +6329,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 				Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
 			}, doctorDeps{
 				// Only the explicitly blocked stage should consume the timeout.
-				cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
+				cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
 				inspectCaches: func(context.Context) toolcache.Report {
 					return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 				},
@@ -6372,14 +6376,14 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 					return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
 				},
 			}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
-			if len(jobs) != 1 {
-				t.Fatalf("jobs len = %d, want 1", len(jobs))
+			if len(jobs) != 2 {
+				t.Fatalf("jobs len = %d, want 2", len(jobs))
 			}
 
 			timer := &controlledDoctorCheckTimer{deadline: make(chan time.Time)}
 			checksDone := make(chan []doctorCheck, 1)
 			go func() {
-				checksDone <- runDoctorCheckWithTimer(context.Background(), jobs[0], 20*time.Millisecond, timer)
+				checksDone <- runDoctorCheckWithTimer(context.Background(), jobs[1], 20*time.Millisecond, timer)
 			}()
 			stuck := time.NewTimer(doctorTestSafetyTimeout)
 			defer stuck.Stop()
@@ -6718,7 +6722,7 @@ func assertDoctorMissingCheck(t *testing.T, report doctorReport, name string) {
 
 func successfulDoctorDeps() doctorDeps {
 	return doctorDeps{
-		cacheFreeBytes: func(string) (uint64, error) { return 1 << 50, nil },
+		cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 		},

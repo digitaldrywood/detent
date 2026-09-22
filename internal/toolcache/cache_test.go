@@ -269,7 +269,7 @@ func TestPolicyDefaults(t *testing.T) {
 		{"explicit", Policy{MaxAge: time.Hour, MaxBytes: 123}, Policy{MaxAge: time.Hour, MaxBytes: 123}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.input.Normalized(); got != tt.want {
+			if got := tt.input.NormalizedForCapacity(0); got != tt.want {
 				t.Fatalf("got %+v want %+v", got, tt.want)
 			}
 		})
@@ -402,7 +402,7 @@ func TestTrimCandidateLayout(t *testing.T) {
 }
 
 // Sparse files reproduce the reported 47 GiB growth without consuming that disk space.
-func TestTrimDefaultReportedGrowth(t *testing.T) {
+func TestTrimExplicitReportedGrowth(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		size    int64
@@ -439,7 +439,7 @@ func TestTrimDefaultReportedGrowth(t *testing.T) {
 			if err := os.Chtimes(path, at, at); err != nil {
 				t.Fatal(err)
 			}
-			reclaimed, err := Trim(t.Context(), root, Policy{}, now)
+			reclaimed, err := Trim(t.Context(), root, Policy{MaxBytes: 20 << 30}, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -449,6 +449,47 @@ func TestTrimDefaultReportedGrowth(t *testing.T) {
 			}
 			if tt.removed && reclaimed != tt.size {
 				t.Fatalf("reclaimed = %d", reclaimed)
+			}
+		})
+	}
+}
+
+func TestPolicyCapacity(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		capacity       uint64
+		explicit, want int64
+	}{
+		{"reference volume", 1858 << 30, 0, int64(uint64(1858<<30) / 10)},
+		{"unavailable", 0, 0, 20 << 30}, {"explicit", 1858 << 30, 123, 123}, {"explicit unavailable", 0, 123, 123},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := (Policy{MaxBytes: tt.explicit}).NormalizedForCapacity(tt.capacity)
+			if got.MaxBytes != tt.want || got.MaxAge != 48*time.Hour {
+				t.Fatalf("policy=%+v", got)
+			}
+		})
+	}
+	paths, err := Resolve(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity, _ := CapacityBytes(paths.Build)
+	if got, want := (Policy{}).Normalized(), (Policy{}).NormalizedForCapacity(capacity); got != want {
+		t.Fatalf("normalized=%+v want %+v", got, want)
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	for _, tt := range []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 bytes"}, {34, "34 bytes"}, {1024, "1.0 KiB"}, {1536 << 10, "1.5 MiB"}, {20 << 30, "20.0 GiB"}, {2 << 40, "2.0 TiB"},
+	} {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := FormatBytes(tt.bytes); got != tt.want {
+				t.Fatalf("got %q want %q", got, tt.want)
 			}
 		})
 	}

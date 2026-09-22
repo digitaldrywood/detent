@@ -2,42 +2,54 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
-// checkDoctorNativeCaches is read-only, including when legacy caches remain.
-func checkDoctorNativeCaches(ctx context.Context, projectID, root string, deps doctorDeps, policy toolcache.Policy) doctorCheck {
-	check := doctorCheck{Name: "Project " + projectID + " native toolchain caches", Status: doctorOK}
+// checkDoctorNativeCaches reports the host cache once without modifying it.
+func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolcache.Policy) doctorCheck {
+	check := doctorCheck{Name: "Host native toolchain caches", Status: doctorOK}
 	inspect := deps.inspectCaches
 	if inspect == nil {
 		inspect = toolcache.Inspect
 	}
 	report := inspect(ctx)
 	check.Detail = report.String()
-	policy = policy.Normalized()
-	check.Detail += fmt.Sprintf("; build cache bound: %d bytes", policy.MaxBytes)
+
 	if report.BuildPath != "" && report.BuildPath != "off" {
-		freeBytes := deps.cacheFreeBytes
-		if freeBytes == nil {
-			freeBytes = toolcache.FreeBytes
+		capacityBytes := deps.cacheCapacityBytes
+		if capacityBytes == nil {
+			capacityBytes = toolcache.CapacityBytes
 		}
-		free, err := freeBytes(report.BuildPath)
-		if err != nil {
+		capacity, err := capacityBytes(report.BuildPath)
+		if err != nil || capacity == 0 {
+			capacity = 0
 			check.Status = doctorWarn
-			check.Detail += "; inspect cache volume free space: " + err.Error()
+			check.Detail += "; cache volume capacity unavailable"
+			if err != nil {
+				check.Detail += ": " + err.Error()
+			}
+			if policy.MaxBytes == 0 {
+				check.Detail += "; using fallback build cache bound of 20 GiB"
+			}
 		} else {
-			check.Detail += fmt.Sprintf("; cache volume free: %d bytes", free)
-			if uint64(policy.MaxBytes) > free/10 {
+			check.Detail += "; cache volume capacity: " + toolcache.FormatBytes(int64(capacity))
+			if uint64(policy.NormalizedForCapacity(capacity).MaxBytes) > capacity/10 {
 				check.Status = doctorWarn
-				check.Detail += "; effective build cache bound exceeds 10% of cache-volume free space"
-				check.Hint = "Reduce global.cache.max_bytes or free space on the cache volume."
+				check.Detail += "; effective build cache bound exceeds 10% of cache-volume capacity"
+				check.Hint = "Reduce global.cache.max_bytes to at most 10% of the cache-volume capacity."
 			}
 		}
+		policy = policy.NormalizedForCapacity(capacity)
+	}
+	policy = policy.NormalizedForCapacity(0)
+	check.Detail += "; build cache bound: " + toolcache.FormatBytes(policy.MaxBytes)
+	if report.SizeEvictedBytes > 0 {
+		check.Status = doctorWarn
+		check.Detail += "; last sweep size eviction: " + toolcache.FormatBytes(report.SizeEvictedBytes)
+		check.Hint = "Review global.cache.max_bytes: size eviction indicates the bound may be below the working set; last sweep retained " + toolcache.FormatBytes(report.RetainedBytes) + "."
 	}
 	lastTrim := report.LastTrim
 	if lastTrim == "" {
@@ -47,6 +59,11 @@ func checkDoctorNativeCaches(ctx context.Context, projectID, root string, deps d
 	if report.Error != "" {
 		check.Status = doctorWarn
 	}
+	return check
+}
+
+func checkDoctorLegacyCaches(projectID, root string) doctorCheck {
+	check := doctorCheck{Name: "Project " + projectID + " legacy toolchain caches", Status: doctorOK, Detail: "legacy cache inspection"}
 	resolved, err := expandDoctorWorkspacePath(root)
 	if err != nil {
 		check.Status = doctorWarn
@@ -91,18 +108,8 @@ func checkDoctorNativeCaches(ctx context.Context, projectID, root string, deps d
 			}
 		}
 	}
+	if check.Status == doctorOK {
+		check.Detail = "no Detent-owned cache roots"
+	}
 	return check
-}
-
-// Each doctor invocation measures host caches once, even with concurrent projects.
-func cacheDoctorInspection(inspect func(context.Context) toolcache.Report) func(context.Context) toolcache.Report {
-	if inspect == nil {
-		inspect = toolcache.Inspect
-	}
-	var once sync.Once
-	var report toolcache.Report
-	return func(ctx context.Context) toolcache.Report {
-		once.Do(func() { report = inspect(ctx) })
-		return report
-	}
 }
