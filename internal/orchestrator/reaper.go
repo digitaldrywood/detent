@@ -181,8 +181,7 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
-		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
-			cleaned = true
+		if _, running := state.Running[issue.ID]; running {
 			continue
 		}
 		if o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now) {
@@ -213,7 +212,7 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
-		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
+		if _, running := state.Running[issue.ID]; running {
 			continue
 		}
 		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now)
@@ -362,36 +361,6 @@ func workspaceIssueCancelled(state string) bool {
 	default:
 		return false
 	}
-}
-
-func (o *Orchestrator) completeRunningIssueFromWorkspaceCleanup(ctx context.Context, state *State, issue connector.Issue, now time.Time) bool {
-	if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
-		return false
-	}
-	issueID := strings.TrimSpace(issue.ID)
-	if issueID == "" {
-		return false
-	}
-	running, ok := state.Running[issueID]
-	if !ok {
-		return false
-	}
-
-	running.Issue = mergeIssueTrackerFields(running.Issue, issue)
-	if o.logger != nil {
-		o.logger.Info(
-			"completed running issue during workspace cleanup",
-			slog.String("issue_id", issueID),
-			slog.String("issue_identifier", running.Issue.Identifier),
-			slog.String("state", running.Issue.State),
-			slog.String("reason", workspaceReapReason(running.Issue, o.cfg.TerminalStates)),
-		)
-	}
-	if normalizeState(state.Running[issueID].Issue.State) != normalizeState(running.Issue.State) || !stateIn(running.Issue.State, o.cfg.ActiveStates) {
-		running.CompletionLane = running.Issue.State
-	}
-	state.Running[issueID] = running
-	return true
 }
 
 func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string, now time.Time) bool {

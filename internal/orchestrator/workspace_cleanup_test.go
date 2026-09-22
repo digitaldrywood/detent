@@ -78,3 +78,29 @@ func TestWorkspaceCleanupResultPreservesNewOwner(t *testing.T) {
 		t.Fatal("sweep lost concurrent failure")
 	}
 }
+
+func TestWorkspaceCleanupNeverAppliesTrackerObservations(t *testing.T) {
+	for _, newerRefresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("newer_refresh=%v", newerRefresh), func(t *testing.T) {
+			before := newState(Config{})
+			before.LastRefreshAt = time.Now()
+			before.Running["issue"] = Running{Issue: connector.Issue{ID: "issue", State: "In Progress"}, Generation: 1}
+			after := before.clone()
+			terminal := after.Running["issue"]
+			terminal.Issue.State = "Done"
+			terminal.CompletionLane = "Done"
+			after.Running["issue"] = terminal
+			current := before.clone()
+			if newerRefresh {
+				// A newer refresh saw the terminal lane and then its reversal. State
+				// equality cannot distinguish this from the original active snapshot.
+				current.LastRefreshAt = before.LastRefreshAt.Add(time.Minute)
+			}
+			o := &Orchestrator{workspaceCleanupCancel: func() {}}
+			o.finishWorkspaceCleanup(&current, workspaceCleanupResult{before: before, after: after})
+			if got := current.Running["issue"]; got.Issue.State != "In Progress" || got.CompletionLane != "" {
+				t.Fatalf("cleanup replaced authoritative running observation: %+v", got)
+			}
+		})
+	}
+}

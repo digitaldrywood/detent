@@ -295,7 +295,11 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 Workspace cleanup (#2913) uses one cancellable background execution of the existing
 reaper instead of synchronous tick and completion sweeps. Each pass bounds tracker
 candidate attempts and workspace removals to ten, rotating retained candidates.
-The event loop alone applies cleanup results; workspace use and removal share
+The event loop alone applies cleanup results. Background cleanup never applies
+tracker lane observations; the existing running-issue reconciliation owns those,
+so a delayed sweep cannot restore a stale terminal lane after newer refreshes.
+`TestWorkspaceCleanupNeverAppliesTrackerObservations` covers this boundary.
+Workspace use and removal share
 in-process synchronization so a stale sweep cannot delete a new worker's workspace.
 Shutdown cancels and joins cleanup. `TestWorkspaceCleanupBatch`,
 `TestStartupRefreshKeepsStateAndWorkerProgressObservable`,

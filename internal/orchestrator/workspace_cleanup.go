@@ -85,15 +85,6 @@ func (o *Orchestrator) finishWorkspaceCleanup(state *State, result workspaceClea
 	if after.CleanupFailureAt.After(state.CleanupFailureAt) {
 		state.CleanupFailureAt = after.CleanupFailureAt
 	}
-	for id, updated := range after.Running {
-		initial := before.Running[id]
-		current, ok := state.Running[id]
-		if ok && current.Generation == initial.Generation && current.WorkAttemptID == initial.WorkAttemptID && current.StartedAt.Equal(initial.StartedAt) && current.Issue.State == initial.Issue.State && current.CompletionLane == initial.CompletionLane && updated.CompletionLane != initial.CompletionLane {
-			current.CompletionLane = updated.CompletionLane
-			current.Issue = mergeIssueTrackerFields(current.Issue, updated.Issue)
-			state.Running[id] = current
-		}
-	}
 	for _, event := range after.RecentEvents {
 		recordStateEvent(state, event)
 	}
