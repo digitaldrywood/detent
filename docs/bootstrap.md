@@ -117,14 +117,22 @@ complete, annotated reference instance to compare against as you work.
    They set `server.kanban.mode: integration` for trusted project boards;
    change that to `read_only` only for an observer or shared dashboard,
    explicit no-writes choice, or failed post-authorization write probes. They
-   also include a `## Required Execution Flow` with `For Todo`, `For In
-   Progress`, `For Rework`, and `For Merging` sections so merge workers have a
-   terminal instruction: invoke `$go-workflow:ship`, merge and move the issue to
-   `Done`, move it to `Rework` with an actionable defect, or leave it in
-   `Merging` with a concrete external blocker recorded. Before dispatching
-   `Merging`, confirm the Detent host's Codex environment exposes
-   `$go-workflow:ship`; otherwise install or enable that workflow, or replace
-   the `For Merging` section with equivalent project-local merge instructions.
+   also include a `## Required Execution Flow` with `### State:` authoring
+   headings for Todo, In Progress, Rework, and Merging. The onboarding builder
+   moves those section bodies into `agent.instructions_by_state`; the runner
+   appends only the current state's instructions to the shared worker prompt.
+   Downloading the raw template above does not perform that extraction. Follow
+   Project Onboarding to generate the project contract with
+   `detent onboarding build-workflow`, or manually move each state section's
+   body into the matching `agent.instructions_by_state` entry in `detent.yaml`
+   and remove those sections from `WORKFLOW.md`. Until that migration is done,
+   all state sections remain in the shared prompt.
+   Keep shared validation and delivery rules in the prompt body. Reference the
+   Detent-appended Blocked handoff for Workpad, dependency, and completion
+   reporting instead of duplicating that contract. The orchestrator owns lane
+   transitions; workers report outcomes through the appended handoff. Reference
+   the Detent-appended Validation gate block for full-versus-focused validation
+   selection instead of repeating gate commands in each state section.
 
    For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
    boardless issue-field mode, set `tracker.github_status_source:
