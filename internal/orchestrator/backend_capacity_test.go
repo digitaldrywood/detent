@@ -290,13 +290,10 @@ func TestBackendCapacityDispatchAllowsOneResetProbe(t *testing.T) {
 	if _, _, paused := orch.backendCapacityDispatch(&state, request, now); !paused {
 		t.Fatal("backendCapacityDispatch() paused = false before reset")
 	}
-	probeAt := now.Add(backendCapacityProbeDelay)
-	if !probeAt.Before(outage.ResumeAt) {
-		t.Fatalf("probeAt = %s, want before provider resume %s", probeAt, outage.ResumeAt)
-	}
+	probeAt := outage.ResumeAt
 	resolvedScope, probeKey, paused := orch.backendCapacityDispatch(&state, request, probeAt)
 	if paused || probeKey == "" || !resolvedScope.Matches(scope) {
-		t.Fatalf("backendCapacityDispatch() = scope %#v probe %q paused %v, want one early probe", resolvedScope, probeKey, paused)
+		t.Fatalf("backendCapacityDispatch() = scope %#v probe %q paused %v, want one reset probe", resolvedScope, probeKey, paused)
 	}
 	orch.markBackendCapacityProbe(&state, probeKey, request.Issue.ID, probeAt)
 	if !strings.Contains(logs.String(), "backend capacity probe started") || !stateEventExists(state, "backend_capacity_probe_started") {
@@ -1025,7 +1022,7 @@ func TestBackendCapacityProbeFailureRefreshesProviderWindow(t *testing.T) {
 	if outage.LastProbeResult != "capacity_exhausted" || outage.ProbeIssueID != "" {
 		t.Fatalf("probe result = %#v", outage)
 	}
-	if want := now.Add(backendCapacityProbeDelayForAttempt(1)); !outage.NextProbeAt.Equal(want) {
+	if want := freshResetAt.Add(backendCapacityResetJitter); !outage.NextProbeAt.Equal(want) {
 		t.Fatalf("NextProbeAt = %s, want %s", outage.NextProbeAt, want)
 	}
 	request := runpkg.RunRequest{Issue: connector.Issue{ID: "issue-other"}}
@@ -1133,7 +1130,7 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 		t.Fatalf("scheduled state = claims %#v retries %#v", state.Claimed, state.Retry)
 	}
 	if !state.Retry[running.Issue.ID].DueAt.Equal(registered.NextProbeAt) {
-		t.Fatalf("retry due = %s, want early probe %s", state.Retry[running.Issue.ID].DueAt, registered.NextProbeAt)
+		t.Fatalf("retry due = %s, want scheduled probe %s", state.Retry[running.Issue.ID].DueAt, registered.NextProbeAt)
 	}
 	orch.markBackendCapacityProbe(&state, "missing", running.Issue.ID, now)
 	orch.recoverBackendCapacity(&state, Running{CapacityScope: backendcapacity.Scope{BackendID: "missing"}}, now)
@@ -2334,6 +2331,51 @@ func TestCapacityClearRespectsConfiguredDispatchSlots(t *testing.T) {
 			}})
 			if admitted != tt.want {
 				t.Fatalf("admitted = %d, want %d", admitted, tt.want)
+			}
+		})
+	}
+}
+
+func TestBackendCapacityProviderResetWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 18, 5, 47, 0, 0, time.UTC)
+	reset := time.Date(2026, 9, 22, 11, 27, 0, 0, time.UTC)
+	resume := reset.Add(backendCapacityResetJitter)
+	for _, tt := range []struct {
+		name   string
+		at     time.Time
+		clear  bool
+		paused bool
+	}{
+		{"first observed retry", now.Add(5 * time.Minute), false, true},
+		{"second observed retry", now.Add(17 * time.Minute), false, true},
+		{"third observed retry", now.Add(20 * time.Minute), false, true},
+		{"fourth observed retry", now.Add(25*time.Minute + 2*time.Second), false, true},
+		{"before reset", reset.Add(-time.Nanosecond), false, true},
+		{"reset jitter", reset, false, true},
+		{"resume", resume, false, false},
+		{"operator clear", now.Add(time.Minute), true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			orch := &Orchestrator{capacityController: backendCapacityTestController{scope: scope}}
+			state := newState(normalizeConfig(Config{}))
+			err := &codex.TurnFailedError{Status: "failed", Body: `{"message":"You've hit your usage limit. Try again at Sep 22nd, 2026 11:27 AM.","codexErrorInfo":"usageLimitExceeded"}`}
+			details, ok := codex.ClassifyCapacityError(err, nil, now)
+			if !ok || details.ResetAt == nil || !details.ResetAt.Equal(reset) {
+				t.Fatalf("classification = %#v, %v", details, ok)
+			}
+			capacityErr, _ := backendcapacity.As(backendcapacity.NewError(scope, details, err))
+			outage := orch.registerBackendOutage(&state, capacityErr, now, false)
+			if !outage.NextProbeAt.Equal(resume) {
+				t.Errorf("next probe = %s, want provider resume %s", outage.NextProbeAt, resume)
+			}
+			if tt.clear {
+				orch.clearBackendCapacity(&state, "codex", tt.at, true)
+			}
+			_, _, paused := orch.backendCapacityDispatch(&state, runpkg.RunRequest{}, tt.at)
+			if paused != tt.paused {
+				t.Errorf("paused = %v, want %v", paused, tt.paused)
 			}
 		})
 	}

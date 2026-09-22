@@ -1545,9 +1545,9 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	if retry.Attempt != 0 {
 		t.Fatalf("Retry[%q].Attempt = %d, want unchanged initial attempt", issue.ID, retry.Attempt)
 	}
-	probeAt := now.Add(5 * time.Minute)
-	if retry.DueAt.Before(probeAt) || retry.DueAt.After(probeAt.Add(time.Minute)) {
-		t.Fatalf("Retry[%q].DueAt = %s, want early canary around %s before provider reset %s", issue.ID, retry.DueAt, probeAt, resetAt)
+	probeAt := resetAt.Add(5 * time.Second)
+	if !retry.DueAt.Equal(probeAt) {
+		t.Fatalf("Retry[%q].DueAt = %s, want provider resume %s", issue.ID, retry.DueAt, probeAt)
 	}
 	updates := tracker.stateUpdateCalls()
 	if len(updates) < 2 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Todo"}) {
