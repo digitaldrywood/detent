@@ -3,6 +3,8 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -14,73 +16,101 @@ import (
 )
 
 func TestStartupRefreshKeepsStateAndWorkerProgressObservable(t *testing.T) {
-	for _, cancelRefresh := range []bool{false, true} {
-		name := "complete refresh"
-		if cancelRefresh {
-			name = "cancel refresh"
-		}
-		t.Run(name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				issue := testIssue("startup-worker", "digitaldrywood/detent#2270", "Todo")
-				tracker := &pendingDispatchConnector{fakeConnector: newFakeConnector(issue, testIssue("startup-worker-2", "digitaldrywood/detent#2271", "Todo")), started: make(chan struct{}), release: make(chan struct{})}
-				reaper := &startupStalledReaper{started: make(chan struct{}), release: make(chan struct{})}
-				runner := newBlockingRunner()
-				orch, err := orchestrator.New(orchestrator.Config{
-					PollInterval: time.Hour, MaxConcurrentAgents: 2,
-					ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"},
-				}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkspaceReaper: reaper})
-				if err != nil {
-					t.Fatal(err)
-				}
-				ctx, cancel := context.WithCancel(t.Context())
-				done := make(chan error, 1)
-				go func() { done <- orch.Run(ctx) }()
-				defer func() { cancel(); <-done }()
-				<-tracker.started
-				state := startupState(t, orch)
-				if got := state.Snapshot(time.Now()).Refresh; !got.Initializing() || got.LastRefreshAt != nil {
-					t.Fatalf("initial refresh = %#v", got)
-				}
-				initialProgress := state.Snapshot(time.Now().Add(2 * time.Minute)).Refresh.InFlight
-				if initialProgress == nil || initialProgress.Stage != "tracker_fetch" || initialProgress.ElapsedSeconds != 120 || initialProgress.StageElapsedSeconds != 120 {
-					t.Fatalf("initial progress = %#v", initialProgress)
-				}
-				close(tracker.release)
-				requests := []orchestrator.RunRequest{<-runner.started, <-runner.started}
-				<-reaper.started
-				for _, request := range requests {
-					for _, message := range []string{"workspace created", "tests running"} {
-						err := request.OnUsageUpdate(runpkg.UsageUpdate{
-							SessionID: request.Issue.ID + "-session", TurnCount: 1, LastEventAt: time.Now(), LastMessage: message,
-							DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true},
-						})
-						if err != nil {
-							t.Fatal(err)
-						}
-						state = startupState(t, orch)
-						progress := state.Snapshot(time.Now().Add(time.Minute)).Refresh.InFlight
-						if progress == nil || progress.Stage != "workspace_cleanup" || progress.StageElapsedSeconds != 60 {
-							t.Fatalf("cleanup progress = %#v", progress)
-						}
-						if got := state.Running[request.Issue.ID]; got.LastMessage != message || got.SessionID != request.Issue.ID+"-session" {
-							t.Fatalf("running worker = %#v, want progress %q during stalled cleanup", got, message)
-						}
-						if got := state.Snapshot(time.Now()).Refresh; got.ReadinessStatus() != telemetry.RefreshStatusInitializing || got.LastRefreshAt != nil {
-							t.Fatalf("in-flight refresh = %#v, want initializing", got)
-						}
+	for _, candidates := range []int{0, 50, 135} {
+		for _, cancelRefresh := range []bool{false, true} {
+			name := "complete refresh"
+			if cancelRefresh {
+				name = "cancel refresh"
+			}
+			t.Run(fmt.Sprintf("%s/candidates=%d", name, candidates), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					issue := testIssue("startup-worker", "digitaldrywood/detent#2270", "Todo")
+					issues := []connector.Issue{issue, testIssue("startup-worker-2", "digitaldrywood/detent#2271", "Todo")}
+					for i := range candidates {
+						issues = append(issues, testIssue(fmt.Sprintf("done-%d", i), fmt.Sprintf("repo#%d", i), "Done"))
 					}
-				}
-				if cancelRefresh {
-					cancel()
-				} else {
-					close(reaper.release)
+					tracker := &pendingDispatchConnector{fakeConnector: newFakeConnector(issues...), started: make(chan struct{}), release: make(chan struct{})}
+					reaper := &startupStalledReaper{started: make(chan struct{}), release: make(chan struct{})}
+					runner := newBlockingRunner()
+					orch, err := orchestrator.New(orchestrator.Config{
+						PollInterval: time.Minute, MaxConcurrentAgents: 3,
+						ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"},
+					}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkspaceReaper: reaper})
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					done := make(chan error, 1)
+					go func() { done <- orch.Run(ctx) }()
+					defer func() { cancel(); <-done }()
+					<-tracker.started
+					state := startupState(t, orch)
+					if got := state.Snapshot(time.Now()).Refresh; !got.Initializing() || got.LastRefreshAt != nil {
+						t.Fatalf("initial refresh = %#v", got)
+					}
+					initialProgress := state.Snapshot(time.Now().Add(2 * time.Minute)).Refresh.InFlight
+					if initialProgress == nil || initialProgress.Stage != "tracker_fetch" || initialProgress.ElapsedSeconds != 120 || initialProgress.StageElapsedSeconds != 120 {
+						t.Fatalf("initial progress = %#v", initialProgress)
+					}
+					close(tracker.release)
+					requests := []orchestrator.RunRequest{<-runner.started, <-runner.started}
+					<-reaper.started
+					// Starting background cleanup does not mean the event loop has
+					// published the completed refresh. Let it settle while the
+					// reaper remains blocked before asserting refresh readiness.
 					synctest.Wait()
-					if got := startupState(t, orch).Snapshot(time.Now()).Refresh; !got.Ready() || got.InFlight != nil {
-						t.Fatalf("completed refresh = %#v", got)
+					for _, request := range requests {
+						for _, message := range []string{"workspace created", "tests running"} {
+							err := request.OnUsageUpdate(runpkg.UsageUpdate{
+								SessionID: request.Issue.ID + "-session", TurnCount: 1, LastEventAt: time.Now(), LastMessage: message,
+								DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true},
+							})
+							if err != nil {
+								t.Fatal(err)
+							}
+							state = startupState(t, orch)
+							progress := state.Snapshot(time.Now().Add(time.Minute)).Refresh.InFlight
+							if progress != nil {
+								t.Fatalf("cleanup progress = %#v", progress)
+							}
+							if got := state.Running[request.Issue.ID]; got.LastMessage != message || got.SessionID != request.Issue.ID+"-session" {
+								t.Fatalf("running worker = %#v, want progress %q during stalled cleanup", got, message)
+							}
+							if got := state.Snapshot(time.Now()).Refresh; !got.Ready() || got.LastRefreshAt == nil {
+								t.Fatalf("refresh = %#v, want ready during cleanup", got)
+							}
+						}
 					}
-				}
+					nextIssue := testIssue("next-worker", "repo#next", "Todo")
+					tracker.mu.Lock()
+					tracker.candidates = append(tracker.candidates, nextIssue)
+					tracker.mu.Unlock()
+					// Reproduce a multi-minute sweep without wall-clock sleeps.
+					time.Sleep(4 * time.Minute)
+					synctest.Wait()
+					select {
+					case request := <-runner.started:
+						if request.Issue.ID != nextIssue.ID {
+							t.Fatalf("dispatched %s, want next worker", request.Issue.ID)
+						}
+					default:
+						t.Fatal("cleanup blocked dispatch on subsequent ticks")
+					}
+					if got := orch.TickLiveness(time.Now()); got.Status != telemetry.TickLivenessStatusReady || got.MissedIntervals != 0 {
+						t.Fatalf("tick liveness during cleanup = %#v", got)
+					}
+					if cancelRefresh {
+						cancel()
+					} else {
+						close(reaper.release)
+						synctest.Wait()
+						if got := startupState(t, orch).Snapshot(time.Now()).Refresh; !got.Ready() || got.InFlight != nil {
+							t.Fatalf("completed refresh = %#v", got)
+						}
+					}
+				})
 			})
-		})
+		}
 	}
 }
 
@@ -96,21 +126,26 @@ func startupState(t *testing.T, orch *orchestrator.Orchestrator) orchestrator.St
 }
 
 type startupStalledReaper struct {
+	once    sync.Once
 	started chan struct{}
 	release chan struct{}
 }
 
-func (r *startupStalledReaper) ReapWorkspace(context.Context, connector.Issue) (orchestrator.WorkspaceReapResult, error) {
-	return orchestrator.WorkspaceReapResult{}, nil
+func (r *startupStalledReaper) ReapWorkspace(ctx context.Context, _ connector.Issue) (orchestrator.WorkspaceReapResult, error) {
+	return orchestrator.WorkspaceReapResult{}, r.wait(ctx)
 }
 
 func (r *startupStalledReaper) ReconcileWorkspaces(ctx context.Context, _ []connector.Issue) (orchestrator.WorkspaceReconcileResult, error) {
-	close(r.started)
+	return orchestrator.WorkspaceReconcileResult{}, r.wait(ctx)
+}
+
+func (r *startupStalledReaper) wait(ctx context.Context) error {
+	r.once.Do(func() { close(r.started) })
 	select {
 	case <-ctx.Done():
-		return orchestrator.WorkspaceReconcileResult{}, ctx.Err()
+		return ctx.Err()
 	case <-r.release:
-		return orchestrator.WorkspaceReconcileResult{}, nil
+		return nil
 	}
 }
 

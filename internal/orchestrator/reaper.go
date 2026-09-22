@@ -177,12 +177,11 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 	}
 	timing.step("reap_cleanup_issue_ids")
 	cleaned := false
-	for _, issue := range issues {
+	for _, issue := range cleanupIssueOrder(issues, state.workspaceCleanupCursor) {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
-		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
-			cleaned = true
+		if _, running := state.Running[issue.ID]; running {
 			continue
 		}
 		if o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now) {
@@ -209,11 +208,11 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 		return false
 	}
 	timing.step("reap_cleanup_candidates")
-	for _, issue := range issues {
+	for _, issue := range cleanupIssueOrder(issues, state.workspaceCleanupCursor) {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
-		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
+		if _, running := state.Running[issue.ID]; running {
 			continue
 		}
 		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now)
@@ -284,6 +283,20 @@ func workspaceCleanupIssueIDs(state *State) []string {
 	for _, blocked := range state.Blocked {
 		appendIssue(blocked.Issue)
 	}
+	// Completed workers join the same sweep instead of deleting inline on the
+	// event loop. Bound tracker lookups and rotate retained work across passes.
+	completed := make([]connector.Issue, 0, len(state.Completed))
+	for id, entry := range state.Completed {
+		if _, reaped := state.ReapedWorkspaces[id]; !reaped {
+			completed = append(completed, entry.Issue)
+		}
+	}
+	for _, issue := range cleanupIssueOrder(completed, state.workspaceCleanupCursor) {
+		if len(out) >= workspaceCleanupCandidateLimit {
+			break
+		}
+		appendIssue(issue)
+	}
 	return out
 }
 
@@ -350,36 +363,6 @@ func workspaceIssueCancelled(state string) bool {
 	}
 }
 
-func (o *Orchestrator) completeRunningIssueFromWorkspaceCleanup(ctx context.Context, state *State, issue connector.Issue, now time.Time) bool {
-	if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
-		return false
-	}
-	issueID := strings.TrimSpace(issue.ID)
-	if issueID == "" {
-		return false
-	}
-	running, ok := state.Running[issueID]
-	if !ok {
-		return false
-	}
-
-	running.Issue = mergeIssueTrackerFields(running.Issue, issue)
-	if o.logger != nil {
-		o.logger.Info(
-			"completed running issue during workspace cleanup",
-			slog.String("issue_id", issueID),
-			slog.String("issue_identifier", running.Issue.Identifier),
-			slog.String("state", running.Issue.State),
-			slog.String("reason", workspaceReapReason(running.Issue, o.cfg.TerminalStates)),
-		)
-	}
-	if normalizeState(state.Running[issueID].Issue.State) != normalizeState(running.Issue.State) || !stateIn(running.Issue.State, o.cfg.ActiveStates) {
-		running.CompletionLane = running.Issue.State
-	}
-	state.Running[issueID] = running
-	return true
-}
-
 func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string, now time.Time) bool {
 	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
 	timing.phase = "workspace_cleanup"
@@ -398,6 +381,13 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 	}
 	if _, ok := state.ReapedWorkspaces[issue.ID]; ok {
 		return false
+	}
+	if o.workspaceCleanupRemaining != nil {
+		if *o.workspaceCleanupRemaining == 0 || ctx.Err() != nil {
+			return false
+		}
+		*o.workspaceCleanupRemaining--
+		state.workspaceCleanupCursor = issue.ID
 	}
 	result, err := o.reaper.ReapWorkspace(ctx, issue)
 	if errors.Is(err, workspace.ErrWorkspacePreserved) {

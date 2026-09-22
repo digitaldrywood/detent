@@ -237,6 +237,9 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 	records = append(records, unrecorded...)
 	var reconcileErrors []error
 	for _, record := range records {
+		if cleanupBatchExhausted(ctx) {
+			break
+		}
 		if _, active := activeKeys[record.Key]; active {
 			result.ActiveSkipped++
 			continue

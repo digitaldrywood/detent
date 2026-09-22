@@ -386,6 +386,11 @@ type Orchestrator struct {
 	refreshInProgress       atomic.Bool
 	refreshProgress         atomic.Pointer[telemetry.RefreshProgress]
 	tickWatchdog            *tickWatchdog
+
+	workspaceCleanupResults   chan workspaceCleanupResult
+	workspaceCleanupCancel    context.CancelFunc
+	workspaceCleanupWG        sync.WaitGroup
+	workspaceCleanupRemaining *int
 }
 
 type runtimeState struct {
@@ -803,6 +808,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	state := newState(o.cfg)
+	defer o.stopWorkspaceCleanup()
 	defer o.validatorWG.Wait()
 	defer o.securityAuditWG.Wait()
 	defer o.releaseRunningSlots(&state)
@@ -888,6 +894,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case <-o.globalDispatchReady:
 			state.syncWorkerProgress()
 			o.dispatchGrantedRequests(ctx, &state, o.clockNow())
+		case result := <-o.workspaceCleanupResults:
+			o.finishWorkspaceCleanup(&state, result)
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
 			o.startCompletion(&state)

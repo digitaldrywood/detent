@@ -682,9 +682,9 @@ func TestTickCancelledRunningIssueAuditsWorkspaceCleanupAndReleasesLease(t *test
 		Tokens:    TokenTotals{TotalTokens: 15, RuntimeSeconds: 90},
 		cancel:    cancel,
 	}
-	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: startedAt, Owner: "detent-test"}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: startedAt, Owner: "detent-test", LeaseRenewedAt: now}
 
-	tracker := &runningStateConnector{issuesByState: []connector.Issue{cancelled}}
+	tracker := &runningStateConnector{issues: []connector.Issue{cancelled}, issuesByState: []connector.Issue{cancelled}}
 	reaper := &cleanupSweepReaper{result: WorkspaceReapResult{Worktrees: 1, Branches: 1, Processes: 2}}
 	orch := &Orchestrator{
 		cfg:       cfg,
@@ -694,10 +694,12 @@ func TestTickCancelledRunningIssueAuditsWorkspaceCleanupAndReleasesLease(t *test
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 	if _, active := state.Running[issue.ID]; !active {
 		t.Fatal("lane observation stopped worker before completion")
 	}
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after cancellation cleanup", issue.ID)
@@ -779,6 +781,7 @@ func TestTickCancelledNonRunningIssueReapsWorkspaceEvenBeforeNextSweep(t *testin
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if len(reaper.issues) != 1 || reaper.issues[0].ID != cancelled.ID {
 		t.Fatalf("reaped issues = %#v, want cancelled non-running issue before next sweep", reaper.issues)
@@ -824,6 +827,7 @@ func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if _, ok := state.ReapedWorkspaces[cancelled.ID]; ok {
 		t.Fatalf("ReapedWorkspaces[%q] present after failed cleanup", cancelled.ID)
@@ -1016,10 +1020,12 @@ func TestTickMarksClosedCompletedRunningIssueDoneBeforeReaping(t *testing.T) {
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 	if _, active := state.Running[issue.ID]; !active {
 		t.Fatal("lane observation stopped worker before completion")
 	}
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if got, want := tracker.updates, []statusUpdate{{issueID: issue.ID, state: "Done"}}; !slices.Equal(got, want) {
 		t.Fatalf("updates = %#v, want %#v", got, want)
@@ -1068,7 +1074,7 @@ func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing
 		WorkspaceCleanupSweepInterval: time.Hour,
 	})
 	state := newState(cfg)
-	state.LastRunningReconcileAt = now.Add(-time.Second)
+	state.LastRunningReconcileAt = now.Add(-time.Hour)
 	state.Running[prior.ID] = Running{
 		Issue:       cloneIssue(prior),
 		StartedAt:   startedAt,
@@ -1078,7 +1084,7 @@ func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing
 	}
 	state.Claimed[prior.ID] = Claimed{Issue: cloneIssue(prior), ClaimedAt: startedAt, Owner: "worker-1"}
 
-	tracker := &runningStateConnector{issuesByState: []connector.Issue{done}}
+	tracker := &runningStateConnector{issues: []connector.Issue{done}, issuesByState: []connector.Issue{done}}
 	reaper := &cleanupSweepReaper{}
 	orch := &Orchestrator{
 		cfg:       cfg,
@@ -1088,10 +1094,12 @@ func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 	if _, active := state.Running[prior.ID]; !active {
 		t.Fatal("lane observation stopped worker before completion")
 	}
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: prior.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}})
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if _, ok := state.Running[prior.ID]; ok {
 		t.Fatalf("Running[%q] present after terminal cleanup sweep", prior.ID)
@@ -1424,13 +1432,11 @@ func TestResidualCleanupProtectsFinalizingTerminalWorkers(t *testing.T) {
 			issue := connector.Issue{ID: "finalizing", Identifier: "detent#2612", State: "In Progress"}
 			state.Running[issue.ID] = Running{Issue: issue}
 			issue.State = lane
+			state.Running[issue.ID] = Running{Issue: issue}
 			state.BoardIssues = []connector.Issue{issue}
 			reaper := &residualCleanupReaper{cleanupSweepReaper: &cleanupSweepReaper{}, results: []WorkspaceReconcileResult{{}}, errors: []error{nil}}
 			orch := &Orchestrator{cfg: cfg, reaper: reaper}
 			now := time.Now()
-			if !orch.completeRunningIssueFromWorkspaceCleanup(t.Context(), &state, issue, now) {
-				t.Fatal("terminal update did not retain running worker")
-			}
 			orch.reconcileResidualWorkspaces(t.Context(), &state, now)
 			if len(reaper.active) != 1 || len(reaper.active[0]) != 1 || reaper.active[0][0].ID != issue.ID {
 				t.Fatalf("finalizing worker absent from cleanup exclusions: %+v", reaper.active)

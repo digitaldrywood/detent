@@ -262,6 +262,8 @@ type SecurityAuditor interface {
 	Audit(context.Context, SecurityAuditRequest) (SecurityAuditExecution, error)
 }
 
+// WorkspaceReaper runs concurrently with workers. Implementations must serialize
+// removal with workspace use, and honor cancellation when possible.
 type WorkspaceReaper interface {
 	ReapWorkspace(context.Context, connector.Issue) (WorkspaceReapResult, error)
 }

@@ -2898,7 +2898,11 @@ func (o *Orchestrator) completeTerminalRunning(
 	if mergeWorkerIssue(running.Issue) {
 		o.logMergeWorkerSuccess(running.Issue, finalState)
 	}
-	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
+	if o.reaper == nil {
+		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
+	} else {
+		o.startWorkspaceCleanup(ctx, state, completedAt)
+	}
 }
 
 func (o *Orchestrator) recordEfficiencyReceipt(ctx context.Context, issue connector.Issue, completedAt time.Time) {

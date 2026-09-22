@@ -138,6 +138,8 @@ type State struct {
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
 	tickTransitions          *issueStateSnapshotTransitions
+
+	workspaceCleanupCursor string
 }
 
 type StalenessWarning struct {
@@ -511,6 +513,7 @@ func (s State) clone() State {
 		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
+		workspaceCleanupCursor:   s.workspaceCleanupCursor,
 		WorkspaceRetention:       append([]workspace.RetentionTotals(nil), s.WorkspaceRetention...),
 		CleanupFailures:          maps.Clone(s.CleanupFailures),
 		CleanupFailureAt:         s.CleanupFailureAt,

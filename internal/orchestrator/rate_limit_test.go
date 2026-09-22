@@ -1082,6 +1082,7 @@ func TestTickPacesQuietProjectBelowRESTReserve(t *testing.T) {
 	}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if tracker.fetchCandidateCalls != 1 {
 		t.Fatalf("candidate reads = %d, want 1", tracker.fetchCandidateCalls)
@@ -1526,6 +1527,7 @@ func TestTickPrioritizesStatusDriftBeforeBulkTrackerReads(t *testing.T) {
 	orch.reaper = rateLimitWorkspaceReaper{}
 
 	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
 
 	if len(tracker.calls) == 0 || tracker.calls[0] != "status_drift" {
 		t.Fatalf("tracker call order = %#v, want status drift first", tracker.calls)
