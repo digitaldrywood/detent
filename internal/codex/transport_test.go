@@ -32,6 +32,7 @@ const (
 	helperCloseBeforeFailureReadySignal = "waiting for stdin close before invalid frame"
 	helperDrainWriteStartedSignal       = "drain write started"
 	helperDrainWriteCompletedSignal     = "drain write completed"
+	helperOversizedFrameWrittenSignal   = "oversized frame written"
 )
 
 func TestStartupTimeoutCapturesCleanupEvidence(t *testing.T) {
@@ -208,7 +209,10 @@ func TestLocalTransportReceivesOversizedFrame(t *testing.T) {
 		_ = transport.Close(closeCtx)
 	})
 
-	receiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Wait for subprocess startup and frame emission before receiving. This tests
+	// frame size support, not helper startup or serialization speed under load.
+	waitForLocalTransportStderr(t, transport.(*localTransport), helperOversizedFrameWrittenSignal)
+	receiveCtx, cancel := context.WithTimeout(t.Context(), transportTestDeadlockTimeout)
 	defer cancel()
 	msg, err := transport.Receive(receiveCtx)
 	if err != nil {
@@ -1031,6 +1035,7 @@ func helperOversizedFrame() {
 	}); err != nil {
 		helperBackpressureExit("write oversized frame", err)
 	}
+	helperBackpressureSignal(helperOversizedFrameWrittenSignal)
 }
 
 func helperInvalidFrameBackpressure(closeBeforeFailure bool) {
