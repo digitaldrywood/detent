@@ -837,18 +837,27 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 
 	for _, want := range []string{
 		"`## Required Execution Flow`",
-		"`For Todo`",
-		"`For In Progress`",
-		"`For Rework`",
-		"`For Merging`",
-		"invoke `$go-workflow:ship`",
-		"Codex environment exposes `$go-workflow:ship`",
-		"`Done`",
-		"`Rework` with an actionable defect",
-		"`Merging` with a concrete external blocker recorded",
+		"`### State:` authoring headings",
+		"`agent.instructions_by_state`",
+		"appends only the current state's instructions",
+		"Detent-appended Blocked handoff",
+		"instead of duplicating that contract",
+		"The orchestrator owns lane transitions",
+		"workers report outcomes through the appended handoff",
+		"Detent-appended Validation gate block",
+		"instead of repeating gate commands in each state section",
 		"Current Detent status: {{ issue.state }}",
 	} {
 		assertContainsWords(t, bootstrap, want)
+	}
+
+	for _, stale := range []string{
+		"For Todo", "For In Progress", "For Rework", "For Merging",
+		"$go-workflow:ship", "move the issue to", "```detent-status",
+	} {
+		if strings.Contains(strings.Join(strings.Fields(bootstrap), " "), stale) {
+			t.Errorf("bootstrap retains legacy or duplicated workflow guidance %q", stale)
+		}
 	}
 
 	for _, path := range []string{
