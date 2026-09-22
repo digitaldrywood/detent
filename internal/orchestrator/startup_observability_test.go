@@ -55,6 +55,10 @@ func TestStartupRefreshKeepsStateAndWorkerProgressObservable(t *testing.T) {
 					close(tracker.release)
 					requests := []orchestrator.RunRequest{<-runner.started, <-runner.started}
 					<-reaper.started
+					// Starting background cleanup does not mean the event loop has
+					// published the completed refresh. Let it settle while the
+					// reaper remains blocked before asserting refresh readiness.
+					synctest.Wait()
 					for _, request := range requests {
 						for _, message := range []string{"workspace created", "tests running"} {
 							err := request.OnUsageUpdate(runpkg.UsageUpdate{
