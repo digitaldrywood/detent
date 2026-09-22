@@ -26,7 +26,9 @@ interpretation (#2949): a hydrated merged PR, or a non-draft open PR whose head
 commit is strictly newer than the recorded structured Workpad, supersedes an
 `in_progress` assertion without explicit blockers or human action. Missing or
 equal timestamps retain the open-PR assertion. This interpretation does not
-rewrite the stored Workpad or manufacture a current-attempt completion receipt.
+rewrite the parsed or stored Workpad, credit an artifact receipt to spend/progress,
+or manufacture a current-attempt completion claim for cleanliness accounting.
+`TestCompletionForgeEvidencePreservesReceipt` exercises these shared consumers.
 `TestCompletionForgeEvidence`, `TestCompletionForgeEvidenceClassification`, and
 `TestCompletionForgeEvidenceDispatch` cover classification and dispatch in both
 active lanes; no-PR work remains eligible for implementation. A rebase with the

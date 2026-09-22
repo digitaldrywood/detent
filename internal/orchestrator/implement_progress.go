@@ -679,7 +679,7 @@ func implementProgressMergedCompletionCandidate(issue connector.Issue, diffStats
 	}
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
 	if !ok || signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
-		strings.TrimSpace(signal.Status) != workpad.StatusComplete ||
+		(strings.TrimSpace(signal.Status) != workpad.StatusComplete && !completionForgeSupersedesWorkpad(issue.PullRequest, signal)) ||
 		strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 {
 		return false
 	}

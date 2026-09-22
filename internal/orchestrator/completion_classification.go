@@ -19,6 +19,9 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 	}
 	if completionWorkpadUnfinished(decision.Issue) {
 		decision.WorkpadStatus = workpad.StatusInProgress
+	} else if signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue); completionForgeSupersedesWorkpad(decision.Issue.PullRequest, signal) {
+		// This is a completion decision, not an authored Workpad receipt.
+		decision.WorkpadStatus = workpad.StatusComplete
 	}
 	if !o.implementCompletionRebaseOnly(ctx, running, decision) {
 		return decision
@@ -32,9 +35,8 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 
 func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, running Running, decision implementCompletionProgressDecision) bool {
 	signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
-	asserted, _ := rawIssueWorkpadSignal(decision.Issue)
 	pr := decision.Issue.PullRequest
-	if (workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) || completionForgeSupersedesWorkpad(pr, asserted)) &&
+	if (workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) || completionForgeSupersedesWorkpad(pr, signal)) &&
 		pullRequestOpen(pr) && !pr.Draft && !connector.PullRequestConflicts(pr.MergeableState) && !mergeWorkerCIFailed(pr) {
 		return false
 	}
@@ -92,7 +94,8 @@ func (o *Orchestrator) implementCompletionDiffFingerprint(ctx context.Context, i
 func completionWorkpadUnfinished(issue connector.Issue) bool {
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
 	return ok && signal != nil && signal.Invalid == nil &&
-		signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress
+		signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress &&
+		!completionForgeSupersedesWorkpad(issue.PullRequest, signal)
 }
 
 func completionForgeSupersedesWorkpad(pr *connector.PullRequest, signal *workpad.Signal) bool {

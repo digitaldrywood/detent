@@ -10,6 +10,7 @@
       "TestCompletionForgeEvidence",
       "TestCompletionForgeEvidenceClassification",
       "TestCompletionForgeEvidenceDispatch",
+      "TestCompletionForgeEvidencePreservesReceipt",
       "TestUnfinishedSessionsExhaustAttemptAllowance",
       "TestCompletedReworkCandidatesRemainVisible",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",

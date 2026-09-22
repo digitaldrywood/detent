@@ -136,3 +136,30 @@ func TestCompletionForgeEvidenceDispatch(t *testing.T) {
 		}
 	}
 }
+
+func TestCompletionForgeEvidencePreservesReceipt(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"OPEN", "MERGED"} {
+		t.Run(state, func(t *testing.T) {
+			old := time.Date(2026, 9, 21, 18, 59, 29, 0, time.UTC)
+			head := old.Add(time.Hour)
+			issue := implementProgressIssue("head")
+			issue.PullRequest.State = state
+			issue.PullRequest.HeadCommittedAt = &head
+			issue.Comments = []connector.IssueComment{{UpdatedAt: &old, Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: in_progress\nfields:\n  completion_work_attempt_id: \"42\"\n  completion_generation: \"7\"\nblockers: []\nhuman_action: null\n```"}}
+			running := Running{Issue: issue, WorkAttemptID: 42, Generation: 7}
+			snapshot := implementProgressArtifactSnapshotFromIssue(issue, true)
+			if snapshot.WorkpadStatus != workpad.StatusInProgress || snapshot.WorkpadReceiptHash != "" {
+				t.Errorf("forge evidence fabricated a receipt: %#v", snapshot)
+			}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{})}
+			fingerprint, _ := orch.spendProgressArtifactFingerprint(running)
+			if fingerprint.ReceiptHash != "" {
+				t.Error("forge evidence credited an artifact receipt")
+			}
+			if completionCleanlinessAttempted(running, issue) {
+				t.Error("forge evidence accepted an authored current-attempt claim")
+			}
+		})
+	}
+}

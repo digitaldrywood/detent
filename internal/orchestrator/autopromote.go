@@ -652,14 +652,7 @@ func autoPromoteBlockedRefResolved(ref connector.BlockedRef, terminalStates []st
 func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 	signal, ok := rawIssueWorkpadSignal(issue)
 	issue.WorkpadSignal = signal
-	signal = issue.WithNativeWorkpadAuthority().WorkpadSignal
-	// Completion and promotion share forge evidence instead of allowing an older
-	// assertion to send finished work through another implementation session.
-	if completionForgeSupersedesWorkpad(issue.PullRequest, signal) {
-		signal = workpad.CloneSignal(signal)
-		signal.Status = workpad.StatusComplete
-	}
-	return signal, ok
+	return issue.WithNativeWorkpadAuthority().WorkpadSignal, ok
 }
 
 func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
