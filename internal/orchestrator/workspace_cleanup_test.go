@@ -94,7 +94,13 @@ func TestWorkspaceCleanupNeverAppliesTrackerObservations(t *testing.T) {
 			if newerRefresh {
 				// A newer refresh saw the terminal lane and then its reversal. State
 				// equality cannot distinguish this from the original active snapshot.
+				current.Running["issue"] = terminal
 				current.LastRefreshAt = before.LastRefreshAt.Add(time.Minute)
+				active := current.Running["issue"]
+				active.Issue.State = "In Progress"
+				active.CompletionLane = ""
+				current.Running["issue"] = active
+				current.LastRefreshAt = before.LastRefreshAt.Add(2 * time.Minute)
 			}
 			o := &Orchestrator{workspaceCleanupCancel: func() {}}
 			o.finishWorkspaceCleanup(&current, workspaceCleanupResult{before: before, after: after})
