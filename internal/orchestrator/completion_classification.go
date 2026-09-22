@@ -32,8 +32,9 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 
 func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, running Running, decision implementCompletionProgressDecision) bool {
 	signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
+	asserted, _ := rawIssueWorkpadSignal(decision.Issue)
 	pr := decision.Issue.PullRequest
-	if workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) &&
+	if (workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) || completionForgeSupersedesWorkpad(pr, asserted)) &&
 		pullRequestOpen(pr) && !pr.Draft && !connector.PullRequestConflicts(pr.MergeableState) && !mergeWorkerCIFailed(pr) {
 		return false
 	}
@@ -92,4 +93,17 @@ func completionWorkpadUnfinished(issue connector.Issue) bool {
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
 	return ok && signal != nil && signal.Invalid == nil &&
 		signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress
+}
+
+func completionForgeSupersedesWorkpad(pr *connector.PullRequest, signal *workpad.Signal) bool {
+	if signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
+		signal.Status != workpad.StatusInProgress || signal.HumanAction != "" || len(signal.Blockers) != 0 ||
+		pr == nil || pullRequestHydrationBlocksProgress(pr) || strings.TrimSpace(pr.HeadSHA) == "" {
+		return false
+	}
+	if pullRequestMerged(pr) {
+		return true
+	}
+	return pullRequestOpen(pr) && !pr.Draft && signal.RecordedAt != nil && !signal.RecordedAt.IsZero() &&
+		pr.HeadCommittedAt != nil && pr.HeadCommittedAt.After(*signal.RecordedAt)
 }
