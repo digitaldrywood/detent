@@ -63,7 +63,7 @@ func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolca
 }
 
 func checkDoctorLegacyCaches(projectID, root string) doctorCheck {
-	check := doctorCheck{Name: "Project " + projectID + " legacy toolchain caches", Status: doctorOK, Detail: "no Detent-owned cache roots"}
+	check := doctorCheck{Name: "Project " + projectID + " legacy toolchain caches", Status: doctorOK, Detail: "legacy cache inspection"}
 	resolved, err := expandDoctorWorkspacePath(root)
 	if err != nil {
 		check.Status = doctorWarn
@@ -107,6 +107,9 @@ func checkDoctorLegacyCaches(projectID, root string) doctorCheck {
 				check.Detail += "; inspect legacy cache: " + err.Error()
 			}
 		}
+	}
+	if check.Status == doctorOK {
+		check.Detail = "no Detent-owned cache roots"
 	}
 	return check
 }

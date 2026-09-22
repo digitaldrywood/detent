@@ -55,6 +55,9 @@ func TestINV12DoctorNativeCaches(t *testing.T) {
 			}
 
 			if tt.legacy != "" {
+				if strings.Contains(got.Detail, "no Detent-owned cache roots") {
+					t.Fatalf("contradictory detail: %+v", got)
+				}
 				if !strings.Contains(got.Detail, filepath.Join(root, tt.legacy)) {
 					t.Errorf("legacy path missing: %+v", got)
 				}
@@ -179,5 +182,12 @@ func TestDoctorCacheLastSweep(t *testing.T) {
 				t.Fatalf("hint=%q", got.Hint)
 			}
 		})
+	}
+}
+
+func TestDoctorLegacyCacheInspectionFailure(t *testing.T) {
+	check := checkDoctorLegacyCaches("test", "\x00")
+	if check.Status != doctorWarn || strings.Contains(check.Detail, "no Detent-owned cache roots") {
+		t.Fatalf("check=%+v", check)
 	}
 }
