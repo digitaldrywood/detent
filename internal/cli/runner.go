@@ -290,7 +290,7 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 		Logger: logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create workspace backend: %w", err)
+		return nil, fmt.Errorf("%w: create workspace backend for workspace root %q and source root %q: %w", project.ErrProjectDefinition, root, sourceRoot, err)
 	}
 	return backend, nil
 }

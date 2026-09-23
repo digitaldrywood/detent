@@ -321,6 +321,13 @@ when a preceding project has an invalid definition. Classification lives in the
 shared workflow loader instead of unconditional caller wrappers. The manager’s
 duplicate startup/reload pause-reference validator is removed; the existing pause
 monitor owns evaluation errors and keeps unresolved projects paused.
+Workspace backend construction errors from configured workspace and source paths
+are project-definition failures; they leave that project unavailable while other
+projects start. An explicit manager reconciliation retries terminal pending definitions
+even when the global project entry is unchanged, so a corrected workflow path
+can recover without a restart. Runtime state-store failures remain instance-fatal.
+`TestStartupIsolatesWorkspacePathFailureAndReloads` covers both workspace and
+source paths, another running project, and correction on reconciliation.
 `TestStartupIsolatesWorkflowLoadFailure` verifies healthy-project dispatch and
 unavailable-project dashboard snapshots in both project orders, including a paused
 project referencing the unavailable tracker. `TestStartupInfrastructureFailureRemainsFatal`

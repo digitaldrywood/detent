@@ -386,10 +386,12 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			result.Removed = append(result.Removed, id)
 			continue
 		}
-		if !runtimeCredentialChanged && sameProjectConfig(health.Project, next) {
+		if !runtimeCredentialChanged && sameProjectConfig(health.Project, next) && !health.RetryStopped {
 			result.Unchanged = append(result.Unchanged, id)
 			continue
 		}
+		// A terminally unavailable project has no workflow watcher. Retry it
+		// on explicit reconciliation even when only its workflow file changed.
 		result.Changed = append(result.Changed, id)
 	}
 
