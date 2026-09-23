@@ -1914,6 +1914,10 @@ func runGitAt(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	return runGitAtWithEnvCapture(ctx, dir, env, false, args...)
+}
+
+func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
@@ -1921,7 +1925,42 @@ func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...stri
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
 	}
-	output, err := cmd.CombinedOutput()
+	var output []byte
+	var err error
+	if fileOutput {
+		// A completed identity query must not depend on an inherited output pipe
+		// closing within WaitDelay under heavy subprocess load.
+		file, createErr := os.CreateTemp("", "detent-git-common-dir-*")
+		if createErr != nil {
+			return "", fmt.Errorf("create git output file: %w", createErr)
+		}
+		cmd.Stdout = file
+		cmd.Stderr = file
+		err = cmd.Run()
+		_, seekErr := file.Seek(0, io.SeekStart)
+		var readErr error
+		if seekErr == nil {
+			output, readErr = io.ReadAll(file)
+		}
+		closeErr := file.Close()
+		removeErr := os.Remove(file.Name())
+		if seekErr != nil {
+			return "", fmt.Errorf("rewind git output file: %w", seekErr)
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("read git output file: %w", readErr)
+		}
+		if closeErr != nil {
+			return "", fmt.Errorf("close git output file: %w", closeErr)
+		}
+		if removeErr != nil {
+			// On Windows a descendant can retain this handle without delete sharing.
+			// Report the leftover file without invalidating a successful query.
+			slog.Warn("remove git output file", slog.String("path", file.Name()), slog.Any("error", removeErr))
+		}
+	} else {
+		output, err = cmd.CombinedOutput()
+	}
 	if err == nil {
 		return string(output), nil
 	}
@@ -1957,7 +1996,7 @@ func gitCommonDirWithinRoot(ctx context.Context, dir string) (string, error) {
 }
 
 func gitCommonDirWithEnv(ctx context.Context, dir string, env []string) (string, error) {
-	output, err := runGitAtWithEnv(ctx, dir, env, "rev-parse", "--git-common-dir")
+	output, err := runGitAtWithEnvCapture(ctx, dir, env, true, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}

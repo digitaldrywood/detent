@@ -3070,6 +3070,95 @@ exit %d
 	}
 }
 
+func TestGitCommonDirCompletesWhenDescendantRetainsOutput(t *testing.T) {
+	skipWindows(t)
+	for _, tt := range []struct {
+		name  string
+		probe func(context.Context, string) (string, error)
+	}{
+		{name: "source common dir", probe: gitCommonDir},
+		{name: "workspace common dir", probe: gitCommonDirWithinRoot},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fifoPath := filepath.Join(dir, "release")
+			runCommand(t, dir, "mkfifo", fifoPath)
+			release, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release.Close()
+			donePath := filepath.Join(dir, "done")
+			script := `#!/bin/sh
+( read -r release < "$DETENT_PIPE_RELEASE"; printf done > "$DETENT_PIPE_DONE" ) &
+printf '%s\n' "$DETENT_COMMON_DIR"
+`
+			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("DETENT_PIPE_RELEASE", fifoPath)
+			t.Setenv("DETENT_PIPE_DONE", donePath)
+			t.Setenv("DETENT_COMMON_DIR", dir)
+
+			commonDir, commandErr := tt.probe(t.Context(), dir)
+			if _, err := release.WriteString("release\n"); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.After(10 * time.Second)
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				if _, err := os.Stat(donePath); err == nil {
+					break
+				}
+				select {
+				case <-deadline:
+					t.Fatal("descendant did not acknowledge release")
+				case <-ticker.C:
+				}
+			}
+			if commandErr != nil {
+				t.Fatalf("common dir probe error = %v, want successful identity after Git exits", commandErr)
+			}
+			if commonDir != dir {
+				t.Fatalf("common dir probe = %q, want %q", commonDir, dir)
+			}
+		})
+	}
+}
+
+func TestGitCommonDirCleanupFailureDoesNotInvalidateIdentity(t *testing.T) {
+	skipWindows(t)
+
+	commonDir := t.TempDir()
+	scratchDir := t.TempDir()
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+printf '%s\n' "$DETENT_COMMON_DIR"
+chmod 500 "$TMPDIR"
+`
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMPDIR", scratchDir)
+	t.Setenv("DETENT_COMMON_DIR", commonDir)
+	t.Cleanup(func() {
+		if err := os.Chmod(scratchDir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+
+	got, err := gitCommonDir(t.Context(), commonDir)
+	if err != nil {
+		t.Fatalf("gitCommonDir() error = %v, want successful identity despite cleanup failure", err)
+	}
+	if got != commonDir {
+		t.Fatalf("gitCommonDir() = %q, want %q", got, commonDir)
+	}
+}
+
 func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 	t.Parallel()
 	for _, operation := range []string{"checked-out", "rebase", "am", "merge", "cherry-pick", "detached"} {
