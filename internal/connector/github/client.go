@@ -291,39 +291,45 @@ func (c *Client) RESTPage(ctx context.Context, path string, out any) (string, er
 }
 
 func (c *Client) RESTText(ctx context.Context, path, accept string, maxBytes int) (string, bool, error) {
-	return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true)
+	text, truncated, _, err := c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true, false)
+	return text, truncated, err
 }
 
-func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept string, maxBytes int, allowTokenRefresh bool) (string, bool, error) {
+// RESTTextWithSize retains at most maxBytes while counting the complete response.
+func (c *Client) RESTTextWithSize(ctx context.Context, path, accept string, maxBytes int) (string, bool, int, error) {
+	return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true, true)
+}
+
+func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept string, maxBytes int, allowTokenRefresh, countSize bool) (string, bool, int, error) {
 	if maxBytes <= 0 {
-		return "", false, errors.New("maximum response bytes must be positive")
+		return "", false, 0, errors.New("maximum response bytes must be positive")
 	}
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
-		return "", false, fmt.Errorf("resolve github token: %w", err)
+		return "", false, 0, fmt.Errorf("resolve github token: %w", err)
 	}
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return "", false, ErrMissingToken
+		return "", false, 0, ErrMissingToken
 	}
 	backoffKey := c.restSharedBackoffKey(token)
 	credentialIdentity := c.restCredentialIdentity(token)
 	c.rememberRESTBackoffKey(backoffKey)
 	now := time.Now()
 	if err := c.restBackoffError(backoffKey, now); err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 	if err := c.restBudgetPolicyError(ctx, credentialIdentity, http.MethodGet, path, false, now); err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 
 	url, err := c.restURL(path)
 	if err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", false, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+		return "", false, 0, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", strings.TrimSpace(accept))
@@ -335,9 +341,9 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
+			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
 		}
-		return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: %w", ErrTransient, err))
+		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -347,7 +353,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
 	if err != nil {
-		return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
+		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
@@ -357,15 +363,23 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		c.logRESTStatusError(ctx, http.MethodGet, path, family, resp.StatusCode, responseErr)
 		if c.refreshAfterAuthFailure(ctx, responseErr, allowTokenRefresh) {
-			return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, false)
+			return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, false, countSize)
 		}
-		return "", false, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), resp.StatusCode, responseErr)
+		return "", false, 0, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), resp.StatusCode, responseErr)
 	}
 	truncated := len(raw) > maxBytes
+	size := len(raw)
+	if truncated && countSize {
+		rest, err := io.Copy(io.Discard, resp.Body)
+		if err != nil {
+			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: count response: %w", ErrTransient, err))
+		}
+		size += int(rest)
+	}
 	if truncated {
 		raw = raw[:maxBytes]
 	}
-	return string(raw), truncated, nil
+	return string(raw), truncated, size, nil
 }
 
 func (c *Client) restProbe(ctx context.Context, method string, path string, body any) (restProbeResult, error) {

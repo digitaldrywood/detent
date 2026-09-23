@@ -552,7 +552,7 @@ func (c *Connector) securityAuditSnapshot(ctx context.Context, issue connector.I
 			previous = nil
 		}
 	}
-	diff, truncated, err := c.client.RESTText(ctx, diffPath, "application/vnd.github.diff", maxDiffBytes)
+	diff, truncated, diffBytes, err := c.client.RESTTextWithSize(ctx, diffPath, "application/vnd.github.diff", maxDiffBytes)
 	if err != nil {
 		return securityaudit.Snapshot{}, fmt.Errorf("fetch security audit pull request diff: %w", err)
 	}
@@ -626,6 +626,7 @@ func (c *Connector) securityAuditSnapshot(ctx context.Context, issue connector.I
 		BaseSHA:          strings.TrimSpace(before.Base.SHA),
 		HeadSHA:          strings.TrimSpace(before.Head.SHA),
 		Diff:             diff,
+		DiffBytes:        diffBytes,
 		DiffTruncated:    truncated,
 	}, nil
 }

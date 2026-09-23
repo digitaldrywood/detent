@@ -216,7 +216,7 @@ func (o *Orchestrator) recordSecurityAuditFailure(ctx context.Context, issue con
 		ServiceIdentity:    strings.TrimSpace(o.cfg.ServiceIdentity),
 		ReviewerVersion:    securityaudit.ReviewerVersion,
 		ReviewerDigest:     securityaudit.ReviewerDigest(),
-		AuthenticationMode: securityaudit.AuthenticationRejected,
+		AuthenticationMode: securityaudit.AuthenticationNotRun,
 		ExitStatus:         securityaudit.ExitStatusFailed,
 		Failure:            failure.Error(),
 		Attempt:            attempt,
@@ -244,7 +244,7 @@ func (o *Orchestrator) recordSecurityAuditExecution(ctx context.Context, snapsho
 	}
 	authenticationMode := strings.TrimSpace(execution.AuthenticationMode)
 	if authenticationMode == "" {
-		authenticationMode = securityaudit.AuthenticationRejected
+		authenticationMode = securityaudit.AuthenticationNotRun
 	}
 	exitStatus := securityaudit.ExitStatusSuccess
 	failure := ""
