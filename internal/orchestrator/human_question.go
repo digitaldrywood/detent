@@ -35,7 +35,7 @@ func (o *Orchestrator) attachHumanQuestionTool(request *RunRequest) {
 	issue := request.Issue
 	request.AgentTools = append(request.AgentTools, runner.AgentTool{
 		Name:        "ask_human_question",
-		Description: "Ask one concise researched question in a comment on your assigned issue. Finish all independent work first. Detent persists the wait without changing the lane or creating dependencies. Reuse the stable key on retries; use a new key only for a focused follow-up after an ambiguous reply. Replies authorize only what they actually say.",
+		Description: "Ask one concise researched question in a comment on your assigned issue. Finish all independent work first. Infrastructure conditions (CI runners, worker credentials, host tools, or a gate that fails on unchanged main) belong to the instance: record the exact failure in the Workpad and end the turn instead of asking a human question. Detent persists the wait without changing the lane or creating dependencies. Reuse the stable key on retries; use a new key only for a focused follow-up after an ambiguous reply. Replies authorize only what they actually say.",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["key","question"],"properties":{"key":{"type":"string","minLength":1},"question":{"type":"string","minLength":1}}}`),
 	})
 	request.AgentToolHandler = func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {

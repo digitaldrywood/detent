@@ -43,6 +43,32 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			},
 		},
 		{
+			name: "all candidates waiting on questions clear an existing stall",
+			previous: store.ProjectDispatchStatus{
+				CandidateCount:       2,
+				CandidateFingerprint: fingerprint,
+				SkippedCount:         2,
+				WaitReasonCode:       "human_question_wait",
+				AllSkippedSince:      dispatchStatusTimePointer(now.Add(-8 * time.Hour)),
+			},
+			candidates: []connector.Issue{alpha, beta},
+			decisions: []dispatchPlanDecision{
+				{Issue: alpha, SkipReason: "human_question_wait"},
+				{Issue: beta, SkipReason: "human_question_wait"},
+			},
+		},
+		{
+			name:       "question wait does not hide another candidate",
+			candidates: []connector.Issue{alpha, beta},
+			decisions: []dispatchPlanDecision{
+				{Issue: alpha, SkipReason: "human_question_wait"},
+				{Issue: beta, Selected: true},
+			},
+			outcomes:     dispatchStatusOutcomes(beta, dispatchIssueOutcome{dispatched: true}),
+			wantCount:    1,
+			wantEligible: 1,
+		},
+		{
 			name:         "candidate selected is healthy",
 			candidates:   []connector.Issue{alpha},
 			decisions:    []dispatchPlanDecision{{Issue: alpha, Selected: true}},

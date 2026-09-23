@@ -205,9 +205,11 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 			}
 		}()
 	}
-	if !o.liveDispatchPlanner(ctx).dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired).dispatchable {
+	decision := o.liveDispatchPlanner(ctx).dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired)
+	if !decision.dispatchable {
 		return
 	}
+	action.issue.Comments = decision.comments
 	consumed := grant
 	grant.Slot = scheduler.Slot{}
 	o.dispatchIssueWithGlobalGrant(ctx, state, action.issue, action.attempt, now, action.workerHost, action.modelPermitRequired, action.allowMergeControl, action.retryState, &consumed)

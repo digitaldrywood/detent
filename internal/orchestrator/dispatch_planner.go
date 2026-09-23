@@ -18,9 +18,10 @@ import (
 )
 
 type dispatchPlanner struct {
-	recordedBlockers func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
-	cfg              Config
-	now              time.Time
+	humanQuestionWaiting func(*connector.Issue) (bool, error)
+	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
+	cfg                  Config
+	now                  time.Time
 }
 
 type dispatchPlanHooks struct {
@@ -360,7 +361,7 @@ func (p dispatchPlanner) retryAction(
 		if forgeProbeReserved {
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", decision.reason, now)
 		}
-		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency || decision.reason == dispatchSkipTrackerUnavailable {
+		if decision.reason == dispatchSkipCurrentHeadCIWait || decision.reason == dispatchSkipBlockedByDependency || decision.reason == dispatchSkipTrackerUnavailable || decision.reason == "human_question_wait" || decision.reason == "human_question_unavailable" {
 			state.Retry[retry.Issue.ID] = retry
 			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
@@ -392,6 +393,7 @@ func (p dispatchPlanner) retryAction(
 		return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 	}
 
+	issue.Comments = decision.comments
 	action, ok := p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true, modelPermitRequired, &retry)
 	if !ok {
 		if forgeProbeReserved {
@@ -429,6 +431,7 @@ func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now
 		return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 	}
 
+	issue.Comments = decision.comments
 	action, ok := p.newDispatchAction(state, issue, 0, "", false, p.modelPermitRequiredAtDispatch(issue), nil)
 	if !ok {
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
@@ -649,6 +652,7 @@ func (p dispatchPlanner) dispatchableIssue(
 }
 
 type dispatchableDecision struct {
+	comments      []connector.IssueComment
 	dispatchable  bool
 	reason        string
 	detail        string
@@ -866,7 +870,14 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 			}
 		}
 	}
-	return dispatchableDecision{dispatchable: true}
+	if p.humanQuestionWaiting != nil {
+		if waiting, err := p.humanQuestionWaiting(&issue); err != nil {
+			return dispatchableDecision{reason: "human_question_unavailable", detail: err.Error()}
+		} else if waiting {
+			return dispatchableDecision{reason: "human_question_wait", detail: "waiting for a reply on the original issue"}
+		}
+	}
+	return dispatchableDecision{dispatchable: true, comments: issue.Comments}
 }
 
 func pullRequestHydrationBlocksDispatch(issue connector.Issue) bool {
