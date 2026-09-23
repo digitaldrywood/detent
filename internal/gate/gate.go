@@ -92,6 +92,7 @@ type Summary struct {
 	PullRequestPresent bool
 	PullRequestURL     string
 	CIStatus           string
+	QueueEligibleCI    bool
 	ReviewState        string
 	ReviewPending      bool
 	P1Findings         []Finding
@@ -519,7 +520,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 		return decision(ActionSkip, ReasonMissingPullRequest)
 	}
 	ciStatus := normalizedCIStatus(summary.CIStatus)
-	if ciStatus != "green" {
+	if ciStatus != "green" && (ciStatus != "pending" || !summary.QueueEligibleCI) {
 		out := decision(ciFailureAction(cfg, summary.CIStatus), ReasonCINotGreen)
 		out.CIStatus = ciStatus
 		return out

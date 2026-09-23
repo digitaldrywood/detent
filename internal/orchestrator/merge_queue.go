@@ -340,6 +340,45 @@ func nativeMergeQueueChecksReady(pr *connector.PullRequest) bool {
 	return true
 }
 
+// nativeMergeQueuePromotionHead reuses the queue's check and availability
+// evidence so skipped PR jobs can reach the merge group without claiming CI
+// passed on the PR head.
+func (o *Orchestrator) nativeMergeQueuePromotionHead(ctx context.Context, state *State, issue connector.Issue, now time.Time) string {
+	if normalizeState(o.cfg.AutoPromote.PassState) != normalizeState(autoPromoteMergingState) ||
+		gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindCommand {
+		return ""
+	}
+	if state == nil || issue.PullRequest == nil || issue.PullRequest.CIStatus != "pending" || !nativeMergeQueueCandidate(issue, o.cfg) {
+		return ""
+	}
+	queue, ok := o.connector.(connector.PullRequestMergeQueue)
+	if !ok {
+		return ""
+	}
+	head := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	key := nativeMergeQueueRepositoryKey(issue)
+	if cached, ok := state.nativeMergeQueueRepos[key]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueRepositoryExpiry {
+		if cached.Available {
+			return head
+		}
+		return ""
+	}
+	status, err := queue.InspectPullRequestMergeQueue(ctx, issue)
+	if err != nil {
+		o.logNativeMergeQueueFailure(issue, "inspection_failed", err)
+		return ""
+	}
+	if strings.TrimSpace(status.HeadSHA) != head {
+		o.logNativeMergeQueueFailure(issue, "head_changed", nil)
+		return ""
+	}
+	state.nativeMergeQueueRepos[key] = nativeMergeQueueRepository{Available: status.Available, CheckedAt: now}
+	if status.Available {
+		return head
+	}
+	return ""
+}
+
 func nativeMergeQueueRepositoryKey(issue connector.Issue) string {
 	baseRef := ""
 	if issue.PullRequest != nil {
