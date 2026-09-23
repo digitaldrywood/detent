@@ -3177,7 +3177,7 @@ func TestLocalGitStaleQuarantineReleasesBranch(t *testing.T) {
 				t.Fatalf("HEAD = %q, want %q", got, head)
 			}
 			if failDetach {
-				if err == nil || !strings.Contains(err.Error(), "detach quarantined worktree HEAD") || !strings.Contains(err.Error(), quarantined) {
+				if err == nil || !strings.Contains(err.Error(), "detach quarantined worktree HEAD") || !strings.Contains(err.Error(), strconv.Quote(quarantined)) {
 					t.Fatalf("recovery error = %v, want detach failure and quarantine path", err)
 				}
 				if _, err := os.Stat(first.Path); !errors.Is(err, os.ErrNotExist) {

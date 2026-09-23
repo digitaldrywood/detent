@@ -217,7 +217,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 				t.Fatalf("archives=%v err=%v", archives, err)
 			}
 			restored := filepath.Join(t.TempDir(), "restored")
-			runGit(t, backend.sourceRoot, "clone", filepath.Join(archives[0], "commits.bundle"), restored)
+			runGit(t, backend.sourceRoot, "clone", "-c", "core.autocrlf=false", filepath.Join(archives[0], "commits.bundle"), restored)
 			if got := strings.TrimSpace(runGit(t, restored, "rev-parse", "HEAD")); got != head {
 				t.Fatalf("restored head=%s want=%s", got, head)
 			}
