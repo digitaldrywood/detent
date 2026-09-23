@@ -89,6 +89,7 @@ type Config struct {
 	StatusLabelPrefix          string
 	ActiveStates               []string
 	ObservedStates             []string
+	PlanStop                   string
 	TerminalStates             []string
 	StateMap                   map[string]string
 	PriorityMap                map[string]*int
@@ -123,6 +124,7 @@ type Connector struct {
 	statusLabelPrefix   string
 	activeStates        []string
 	observedStates      []string
+	planStop            string
 	terminalStates      []string
 	stateMap            map[string]string
 	priorityMap         map[string]*int
@@ -245,6 +247,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		statusLabelPrefix:  statusLabelPrefix,
 		activeStates:       normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
 		observedStates:     normalizeStateList(cfg.ObservedStates, nil),
+		planStop:           strings.TrimSpace(cfg.PlanStop),
 		terminalStates:     normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
 		stateMap:           cloneStateMap(cfg.StateMap),
 		priorityMap:        clonePriorityMapWithDefault(cfg.PriorityMap),

@@ -90,6 +90,7 @@ func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 		StatusLabelPrefix:       cfg.Tracker.StatusLabelPrefix,
 		ActiveStates:            cfg.Tracker.ActiveStates,
 		ObservedStates:          cfg.Tracker.ObservedStates,
+		PlanStop:                cfg.Plan.Stop,
 		TerminalStates:          cfg.Tracker.TerminalStates,
 		StateMap:                doctorTrackerStateMap(cfg.Tracker.StateMap),
 		Logger:                  doctorConnectorLogger(),
