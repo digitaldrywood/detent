@@ -1061,6 +1061,7 @@ type boardCardView struct {
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
+	data.latestBoardAttempts = latestBoardAttempts(data.Snapshot.WorkAttempts)
 	board := projectKanbanBoardView(data)
 	spend := "-- today"
 	if !data.PendingEnrichment {
@@ -1532,13 +1533,11 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	runtimeIdentity := card.RuntimeIdentity
 	attempted := !runtimeIdentity.IsZero()
 	if !attempted {
-		var latest *telemetry.WorkAttempt
-		for i := range data.Snapshot.WorkAttempts {
-			attempt := &data.Snapshot.WorkAttempts[i]
-			if issueKey != "" && BoardIssueKey(telemetry.Issue{ProjectID: attempt.ProjectID, ID: attempt.IssueID, Identifier: attempt.Identifier}) == issueKey && (latest == nil || attempt.AttemptID > latest.AttemptID) {
-				latest = attempt
-			}
+		attempts := data.latestBoardAttempts
+		if attempts == nil {
+			attempts = latestBoardAttempts(data.Snapshot.WorkAttempts)
 		}
+		latest := attempts[issueKey]
 		if latest != nil {
 			runtimeIdentity = latest.RuntimeIdentity
 			attempted = true
@@ -2522,4 +2521,17 @@ func boardCardSlug(identity string) string {
 		return "unknown"
 	}
 	return slug
+}
+
+// latestBoardAttempts preserves the first row on equal attempt IDs.
+func latestBoardAttempts(attempts []telemetry.WorkAttempt) map[string]*telemetry.WorkAttempt {
+	latest := make(map[string]*telemetry.WorkAttempt)
+	for i := range attempts {
+		attempt := &attempts[i]
+		key := BoardIssueKey(telemetry.Issue{ProjectID: attempt.ProjectID, ID: attempt.IssueID, Identifier: attempt.Identifier})
+		if key != "" && (latest[key] == nil || attempt.AttemptID > latest[key].AttemptID) {
+			latest[key] = attempt
+		}
+	}
+	return latest
 }
