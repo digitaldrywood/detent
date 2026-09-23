@@ -79,3 +79,15 @@ human_action: null
 - Passed existing runner protocol diagnostics: `go test ./internal/runner -run '^(TestSSHErrorRoundTrip|TestSSHPeerConcurrentCallbacksAndDisconnect|TestSSHCallbackDoesNotPublishRemotePID|TestSSHRunResponseRetainsResultOnFailure)$' -count=1 -p 4` (0.406s package time). Existing tests cover sentinel identity, wrappers, structured errors, callbacks, disconnects, and failure results; no duplicate test added.
 - No generated inputs changed. Configured gate is `true`; no full gates, coverage, race suite, or CI wait. No out-of-scope discovery or reusable skill draft.
 - Source repair and focused diagnostics are complete. PR publication, current-head review, and completion for attempt 7112 / generation 42 are tracked in the canonical issue Workpad.
+
+# Issue #3019
+
+- Key files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`.
+- Existing fix publishes the dashboard address immediately after binding, before runtime store and board snapshot initialization. The blocked snapshot-load regression covers fixture and screenshots modes and checks `/health` after releasing the load.
+- Rework was an old CI failure, with no actionable human or bot review. #2975 and #3009 are closed; their fixes are merged into `origin/main`. Current `develop` has independent platform fixes; prior full-CI failures are historical under the operator's disabled blocking-gate policy.
+- Rebased the single issue commit cleanly onto `origin/develop` at `bccee4c50f86019fd961a4c457a59a2c91e9eb31`. Rebased head: `1cae634d21b925d2ef4570a6061d0888414342ae`.
+- Current-head diagnostics: affected startup tests passed three repetitions (27.313s); four concurrent GOMAXPROCS=1 runs passed (10.056–11.679s); `go test ./internal/cli/... -count=1 -timeout=15m` passed (54.533s); `go vet ./internal/cli/...` passed. DETENT_API_TOKEN was cleared for tests.
+- Prior deterministic regression failed on the old boot order after the unchanged 10-second empty-banner wait. Prior ambient host stress did not reproduce the observed host slowdown; no blanket timeout increase was made.
+- Configured `true` gate passed exactly once immediately before pushing. Rebased head is pushed, ready PR #3026 targets `develop`, and the issue Workpad reports `complete` with no blockers. GitHub recheck confirmed exact head, no review threads/findings, and no current-head check rollup; no skipped checks are credited as tests.
+- Open items: none for implementation/Rework. The orchestrator owns promotion and merging; do not merge during Rework or change tracker lane labels.
+- Skill draft: no; the deterministic startup-order regression needs no new reusable procedure.
