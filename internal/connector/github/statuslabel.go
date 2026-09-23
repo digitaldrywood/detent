@@ -64,6 +64,24 @@ type labelStatusResolution struct {
 	ConflictLabels []string
 }
 
+type labelIssueReferenceKey struct {
+	ID           string
+	IncludeState bool
+}
+
+type labelIssueReferenceSnapshot struct {
+	UpdatedAt         time.Time
+	State             string
+	StageUpdatedAt    *time.Time
+	StageUpdatedActor connector.IssueActor
+	PRNumber          int
+	PRHeadSHA         string
+	PRHeadCommittedAt *time.Time
+	PRRepository      string
+	PRSource          string
+	PRState           string
+}
+
 type repositoryStatusDriftReadOptions struct {
 	PageSize      int
 	Limit         int
@@ -127,11 +145,84 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 }
 
 func (c *Connector) attachLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue) error {
-	return c.attachIssuePullRequestReferences(ctx, issues, true, false)
+	return c.attachCachedLabelIssuePullRequestReferences(ctx, issues, false)
 }
 
 func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.Context, issues []connector.Issue, includeState bool) error {
-	return c.attachIssuePullRequestReferences(ctx, issues, true, includeState)
+	return c.attachCachedLabelIssuePullRequestReferences(ctx, issues, includeState)
+}
+
+func (c *Connector) attachCachedLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue, includeState bool) error {
+	pending := make([]connector.Issue, 0, len(issues))
+	indexes := make([]int, 0, len(issues))
+	cacheable := make([]bool, 0, len(issues))
+	for index := range issues {
+		issue := &issues[index]
+		eligible := issue.ID != "" && issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() && issue.PRNumber == nil && issue.PullRequest == nil
+		if eligible {
+			key := labelIssueReferenceKey{ID: issue.ID, IncludeState: includeState}
+			c.labelReferencesMu.RLock()
+			snapshot, ok := c.labelReferences[key]
+			c.labelReferencesMu.RUnlock()
+			if ok && snapshot.UpdatedAt.Equal(*issue.UpdatedAt) && snapshot.State == issue.State {
+				snapshot.apply(issue, includeState)
+				continue
+			}
+		}
+		pending = append(pending, *issue)
+		indexes = append(indexes, index)
+		cacheable = append(cacheable, eligible)
+	}
+	if err := c.attachIssuePullRequestReferences(ctx, pending, true, includeState); err != nil {
+		return err
+	}
+	for i, index := range indexes {
+		issues[index] = pending[i]
+		issue := &issues[index]
+		if !cacheable[i] || issue.PullRequest != nil && issue.PullRequest.HydrationUnavailableReason != "" {
+			continue
+		}
+		key := labelIssueReferenceKey{ID: issue.ID, IncludeState: includeState}
+		snapshot := labelIssueReferenceSnapshot{
+			UpdatedAt:         *issue.UpdatedAt,
+			State:             issue.State,
+			StageUpdatedAt:    cloneGitHubTime(issue.StageUpdatedAt),
+			StageUpdatedActor: issue.StageUpdatedActor,
+			PRHeadSHA:         issue.PRHeadSHA,
+			PRHeadCommittedAt: cloneGitHubTime(issue.PRHeadCommittedAt),
+			PRRepository:      issue.PRRepository,
+			PRSource:          issue.PRSource,
+		}
+		if issue.PRNumber != nil {
+			snapshot.PRNumber = *issue.PRNumber
+		}
+		if issue.PullRequest != nil {
+			snapshot.PRState = issue.PullRequest.State
+		}
+		c.labelReferencesMu.Lock()
+		if c.labelReferences == nil {
+			c.labelReferences = make(map[labelIssueReferenceKey]labelIssueReferenceSnapshot)
+		}
+		c.labelReferences[key] = snapshot
+		c.labelReferencesMu.Unlock()
+	}
+	return nil
+}
+
+func (snapshot labelIssueReferenceSnapshot) apply(issue *connector.Issue, includeState bool) {
+	issue.StageUpdatedAt = cloneGitHubTime(snapshot.StageUpdatedAt)
+	issue.StageUpdatedActor = snapshot.StageUpdatedActor
+	if snapshot.PRNumber == 0 {
+		return
+	}
+	issue.PRNumber = new(snapshot.PRNumber)
+	issue.PRHeadSHA = snapshot.PRHeadSHA
+	issue.PRHeadCommittedAt = cloneGitHubTime(snapshot.PRHeadCommittedAt)
+	issue.PRRepository = snapshot.PRRepository
+	issue.PRSource = snapshot.PRSource
+	if includeState {
+		issue.PullRequest = &connector.PullRequest{Number: snapshot.PRNumber, State: snapshot.PRState}
+	}
 }
 
 func (c *Connector) attachIssuePullRequestReferences(ctx context.Context, issues []connector.Issue, includeLabelTransition bool, includeState bool) error {
