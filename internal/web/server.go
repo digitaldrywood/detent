@@ -172,6 +172,7 @@ type Config struct {
 }
 
 type Server struct {
+	boardIdentities     boardIdentityCache
 	runnerFleet         RunnerFleet
 	echo                *echo.Echo
 	hub                 *hub.Hub[telemetry.Snapshot]

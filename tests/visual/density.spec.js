@@ -81,6 +81,24 @@ test("card density changes rendered information and persists", async ({
   await expect(page.locator("html")).toHaveAttribute("data-density", "comfy");
 });
 
+test("fleet model text is visibly unclipped at every density", async ({ page }) => {
+  await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": "fleet-healthy-parallel-work" });
+  await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
+  const card = page.locator("article", { hasText: "Implement page-addressable screenshot scenarios" });
+  const model = card.locator("[data-board-card-model] > span").first();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1100 });
+    for (const density of ["compact", "cozy", "comfy"]) {
+      await setDensity(page, density);
+      await expect(model).toBeVisible();
+      await expect(model).toHaveText("gpt-5.6-sol");
+      const size = await model.evaluate(el => ({ visible: el.clientWidth, full: el.scrollWidth }));
+      expect(size.visible).toBeGreaterThan(0);
+      expect(size.full).toBeLessThanOrEqual(size.visible);
+    }
+  }
+});
+
 test("maximal card keeps project, issue, and PR identity at every density", async ({
   page,
 }) => {
@@ -164,6 +182,7 @@ async function assertCardIdentity(card, density) {
   await expect(identity).toBeVisible();
   const model = identity.locator("[data-board-card-model]");
   await expect(model).toBeVisible();
+  await expect(model).toContainText("provider/long-model-identifier-release-2026-09");
   await expect(model).toHaveAttribute("title", "Model: provider/long-model-identifier-release-2026-09");
   const effort = identity.locator("[data-board-card-effort]");
   if (density === "compact") {
