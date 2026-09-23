@@ -213,11 +213,7 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 	before := cloneIssue(issue)
 	before.State = previous.State
 	if known && !same && !local && !peer {
-		var err error
-		before, err = o.hydrateOperatorRework(ctx, before, issue.State)
-		if err != nil {
-			return store.LaneObservation{}, provenance.Attribution{}, err
-		}
+		before = o.hydrateOperatorRework(ctx, before, issue.State)
 	}
 	observation := store.LaneObservation{State: issue.State, EnteredAt: enteredAt, Origin: string(attribution.Origin)}
 	if err := o.saveLaneObservation(ctx, issue.ID, observation); err != nil {

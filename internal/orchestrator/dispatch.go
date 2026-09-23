@@ -30,7 +30,7 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
-	planner.operatorRejectedHead = func(issue connector.Issue) bool {
+	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
 		return o.operatorRejectedHead(ctx, issue)
 	}
 	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) (recordedBlockerEvaluation, error) {

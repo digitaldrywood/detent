@@ -78,7 +78,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 			normalizeState(completed.Issue.State) != normalizeState(issue.State) {
 			continue
 		}
-		if o.operatorRejectedHead(ctx, issue) {
+		if rejected, err := o.operatorRejectedHead(ctx, issue); err != nil || rejected {
 			continue
 		}
 		targetState := completedActiveReviewTargetState(

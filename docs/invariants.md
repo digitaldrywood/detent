@@ -65,6 +65,13 @@ while a different head follows the normal gates. Rejected work remains eligible
 for a repair worker instead of waiting on its old completion. Automated Rework
 routing does not imply an operator rejection. This consolidates review eligibility
 with the lane ledger without adding a label, reason code, or configuration key.
+Forge hydration is best-effort so a PR endpoint failure cannot veto an operator
+lane move or abort the project tick. Unknown rejected heads require a commit
+strictly newer than the move. History read errors hold only the affected card;
+the independently durable human lane observation also prevents promotion when
+the best-effort history event was lost. Missing event evidence holds repair
+dispatch until a newer commit establishes progress, rather than allowing a lane
+change to erase the remaining rejection evidence.
 `TestOperatorRejectionPromotion` and `TestOperatorRejectionRepairDispatch` cover
 unchanged and new heads, drafts, dashboard and observed moves, and repair dispatch
 (#2943).
@@ -325,9 +332,10 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 ## INV-3 — Mechanism moratorium
 
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
-history (INV-1). The reviewed `applyOperatorMove` fingerprint changes only to
-hydrate the PR before recording a Rework move. Its dynamic reason selection and
-lane writer remain unchanged; no new reason or recovery mechanism is introduced.
+history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
+the PR best-effort before recording Rework and identify an otherwise unattributed
+`operator_move` as human. Its dynamic reason selection and lane writer remain
+unchanged; no new reason or recovery mechanism is introduced.
 
 Startup workflow definition/validation failures use the project manager's existing terminal
 unavailable-project reporting (#2969), including loads performed by the runner
