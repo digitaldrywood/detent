@@ -530,6 +530,7 @@ func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowPr
 		StatusLabelPrefix:           cfg.Tracker.StatusLabelPrefix,
 		ActiveStates:                cfg.Tracker.ActiveStates,
 		ObservedStates:              cfg.Tracker.ObservedStates,
+		PlanStop:                    cfg.Plan.Stop,
 		TerminalStates:              cfg.Tracker.TerminalStates,
 		StateMap:                    doctorTrackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 doctorTrackerPriorityMap(cfg.Tracker.PriorityMap),
