@@ -431,6 +431,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			progressMetadata,
 			spendProgressMetadata(spendProgress),
 			deliverableCommandEvidenceMetadata(event.Result),
+			o.finalAssistantMessageMetadata(event.Result),
 		))
 		attempt := event.RetryAttempt
 		if attempt < 1 {
@@ -691,6 +692,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		artifactGateConvergenceMetadata(artifactConvergence),
 		deliverableCommandEvidenceMetadata(event.Result),
 		completionGateWaitMetadata(gateWaitReason, progress.Issue),
+		o.finalAssistantMessageMetadata(event.Result),
 	))
 
 	if terminalState == store.WorkAttemptTerminalNoProgress {

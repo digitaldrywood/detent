@@ -374,6 +374,7 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	checks = append(checks, checkDoctorWorkflowSkillMentions(id, workflow.Definition)...)
 	setDoctorCurrentCheck("Project " + id + " workflow_source_drift")
 	checks = append(checks, checkDoctorWorkflowSourceDrift(ctx, id, project, workflow.Config, deps))
 	instructionWorkflowPath, instructionWorkflowErr := resolveDoctorProjectPath(project, project.Workflow)
