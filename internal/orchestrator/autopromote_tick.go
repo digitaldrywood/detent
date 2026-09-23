@@ -160,6 +160,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
+		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if mergeWorkerIssue(issue) {
 			// Merging consumes only the audit verdict here; its other gates remain

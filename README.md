@@ -215,8 +215,10 @@ boardless issue field, or repository status labels drive everything.
    instruction contract. The prompt declares the project's required CI stage
    categories and the project-specific commands and check names that satisfy
    each category. Agents use that declaration when they change CI configuration
-   or review a change: every required stage must exist and pass on the current
-   pull request head. Optional gitignored `detent.local.yaml` and
+   or review a change: every required stage and mapped tool must exist. Checks
+   must pass on the PR head when jobs run there; for merge-group-only CI, report
+   expected PR skips and require passing merge-group checks before merge.
+   Optional gitignored `detent.local.yaml` and
    `WORKFLOW.local.md` files apply machine-specific configuration and agent
    direction, respectively, without changing the shared contracts.
 2. **You mark an issue `Todo`.** Detent claims it, creates an isolated Git

@@ -1088,6 +1088,13 @@ required contexts. `TestNativeMergeQueueSkippedChecks` and
 `TestAttemptTriageSkippedChecks` ensures triage describes skipped checks as not
 fully verified, even when the provider aggregate is green (#2948).
 
+The command-gate promotion path shares this queue eligibility rule only after a
+native queue inspection confirms availability for the same PR head. A pending
+aggregate caused by completed skipped checks can then enter Merging; no queue,
+missing or unfinished checks, failed checks, and a changed head stay ineligible.
+This does not count skipped checks as passed tests. `TestAutoPromoteSkippedPRChecksOnlyWithNativeQueue`
+and `TestCommandGateQueueEligibleCI` cover the handoff to the merge group.
+
 **Why:** Competing speculative merge work and repeated head invalidations
 contributed to the measured rebase and CI loop.
 
@@ -1129,6 +1136,12 @@ changing the ownership or fallback behavior.
 ## INV-5 — CI once per ready head
 
 **Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
+
+The implementation handoff records passing local validation and expected skipped
+current-head PR checks separately. Skipped PR jobs are not evidence that the
+suite passed. Queue-eligible skipped checks allow promotion only when the native
+queue is available for that head. The full suite must pass on the merge-group
+commit before merge.
 
 **Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
 Verify job; draft iteration avoids paying this cost before local review ends.

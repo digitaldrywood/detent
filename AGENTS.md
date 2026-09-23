@@ -55,6 +55,12 @@ in the PR template.
 
 ## Validation
 
+For this repository, real pull-request CI jobs are intentionally skipped under
+INV-5. After `make check-fast` passes, report the skipped current-head PR checks
+as skipped in the Workpad; they are not passing test evidence and do not block
+the completion handoff. The merge queue must pass the full suite on its
+merge-group commit before merge.
+
 Do not re-read AGENTS.md, CLAUDE.md, or an injected skill when its contents are already in the prompt.
 
 During the edit loop, run `go test ./<touched-package>/...` and `go vet` on
