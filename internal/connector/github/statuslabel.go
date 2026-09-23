@@ -655,20 +655,7 @@ func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, is
 	}
 	issue = latest
 
-	nextLabels := make([]string, 0, len(issue.Labels.Nodes)+1)
-	seen := map[string]struct{}{}
-	for _, label := range issue.Labels.Nodes {
-		labelName := strings.TrimSpace(label.Name)
-		if labelName == "" || c.isStatusLabel(labelName) {
-			continue
-		}
-		key := normalizeLabelName(labelName)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		nextLabels = append(nextLabels, labelName)
-	}
+	nextLabels := c.nonStatusLabels(issue.Labels)
 	nextLabels = append(nextLabels, targetLabel)
 
 	var response []label
@@ -703,20 +690,16 @@ func (c *Connector) removeIssueStatusLabels(ctx context.Context, ref issueRef) e
 	if resolution := c.labelStatusResolutionFromLabels(nodeConnection[label]{Nodes: response}); resolution.Status != "" || resolution.conflicted() {
 		return ErrStatusUpdateFailed
 	}
-	for _, label := range response {
-		if c.isStatusLabel(label.Name) {
-			return ErrStatusUpdateFailed
-		}
-	}
 	return nil
 }
 
 func (c *Connector) nonStatusLabels(labels nodeConnection[label]) []string {
+	statesByLabel := c.statusLabelStates(c.configuredStatusStates())
 	nextLabels := make([]string, 0, len(labels.Nodes))
 	seen := map[string]struct{}{}
 	for _, label := range labels.Nodes {
 		labelName := strings.TrimSpace(label.Name)
-		if labelName == "" || c.isStatusLabel(labelName) {
+		if _, isStatus := statesByLabel[normalizeLabelName(labelName)]; labelName == "" || isStatus {
 			continue
 		}
 		key := normalizeLabelName(labelName)
@@ -930,10 +913,6 @@ func (c *Connector) statusLabelForExternalState(stateName string) string {
 		return ""
 	}
 	return c.statusLabelPrefix + slug
-}
-
-func (c *Connector) isStatusLabel(labelName string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(labelName)), strings.ToLower(c.statusLabelPrefix))
 }
 
 func statusLabelSlug(value string) string {
