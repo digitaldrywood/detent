@@ -522,7 +522,12 @@ the two cooldown schedules without adding a timer or configuration surface.
 `TestClientGraphQLSecondaryBackoffExpires`, `TestClientGraphQLSecondaryRepeatedFailures`,
 `TestClientGraphQLSecondarySharedAcrossProjects`, `TestClientGraphQLSharedMutationAdmission`,
 `TestGitHubLookupBackoffDelayAfterSecondaryExpiry`, and
-`TestGitHubLookupBackoffSecondaryDeadline` cover these boundaries.
+`TestGitHubLookupBackoffSecondaryDeadline` cover these boundaries. Primary exhaustion
+expires using the existing snapshot reset and clock-skew allowance (#2998), so
+lookup-only clients can refresh their budget. Paused lookup retry delays count
+down to that deadline and remain nonnegative. An active secondary deadline still
+takes precedence; `TestClientGraphQLPrimaryExhaustionExpires` covers recovery
+with and without a reserve and with an overlapping secondary cooldown.
 
 Legacy worker caches are removed at project startup using an absolute, home-expanded
 workspace root (#2742). The obsolete per-project shared-cache sweep and its state
