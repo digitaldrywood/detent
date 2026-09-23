@@ -57,6 +57,27 @@ and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
 appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
 
+An operator rejects a reviewed PR by moving its card to Rework, including through
+the dashboard. The existing lane history records the PR identity and hydrated
+head. Both completion and auto-promotion consume this durable rejection evidence:
+the same head cannot re-enter review after a restart or a successful worker report,
+while a different head follows the normal gates. Rejected work remains eligible
+for a repair worker instead of waiting on its old completion. Automated Rework
+routing does not imply an operator rejection. This consolidates review eligibility
+with the lane ledger without adding a label, reason code, or configuration key.
+Forge hydration is best-effort so a PR endpoint failure cannot veto an operator
+lane move or abort the project tick. Soft hydration failures also discard cached
+heads. Lane observations remain authoritative when no timeline reader is configured.
+Unknown rejected heads require a commit
+strictly newer than the move. History read errors hold only the affected card;
+the independently durable human lane observation also prevents promotion when
+the best-effort history event was lost. Missing event evidence holds repair
+dispatch until a newer commit establishes progress, rather than allowing a lane
+change to erase the remaining rejection evidence.
+`TestOperatorRejectionPromotion` and `TestOperatorRejectionRepairDispatch` cover
+unchanged and new heads, drafts, dashboard and observed moves, and repair dispatch
+(#2943).
+
 Human Review is entered only for PR-review outcomes or an explicit opt-out of
 an automated gate (including a configured `human_review` gate). Non-review
 human decisions, including attempt-allowance exhaustion and Workpad blockers,
@@ -317,6 +338,12 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Operator rejection (#2943) consolidates promotion eligibility with existing lane
+history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
+the PR best-effort before recording Rework and identify an otherwise unattributed
+`operator_move` as human. Its dynamic reason selection and lane writer remain
+unchanged; no new reason or recovery mechanism is introduced.
+
 Startup workflow definition/validation failures use the project manager's existing terminal
 unavailable-project reporting (#2969), including loads performed by the runner
 factory. The optional historical-session attribution backfill defers when any
@@ -331,6 +358,16 @@ unavailable-project dashboard snapshots in both project orders, including a paus
 project referencing the unavailable tracker. `TestStartupInfrastructureFailureRemainsFatal`
 and `TestWorkflowLoadFailureClassification` preserve the infrastructure boundary
 (INV-2); no retry or recovery path is added.
+
+Codex workers use the backend's existing blocking terminal wait with a 50-minute
+cap (#2936), replacing the instruction to return to the model every 55 seconds.
+New and resumed worker threads receive the same native timeout override. The
+worker's shorter stream-stall timeout is removed in favor of the existing stream
+read timeout; runner turn/session deadlines and cancellation remain authoritative.
+Tool-only operator sessions retain their configured stall timeout. This adds no
+Detent configuration key, polling loop, watchdog, or recovery path.
+`TestAgentBackendNativeCommandWait` covers quiet commands, resume, supplemental
+tools, operator isolation, configured stream deadlines, and cancellation.
 
 Operational completion (#2911) reuses the existing terminal issue closer and
 `operational_completion` reason. Closure precedes terminal lane publication so
@@ -538,7 +575,12 @@ the two cooldown schedules without adding a timer or configuration surface.
 `TestClientGraphQLSecondaryBackoffExpires`, `TestClientGraphQLSecondaryRepeatedFailures`,
 `TestClientGraphQLSecondarySharedAcrossProjects`, `TestClientGraphQLSharedMutationAdmission`,
 `TestGitHubLookupBackoffDelayAfterSecondaryExpiry`, and
-`TestGitHubLookupBackoffSecondaryDeadline` cover these boundaries.
+`TestGitHubLookupBackoffSecondaryDeadline` cover these boundaries. Primary exhaustion
+expires using the existing snapshot reset and clock-skew allowance (#2998), so
+lookup-only clients can refresh their budget. Paused lookup retry delays count
+down to that deadline and remain nonnegative. An active secondary deadline still
+takes precedence; `TestClientGraphQLPrimaryExhaustionExpires` covers recovery
+with and without a reserve and with an overlapping secondary cooldown.
 
 Legacy worker caches are removed at project startup using an absolute, home-expanded
 workspace root (#2742). The obsolete per-project shared-cache sweep and its state
@@ -1054,6 +1096,14 @@ a dequeue. A consumed provider entry is already withdrawn.
 `TestDelegateNativeMergeQueueIssuesCachesQueueEntries` cover withdrawal,
 lane progress, and hydration request counts (#2826).
 
+Queue admission distinguishes verification from enqueue eligibility: completed
+success, skipped, and neutral checks may enter the native queue, but missing, running, cancelled, or
+failed checks do not qualify through that path. The provider still enforces its
+required contexts. `TestNativeMergeQueueSkippedChecks` and
+`TestNativeMergeQueueNeutralChecks` cover this distinction;
+`TestAttemptTriageSkippedChecks` ensures triage describes skipped checks as not
+fully verified, even when the provider aggregate is green (#2948).
+
 **Why:** Competing speculative merge work and repeated head invalidations
 contributed to the measured rebase and CI loop.
 
@@ -1094,14 +1144,14 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — CI once per ready head
 
-**Statement:** Real CI never runs on pull_request events. Pull requests carry only instant placeholder checks so the merge queue can accept them; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
+**Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
 
 **Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
 Verify job; draft iteration avoids paying this cost before local review ends.
 
 **Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
-requires the PR activity allowlist and draft exclusion on every PR job (including
-the Invariant Gate), and restricts portability, Windows core, installer, and
+requires the PR activity allowlist and excludes every real job from PR execution (including
+the Invariant Gate), rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
 snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;

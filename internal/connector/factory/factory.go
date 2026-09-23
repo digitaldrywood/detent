@@ -49,6 +49,7 @@ type Config struct {
 	StatusLabelPrefix           string
 	ActiveStates                []string
 	ObservedStates              []string
+	PlanStop                    string
 	TerminalStates              []string
 	StateMap                    map[string]string
 	PriorityMap                 map[string]*int
@@ -104,6 +105,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			StatusLabelPrefix:          cfg.StatusLabelPrefix,
 			ActiveStates:               cfg.ActiveStates,
 			ObservedStates:             cfg.ObservedStates,
+			PlanStop:                   cfg.PlanStop,
 			TerminalStates:             cfg.TerminalStates,
 			StateMap:                   cfg.StateMap,
 			PriorityMap:                cfg.PriorityMap,
@@ -152,6 +154,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				StatusLabelPrefix:          cfg.StatusLabelPrefix,
 				ActiveStates:               cfg.ActiveStates,
 				ObservedStates:             cfg.ObservedStates,
+				PlanStop:                   cfg.PlanStop,
 				TerminalStates:             cfg.TerminalStates,
 				StateMap:                   cfg.StateMap,
 				PriorityMap:                cfg.PriorityMap,

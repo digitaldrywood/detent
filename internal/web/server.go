@@ -172,6 +172,7 @@ type Config struct {
 }
 
 type Server struct {
+	boardIdentities     boardIdentityCache
 	runnerFleet         RunnerFleet
 	echo                *echo.Echo
 	hub                 *hub.Hub[telemetry.Snapshot]
@@ -1025,7 +1026,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		ConnectorName:             s.connector.Name(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scopedSnapshot,
-		ConfiguredAgents:          s.boardConfiguredAgents(scopedSnapshot),
+		ConfiguredAgents:          s.boardConfiguredAgentsForProject(scopedSnapshot, project.ID),
 		Projects:                  projects,
 		Kanban:                    s.dashboardKanbanData(ctx, project.ID, scopedSnapshot),
 		Assets:                    s.assets.templatePaths(),
@@ -1182,7 +1183,7 @@ func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 	if !ok {
 		return s.withManualRefresh(s.enrichSnapshot(ctx, telemetry.Snapshot{})).WithFreshness(s.now())
 	}
-	return s.withManualRefresh(s.cachedEnrichedSnapshot(ctx, snapshot)).WithFreshness(s.now())
+	return s.withManualRefresh(s.snapshotMissingRequiredChecks(s.cachedEnrichedSnapshot(ctx, snapshot))).WithFreshness(s.now())
 }
 
 func (s *Server) latestBoardSnapshot() (telemetry.Snapshot, bool) {
@@ -1191,9 +1192,9 @@ func (s *Server) latestBoardSnapshot() (telemetry.Snapshot, bool) {
 		return s.withManualRefresh(telemetry.Snapshot{}).WithFreshness(s.now()), false
 	}
 	if enriched, ok := s.snapshots.get(snapshot); ok {
-		return s.withManualRefresh(enriched).WithFreshness(s.now()), true
+		return s.withManualRefresh(s.snapshotMissingRequiredChecks(enriched)).WithFreshness(s.now()), true
 	}
-	return s.withManualRefresh(snapshot).WithFreshness(s.now()), false
+	return s.withManualRefresh(s.snapshotMissingRequiredChecks(snapshot)).WithFreshness(s.now()), false
 }
 
 func (s *Server) health(c echo.Context) error {

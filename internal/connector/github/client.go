@@ -741,7 +741,11 @@ func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now ti
 		return nil
 	}
 	if status == connector.GraphQLRateLimitStatusExhausted {
-		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
+		if !graphQLRateLimitSnapshotExpired(rateLimit, now) {
+			return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
+		}
+		// Let lookup-only clients refresh the budget after the exhausted window ends.
+		c.graphQLRateLimitStatus = ""
 	}
 	if reserve > 0 && hasRateLimit && rateLimit.Limit > 0 && rateLimit.Remaining <= reserve && !graphQLRateLimitSnapshotExpired(rateLimit, now) {
 		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL remaining budget is reserved for shared work")
@@ -750,9 +754,9 @@ func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now ti
 }
 
 func graphQLLookupPausedError(rateLimit connector.GraphQLRateLimit, now time.Time, body string) error {
-	retryAfter := rateLimit.RetryAfter
-	if retryAfter <= 0 && rateLimit.ResetAt.After(now) {
-		retryAfter = rateLimit.ResetAt.Sub(now)
+	retryAfter := max(rateLimit.RetryAfter, 0)
+	if !rateLimit.ResetAt.IsZero() {
+		retryAfter = max(rateLimit.ResetAt.Add(restRateLimitResetSkew).Sub(now), 0)
 	}
 	return &StatusError{
 		StatusCode:    http.StatusTooManyRequests,

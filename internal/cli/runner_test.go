@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -683,76 +684,78 @@ func TestStartupSnapshotMarksTrackerStateInitializing(t *testing.T) {
 func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	t.Parallel()
 
-	registry := projectpkg.NewRegistry()
-	healthy := startRefreshProject(t, "alpha")
-	waitForProjectDataSeq(t, healthy, 1)
-	mustSetProject(t, registry, healthy)
-
-	snapshotHub := hub.New[telemetry.Snapshot]()
-	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	var seq atomic.Uint64
-	go func() {
-		defer close(done)
-		publishSnapshots(
-			ctx,
-			registry,
-			agentPoolSnapshotSourceStub{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}},
-			snapshotHub,
-			&seq,
-			nil,
-			nil,
-			"http://localhost:4101",
-			nil,
-			5*time.Millisecond,
-			func() time.Time { return now },
-		)
-	}()
-
-	var (
-		snapshot telemetry.Snapshot
-		ok       bool
-	)
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if snapshot, ok = snapshotHub.Latest(); ok {
-			break
+	// Keep startup and publication independent of host scheduling delays.
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		healthy := startRefreshProject(t, "alpha")
+		synctest.Wait()
+		state, err := healthy.Orchestrator().State(t.Context())
+		if err != nil {
+			t.Fatalf("State() error = %v", err)
 		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	cancel()
-	<-done
+		if state.DataSeq < 1 {
+			t.Fatalf("startup DataSeq = %d, want >= 1", state.DataSeq)
+		}
+		mustSetProject(t, registry, healthy)
 
-	if !ok {
-		t.Fatal("publishSnapshots did not publish any snapshot")
-	}
-	if !snapshot.GeneratedAt.Equal(now) {
-		t.Fatalf("snapshot.GeneratedAt = %v, want %v", snapshot.GeneratedAt, now)
-	}
-	if snapshot.Project.DisplayName != "alpha" {
-		t.Fatalf("snapshot.Project.DisplayName = %q, want alpha", snapshot.Project.DisplayName)
-	}
-	if len(snapshot.Projects) != 1 {
-		t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))
-	}
-	if snapshot.Projects[0].Project.ID != "alpha" || snapshot.Projects[0].Project.DisplayName != "alpha" {
-		t.Fatalf("snapshot.Projects[0].Project = %#v, want alpha metadata", snapshot.Projects[0].Project)
-	}
-	if snapshot.Projects[0].Project.Pool != scheduler.DefaultPoolName {
-		t.Fatalf("snapshot.Projects[0].Project.Pool = %q, want default", snapshot.Projects[0].Project.Pool)
-	}
-	if !reflect.DeepEqual(snapshot.AgentPools, []telemetry.AgentPool{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}}) {
-		t.Fatalf("snapshot.AgentPools = %#v, want scheduler utilization", snapshot.AgentPools)
-	}
-	if snapshot.DashboardURL != "http://localhost:4101" {
-		t.Fatalf("snapshot.DashboardURL = %q, want dashboard URL", snapshot.DashboardURL)
-	}
-	if snapshot.Refresh.NextRefreshAt == nil {
-		t.Fatalf("snapshot.Refresh.NextRefreshAt = nil, want next refresh")
-	}
+		snapshotHub := hub.New[telemetry.Snapshot]()
+		now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		done := make(chan struct{})
+		var seq atomic.Uint64
+		go func() {
+			defer close(done)
+			publishSnapshots(
+				ctx,
+				registry,
+				agentPoolSnapshotSourceStub{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}},
+				snapshotHub,
+				&seq,
+				nil,
+				nil,
+				"http://localhost:4101",
+				nil,
+				5*time.Millisecond,
+				func() time.Time { return now },
+			)
+		}()
+
+		synctest.Wait()
+		snapshot, ok := snapshotHub.Latest()
+		cancel()
+		<-done
+
+		if !ok {
+			t.Fatal("publishSnapshots did not publish any snapshot")
+		}
+		if !snapshot.GeneratedAt.Equal(now) {
+			t.Fatalf("snapshot.GeneratedAt = %v, want %v", snapshot.GeneratedAt, now)
+		}
+		if snapshot.Project.DisplayName != "alpha" {
+			t.Fatalf("snapshot.Project.DisplayName = %q, want alpha", snapshot.Project.DisplayName)
+		}
+		if len(snapshot.Projects) != 1 {
+			t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))
+		}
+		if snapshot.Projects[0].Project.ID != "alpha" || snapshot.Projects[0].Project.DisplayName != "alpha" {
+			t.Fatalf("snapshot.Projects[0].Project = %#v, want alpha metadata", snapshot.Projects[0].Project)
+		}
+		if snapshot.Projects[0].Project.Pool != scheduler.DefaultPoolName {
+			t.Fatalf("snapshot.Projects[0].Project.Pool = %q, want default", snapshot.Projects[0].Project.Pool)
+		}
+		if !reflect.DeepEqual(snapshot.AgentPools, []telemetry.AgentPool{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}}) {
+			t.Fatalf("snapshot.AgentPools = %#v, want scheduler utilization", snapshot.AgentPools)
+		}
+		if snapshot.DashboardURL != "http://localhost:4101" {
+			t.Fatalf("snapshot.DashboardURL = %q, want dashboard URL", snapshot.DashboardURL)
+		}
+		if snapshot.Refresh.NextRefreshAt == nil {
+			t.Fatalf("snapshot.Refresh.NextRefreshAt = nil, want next refresh")
+		}
+	})
 }
 
 func TestPublishSnapshotOnceAssignsMonotonicSeq(t *testing.T) {
@@ -1564,62 +1567,72 @@ func TestRepublishSnapshotsOnProjectEventsLogsPauseTransitions(t *testing.T) {
 func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 	t.Parallel()
 
-	registry := projectpkg.NewRegistry()
-	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	updatedAt := now.Add(-7 * time.Minute)
-	pipelineIssue := connector.Issue{
-		ID:         "i-212",
-		Identifier: "digitaldrywood/detent#212",
-		Title:      "Add PR pipeline lanes",
-		State:      "Human Review",
-		UpdatedAt:  &updatedAt,
-		PullRequest: &connector.PullRequest{
-			Number:           218,
-			URL:              "https://github.com/digitaldrywood/detent/pull/218",
-			State:            "OPEN",
-			CIStatus:         "pending",
-			CodexReviewState: "P1",
-		},
-	}
-	project := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{
-		Issues: []connector.Issue{pipelineIssue},
-	}))
-	if err := project.Start(context.Background()); err != nil {
-		t.Fatalf("Project.Start() error = %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
-			t.Fatalf("Project.Stop() error = %v", err)
+	// Keep startup and publication independent of host scheduling delays.
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		updatedAt := now.Add(-7 * time.Minute)
+		pipelineIssue := connector.Issue{
+			ID:         "i-212",
+			Identifier: "digitaldrywood/detent#212",
+			Title:      "Add PR pipeline lanes",
+			State:      "Human Review",
+			UpdatedAt:  &updatedAt,
+			PullRequest: &connector.PullRequest{
+				Number:           218,
+				URL:              "https://github.com/digitaldrywood/detent/pull/218",
+				State:            "OPEN",
+				CIStatus:         "pending",
+				CodexReviewState: "P1",
+			},
+		}
+		project := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{
+			Issues: []connector.Issue{pipelineIssue},
+		}))
+		if err := project.Start(context.Background()); err != nil {
+			t.Fatalf("Project.Start() error = %v", err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+				t.Fatalf("Project.Stop() error = %v", err)
+			}
+		})
+		synctest.Wait()
+		state, err := project.Orchestrator().State(t.Context())
+		if err != nil {
+			t.Fatalf("State() error = %v", err)
+		}
+		if state.DataSeq < 1 {
+			t.Fatalf("startup DataSeq = %d, want >= 1", state.DataSeq)
+		}
+		mustSetProject(t, registry, project)
+
+		snapshotHub := hub.New[telemetry.Snapshot]()
+		var seq atomic.Uint64
+		if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101", nil); err != nil {
+			t.Fatalf("publishSnapshotOnce() error = %v", err)
+		}
+
+		snapshot, ok := snapshotHub.Latest()
+		if !ok {
+			t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+		}
+		if len(snapshot.Pipeline) != 1 {
+			t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
+		}
+		got := snapshot.Pipeline[0]
+		if got.ID != "i-212" || got.State != "Human Review" || got.Title != "Add PR pipeline lanes" {
+			t.Fatalf("Pipeline[0] = %#v, want issue #212 in Human Review", got)
+		}
+		if got.UpdatedAt == nil || !got.UpdatedAt.Equal(updatedAt) {
+			t.Fatalf("Pipeline[0].UpdatedAt = %v, want %v", got.UpdatedAt, updatedAt)
+		}
+		if got.PullRequest == nil || got.PullRequest.Number != 218 || got.PullRequest.CIStatus != "pending" || got.PullRequest.CodexReviewState != "P1" {
+			t.Fatalf("Pipeline[0].PullRequest = %#v, want PR #218 pending with P1 review", got.PullRequest)
 		}
 	})
-	waitForProjectDataSeq(t, project, 1)
-	mustSetProject(t, registry, project)
-
-	snapshotHub := hub.New[telemetry.Snapshot]()
-	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101", nil); err != nil {
-		t.Fatalf("publishSnapshotOnce() error = %v", err)
-	}
-
-	snapshot, ok := snapshotHub.Latest()
-	if !ok {
-		t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
-	}
-	if len(snapshot.Pipeline) != 1 {
-		t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
-	}
-	got := snapshot.Pipeline[0]
-	if got.ID != "i-212" || got.State != "Human Review" || got.Title != "Add PR pipeline lanes" {
-		t.Fatalf("Pipeline[0] = %#v, want issue #212 in Human Review", got)
-	}
-	if got.UpdatedAt == nil || !got.UpdatedAt.Equal(updatedAt) {
-		t.Fatalf("Pipeline[0].UpdatedAt = %v, want %v", got.UpdatedAt, updatedAt)
-	}
-	if got.PullRequest == nil || got.PullRequest.Number != 218 || got.PullRequest.CIStatus != "pending" || got.PullRequest.CodexReviewState != "P1" {
-		t.Fatalf("Pipeline[0].PullRequest = %#v, want PR #218 pending with P1 review", got.PullRequest)
-	}
 }
 
 func TestMergeSnapshotMergesInstanceScope(t *testing.T) {

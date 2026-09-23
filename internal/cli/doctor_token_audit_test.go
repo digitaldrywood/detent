@@ -271,7 +271,7 @@ func TestDoctorTokenAuditCITriggerShape(t *testing.T) {
 	}{
 		{"label no concurrency", "pull_request:\n    types: [labeled]", "", doctorWarn},
 		{"label branch concurrency", "pull_request:\n    types: [labeled]", "concurrency: '${{ github.head_ref }}'", doctorWarn},
-		{"label head concurrency", "pull_request:\n    types: [labeled]", "concurrency:\n  group: 'ci-${{ github.event.pull_request.head.sha }}'", doctorOK},
+		{"label head concurrency", "pull_request:\n    types: [labeled]", "concurrency:\n  group: 'ci-${{ github.event.pull_request.head.sha }}'", doctorWarn},
 		{"default PR events", "pull_request", "", doctorOK},
 		{"push", "push", "", doctorOK},
 	} {
@@ -346,7 +346,7 @@ func TestDoctorTokenAuditCIEvidence(t *testing.T) {
 		readErr      bool
 		want         doctorStatus
 	}{
-		{"job concurrency", "on:\n  pull_request:\n    types: [labeled]\njobs:\n  Verify:\n    concurrency: 'ci-${{ github.event.pull_request.head.sha }}'\n", false, doctorOK},
+		{"job concurrency", "on:\n  pull_request:\n    types: [labeled]\njobs:\n  Verify:\n    concurrency: 'ci-${{ github.event.pull_request.head.sha }}'\n", false, doctorWarn},
 		{"malformed", "on: [", false, doctorWarn},
 		{"unmatched", "on: push\njobs:\n  other:\n    steps: []\n", false, doctorWarn},
 		{"read denied", "", true, doctorWarn},

@@ -1251,7 +1251,7 @@ func TestBoardCardAlwaysRendersPullRequest(t *testing.T) {
 	}
 }
 
-func TestBoardCardIdentityStaysOnOneLine(t *testing.T) {
+func TestBoardCardProjectAndReferencesWrapWithoutClipping(t *testing.T) {
 	t.Parallel()
 
 	card := boardCardView{
@@ -4893,5 +4893,32 @@ func TestBoardSymbolicBlockerDetail(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLatestBoardAttempts(t *testing.T) {
+	attempts := []telemetry.WorkAttempt{
+		{ProjectID: "one", IssueID: "1", AttemptID: 2},
+		{ProjectID: "one", IssueID: "1", AttemptID: 1},
+		{ProjectID: "two", IssueID: "1", AttemptID: 3},
+		{ProjectID: "one", Identifier: "repo#1", AttemptID: 4},
+		{ProjectID: "one", IssueID: "1", AttemptID: 2},
+		{},
+	}
+	got := latestBoardAttempts(attempts)
+	for _, tt := range []struct {
+		key   string
+		index int
+	}{
+		{"project:one:id:1", 0}, {"project:two:id:1", 2}, {"project:one:identifier:repo#1", 3},
+	} {
+		t.Run(tt.key, func(t *testing.T) {
+			if got[tt.key] != &attempts[tt.index] {
+				t.Fatalf("wrong latest attempt for %s", tt.key)
+			}
+		})
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries", len(got))
 	}
 }

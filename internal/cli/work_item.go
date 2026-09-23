@@ -189,6 +189,7 @@ func workItemConnectorFromWorkflow(ctx context.Context, cfg workflowconfig.Confi
 		StatusLabelPrefix:           cfg.Tracker.StatusLabelPrefix,
 		ActiveStates:                cfg.Tracker.ActiveStates,
 		ObservedStates:              cfg.Tracker.ObservedStates,
+		PlanStop:                    cfg.Plan.Stop,
 		TerminalStates:              cfg.Tracker.TerminalStates,
 		StateMap:                    githubLocalTrackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 githubLocalTrackerPriorityMap(cfg.Tracker.PriorityMap),

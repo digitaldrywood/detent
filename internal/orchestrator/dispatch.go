@@ -33,6 +33,9 @@ func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner 
 	planner.humanQuestionWaiting = func(issue *connector.Issue) (bool, error) {
 		return o.humanQuestionWaiting(ctx, issue)
 	}
+	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
+		return o.operatorRejectedHead(ctx, issue)
+	}
 	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) (recordedBlockerEvaluation, error) {
 		issue, err := o.refreshDependencyAutoUnblockComments(ctx, issue)
 		if err != nil {

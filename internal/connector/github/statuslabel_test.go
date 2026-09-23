@@ -97,6 +97,203 @@ func TestAttachLabelIssuePullRequestReferencesHydratesLatestLaneEntry(t *testing
 	}
 }
 
+func TestAttachLabelIssuePullRequestReferencesReusesUnchangedIssues(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-01T10:00:00Z","label":{"name":"detent:blocked"}}]},"closedByPullRequestsReferences":{"nodes":[]}},{"__typename":"Issue","id":"I_2","number":2,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-01T11:00:00Z","label":{"name":"detent:blocked"}}]},"closedByPullRequestsReferences":{"nodes":[]}}]}}`},
+		{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-02T10:00:00Z","label":{"name":"detent:backlog"}}]},"closedByPullRequestsReferences":{"nodes":[]}}]}}`},
+		{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_2","number":2,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-01T11:00:00Z","label":{"name":"detent:blocked"}}]},"closedByPullRequestsReferences":{"nodes":[{"number":20,"state":"OPEN","headRefOid":"new-head","repository":{"nameWithOwner":"example/repo"},"commits":{"nodes":[{"commit":{"oid":"new-head","committedDate":"2026-09-03T09:00:00Z"}}]}}]}}]}}`},
+		{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_2","number":2,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-01T11:00:00Z","label":{"name":"detent:blocked"}}]},"closedByPullRequestsReferences":{"nodes":[{"number":20,"state":"OPEN","headRefOid":"new-head","repository":{"nameWithOwner":"example/repo"},"commits":{"nodes":[{"commit":{"oid":"new-head","committedDate":"2026-09-03T09:00:00Z"}}]}}]}}]}}`},
+	})
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "example/repo", ObservedStates: []string{"Backlog", "Blocked"}, Now: func() time.Time { return now }})
+	firstRevision := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	laneRevision := firstRevision.Add(24 * time.Hour)
+	prRevision := laneRevision.Add(24 * time.Hour)
+
+	tests := []struct {
+		name       string
+		firstState string
+		firstAt    time.Time
+		secondAt   time.Time
+		wantIDs    []string
+		wantStage  time.Time
+		wantPR     int
+	}{
+		{name: "first refresh", firstState: "Blocked", firstAt: firstRevision, secondAt: firstRevision, wantIDs: []string{"I_1", "I_2"}, wantStage: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)},
+		{name: "unchanged refresh", firstState: "Blocked", firstAt: firstRevision, secondAt: firstRevision, wantStage: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)},
+		{name: "lane changed", firstState: "Backlog", firstAt: laneRevision, secondAt: firstRevision, wantIDs: []string{"I_1"}, wantStage: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)},
+		{name: "PR linked", firstState: "Backlog", firstAt: laneRevision, secondAt: prRevision, wantIDs: []string{"I_2"}, wantStage: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), wantPR: 20},
+		{name: "linked PR unchanged", firstState: "Backlog", firstAt: laneRevision, secondAt: prRevision, wantIDs: []string{"I_2"}, wantStage: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), wantPR: 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issues := []connector.Issue{
+				{ID: "I_1", Identifier: "example/repo#1", State: tt.firstState, UpdatedAt: &tt.firstAt},
+				{ID: "I_2", Identifier: "example/repo#2", State: "Blocked", UpdatedAt: &tt.secondAt},
+			}
+			before := len(server.requests())
+			if err := c.attachLabelIssuePullRequestReferences(t.Context(), issues); err != nil {
+				t.Fatal(err)
+			}
+			requests := server.requests()[before:]
+			if len(requests) != min(1, len(tt.wantIDs)) {
+				t.Fatalf("GraphQL requests = %d, want one only when issues changed", len(requests))
+			}
+			if len(tt.wantIDs) > 0 {
+				variables, ok := requests[0]["variables"].(map[string]any)
+				wantIDs := make([]any, len(tt.wantIDs))
+				for i, id := range tt.wantIDs {
+					wantIDs[i] = id
+				}
+				if !ok || !reflect.DeepEqual(variables["issueIds"], wantIDs) {
+					t.Fatalf("queried issue IDs = %v, want %v", variables["issueIds"], tt.wantIDs)
+				}
+			}
+			if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(tt.wantStage) {
+				t.Fatalf("lane entry = %v, want %v", issues[0].StageUpdatedAt, tt.wantStage)
+			}
+			if issues[1].PRNumber == nil && tt.wantPR != 0 || issues[1].PRNumber != nil && *issues[1].PRNumber != tt.wantPR {
+				t.Fatalf("PR number = %v, want %d", issues[1].PRNumber, tt.wantPR)
+			}
+			if tt.wantPR != 0 && (issues[1].PRHeadSHA != "new-head" || issues[1].PRRepository != "example/repo" || issues[1].PRSource != "github_closing_reference" || issues[1].PRHeadCommittedAt == nil || !issues[1].PRHeadCommittedAt.Equal(time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC))) {
+				t.Fatalf("PR reference = %#v", issues[1])
+			}
+		})
+	}
+}
+
+func TestAttachLabelIssuePullRequestReferencesRetriesIncompleteHydration(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"nodes":[]}}`},
+		{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-01T10:00:00Z","label":{"name":"detent:blocked"}}]},"closedByPullRequestsReferences":{"nodes":[]}}]}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "example/repo", ObservedStates: []string{"Blocked"}})
+	updatedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	issue := connector.Issue{ID: "I_1", Identifier: "example/repo#1", State: "Blocked", UpdatedAt: &updatedAt}
+	if err := c.attachLabelIssuePullRequestReferences(t.Context(), []connector.Issue{issue}); err == nil {
+		t.Fatal("incomplete hydration accepted")
+	}
+	issues := []connector.Issue{issue}
+	if err := c.attachLabelIssuePullRequestReferences(t.Context(), issues); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(server.requests()); got != 2 {
+		t.Fatalf("GraphQL requests = %d, want retry after incomplete hydration", got)
+	}
+	if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)) {
+		t.Fatalf("lane entry = %v", issues[0].StageUpdatedAt)
+	}
+}
+
+func TestAttachLabelIssuePullRequestReferencesRefreshesPRSensitiveStates(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name         string
+		state        string
+		activeStates []string
+		planStop     string
+	}{
+		{name: "todo", state: "Todo", activeStates: []string{"Todo"}},
+		{name: "in progress", state: "In Progress", activeStates: []string{"In Progress"}},
+		{name: "rework", state: "Rework", activeStates: []string{"Rework"}},
+		{name: "merging", state: "Merging", activeStates: []string{"Merging"}},
+		{name: "human review", state: "Human Review"},
+		{name: "configured plan stop", state: "Blocked", planStop: "Blocked"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			response := graphqlTestResponse{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"closedByPullRequestsReferences":{"nodes":[]}}]}}`}
+			server := newGraphQLTestServer(t, []graphqlTestResponse{response, response})
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "example/repo", ActiveStates: tt.activeStates, ObservedStates: []string{tt.state}, PlanStop: tt.planStop})
+			updatedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+			issue := connector.Issue{ID: "I_1", Identifier: "example/repo#1", State: tt.state, UpdatedAt: &updatedAt}
+			for range 2 {
+				if err := c.attachLabelIssuePullRequestReferences(t.Context(), []connector.Issue{issue}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := len(server.requests()); got != 2 {
+				t.Fatalf("GraphQL requests = %d, want a fresh read on each call", got)
+			}
+		})
+	}
+}
+
+func TestAttachLabelIssuePullRequestReferencesExpiresIdleSnapshot(t *testing.T) {
+	t.Parallel()
+
+	response := graphqlTestResponse{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-01T10:00:00Z","label":{"name":"detent:backlog"}}]},"closedByPullRequestsReferences":{"nodes":[]}}]}}`}
+	linked := graphqlTestResponse{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-09-01T10:00:00Z","label":{"name":"detent:backlog"}}]},"closedByPullRequestsReferences":{"nodes":[{"number":20,"state":"OPEN","repository":{"nameWithOwner":"example/repo"}}]}}]}}`}
+	server := newGraphQLTestServer(t, []graphqlTestResponse{response, linked})
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "example/repo", ObservedStates: []string{"Backlog"}, Now: func() time.Time { return now }})
+	updatedAt := now
+	issue := connector.Issue{ID: "I_1", Identifier: "example/repo#1", State: "Backlog", UpdatedAt: &updatedAt}
+	for _, tt := range []struct {
+		name         string
+		advance      time.Duration
+		wantRequests int
+	}{
+		{name: "initial", wantRequests: 1},
+		{name: "within max age", advance: labelIssueReferenceMaxAge - time.Second, wantRequests: 1},
+		{name: "at max age", advance: time.Second, wantRequests: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now = now.Add(tt.advance)
+			issues := []connector.Issue{issue}
+			if err := c.attachLabelIssuePullRequestReferences(t.Context(), issues); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(server.requests()); got != tt.wantRequests {
+				t.Fatalf("GraphQL requests = %d, want %d", got, tt.wantRequests)
+			}
+			if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)) {
+				t.Fatalf("lane entry = %v", issues[0].StageUpdatedAt)
+			}
+			if tt.wantRequests == 2 && (issues[0].PRNumber == nil || *issues[0].PRNumber != 20) {
+				t.Fatalf("late PR reference = %v, want 20", issues[0].PRNumber)
+			}
+		})
+	}
+}
+
+func TestAttachLabelIssuePullRequestReferencesRefreshesLinkedPR(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"closedByPullRequestsReferences":{"nodes":[{"number":20,"state":"OPEN","headRefOid":"first-head","repository":{"nameWithOwner":"example/repo"},"commits":{"nodes":[{"commit":{"oid":"first-head","committedDate":"2026-09-01T09:00:00Z"}}]}}]}}]}}`},
+		{body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_1","number":1,"repository":{"nameWithOwner":"example/repo"},"closedByPullRequestsReferences":{"nodes":[{"number":20,"state":"MERGED","headRefOid":"second-head","repository":{"nameWithOwner":"example/repo"},"commits":{"nodes":[{"commit":{"oid":"second-head","committedDate":"2026-09-01T10:00:00Z"}}]}}]}}]}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "example/repo", ObservedStates: []string{"Blocked"}})
+	updatedAt := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	issue := connector.Issue{ID: "I_1", Identifier: "example/repo#1", State: "Blocked", UpdatedAt: &updatedAt}
+	for index, want := range []struct {
+		state string
+		head  string
+		at    time.Time
+	}{
+		{state: "OPEN", head: "first-head", at: time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)},
+		{state: "MERGED", head: "second-head", at: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)},
+	} {
+		issues := []connector.Issue{issue}
+		if err := c.attachLabelIssuePullRequestReferencesWithState(t.Context(), issues, true); err != nil {
+			t.Fatal(err)
+		}
+		got := issues[0]
+		if got.PRNumber == nil || *got.PRNumber != 20 || got.PullRequest == nil || got.PullRequest.State != want.state || got.PRHeadSHA != want.head || got.PRHeadCommittedAt == nil || !got.PRHeadCommittedAt.Equal(want.at) {
+			t.Fatalf("refresh %d: PR reference = %#v", index, got)
+		}
+	}
+	if got := len(server.requests()); got != 2 {
+		t.Fatalf("GraphQL requests = %d, want linked PR re-query", got)
+	}
+}
+
 func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 	t.Parallel()
 
