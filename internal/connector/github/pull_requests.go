@@ -174,6 +174,11 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 		}
 		c.setPullRequestHydrationCursor(repo, nextCursor)
 	}
+	for i := range issues {
+		if err := c.attachRequiredBranchChecks(ctx, &issues[i]); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -362,6 +367,9 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 		}
 	}
 	attachPullRequestToIssue(&issue, repo, pullRequest)
+	if err := c.attachRequiredBranchChecks(ctx, &issue); err != nil {
+		return issue, err
+	}
 	return issue, nil
 }
 

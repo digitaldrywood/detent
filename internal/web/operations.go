@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -379,6 +380,8 @@ func operationsBlockedDecision(row telemetry.Blocked, fallbackProjectID string) 
 }
 
 type operationsHumanReviewPolicy struct {
+	ciTriggerLabel string
+	configured     bool
 	required       bool
 	sourceState    string
 	terminalStates []string
@@ -434,6 +437,8 @@ func (s *Server) operationsProjectHumanReviewPolicy(issue telemetry.Issue, fallb
 	workflow := trackedProject.Workflow().Config
 	policy := operationsHumanReviewPolicy{
 		sourceState:    workflow.Agent.AutoPromote.SourceState,
+		ciTriggerLabel: strings.TrimSpace(workflow.Gate.CITriggerLabel),
+		configured:     true,
 		terminalStates: append([]string(nil), workflow.Tracker.TerminalStates...),
 	}
 	if !workflow.Agent.AutoPromote.Enabled {
@@ -515,4 +520,43 @@ func (s *Server) operationsPage(c echo.Context) error {
 	shell := templates.DashboardShellDataFromDashboard(data)
 	shell.Title = instancePageTitle(report.Instance, "Operations")
 	return render(c, templates.OperationsPage(shell, report))
+}
+
+// snapshotMissingRequiredChecks projects a configuration decision into the same
+// required-gate evidence consumed by both board cards and Needs-you. Copies keep
+// this presentation-only evidence out of the cached orchestrator snapshot.
+func (s *Server) snapshotMissingRequiredChecks(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	enrich := func(issues []telemetry.Issue) []telemetry.Issue {
+		result := append([]telemetry.Issue(nil), issues...)
+		for i, issue := range result {
+			policy := s.operationsProjectHumanReviewPolicy(issue, snapshot.Project.ID)
+			if !policy.configured || policy.ciTriggerLabel != "" || !strings.EqualFold(strings.TrimSpace(issue.State), "Merging") || issue.PullRequest == nil || operationsPullRequestSupersedesQuestion(issue.PullRequest) || operationsStateIn(issue.State, policy.terminalStates) {
+				continue
+			}
+			if issue.RequiredGate != nil && issue.RequiredGate.HumanAction != "" {
+				continue
+			}
+			var missing []string
+			for _, check := range issue.PullRequest.RequiredCheckFailures {
+				if strings.EqualFold(check.Status, "missing") && strings.TrimSpace(check.Name) != "" {
+					missing = append(missing, check.Name)
+				}
+			}
+			sort.Strings(missing)
+			missing = slices.Compact(missing)
+			if len(missing) == 0 {
+				continue
+			}
+			required := telemetry.RequiredGate{PRNumber: issue.PullRequest.Number, HeadSHA: issue.PullRequest.HeadSHA, BaseSHA: issue.PullRequest.BaseSHA, CIState: issue.PullRequest.CIStatus}
+			if issue.RequiredGate != nil {
+				required = *issue.RequiredGate
+			}
+			required.HumanAction = "Required status missing: " + strings.Join(missing, ", ") + ". Configure gate.ci_trigger_label for label-triggered CI, or enable an automatic producer for these checks."
+			result[i].RequiredGate = &required
+		}
+		return result
+	}
+	snapshot.BoardIssues = enrich(snapshot.BoardIssues)
+	snapshot.Pipeline = enrich(snapshot.Pipeline)
+	return snapshot
 }

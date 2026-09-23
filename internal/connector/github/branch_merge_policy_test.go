@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,11 +29,13 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 		status          int
 		wantError       bool
 		wantUnavailable bool
+		wantChecks      []string
 	}{
 		{name: "queue", rules: `[{"type":"merge_queue","parameters":{"max_entries_to_build":5}}]`, wantQueue: true, wantLimit: 5},
 		{name: "classic strict", rules: `[]`, protection: `{"strict":true}`, wantStrict: true},
 		{name: "ruleset strict", rules: `[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]`, wantStrict: true},
 		{name: "unprotected", rules: `[]`},
+		{name: "ruleset and classic contexts", rules: `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Full CI"}]}}]`, protection: `{"contexts":["Full CI","Lint"],"checks":[{"context":"Build"}]}`, wantChecks: []string{"Full CI", "Lint", "Build"}},
 		{name: "plan unavailable", status: 403, rules: `{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}`, wantUnavailable: true},
 		{name: "unavailable rules", status: 500, wantError: true},
 	} {
@@ -77,6 +80,9 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 			if tt.wantError {
 				return
 			}
+			if !slices.Equal(got.RequiredStatusChecks, tt.wantChecks) {
+				t.Fatalf("checks = %v, want %v", got.RequiredStatusChecks, tt.wantChecks)
+			}
 			if got.Branch != "release/stable" || got.MergeQueue != tt.wantQueue || got.Strict != tt.wantStrict || got.AdmissionLimit != tt.wantLimit || got.RulesUnavailableOnPlan != tt.wantUnavailable {
 				t.Fatalf("policy = %+v", got)
 			}
@@ -90,6 +96,11 @@ func TestRefreshMergeQueuePolicyTracksRuleChanges(t *testing.T) {
 	enabled.Store(true)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/protection/required_status_checks") {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
 		switch r.URL.Path {
 		case "/repos/example/repo":
 			fmt.Fprint(w, `{"default_branch":"main"}`)
@@ -137,6 +148,11 @@ func TestInspectMergeQueueScopesPolicyToPullRequestTarget(t *testing.T) {
 	var reads atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/protection/required_status_checks") {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
 		if r.URL.Path == "/graphql" {
 			var request struct {
 				Variables struct {
@@ -197,6 +213,10 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 			var logs bytes.Buffer
 			status := tt.status
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/protection/required_status_checks") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				if r.URL.Path == "/repos/example/repo" {
 					fmt.Fprint(w, `{"default_branch":"main"}`)
 					return
@@ -297,6 +317,11 @@ func TestMergeQueueRefusalRefreshesCachedBranchPolicy(t *testing.T) {
 			var refreshes atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
+				if strings.HasSuffix(r.URL.Path, "/protection/required_status_checks") {
+					w.WriteHeader(http.StatusNotFound)
+					fmt.Fprint(w, `{"message":"Not Found"}`)
+					return
+				}
 				switch r.URL.Path {
 				case "/repos/example/repo/pulls/42/merge":
 					w.WriteHeader(http.StatusMethodNotAllowed)
