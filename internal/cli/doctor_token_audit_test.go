@@ -417,9 +417,13 @@ func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
 			if got.Status != tt.want {
 				t.Fatalf("got %+v; want %s", got, tt.want)
 			}
+			workflowPath, err := filepath.EvalSymlinks(filepath.Join(root, "WORKFLOW.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			count := 0
 			for _, file := range files {
-				if file.path == filepath.Join(root, "WORKFLOW.md") {
+				if file.path == workflowPath {
 					count++
 				}
 			}
@@ -472,6 +476,96 @@ func TestDoctorEffectiveWorkflowDeduplicated(t *testing.T) {
 				if total != len(agents)+len(prompt) {
 					t.Fatalf("instruction bytes = %d; want %d", total, len(agents)+len(prompt))
 				}
+			}
+		})
+	}
+}
+
+// Git returns physical paths even when a configured workdir uses a symlink
+// (for example macOS /var -> /private/var). Exercise real linked worktrees too.
+func TestDoctorInstructionAuditPathAliases(t *testing.T) {
+	for _, layout := range []string{"checkout", "worktree"} {
+		for _, alias := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/alias=%t", layout, alias), func(t *testing.T) {
+				repo, _ := initDoctorWorkflowSourceRepository(t)
+				root := repo
+				if layout == "worktree" {
+					root = filepath.Join(t.TempDir(), "worker")
+					runDoctorWorkflowSourceGit(t, repo, "worktree", "add", "--detach", root, "main")
+				}
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), "Run make check.\n")
+				sub := filepath.Join(root, "sub")
+				if err := os.Mkdir(sub, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if alias {
+					link := filepath.Join(t.TempDir(), "alias")
+					if err := os.Symlink(root, link); err != nil {
+						t.Skipf("symlink unavailable: %v", err)
+					}
+					root = link
+					sub = filepath.Join(root, "sub")
+				}
+				workflow := filepath.Join(root, "WORKFLOW.md")
+				prompt := "Do not run make check.\nRead ../WORKFLOW.md."
+				files, problems := doctorInstructionFiles(t.Context(), sub, prompt, workflow)
+				if len(problems) != 0 {
+					t.Fatalf("problems: %v", problems)
+				}
+				if len(files) != 2 || filepath.Base(files[0].path) != "AGENTS.md" {
+					t.Fatalf("expected ancestor instructions and deduplicated prompt, got %+v", files)
+				}
+				if got := checkDoctorGateInstructionConflict("p", "make check", files, problems); got.Status != doctorWarn || !strings.Contains(got.Detail, "AGENTS.md") {
+					t.Fatalf("ancestor conflict missing: %+v", got)
+				}
+				cfg := workflowconfig.Config{}
+				cfg.Tracker.Kind = "github"
+				deps := doctorDeps{githubRepositoryInfo: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error) {
+					return ghconnector.RepositoryInfo{DefaultBranch: "main"}, nil
+				}}
+				for _, ref := range []string{"", "origin/main"} {
+					got := checkDoctorWorkflowSourceDrift(t.Context(), "p", globalconfig.Project{Workdir: root, Workflow: workflow, WorkflowRef: ref}, cfg, deps)
+					if strings.Contains(got.Detail, "unavailable") || !strings.Contains(got.Detail, "17 bytes") {
+						t.Fatalf("ref %q: %+v", ref, got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDoctorInstructionAuditRepositoryErrors(t *testing.T) {
+	for _, condition := range []string{"ceiling", "unsafe ownership", "missing workdir"} {
+		t.Run(condition, func(t *testing.T) {
+			root, _ := initDoctorWorkflowSourceRepository(t)
+			sub := filepath.Join(root, "sub")
+			if err := os.Mkdir(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			switch condition {
+			case "ceiling":
+				physical, err := filepath.EvalSymlinks(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("GIT_CEILING_DIRECTORIES", physical)
+			case "unsafe ownership":
+				t.Setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+			case "missing workdir":
+				sub = filepath.Join(root, "missing")
+			}
+			files, problems := doctorInstructionFiles(t.Context(), sub, "Run make check.", "")
+			if len(problems) == 0 {
+				t.Fatal("repository resolution failure was not reported")
+			}
+			if len(files) != 1 || files[0].text != "Run make check." {
+				t.Fatalf("lost effective prompt: %+v", files)
+			}
+			if got := checkDoctorInstructionBudget("p", files, problems); got.Status != doctorWarn {
+				t.Fatalf("budget failed to warn: %+v", got)
+			}
+			if got := checkDoctorGateInstructionConflict("p", "make check", files, problems); got.Status != doctorWarn {
+				t.Fatalf("gate failed to warn: %+v", got)
 			}
 		})
 	}
