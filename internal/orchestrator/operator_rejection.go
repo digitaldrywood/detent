@@ -89,7 +89,9 @@ func (o *Orchestrator) operatorRejectedHead(ctx context.Context, issue connector
 	// A missing event must not erase a recorded human move, including after restart.
 	ledger := o.laneLedger
 	if ledger == nil {
-		ledger, _ = o.workflowMetrics.(store.LaneLedgerStore)
+		if metricsLedger, ok := o.workflowMetrics.(store.LaneLedgerStore); ok {
+			ledger = metricsLedger
+		}
 	}
 	observation := o.laneObservations[issue.ID]
 	if ledger != nil {
