@@ -106,6 +106,10 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
+		// Unfinished ready PRs need the existing repair lane before a worker can
+		// publish corrections. They do not gain eligibility for promotion.
+		repairOnly := autoPromoteInProgressRepairIssue(issue, cfg) &&
+			(!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg))
 		rework := gateRequiresPullRequest(cfg.Gate) && normalizeState(issue.State) == normalizeState(cfg.ReworkState)
 		if rework {
 			if _, running := state.Running[issueID]; running {
@@ -162,6 +166,10 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary.SecurityAudit = securityAudit
 		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
+		if repairOnly && (decision.Action != AutoPromoteActionRework ||
+			(decision.Reason != AutoPromoteReasonUnresolvedReviewThreads && decision.Reason != AutoPromoteReasonCINotGreen)) {
+			continue
+		}
 		if mergeWorkerIssue(issue) {
 			// Merging consumes only the audit verdict here; its other gates remain
 			// owned by merge preparation. Passing audits leave the lane unchanged.
@@ -335,13 +343,18 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 			_, running = state.Running[issueID]
 		}
 		liveRework := gateRequiresPullRequest(cfg.Gate) && !running && normalizeState(issue.State) == normalizeState(cfg.ReworkState) && issueHasOpenPullRequest(issue) && completedActiveIssueReadyForReview(issue, true, false)
-		if !liveRework && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
+		if !liveRework && !autoPromoteInProgressRepairIssue(issue, cfg) && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
 			continue
 		}
 		out = append(out, cloneIssue(issue))
 		seen[issueID] = struct{}{}
 	}
 	return out
+}
+
+func autoPromoteInProgressRepairIssue(issue connector.Issue, cfg AutoPromoteConfig) bool {
+	return gateRequiresPullRequest(cfg.Gate) && normalizeState(issue.State) == "in progress" &&
+		issueHasOpenPullRequest(issue) && !issue.PullRequest.Draft
 }
 
 func autoPromoteIssueCompleted(state *State, issueID string) bool {
