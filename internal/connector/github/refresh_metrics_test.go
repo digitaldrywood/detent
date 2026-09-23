@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -68,6 +70,45 @@ func TestRefreshGraphQLOperationAttribution(t *testing.T) {
 			if got.Name != graphQLOperationName(tt.query, "") || got.Requests != 2 || got.Points != points.Total() || got.NodesRequested != 2*tt.wantRequested || got.NodesReturned != 2*tt.wantReturned || got.WallTime <= 0 {
 				t.Fatalf("operation = %+v, total points = %d", got, points.Total())
 			}
+		})
+	}
+}
+
+func TestRefreshGraphQLRetryWallTimeCountsEachAttemptOnce(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "HTTP authentication failure", status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`},
+		{name: "GraphQL authentication failure", status: http.StatusOK, body: `{"errors":[{"message":"Bad credentials"}]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				source := newRefreshingTokenTestSource("stale", "fresh")
+				client, err := NewClient(ClientConfig{
+					Endpoint:    "https://example.test/graphql",
+					TokenSource: source,
+					HTTPClient: staticHTTPClient{do: func(req *http.Request) (*http.Response, error) {
+						if req.Header.Get("Authorization") == "Bearer stale" {
+							return jsonResponse(req, tt.status, tt.body, nil), nil
+						}
+						time.Sleep(time.Second)
+						return jsonResponse(req, http.StatusOK, `{"data":{"rateLimit":{"cost":1}}}`, nil), nil
+					}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, metrics := connector.WithGraphQLPoints(t.Context())
+				if err := client.GraphQLWithType(ctx, "test", "query RetryOperation { rateLimit { cost } }", nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				operations := metrics.Operations()
+				if len(operations) != 1 || operations[0].Requests != 2 || operations[0].WallTime != time.Second {
+					t.Fatalf("operations = %+v, want two attempts and one second", operations)
+				}
+			})
 		})
 	}
 }

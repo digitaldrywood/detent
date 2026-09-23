@@ -199,13 +199,19 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	tracked := connector.HasGraphQLPoints(ctx)
 	var startedAt time.Time
 	var operationPoints, nodesReturned int64
+	var requestDuration time.Duration
+	requestFinished := false
 	if tracked {
 		startedAt = time.Now()
 		defer func() {
+			wallTime := requestDuration
+			if !requestFinished {
+				wallTime = time.Since(startedAt)
+			}
 			connector.RecordGraphQLOperation(ctx, connector.GraphQLOperation{
 				Name: operationName, Requests: 1, Points: operationPoints,
 				NodesRequested: requestedGraphQLNodes(query, variables),
-				NodesReturned:  nodesReturned, WallTime: time.Since(startedAt),
+				NodesReturned:  nodesReturned, WallTime: wallTime,
 			})
 		}()
 	}
@@ -246,6 +252,10 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
+	if tracked {
+		requestDuration = receivedAt.Sub(startedAt)
+		requestFinished = true
+	}
 	headerRateLimit := c.recordRateLimitFromHeaders(resp.Header, receivedAt)
 
 	if resp.StatusCode != http.StatusOK {
