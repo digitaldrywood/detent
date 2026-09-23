@@ -684,7 +684,9 @@ func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
 
 	got := Instructions(Config{Kind: KindCommand, Run: "make check", RequireAutomatedReview: new(false)})
 	for _, want := range []string{
-		"Run `make check` from the workspace root; require green current-head CI before promotion",
+		"Run `make check` from the workspace root; require eligible current-head checks before promotion",
+		"Skipped is not a test pass",
+		"For merge-group-only CI, require passing merge-group checks before merge",
 		"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation",
 		"otherwise rerun `make check`",
 		"REST backoff",

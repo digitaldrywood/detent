@@ -1130,6 +1130,10 @@ changing the ownership or fallback behavior.
 
 **Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
 
+The implementation handoff records passing local validation and expected skipped
+current-head PR checks separately. Skipped PR jobs are not evidence that the
+suite passed. The full suite must pass on the merge-group commit before merge.
+
 **Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
 Verify job; draft iteration avoids paying this cost before local review ends.
 

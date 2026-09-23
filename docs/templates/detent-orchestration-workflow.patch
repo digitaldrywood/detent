@@ -86,8 +86,8 @@
 -external access, move the issue to `Blocked` with the exact failed command and
 -the human action needed — never declare `complete`.
 +9. Report completion through the appended handoff contract only when the PR is
-+   non-draft, references the issue, and local validation and current-head CI are
-+   green with no actionable review remaining. Report exact validation failures.
++   non-draft, references the issue, local validation passed, expected skipped
++   current-head PR checks are recorded, and no actionable review remains. Report validation failures.
  
  ### For In Progress
  
@@ -101,8 +101,10 @@
  
  ### For Merging
 @@ -196,9 +156,8 @@
- 2. Watch CI on the pushed head via REST; wait for every check to pass and
-    every automated review to be addressed (no `CHANGES_REQUESTED`, no pending
+-2. Watch CI on the pushed head via REST; wait for every check to pass and
+-   every automated review to be addressed (no `CHANGES_REQUESTED`, no pending
++2. Watch applicable CI via REST; require successful merge-group checks before
++   merge and address automated review (no `CHANGES_REQUESTED`, no pending
     bot review).
 -3. Merge via the REST merge endpoint with the exact head sha, then move the
 -   issue to `Done`.
