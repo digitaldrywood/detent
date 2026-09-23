@@ -20,6 +20,8 @@ func TestDoctorRequiredStatusTriggerGap(t *testing.T) {
 		{"explicit automatic", "pull_request: {types: [opened, synchronize]}", "", "", ""},
 		{"sequence automatic", "[pull_request, workflow_dispatch]", "", "", ""},
 		{"conditional automatic", "pull_request:", "github.event.label.name == 'run-full-ci'", "", "cannot trigger"},
+		{"always aggregator", "pull_request:", "always()", "", ""},
+		{"expression always aggregator", "pull_request:", "${{ always() }}", "", ""},
 		{"automatic", "pull_request:", "", "", ""},
 		{"configured label", "pull_request: {types: [labeled]}", "github.event.label.name == 'run-full-ci'", "run-full-ci", ""},
 		{"wrong label", "pull_request: {types: [labeled]}", "github.event.label.name == 'run-full-ci'", "wrong", "gate.ci_trigger_label: run-full-ci"},

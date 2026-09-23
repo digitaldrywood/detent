@@ -177,7 +177,7 @@ var doctorCILabelContains = regexp.MustCompile(`^\s*(?:\$\{\{\s*)?contains\(\s*g
 func doctorCIProducerFor(root, job *yaml.Node) doctorCIProducer {
 	on := doctorYAMLMapValue(root, "on")
 	condition := strings.TrimSpace(doctorYAMLScalarValue(doctorYAMLMapValue(job, "if")))
-	p := doctorCIProducer{labeled: doctorWorkflowHasLabeled(on), unconditional: condition == "" || condition == "true" || condition == "${{ true }}"}
+	p := doctorCIProducer{labeled: doctorWorkflowHasLabeled(on), unconditional: condition == "" || condition == "true" || condition == "${{ true }}" || condition == "always()" || condition == "${{ always() }}"}
 	for _, pattern := range []*regexp.Regexp{doctorCILabelEquality, doctorCILabelContains} {
 		if match := pattern.FindStringSubmatch(condition); len(match) > 1 {
 			p.label = match[1]

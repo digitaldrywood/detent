@@ -81,15 +81,6 @@ func (c *Connector) RepositoryBranchMergePolicy(ctx context.Context, repository,
 			break
 		}
 	}
-	policy.RequiredStatusChecks = normalizeRequiredStatusChecks(policy.RequiredStatusChecks)
-	return policy, nil
-}
-
-func (c *Connector) RepositoryStrictMergePolicy(ctx context.Context, repository string) (BranchMergePolicy, error) {
-	policy, err := c.RepositoryBranchMergePolicy(ctx, repository, "")
-	if err != nil || policy.RulesUnavailableOnPlan {
-		return policy, err
-	}
 	var checks struct {
 		Strict   bool     `json:"strict"`
 		Contexts []string `json:"contexts"`
@@ -108,6 +99,10 @@ func (c *Connector) RepositoryStrictMergePolicy(ctx context.Context, repository 
 	}
 	policy.RequiredStatusChecks = normalizeRequiredStatusChecks(policy.RequiredStatusChecks)
 	return policy, nil
+}
+
+func (c *Connector) RepositoryStrictMergePolicy(ctx context.Context, repository string) (BranchMergePolicy, error) {
+	return c.RepositoryBranchMergePolicy(ctx, repository, "")
 }
 
 func (c *Connector) RefreshMergeQueuePolicy(ctx context.Context) error {
