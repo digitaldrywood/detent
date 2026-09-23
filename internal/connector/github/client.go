@@ -160,6 +160,7 @@ func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query st
 
 func (c *Client) graphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any, allowTokenRefresh bool) error {
 	queryType = graphQLQueryType(queryType, query)
+	operationName := graphQLOperationName(query, queryType)
 	lookup := graphQLLookup(query)
 	trackerRead := graphQLTrackerRead(queryType, query)
 	token, err := c.tokenSource.Token(ctx)
@@ -195,6 +196,19 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	tracked := connector.HasGraphQLPoints(ctx)
+	var startedAt time.Time
+	var operationPoints, nodesReturned int64
+	if tracked {
+		startedAt = time.Now()
+		defer func() {
+			connector.RecordGraphQLOperation(ctx, connector.GraphQLOperation{
+				Name: operationName, Requests: 1, Points: operationPoints,
+				NodesRequested: requestedGraphQLNodes(query, variables),
+				NodesReturned:  nodesReturned, WallTime: time.Since(startedAt),
+			})
+		}()
+	}
 
 	operation := firstLine(query)
 	c.logger.DebugContext(ctx, "github graphql request",
@@ -250,8 +264,14 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
-	if !c.recordRateLimitFromData(ctx, envelope.Data, queryType, receivedAt) {
-		c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
+	if recorded, cost := c.recordRateLimitFromData(ctx, envelope.Data, queryType, receivedAt); recorded {
+		operationPoints = cost
+	} else {
+		operationPoints = c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
+		connector.RecordGraphQLPoints(ctx, operationPoints)
+	}
+	if tracked {
+		nodesReturned = returnedGraphQLNodes(envelope.Data)
 	}
 	if len(envelope.Errors) > 0 {
 		err := classifyGraphQLErrors(envelope.Errors)
@@ -1287,9 +1307,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	}
 }
 
-func (c *Client) recordRateLimitFromData(ctx context.Context, data json.RawMessage, queryType string, now time.Time) bool {
+func (c *Client) recordRateLimitFromData(ctx context.Context, data json.RawMessage, queryType string, now time.Time) (bool, int64) {
 	if len(data) == 0 {
-		return false
+		return false, 0
 	}
 
 	var envelope struct {
@@ -1302,7 +1322,7 @@ func (c *Client) recordRateLimitFromData(ctx context.Context, data json.RawMessa
 		} `json:"rateLimit"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil || envelope.RateLimit == nil {
-		return false
+		return false, 0
 	}
 
 	var resetAt time.Time
@@ -1322,7 +1342,7 @@ func (c *Client) recordRateLimitFromData(ctx context.Context, data json.RawMessa
 	})
 	connector.RecordGraphQLPoints(ctx, envelope.RateLimit.Cost)
 	c.addGraphQLQueryCost(queryType, envelope.RateLimit.Cost)
-	return true
+	return true, envelope.RateLimit.Cost
 }
 
 type graphQLHeaderRateLimit struct {
@@ -1470,15 +1490,15 @@ func (c *Client) addGraphQLQueryCost(queryType string, cost int64) {
 	c.queryCosts[queryType] = current
 }
 
-func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot graphQLHeaderRateLimit) {
+func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot graphQLHeaderRateLimit) int64 {
 	if !snapshot.HasCurrent || !snapshot.HasPrevious || !snapshot.HasPrimarySnapshot {
-		return
+		return 0
 	}
 	if snapshot.Current.Limit <= 0 || snapshot.Previous.Limit <= 0 {
-		return
+		return 0
 	}
 	if !snapshot.Current.ResetAt.IsZero() && !snapshot.Previous.ResetAt.IsZero() && !snapshot.Current.ResetAt.Equal(snapshot.Previous.ResetAt) {
-		return
+		return 0
 	}
 
 	cost := snapshot.Current.Used - snapshot.Previous.Used
@@ -1489,6 +1509,7 @@ func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot gr
 		cost = 0
 	}
 	c.addGraphQLQueryCost(queryType, cost)
+	return cost
 }
 
 func (c *Client) recordGraphQLRateLimitFailure(err error, snapshot graphQLHeaderRateLimit, now time.Time) {
