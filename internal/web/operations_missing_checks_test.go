@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"bufio"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -64,7 +65,7 @@ func TestOperationsMissingRequiredChecks(t *testing.T) {
 			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}, Pipeline: []telemetry.Issue{issue}}); err != nil {
 				t.Fatal(err)
 			}
-			server, err := newServerWithLaneWriter(webconfig.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
+			server, err := newServerWithLaneWriter(webconfig.Config{ServerAddress: "127.0.0.1:0", SSEFragmentInterval: -1, LookupEnv: func(string) string { return "" }}, deps)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,6 +77,24 @@ func TestOperationsMissingRequiredChecks(t *testing.T) {
 			if strings.Contains(card.Body.String(), "Needs you") != wantCard {
 				t.Fatalf("card human action = %t, want %t; status=%d", strings.Contains(card.Body.String(), "Needs you"), wantCard, card.Code)
 			}
+			withBoardSSEStream(t, server.Handler(), "/events?view=kanban", func(reader *bufio.Reader, _ func()) {
+				for range 2 {
+					for {
+						body := readBoardSSEData(t, reader)
+						if !strings.Contains(body, issue.Title) {
+							continue
+						}
+						if strings.Contains(body, "Needs you") != wantCard {
+							t.Fatalf("streamed card human action = %t, want %t", strings.Contains(body, "Needs you"), wantCard)
+						}
+						break
+					}
+					issue.Title += " updated"
+					if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}, Pipeline: []telemetry.Issue{issue}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
 			for range 2 {
 				req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
 				req.RemoteAddr = "127.0.0.1:12345"

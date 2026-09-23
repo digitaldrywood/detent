@@ -12,6 +12,11 @@ import (
 func TestDoctorRequiredStatusTriggerGap(t *testing.T) {
 	for _, tt := range []struct{ name, on, condition, label, want string }{
 		{"ruleset label only", "pull_request: {types: [labeled]}", "github.event.label.name == 'run-full-ci'", "", "gate.ci_trigger_label: run-full-ci"},
+		{"target scalar", "pull_request_target", "", "", "cannot trigger"},
+		{"target mapping", "pull_request_target:", "", "", "cannot trigger"},
+		{"target sequence", "[pull_request_target, workflow_dispatch]", "", "", "cannot trigger"},
+		{"target labeled configured", "pull_request_target: {types: [labeled]}", "", "run-full-ci", "cannot trigger"},
+		{"target with head producer", "[pull_request_target, pull_request]", "", "", ""},
 		{"manual", "workflow_dispatch:", "", "", "cannot trigger"},
 		{"contains label", "pull_request: {types: [labeled]}", "contains(github.event.pull_request.labels.*.name, 'run-full-ci')", "", "gate.ci_trigger_label: run-full-ci"},
 		{"unconditional labeled configured", "pull_request: {types: [labeled]}", "", "run-full-ci", ""},

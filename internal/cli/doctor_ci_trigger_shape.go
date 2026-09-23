@@ -123,6 +123,10 @@ func checkDoctorCITriggerShape(ctx context.Context, id string, cfg workflowconfi
 }
 
 func doctorWorkflowHasLabeled(on *yaml.Node) bool {
+	return doctorWorkflowHasLabeledEvents(on, []string{"pull_request", "pull_request_target"})
+}
+
+func doctorWorkflowHasLabeledEvents(on *yaml.Node, events []string) bool {
 	if on == nil {
 		return false
 	}
@@ -130,9 +134,9 @@ func doctorWorkflowHasLabeled(on *yaml.Node) bool {
 		return false
 	}
 	if on.Kind == yaml.SequenceNode {
-		return slices.ContainsFunc(on.Content, doctorWorkflowHasLabeled)
+		return slices.ContainsFunc(on.Content, func(node *yaml.Node) bool { return doctorWorkflowHasLabeledEvents(node, events) })
 	}
-	for _, event := range []string{"pull_request", "pull_request_target"} {
+	for _, event := range events {
 		spec := doctorYAMLMapValue(on, event)
 		if spec == nil {
 			continue
@@ -177,7 +181,7 @@ var doctorCILabelContains = regexp.MustCompile(`^\s*(?:\$\{\{\s*)?contains\(\s*g
 func doctorCIProducerFor(root, job *yaml.Node) doctorCIProducer {
 	on := doctorYAMLMapValue(root, "on")
 	condition := strings.TrimSpace(doctorYAMLScalarValue(doctorYAMLMapValue(job, "if")))
-	p := doctorCIProducer{labeled: doctorWorkflowHasLabeled(on), unconditional: condition == "" || condition == "true" || condition == "${{ true }}" || condition == "always()" || condition == "${{ always() }}"}
+	p := doctorCIProducer{labeled: doctorWorkflowHasLabeledEvents(on, []string{"pull_request"}), unconditional: condition == "" || condition == "true" || condition == "${{ true }}" || condition == "always()" || condition == "${{ always() }}"}
 	for _, pattern := range []*regexp.Regexp{doctorCILabelEquality, doctorCILabelContains} {
 		if match := pattern.FindStringSubmatch(condition); len(match) > 1 {
 			p.label = match[1]
@@ -192,12 +196,13 @@ func doctorWorkflowAutomaticPR(on *yaml.Node) bool {
 		return false
 	}
 	if on.Kind == yaml.ScalarNode {
-		return on.Value == "pull_request" || on.Value == "pull_request_target" || on.Value == "push"
+		// pull_request_target jobs run against the base commit, not the PR head.
+		return on.Value == "pull_request" || on.Value == "push"
 	}
 	if on.Kind == yaml.SequenceNode {
 		return slices.ContainsFunc(on.Content, doctorWorkflowAutomaticPR)
 	}
-	for _, event := range []string{"pull_request", "pull_request_target", "push"} {
+	for _, event := range []string{"pull_request", "push"} {
 		spec := doctorYAMLMapValue(on, event)
 		if spec == nil {
 			continue
