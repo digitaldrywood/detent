@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -318,7 +320,7 @@ func TestAgentUpdateFromCodexCarriesCommandCompletionEvidence(t *testing.T) {
 	}
 }
 
-func TestAgentBackendEnforcesConfiguredStallTimeout(t *testing.T) {
+func TestAgentBackendOperatorEnforcesConfiguredStallTimeout(t *testing.T) {
 	t.Parallel()
 
 	transport := newBlockingAppServerTransport([]Message{
@@ -344,14 +346,14 @@ func TestAgentBackendEnforcesConfiguredStallTimeout(t *testing.T) {
 	factory := newControlledTimeoutFactory()
 	server.timeoutContext = factory.context
 	err = runWithTimeoutExpiration(t, factory, 10*time.Millisecond, ErrStreamStalled, func() error {
-		_, runErr := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+		_, runErr := backend.RunTurnWithTools(context.Background(), runner.AgentTurnRequest{
 			Workspace: "/tmp/detent-workspace",
 			Prompt:    "stall",
-		}, nil)
+		}, []runner.AgentTool{{Name: "board_state", InputSchema: json.RawMessage(`{"type":"object"}`)}}, nil, nil)
 		return runErr
 	})
 	if !errors.Is(err, ErrStreamStalled) {
-		t.Fatalf("RunTurn() error = %v, want configured ErrStreamStalled", err)
+		t.Fatalf("RunTurnWithTools() error = %v, want configured ErrStreamStalled", err)
 	}
 }
 
@@ -520,4 +522,110 @@ func (f *workerTempCapturingTransportFactory) NewTransport(ctx context.Context) 
 	f.workspace = workerWorkspace(ctx)
 	f.variables = workerEnvironment(ctx).Variables
 	return f.transport, nil
+}
+
+func TestAgentBackendNativeCommandWait(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                                      string
+		resume, tools, supplemental, readOnly     bool
+		turnTimeout, cancelAfter, commandDuration time.Duration
+		wantErr                                   error
+		wantElapsed                               time.Duration
+	}{
+		{name: "new worker", wantElapsed: 45 * time.Minute},
+		{name: "resumed worker", resume: true, wantElapsed: 45 * time.Minute},
+		{name: "supplemental worker", tools: true, supplemental: true, wantElapsed: 45 * time.Minute},
+		{name: "read-only worker", readOnly: true, wantElapsed: 45 * time.Minute},
+		{name: "operator keeps stall limit", tools: true, wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
+		{name: "worker keeps stream limit", turnTimeout: 10 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: 10 * time.Minute},
+		{name: "worker keeps default stream limit", commandDuration: 70 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: time.Hour},
+		{name: "worker cancellation", cancelAfter: 7 * time.Minute, wantErr: context.Canceled, wantElapsed: 7 * time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				threadRequest := threadStartRequestID
+				resumeID := ""
+				if tt.resume {
+					threadRequest = threadResumeRequestID
+					resumeID = "thread-1"
+				}
+				duration := tt.commandDuration
+				if duration == 0 {
+					duration = 45 * time.Minute
+				}
+				transport := &quietCommandTransport{fakeAppServerTransport: newFakeAppServerTransport([]Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/0.155.1"}`),
+					responseMessage(t, threadRequest, `{"thread":{"id":"thread-1","model":"gpt-6-astra"}}`),
+					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+				}), delay: duration}
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Hour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				backend, err := NewAgentBackend(server, Options{ThreadSandbox: "read-only", StallTimeout: 5 * time.Minute})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if tt.cancelAfter > 0 {
+					timer := time.AfterFunc(tt.cancelAfter, cancel)
+					defer timer.Stop()
+				}
+				req := runner.AgentTurnRequest{Workspace: t.TempDir(), Prompt: "Run the gate", Resume: runner.AgentResume{ThreadID: resumeID}, SupplementalTools: tt.supplemental, ReadOnly: tt.readOnly, TurnTimeout: tt.turnTimeout}
+				var tools []runner.AgentTool
+				if tt.tools {
+					tools = []runner.AgentTool{{Name: "board_state", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+				}
+				started := time.Now()
+				_, err = backend.RunTurnWithTools(ctx, req, tools, nil, nil)
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("RunTurnWithTools() = %v, want %v", err, tt.wantErr)
+				}
+				if elapsed := time.Since(started); elapsed != tt.wantElapsed {
+					t.Fatalf("elapsed = %s, want %s", elapsed, tt.wantElapsed)
+				}
+				params := transport.sentMessages()[2].Params
+				if tt.tools && !tt.supplemental {
+					assertJSONOmits(t, params, "config")
+				} else {
+					assertJSONContains(t, params, "config.background_terminal_max_timeout", 3000000)
+					var thread struct {
+						Instructions string `json:"developerInstructions"`
+					}
+					if err := json.Unmarshal(params, &thread); err != nil {
+						t.Fatal(err)
+					}
+					for _, required := range []string{"write_stdin", "3000000", "3060000"} {
+						if !strings.Contains(thread.Instructions, required) {
+							t.Errorf("missing native wait guidance %q", required)
+						}
+					}
+					if strings.Contains(thread.Instructions, "55 seconds") {
+						t.Error("retains paid polling cadence")
+					}
+				}
+			})
+		})
+	}
+}
+
+type quietCommandTransport struct {
+	*fakeAppServerTransport
+	delay time.Duration
+}
+
+func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
+	if len(t.received) == 1 {
+		timer := time.NewTimer(t.delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return Message{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return t.fakeAppServerTransport.Receive(ctx)
 }

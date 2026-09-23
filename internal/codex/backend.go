@@ -16,7 +16,9 @@ import (
 
 var ErrMissingAppServer = errors.New("codex app-server is required")
 
-const terminalWaitInstructions = "For known long-running terminal commands, set the command wait to about 55 seconds and the enclosing functions.exec yield horizon to at least 60 seconds, with headroom beyond the command wait. Do not use 1-second yields for builds, test suites, CI checks, or an already-running managed session. Reuse the existing command session and wait on it instead of repeatedly running ps, pgrep, or tail probes unless there is evidence the session is stuck."
+const terminalWaitInstructions = "For known long-running terminal commands such as builds, test suites, gates, and CI checks, use the backend's native blocking wait. Start exec_command with yield_time_ms=30000. If it returns a session ID, reuse that session with write_stdin, empty chars, and yield_time_ms=3000000 (50 minutes); the wait returns early when the command exits. When code mode is available, await the initial exec and its first empty write_stdin wait in the same functions.exec cell before returning the result. For an enclosing functions.exec call or functions.wait on its running cell, set yield_time_ms=3060000 so the wrapper does not force a model turn before the terminal wait finishes. If the native wait reaches its cap with the command still running, wait on the same session again. Do not shorten waits to narrate progress or emit waiting-only commentary. Do not rerun the command or use ps, pgrep, or tail probes without evidence of a failure. Existing cancellation and runtime limits still apply."
+
+const terminalWaitTimeout = 50 * time.Minute
 
 const dynamicToolTurnInstructions = "You are Detent's board operator assistant. Use only the provided Detent tools for board, fleet, telemetry, activity, and operator actions. Never use shell, filesystem, network, MCP, browser, delegation, or configuration tools. Mutating tools only create proposals; tell the operator that confirmation is required and never claim a proposal already executed."
 
@@ -91,6 +93,12 @@ func (b *AgentBackend) runTurn(
 	if req.SupplementalTools {
 		instructionTools = nil
 	}
+	stallTimeout := b.options.StallTimeout
+	var terminalTimeout time.Duration
+	if len(instructionTools) == 0 {
+		stallTimeout = 0
+		terminalTimeout = terminalWaitTimeout
+	}
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		Workspace:               req.Workspace,
 		Prompt:                  req.Prompt,
@@ -105,7 +113,8 @@ func (b *AgentBackend) runTurn(
 		ServiceTier:             req.ServiceTier,
 		ReasoningEffort:         req.ReasoningEffort,
 		TurnTimeout:             req.TurnTimeout,
-		StallTimeout:            b.options.StallTimeout,
+		StallTimeout:            stallTimeout,
+		TerminalWaitTimeout:     terminalTimeout,
 		DynamicTools:            tools,
 		ToolHandler:             toolHandler,
 		RequireSubscriptionAuth: req.RequireSubscriptionAuth,
