@@ -84,7 +84,9 @@ and prefixes it with `tracker.status_label_prefix`, which defaults to
 `detent:backlog`, `detent:todo`, `detent:in-progress`, `detent:blocked`,
 `detent:human-review`, `detent:rework`, `detent:merging`, and `detent:done`.
 With `tracker.auto_provision` enabled, Detent creates missing repository status
-labels for configured workflow states on startup.
+labels for configured workflow states on startup. Lane transitions and status-label
+removal only remove labels matching configured states. Other labels sharing the
+prefix, such as the authorization selector `detent:host-a`, are preserved.
 Discover existing labels with:
 
 ```sh
