@@ -149,6 +149,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
+		if rejected, err := o.operatorRejectedHead(ctx, issue); err != nil || rejected {
+			continue
+		}
 		if rework && !completedActiveIssueReadyForReview(issue, true, false) {
 			continue
 		}

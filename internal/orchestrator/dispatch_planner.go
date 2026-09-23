@@ -18,9 +18,10 @@ import (
 )
 
 type dispatchPlanner struct {
-	recordedBlockers func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
-	cfg              Config
-	now              time.Time
+	operatorRejectedHead func(connector.Issue) (bool, error)
+	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
+	cfg                  Config
+	now                  time.Time
 }
 
 type dispatchPlanHooks struct {
@@ -784,7 +785,15 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) {
 		return dispatchableDecision{reason: dispatchSkipArtifactGateWaitStatus}
 	}
-	if autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote) {
+	rejected := false
+	if p.operatorRejectedHead != nil {
+		var err error
+		rejected, err = p.operatorRejectedHead(issue)
+		if err != nil {
+			return dispatchableDecision{reason: dispatchSkipAwaitingGate}
+		}
+	}
+	if autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote) && !rejected {
 		return dispatchableDecision{reason: dispatchSkipAwaitingGate}
 	}
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
