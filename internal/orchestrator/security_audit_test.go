@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -214,6 +215,51 @@ func TestStartSecurityAuditStageLogsFailedExecution(t *testing.T) {
 	}
 }
 
+func TestOversizedSecurityAuditSnapshotRecordsSizeWithoutReviewerAuth(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		diffBytes int
+		limit     int
+	}{
+		{name: "reported incident", diffBytes: 272414, limit: 262144},
+		{name: "custom limit", diffBytes: 9, limit: 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := securityAuditTestIssue()
+			snapshot := securityAuditSnapshotFromIssue("detent", issue)
+			snapshot.Diff = strings.Repeat("x", tc.limit)
+			snapshot.DiffBytes = tc.diffBytes
+			snapshot.DiffTruncated = true
+			memo := newSecurityAuditMemoryStore()
+			orch := securityAuditTestOrchestrator(memo)
+			orch.connector = &securityAuditTestConnector{snapshot: snapshot}
+			orch.securityAuditor = &securityAuditTestAuditor{preflightLimit: tc.limit}
+			orch.cfg.AutoPromote.Gate.SecurityAudit.MaxAttempts = 1
+			orch.startSecurityAuditStage(t.Context(), issue, time.Now())
+			orch.securityAuditWG.Wait()
+			if len(memo.runs) != 1 {
+				t.Fatalf("runs = %#v, want one refusal", memo.runs)
+			}
+			run := memo.runs[0]
+			size, ok := securityaudit.ParseDiffTooLargeFailure(run.Failure)
+			if !ok || size.ActualBytes != tc.diffBytes || size.LimitBytes != tc.limit || run.AuthenticationMode != securityaudit.AuthenticationNotRun || run.ExitStatus != securityaudit.ExitStatusFailed || run.OutputBytes != 0 {
+				t.Fatalf("run = %#v, size = %#v, want size refusal without reviewer", run, size)
+			}
+			evaluation := orch.securityAuditEvaluation(t.Context(), issue)
+			if evaluation.Reason != securityaudit.ReasonDiffTooLarge || evaluation.ActualBytes != tc.diffBytes || evaluation.MaxDiffBytes != tc.limit {
+				t.Fatalf("evaluation = %#v, want size reason", evaluation)
+			}
+			comment := autoPromoteComment(AutoPromoteSummary{SecurityAudit: evaluation}, AutoPromoteDecision{Action: AutoPromoteActionRework, Reason: AutoPromoteReasonSecurityAuditFailed}, "Human Review", "Rework")
+			for _, required := range []string{"diff_too_large", "security_audit.max_diff_bytes", strconv.Itoa(tc.diffBytes), strconv.Itoa(tc.limit)} {
+				if !strings.Contains(comment, required) {
+					t.Fatalf("comment = %q, missing %q", comment, required)
+				}
+			}
+		})
+	}
+}
+
 func TestLiveSecurityAuditEvaluationRefreshesExactHead(t *testing.T) {
 	t.Parallel()
 
@@ -291,12 +337,17 @@ func (s *securityAuditMemoryStore) ListSecurityAuditDispositions(_ context.Conte
 }
 
 type securityAuditTestAuditor struct {
-	request SecurityAuditRequest
-	err     error
+	request        SecurityAuditRequest
+	err            error
+	preflightLimit int
 }
 
 func (a *securityAuditTestAuditor) Audit(_ context.Context, request SecurityAuditRequest) (SecurityAuditExecution, error) {
 	a.request = request
+	if a.preflightLimit > 0 {
+		_, err := securityaudit.BuildPrompt(request.Snapshot, a.preflightLimit)
+		return SecurityAuditExecution{}, err
+	}
 	startedAt := request.StartedAt.UTC()
 	output := `{"verdict":"pass","summary":"No actionable security findings.","findings":[]}`
 	return SecurityAuditExecution{

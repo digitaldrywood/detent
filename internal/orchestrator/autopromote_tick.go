@@ -3569,6 +3569,9 @@ func autoPromoteComment(
 	b.WriteString("\n\n")
 	b.WriteString("- reason: ")
 	b.WriteString(string(decision.Reason))
+	if decision.Reason == AutoPromoteReasonSecurityAuditFailed && summary.SecurityAudit.Reason == securityaudit.ReasonDiffTooLarge {
+		fmt.Fprintf(&b, "\n- security_audit: diff_too_large; actual %d bytes exceeds security_audit.max_diff_bytes %d bytes", summary.SecurityAudit.ActualBytes, summary.SecurityAudit.MaxDiffBytes)
+	}
 	if summary.PullRequestURL != "" {
 		b.WriteString("\n- pull request: ")
 		b.WriteString(summary.PullRequestURL)
