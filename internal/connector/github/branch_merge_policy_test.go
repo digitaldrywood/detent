@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,11 +29,13 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 		status          int
 		wantError       bool
 		wantUnavailable bool
+		wantChecks      []string
 	}{
 		{name: "queue", rules: `[{"type":"merge_queue","parameters":{"max_entries_to_build":5}}]`, wantQueue: true, wantLimit: 5},
 		{name: "classic strict", rules: `[]`, protection: `{"strict":true}`, wantStrict: true},
 		{name: "ruleset strict", rules: `[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]`, wantStrict: true},
 		{name: "unprotected", rules: `[]`},
+		{name: "ruleset and classic contexts", rules: `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Full CI"}]}}]`, protection: `{"contexts":["Full CI","Lint"],"checks":[{"context":"Build"}]}`, wantChecks: []string{"Full CI", "Lint", "Build"}},
 		{name: "plan unavailable", status: 403, rules: `{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}`, wantUnavailable: true},
 		{name: "unavailable rules", status: 500, wantError: true},
 	} {
@@ -76,6 +79,9 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 			}
 			if tt.wantError {
 				return
+			}
+			if !slices.Equal(got.RequiredStatusChecks, tt.wantChecks) {
+				t.Fatalf("checks = %v, want %v", got.RequiredStatusChecks, tt.wantChecks)
 			}
 			if got.Branch != "release/stable" || got.MergeQueue != tt.wantQueue || got.Strict != tt.wantStrict || got.AdmissionLimit != tt.wantLimit || got.RulesUnavailableOnPlan != tt.wantUnavailable {
 				t.Fatalf("policy = %+v", got)

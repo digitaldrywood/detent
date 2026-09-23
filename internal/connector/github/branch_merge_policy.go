@@ -10,9 +10,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 type BranchMergePolicy struct {
+	RequiredStatusChecks   []string
 	RulesUnavailableOnPlan bool
 	Branch                 string
 	MergeQueue             bool
@@ -48,6 +51,9 @@ func (c *Connector) RepositoryBranchMergePolicy(ctx context.Context, repository,
 		var rules []struct {
 			Type       string `json:"type"`
 			Parameters struct {
+				RequiredStatusChecks []struct {
+					Context string `json:"context"`
+				} `json:"required_status_checks"`
 				Strict     bool `json:"strict_required_status_checks_policy"`
 				MaxEntries int  `json:"max_entries_to_build"`
 			} `json:"parameters"`
@@ -66,12 +72,16 @@ func (c *Connector) RepositoryBranchMergePolicy(ctx context.Context, repository,
 				policy.AdmissionLimit = rule.Parameters.MaxEntries
 			case "required_status_checks":
 				policy.Strict = policy.Strict || rule.Parameters.Strict
+				for _, check := range rule.Parameters.RequiredStatusChecks {
+					policy.RequiredStatusChecks = append(policy.RequiredStatusChecks, check.Context)
+				}
 			}
 		}
 		if len(rules) < 100 {
 			break
 		}
 	}
+	policy.RequiredStatusChecks = normalizeRequiredStatusChecks(policy.RequiredStatusChecks)
 	return policy, nil
 }
 
@@ -81,13 +91,22 @@ func (c *Connector) RepositoryStrictMergePolicy(ctx context.Context, repository 
 		return policy, err
 	}
 	var checks struct {
-		Strict bool `json:"strict"`
+		Strict   bool     `json:"strict"`
+		Contexts []string `json:"contexts"`
+		Checks   []struct {
+			Context string `json:"context"`
+		} `json:"checks"`
 	}
 	path := "/repos/" + repository + "/branches/" + url.PathEscape(policy.Branch) + "/protection/required_status_checks"
 	if err := c.client.REST(ctx, http.MethodGet, path, nil, &checks); err != nil && !errors.Is(err, ErrNotFound) {
 		return policy, fmt.Errorf("read strict branch protection: %w", err)
 	}
 	policy.Strict = policy.Strict || checks.Strict
+	policy.RequiredStatusChecks = append(policy.RequiredStatusChecks, checks.Contexts...)
+	for _, check := range checks.Checks {
+		policy.RequiredStatusChecks = append(policy.RequiredStatusChecks, check.Context)
+	}
+	policy.RequiredStatusChecks = normalizeRequiredStatusChecks(policy.RequiredStatusChecks)
 	return policy, nil
 }
 
@@ -168,4 +187,40 @@ func (c *Client) recordBranchRulesAvailability(ctx context.Context, repository s
 	if _, loaded := unavailableBranchRules.LoadOrStore(key, http.StatusForbidden); !loaded {
 		c.logger.InfoContext(ctx, "github branch rules not available on this plan", "repository", repository, "status", http.StatusForbidden)
 	}
+}
+
+// attachRequiredBranchChecks shares the merge-queue policy cache. It enriches
+// current-head observations rather than creating missing evidence on read errors.
+func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *connector.Issue) error {
+	pr := issue.PullRequest
+	if normalizeStateName(issue.State) != normalizeStateName("Merging") || pr == nil || pr.BaseRef == "" || pr.HeadSHA == "" || pr.HydrationUnavailableReason != "" || !strings.EqualFold(pr.State, "open") {
+		return nil
+	}
+	repo, _, ok := hydratedPullRequestRef(*issue)
+	if !ok {
+		return nil
+	}
+	policy, err := c.branchMergePolicy(ctx, pullRequestRepoName(repo), pr.BaseRef)
+	if err != nil {
+		return fmt.Errorf("read required status policy: %w", err)
+	}
+	seen := make(map[string]bool)
+	for _, check := range pr.Checks {
+		seen[check.Name] = true
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		seen[check.Name] = true
+	}
+	// Copy the PR because snapshots may share a cached pointer.
+	enriched := *pr
+	enriched.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), pr.RequiredCheckFailures...)
+	for _, name := range policy.RequiredStatusChecks {
+		if !seen[name] {
+			enriched.RequiredCheckFailures = append(enriched.RequiredCheckFailures, connector.PullRequestCheck{Name: name, Status: "missing", Conclusion: "missing"})
+			seen[name] = true
+		}
+	}
+	enriched.CIStatus = combinedCIState(requiredStatusCheckState(enriched.RequiredCheckFailures), pr.CIStatus)
+	issue.PullRequest = &enriched
+	return nil
 }
