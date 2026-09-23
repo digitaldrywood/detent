@@ -18,13 +18,13 @@ func (o *Orchestrator) hydrateOperatorRework(ctx context.Context, issue connecto
 	}
 	if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok {
 		hydrated, err := hydrator.HydratePullRequest(ctx, issue)
-		if err == nil {
+		if err == nil && (hydrated.PullRequest == nil || strings.TrimSpace(hydrated.PullRequest.HydrationUnavailableReason) == "") {
 			hydrated.State = issue.State
 			return hydrated
 		}
 		// The lane move is authoritative even when the forge is unavailable. Record
 		// an unknown head instead of treating a cached head as freshly rejected.
-		if o.logger != nil {
+		if o.logger != nil && err != nil {
 			o.logger.Warn("hydrate operator rejection head", "issue_id", issue.ID, "error", err)
 		}
 		issue = cloneIssue(issue)
@@ -47,14 +47,15 @@ func (o *Orchestrator) operatorRejectedHead(ctx context.Context, issue connector
 	if normalizeState(issue.State) == normalizeState(cfg.SourceState) || mergeWorkerIssue(issue) {
 		return false, nil
 	}
-	reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader)
-	if !ok {
-		return false, nil
-	}
 	identity := store.IssueIdentity{ProjectID: o.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL}
-	timeline, err := reader.IssueWorkflowTimeline(ctx, identity)
-	if err != nil {
-		return false, err
+	var timeline store.WorkflowTimeline
+	var err error
+	reader, hasTimeline := o.workflowMetrics.(WorkflowMetricsTimelineReader)
+	if hasTimeline {
+		timeline, err = reader.IssueWorkflowTimeline(ctx, identity)
+		if err != nil {
+			return false, err
+		}
 	}
 	var recordedAt time.Time
 	for _, event := range timeline.Events {
@@ -92,6 +93,9 @@ func (o *Orchestrator) operatorRejectedHead(ctx context.Context, issue connector
 		if metricsLedger, ok := o.workflowMetrics.(store.LaneLedgerStore); ok {
 			ledger = metricsLedger
 		}
+	}
+	if !hasTimeline && ledger == nil {
+		return false, nil
 	}
 	observation := o.laneObservations[issue.ID]
 	if ledger != nil {

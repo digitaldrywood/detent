@@ -66,7 +66,9 @@ for a repair worker instead of waiting on its old completion. Automated Rework
 routing does not imply an operator rejection. This consolidates review eligibility
 with the lane ledger without adding a label, reason code, or configuration key.
 Forge hydration is best-effort so a PR endpoint failure cannot veto an operator
-lane move or abort the project tick. Unknown rejected heads require a commit
+lane move or abort the project tick. Soft hydration failures also discard cached
+heads. Lane observations remain authoritative when no timeline reader is configured.
+Unknown rejected heads require a commit
 strictly newer than the move. History read errors hold only the affected card;
 the independently durable human lane observation also prevents promotion when
 the best-effort history event was lost. Missing event evidence holds repair

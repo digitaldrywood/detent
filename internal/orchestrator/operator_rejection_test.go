@@ -24,6 +24,9 @@ func TestOperatorRejectionPromotion(t *testing.T) {
 		automated      bool
 		otherPR        bool
 		hydrateFailure bool
+		softFailure    bool
+		noTimeline     bool
+		recorderOnly   bool
 		readFailure    bool
 		writeFailure   bool
 		newCommit      bool
@@ -40,6 +43,13 @@ func TestOperatorRejectionPromotion(t *testing.T) {
 		{name: "observed move survives hydration failure", head: "rejected", observed: true, hydrateFailure: true},
 		{name: "new commit after unknown rejection", head: "fixed", hydrateFailure: true, newCommit: true, want: true},
 		{name: "unknown rejection needs evidence of new commit", head: "fixed", hydrateFailure: true},
+		{name: "soft hydration failure with stale head", head: "fixed", softFailure: true},
+		{name: "observed soft hydration failure", head: "fixed", softFailure: true, observed: true},
+		{name: "new commit after soft hydration failure", head: "fixed", softFailure: true, newCommit: true, want: true},
+		{name: "ledger without timeline retains rejection", head: "rejected", noTimeline: true},
+		{name: "ledger without timeline accepts new commit", head: "fixed", noTimeline: true, newCommit: true, want: true},
+		{name: "recorder only retains ledger rejection", head: "rejected", noTimeline: true, recorderOnly: true},
+		{name: "recorder only accepts new commit", head: "fixed", noTimeline: true, recorderOnly: true, newCommit: true, want: true},
 		{name: "history read failure", head: "rejected", readFailure: true},
 		{name: "history write failure", head: "rejected", writeFailure: true},
 		{name: "observed history write failure", head: "rejected", observed: true, writeFailure: true},
@@ -65,6 +75,7 @@ func TestOperatorRejectionPromotion(t *testing.T) {
 				if tt.hydrateFailure {
 					tracker.hydrateErr = errors.New("forge unavailable")
 				}
+				tracker.softFailure = tt.softFailure
 				o := newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, now)
 				state := newState(cfg)
 				if tt.observed {
@@ -93,6 +104,7 @@ func TestOperatorRejectionPromotion(t *testing.T) {
 				backend.writeFailure = false
 				backend.readFailure = tt.readFailure
 				tracker.hydrateErr = nil
+				tracker.softFailure = false
 				tracker.updates = nil
 				issue.State = "Rework"
 				issue.PullRequest.HeadSHA = tt.head
@@ -109,6 +121,13 @@ func TestOperatorRejectionPromotion(t *testing.T) {
 				tracker.live = issue
 				// Recreate the orchestrator and state: rejection must survive a restart.
 				o = newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, now)
+				if tt.noTimeline {
+					o.laneLedger = db
+					o.workflowMetrics = nil
+					if tt.recorderOnly {
+						o.workflowMetrics = &struct{ WorkflowMetricsRecorder }{backend}
+					}
+				}
 				state = newState(cfg)
 				if tt.readFailure || tt.writeFailure && !tt.newCommit {
 					other := dispatchTestIssue("unrelated-rework", "Rework")
@@ -171,14 +190,20 @@ func TestOperatorRejectionRepairDispatch(t *testing.T) {
 
 type operatorRejectionConnector struct {
 	*liveReworkConnector
-	hydrateErr error
+	hydrateErr  error
+	softFailure bool
 }
 
 func (c *operatorRejectionConnector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	if c.hydrateErr != nil {
 		return connector.Issue{}, c.hydrateErr
 	}
-	return c.liveReworkConnector.HydratePullRequest(ctx, issue)
+	hydrated, err := c.liveReworkConnector.HydratePullRequest(ctx, issue)
+	if c.softFailure && hydrated.PullRequest != nil {
+		hydrated = cloneIssue(hydrated)
+		hydrated.PullRequest.HydrationUnavailableReason = "rate_limited"
+	}
+	return hydrated, err
 }
 
 type operatorRejectionStore struct {
