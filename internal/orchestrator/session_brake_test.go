@@ -116,8 +116,9 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			}
 			runner := sessionBrakeCompletionRunner{
 				result: RunResult{
-					FinalState:  tt.finalState,
-					TurnStarted: true,
+					FinalState:   tt.finalState,
+					FinalMessage: "No audit verdict; there is no PR.",
+					TurnStarted:  true,
 					Tokens: TokenTotals{
 						TotalTokens:    brake.Tokens,
 						RuntimeSeconds: brake.Elapsed.Seconds(),
@@ -218,6 +219,9 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			sessionBrake, ok := metadata[sessionBrakeMetadataKey].(map[string]any)
 			if !ok || sessionBrake["cause_fingerprint"] != brake.CauseFingerprint {
 				t.Fatalf("session brake metadata = %#v, want cause fingerprint", metadata)
+			}
+			if metadata["final_assistant_message"] != "No audit verdict; there is no PR." {
+				t.Fatalf("final assistant message = %#v", metadata["final_assistant_message"])
 			}
 			if tt.finalState == runpkg.FinalStateMemoryCeilingExceeded {
 				if sessionBrake["rss_bytes"] != float64(brake.RSSBytes) || sessionBrake["rss_ceiling_bytes"] != float64(brake.RSSCeilingBytes) {

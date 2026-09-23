@@ -108,7 +108,7 @@ func (o *Orchestrator) handleSessionBrake(
 		event.Err.Error(),
 		phase,
 		statusMessage,
-		sessionBrakeMetadata(brake, targetState, resumable),
+		mergeWorkAttemptMetadata(sessionBrakeMetadata(brake, targetState, resumable), o.finalAssistantMessageMetadata(event.Result)),
 	)
 
 	issue := cloneIssue(running.Issue)
