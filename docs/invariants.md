@@ -1134,7 +1134,13 @@ operator interventions unrelated to the assigned repository task.
 
 **Enforcement:** `TestPrepareCodexCommandForServiceIsolatesInstructions` and
 `TestPrepareWorkerCodexHomeExistingInstructions` exercise service profile
-isolation, per-worker SQLite state, and rejection of inherited instructions. The
+isolation, per-worker SQLite state, and rejection of inherited instructions.
+Worker and launchd profiles own real `sessions` and `archived_sessions`
+directories; sync replaces legacy symlinks without touching host transcripts.
+History prefers profile transcripts and falls back to host history. Startup
+retention removes profile rollouts older than 30 days, preserving unfinished
+threads, their resume sources, and descendants of retained parents. It never
+traverses shared transcript symlinks. The
 manifest runs both.
 Repository instructions and the Detent-provided worktree remain authoritative.
 

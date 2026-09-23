@@ -300,6 +300,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				continue
 			}
 			retentionHomes[home] = true
+			if err := pruneCodexTranscripts(runCtx, home, time.Now(), runtimeStore); err != nil {
+				logger.Warn("Codex transcript retention failed", "home", home, "error", err)
+			}
 			if err := pruneCodexLogs(runCtx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
 				logger.Warn("Codex log retention failed", "home", home, "error", err)
 			}
