@@ -101,6 +101,10 @@ tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
 Accepted operational completions also close the issue in the existing terminal
 transition; merged PR completion does not depend on a closing keyword (#2911).
+When GitHub closes a linked issue as completed during the merge, a redundant
+close returning 422 is accepted only after a fresh issue read confirms that
+closed/completed state. Open issues and other closure reasons retain the close
+error, so the terminal lane is published only after confirmed closure (#3028).
 The existing completion comment links the issue closure.
 `TestCompletionTransitionClosesIssue` covers both completion paths.
 

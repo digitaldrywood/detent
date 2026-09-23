@@ -6392,6 +6392,38 @@ func TestConnectorCloseIssueCallsCloseIssue(t *testing.T) {
 	}
 }
 
+func TestConnectorCloseIssueAfterMergeAutoClosure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		state       string
+		reason      string
+		wantSuccess bool
+	}{
+		{name: "auto closed completed", state: "closed", reason: "completed", wantSuccess: true},
+		{name: "still open", state: "open"},
+		{name: "closed not planned", state: "closed", reason: "not_planned"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{status: http.StatusUnprocessableEntity, method: http.MethodPatch, path: "/repos/example/repo/issues/1", body: `{"message":"Validation Failed"}`},
+				{method: http.MethodGet, path: "/repos/example/repo/issues/1", body: fmt.Sprintf(`{"node_id":"I_kw1","state":%q,"state_reason":%q}`, tt.state, tt.reason)},
+			})
+			c := newGitHubTestConnector(t, server, Config{})
+			c.projectCache.SetIssueRef("I_kw1", issueRef{Owner: "example", Name: "repo", Number: 1})
+			err := c.CloseIssue(t.Context(), "I_kw1")
+			if (err == nil) != tt.wantSuccess {
+				t.Fatalf("CloseIssue() error = %v, want success %v", err, tt.wantSuccess)
+			}
+			if got := len(server.requests()); got != 2 {
+				t.Fatalf("request count = %d, want PATCH then GET", got)
+			}
+		})
+	}
+}
+
 func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	t.Parallel()
 
