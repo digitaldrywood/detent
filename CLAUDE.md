@@ -26,23 +26,25 @@
 ## Issue effort selection
 
 Model and reasoning effort are orchestration settings, not authoring decisions.
-The fleet default is Codex Astra (`gpt-6-astra`) at `low` effort — equivalent in
-capability to Sol at `high` — and it is configured once in the operator's
-instance config, not in this repo. `detent.yaml` deliberately carries an empty
-`agents.model_selection` block so it inherits that default.
+They are configured once in the operator's instance config, not in this repo,
+and split by stage: Codex Astra (`gpt-6-astra`) plans at `low` effort and
+validates at `medium`, and Codex Sol (`gpt-6-sol`) builds (code, rework, merge)
+at `high`. `detent.yaml` deliberately carries an empty `agents.model_selection`
+block so it inherits that split.
 
-Do not put a `model` in a `detent-agent` block. If you include one for `effort`,
-use `low`; the configured policy ceiling clamps anything higher, so a raised
-effort in an issue body has no effect.
+Do not put a `model` in a `detent-agent` block: it overrides every stage,
+including Astra planning and validation. Use `effort: high`; each stage clamps
+it to its own ceiling, so planning still runs at `low` and validation at
+`medium`.
 
 ```detent-agent
 schema: 1
-effort: low
+effort: high
 ```
 
-Escalation above the default is an operator action: applying the
-`complexity:very-complex` label routes the issue to the high-effort level.
-Agents never apply complexity labels and never assign `xhigh` or `max`.
+Escalation is an operator action: applying the `complexity:very-complex` label
+routes the issue to Astra at `medium`. Agents never apply complexity labels and
+never assign `xhigh` or `max`.
 
 ## Mechanism moratorium
 
