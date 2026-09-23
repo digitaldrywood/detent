@@ -1026,7 +1026,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		ConnectorName:             s.connector.Name(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scopedSnapshot,
-		ConfiguredAgents:          s.boardConfiguredAgents(scopedSnapshot),
+		ConfiguredAgents:          s.boardConfiguredAgentsForProject(scopedSnapshot, project.ID),
 		Projects:                  projects,
 		Kanban:                    s.dashboardKanbanData(ctx, project.ID, scopedSnapshot),
 		Assets:                    s.assets.templatePaths(),

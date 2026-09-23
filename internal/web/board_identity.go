@@ -15,6 +15,7 @@ import (
 )
 
 // boardIdentityCache retains immutable routing inputs for the last rendered issue set.
+// Scoped renders replace only their own project entries.
 // Body edits and configuration or selector changes invalidate a resolution;
 // unrelated telemetry updates do not. The mutex serializes concurrent SSE renders.
 type boardIdentityCache struct {
@@ -23,16 +24,28 @@ type boardIdentityCache struct {
 }
 
 type boardIdentityEntry struct {
-	config   string
-	issue    string
-	identity agentidentity.Identity
-	valid    bool
+	projectID string
+	config    string
+	issue     string
+	identity  agentidentity.Identity
+	valid     bool
 }
 
 func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]agentidentity.Identity {
+	return s.boardConfiguredAgentsForProject(snapshot, "")
+}
+
+func (s *Server) boardConfiguredAgentsForProject(snapshot telemetry.Snapshot, projectID string) map[string]agentidentity.Identity {
 	s.boardIdentities.mu.Lock()
 	defer s.boardIdentities.mu.Unlock()
 	next := make(map[string]*boardIdentityEntry)
+	if projectID != "" {
+		for key, entry := range s.boardIdentities.entries {
+			if entry.projectID != projectID {
+				next[key] = entry
+			}
+		}
+	}
 	defer func() { s.boardIdentities.entries = next }()
 	configKeys := make(map[string]string)
 	identities := make(map[string]agentidentity.Identity, len(snapshot.BoardIssues))
@@ -92,7 +105,7 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 			continue
 		}
 		identity, err := resolver.Identity(input)
-		next[key] = &boardIdentityEntry{config: configKeys[issue.ProjectID], issue: string(inputJSON), identity: identity, valid: err == nil}
+		next[key] = &boardIdentityEntry{projectID: issue.ProjectID, config: configKeys[issue.ProjectID], issue: string(inputJSON), identity: identity, valid: err == nil}
 		if err != nil {
 			continue
 		}
