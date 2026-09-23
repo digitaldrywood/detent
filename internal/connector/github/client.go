@@ -47,6 +47,7 @@ type HTTPClient interface {
 
 type ClientConfig struct {
 	Endpoint                   string
+	Project                    string
 	TokenSource                TokenSource
 	HTTPClient                 HTTPClient
 	GraphQLMinRemainingReserve int64
@@ -63,6 +64,7 @@ type RESTBudgetPolicy struct {
 
 type Client struct {
 	endpoint               string
+	project                string
 	restEndpoint           string
 	tokenSource            TokenSource
 	httpClient             HTTPClient
@@ -135,6 +137,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 	return &Client{
 		endpoint:            endpoint,
+		project:             strings.TrimSpace(cfg.Project),
 		restEndpoint:        restEndpoint,
 		tokenSource:         cfg.TokenSource,
 		httpClient:          httpClient,
@@ -252,6 +255,9 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	}
 	if !c.recordRateLimitFromData(ctx, envelope.Data, queryType, receivedAt) {
 		c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
+	}
+	if cost, snapshot, ok := graphQLAttributionCost(envelope.Data, headerRateLimit); ok {
+		defaultGraphQLAttribution.record(ctx, token, c.project, queryType, cost, snapshot, c.logger, c)
 	}
 	if len(envelope.Errors) > 0 {
 		err := classifyGraphQLErrors(envelope.Errors)

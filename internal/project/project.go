@@ -1983,6 +1983,7 @@ func buildScheduleOwnership(
 		}
 		client, err := ghconnector.NewClient(ghconnector.ClientConfig{
 			Endpoint:    ownership.Endpoint,
+			Project:     ownership.Key,
 			TokenSource: tokenSource,
 			HTTPClient:  httpClient,
 			Logger:      logger,

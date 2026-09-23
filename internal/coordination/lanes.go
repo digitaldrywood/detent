@@ -35,6 +35,7 @@ func PublishLaneWrite(ctx context.Context, backend Store, project string, write 
 		return errors.New("lane write identity, transition, fence token and timestamp are required")
 	}
 	write.WrittenAt = write.WrittenAt.UTC()
+	ctx = withCoordinationPurpose(ctx, "lane_coordination")
 	key := laneWriteKey(project, write.Issue)
 	for range 16 {
 		record, found, err := backend.Get(ctx, key)

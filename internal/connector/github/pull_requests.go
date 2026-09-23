@@ -373,6 +373,7 @@ func (c *Connector) LookupBranchHead(ctx context.Context, repository, branch str
 	}
 	const query = `query BranchHead($owner: String!, $name: String!, $ref: String!) {
   repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { target { oid } } }
+  rateLimit { limit used remaining cost resetAt }
  }`
 	var response struct {
 		Repository *struct {
@@ -383,7 +384,7 @@ func (c *Connector) LookupBranchHead(ctx context.Context, repository, branch str
 			} `json:"ref"`
 		} `json:"repository"`
 	}
-	if err := c.client.GraphQL(ctx, query, map[string]any{"owner": repo.Owner, "name": repo.Name, "ref": "refs/heads/" + branch}, &response); err != nil {
+	if err := c.client.GraphQLWithType(ctx, "merge", query, map[string]any{"owner": repo.Owner, "name": repo.Name, "ref": "refs/heads/" + branch}, &response); err != nil {
 		return "", fmt.Errorf("lookup github branch head: %w", err)
 	}
 	if response.Repository == nil {
