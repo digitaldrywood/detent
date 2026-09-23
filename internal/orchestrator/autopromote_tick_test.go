@@ -575,6 +575,84 @@ func TestApplyAutoPromoteDecisionArtifactReworkTicks(t *testing.T) {
 	}
 }
 
+func TestAutoPromoteReadyPullRequestRepairs(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, lane, ci, prState                      string
+		threads, draft, running, optout, unavailable bool
+		want                                         AutoPromoteReason
+	}{
+		{name: "human review threads", lane: "Human Review", threads: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "in progress threads", lane: "In Progress", threads: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "running in progress threads", lane: "In Progress", threads: true, running: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "human review failed check", lane: "Human Review", ci: "failure", want: AutoPromoteReasonCINotGreen},
+		{name: "in progress failed check", lane: "In Progress", ci: "failure", want: AutoPromoteReasonCINotGreen},
+		{name: "draft threads", lane: "In Progress", threads: true, draft: true},
+		{name: "draft failed check", lane: "In Progress", ci: "failure", draft: true},
+		{name: "unfinished green PR", lane: "In Progress", ci: "success"},
+		{name: "pending check", lane: "In Progress", ci: "pending"},
+		{name: "closed PR threads", lane: "In Progress", threads: true, prState: "CLOSED"},
+		{name: "opted out threads", lane: "In Progress", threads: true, optout: true},
+		{name: "unavailable threads", lane: "In Progress", threads: true, unavailable: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+			issue := autoPromoteTickIssue("ready-repair", nil, &connector.PullRequest{
+				Number: 2974, URL: "https://github.test/digitaldrywood/detent/pull/2974",
+				State: firstNonBlank(tt.prState, "OPEN"), Draft: tt.draft, CIStatus: firstNonBlank(tt.ci, "success"),
+				MergeableState: "clean", CodexReviewState: "COMMENTED",
+			})
+			issue.State = tt.lane
+			if tt.lane == "In Progress" {
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusInProgress}
+			}
+			if tt.optout {
+				issue.Labels = []string{"human-only"}
+			}
+			if tt.unavailable {
+				issue.PullRequest.HydrationUnavailableReason = "unavailable"
+			}
+			if tt.threads {
+				issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "main.go", Line: 10}}
+			}
+			cfg := normalizeConfig(Config{
+				AutoPromote:    AutoPromoteConfig{Enabled: true, OptoutLabel: "human-only", Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			state := newState(cfg)
+			if tt.running {
+				state.Running[issue.ID] = Running{Issue: issue}
+			}
+			tracker := &autoPromoteTickConnector{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+			if tt.want == "" {
+				if len(tracker.updates) != 0 || len(result.transitioned) != 0 {
+					t.Fatalf("unexpected transition: %#v", tracker.updates)
+				}
+				return
+			}
+			want := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}
+			if !reflect.DeepEqual(tracker.updates, want) {
+				t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
+			}
+			if len(tracker.comments) != 1 {
+				t.Fatalf("comments = %#v, want one", tracker.comments)
+			}
+			for _, fragment := range []string{"Auto-promote routed this issue from " + tt.lane + " to Rework", "reason: " + string(tt.want)} {
+				if !strings.Contains(tracker.comments[0].body, fragment) {
+					t.Fatalf("comment %q missing %q", tracker.comments[0].body, fragment)
+				}
+			}
+			if _, ok := result.transitioned[issue.ID]; !ok {
+				t.Fatal("transition missing from result")
+			}
+		})
+	}
+}
+
 func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 	t.Parallel()
 
