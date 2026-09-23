@@ -2982,6 +2982,48 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 	}
 }
 
+func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		finalHead   string
+		wantVerdict string
+	}{
+		{name: "stable head", finalHead: "B", wantVerdict: gate.ValidatorVerdictPass},
+		{name: "head changes during evaluation", finalHead: "C", wantVerdict: gate.ValidatorVerdictWait},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := autoPromoteTickIssue("issue-head-race", nil, &connector.PullRequest{Number: 3031, HeadSHA: "A", State: "OPEN"})
+			current := cloneIssue(issue)
+			current.PullRequest.HeadSHA = "B"
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, hydratedIssues: []connector.Issue{current}}
+			validator := newBlockingAutoPromoteValidatorRunner()
+			cfg := autoPromoteValidatorTestConfig()
+			orch := &Orchestrator{cfg: cfg, connector: tracker, validator: validator}
+			state := newState(cfg)
+			orch.startValidatorStage(t.Context(), &state, issue, time.Now())
+			select {
+			case req := <-validator.started:
+				if got := req.Issue.PullRequest.HeadSHA; got != "B" {
+					t.Fatalf("seeded head = %s, want B", got)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("validator did not start")
+			}
+			current.PullRequest.HeadSHA = tt.finalHead
+			tracker.hydratedIssues = []connector.Issue{current}
+			validator.Release()
+			orch.validatorWG.Wait()
+			result, _, ok := orch.validatorStageResult(t.Context(), connector.Issue{ID: issue.ID, PullRequest: &connector.PullRequest{HeadSHA: "B"}})
+			if !ok || result.Verdict != tt.wantVerdict {
+				t.Fatalf("verdict = %#v, want %s", result, tt.wantVerdict)
+			}
+			if tt.wantVerdict == gate.ValidatorVerdictWait && !strings.Contains(result.Summary, "reviewed B, current PR C") {
+				t.Fatalf("mismatch detail = %q", result.Summary)
+			}
+		})
+	}
+}
+
 func TestTickAutoPromoteStartsValidatorBeforeAutomatedReview(t *testing.T) {
 	t.Parallel()
 

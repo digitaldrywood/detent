@@ -19,6 +19,14 @@ A passing test does not authorize weakening a rule.
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
+Validator reviews now refresh the PR head before dispatch, seed a clean review
+workspace at that commit, and compare the current PR head again before storing
+the verdict. A changed head produces the existing wait verdict under the head
+that was actually reviewed; the next tick evaluates the new head. This keeps
+validation evidence attributable to its commit without giving workers lane
+ownership. `TestValidatorStageTracksHeadBeforeAndDuringReview` and
+`TestLocalGitSeedReviewHead` cover these boundaries (#3031).
+
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; current unfinished work cannot promote on completion or
 the Rework tick. Completion and promotion use the same forge-over-assertion

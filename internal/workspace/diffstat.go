@@ -48,6 +48,62 @@ type DiffProvider interface {
 	Diff(context.Context, Info, Issue, int) (Diff, error)
 }
 
+// HeadProvider reports the commit actually checked out for a review.
+type HeadProvider interface {
+	Head(context.Context, Info, Issue) (string, error)
+}
+
+// ReviewHeadSeeder aligns an existing review worktree with the requested PR commit.
+type ReviewHeadSeeder interface {
+	SeedReviewHead(context.Context, Info, Issue) error
+}
+
+func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) error {
+	if strings.TrimSpace(issue.PullRequestHeadSHA) == "" {
+		return nil
+	}
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return err
+	}
+	branch := strings.TrimSpace(normalized.Branch)
+	if branch == "" {
+		return errors.New("review branch is empty")
+	}
+	remoteRef := "refs/remotes/origin/" + branch
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-write-fetch-head", "origin", "+refs/heads/"+branch+":"+remoteRef); err != nil {
+		return fmt.Errorf("fetch review branch: %w", err)
+	}
+	remoteHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", remoteRef)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(remoteHead) != strings.TrimSpace(issue.PullRequestHeadSHA) {
+		return fmt.Errorf("review branch head mismatch: fetched %s, expected %s", strings.TrimSpace(remoteHead), strings.TrimSpace(issue.PullRequestHeadSHA))
+	}
+	localHead, err := l.Head(ctx, normalized, issue)
+	if err != nil || strings.TrimSpace(localHead) == strings.TrimSpace(remoteHead) {
+		return err
+	}
+	changes, err := runGitAt(ctx, normalized.Path, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(changes) != "" {
+		return errors.New("review workspace has local changes")
+	}
+	_, err = runGitAt(ctx, normalized.Path, "reset", "--hard", strings.TrimSpace(remoteHead))
+	return err
+}
+
+func (l *LocalGit) Head(ctx context.Context, info Info, issue Issue) (string, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return "", err
+	}
+	return runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
+}
+
 func (l *LocalGit) DiffStat(ctx context.Context, info Info, issue Issue) (DiffStat, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {

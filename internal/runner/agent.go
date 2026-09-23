@@ -2960,6 +2960,12 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
+	if seeder, ok := r.workspace.(workspace.ReviewHeadSeeder); ok {
+		if err := seeder.SeedReviewHead(ctx, info, workspaceIssue); err != nil {
+			return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
+				Summary: "validation head mismatch: " + err.Error()}, nil
+		}
+	}
 
 	if err := r.workspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return gate.ValidatorResult{}, fmt.Errorf("workspace before_run: %w", err)
@@ -2974,6 +2980,18 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			r.afterRun(r.workspace, info, workspaceIssue)
 		}
 	}()
+	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
+			if err != nil {
+				return gate.ValidatorResult{}, fmt.Errorf("read validation workspace head: %w", err)
+			}
+			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
+				return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
+					Summary: fmt.Sprintf("validation head mismatch: workspace %s, PR evidence %s", checkedOut, expected)}, nil
+			}
+		}
+	}
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := r.validatorPromptOptions(ctx, info, workspaceIssue, validatorMaxInlineDiffBytes(validator))
@@ -3206,6 +3224,18 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			fmt.Errorf("parse validator result: %w", err),
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
+	}
+	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, headErr := provider.Head(ctx, info, workspaceIssue)
+			if headErr != nil {
+				return gate.ValidatorResult{}, fmt.Errorf("read validation workspace head: %w", headErr)
+			}
+			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
+				validation = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
+					Summary: fmt.Sprintf("validation head mismatch: workspace %s, PR evidence %s", checkedOut, expected)}
+			}
+		}
 	}
 	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err

@@ -2477,6 +2477,13 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
+	if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
+		var ok bool
+		issue, ok = o.hydrateValidatorStagePullRequest(ctx, issue)
+		if !ok {
+			return
+		}
+	}
 	identity := validatorStageIdentityForIssue(issue)
 	if identity.Key == "" {
 		if o.logger != nil {
@@ -2670,6 +2677,18 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 				CapacityProbe: true,
 				CompletedAt:   completedAt,
 			})
+		}
+		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
+			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
+				currentHead := validatorStageIdentityForIssue(current).HeadSHA
+				if currentHead != identity.HeadSHA {
+					result = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
+						Summary: fmt.Sprintf("validation head mismatch: reviewed %s, current PR %s", identity.HeadSHA, currentHead)}
+				}
+			} else {
+				result = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
+					Summary: "validation head mismatch: current PR head could not be verified"}
+			}
 		}
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
 
