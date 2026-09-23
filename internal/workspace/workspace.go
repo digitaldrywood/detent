@@ -2158,7 +2158,7 @@ func canonicalExistingPath(path string) (string, error) {
 	}
 	canonical, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", fmt.Errorf("canonicalize %s: %w", abs, err)
+		return "", &os.PathError{Op: "canonicalize", Path: abs, Err: err}
 	}
 	return filepath.Clean(canonical), nil
 }
