@@ -5657,8 +5657,8 @@ func TestConnectorSecurityAuditSnapshotMarksOversizedRawDiff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SecurityAuditSnapshot() error = %v", err)
 	}
-	if snapshot.Diff != "1234" || !snapshot.DiffTruncated {
-		t.Fatalf("SecurityAuditSnapshot() diff = %q truncated=%t", snapshot.Diff, snapshot.DiffTruncated)
+	if snapshot.Diff != "1234" || !snapshot.DiffTruncated || snapshot.DiffBytes != 5 {
+		t.Fatalf("SecurityAuditSnapshot() diff = %q truncated=%t bytes=%d", snapshot.Diff, snapshot.DiffTruncated, snapshot.DiffBytes)
 	}
 }
 

@@ -64,6 +64,32 @@ func TestAuditEvidenceResultOmitsCredentialsAndRawFailure(t *testing.T) {
 	}
 }
 
+func TestAuditEvidenceResultShowsOversizedDiff(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		failure    string
+		wantReason string
+	}{
+		{name: "oversized", failure: (&securityaudit.DiffTooLargeError{ActualBytes: 272414, LimitBytes: 262144}).Error(), wantReason: securityaudit.ReasonDiffTooLarge},
+		{name: "other failure stays private", failure: "credential=private"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := auditEvidenceResultFromRun(securityaudit.Run{ExitStatus: securityaudit.ExitStatusFailed, Failure: tc.failure, AuthenticationMode: securityaudit.AuthenticationNotRun}, nil)
+			if result.FailureReason != tc.wantReason || result.AuthenticationMode != securityaudit.AuthenticationNotRun {
+				t.Fatalf("result = %#v, want reason %q", result, tc.wantReason)
+			}
+			if tc.wantReason == securityaudit.ReasonDiffTooLarge && (result.ActualBytes != 272414 || result.MaxDiffBytes != 262144) {
+				t.Fatalf("result = %#v, want actual and limit", result)
+			}
+			raw, err := json.Marshal(result)
+			if err != nil || strings.Contains(string(raw), tc.failure) {
+				t.Fatalf("evidence = %s, error = %v; raw failure leaked", raw, err)
+			}
+		})
+	}
+}
+
 func TestAuditEvidenceRequiresBaseAndHeadTogether(t *testing.T) {
 	t.Parallel()
 
