@@ -52,13 +52,14 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 		return out
 	}
 	o.pruneNativeMergeQueueEntries(ctx, state, out)
+	runningRepositories := activeMergeWorkerRepositories(state)
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg, state, now) {
 		if ctx.Err() != nil {
 			state.nativeMergeQueueDeferred[strings.TrimSpace(candidate.ID)] = struct{}{}
 			continue
 		}
-		if _, reserved := mergeReservationBlocks(state, candidate, now); reserved {
+		if mergeWorkerRepositoryConsumed(runningRepositories, nativeMergeQueueRepositoryKey(candidate)) {
 			continue
 		}
 		issueID := strings.TrimSpace(candidate.ID)

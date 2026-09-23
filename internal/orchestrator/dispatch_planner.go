@@ -161,14 +161,6 @@ func (p dispatchPlanner) plan(
 					continue
 				}
 			}
-			if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
-				logDecision(dispatchPlanDecision{
-					Issue: issue, QueuePosition: queuePosition,
-					SkipReason: "merge_ci_reservation",
-					SkipDetail: "merge running for " + reservation.IssueID,
-				})
-				continue
-			}
 			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
 				logDecision(dispatchPlanDecision{
@@ -214,14 +206,6 @@ func (p dispatchPlanner) plan(
 				})
 				continue
 			}
-		}
-		if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
-			logDecision(dispatchPlanDecision{
-				Issue: issue, QueuePosition: queuePosition,
-				SkipReason: "merge_ci_reservation",
-				SkipDetail: "merge running for " + reservation.IssueID,
-			})
-			continue
 		}
 		action, ok, reason := p.dispatchAction(state, issue, now)
 		if !ok {

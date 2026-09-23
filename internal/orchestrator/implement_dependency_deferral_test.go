@@ -57,10 +57,6 @@ func TestCompletedDependencyWaitReleasesOwnedMergeReservation(t *testing.T) {
 			next := nativeMergeQueueTestIssue(2282, "success")
 			later := now.Add(time.Minute)
 			reconcileMergeReservations(&state, []connector.Issue{next}, cfg, later)
-			_, blocked := mergeReservationBlocks(&state, next, later)
-			if blocked {
-				t.Fatal("retained CI metadata blocks next merge")
-			}
 			reservation, retained := state.mergeReservations[owner.ID]
 			if retained != tt.wantRetained {
 				t.Fatalf("metadata retained = %t, want %t", retained, tt.wantRetained)

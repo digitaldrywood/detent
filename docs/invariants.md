@@ -1304,13 +1304,15 @@ still apply. Queued acquisitions consolidate overlapping-call ordering and
 retained demand into executable requests; they introduce no selected-slot
 reservation, configuration, or recovery mechanism.
 
-Merge scheduling serializes only running merges against the same repository/base
-(#2572). CI waits, retries, claims without running work, and unready heads do not
-exclude ready competitors. Aged heads retain ordering preference when ready.
-`TestMergeIdleHeadDoesNotReserveSlot` checks planner dispatch, fresh candidates,
-and native queue admission, including independent base branches. The existing
-`merge_ci_reservation` reason now denotes only a running merge; its detail names
-the running issue. `merge_fairness_head_reserved` is retired from producers and
+Merge scheduling admits ready workers in the same repository up to the configured
+Merging state capacity (#3023). CI waits, retries, claims without running work,
+and unready heads do not exclude ready competitors. Aged heads retain ordering
+preference when ready. `TestMergeDispatchUsesMergingCapacity` checks fresh and
+retry dispatch with limits of one and three; `TestMergeIdleHeadDoesNotReserveSlot`
+checks planner dispatch, fresh candidates, and native queue admission.
+The `merge_ci_reservation` dispatch reason is retired. Native merge queue admission
+still defers enqueueing behind a running merge in its repository, without holding
+a worker slot. `merge_fairness_head_reserved` remains retired from producers and
 covered by the source scanner; historical configuration remains readable.
 CI wait metadata remains compatible on disk but is keyed by issue in memory so
 concurrent waits preserve separate deadlines and refresh state across restart
