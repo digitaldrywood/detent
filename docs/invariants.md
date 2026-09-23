@@ -454,7 +454,11 @@ covers immediate repair dispatch and preserves pending CI and review waits.
 Question waits are evaluated in live candidate eligibility before selection
 (#2995), using the existing `human_question_wait` and
 `human_question_unavailable` reasons. There is no post-selection question refusal.
-Question-only waits do not count toward a project dispatch stall.
+Question waits precede capacity exits, so question-only waits do not count
+toward a project dispatch stall even when existing workers occupy all slots.
+Allowance triage also uses live eligibility;
+`TestHumanQuestionAllowanceTriageEligibility` covers ordinary and migrated
+question waits and permits triage after an authorized reply.
 `TestHumanQuestionCandidateEligibility` covers fresh candidates and due retries,
 changed work fingerprints, reply propagation, and unavailable question storage.
 

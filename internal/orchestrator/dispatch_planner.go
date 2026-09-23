@@ -199,10 +199,6 @@ func (p dispatchPlanner) plan(
 			}
 			continue
 		}
-		if p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
-			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipProjectCapacityFull})
-			continue
-		}
 		if hooks.hydrate != nil {
 			var ok bool
 			issue, ok = hooks.hydrate(issue)
@@ -829,6 +825,13 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		}
 		return dispatchableDecision{reason: dispatchSkipBlocked}
 	}
+	if p.humanQuestionWaiting != nil {
+		if waiting, err := p.humanQuestionWaiting(&issue); err != nil {
+			return dispatchableDecision{reason: "human_question_unavailable", detail: err.Error()}
+		} else if waiting {
+			return dispatchableDecision{reason: "human_question_wait", detail: "waiting for a reply on the original issue"}
+		}
+	}
 	if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 		return dispatchableDecision{reason: reason}
 	}
@@ -868,13 +871,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 			if len(parts) > 0 {
 				return dispatchableDecision{reason: dispatchSkipBlockedByDependency, detail: strings.Join(parts, "; ")}
 			}
-		}
-	}
-	if p.humanQuestionWaiting != nil {
-		if waiting, err := p.humanQuestionWaiting(&issue); err != nil {
-			return dispatchableDecision{reason: "human_question_unavailable", detail: err.Error()}
-		} else if waiting {
-			return dispatchableDecision{reason: "human_question_wait", detail: "waiting for a reply on the original issue"}
 		}
 	}
 	return dispatchableDecision{dispatchable: true, comments: issue.Comments}

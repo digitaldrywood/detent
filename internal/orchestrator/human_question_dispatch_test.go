@@ -106,12 +106,16 @@ func TestHumanQuestionCandidateEligibility(t *testing.T) {
 
 func TestHumanQuestionDispatchSkipsBeforeSelection(t *testing.T) {
 	t.Parallel()
-	for _, retry := range []bool{false, true} {
-		name := "candidate"
-		if retry {
-			name = "retry"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		retry, full bool
+	}{
+		{name: "candidate"},
+		{name: "retry", retry: true},
+		{name: "candidate at capacity", full: true},
+		{name: "retry at capacity", retry: true, full: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			db := openWorkAttemptRecoveryStore(t, t.Context())
 			issue := dispatchTestIssue("2995", "In Progress")
@@ -125,7 +129,11 @@ func TestHumanQuestionDispatchSkipsBeforeSelection(t *testing.T) {
 			}
 			now := time.Now()
 			state := newState(o.cfg)
-			if retry {
+			if tt.full {
+				busy := dispatchTestIssue("busy", "In Progress")
+				state.Running[busy.ID] = Running{Issue: busy}
+			}
+			if tt.retry {
 				state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now.Add(-time.Minute)}
 			}
 			for cycle := range 2 {
@@ -160,6 +168,62 @@ func TestHumanQuestionToolInfrastructureGuidance(t *testing.T) {
 		t.Run(phrase, func(t *testing.T) {
 			if !strings.Contains(request.AgentTools[0].Description, phrase) {
 				t.Fatalf("tool description omits %q", phrase)
+			}
+		})
+	}
+}
+
+func TestHumanQuestionAllowanceTriageEligibility(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, key string
+		answered  bool
+	}{
+		{name: "ordinary unanswered question", key: "target"},
+		{name: "migrated unanswered question", key: "migration:target"},
+		{name: "answered question permits triage", key: "target", answered: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			issue := dispatchTestIssue("2995", "In Progress")
+			tracker := &questionTracker{Connector: memory.New(memory.Config{Issues: []connector.Issue{issue}})}
+			o := newWorkAttemptRecoveryOrchestratorWithConnector(t, db, nil, tracker)
+			o.cfg.Claiming.Enabled = false
+			o.cfg.AutoPromote.Enabled = true
+			o.cfg.AutoPromote.SourceState = issue.State
+			o.supervisor = newTestSupervisor(t, attemptTriageRunner{}, o.cfg)
+			o.runResults = make(chan runner.Completion, 1)
+			now := time.Now()
+			for i := range 3 {
+				id := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now.Add(-time.Duration(10-i)*time.Minute))
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: "runner_error"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			allowance, err := o.issueAttemptAllowance(t.Context(), issue)
+			if err != nil || !allowance.exhausted() {
+				t.Fatalf("allowance = %+v, %v", allowance, err)
+			}
+			request := RunRequest{Issue: issue}
+			o.attachHumanQuestionTool(&request)
+			args, err := json.Marshal(map[string]string{"key": tt.key, "question": "Which target?"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "ask_human_question", Arguments: args})
+			if err != nil || !result.Success {
+				t.Fatalf("question = %+v, %v", result, err)
+			}
+			if tt.answered {
+				at := tracker.comments[0].CreatedAt.Add(time.Minute)
+				tracker.comments = append(tracker.comments, connector.IssueComment{ID: "reply", Body: "Use target A", CreatedAt: &at, AuthorAuthorized: true})
+			}
+			state := newState(o.cfg)
+			o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			_, running := state.Running[issue.ID]
+			if running != tt.answered {
+				t.Fatalf("triage running = %v, want %v", running, tt.answered)
 			}
 		})
 	}
