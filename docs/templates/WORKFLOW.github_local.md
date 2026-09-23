@@ -13,8 +13,10 @@ records in Detent; do not add `tracker.github_status_source`; do not write GitHu
 - `<required-stage-category>`: local command `<project-command>`; CI check `<project-check-name>`.
 
 Whenever you touch CI configuration or perform a review, verify every declared
-stage exists and passes on the current pull request head. Do not rely on Detent
-or `detent doctor` to infer required stages or inspect CI configuration.
+stage exists and runs its mapped tool. Require passing PR-head checks when jobs
+run there. For merge-group-only CI, report expected PR skips and require passing
+merge-group checks before merge. Do not rely on Detent or `detent doctor` to
+infer required stages or inspect CI configuration.
 
 ## Validation
 

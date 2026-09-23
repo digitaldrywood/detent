@@ -902,7 +902,9 @@ func TestDocsDeclareProjectSpecificCIQualityGates(t *testing.T) {
 	for _, want := range []string{
 		"required CI stage categories",
 		"project-specific commands and check names",
-		"every required stage must exist and pass on the current pull request head",
+		"every required stage and mapped tool must exist",
+		"when jobs run there",
+		"require passing merge-group checks before merge",
 	} {
 		assertContainsWords(t, readme, want)
 	}
@@ -923,7 +925,8 @@ func TestDocsDeclareProjectSpecificCIQualityGates(t *testing.T) {
 				"<project-command>",
 				"<project-check-name>",
 				"Whenever you touch CI configuration or perform a review",
-				"passes on the current pull request head",
+				"Require passing PR-head checks when jobs run there",
+				"For merge-group-only CI, report expected PR skips and require passing merge-group checks before merge",
 				"Do not rely on Detent or `detent doctor` to infer required stages or inspect CI configuration",
 			} {
 				assertContainsWords(t, template, want)
