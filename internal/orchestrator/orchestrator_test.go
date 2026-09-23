@@ -2072,8 +2072,10 @@ func TestRunKeepsRefreshReadyWhenTerminalCleanupFetchFailsAfterSnapshot(t *testi
 	}
 	tracker.waitForCleanupAttempts(t, 1)
 
+	// The cleanup fetch starts asynchronously; wait for its result before requesting another sweep.
 	initialState := waitForState(t, orch, func(state orchestrator.State) bool {
 		return !state.LastRefreshAt.IsZero() &&
+			!state.LastWorkspaceCleanupAt.IsZero() &&
 			state.Snapshot(time.Now()).Refresh.ReadinessStatus() == telemetry.RefreshStatusReady
 	})
 	if initialState.LastRefreshError != "" || !initialState.LastRefreshErrorAt.IsZero() {
