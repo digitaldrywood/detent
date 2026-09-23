@@ -193,6 +193,7 @@ type RunTurnRequest struct {
 	ReasoningEffort         string
 	TurnTimeout             time.Duration
 	StallTimeout            time.Duration
+	TerminalWaitTimeout     time.Duration
 	DynamicTools            []DynamicTool
 	ToolHandler             DynamicToolHandler
 	RequireSubscriptionAuth bool
@@ -828,6 +829,11 @@ func (s *AppServer) startThread(
 		"cwd": req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	if req.TerminalWaitTimeout > 0 {
+		params["config"] = map[string]any{
+			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
+		}
+	}
 	if req.DeveloperInstructions != "" {
 		params["developerInstructions"] = req.DeveloperInstructions
 	}
@@ -896,6 +902,11 @@ func (s *AppServer) resumeThread(
 		"cwd":      req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	if req.TerminalWaitTimeout > 0 {
+		params["config"] = map[string]any{
+			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
+		}
+	}
 	if req.DeveloperInstructions != "" {
 		params["developerInstructions"] = req.DeveloperInstructions
 	}

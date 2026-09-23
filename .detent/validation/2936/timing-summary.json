@@ -1,0 +1,42 @@
+{
+  "source": "local Detent database joined by provider_thread_id to local Codex transcripts",
+  "window": "2026-09-15T00:00:00Z <= session start < 2026-09-23T00:00:00Z",
+  "sessions": {
+    "n": 332,
+    "mean_min": 19.71,
+    "p50_min": 14.7,
+    "p90_min": 44.62,
+    "p95_min": 65.72,
+    "p99_min": 151.93,
+    "max_min": 225.63
+  },
+  "matched_transcripts": 298,
+  "execution_records": 8345,
+  "logical_command_groups": 8240,
+  "gate_elapsed": {
+    "n": 1220,
+    "mean_min": 3.2,
+    "p50_min": 0.02,
+    "p90_min": 10.65,
+    "p95_min": 17.08,
+    "p99_min": 44.44,
+    "max_min": 75.98
+  },
+  "gates_over_30min": 27,
+  "gates_over_60min": 9,
+  "method": "Consecutive identical command executions grouped within each transcript; elapsed interval from first start to last completion. Includes polling gaps; repeated consecutive identical launches can be conflated.",
+  "substantive_gate_elapsed": {
+    "n": 285,
+    "mean_min": 13.64,
+    "p50_min": 9.06,
+    "p90_min": 29.23,
+    "p95_min": 42.87,
+    "p99_min": 69.85,
+    "max_min": 75.98,
+    "over_30min": 27,
+    "over_60min": 9
+  },
+  "substantive_filter": "Only grouped command intervals >=30 seconds containing make check; excludes short probes and immediate failures. Proxy, not exact gate completion measurement.",
+  "latest_session_start": "2026-09-22T19:37:24Z",
+  "selected_wait_minutes": 50
+}

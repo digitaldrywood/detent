@@ -327,6 +327,16 @@ project referencing the unavailable tracker. `TestStartupInfrastructureFailureRe
 and `TestWorkflowLoadFailureClassification` preserve the infrastructure boundary
 (INV-2); no retry or recovery path is added.
 
+Codex workers use the backend's existing blocking terminal wait with a 50-minute
+cap (#2936), replacing the instruction to return to the model every 55 seconds.
+New and resumed worker threads receive the same native timeout override. The
+worker's shorter stream-stall timeout is removed in favor of the existing stream
+read timeout; runner turn/session deadlines and cancellation remain authoritative.
+Tool-only operator sessions retain their configured stall timeout. This adds no
+Detent configuration key, polling loop, watchdog, or recovery path.
+`TestAgentBackendNativeCommandWait` covers quiet commands, resume, supplemental
+tools, operator isolation, configured stream deadlines, and cancellation.
+
 Operational completion (#2911) reuses the existing terminal issue closer and
 `operational_completion` reason. Closure precedes terminal lane publication so
 close failures leave the prior lane retryable; the existing completion comment
