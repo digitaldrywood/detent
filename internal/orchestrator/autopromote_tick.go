@@ -149,7 +149,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
-		if rework && !completedActiveIssueReadyForReview(issue, true, false) {
+		if o.operatorRejectedHead(ctx, issue) || rework && !completedActiveIssueReadyForReview(issue, true, false) {
 			continue
 		}
 		summary := AutoPromoteSummaryFromIssue(issue)

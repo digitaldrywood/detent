@@ -4,6 +4,8 @@
       "TestBehaviorEvidence"
     ],
     "./internal/orchestrator": [
+      "TestOperatorRejectionPromotion",
+      "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
       "TestUnfinishedCompletionClassification",
       "TestCompletionRebaseProgress",

@@ -100,6 +100,11 @@ func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, requ
 		if reason == "" {
 			reason = "operator_move"
 		}
+		var err error
+		issue, err = owner.hydrateOperatorRework(ctx, issue, request.ToState)
+		if err != nil {
+			return OperatorMoveResult{err: err}
+		}
 		metadata := workflowLaneMetadata{StateFieldID: request.StateFieldID, StateFieldValue: request.StateFieldValue, Provenance: request.Attribution}
 		if err := owner.updateIssueStateByIDStrictWithMetadata(ctx, ownerState, issue.ID, issue, request.ToState, at, reason, metadata); err != nil {
 			return OperatorMoveResult{err: err}

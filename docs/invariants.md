@@ -57,6 +57,18 @@ and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
 appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
 
+An operator rejects a reviewed PR by moving its card to Rework, including through
+the dashboard. The existing lane history records the PR identity and hydrated
+head. Both completion and auto-promotion consume this durable rejection evidence:
+the same head cannot re-enter review after a restart or a successful worker report,
+while a different head follows the normal gates. Rejected work remains eligible
+for a repair worker instead of waiting on its old completion. Automated Rework
+routing does not imply an operator rejection. This consolidates review eligibility
+with the lane ledger without adding a label, reason code, or configuration key.
+`TestOperatorRejectionPromotion` and `TestOperatorRejectionRepairDispatch` cover
+unchanged and new heads, drafts, dashboard and observed moves, and repair dispatch
+(#2943).
+
 Human Review is entered only for PR-review outcomes or an explicit opt-out of
 an automated gate (including a configured `human_review` gate). Non-review
 human decisions, including attempt-allowance exhaustion and Workpad blockers,
@@ -311,6 +323,11 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Operator rejection (#2943) consolidates promotion eligibility with existing lane
+history (INV-1). The reviewed `applyOperatorMove` fingerprint changes only to
+hydrate the PR before recording a Rework move. Its dynamic reason selection and
+lane writer remain unchanged; no new reason or recovery mechanism is introduced.
 
 Startup workflow definition/validation failures use the project manager's existing terminal
 unavailable-project reporting (#2969), including loads performed by the runner

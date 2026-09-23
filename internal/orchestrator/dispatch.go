@@ -30,6 +30,9 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
+	planner.operatorRejectedHead = func(issue connector.Issue) bool {
+		return o.operatorRejectedHead(ctx, issue)
+	}
 	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) (recordedBlockerEvaluation, error) {
 		issue, err := o.refreshDependencyAutoUnblockComments(ctx, issue)
 		if err != nil {
