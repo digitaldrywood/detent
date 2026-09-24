@@ -95,8 +95,7 @@ func (r *graphQLAttributionRegistry) record(ctx context.Context, token, project,
 	if !snapshot.ResetAt.After(time.Now().Add(-5*time.Second)) || cost < 0 {
 		return
 	}
-	digest := sha256.Sum256([]byte(token))
-	fingerprint := "github-graphql:" + hex.EncodeToString(digest[:8])
+	fingerprint := graphQLCredentialFingerprint(token, client)
 	if project == "" {
 		project = "unknown"
 	}
@@ -180,8 +179,7 @@ func (r *graphQLAttributionRegistry) probe(ctx context.Context, fingerprint stri
 	if err != nil {
 		return
 	}
-	digest := sha256.Sum256([]byte(strings.TrimSpace(token)))
-	if "github-graphql:"+hex.EncodeToString(digest[:8]) != fingerprint {
+	if graphQLCredentialFingerprint(token, client) != fingerprint {
 		return
 	}
 	var response struct {
@@ -204,6 +202,21 @@ func (r *graphQLAttributionRegistry) probe(ctx context.Context, fingerprint stri
 		current.hasProviderUsed = true
 	}
 	r.mu.Unlock()
+}
+
+func graphQLCredentialFingerprint(token string, client *Client) string {
+	identity := strings.TrimSpace(token)
+	if client != nil {
+		// Installation identity survives token rotation within a rate-limit window.
+		if source, ok := client.tokenSource.(CredentialIdentitySource); ok {
+			if stable := strings.TrimSpace(source.CredentialIdentity(token)); stable != "" {
+				identity = stable
+			}
+		}
+		identity = client.restEndpoint + "\x00" + identity
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return "github-graphql:" + hex.EncodeToString(digest[:8])
 }
 
 func (r *graphQLAttributionRegistry) finish(fingerprint string, resetAt time.Time) {

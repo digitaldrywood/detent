@@ -2,6 +2,7 @@ package github
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,21 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
+
+type rotatingAttributionTokenSource struct {
+	token atomic.Value
+}
+
+func (s *rotatingAttributionTokenSource) Token(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.token.Load().(string), nil
+}
+
+func (*rotatingAttributionTokenSource) CredentialIdentity(string) string {
+	return "github-app-installation:4242"
+}
 
 func TestGraphQLAttributionCombinesProjectsByCredentialAndReconciles(t *testing.T) {
 	t.Parallel()
@@ -135,6 +151,65 @@ func TestGraphQLAttributionReconcilesWithRateLimitEndpoint(t *testing.T) {
 	}
 	if line.RateLimitSource != "rest" || line.RateLimitUsedDelta != 8 || line.UnattributedCost != 6 {
 		t.Fatalf("reconciliation = %#v", line)
+	}
+}
+
+func TestGraphQLAttributionKeepsOneWindowAcrossInstallationTokenRotation(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rate_limit" || r.Header.Get("Authorization") != "Bearer rotated-secret" {
+			t.Errorf("probe path = %q, authorization = %q", r.URL.Path, r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"resources": map[string]any{"graphql": map[string]any{"used": 108, "reset": reset.Unix()}}})
+	}))
+	defer server.Close()
+	source := &rotatingAttributionTokenSource{}
+	source.token.Store("original-secret")
+	client, err := NewClient(ClientConfig{Endpoint: server.URL + "/graphql", Project: "project", TokenSource: source, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	registry := &graphQLAttributionRegistry{}
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	registry.record(t.Context(), "original-secret", "project", "candidate_issues", 2, graphQLCostSnapshot{Used: 102, Cost: 2, ResetAt: reset, Measured: true}, logger, client)
+	source.token.Store("rotated-secret")
+	registry.record(t.Context(), "rotated-secret", "project", "merge_queue", 2, graphQLCostSnapshot{Used: 104, Cost: 2, ResetAt: reset, Measured: true}, logger, client)
+	registry.mu.Lock()
+	windowCount := len(registry.windows)
+	if windowCount != 1 {
+		registry.mu.Unlock()
+		t.Fatalf("attribution windows = %d, want 1", windowCount)
+	}
+	var fingerprint string
+	for fingerprint = range registry.windows {
+		break
+	}
+	registry.mu.Unlock()
+	registry.probe(t.Context(), fingerprint, reset)
+	registry.finish(fingerprint, reset)
+	if requests.Load() != 1 {
+		t.Fatalf("/rate_limit requests = %d, want 1", requests.Load())
+	}
+	if strings.Count(output.String(), "github graphql hourly attribution") != 1 || strings.Contains(output.String(), "secret") || strings.Contains(output.String(), "github-app-installation") {
+		t.Fatalf("attribution log = %q", output.String())
+	}
+	var line struct {
+		QueryCount         int64  `json:"query_count"`
+		AttributedCost     int64  `json:"attributed_cost"`
+		RateLimitSource    string `json:"rate_limit_source"`
+		RateLimitUsedDelta int64  `json:"rate_limit_used_delta"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &line); err != nil {
+		t.Fatal(err)
+	}
+	if line.QueryCount != 2 || line.AttributedCost != 4 || line.RateLimitSource != "rest" || line.RateLimitUsedDelta != 8 {
+		t.Fatalf("attribution = %#v", line)
 	}
 }
 
