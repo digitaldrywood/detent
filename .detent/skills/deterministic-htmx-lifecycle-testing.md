@@ -1,5 +1,7 @@
 ---
 name: deterministic-htmx-lifecycle-testing
+aliases:
+  - native-sse-cleanup-verification
 description: "Verify HTMX lifecycle tests and SSE cleanup without racing DOM swaps or leaving idle streams."
 when_to_use: "Use when a focused HTMX test passes but a serial browser suite exposes duplicate nodes, settling classes, or assertions that race a synthetic lifecycle event. Also use for native sse cleanup verification."
 ---

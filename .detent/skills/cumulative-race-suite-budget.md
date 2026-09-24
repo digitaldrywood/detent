@@ -1,5 +1,7 @@
 ---
 name: cumulative-race-suite-budget
+aliases:
+  - same-invocation-race-coverage
 description: "Diagnose race-suite timeouts and combine required race and coverage evidence without repeating expensive fixtures."
 when_to_use: "Use when an unchanged Go package alternates between passing race tests and hitting its package timeout while many subtests wait for parallel slots. Also use for same invocation race coverage."
 ---

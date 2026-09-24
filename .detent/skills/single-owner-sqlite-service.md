@@ -1,5 +1,7 @@
 ---
 name: single-owner-sqlite-service
+aliases:
+  - sqlite-text-time-ordering
 description: "Operate a sole-owner SQLite service and preserve chronological ordering for TEXT timestamps."
 when_to_use: "Use when adding or changing a long-running Detent service whose SQLite file must never be shared across service processes or opened remotely over NFS or SMB. Also use for sqlite text time ordering."
 ---

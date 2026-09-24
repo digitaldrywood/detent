@@ -1,5 +1,8 @@
 ---
 name: worker-process-lifecycle
+aliases:
+  - subprocess-lifecycle-fixture-testing
+  - subprocess-pressure-tracing
 description: "Diagnose worker process ownership, subprocess fixture lifecycle, and command fan-out under pressure."
 when_to_use: "Use when changing Codex or Claude process launch, completion, cancellation, shutdown, startup recovery, retry scheduling, or session persistence. Also use for subprocess lifecycle fixture testing, subprocess pressure tracing."
 ---

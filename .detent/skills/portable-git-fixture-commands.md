@@ -1,5 +1,8 @@
 ---
 name: portable-git-fixture-commands
+aliases:
+  - inherited-git-fixture-isolation
+  - windows-shell-command-boundary
 description: "Isolate Git fixtures from inherited environment and preserve command arguments across POSIX and Windows shells."
 when_to_use: "Use when a shell-driven Git fixture passes on POSIX but Windows reports a quoted directory argument as invalid. Also use for inherited git fixture isolation, windows shell command boundary."
 ---

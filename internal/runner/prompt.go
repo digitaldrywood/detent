@@ -621,7 +621,11 @@ func AvailableSkillsBlock(skillList []skills.Skill) string {
 
 	lines := make([]string, 0, len(skillList))
 	for _, skill := range skillList {
-		lines = append(lines, "- "+skill.Name)
+		line := "- " + skill.Name
+		if len(skill.Aliases) > 0 {
+			line += " (includes: " + strings.Join(skill.Aliases, ", ") + ")"
+		}
+		lines = append(lines, line)
 	}
 
 	return "## Available skills\n\n" + strings.Join(lines, "\n")

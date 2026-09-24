@@ -1,5 +1,7 @@
 ---
 name: workspace-process-ownership
+aliases:
+  - supervised-lsof-scan-overhead
 description: "Diagnose workspace process ownership and macOS lsof scan overhead without harming unrelated processes."
 when_to_use: "Use when workspace cleanup counts vary under concurrent load or host services disappear while a workspace is reaped. Also use for supervised lsof scan overhead."
 ---

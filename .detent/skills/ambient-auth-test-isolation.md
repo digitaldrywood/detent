@@ -1,5 +1,10 @@
 ---
 name: ambient-auth-test-isolation
+aliases:
+  - ambient-cleanup-test-isolation
+  - deterministic-http-transport-cleanup-testing
+  - shared-registry-fixture-isolation
+  - wildcard-loopback-test-isolation
 description: "Isolate HTTP and filesystem test fixtures from ambient credentials, cleanup, shared transports, registries, and loopback conflicts."
 when_to_use: "Use when local HTTP tests fail only inside an authenticated agent or CI environment, especially when a healthy listener appears unready or handlers receive an unexpected bearer token. Also use for wildcard loopback test isolation, shared registry fixture isolation, deterministic http transport cleanup testing, ambient cleanup test isolation."
 ---

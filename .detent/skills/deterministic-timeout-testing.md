@@ -1,5 +1,7 @@
 ---
 name: deterministic-timeout-testing
+aliases:
+  - deterministic-debounce-testing
 description: "Test timeout and debounce behavior with controlled timers and explicit event delivery."
 when_to_use: "Use when a test sleeps for a timeout, expects a timer to fire within a margin, or asserts elapsed time under hosted-runner load. Also use for deterministic debounce testing."
 ---

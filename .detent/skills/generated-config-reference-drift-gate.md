@@ -1,5 +1,7 @@
 ---
 name: generated-config-reference-drift-gate
+aliases:
+  - refresh-generated-config-reference
 description: "Generate and refresh Detent configuration references while verifying source, defaults, validation, and CI drift."
 when_to_use: "Use when a Go project's YAML configuration surface is too large for a hand-maintained reference and new fields, defaults, or validation rules must fail CI if documentation drifts. Also use for refresh generated config reference."
 ---

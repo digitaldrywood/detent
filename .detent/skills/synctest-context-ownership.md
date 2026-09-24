@@ -1,5 +1,7 @@
 ---
 name: synctest-context-ownership
+aliases:
+  - synctest-mutex-join-testing
 description: "Diagnose virtual-time hangs caused by context ownership or mutex contention during cancellation."
 when_to_use: "Use when a testing/synctest retry or timeout test stops advancing fake time and a goroutine dump shows a select without the durable-blocking annotation. Also use for synctest mutex join testing."
 ---

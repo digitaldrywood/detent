@@ -1,5 +1,7 @@
 ---
 name: git-command-postcondition-fault-injection
+aliases:
+  - eager-file-identity-snapshots
 description: "Test Git postconditions and capture stable file identity across filesystem replacements."
 when_to_use: "Use when a Git subprocess intermittently leaves partial state or reports success while a required repository or worktree invariant is false. Also use for eager file identity snapshots."
 ---

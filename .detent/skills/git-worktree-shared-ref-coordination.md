@@ -1,5 +1,8 @@
 ---
 name: git-worktree-shared-ref-coordination
+aliases:
+  - git-worktree-removal-recovery
+  - serialize-git-worktree-creation
 description: "Coordinate shared Git refs, worktree creation, and partial removal across concurrent worktrees."
 when_to_use: "Use when parallel workspace hooks or merge preparation fail with cannot-lock-ref or expected-value mismatches under a shared Git common directory. Also use for git worktree removal recovery, serialize git worktree creation."
 ---

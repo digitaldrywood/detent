@@ -1,5 +1,7 @@
 ---
 name: join-canceled-startup-rollback
+aliases:
+  - startup-failure-cleanup-attribution
 description: "Roll back canceled startup and attribute subprocess startup failures separately from cleanup errors."
 when_to_use: "Use when shutdown returns while startup work still writes files, uses a closed store, or recreates temporary directories after cancellation. Also use for startup failure cleanup attribution."
 ---
