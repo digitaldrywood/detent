@@ -578,15 +578,17 @@ func TestApplyAutoPromoteDecisionArtifactReworkTicks(t *testing.T) {
 func TestAutoPromoteReadyPullRequestRepairs(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, lane, ci, prState                      string
-		threads, draft, running, optout, unavailable bool
-		want                                         AutoPromoteReason
+		name, lane, ci, prState                                    string
+		threads, draft, running, finalAttempt, optout, unavailable bool
+		want                                                       AutoPromoteReason
 	}{
 		{name: "human review threads", lane: "Human Review", threads: true, want: AutoPromoteReasonUnresolvedReviewThreads},
 		{name: "in progress threads", lane: "In Progress", threads: true, want: AutoPromoteReasonUnresolvedReviewThreads},
 		{name: "running in progress threads", lane: "In Progress", threads: true, running: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "final running attempt threads", lane: "In Progress", threads: true, running: true, finalAttempt: true, want: AutoPromoteReasonUnresolvedReviewThreads},
 		{name: "human review failed check", lane: "Human Review", ci: "failure", want: AutoPromoteReasonCINotGreen},
 		{name: "in progress failed check", lane: "In Progress", ci: "failure", want: AutoPromoteReasonCINotGreen},
+		{name: "final running attempt failed check", lane: "In Progress", ci: "failure", running: true, finalAttempt: true, want: AutoPromoteReasonCINotGreen},
 		{name: "draft threads", lane: "In Progress", threads: true, draft: true},
 		{name: "draft failed check", lane: "In Progress", ci: "failure", draft: true},
 		{name: "unfinished green PR", lane: "In Progress", ci: "success"},
@@ -627,6 +629,15 @@ func TestAutoPromoteReadyPullRequestRepairs(t *testing.T) {
 			}
 			tracker := &autoPromoteTickConnector{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			if tt.finalAttempt {
+				orch.workAttempts = &autoPromoteActiveAttemptStore{
+					recordingWorkAttemptStore: &recordingWorkAttemptStore{history: []store.WorkAttempt{
+						{IssueID: issue.ID, WorkerType: "agent", Lane: "In Progress", StartedAt: now.Add(-2 * time.Hour)},
+						{IssueID: issue.ID, WorkerType: "agent", Lane: "In Progress", StartedAt: now.Add(-time.Hour)},
+					}},
+					active: []store.WorkAttempt{{IssueID: issue.ID, WorkerType: "agent", Lane: "In Progress", StartedAt: now.Add(-time.Minute)}},
+				}
+			}
 			result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
 			if tt.want == "" {
 				if len(tracker.updates) != 0 || len(result.transitioned) != 0 {
@@ -650,6 +661,35 @@ func TestAutoPromoteReadyPullRequestRepairs(t *testing.T) {
 				t.Fatal("transition missing from result")
 			}
 		})
+	}
+}
+
+type autoPromoteActiveAttemptStore struct {
+	*recordingWorkAttemptStore
+	active []store.WorkAttempt
+}
+
+func (s *autoPromoteActiveAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	return append([]store.WorkAttempt(nil), s.active...), nil
+}
+
+func TestAutoPromoteConfiguredInProgressSourcePromotesReadyPullRequest(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("configured-source", nil, &connector.PullRequest{
+		Number: 2974, State: "OPEN", CIStatus: "success", MergeableState: "clean", CodexReviewState: "COMMENTED",
+	})
+	issue.State = "In Progress"
+	cfg := normalizeConfig(Config{
+		AutoPromote:  AutoPromoteConfig{Enabled: true, SourceState: "In Progress", Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}},
+		ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{}
+	orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+	if want := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(tracker.updates, want) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
 	}
 }
 

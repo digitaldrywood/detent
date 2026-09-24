@@ -654,11 +654,13 @@ while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers th
 no new lane reason, allowance reset, or recovery mechanism is introduced.
 Ready In Progress PRs also enter the existing repair evaluation before worker
 completion (#2976). Unresolved review threads and failing CI reuse the existing
-Rework decisions and audit comments, including while a worker is running.
+Rework decisions and audit comments, including during the final running attempt.
+Configured source, pass, and rework lanes retain their normal promotion behavior.
 This consolidates repair routing with Human Review; it does not authorize
 promotion of unfinished work or routing drafts. `TestAutoPromoteReadyPullRequestRepairs`
-covers both lanes, active workers, draft exclusion, unfinished clean heads,
-pending checks, closed PRs, opt-out labels, and unavailable evidence.
+and `TestAutoPromoteConfiguredInProgressSourcePromotesReadyPullRequest` cover
+both lanes, active workers, configured source lanes, draft exclusion, unfinished
+clean heads, pending checks, closed PRs, opt-out labels, and unavailable evidence.
 Idle Rework PRs enter the existing promotion evaluation without a worker completion
 record (#2688). Promotion reuses the merge worker readiness predicate and live PR
 hydration; unresolved threads and known audit failures still prevent promotion.

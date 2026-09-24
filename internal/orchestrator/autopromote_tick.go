@@ -131,17 +131,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if allowanceErr != nil {
 			continue
 		}
-		if allowance.exhausted() && o.cfg.DeliverableKind != "artifact" {
-			if _, running := state.Running[issueID]; running {
-				continue
-			}
-			if allowance.Triage != nil {
-				if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
-					o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
-				}
-			} else if !mergeWorkerIssue(issue) {
-				o.dispatchIssue(ctx, state, issue, 1, now, "")
-			}
+		allowanceExhausted := allowance.exhausted() && o.cfg.DeliverableKind != "artifact"
+		if allowanceExhausted && !repairOnly {
+			o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
 			continue
 		}
 
@@ -168,6 +160,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if repairOnly && (decision.Action != AutoPromoteActionRework ||
 			(decision.Reason != AutoPromoteReasonUnresolvedReviewThreads && decision.Reason != AutoPromoteReasonCINotGreen)) {
+			if allowanceExhausted {
+				o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
+			}
 			continue
 		}
 		if mergeWorkerIssue(issue) {
@@ -258,6 +253,21 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		return autoPromoteTickResult{}
 	}
 	return result
+}
+
+func (o *Orchestrator) handleExhaustedAutoPromoteAllowance(
+	ctx context.Context, state *State, issue connector.Issue, allowance attemptAllowance, now time.Time,
+) {
+	if _, running := state.Running[strings.TrimSpace(issue.ID)]; running {
+		return
+	}
+	if allowance.Triage != nil {
+		if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
+			o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
+		}
+	} else if !mergeWorkerIssue(issue) {
+		o.dispatchIssue(ctx, state, issue, 1, now, "")
+	}
 }
 
 func autoPromoteCompletedFinalState(state *State, issueID string) string {
@@ -353,7 +363,10 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 }
 
 func autoPromoteInProgressRepairIssue(issue connector.Issue, cfg AutoPromoteConfig) bool {
-	return gateRequiresPullRequest(cfg.Gate) && normalizeState(issue.State) == "in progress" &&
+	state := normalizeState(issue.State)
+	return gateRequiresPullRequest(cfg.Gate) && state == "in progress" &&
+		state != normalizeState(cfg.SourceState) && state != normalizeState(cfg.PassState) &&
+		state != normalizeState(cfg.ReworkState) &&
 		issueHasOpenPullRequest(issue) && !issue.PullRequest.Draft
 }
 
