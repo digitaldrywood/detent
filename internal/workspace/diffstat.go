@@ -66,13 +66,21 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 	if err != nil {
 		return err
 	}
-	branch := strings.TrimSpace(normalized.Branch)
+	branch := strings.TrimSpace(issue.PullRequestBranch)
 	if branch == "" {
+		branch = strings.TrimSpace(normalized.Branch)
+	}
+	if branch == "" && issue.PullRequestNumber == 0 {
 		return errors.New("review branch is empty")
 	}
 	remoteRef := "refs/remotes/origin/" + branch
-	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-write-fetch-head", "origin", "+refs/heads/"+branch+":"+remoteRef); err != nil {
-		return fmt.Errorf("fetch review branch: %w", err)
+	sourceRef := "refs/heads/" + branch
+	if issue.PullRequestNumber > 0 {
+		remoteRef = fmt.Sprintf("refs/remotes/origin/pull/%d/head", issue.PullRequestNumber)
+		sourceRef = fmt.Sprintf("refs/pull/%d/head", issue.PullRequestNumber)
+	}
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-write-fetch-head", "origin", "+"+sourceRef+":"+remoteRef); err != nil {
+		return fmt.Errorf("fetch review head: %w", err)
 	}
 	remoteHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", remoteRef)
 	if err != nil {

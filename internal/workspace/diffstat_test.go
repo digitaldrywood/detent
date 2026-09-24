@@ -133,6 +133,41 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 	}
 }
 
+func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
+	source := initSourceRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, t.TempDir(), "clone", "--bare", source, remote)
+	runGit(t, source, "remote", "add", "origin", remote)
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "review-pr-ref"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := filepath.Join(t.TempDir(), "writer")
+	runGit(t, t.TempDir(), "clone", remote, writer)
+	if err := os.WriteFile(filepath.Join(writer, "review.txt"), []byte("PR head\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, writer, "add", "review.txt")
+	runGit(t, writer, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "PR head")
+	wanted := strings.TrimSpace(runGit(t, writer, "rev-parse", "HEAD"))
+	runGit(t, writer, "push", "origin", "HEAD:refs/pull/119/head")
+	issue.PullRequestHeadSHA = wanted
+	issue.PullRequestNumber = 119
+	issue.PullRequestBranch = "human-authored-branch"
+	if err := backend.SeedReviewHead(t.Context(), info, issue); err != nil {
+		t.Fatal(err)
+	}
+	head, err := backend.Head(t.Context(), info, issue)
+	if err != nil || strings.TrimSpace(head) != wanted {
+		t.Fatalf("HEAD = %q, error = %v; want %q", head, err, wanted)
+	}
+}
+
 func TestLocalGitDiffStat(t *testing.T) {
 	t.Parallel()
 

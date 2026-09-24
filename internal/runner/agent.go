@@ -48,8 +48,9 @@ const (
 )
 
 var (
-	ErrMissingWorkspace    = errors.New("runner workspace backend is required")
-	ErrMissingAgentBackend = errors.New("runner agent backend is required")
+	ErrMissingWorkspace        = errors.New("runner workspace backend is required")
+	ErrMissingAgentBackend     = errors.New("runner agent backend is required")
+	ErrValidatorInfrastructure = errors.New("validator infrastructure failure")
 )
 
 type SessionStore interface {
@@ -2962,8 +2963,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	)
 	if seeder, ok := r.workspace.(workspace.ReviewHeadSeeder); ok {
 		if err := seeder.SeedReviewHead(ctx, info, workspaceIssue); err != nil {
-			return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
-				Summary: "validation head mismatch: " + err.Error()}, nil
+			return gate.ValidatorResult{}, fmt.Errorf("%w: seed validation review head: %w", ErrValidatorInfrastructure, err)
 		}
 	}
 
@@ -2984,7 +2984,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
 			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
 			if err != nil {
-				return gate.ValidatorResult{}, fmt.Errorf("read validation workspace head: %w", err)
+				return gate.ValidatorResult{}, fmt.Errorf("%w: read validation workspace head: %w", ErrValidatorInfrastructure, err)
 			}
 			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
 				return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
@@ -3229,7 +3229,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
 			checkedOut, headErr := provider.Head(ctx, info, workspaceIssue)
 			if headErr != nil {
-				return gate.ValidatorResult{}, fmt.Errorf("read validation workspace head: %w", headErr)
+				return gate.ValidatorResult{}, errors.Join(
+					fmt.Errorf("%w: read validation workspace head: %w", ErrValidatorInfrastructure, headErr),
+					r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
+				)
 			}
 			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
 				validation = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
@@ -4234,7 +4237,23 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		BaseRef:            baseRef,
 		ProgressBaseRef:    progressBaseRef,
 		PullRequestHeadSHA: pullRequestHeadSHA(issue.PullRequest),
+		PullRequestNumber:  workspacePullRequestNumber(issue.PullRequest),
+		PullRequestBranch:  pullRequestBranch(issue.PullRequest),
 	}
+}
+
+func pullRequestBranch(pr *connector.PullRequest) string {
+	if pr == nil {
+		return ""
+	}
+	return strings.TrimSpace(pr.BranchName)
+}
+
+func workspacePullRequestNumber(pr *connector.PullRequest) int {
+	if pr == nil {
+		return 0
+	}
+	return pr.Number
 }
 
 func pullRequestHeadSHA(pullRequest *connector.PullRequest) string {

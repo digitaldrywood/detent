@@ -2593,6 +2593,13 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		if err != nil {
 			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
 			delete(o.validatorRuns, identity.Key)
+			if errors.Is(err, runpkg.ErrValidatorInfrastructure) {
+				o.validatorMu.Unlock()
+				if o.logger != nil {
+					o.logger.Error("validator infrastructure failure", "issue_id", identity.IssueID, "head_sha", identity.HeadSHA, "error", err)
+				}
+				return
+			}
 			if capacityErr, ok := backendcapacity.As(err); ok {
 				if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 					failure := o.validatorFailures[identity.Key]
@@ -2686,8 +2693,13 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 						Summary: fmt.Sprintf("validation head mismatch: reviewed %s, current PR %s", identity.HeadSHA, currentHead)}
 				}
 			} else {
-				result = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
-					Summary: "validation head mismatch: current PR head could not be verified"}
+				// The authoritative head is unavailable. Leave the verdict absent so
+				// the existing validation path can try again on the next tick.
+				o.validatorMu.Lock()
+				o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+				delete(o.validatorRuns, identity.Key)
+				o.validatorMu.Unlock()
+				return
 			}
 		}
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
