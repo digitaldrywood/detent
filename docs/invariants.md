@@ -304,6 +304,9 @@ the condition's attempt history, so a repeated failure after expiry increases
 backoff. Missing candidate batches preserve monitor carrier retries; only a
 dispatchable carrier reserves a probe and consumes an attempt. Durable attempt recovery restores both the
 condition and its carrier retry, and a successful budget observation clears it.
+Completion without a budget observation settles an in-flight canary and schedules
+the next probe from its existing bounded backoff. A budget observation in the
+completion result can clear the condition before that settlement.
 `TestWorkerGitHubClassificationWaitsForSharedCooldown`,
 `TestWorkerGitHubMonitorCarrierEligibility`, and
 `TestDispatchableWorkerGitHubMonitorCarrier` cover cooldown, expiry, and dispatch

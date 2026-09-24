@@ -436,6 +436,50 @@ func TestWorkerGitHubMonitorCanaryReleasedByEarlierCompletionHandlers(t *testing
 	}
 }
 
+func TestWorkerGitHubMonitorCompletedCanaryGetsAnotherProbe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 24, 6, 10, 52, 0, time.UTC)
+	credential := "github-rest:shared-worker"
+	issue := dispatchTestIssue("issue-monitor-canary", "In Progress")
+	for _, tt := range []struct {
+		name       string
+		rateLimits *telemetry.RateLimits
+		recovered  bool
+	}{
+		{name: "no observation schedules another canary"},
+		{name: "completion observation recovers", recovered: true, rateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool, Remaining: 4340}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}})
+			orch := &Orchestrator{cfg: cfg, connector: &implementProgressConnector{}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}
+			state := newState(cfg)
+			state.GitHubMonitors[credential] = GitHubMonitor{CredentialIdentity: credential, ProbeIssueID: issue.ID, ProbeAttempts: 1, LastProbeResult: "in_progress"}
+			state.Running[issue.ID] = Running{Issue: issue, GitHubCredential: credential, StartedAt: now}
+			completedAt := now.Add(5 * time.Minute)
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID, CompletedAt: completedAt,
+				Request: runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement},
+				Result:  runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, TurnStarted: true, RateLimits: tt.rateLimits},
+			})
+			condition, active := state.GitHubMonitors[credential]
+			if tt.recovered {
+				if active {
+					t.Fatalf("condition = %#v, want recovered credential", condition)
+				}
+				return
+			}
+			wantNext := completedAt.Add(backendCapacityProbeDelayForAttempt(1))
+			if !active || condition.ProbeIssueID != "" || condition.LastProbeResult != "deferred" || !condition.NextProbeAt.Equal(wantNext) {
+				t.Fatalf("condition = %#v, want fresh bounded probe at %s", condition, wantNext)
+			}
+			if workerGitHubMonitorBlocks(&state, "other", Retry{}, wantNext) {
+				t.Fatal("later scheduler pass retained expired credential hold")
+			}
+		})
+	}
+}
+
 func TestWorkerGitHubMonitorRawSentinelUsesRecoverableFallbackScope(t *testing.T) {
 	t.Parallel()
 

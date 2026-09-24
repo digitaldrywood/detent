@@ -161,8 +161,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	running.ForgeWriteCompleted = event.Result.ForgeWriteCompleted
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		o.recoverWorkerGitHubMonitorFromUpdate(state, running, event.Result.RateLimits, event.CompletedAt)
 	}
 	delete(state.Running, event.IssueID)
+	// A canary can finish without a rate-limit update. Settle its ownership on
+	// every completion path so the credential gets another bounded probe time.
+	defer releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed without a GitHub REST monitor observation", event.CompletedAt)
 	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
