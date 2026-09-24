@@ -3807,6 +3807,8 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 		`id="board-alert-failure-breaker"`,
 		`data-board-alert="project-failure-breaker"`,
 		"Project failure breaker active — 1 project",
+		"Run canary now",
+		`hx-post="/api/v1/failure-breaker/canary?project_id=detent"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
@@ -3818,6 +3820,7 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 		"Author beat visuals — 2026-07-10-detent-not-vibe-coding-short",
 		`href="https://example.test/items/video-1"`,
 		"Provider usage limit reached",
+		"Canary resumes",
 		"Backend: claude-code · kind claude_code · provider anthropic",
 		"Diagnostic class: runner_error:b6c174a86dfb",
 		"will not retry merely because the project canary is eligible",
@@ -3827,9 +3830,16 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 			t.Fatalf("failure breaker overlay missing detail %q:\n%s", want, html)
 		}
 	}
-	for _, unwanted := range []string{"Run canary now"} {
-		if strings.Contains(html, unwanted) {
-			t.Fatalf("failure breaker summary contains detail %q:\n%s", unwanted, html)
+	health := renderBoardComponent(t, HealthSnapshotV2(data))
+	for _, want := range []string{
+		`id="project-failure-breaker"`,
+		"Provider usage limit reached",
+		"Canary resumes",
+		"Run canary now",
+		`datetime="` + data.Snapshot.GeneratedAt.Add(time.Hour).Format(time.RFC3339) + `"`,
+	} {
+		if !strings.Contains(health, want) {
+			t.Fatalf("health breaker banner missing %q:\n%s", want, health)
 		}
 	}
 }

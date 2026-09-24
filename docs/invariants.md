@@ -178,6 +178,20 @@ and timeout text; the runner no longer presents every workspace failure as a
 `git fetch` failure. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
 checks that these failures drain the instance without a forge condition or
 issue retry accounting. Actual remote write timeouts still use forge availability.
+Remote Git reads during workspace preparation use forge availability only when
+a matching forge host and `ls-remote` or `fetch` operation identify the failure.
+SSH refusal, transport loss, and 5xx responses retain the original workspace
+error, enter the existing forge retry with backoff, and do not count toward the
+project breaker. Other preparation failures remain instance-owned; their breaker
+uses `agent.failure_breaker.cooldown_seconds` rather than the separate
+blocked-recovery cooldown. A checked clean merge that needs no new workspace
+may continue under that workspace breaker. The same checked merge may continue
+when the matching forge condition came from a Git read; forge write and
+credential conditions retain their existing merge hold.
+`TestClassifyWorkspaceForgeReadFailure`,
+`TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
+`TestWorkspaceBreakerHonorsFailureCooldown`, `TestReadyMergeAtWorkerCapacity`,
+and `TestCheckedMergeUnderForgeCondition` cover these boundaries (#3067).
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
 completion handlers to triage workspace, startup, transport, protocol, and capacity
 failures. These failures publish no triage comment and do not consume the triage

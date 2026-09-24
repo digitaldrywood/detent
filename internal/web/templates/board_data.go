@@ -693,31 +693,45 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 			}
 			detail += "."
 		}
+		summary := failureBreakerCauseLabel(breaker)
+		if !breaker.ResumeAt.IsZero() {
+			summary += " · Canary resumes " + localTimeToken(breaker.ResumeAt, LocalDateTimeZone)
+		}
 		rows = append(rows, boardAlertDetailRow{
 			ID:      "board-alert-failure-breaker-" + boardAlertRowSlug(projectID+"-"+breaker.Class, index),
 			Label:   label,
 			Link:    link,
-			Summary: failureBreakerCauseLabel(breaker),
+			Summary: summary,
 			Detail:  detail,
 		})
 	}
 	rows, overflow := capBoardAlertRows(rows)
-	count := boardAffectedProjectCount(len(breakers), func(yield func(string)) {
-		for _, breaker := range breakers {
-			yield(breaker.ProjectID)
+	lead := summary.Title
+	if len(breakers) == 1 {
+		lead += " · " + failureBreakerCauseLabel(breakers[0])
+		if !breakers[0].ResumeAt.IsZero() {
+			lead += " · Canary resumes " + localTimeToken(breakers[0].ResumeAt, LocalDateTimeZone)
 		}
-	})
-	return boardAlert{
+	}
+	alert := boardAlert{
 		ID:            "board-alert-failure-breaker",
 		Kind:          boardAlertKindFailureBreaker,
 		Severity:      boardAlertSeverityFailureBreaker,
 		Tone:          primitives.KindErr,
-		TerseSummary:  "Project failure breaker (" + boardCountLabel(count, "project", "projects") + ")",
+		TerseSummary:  lead,
 		DetailSummary: summary.Title,
 		DetailRows:    rows,
 		Overflow:      overflow,
 		DeepLink:      "/health/ui",
-	}, true
+	}
+	if len(breakers) == 1 && strings.TrimSpace(breakers[0].CanaryIssueID) == "" {
+		path := "/api/v1/failure-breaker/canary"
+		if projectID := strings.TrimSpace(breakers[0].ProjectID); projectID != "" {
+			path += "?project_id=" + url.QueryEscape(projectID)
+		}
+		alert.Action = &boardAlertAction{Label: "Run canary now", Path: path, Swap: "none"}
+	}
+	return alert, true
 }
 
 func actionableBoardFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {

@@ -14,9 +14,57 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const forgeUnavailableErrorClass = forgeavailability.Condition
+
+// Workspace creation can fail before a worker turn when its Git read cannot
+// reach the forge. Keep that failure in the existing forge retry path.
+func classifyWorkspaceForgeReadFailure(err error, fallbackHost string) error {
+	if err == nil || !errors.Is(err, runpkg.ErrWorkspacePreparation) {
+		return err
+	}
+	detail := err.Error()
+	var commandErr *workspace.CommandError
+	operation := ""
+	if errors.As(err, &commandErr) && commandErr != nil && commandErr.Command == "git" {
+		for _, arg := range commandErr.Args {
+			if arg == "ls-remote" || arg == "fetch" {
+				operation = "git " + arg
+				break
+			}
+		}
+		detail += "\n" + commandErr.Output
+	}
+	if operation == "" {
+		lower := strings.ToLower(detail)
+		switch {
+		case strings.Contains(lower, "ls-remote"):
+			operation = "git ls-remote"
+		case strings.Contains(lower, "git fetch"):
+			operation = "git fetch"
+		}
+	}
+	host := forgeavailability.HostFromText(detail)
+	if operation == "" || host == "" {
+		return err
+	}
+	if configured := forgeavailability.NormalizeHost(fallbackHost); configured != "" && host != configured {
+		return err
+	}
+	if forgeavailability.GitHubCLIAuthFailure("git fetch", detail) {
+		return err
+	}
+	class, unavailable := forgeavailability.Classify("git fetch", detail)
+	if strings.Contains(strings.ToLower(detail), "permission denied (publickey)") || strings.Contains(strings.ToLower(detail), "authentication failed") {
+		class, unavailable = forgeavailability.ClassTransport, true
+	}
+	if !unavailable {
+		return err
+	}
+	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+}
 
 type ForgeCondition = telemetry.ForgeCondition
 
@@ -141,6 +189,24 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 		return false
 	}
 	return retry.ForgeUnavailable || mergeWorkerIssue(issue)
+}
+
+// A checked clean PR can merge through the existing API path without the Git
+// read that opened this condition. Write failures still hold the merge lane.
+func (p dispatchPlanner) forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, now time.Time) bool {
+	if !forgeAvailabilityBlocks(state, issue, retry, p.cfg.ForgeHost, now) {
+		return false
+	}
+	if retry.ForgeUnavailable || !p.readyMergeControlCandidate(state, issue) {
+		return true
+	}
+	condition, active := forgeCondition(state, forgeHostForIssue(issue, p.cfg.ForgeHost))
+	return !active || !forgeRetryReadOperation(condition.Operation) || condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable
+}
+
+func forgeRetryReadOperation(operation string) bool {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	return operation == "git fetch" || operation == "git ls-remote"
 }
 
 func workerGitHubCredentialAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, now time.Time) bool {

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -30,6 +31,13 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 				Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1},
 			})
 			state := providerWindowState(cfg, workers)
+			state.FailureBreaker.Class = workAttemptErrorWorkspace
+			state.FailureBreaker.PreTurn = true
+			state.FailureBreaker.ResumeAt = now.Add(time.Hour)
+			state.ForgeUnavailable["github.test"] = ForgeCondition{
+				Host: "github.test", Operation: "git ls-remote", ErrorClass: forgeavailability.ClassTransport,
+				NextProbeAt: now.Add(time.Hour),
+			}
 			for id, running := range state.Running {
 				running.LastEvent = "validation_waiting"
 				state.Running[id] = running
@@ -52,6 +60,31 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 			}
 			if len(state.Running) != workers || len(state.Claimed) != 0 {
 				t.Fatalf("running=%d claimed=%d, want unchanged workers and released merge claim", len(state.Running), len(state.Claimed))
+			}
+		})
+	}
+}
+
+func TestCheckedMergeUnderForgeCondition(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 24, 17, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{MergeFastPathEnabled: true, ForgeHost: "github.test", ActiveStates: []string{"Merging"}})
+	issue := readyMergeCapacityIssue("ready", 2371)
+	for _, tt := range []struct {
+		name, operation, class string
+		wantBlocked            bool
+	}{
+		{name: "Git read transport", operation: "git ls-remote", class: forgeavailability.ClassTransport},
+		{name: "Git fetch server", operation: "git fetch", class: forgeavailability.ClassServer},
+		{name: "Git write transport", operation: "git push", class: forgeavailability.ClassTransport, wantBlocked: true},
+		{name: "credential", operation: "git fetch", class: forgeavailability.ClassWorkerGitHubCredentialUnavailable, wantBlocked: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			state := newState(cfg)
+			state.ForgeUnavailable["github.test"] = ForgeCondition{Host: "github.test", Operation: tt.operation, ErrorClass: tt.class, NextProbeAt: now.Add(time.Hour)}
+			if got := newDispatchPlanner(cfg).forgeAvailabilityBlocks(&state, issue, Retry{}, now); got != tt.wantBlocked {
+				t.Fatalf("forge availability blocks checked merge = %v, want %v", got, tt.wantBlocked)
 			}
 		})
 	}

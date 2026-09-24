@@ -1571,7 +1571,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	if req.ForgeRetry != nil && !strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+	if req.ForgeRetry != nil && !forgeRetryReadOperation(req.ForgeRetry.Operation) {
 		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
 		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
 			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
@@ -1880,7 +1880,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
-	if req.ForgeRetry != nil && strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+	if req.ForgeRetry != nil && forgeRetryReadOperation(req.ForgeRetry.Operation) {
 		execution.result.ForgeWriteCompleted = true
 	}
 	if req.ForgeRetry != nil && req.ForgeRetry.WorkProductPushed {
@@ -2404,6 +2404,11 @@ func classifyForgeOperationError(err error, operation string, host string) error
 		host = observedHost
 	}
 	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+}
+
+func forgeRetryReadOperation(operation string) bool {
+	operation = strings.ToLower(operation)
+	return strings.Contains(operation, "git fetch") || strings.Contains(operation, "git ls-remote")
 }
 
 func pullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {

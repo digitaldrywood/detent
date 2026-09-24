@@ -582,7 +582,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || ciUnavailableRetry(state, issue.ID)) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureCIUnavailable}
 	}
-	if forgeAvailabilityBlocks(state, issue, queuedRetry, o.cfg.ForgeHost, now) {
+	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
 	if workerGitHubMonitorBlocks(state, issue.ID, queuedRetry, now) {
@@ -591,7 +591,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
+	if !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 	o.observeHostPressure(ctx, state, o.clockNow())
@@ -773,7 +773,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 		return dispatchIssueOutcome{reason: recoveryReason}
 	}
-	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
+	canary, allowed := false, true
+	if !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
+		canary, allowed = tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
+	}
 	if !allowed {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
