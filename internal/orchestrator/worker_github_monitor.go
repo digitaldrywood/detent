@@ -312,6 +312,26 @@ func reservedGitHubCredential(state *State, issueID string) string {
 	return ""
 }
 
+// An expired idle condition can use the next dispatched worker as its canary
+// when the original retry was consumed by a completed worker.
+func reserveIdleWorkerGitHubMonitorProbe(state *State, issueID string, now time.Time) {
+	if state == nil || reservedGitHubCredential(state, issueID) != "" {
+		return
+	}
+	var selected string
+	for key, condition := range state.GitHubMonitors {
+		if condition.ProbeIssueID != "" || now.Before(condition.NextProbeAt) {
+			continue
+		}
+		if selected == "" || key < selected {
+			selected = key
+		}
+	}
+	if selected != "" {
+		reserveWorkerGitHubMonitorProbe(state, issueID, Retry{GitHubMonitor: true, GitHubCredential: selected}, now)
+	}
+}
+
 func (o *Orchestrator) recoverWorkerGitHubMonitorFromUpdate(state *State, running Running, limits *telemetry.RateLimits, observedAt time.Time) {
 	credential := strings.TrimSpace(running.GitHubCredential)
 	if state == nil || credential == "" || limits == nil {
@@ -327,6 +347,9 @@ func (o *Orchestrator) recoverWorkerGitHubMonitorFromUpdate(state *State, runnin
 		}
 		if budget.ObservedAt != nil && !budget.ObservedAt.IsZero() {
 			observedAt = budget.ObservedAt.UTC()
+		}
+		if condition, ok := state.GitHubMonitors[credential]; ok && observedAt.Before(condition.LastObservedAt) {
+			continue
 		}
 		o.completeWorkerGitHubMonitorRecovery(state, credential, observedAt)
 		return

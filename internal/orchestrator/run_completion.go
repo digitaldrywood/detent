@@ -89,6 +89,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		o.recoverWorkerGitHubMonitorFromUpdate(state, running, event.Result.RateLimits, event.CompletedAt)
+	}
+	// A completed canary must release its probe even when lane refresh defers
+	// the rest of completion processing.
+	defer releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed without a GitHub REST monitor observation", event.CompletedAt)
 	// The final result includes checkpoint and recovery segments; live progress
 	// can still describe only the last segment. Use the session totals for every
 	// completion path, retaining progress when a runner has no final usage.
@@ -159,9 +166,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	running.ArtifactEvidence = event.Result.ArtifactEvidence
 	running.ForgeWriteCompleted = event.Result.ForgeWriteCompleted
-	if event.Result.RateLimits != nil {
-		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-	}
 	delete(state.Running, event.IssueID)
 	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {

@@ -449,6 +449,7 @@ func (p dispatchPlanner) newDispatchAction(
 
 func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
 	issue := cloneIssue(action.issue)
+	reserveIdleWorkerGitHubMonitorProbe(state, issue.ID, now)
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	reserveMergeCandidate(state, issue, now)
 	state.Running[issue.ID] = Running{
