@@ -301,12 +301,14 @@ no retry; at `NextProbeAt` the carrier can reserve the existing single canary.
 An idle hold expires at `NextProbeAt` even when its carrier cannot dispatch;
 an in-flight canary retains ownership. Eligibility checks are read-only and retain
 the condition's attempt history, so a repeated failure after expiry increases
-backoff. Missing candidate batches preserve monitor carrier retries; only a
-dispatchable carrier reserves a probe and consumes an attempt. Durable attempt recovery restores both the
+backoff. Missing candidate batches preserve monitor carrier retries; a
+dispatchable carrier or the next eligible worker after an idle hold expires
+reserves the existing probe and consumes an attempt. Durable attempt recovery restores both the
 condition and its carrier retry, and a successful budget observation clears it.
 Completion without a budget observation settles an in-flight canary and schedules
 the next probe from its existing bounded backoff. A budget observation in the
-completion result can clear the condition before that settlement.
+completion result can clear the condition before that settlement only when its
+observation is at least as recent as the active failure.
 `TestWorkerGitHubClassificationWaitsForSharedCooldown`,
 `TestWorkerGitHubMonitorCarrierEligibility`, and
 `TestDispatchableWorkerGitHubMonitorCarrier` cover cooldown, expiry, and dispatch
