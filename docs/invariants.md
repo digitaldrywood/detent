@@ -661,7 +661,8 @@ no new lane reason, allowance reset, or recovery mechanism is introduced.
 Idle Rework PRs enter the existing promotion evaluation without a worker completion
 record (#2688). Promotion reuses the merge worker readiness predicate and live PR
 hydration; unresolved threads and known audit failures still prevent promotion.
-Missing audits run in Merging. `TestReworkLivePullRequestPromotion`,
+Missing audits start while the completed Rework issue waits, and a trusted
+current-head pass is required before promotion to Merging. `TestReworkLivePullRequestPromotion`,
 `TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
 consolidation; no new transition reason or recovery loop is introduced.
 
