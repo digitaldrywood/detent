@@ -50,7 +50,7 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 	}
 	// Legacy question receipts are not live decisions. Current Workpad human
 	// actions and other gate evidence below provide the operations decisions.
-	report.Decisions = nil
+	report.Decisions = []operations.Decision{}
 	blockedByIssue := map[string]telemetry.Blocked{}
 	for _, row := range snapshot.Blocked {
 		projectID := operationsProjectScope(row.ProjectID, snapshot.Project.ID)

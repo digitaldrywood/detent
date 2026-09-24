@@ -2296,7 +2296,8 @@ func workerCredentialBlockerError(message string) error {
 	firstLine, _, _ := strings.Cut(message, "\n")
 	firstLine = strings.TrimSpace(strings.TrimLeft(firstLine, "#>*_- "))
 	blocked := strings.HasPrefix(strings.ToLower(firstLine), "blocked") || strings.HasPrefix(strings.ToLower(firstLine), "work is blocked")
-	if !blocked || !workerGitHubCredentialFailureDetail(message) {
+	credentialBlocker := blocked && workerGitHubCredentialFailureDetail(message)
+	if !credentialBlocker && !workerGitHubSupportRequest(message) {
 		return nil
 	}
 	return &DeliverableCommandError{
@@ -2306,6 +2307,42 @@ func workerCredentialBlockerError(message string) error {
 		Message:        truncateDeliverableDetail(firstLine),
 		Body:           truncateDeliverableDetail(message),
 	}
+}
+
+// workerGitHubSupportRequest catches final messages that ask a person to repair
+// worker access or perform a GitHub write. Those are instance failures even
+// when the worker phrases them as a question instead of a blocked report.
+func workerGitHubSupportRequest(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	if !strings.Contains(detail, "?") {
+		return false
+	}
+	githubScoped := false
+	for _, marker := range []string{"github", "gh cli", "gh auth", "pull request", "open the pr", "open pr"} {
+		if strings.Contains(detail, marker) {
+			githubScoped = true
+			break
+		}
+	}
+	if !githubScoped {
+		return false
+	}
+	if githubCredentialFailureDetail(detail) {
+		return true
+	}
+	if strings.Contains(detail, "write access") {
+		for _, action := range []string{"you enable", "you grant", "you allow"} {
+			if strings.Contains(detail, action) {
+				return true
+			}
+		}
+	}
+	for _, marker := range []string{"enable write", "allow write", "open manually", "open the pull request manually", "open the pr manually", "you manually open"} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func workerGitHubCredentialFailureDetail(detail string) bool {
@@ -2333,7 +2370,7 @@ func workerGitHubCredentialFailureDetail(detail string) bool {
 }
 
 func deliverableCredentialFailureDetail(detail string) bool {
-	if githubCredentialFailureDetail(detail) {
+	if githubCredentialFailureDetail(detail) || workerGitHubSupportRequest(detail) {
 		return true
 	}
 	detail = strings.ToLower(strings.TrimSpace(detail))

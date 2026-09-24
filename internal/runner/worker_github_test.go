@@ -249,14 +249,15 @@ func TestWorkerCredentialBlockerError(t *testing.T) {
 		{name: "reported disabled credential policy", message: "Work is blocked: GitHub credential injection is disabled for this worker.", want: true},
 		{name: "reported git credential failure", message: "Blocked because git push failed: could not read username for HTTPS remote.", want: true},
 		{name: "budget scheduler question", message: "Should we replace project timers with a credential-scoped scheduler using GitHub's rate-budget reset window?"},
-		{name: "would enable", message: "Would you enable GitHub connector write access?"},
-		{name: "manually open", message: "Could you manually open the PR?"},
+		{name: "would enable", message: "Would you enable GitHub connector write access?", want: true},
+		{name: "manually open", message: "Could you manually open the PR?", want: true},
+		{name: "can I open manually", message: "Can I open the PR manually?", want: true},
 		{name: "manual design", message: "Should workers manually open the PR?"},
 		{name: "enable design", message: "Should we enable GitHub connector write access?"},
 		{name: "credential design question", message: "Should GitHub authentication use one credential per project?"},
-		{name: "authentication support question", message: "GitHub authentication failed; can you repair it?"},
-		{name: "missing credential support question", message: "GitHub credentials are unavailable; can you restore worker access?"},
-		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?"},
+		{name: "authentication support question", message: "GitHub authentication failed; can you repair it?", want: true},
+		{name: "missing credential support question", message: "GitHub credentials are unavailable; can you restore worker access?", want: true},
+		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?", want: true},
 		{name: "successful fix mentioning incident", message: "Fixed the path that previously reported Blocked by missing GitHub authentication."},
 		{name: "unrelated blocker", message: "Blocked by an ambiguous product decision."},
 		{name: "unrelated authentication blocker", message: "Blocked because authentication is required for the private package registry."},
@@ -279,7 +280,7 @@ func TestWorkerCredentialBlockerError(t *testing.T) {
 					t.Fatalf("workerCredentialBlockerError() = %#v, want classified write operation", err)
 				}
 				if deliverableErr.ApprovalDenied {
-					t.Fatal("question-specific approval classification was retained")
+					t.Fatal("support request misclassified as approval denial")
 				}
 			}
 		})

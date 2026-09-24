@@ -388,6 +388,9 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 				if len(report.Decisions) != 0 {
 					t.Fatalf("decisions = %#v, want none", report.Decisions)
 				}
+				if !strings.Contains(rec.Body.String(), `"decisions":[]`) {
+					t.Fatalf("response decisions must be an empty array: %s", rec.Body.String())
+				}
 				return
 			}
 			if len(report.Decisions) != 1 || report.Decisions[0].Kind != tc.wantKind || report.Decisions[0].Question != tc.wantQuestion {

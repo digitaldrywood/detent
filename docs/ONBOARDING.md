@@ -974,9 +974,10 @@ probes.
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
    ```
 
-Ask account setup and publishing approval questions in the
-[original issue thread](dependency-workflows.md#human-questions).
-Finish independent executable work before waiting for the answer.
+Record any account setup or publishing approval that still requires a person
+as a concrete Workpad `human_action` with `status: blocked`, following the
+[human action workflow](dependency-workflows.md#human-action).
+Finish independent executable work before recording the blocker.
 Queue executable dependent work in Todo and preserve existing PR phases; keep
 independent breaker parks intact. Completion evidence is not external-action
 authorization.
