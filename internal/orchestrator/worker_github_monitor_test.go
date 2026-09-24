@@ -446,20 +446,28 @@ func TestWorkerGitHubMonitorCompletedCanaryGetsAnotherProbe(t *testing.T) {
 		name       string
 		rateLimits *telemetry.RateLimits
 		recovered  bool
+		deferLane  bool
 	}{
 		{name: "no observation schedules another canary"},
+		{name: "lane refresh defers completion", deferLane: true},
 		{name: "completion observation recovers", recovered: true, rateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool, Remaining: 4340}}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}})
-			orch := &Orchestrator{cfg: cfg, connector: &implementProgressConnector{}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}
+			connector := &implementProgressConnector{}
+			generation := uint64(0)
+			if tt.deferLane {
+				connector.refreshErr = errors.New("tracker unavailable")
+				generation = 1
+			}
+			orch := &Orchestrator{cfg: cfg, connector: connector, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}
 			state := newState(cfg)
 			state.GitHubMonitors[credential] = GitHubMonitor{CredentialIdentity: credential, ProbeIssueID: issue.ID, ProbeAttempts: 1, LastProbeResult: "in_progress"}
-			state.Running[issue.ID] = Running{Issue: issue, GitHubCredential: credential, StartedAt: now}
+			state.Running[issue.ID] = Running{Issue: issue, GitHubCredential: credential, Generation: generation, StartedAt: now}
 			completedAt := now.Add(5 * time.Minute)
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: completedAt,
-				Request: runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement},
+				Request: runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement, Generation: generation},
 				Result:  runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, TurnStarted: true, RateLimits: tt.rateLimits},
 			})
 			condition, active := state.GitHubMonitors[credential]
