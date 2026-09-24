@@ -279,7 +279,7 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 				}
 			}
 			if tt.wantUnavailable {
-				if strings.Contains(logs.String(), "WARN") || strings.Count(logs.String(), "level=INFO") != 1 {
+				if strings.Contains(logs.String(), "WARN") || strings.Count(logs.String(), "github branch rules not available on this plan") != 1 {
 					t.Fatalf("logs: %s", &logs)
 				}
 				status = 200
@@ -290,7 +290,7 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 				if err := c.RefreshMergeQueuePolicy(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				if strings.Count(logs.String(), "level=INFO") != 2 {
+				if strings.Count(logs.String(), "github branch rules not available on this plan") != 2 {
 					t.Fatalf("logs after plan change: %s", &logs)
 				}
 				status = http.StatusNotModified
@@ -301,7 +301,7 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 				if err := c.RefreshMergeQueuePolicy(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				if strings.Count(logs.String(), "level=INFO") != 3 {
+				if strings.Count(logs.String(), "github branch rules not available on this plan") != 3 {
 					t.Fatalf("logs after conditional recovery: %s", &logs)
 				}
 

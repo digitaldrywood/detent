@@ -132,6 +132,16 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	restPolicy := normalizeRESTBudgetPolicy(cfg.RESTPolicy)
+	fanoutCapSource := "default"
+	if cfg.RESTPolicy.FanoutMaxRequests > 0 {
+		fanoutCapSource = "configured"
+	}
+	logger.Info("github rest fanout cap",
+		"fanout_cap", restPolicy.FanoutMaxRequests,
+		"fanout_cap_source", fanoutCapSource,
+		"fanout_scope", "shared across endpoint families",
+	)
 
 	return &Client{
 		endpoint:            endpoint,
@@ -139,7 +149,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		tokenSource:         cfg.TokenSource,
 		httpClient:          httpClient,
 		graphQLMinReserve:   max(cfg.GraphQLMinRemainingReserve, 0),
-		restPolicy:          normalizeRESTBudgetPolicy(cfg.RESTPolicy),
+		restPolicy:          restPolicy,
 		restDebugLogging:    cfg.RESTDebugLogging,
 		logger:              logger,
 		restBackoffs:        defaultRESTBackoffs,
@@ -1046,7 +1056,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 	c.restRequests[requestKey] = request
 	message := "github rest reserve floor held"
 	if branch == restBudgetGateFanoutCap {
-		message = "github rest fanout deferred"
+		message = "github rest fanout cap reached (shared across endpoint families)"
 		c.restFanoutDeferred = true
 	} else {
 		c.restReserveHeld = true
@@ -1056,6 +1066,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 		"method", strings.ToUpper(strings.TrimSpace(method)),
 		"path", path,
 		"endpoint_family", family,
+		"refused_endpoint_family", family,
 		"budget_scope", budgetScope,
 		"credential_identity", credentialIdentity,
 		"resource", rateLimit.Resource,
