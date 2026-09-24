@@ -1401,6 +1401,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if req.RetryMode == RetryModeResume && req.ResumeState.Orphaned &&
+		(req.WorkAttemptID <= 0 || req.Generation == 0) {
+		return RunResult{}, errors.New("orphaned session resume requires completion attempt and generation")
+	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
 	if req.Policy.ID != "" || workflow.Config.Policy.ID != "" {
 		if err := req.Policy.Match(workflow.Config.Policy); err != nil {
