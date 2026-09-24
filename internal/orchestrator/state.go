@@ -279,9 +279,15 @@ type MergeTiming struct {
 	MergeStartedAt             time.Time
 	BaseRefreshStartedAt       time.Time
 	BaseRefreshFinishedAt      time.Time
+	BaseSyncActiveAt           time.Time
+	BaseSyncObserved           bool
+	BaseSyncSeconds            int64
 	CIWaitHeadSHA              string
 	CIWaitStartedAt            time.Time
 	CIWaitFinishedAt           time.Time
+	CIWaitActiveAt             time.Time
+	CIWaitSeconds              int64
+	CIWaitBeforeSlotSeconds    int64
 	MergedAt                   time.Time
 	MergeFailedAt              time.Time
 	MergeFailureReason         string
