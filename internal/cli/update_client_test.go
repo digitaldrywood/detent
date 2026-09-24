@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -125,6 +126,42 @@ func (w *drainReportWriter) Write(p []byte) (int, error) {
 		close(w.reported)
 	}
 	return n, err
+}
+
+func TestReportDrainPreservesLegacyRestartProgress(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{0, 2} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/state" {
+					t.Errorf("path = %q", r.URL.Path)
+				}
+				if err := json.NewEncoder(w).Encode(map[string]any{"running": make([]struct{}, count)}); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			address, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := &DashboardReadClient{baseURL: address, http: server.Client()}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			reported := make(chan struct{})
+			var output bytes.Buffer
+			stop := client.reportDrain(ctx, &drainReportWriter{Writer: &output, reported: reported}, "restart")
+			defer stop()
+			select {
+			case <-reported:
+			case <-ctx.Done():
+				t.Fatalf("restart progress not reported: %v", ctx.Err())
+			}
+			if want := "draining for restart: " + strconv.Itoa(count) + " active attempts"; !strings.Contains(output.String(), want) {
+				t.Fatalf("output = %q, want %q", output.String(), want)
+			}
+		})
+	}
 }
 
 func TestApplyRunningUpdateRequiresLiveInstanceCoordination(t *testing.T) {

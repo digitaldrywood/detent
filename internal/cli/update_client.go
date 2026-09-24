@@ -105,6 +105,7 @@ type runningUpdateState struct {
 	Counts struct {
 		Running int `json:"running"`
 	} `json:"counts"`
+	Running []struct{} `json:"running"`
 }
 
 func (c *DashboardReadClient) updateState(ctx context.Context) (runningUpdateState, error) {
@@ -129,8 +130,12 @@ func (c *DashboardReadClient) reportDrain(ctx context.Context, out io.Writer, re
 		defer ticker.Stop()
 		for {
 			state, err := c.updateState(progressCtx)
-			if err == nil && state.Update.ActiveAttempts != nil && out != nil {
-				fmt.Fprintf(out, "draining for %s: %d active attempts\n", reason, state.Counts.Running)
+			if err == nil && out != nil && (state.Update.ActiveAttempts != nil || state.Running != nil) {
+				count := state.Counts.Running
+				if state.Update.ActiveAttempts == nil {
+					count = len(state.Running)
+				}
+				fmt.Fprintf(out, "draining for %s: %d active attempts\n", reason, count)
 			}
 			select {
 			case <-progressCtx.Done():
