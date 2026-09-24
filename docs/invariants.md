@@ -1327,6 +1327,12 @@ and unready heads do not exclude ready competitors. Aged heads retain ordering
 preference when ready. `TestMergeDispatchUsesMergingCapacity` checks fresh and
 retry dispatch with limits of one and three; `TestMergeIdleHeadDoesNotReserveSlot`
 checks planner dispatch, fresh candidates, and native queue admission.
+The regular Merging agent prompt now hands a pushed head back immediately, even
+when the project workflow asks the agent to watch CI. The existing current-head
+CI retry releases the worker and claim; a green head re-enters the same fairness
+order. `TestPushedMergeHeadRequeuesWithoutHoldingSlot` covers post-push admission
+of a same-repository peer and the older issue's return after CI, while
+`TestMergePromptHandsOffPushedHeadBeforeCI` covers the instruction boundary (#3045).
 The `merge_ci_reservation` dispatch reason is retired. Native merge queue admission
 still defers enqueueing behind a running merge in its repository, without holding
 a worker slot. `merge_fairness_head_reserved` remains retired from producers and

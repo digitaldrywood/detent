@@ -86,6 +86,68 @@ func TestMergeIdleHeadDoesNotReserveSlot(t *testing.T) {
 	}
 }
 
+func TestPushedMergeHeadRequeuesWithoutHoldingSlot(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		output string
+	}{
+		{name: "programmatic base sync", output: runpkg.RunOutputMergeFastPathClean},
+		{name: "agent pushed fix"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 23, 17, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:        1,
+				MaxConcurrentAgentsByState: map[string]int{"Merging": 1},
+				ActiveStates:               []string{"Merging"},
+				TerminalStates:             []string{"Done"},
+				MergeFastPathEnabled:       true,
+				MergeFairnessAge:           time.Hour,
+				ContinuationRetryDelay:     time.Second,
+			})
+			waiting := nativeMergeQueueTestIssue(3045, "pending")
+			waiting.PullRequest.HeadSHA = "pushed-head"
+			waiting.StageUpdatedAt = timePointer(now.Add(-3 * time.Hour))
+			peer := nativeMergeQueueTestIssue(3046, "success")
+			peer.StageUpdatedAt = timePointer(now.Add(-2 * time.Hour))
+			newer := nativeMergeQueueTestIssue(3047, "success")
+			newer.StageUpdatedAt = timePointer(now.Add(-time.Minute))
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{waiting, peer, newer}}}
+			orch := Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			state.Running[waiting.ID] = Running{Issue: waiting, Attempt: 1, Mode: runpkg.RunModeMerge}
+			state.Claimed[waiting.ID] = Claimed{Issue: waiting}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: waiting.ID, CompletedAt: now,
+				Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+				Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: tt.output,
+					PullRequestHeadPushed: true, CITriggerLabelReapplied: true},
+			})
+			if _, running := state.Running[waiting.ID]; running {
+				t.Fatal("pushed head retained Merging worker")
+			}
+			if _, claimed := state.Claimed[waiting.ID]; claimed {
+				t.Fatal("pushed head retained claim")
+			}
+			if retry := state.Retry[waiting.ID]; retry.Wait.Kind != retryWaitCurrentHeadCI {
+				t.Fatalf("retry wait = %q, want current-head CI", retry.Wait.Kind)
+			}
+			plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{waiting, peer, newer}, now.Add(time.Minute), dispatchPlanHooks{})
+			if len(plan.Dispatches) != 1 || plan.Dispatches[0].IssueID != peer.ID {
+				t.Fatalf("dispatches while CI pending = %#v, want same-repository peer", plan.Dispatches)
+			}
+			delete(state.Running, peer.ID)
+			delete(state.Claimed, peer.ID)
+			waiting.PullRequest.CIStatus = "success"
+			plan = newDispatchPlanner(cfg).plan(&state, []connector.Issue{newer, waiting}, now.Add(2*time.Minute), dispatchPlanHooks{})
+			if len(plan.Dispatches) != 1 || plan.Dispatches[0].IssueID != waiting.ID {
+				t.Fatalf("dispatches after CI green = %#v, want aged waiting issue before newer issue", plan.Dispatches)
+			}
+		})
+	}
+}
+
 func TestMergeDispatchUsesMergingCapacity(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
