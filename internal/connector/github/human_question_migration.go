@@ -116,7 +116,7 @@ func (c *Connector) RetireHumanQuestion(ctx context.Context, request connector.H
 					} `json:"issueComment"`
 				} `json:"updateIssueComment"`
 			}
-			if err := c.client.GraphQL(ctx, `mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id,body:$body}){issueComment{id}}}`, map[string]any{"id": comment.ID, "body": updated}, &result); err != nil {
+			if err := c.client.GraphQLWithType(ctx, "questions", `mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id,body:$body}){issueComment{id}}}`, map[string]any{"id": comment.ID, "body": updated}, &result); err != nil {
 				return err
 			}
 		}
