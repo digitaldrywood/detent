@@ -1390,10 +1390,78 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 	if got := restEndpointUsageCount(usage.Requests, "check runs"); got != 1 {
 		t.Fatalf("check runs usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
 	}
-	for _, want := range []string{`msg="github rest fanout deferred"`, "gate_branch=fanout_cap", "budget_scope=refresh", "fanout_count=1", "snapshot_age="} {
+	for _, want := range []string{`msg="github rest fanout cap reached (shared across endpoint families)"`, "gate_branch=fanout_cap", "budget_scope=refresh", "refused_endpoint_family=\"check runs\"", "fanout_count=1", "snapshot_age="} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("throttle log missing %q:\n%s", want, logs.String())
 		}
+	}
+}
+
+func TestRESTFanoutDeferralErrorText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		family string
+		cap    int64
+		want   string
+	}{
+		{name: "issue reads", family: "issue reads", cap: 80, want: "github rest fanout deferred: rest fanout cap 80 reached (shared across endpoint families; refused: issue reads)"},
+		{name: "pull request pages", family: " pull request pages ", cap: 2, want: "github rest fanout deferred: rest fanout cap 2 reached (shared across endpoint families; refused: pull request pages)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := &RESTFanoutDeferralError{EndpointFamily: tt.family, FanoutCap: tt.cap}
+			if got := err.Error(); got != tt.want {
+				t.Fatalf("Error() = %q, want %q", got, tt.want)
+			}
+			if !errors.Is(err, ErrRESTFanoutDeferred) {
+				t.Fatalf("errors.Is(%v, ErrRESTFanoutDeferred) = false", err)
+			}
+		})
+	}
+}
+
+func TestNewClientLogsEffectiveRESTFanoutCap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured int64
+		wantCap    int64
+		wantSource string
+	}{
+		{name: "configured", configured: 80, wantCap: 80, wantSource: "configured"},
+		{name: "default", wantCap: 0, wantSource: "default"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			client, err := NewClient(ClientConfig{
+				TokenSource: StaticTokenSource("test-token"),
+				RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: tt.configured},
+				Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			if got := client.restPolicy.FanoutMaxRequests; got != tt.wantCap {
+				t.Fatalf("effective fanout cap = %d, want %d", got, tt.wantCap)
+			}
+			var entry map[string]any
+			decoder := json.NewDecoder(&logs)
+			if err := decoder.Decode(&entry); err != nil {
+				t.Fatalf("decode construction log: %v", err)
+			}
+			if entry["msg"] != "github rest fanout cap" || entry["fanout_cap"] != float64(tt.wantCap) || entry["fanout_cap_source"] != tt.wantSource || entry["fanout_scope"] != "shared across endpoint families" {
+				t.Fatalf("construction log = %#v", entry)
+			}
+			if err := decoder.Decode(&entry); !errors.Is(err, io.EOF) {
+				t.Fatalf("extra construction log entry: %v", err)
+			}
+		})
 	}
 }
 
