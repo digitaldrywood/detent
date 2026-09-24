@@ -1472,7 +1472,12 @@ readable as receipts.
 A real product decision or physical action is recorded in the existing
 structured Workpad `detent-status` block with `status: blocked` and a concrete
 `human_action`. The card moves to Blocked and displays "Needs you". Instance and
-infrastructure failures remain instance-owned.
+infrastructure failures remain instance-owned. An authorized newer Workpad can
+clear the action after it is performed; existing recorded-blocker recovery
+moves the card back to executable work. Ordinary replies cannot clear it.
+Legacy generated question prerequisites are converted by recording the action
+on each dependent before removing the old dependency; the generated source
+remains historical evidence.
 
 `TestINV14DispatchQuestionTool` checks worker requests across automated,
 human-review, and disabled auto-promotion configurations.
@@ -1481,6 +1486,8 @@ unconfirmed unanswered legacy rows. `TestLegacyHumanQuestionReceiptsReadable`
 checks historical access. `TestFirstHumanBlockerCompletionReachesBlocked`,
 `TestWorkpadHumanActionSnapshot`, `TestOperationsWorkpadHumanAction`, and
 `TestBoardCardSignalBudget` enforce the visible Blocked path.
+`TestWorkpadHumanActionClearanceRecoversBlockedIssue` checks authorized
+clearance, retained legacy dependencies, and refusal of stale updates.
 
 ## Check boundaries
 

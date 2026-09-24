@@ -23,6 +23,7 @@
       "TestINV14DispatchQuestionTool",
       "TestINV14LegacyQuestionRowDispatch",
       "TestFirstHumanBlockerCompletionReachesBlocked",
+      "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
       "TestPreTurnFailuresDrainInstance",
       "TestPlanCompletionCoordinationDeferral",

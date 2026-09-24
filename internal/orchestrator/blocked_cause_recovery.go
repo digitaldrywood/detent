@@ -454,6 +454,18 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
 		return transitioned
 	}
+	if park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+		parkedAt, ok := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
+		if ok {
+			if evidence := clearedHumanActionEvidence(issue, parkedAt, now); evidence != nil {
+				if o.applyRecordedBlockerRecovery(ctx, state, issue, blockers, []telemetry.BlockerEvidence{*evidence}, now) {
+					return true
+				}
+				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, park.CauseFingerprint)
+				return false
+			}
+		}
+	}
 	if park.Owner == blockedRecoveryOwnerHuman || park.Owner == blockedRecoveryOwnerOperator {
 		reason := strings.TrimSpace(park.HoldReason)
 		if reason == "" {

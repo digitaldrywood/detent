@@ -2,11 +2,11 @@
 
 One `## Codex Workpad`: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
 
-PR handoff: gate and current-head checks. Skips are not passes; expected merge-group skips allow handoff. Merge-group CI must pass.
+PR handoff: record gate and current-head checks. Expected skips allow handoff, not test credit; merge-group CI must pass.
 
 The orchestrator is the only writer of tracker lane state. Never change lane labels or status fields.
 
-POST real blocker `issue_id` to `dependencies/blocked_by` before coding; retain `Depends on: owner/repo#123`. Refs: positive `#N` or `owner/repo#N`, not URLs. Symbolic refs (`instance:tool`) are instance-owned; clear via Workpad. No YAML `blocked_by`.
+POST real blocker `issue_id` to `dependencies/blocked_by` before coding; retain `Depends on: owner/repo#123`. Refs: positive `#N` or `owner/repo#N`; no URLs or YAML `blocked_by`. Symbolic `instance:tool` refs are instance-owned; clear via Workpad.
 
 ```detent-status
 schema: 1
@@ -17,9 +17,9 @@ blockers:
 human_action: null
 ```
 
-Defaults: issue-state/tick checks; orchestrator owns. `blocked` needs blocker, `human_action`, or `reason_code`; reason-only blockers never auto-clear.
+Defaults: issue-state/tick checks. `blocked` needs blocker, `human_action`, or `reason_code`; reason-only blockers never auto-clear.
 
-Credential/write-policy failures are instance errors. Finish independent work. For real human needs, set `status: blocked` with concrete `human_action`; Detent shows "Needs you" in Blocked. Keep the PR. Never invent dependencies or acknowledge breaker parks. Replies authorize only what they say.
+Credential/write failures belong to the instance. Finish independent work. Human needs use blocked Workpad `human_action` ("Needs you"). An authorized member posts a newer Workpad with evidence, `status: in_progress`, and `human_action: null`; Detent resumes. Keep the PR. No invented dependencies or breaker acknowledgments. Replies authorize only stated actions.
 
 Success:
 

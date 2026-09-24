@@ -17,6 +17,39 @@ actions. Instance and infrastructure failures stay attributed to the instance.
 Do not create synthetic human-prerequisite issues, labels, or dependency edges.
 Intentional standalone human tasks remain non-executable.
 
+When the action is done, an authorized project member records what was decided
+or done in a **newer** `## Codex Workpad` comment on the original issue. Clear
+`human_action` in its structured block. If no other blocker remains, use:
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+Detent recognizes an authorized Workpad update made after the Blocked entry
+and moves the issue through its existing recorded-blocker recovery to Todo or
+Rework. An ordinary reply alone does not clear the Workpad. If other blockers
+remain, keep them in the newer blocked Workpad; Detent retains their normal
+dependency or predicate checks. Do not move the tracker lane by hand.
+
+### Convert an older generated question prerequisite
+
+An upgrade can leave a generated `detent-human` issue linked to executable
+work. The removed question-migration endpoint cannot convert it. For each
+affected dependent, first inspect the generated source and confirm that it is
+an unresolved generated question, not a software dependency or an intentional
+standalone human task. Record the unresolved decision as a concrete blocked
+Workpad `human_action` on the dependent, preserving unrelated blockers and its
+PR. Then remove the generated source from the dependent's `Depends on:` or
+`Blocked by:` line and from any native tracker dependency relation. Detent
+keeps the dependent in Blocked with "Needs you" until the action is cleared as
+above. Repeat for every dependent before retiring the generated source as not
+planned, with a link to the dependents; retain the source and its comments as
+history. Already completed dependents stay completed. Never treat closing the
+source as approval of the decision or permission for an external action.
+
 ## Dependency configuration
 
 Workpad blockers may declare live evidence directly. Each typed blocker names
