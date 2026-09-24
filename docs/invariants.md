@@ -31,7 +31,18 @@ or manufacture a current-attempt completion claim for cleanliness accounting.
 `TestCompletionForgeEvidencePreservesReceipt` exercises these shared consumers.
 `TestCompletionForgeEvidence`, `TestCompletionForgeEvidenceClassification`, and
 `TestCompletionForgeEvidenceDispatch` cover classification and dispatch in both
-active lanes; no-PR work remains eligible for implementation. A rebase with the
+active lanes; no-PR work remains eligible for implementation.
+
+Orphaned
+provider-session resumes use the new dispatch's durable attempt ID and
+generation in their completion handoff. The existing resume selection rejects
+an orphaned request missing either value before starting a turn; its ordinary
+retry starts a fresh attempt. This keeps the current-attempt matcher
+authoritative without another recovery path.
+`TestRestartResumeDispatchCompletionIdentity` and
+`TestRunnerRunCompletionLeaseOnOrphanResume` cover this handoff.
+
+A rebase with the
 same captured PR diff fingerprint is no-progress unless a current-attempt Workpad
 completion claim or superseded stale assertion is corroborated by an open,
 non-draft, conflict-free PR with no failing CI (pending is allowed), or

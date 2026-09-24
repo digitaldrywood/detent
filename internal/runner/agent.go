@@ -1361,6 +1361,9 @@ func (r *Runner) runRequestResumeState(
 		if agentResumeStateEmpty(req.ResumeState) {
 			return store.AgentResumeState{}, errors.New("resume retry requested without resume state")
 		}
+		if req.ResumeState.Orphaned && (req.WorkAttemptID <= 0 || req.Generation == 0) {
+			return store.AgentResumeState{}, errors.New("orphaned session resume requires completion attempt and generation")
+		}
 		return req.ResumeState, nil
 	default:
 		return r.agentResumeState(ctx, cfg, req, model, backendID, backendKind, agentRole), nil
@@ -1400,10 +1403,6 @@ func verifyAgentResume(ctx context.Context, backend AgentBackend, process AgentP
 func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult, returnErr error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if req.RetryMode == RetryModeResume && req.ResumeState.Orphaned &&
-		(req.WorkAttemptID <= 0 || req.Generation == 0) {
-		return RunResult{}, errors.New("orphaned session resume requires completion attempt and generation")
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
 	if req.Policy.ID != "" || workflow.Config.Policy.ID != "" {
