@@ -172,6 +172,12 @@ innocent issues and left the operator to return them to work.
 **Enforcement:** `TestPreTurnFailuresDrainInstance` and
 `TestObservedLanePreTurnFailureRemainsInstanceOwned` exercise instance attribution
 and preserve issue ownership even after an observed lane change.
+`TestRunnerWorkspaceTimeoutIsNotForgeUnavailable` keeps `Create` failures under
+workspace preparation even when an `after_create` hook includes a loopback URL
+and timeout text; the runner no longer presents every workspace failure as a
+`git fetch` failure. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
+checks that these failures drain the instance without a forge condition or
+issue retry accounting. Actual remote write timeouts still use forge availability.
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
 completion handlers to triage workspace, startup, transport, protocol, and capacity
 failures. These failures publish no triage comment and do not consume the triage

@@ -4112,6 +4112,47 @@ func TestRunnerPublishesWorkspaceCreateStartedBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestRunnerWorkspaceTimeoutIsNotForgeUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		failure string
+	}{
+		{"after_create database", "after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded"},
+		{"workspace fetch", "git fetch https://github.com/acme/repo: context deadline exceeded"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			failure := errors.New(tt.failure)
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{}, Workspace: &fakeWorkspaceBackend{createErr: failure}, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-workspace", Identifier: "acme/repo#1"}})
+			if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, failure) {
+				t.Fatalf("workspace error = %v", err)
+			}
+			if _, ok := forgeavailability.As(err); ok {
+				t.Fatalf("workspace error entered forge availability: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoteWriteTimeoutStillClassifiesForgeUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"git push", "gh pr create"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			err := classifyForgeOperationError(errors.New("https://github.com/acme/repo: context deadline exceeded"), operation, "github.com")
+			availability, ok := forgeavailability.As(err)
+			if !ok || availability.Class != forgeavailability.ClassTimeout || availability.Scope.Host != "github.com" {
+				t.Fatalf("%s error = %v, want github.com forge timeout", operation, err)
+			}
+		})
+	}
+}
+
 func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
 	t.Parallel()
 

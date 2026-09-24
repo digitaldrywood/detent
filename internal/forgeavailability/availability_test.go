@@ -14,6 +14,7 @@ func TestClassify(t *testing.T) {
 	}{
 		{name: "git HTTP 503", operation: "git push", detail: "fatal: unable to access repository: HTTP 503", wantClass: ClassServer, want: true},
 		{name: "git timeout", operation: "git push", detail: "ssh: connect to host github.com port 22: Operation timed out", wantClass: ClassTimeout, want: true},
+		{name: "pull request timeout", operation: "gh pr create", detail: "Post https://api.github.com/repos/acme/repo/pulls: context deadline exceeded", wantClass: ClassTimeout, want: true},
 		{name: "git DNS", operation: "git push", detail: "ssh: Could not resolve hostname github.com: no such host\nfatal: Could not read from remote repository.", wantClass: ClassTransport, want: true},
 		{name: "git fetch server error", operation: "git fetch", detail: "remote: HTTP 503 Service Unavailable", wantClass: ClassServer, want: true},
 		{name: "pull request server error", operation: "codex_apps/github.create_pull_request", detail: `{"status":502,"message":"unavailable"}`, wantClass: ClassServer, want: true},
