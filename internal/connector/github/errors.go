@@ -97,7 +97,7 @@ func (e *RESTFanoutDeferralError) Error() string {
 	if e == nil {
 		return ErrRESTFanoutDeferred.Error()
 	}
-	return fmt.Sprintf("%s: endpoint family %s reached request cap %d", ErrRESTFanoutDeferred, strings.TrimSpace(e.EndpointFamily), e.FanoutCap)
+	return fmt.Sprintf("%s: rest fanout cap %d reached (shared across endpoint families; refused: %s)", ErrRESTFanoutDeferred, e.FanoutCap, strings.TrimSpace(e.EndpointFamily))
 }
 
 func (e *RESTFanoutDeferralError) Unwrap() error {

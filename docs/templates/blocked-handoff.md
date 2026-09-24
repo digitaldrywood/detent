@@ -2,6 +2,8 @@
 
 One `## Codex Workpad`: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
 
+PR handoff: record gate and current-head check results. Skipped checks are not passes. With merge-group-only CI, expected skips allow handoff; merge-group suite must pass before merge.
+
 The orchestrator is the only writer of tracker lane state. Never change lane labels or status fields, even if WORKFLOW says otherwise.
 
 POST real blocker `issue_id` to `dependencies/blocked_by` before coding; retain `Depends on: owner/repo#123`. Refs: positive `#N` or `owner/repo#N`, not URLs. Symbolic refs (`instance:tool`) are instance-owned; clear via Workpad. No YAML `blocked_by`.

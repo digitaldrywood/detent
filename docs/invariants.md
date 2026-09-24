@@ -101,6 +101,10 @@ tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
 Accepted operational completions also close the issue in the existing terminal
 transition; merged PR completion does not depend on a closing keyword (#2911).
+When GitHub closes a linked issue as completed during the merge, a redundant
+close returning 422 is accepted only after a fresh issue read confirms that
+closed/completed state. Open issues and other closure reasons retain the close
+error, so the terminal lane is published only after confirmed closure (#3028).
 The existing completion comment links the issue closure.
 `TestCompletionTransitionClosesIssue` covers both completion paths.
 
@@ -1104,6 +1108,13 @@ required contexts. `TestNativeMergeQueueSkippedChecks` and
 `TestAttemptTriageSkippedChecks` ensures triage describes skipped checks as not
 fully verified, even when the provider aggregate is green (#2948).
 
+The command-gate promotion path shares this queue eligibility rule only after a
+native queue inspection confirms availability for the same PR head. A pending
+aggregate caused by completed skipped checks can then enter Merging; no queue,
+missing or unfinished checks, failed checks, and a changed head stay ineligible.
+This does not count skipped checks as passed tests. `TestAutoPromoteSkippedPRChecksOnlyWithNativeQueue`
+and `TestCommandGateQueueEligibleCI` cover the handoff to the merge group.
+
 **Why:** Competing speculative merge work and repeated head invalidations
 contributed to the measured rebase and CI loop.
 
@@ -1145,6 +1156,12 @@ changing the ownership or fallback behavior.
 ## INV-5 — CI once per ready head
 
 **Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
+
+The implementation handoff records passing local validation and expected skipped
+current-head PR checks separately. Skipped PR jobs are not evidence that the
+suite passed. Queue-eligible skipped checks allow promotion only when the native
+queue is available for that head. The full suite must pass on the merge-group
+commit before merge.
 
 **Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
 Verify job; draft iteration avoids paying this cost before local review ends.
@@ -1320,13 +1337,15 @@ still apply. Queued acquisitions consolidate overlapping-call ordering and
 retained demand into executable requests; they introduce no selected-slot
 reservation, configuration, or recovery mechanism.
 
-Merge scheduling serializes only running merges against the same repository/base
-(#2572). CI waits, retries, claims without running work, and unready heads do not
-exclude ready competitors. Aged heads retain ordering preference when ready.
-`TestMergeIdleHeadDoesNotReserveSlot` checks planner dispatch, fresh candidates,
-and native queue admission, including independent base branches. The existing
-`merge_ci_reservation` reason now denotes only a running merge; its detail names
-the running issue. `merge_fairness_head_reserved` is retired from producers and
+Merge scheduling admits ready workers in the same repository up to the configured
+Merging state capacity (#3023). CI waits, retries, claims without running work,
+and unready heads do not exclude ready competitors. Aged heads retain ordering
+preference when ready. `TestMergeDispatchUsesMergingCapacity` checks fresh and
+retry dispatch with limits of one and three; `TestMergeIdleHeadDoesNotReserveSlot`
+checks planner dispatch, fresh candidates, and native queue admission.
+The `merge_ci_reservation` dispatch reason is retired. Native merge queue admission
+still defers enqueueing behind a running merge in its repository, without holding
+a worker slot. `merge_fairness_head_reserved` remains retired from producers and
 covered by the source scanner; historical configuration remains readable.
 CI wait metadata remains compatible on disk but is keyed by issue in memory so
 concurrent waits preserve separate deadlines and refresh state across restart

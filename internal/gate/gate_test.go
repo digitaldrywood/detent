@@ -679,12 +679,40 @@ func TestEvaluatePlan(t *testing.T) {
 	}
 }
 
+func TestCommandGateQueueEligibleCI(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		status   string
+		eligible bool
+		want     Action
+	}{
+		{name: "pending without queue evidence", status: "pending", want: ActionSkip},
+		{name: "pending with queue evidence", status: "pending", eligible: true, want: ActionPass},
+		{name: "failed with queue evidence", status: "failure", eligible: true, want: ActionRework},
+		{name: "missing with queue evidence", eligible: true, want: ActionSkip},
+		{name: "passed without queue evidence", status: "success", want: ActionPass},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Evaluate(Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework, RequireAutomatedReview: new(false)}, nil,
+				Summary{PullRequestURL: "https://github.test/pull/42", CIStatus: tt.status, QueueEligibleCI: tt.eligible}, time.Now(), EvaluationOptions{})
+			if got.Action != tt.want {
+				t.Fatalf("Evaluate() = %#v, want action %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
 	t.Parallel()
 
 	got := Instructions(Config{Kind: KindCommand, Run: "make check", RequireAutomatedReview: new(false)})
 	for _, want := range []string{
-		"Run `make check` from the workspace root; require green current-head CI before promotion",
+		"Run `make check` from the workspace root; require eligible current-head checks before promotion",
+		"Skipped is not a test pass",
+		"For merge-group-only CI, require passing merge-group checks before merge",
 		"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation",
 		"otherwise rerun `make check`",
 		"REST backoff",

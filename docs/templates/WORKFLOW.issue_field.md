@@ -10,8 +10,10 @@ human questions, completion, and tracker ownership contract.
 - `<required-stage-category>`: local command `<project-command>`; CI check `<project-check-name>`.
 
 Whenever you touch CI configuration or perform a review, verify every declared
-stage exists and passes on the current pull request head. Do not rely on Detent
-or `detent doctor` to infer required stages or inspect CI configuration.
+stage exists and runs its mapped tool. Require passing PR-head checks when jobs
+run there. For merge-group-only CI, report expected PR skips and require passing
+merge-group checks before merge. Do not rely on Detent or `detent doctor` to
+infer required stages or inspect CI configuration.
 
 ## Validation
 
@@ -32,7 +34,9 @@ Before rebase, preserve the effective diff; after rebase compare with
 
 Commit, push, and open a draft PR referencing the
 issue. Review the diff and address actionable feedback before marking ready.
-Verify current-head CI and reviews before reporting completion.
+Verify current-head check conclusions and reviews before reporting completion.
+Report skipped PR checks as skipped, never as passing tests. When real CI runs
+only on merge groups, require successful merge-group checks before merge.
 
 ### State: Todo
 
@@ -48,10 +52,10 @@ shared delivery steps from the current state.
 ### State: Rework
 
 Read human, CI, and bot feedback. Fix actionable findings and deliver the
-updated PR using the shared validation rule. Verify current-head CI and reviews.
+updated PR using the shared validation rule. Verify current-head check conclusions and reviews.
 
 ### State: Merging
 
 Rebase onto the current base, follow the shared validation rule, and push.
-Wait for current-head CI and address actionable review. Merge using the
+Wait for the applicable current-head or merge-group CI and address actionable review. Merge using the
 configured strategy and exact head SHA, then report the result.

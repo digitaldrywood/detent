@@ -165,6 +165,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
+		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if mergeWorkerIssue(issue) {
 			// Merging consumes only the audit verdict here; its other gates remain
@@ -2071,17 +2072,12 @@ func mergeWorkerHeadReady(issue connector.Issue, cfg Config) bool {
 func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	o.reconcileMergeReservations(state, issues, now)
 	candidates := []connector.Issue{}
-	consumedRepositories := activeMergeWorkerRepositories(state)
 	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
 		issueID := strings.TrimSpace(issue.ID)
-		repository := nativeMergeQueueRepositoryKey(issue)
 		if mergeWorkerCIFailed(issue.PullRequest) {
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
-			continue
-		}
-		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
 			continue
 		}
 		if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
@@ -2092,7 +2088,6 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 			continue
 		}
 		candidates = append(candidates, cloneIssue(issue))
-		consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 	}
 	return candidates
 }

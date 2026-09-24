@@ -35,6 +35,7 @@ type AutoPromoteSummary struct {
 	PullRequestHydrationDegradedReason    string
 	MergeableState                        string
 	CIStatus                              string
+	NativeQueueEligibleHeadSHA            string
 	ReviewState                           string
 	ReviewPending                         bool
 	FailedChecks                          []string
@@ -211,7 +212,13 @@ func EvaluateAutoPromote(
 			cfg.Gate.SecurityAudit.Enabled = false
 		}
 	}
-	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
+	gateInput := gateSummary(summary)
+	if normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState) && issue.PullRequest != nil &&
+		summary.NativeQueueEligibleHeadSHA != "" && summary.NativeQueueEligibleHeadSHA == strings.TrimSpace(issue.PullRequest.HeadSHA) &&
+		nativeMergeQueueChecksReady(issue.PullRequest) {
+		gateInput.QueueEligibleCI = true
+	}
+	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateInput, now, gate.EvaluationOptions{
 		QuietDuration:              cfg.QuietDuration,
 		AutomatedReviewWaitExpired: summary.AutomatedReviewWaitExpired,
 	})

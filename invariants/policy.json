@@ -48,6 +48,7 @@
       "TestMachineIssueTool",
       "TestRunDispatchesQueuedRequestsWithoutPolling",
       "TestMergeIdleHeadDoesNotReserveSlot",
+      "TestMergeDispatchUsesMergingCapacity",
       "TestMergeWaitMetadataRemainsIndependent",
       "TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling",
       "TestQueuedDispatchPreservesRetry",

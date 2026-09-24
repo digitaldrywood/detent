@@ -92,6 +92,7 @@ type Summary struct {
 	PullRequestPresent bool
 	PullRequestURL     string
 	CIStatus           string
+	QueueEligibleCI    bool
 	ReviewState        string
 	ReviewPending      bool
 	P1Findings         []Finding
@@ -428,10 +429,10 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 			"```\n\n" +
 			"Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
 	default:
-		instructions := "Run `" + cfg.Run + "` from the workspace root; require green current-head CI before promotion. " +
+		instructions := "Run `" + cfg.Run + "` from the workspace root; require eligible current-head checks before promotion. Skipped is not a test pass. For merge-group-only CI, require passing merge-group checks before merge. " +
 			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) + ciTriggerLabelInstructions(cfg, hostname) +
 			"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation; otherwise rerun `" + cfg.Run + "`. " +
-			"Watch CI with REST backoff. Record quiet-window wait, local gate/CI durations, slow checks, and post-merge main CI in Workpad prose."
+			"Use REST backoff for CI. Record quiet-window, gate/CI, slow-check, and post-merge main-CI timings in Workpad."
 
 		switch AutomatedReviewMode(cfg) {
 		case AutomatedReviewRequired:
@@ -519,7 +520,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 		return decision(ActionSkip, ReasonMissingPullRequest)
 	}
 	ciStatus := normalizedCIStatus(summary.CIStatus)
-	if ciStatus != "green" {
+	if ciStatus != "green" && (ciStatus != "pending" || !summary.QueueEligibleCI) {
 		out := decision(ciFailureAction(cfg, summary.CIStatus), ReasonCINotGreen)
 		out.CIStatus = ciStatus
 		return out

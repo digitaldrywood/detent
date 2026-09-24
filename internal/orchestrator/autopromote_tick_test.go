@@ -5214,7 +5214,7 @@ func TestDecideMergeBaseRefresh(t *testing.T) {
 	}
 }
 
-func TestMergeWorkerDispatchCandidatesSelectsOneQueueHeadPerRepository(t *testing.T) {
+func TestMergeWorkerDispatchCandidatesSelectsUpToStateCapacity(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 21, 30, 0, 0, time.UTC)
@@ -5267,7 +5267,7 @@ func TestMergeWorkerDispatchCandidatesSelectsOneQueueHeadPerRepository(t *testin
 	for _, issue := range got {
 		gotIDs = append(gotIDs, issue.ID)
 	}
-	wantIDs := []string{"issue-phone-head", "issue-outlet-head"}
+	wantIDs := []string{"issue-phone-head", "issue-phone-sibling", "issue-outlet-head"}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("mergeWorkerDispatchCandidates() ids = %#v, want %#v", gotIDs, wantIDs)
 	}

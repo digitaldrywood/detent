@@ -53,19 +53,23 @@ Inside the serialized `Merging` lane, avoid duplicating the full local release
 gate when it does not buy new signal. If the PR already passed the pre-review
 gate, the branch rebases cleanly onto current `origin/main`, and no source files
 change during rebase, the merge agent should run a focused rebase/smoke gate
-locally and rely on required current-head CI for full enforcement. If the merge
-agent edits code, resolves conflicts, detects stale or unknown validation state,
+locally and rely on merge-group CI for full enforcement when using this
+repository's native queue. If the merge agent edits code, resolves conflicts,
+detects stale or unknown validation state,
 or cannot prove the final rebase was source-clean, it must run the full
 configured gate again.
 
-CI waiting should poll current-head REST check runs with backoff, not loop on
-GraphQL-heavy PR status commands. Required checks must run on the PR
-head before merge; post-merge integration failures are tracked separately.
+CI waiting should poll REST check runs with backoff, not loop on
+GraphQL-heavy PR status commands. This repository's required PR-head checks
+are expected to be skipped; record them as skipped. GitHub must run and pass
+the required checks on the merge-group commit before merge. Post-merge
+integration failures are tracked separately.
 Merge handoff telemetry should record the
 quiet-window wait, GitHub queue/start wait, local merge-gate duration,
-current-head PR CI duration, active slow-check runtimes, and whether post-merge
-`main` CI is still running. The quiet window, current-head required CI, and
-conflict/full-gate fallback are quality gates; repeated full local validation
+current-head PR check duration, merge-group CI duration, active slow-check
+runtimes, and whether post-merge `main` CI is still running. The quiet window,
+successful merge-group CI, and conflict/full-gate fallback are quality gates;
+repeated full local validation
 after a source-clean rebase, noisy status polling, uncached tool install, and
 duplicated non-blocking post-merge work are optimization targets.
 
@@ -74,10 +78,9 @@ it with `go install` on cache miss. CI builds golangci-lint `v2.9.0` with the
 repository Go toolchain so analyzer behavior and toolchain provenance stay
 aligned.
 
-PR-required checks are `Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and
-`Browser Visual`. `Security` also runs on every PR. These jobs run for docs-only
-PRs too; Browser Visual uses its existing smoke path for nonvisual changes.
-The same set runs for merge groups.
+Required checks are `Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and
+`Browser Visual`. `Security` is also reported on every PR. Real jobs are skipped
+on pull requests, including docs-only PRs; the same jobs run on merge groups.
 
 `Portability Verify (macos-latest)`, `Portability Verify (windows-latest)`,
 `Windows Core`, `Installer Smoke (ubuntu-latest)`,

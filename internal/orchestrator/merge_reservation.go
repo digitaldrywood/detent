@@ -45,20 +45,6 @@ func reserveMergeCandidate(state *State, issue connector.Issue, now time.Time) m
 	return reservation
 }
 
-// mergeReservationBlocks serializes only running merges against the same base.
-// Persisted CI wait metadata and retries never own the merge slot.
-func mergeReservationBlocks(state *State, issue connector.Issue, _ time.Time) (mergeReservation, bool) {
-	if state == nil || !mergeWorkerIssue(issue) {
-		return mergeReservation{}, false
-	}
-	for _, running := range state.Running {
-		if mergeWorkerIssue(running.Issue) && running.Issue.ID != issue.ID && nativeMergeQueueRepositoryKey(running.Issue) == nativeMergeQueueRepositoryKey(issue) {
-			return mergeReservation{IssueID: running.Issue.ID, Repository: mergeWorkerRepositoryKey(issue)}, true
-		}
-	}
-	return mergeReservation{}, false
-}
-
 func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Config, now time.Time) []mergeReservation {
 	current := make(map[string]connector.Issue, len(issues))
 	for _, issue := range issues {
