@@ -90,6 +90,46 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 	}
 }
 
+func TestAttachRequiredBranchChecksCarriesStrictPolicy(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		strict bool
+	}{
+		{name: "non-strict"},
+		{name: "strict", strict: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/example/repo/rules/branches/main":
+					fmt.Fprint(w, `[]`)
+				case "/repos/example/repo/branches/main/protection/required_status_checks":
+					fmt.Fprintf(w, `{"strict":%t,"contexts":["Verify"]}`, tt.strict)
+				default:
+					t.Errorf("unexpected policy path %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			number := 42
+			issue := connector.Issue{State: "Merging", PRRepository: "example/repo", PRNumber: &number,
+				PullRequest: &connector.PullRequest{Number: number, URL: "https://github.com/example/repo/pull/42", State: "open", BaseRef: "main", HeadSHA: "head", CIStatus: "success", Checks: []connector.PullRequestCheck{{Name: "Verify", Status: "completed", Conclusion: "success"}}}}
+			if err := c.attachRequiredBranchChecks(t.Context(), &issue); err != nil {
+				t.Fatal(err)
+			}
+			if issue.PullRequest.BaseBranchStrict != tt.strict || len(issue.PullRequest.RequiredCheckFailures) != 0 {
+				t.Fatalf("pull request policy = %+v, want strict=%t and green checks", issue.PullRequest, tt.strict)
+			}
+		})
+	}
+}
+
 func TestRefreshMergeQueuePolicyTracksRuleChanges(t *testing.T) {
 	t.Parallel()
 	var enabled atomic.Bool

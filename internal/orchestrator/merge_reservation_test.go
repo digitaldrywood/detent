@@ -747,7 +747,7 @@ func TestMergeReservationPersistsAndRestoresWait(t *testing.T) {
 			restarted := newState(cfg)
 			orch.restoreDurableMergeReservations(t.Context(), &restarted, []connector.Issue{issue}, now.Add(tt.age))
 			reservation := restarted.mergeReservations[issue.ID]
-			if tt.want && (reservation.ExpiresAt != now.Add(mergeWorkerCurrentHeadCIWaitTimeout) || (reservation.RefreshHeadSHA != "") != tt.refresh) {
+			if tt.want && (reservation.ExpiresAt != now.Add(mergeWorkerCurrentHeadCIWaitTimeout) || (reservation.RefreshHeadSHA != "") != tt.apiRefusal) {
 				t.Fatalf("restored reservation = %#v", reservation)
 			}
 			orch.restoreDurableMergeReservations(t.Context(), &restarted, []connector.Issue{issue}, now.Add(tt.age))

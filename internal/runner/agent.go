@@ -792,6 +792,9 @@ func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	if mergeable != "clean" {
 		return false
 	}
+	if pullRequest.BaseBranchStrict {
+		return false
+	}
 	if pullRequest.HydrationUnavailableReason != "" || pullRequest.HydrationDegradedReason != "" || len(pullRequest.RequiredCheckFailures) > 0 || pullRequest.MergeQueueEntry != nil {
 		return false
 	}

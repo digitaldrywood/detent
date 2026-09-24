@@ -2022,7 +2022,14 @@ func (o *Orchestrator) refreshMergeWorkerBase(
 	reason string,
 ) {
 	reservation := reserveMergeCandidate(state, issue, event.CompletedAt)
-	reservation.RefreshHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	// A fresh clean observation can use the already checked head after a
+	// transient behind result. Only an explicit merge API rejection forces a
+	// base refresh even if GitHub still reports the PR as clean.
+	if reason == "merge_api_rejected_out_of_date_base" {
+		reservation.RefreshHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	} else {
+		reservation.RefreshHeadSHA = ""
+	}
 	state.mergeReservations[reservation.IssueID] = reservation
 	running.Issue = issue
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess,

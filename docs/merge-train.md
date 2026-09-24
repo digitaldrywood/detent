@@ -19,10 +19,13 @@ permits delegation, Detent delegates every eligible green candidate to the repos
 through the serialized worker. GitHub owns merge-group validation and batching;
 Detent keeps the issues in `Merging`, observes their queue entries, and
 reconciles them to `Done` after GitHub reports the PR merged. Without a native
-queue, a BEHIND PR whose existing head is mergeable and already has green
-required checks is submitted to the exact-head merge API without rewriting
-the checked head. If GitHub explicitly rejects an out-of-date base, Detent
-refreshes that head and waits for its required CI. Other refusals, including
+queue, a CLEAN PR with green required checks on its current head and non-strict
+base protection is submitted to the exact-head merge API without rewriting
+that head. A transient BEHIND observation does not force a refresh if a fresh
+observation is CLEAN before the retry. Behind or dirty heads, non-green checks,
+and strict base protection use the existing sync path. If GitHub explicitly
+rejects an out-of-date base, Detent refreshes that head and waits for its
+required CI even if the next observation is CLEAN. Other refusals, including
 failed checks, conflicts, permissions, changed heads, and native queue
 requirements, do not authorize this refresh fallback. If a refreshed head
 is missing required contexts, Detent routes the issue to `Rework` instead of
