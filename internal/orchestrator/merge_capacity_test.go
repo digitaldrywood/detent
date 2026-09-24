@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestReadyMergeAtWorkerCapacity(t *testing.T) {
@@ -55,6 +57,68 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 	}
 }
 
+func TestSixCleanHeadsMergeWithinTenMinutesAfterTransientBehind(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 3, MaxConcurrentAgentsByState: map[string]int{"Merging": 3},
+		ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true,
+		ContinuationRetryDelay: time.Second})
+	issues := make([]connector.Issue, 6)
+	for index := range issues {
+		issues[index] = readyMergeCapacityIssue(fmt.Sprintf("issue-%d", index), 3045+index)
+		issues[index].PullRequest.HeadSHA = fmt.Sprintf("green-head-%d", index)
+	}
+	tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: cloneIssues(issues)}}
+	workspaceBackend := &mergeFastPathWorkspace{info: workspace.Info{Path: t.TempDir(), Branch: "detent/test"}, result: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadChanged: true}}
+	runner, err := runpkg.NewRunner(runpkg.Dependencies{Workflow: workflowconfig.Workflow{}, Workspace: workspaceBackend, AgentBackend: &mergeFastPathAgentBackend{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch := &Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 6), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	for _, issue := range issues {
+		behind := cloneIssue(issue)
+		behind.PullRequest.MergeableState = "behind"
+		orch.refreshMergeWorkerBase(t.Context(), &state,
+			runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}},
+			Running{Issue: behind, Attempt: 1, Mode: runpkg.RunModeMerge}, behind, "pull_request_base_behind")
+	}
+	for _, issue := range issues {
+		if !orch.dispatchPlanner().readyMergeControlCandidate(&state, issue) {
+			t.Fatalf("clean green PR %d still requires a base sync after a transient behind observation", issue.PullRequest.Number)
+		}
+	}
+	for minute := range 10 {
+		mergedBefore := len(tracker.merges)
+		orch.dispatchReadyIssues(t.Context(), &state, issues, now.Add(time.Duration(minute+1)*time.Minute))
+		if len(tracker.merges) == mergedBefore {
+			orch.handleRunResult(t.Context(), &state, receiveMergeFastPathCompletion(t, orch.runResults))
+		}
+		if len(tracker.merges) == len(issues) {
+			break
+		}
+	}
+	if len(tracker.merges) != len(issues) {
+		t.Fatalf("merged %d of %d clean heads within 10 minutes", len(tracker.merges), len(issues))
+	}
+	if workspaceBackend.prepareCalls.Load() != 0 {
+		t.Fatalf("PrepareMerge called %d times for six clean checked heads", workspaceBackend.prepareCalls.Load())
+	}
+	wantedHeads := make(map[int]string, len(issues))
+	for _, issue := range issues {
+		wantedHeads[issue.PullRequest.Number] = issue.PullRequest.HeadSHA
+	}
+	for _, merge := range tracker.merges {
+		if want := wantedHeads[merge.number]; merge.headSHA != want || want == "" {
+			t.Fatalf("PR %d merged head %q, want %q", merge.number, merge.headSHA, want)
+		}
+		delete(wantedHeads, merge.number)
+	}
+	if len(wantedHeads) != 0 {
+		t.Fatalf("unmerged PRs: %v", wantedHeads)
+	}
+}
+
 func readyMergeCapacityIssue(id string, number int) connector.Issue {
 	issue := dispatchTestIssue(id, "Merging")
 	issue.Identifier = fmt.Sprintf("digitaldrywood/detent#%d", number)
@@ -84,6 +148,7 @@ func TestReadyMergeCapacitySafety(t *testing.T) {
 		{name: "draft", mutate: func(i *connector.Issue) { i.PullRequest.Draft = true }},
 		{name: "unknown base", mutate: func(i *connector.Issue) { i.PullRequest.BaseSHA = "" }},
 		{name: "CI failed", mutate: func(i *connector.Issue) { i.PullRequest.CIStatus = "failure" }},
+		{name: "strict base", mutate: func(i *connector.Issue) { i.PullRequest.BaseBranchStrict = true }},
 		{name: "behind", mutate: func(i *connector.Issue) { i.PullRequest.MergeableState = "behind" }},
 		{name: "merging lane full", setup: func(s *State, _ connector.Issue) {
 			running := s.Running["running-0"]
