@@ -153,7 +153,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"Prose is not a blocker.",
 		"Already-merged work needs no authorization.",
 		"completion_merged_pr", "completion_merge_commit", "completion_branch_head",
-		"completion_ancestry: verified", "Ask if evidence is missing.",
+		"completion_ancestry: verified", "Missing evidence needs a blocked Workpad `human_action`.",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
 		"## Available skills",

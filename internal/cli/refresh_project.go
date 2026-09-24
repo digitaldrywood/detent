@@ -667,7 +667,7 @@ func projectRefreshFeatures(existing *yaml.Node, desired *yaml.Node) []projectRe
 func refreshProjectWorkflow(existing string, generated string, cfg workflowconfig.Config) string {
 	refreshed := trimProjectRefreshHandoff(existing)
 	if !strings.Contains(refreshed, "Detent-appended Blocked handoff") {
-		refreshed = "Use the Detent-appended Blocked handoff block for the Workpad, dependencies, human questions, completion, and tracker ownership contract.\n\n" + refreshed
+		refreshed = "Use the Detent-appended Blocked handoff block for the Workpad, dependencies, human actions, completion, and tracker ownership contract.\n\n" + refreshed
 	}
 	for _, heading := range []string{"## Validation", "## Browser verification", "## Required Execution Flow", "## Blocked handoff"} {
 		section, _ := projectRefreshMarkdownSection(generated, heading)

@@ -54,14 +54,10 @@ appear. The operator routine below produces these writes; the report does not
 execute remediations. Each action includes its ledger ID, project, issue, kind,
 reason, time, and evidence link.
 
-Decisions include published unanswered durable questions and current explicit
-human-action gates. Answered questions and unpublished reservations are
-excluded. A question is also excluded when the current PR refusal fingerprint
-is nonempty and differs from the stored question fingerprint, matching the
-orchestrator’s question-wait rule. This filtering precedes gate deduplication
-so a superseded question cannot hide a current human-action gate. Issue links, including durable GitHub question-comment links when
-available, provide the context needed to answer. Decisions are independent of
-the action cursor.
+Decisions include current explicit Workpad human actions and other human gates.
+Historical question receipts are excluded from live decisions. Issue and PR
+links provide the context needed to act. Decisions are independent of the
+action cursor.
 
 ## Operator routine
 

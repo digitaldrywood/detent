@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -137,7 +138,15 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 		if !ok || !record.DependencyDeferral || record.Reason != implementDependencyDeferralReason || len(record.DependencyBlockers) == 0 {
 			continue
 		}
-		record.DependencyBlockers = o.withoutMigratedHumanBlockers(ctx, issue, record.DependencyBlockers)
+		// A current prose dependency list supersedes the completion receipt.
+		// This also releases sources removed during legacy migration.
+		if issue.DependencySource == connector.BlockedRefSourceProse {
+			record.DependencyBlockers = slices.DeleteFunc(record.DependencyBlockers, func(blocker implementDependencyBlocker) bool {
+				return !slices.ContainsFunc(issue.BlockedBy, func(ref connector.BlockedRef) bool {
+					return normalizedIssueIdentifier(ref.Identifier) == normalizedIssueIdentifier(blocker.Identifier)
+				})
+			})
+		}
 		if len(record.DependencyBlockers) == 0 {
 			continue
 		}

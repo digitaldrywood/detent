@@ -2298,8 +2298,9 @@ func workerCredentialBlockerError(message string) error {
 	firstLine, _, _ := strings.Cut(message, "\n")
 	firstLine = strings.TrimSpace(strings.TrimLeft(firstLine, "#>*_- "))
 	blocked := strings.HasPrefix(strings.ToLower(firstLine), "blocked") || strings.HasPrefix(strings.ToLower(firstLine), "work is blocked")
-	credentialQuestion := IsWorkerGitHubCredentialQuestion(message)
-	if (!blocked || !workerGitHubCredentialFailureDetail(message)) && !credentialQuestion {
+	credentialBlocker := blocked && workerGitHubCredentialFailureDetail(message)
+	supportRequest := workerGitHubSupportRequest(message)
+	if !credentialBlocker && !supportRequest {
 		return nil
 	}
 	return &DeliverableCommandError{
@@ -2308,11 +2309,14 @@ func workerCredentialBlockerError(message string) error {
 		Status:         "blocked",
 		Message:        truncateDeliverableDetail(firstLine),
 		Body:           truncateDeliverableDetail(message),
-		ApprovalDenied: credentialQuestion,
+		ApprovalDenied: supportRequest,
 	}
 }
 
-func IsWorkerGitHubCredentialQuestion(detail string) bool {
+// workerGitHubSupportRequest catches final messages that ask a person to repair
+// worker access or perform a GitHub write. Those are instance failures even
+// when the worker phrases them as a question instead of a blocked report.
+func workerGitHubSupportRequest(detail string) bool {
 	detail = strings.ToLower(strings.TrimSpace(detail))
 	if !strings.Contains(detail, "?") {
 		return false
@@ -2327,13 +2331,9 @@ func IsWorkerGitHubCredentialQuestion(detail string) bool {
 	if !githubScoped {
 		return false
 	}
-	// Use the same access-failure evidence as worker outcomes. Credential and
-	// authentication terminology alone also occurs in ordinary design questions.
 	if githubCredentialFailureDetail(detail) {
 		return true
 	}
-	// Match the requested action independently of the polite auxiliary and of
-	// the connector name between the action and its object.
 	if strings.Contains(detail, "write access") {
 		for _, action := range []string{"you enable", "you grant", "you allow"} {
 			if strings.Contains(detail, action) {
@@ -2374,7 +2374,7 @@ func workerGitHubCredentialFailureDetail(detail string) bool {
 }
 
 func deliverableCredentialFailureDetail(detail string) bool {
-	if githubCredentialFailureDetail(detail) || IsWorkerGitHubCredentialQuestion(detail) {
+	if githubCredentialFailureDetail(detail) || workerGitHubSupportRequest(detail) {
 		return true
 	}
 	detail = strings.ToLower(strings.TrimSpace(detail))

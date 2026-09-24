@@ -20,9 +20,10 @@
       "TestConfiguredTerminalRetryAfterStoreRestart",
       "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
       "TestStartupDoesNotReclaimLiveWorkAttempts",
-      "TestHumanQuestionRestartAndConcurrentRequests",
-      "TestHumanQuestionReplyAuthorization",
-      "TestHumanQuestionIndependentRework",
+      "TestINV14DispatchQuestionTool",
+      "TestINV14LegacyQuestionRowDispatch",
+      "TestFirstHumanBlockerCompletionReachesBlocked",
+      "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
       "TestPreTurnFailuresDrainInstance",
       "TestPlanCompletionCoordinationDeferral",
@@ -73,6 +74,7 @@
       "TestINV12BackendToolchainEnvironment"
     ],
     "./internal/store": [
+      "TestLegacyHumanQuestionReceiptsReadable",
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
     ],
     "./internal/release": [
@@ -146,9 +148,13 @@
     "./internal/workpad": [
       "TestMergedCompletionEvidence"
     ],
+    "./internal/web": [
+      "TestOperationsWorkpadHumanAction"
+    ],
     "./internal/web/templates": [
       "TestINV13BoardCardContent",
-      "TestINV13SheetObservations"
+      "TestINV13SheetObservations",
+      "TestBoardCardSignalBudget"
     ]
   }
 }

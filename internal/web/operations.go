@@ -48,36 +48,9 @@ func (s *Server) operationsReport(c echo.Context) (operations.Report, error) {
 			}
 		}
 	}
-	decisions := make([]operations.Decision, 0, len(report.Decisions))
-	for _, d := range report.Decisions {
-		issue, current := currentIssues[operationsProjectIssueKey(operationsProjectScope(d.ProjectID, snapshot.Project.ID), d.Issue)]
-		issueURL := ""
-		if current {
-			issueURL = issue.URL
-		}
-		projectID := operationsProjectScope(d.ProjectID, snapshot.Project.ID)
-		d.ProjectID = projectID
-		decisionHost := s.operationsDecisionHost(projectID, issueURL)
-		keys := operationsDecisionKeys(projectID, d.Issue, "", decisionHost)
-		if operationsDecisionSeen(seen, keys) {
-			continue
-		}
-		if current && operationsPullRequestSupersedesQuestion(issue.PullRequest) {
-			continue
-		}
-		// Match humanQuestionWaiting: only nonempty current evidence supersedes a question.
-		if current && issue.PullRequest != nil && issue.PullRequest.HumanQuestionWorkFingerprint != "" && issue.PullRequest.HumanQuestionWorkFingerprint != d.WorkFingerprint {
-			continue
-		}
-		d.Kind = "question"
-		if current {
-			d.Title = issue.Title
-		}
-		d.URL = operationsQuestionURL(d.URL, issueURL, decisionHost)
-		decisions = append(decisions, d)
-		operationsMarkDecisionSeen(seen, keys)
-	}
-	report.Decisions = decisions
+	// Legacy question receipts are not live decisions. Current Workpad human
+	// actions and other gate evidence below provide the operations decisions.
+	report.Decisions = []operations.Decision{}
 	blockedByIssue := map[string]telemetry.Blocked{}
 	for _, row := range snapshot.Blocked {
 		projectID := operationsProjectScope(row.ProjectID, snapshot.Project.ID)
@@ -248,22 +221,6 @@ func operationsURLHost(rawURL string) string {
 	return strings.ToLower(strings.TrimSpace(parsed.Host))
 }
 
-func operationsQuestionURL(storedURL string, currentIssueURL string, host string) string {
-	stored, storedErr := url.Parse(strings.TrimSpace(storedURL))
-	current, currentErr := url.Parse(strings.TrimSpace(currentIssueURL))
-	if currentErr == nil && current.IsAbs() {
-		if current.Fragment == "" && storedErr == nil {
-			current.Fragment = stored.Fragment
-		}
-		return current.String()
-	}
-	if storedErr == nil && stored.IsAbs() && strings.TrimSpace(host) != "" {
-		stored.Host = strings.TrimSpace(host)
-		return stored.String()
-	}
-	return storedURL
-}
-
 func operationsProjectScope(projectID string, fallback string) string {
 	if projectID = strings.TrimSpace(projectID); projectID != "" {
 		return projectID
@@ -288,7 +245,7 @@ func operationsGlobalIssueIdentifier(identifier string) bool {
 	return strings.IndexFunc(number, func(r rune) bool { return r < '0' || r > '9' }) == -1
 }
 
-func operationsPullRequestSupersedesQuestion(pr *telemetry.PullRequest) bool {
+func operationsPullRequestClosed(pr *telemetry.PullRequest) bool {
 	if pr == nil {
 		return false
 	}
@@ -397,7 +354,7 @@ func operationsRequiredGateDecision(issue telemetry.Issue, projectID string, rev
 	if issue.RequiredGate != nil {
 		humanAction = strings.TrimSpace(issue.RequiredGate.HumanAction)
 	}
-	pullRequestClosed := operationsPullRequestSupersedesQuestion(issue.PullRequest)
+	pullRequestClosed := operationsPullRequestClosed(issue.PullRequest)
 	canSynthesizePullRequestReview := strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(reviewPolicy.sourceState)) && issue.PullRequest != nil && !pullRequestClosed
 	isPullRequestReview := false
 	if humanAction == "" && reviewPolicy.required && canSynthesizePullRequestReview {
@@ -530,7 +487,7 @@ func (s *Server) snapshotMissingRequiredChecks(snapshot telemetry.Snapshot) tele
 		result := append([]telemetry.Issue(nil), issues...)
 		for i, issue := range result {
 			policy := s.operationsProjectHumanReviewPolicy(issue, snapshot.Project.ID)
-			if !policy.configured || policy.ciTriggerLabel != "" || !strings.EqualFold(strings.TrimSpace(issue.State), "Merging") || issue.PullRequest == nil || operationsPullRequestSupersedesQuestion(issue.PullRequest) || operationsStateIn(issue.State, policy.terminalStates) {
+			if !policy.configured || policy.ciTriggerLabel != "" || !strings.EqualFold(strings.TrimSpace(issue.State), "Merging") || issue.PullRequest == nil || operationsPullRequestClosed(issue.PullRequest) || operationsStateIn(issue.State, policy.terminalStates) {
 				continue
 			}
 			if issue.RequiredGate != nil && issue.RequiredGate.HumanAction != "" {

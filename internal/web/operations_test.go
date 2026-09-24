@@ -98,68 +98,11 @@ func TestOperationsHandlers(t *testing.T) {
 	}
 }
 
-func TestOperationsCurrentDecisionEvidence(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct{ name, stored, current, gate, prState, want string }{
-		{name: "current question", stored: "current", current: "current", gate: "New gate?", want: "Original question?"},
-		{name: "superseded question", stored: "old", current: "current"},
-		{name: "superseded question allows current gate", stored: "old", current: "current", gate: "New gate?", want: "New gate?"},
-		{name: "unfingerprinted question superseded", current: "current", gate: "New gate?", want: "New gate?"},
-		{name: "no new refusal evidence", stored: "old", want: "Original question?"},
-		{name: "closed pull request supersedes question", stored: "current", current: "current", prState: "CLOSED"},
-		{name: "merged pull request supersedes question", stored: "current", current: "current", prState: "MERGED"},
-		{name: "closed pull request preserves independent gate", stored: "current", current: "current", gate: "Restore deployment credentials.", prState: "CLOSED", want: "Restore deployment credentials."},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			deps := testDeps(t)
-			backend := openWebTestStore(t)
-			q := store.HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "choice", Body: "Original question?", WorkFingerprint: tc.stored, QuestionCommentID: "123"}
-			questions := backend.(store.HumanQuestionStore)
-			if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
-				t.Fatal(err)
-			}
-			if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
-				t.Fatal(err)
-			}
-			deps.Store = backend
-			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "i", ProjectID: "p", Identifier: q.Identifier, RequiredGate: &telemetry.RequiredGate{HumanAction: tc.gate}, PullRequest: &telemetry.PullRequest{HumanQuestionWorkFingerprint: tc.current, State: tc.prState}}}}); err != nil {
-				t.Fatal(err)
-			}
-			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
-			if err != nil {
-				t.Fatal(err)
-			}
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
-			req.RemoteAddr = "127.0.0.1:12345"
-			rec := httptest.NewRecorder()
-			server.Handler().ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-			}
-			var report operations.Report
-			if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
-				t.Fatal(err)
-			}
-			if tc.want == "" {
-				if len(report.Decisions) != 0 {
-					t.Fatalf("superseded decisions: %#v", report.Decisions)
-				}
-				return
-			}
-			if len(report.Decisions) != 1 || report.Decisions[0].Question != tc.want {
-				t.Fatalf("decisions: %#v, want %q", report.Decisions, tc.want)
-			}
-		})
-	}
-}
-
 func TestOperationsHumanDecisionAggregation(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 11, 16, 42, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name             string
-		recorded         []operations.Decision
 		snapshot         telemetry.Snapshot
 		wantKind         string
 		wantQuestion     string
@@ -346,42 +289,6 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			}},
 		},
 		{
-			name:         "closed pull request supersedes published question",
-			recorded:     []operations.Decision{{ProjectID: "detent", Issue: "digitaldrywood/detent#2465", Question: "Choose a recovery?", WorkFingerprint: "same"}},
-			snapshot:     telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "closed", ProjectID: "detent", Identifier: "digitaldrywood/detent#2465", PullRequest: &telemetry.PullRequest{State: "CLOSED", HumanQuestionWorkFingerprint: "same"}}}},
-			wantKind:     "",
-			wantQuestion: "",
-		},
-		{
-			name: "duplicate durable questions",
-			recorded: []operations.Decision{
-				{ProjectID: "alpha", Issue: "owner/repo#99", Question: "Choose a recovery?", URL: "https://github.com/owner/repo/issues/99"},
-				{ProjectID: "beta", Issue: "owner/repo#99", Question: "Choose a recovery?", URL: "https://github.com/owner/repo/issues/99"},
-			},
-			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
-				{ID: "alpha-question", ProjectID: "alpha", Identifier: "owner/repo#99", URL: "https://github.com/owner/repo/issues/99"},
-				{ID: "beta-question", ProjectID: "beta", Identifier: "owner/repo#99", URL: "https://github.com/owner/repo/issues/99"},
-			}},
-			wantKind:     "question",
-			wantQuestion: "Choose a recovery?",
-		},
-		{
-			name:     "question freshness evidence stays project scoped",
-			recorded: []operations.Decision{{ProjectID: "alpha", Issue: "owner/repo#99", Question: "Choose a recovery?", WorkFingerprint: "alpha-current"}},
-			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
-				{ID: "alpha", ProjectID: "alpha", Identifier: "owner/repo#99", Title: "Alpha question", PullRequest: &telemetry.PullRequest{State: "OPEN", HumanQuestionWorkFingerprint: "alpha-current"}},
-				{ID: "beta", ProjectID: "beta", Identifier: "owner/repo#99", Title: "Beta closed copy", PullRequest: &telemetry.PullRequest{State: "CLOSED", HumanQuestionWorkFingerprint: "beta-current"}},
-			}},
-			wantKind:     "question",
-			wantQuestion: "Choose a recovery?",
-			check: func(t *testing.T, decision operations.Decision) {
-				t.Helper()
-				if decision.Title != "Alpha question" {
-					t.Fatalf("question title = %q, want alpha project evidence", decision.Title)
-				}
-			},
-		},
-		{
 			name:             "configured manual pull request review gate",
 			configureProject: true,
 			snapshot: telemetry.Snapshot{BoardIssues: []telemetry.Issue{
@@ -458,7 +365,7 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			if tc.configureProject {
 				setOperationsTestProject(t, deps.Registry, "parable", tc.autoPromote, tc.optoutLabel, tc.allowedLabels, tc.gateKind, tc.sourceState, tc.passState, tc.approvalLabel, tc.terminalStates)
 			}
-			deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{Decisions: tc.recorded}}
+			deps.Store = openWebTestStore(t)
 			if err := deps.Hub.Publish(tc.snapshot); err != nil {
 				t.Fatal(err)
 			}
@@ -480,6 +387,9 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			if tc.wantKind == "" {
 				if len(report.Decisions) != 0 {
 					t.Fatalf("decisions = %#v, want none", report.Decisions)
+				}
+				if !strings.Contains(rec.Body.String(), `"decisions":[]`) {
+					t.Fatalf("response decisions must be an empty array: %s", rec.Body.String())
 				}
 				return
 			}
@@ -562,13 +472,10 @@ func TestOperationsDecisionDedupeKeepsProjectLocalIdentifiers(t *testing.T) {
 func TestOperationsDecisionDedupeKeepsGitHubHostsSeparate(t *testing.T) {
 	t.Parallel()
 	deps := testDeps(t)
-	deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{Decisions: []operations.Decision{
-		{ProjectID: "alpha", Issue: "owner/repo#99", Question: "Restore alpha credentials.", URL: "https://github.com/owner/repo/issues/99#issuecomment-101"},
-		{ProjectID: "beta", Issue: "owner/repo#99", Question: "Restore beta credentials.", URL: "https://github.com/owner/repo/issues/99#issuecomment-202"},
-	}}}
+	deps.Store = openWebTestStore(t)
 	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{
-		{ID: "alpha", ProjectID: "alpha", Identifier: "owner/repo#99", State: "Rework", URL: "https://github.alpha.example/owner/repo/issues/99"},
-		{ID: "beta", ProjectID: "beta", Identifier: "owner/repo#99", State: "Rework", URL: "https://github.beta.example/owner/repo/issues/99"},
+		{ID: "alpha", ProjectID: "alpha", Identifier: "owner/repo#99", State: "Blocked", URL: "https://github.alpha.example/owner/repo/issues/99", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Approve alpha release."}},
+		{ID: "beta", ProjectID: "beta", Identifier: "owner/repo#99", State: "Blocked", URL: "https://github.beta.example/owner/repo/issues/99", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Approve beta release."}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -591,8 +498,8 @@ func TestOperationsDecisionDedupeKeepsGitHubHostsSeparate(t *testing.T) {
 		t.Fatalf("decisions = %#v, want both GitHub hosts", report.Decisions)
 	}
 	wantURLs := map[string]string{
-		"Restore alpha credentials.": "https://github.alpha.example/owner/repo/issues/99#issuecomment-101",
-		"Restore beta credentials.":  "https://github.beta.example/owner/repo/issues/99#issuecomment-202",
+		"Approve alpha release.": "https://github.alpha.example/owner/repo/issues/99",
+		"Approve beta release.":  "https://github.beta.example/owner/repo/issues/99",
 	}
 	for _, decision := range report.Decisions {
 		if want := wantURLs[decision.Question]; decision.URL != want {
@@ -608,10 +515,13 @@ func TestOperationsQuestionAgeOrder(t *testing.T) {
 	for _, tc := range []struct{ name, path string }{{"api", "/api/v1/operations"}, {"page", "/operations"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := testDeps(t)
-			deps.Store = operationsStore{Store: openWebTestStore(t), report: operations.Report{DataTime: now, Decisions: []operations.Decision{
-				{ProjectID: "a", Issue: "owner/repo#1", Question: "Recent question?", AskedAt: &recent},
-				{ProjectID: "z", Issue: "owner/repo#2", Question: "Old question?", AskedAt: &old},
-			}}}
+			deps.Store = openWebTestStore(t)
+			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{
+				{ID: "recent", ProjectID: "a", Identifier: "owner/repo#1", State: "Blocked", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Recent action?", RecordedAt: &recent}},
+				{ID: "old", ProjectID: "z", Identifier: "owner/repo#2", State: "Blocked", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Old action?", RecordedAt: &old}},
+			}}); err != nil {
+				t.Fatal(err)
+			}
 			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
 			if err != nil {
 				t.Fatal(err)
@@ -624,8 +534,8 @@ func TestOperationsQuestionAgeOrder(t *testing.T) {
 				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 			}
 			body := rec.Body.String()
-			if !strings.Contains(body, "Old question?") || strings.Index(body, "Old question?") >= strings.Index(body, "Recent question?") {
-				t.Fatalf("question order: %s", body)
+			if !strings.Contains(body, "Old action?") || strings.Index(body, "Old action?") >= strings.Index(body, "Recent action?") {
+				t.Fatalf("human action order: %s", body)
 			}
 			if tc.name == "api" {
 				var got operations.Report
@@ -635,47 +545,8 @@ func TestOperationsQuestionAgeOrder(t *testing.T) {
 				if len(got.Decisions) != 2 || got.Decisions[0].AskedAt == nil || !got.Decisions[0].AskedAt.Equal(old) || got.Decisions[0].AgeSeconds == nil || *got.Decisions[0].AgeSeconds < 36000 {
 					t.Fatalf("decisions: %+v", got.Decisions)
 				}
-			} else if !strings.Contains(body, "Oldest: 10h") || !strings.Contains(body, "Open questions: 2") {
+			} else if !strings.Contains(body, "Oldest: 10h") || !strings.Contains(body, "Open Workpad actions: 2") {
 				t.Fatalf("summary: %s", body)
-			}
-		})
-	}
-}
-
-func TestOperationsClosureResolvedQuestions(t *testing.T) {
-	t.Parallel()
-	for _, resolved := range []bool{false, true} {
-		t.Run(map[bool]string{false: "open", true: "resolved"}[resolved], func(t *testing.T) {
-			t.Parallel()
-			deps := testDeps(t)
-			db := openWebTestStore(t)
-			deps.Store = db
-			questions := db.(store.HumanQuestionStore)
-			q := store.HumanQuestion{ProjectID: "p", IssueID: "i", Identifier: "owner/repo#1", Key: "target", Body: "Which target?", QuestionCommentID: "123"}
-			if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
-				t.Fatal(err)
-			}
-			if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
-				t.Fatal(err)
-			}
-			if resolved {
-				if err := questions.ResolveHumanQuestionsByClosure(t.Context(), q.ProjectID, q.IssueID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			server, err := newServerWithLaneWriter(web.Config{ServerAddress: "127.0.0.1:0", LookupEnv: func(string) string { return "" }}, deps)
-			if err != nil {
-				t.Fatal(err)
-			}
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/operations", nil)
-			req.RemoteAddr = "127.0.0.1:12345"
-			rec := httptest.NewRecorder()
-			server.Handler().ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-			}
-			if strings.Contains(rec.Body.String(), q.Body) == resolved {
-				t.Fatalf("resolved=%v body=%s", resolved, rec.Body.String())
 			}
 		})
 	}
@@ -694,7 +565,7 @@ func TestOperationsWorkpadHumanAction(t *testing.T) {
 		{name: "cleared", state: "Rework", status: "cleared", reason: "make skill available or waive it"},
 		{name: "empty action", state: "Rework", status: "unverifiable"},
 		{name: "terminal", state: "Done", status: "unverifiable", reason: "make skill available or waive it"},
-		{name: "existing question wins", state: "Rework", status: "unverifiable", reason: "make skill available or waive it", existing: true, want: 1},
+		{name: "legacy receipt ignored", state: "Rework", status: "unverifiable", reason: "make skill available or waive it", existing: true, want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -737,9 +608,7 @@ func TestOperationsWorkpadHumanAction(t *testing.T) {
 			if tc.want == 1 {
 				d := got.Decisions[0]
 				want := tc.reason
-				if tc.existing {
-					want = "existing question"
-				}
+
 				if d.Kind != "question" || d.Question != want || d.AskedAt == nil || !d.AskedAt.Equal(at) || d.AgeSeconds == nil || *d.AgeSeconds < 7200 {
 					t.Fatalf("decision=%+v", d)
 				}

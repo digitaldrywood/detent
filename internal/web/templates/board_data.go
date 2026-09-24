@@ -1794,11 +1794,6 @@ func boardCardSignals(view boardCardView, card projectKanbanCard) []boardCardSig
 			signals = append(signals, boardCardSignal{Text: boardCardStatusText(text), Kind: kind})
 		}
 	}
-	for _, fact := range view.Facts {
-		if fact.Name == "reason" && strings.HasPrefix(fact.Text, "waiting for a human reply · ") {
-			add(strings.Replace(fact.Text, "waiting for a human reply", "Needs your reply", 1), primitives.KindInfo)
-		}
-	}
 	if view.DispatchStatus == "Ready" {
 		add("Ready", primitives.KindInfo)
 	}

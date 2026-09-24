@@ -512,10 +512,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
-	if o.completeHumanQuestionWait(ctx, state, event, running) {
-		return
-	}
-
 	if mergeWorkerIssue(running.Issue) {
 		resetWorkerFailureBreakers(state, event.IssueID)
 	}
