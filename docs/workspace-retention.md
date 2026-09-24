@@ -16,6 +16,10 @@ Live processes also protect quarantine and scratch directories. Scratch UUIDs
 are resolved through recorded session cleanup paths, not interpreted as numeric
 work-attempt IDs. Failed tracker or registry reads do not authorize removal.
 Artifact directories cannot redirect cleanup through symlinks.
+Before deleting an expired quarantine tree, retention makes its directories
+writable so read-only module caches can be removed. If a tree still cannot be
+removed, the warning names that tree once per running orchestrator; later
+sweeps continue trying to remove it.
 
 GitHub closure time is preserved separately from the issue's last update time.
 Lane retention uses the lane-entry timestamp, including the existing tracker

@@ -755,6 +755,9 @@ archives a verified Git bundle, staged and working-tree diffs, and all working
 files. Active issues and live processes remain protected. Content-addressed
 archives prevent identical recovery copies from accumulating after removal
 failures while preserving earlier snapshots after partial deletion.
+Quarantine removal in this existing sweep makes read-only directories writable
+before deletion; persistent failures are warned once per path while later
+sweeps still retry (#3039). This does not add a sweep or recovery path.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See

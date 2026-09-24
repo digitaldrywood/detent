@@ -153,6 +153,25 @@ func removeRetentionPath(root *os.Root, path string, total *RemovalTotal) error 
 	return nil
 }
 
+func makeQuarantineWritable(root *os.Root, path string) error {
+	return fs.WalkDir(root.FS(), filepath.ToSlash(path), func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm()&0o700 == 0o700 {
+			return nil
+		}
+		return root.Chmod(name, info.Mode().Perm()|0o700)
+	})
+}
+
 func (l *LocalGit) sweepQuarantine(ctx context.Context, root *os.Root, now time.Time, total *RemovalTotal) error {
 	const parent = ".detent/quarantine"
 	if err := retentionDirectory(root, parent); err != nil {
@@ -209,6 +228,10 @@ func (l *LocalGit) sweepQuarantine(ctx context.Context, root *os.Root, now time.
 			continue
 		}
 		if len(pids) > 0 {
+			continue
+		}
+		if err := makeQuarantineWritable(root, relative); err != nil {
+			failures = append(failures, &os.PathError{Op: "prepare quarantine", Path: relative, Err: err})
 			continue
 		}
 		if err := removeRetentionPath(root, relative, total); err != nil {

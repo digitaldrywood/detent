@@ -296,6 +296,7 @@ type Orchestrator struct {
 	validator               Validator
 	securityAuditor         SecurityAuditor
 	reaper                  WorkspaceReaper
+	quarantineWarnings      map[string]struct{}
 	trimHostCache           func(context.Context, toolcache.Policy, time.Time) error
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
