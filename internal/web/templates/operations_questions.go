@@ -31,7 +31,7 @@ func operationsQuestionSummary(report operations.Report) string {
 			oldest = question.AskedAt
 		}
 	}
-	summary := fmt.Sprintf("Open questions: %d", count)
+	summary := fmt.Sprintf("Open Workpad actions: %d", count)
 	if oldest != nil {
 		summary += " · Oldest: " + cardFactAge(report.DataTime, *oldest)
 	}

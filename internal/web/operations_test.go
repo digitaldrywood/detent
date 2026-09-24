@@ -545,7 +545,7 @@ func TestOperationsQuestionAgeOrder(t *testing.T) {
 				if len(got.Decisions) != 2 || got.Decisions[0].AskedAt == nil || !got.Decisions[0].AskedAt.Equal(old) || got.Decisions[0].AgeSeconds == nil || *got.Decisions[0].AgeSeconds < 36000 {
 					t.Fatalf("decisions: %+v", got.Decisions)
 				}
-			} else if !strings.Contains(body, "Oldest: 10h") || !strings.Contains(body, "Open questions: 2") {
+			} else if !strings.Contains(body, "Oldest: 10h") || !strings.Contains(body, "Open Workpad actions: 2") {
 				t.Fatalf("summary: %s", body)
 			}
 		})
