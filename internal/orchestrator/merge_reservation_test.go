@@ -604,6 +604,15 @@ func TestMergeReservationRecoversCurrentWaitingHead(t *testing.T) {
 			if restored && restarted.mergeReservations[reservation.IssueID].ExpiresAt != reservation.ExpiresAt {
 				t.Fatal("restart renewed reservation")
 			}
+			if restored {
+				timing := restarted.MergeTimings[issue.ID]
+				if !timing.CIWaitStartedAt.Equal(reservation.StartedAt) || !timing.CIWaitActiveAt.Equal(attempt.CompletedAt) {
+					t.Fatalf("restored CI wait = %+v, want timeout at %s and observed at %s", timing, reservation.StartedAt, attempt.CompletedAt)
+				}
+				if got := timing.finishObservedCIWait(now).CIWaitSeconds; got != 9*60 {
+					t.Fatalf("observed CI wait = %d seconds, want 540", got)
+				}
+			}
 		})
 	}
 }
