@@ -36,14 +36,17 @@ func classifyWorkspaceForgeReadFailure(err error, fallbackHost string) error {
 			}
 		}
 		detail += "\n" + commandErr.Output
-	}
-	if operation == "" {
-		lower := strings.ToLower(detail)
-		switch {
-		case strings.Contains(lower, "ls-remote"):
-			operation = "git ls-remote"
-		case strings.Contains(lower, "git fetch"):
-			operation = "git fetch"
+	} else {
+		var hookErr *workspace.HookError
+		if !errors.As(err, &hookErr) || hookErr == nil || hookErr.Hook != "after_create" {
+			return err
+		}
+		detail = hookErr.Output
+		if !strings.ContainsAny(hookErr.Command, "\n;&|`") {
+			operation = gitReadOperationInText(hookErr.Command)
+		}
+		if operation == "" && strings.Contains(strings.ToLower(detail), "permission denied (publickey)") {
+			operation = gitReadOperationInText(hookErr.Command)
 		}
 	}
 	host := forgeavailability.HostFromText(detail)
@@ -64,6 +67,21 @@ func classifyWorkspaceForgeReadFailure(err error, fallbackHost string) error {
 		return err
 	}
 	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+}
+
+func gitReadOperationInText(value string) string {
+	value = strings.ToLower(value)
+	if !strings.Contains(value, "git ") {
+		return ""
+	}
+	switch {
+	case strings.Contains(value, "ls-remote"):
+		return "git ls-remote"
+	case strings.Contains(value, "git fetch"):
+		return "git fetch"
+	default:
+		return ""
+	}
 }
 
 type ForgeCondition = telemetry.ForgeCondition
@@ -197,11 +215,15 @@ func (p dispatchPlanner) forgeAvailabilityBlocks(state *State, issue connector.I
 	if !forgeAvailabilityBlocks(state, issue, retry, p.cfg.ForgeHost, now) {
 		return false
 	}
-	if retry.ForgeUnavailable || !p.readyMergeControlCandidate(state, issue) {
-		return true
+	return retry.ForgeUnavailable || !p.forgeReadAllowsMerge(state, issue)
+}
+
+func (p dispatchPlanner) forgeReadAllowsMerge(state *State, issue connector.Issue) bool {
+	if !p.readyMergeControlCandidate(state, issue) {
+		return false
 	}
 	condition, active := forgeCondition(state, forgeHostForIssue(issue, p.cfg.ForgeHost))
-	return !active || !forgeRetryReadOperation(condition.Operation) || condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable
+	return active && forgeRetryReadOperation(condition.Operation) && condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable
 }
 
 func forgeRetryReadOperation(operation string) bool {

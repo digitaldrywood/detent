@@ -21,8 +21,11 @@ import (
 
 func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 	t.Parallel()
-	for _, workers := range []int{0, 10} {
-		t.Run(fmt.Sprintf("validation_waiters_%d", workers), func(t *testing.T) {
+	for _, tt := range []struct {
+		workers int
+		full    bool
+	}{{0, true}, {10, true}, {0, false}} {
+		t.Run(fmt.Sprintf("validation_waiters_%d_global_full_%t", tt.workers, tt.full), func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 9, 2, 19, 35, 0, time.UTC)
 			cfg := normalizeConfig(Config{
@@ -30,7 +33,7 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 				ActiveStates: []string{"Todo", "In Progress", "Merging", "Rework"}, TerminalStates: []string{"Done"},
 				Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1},
 			})
-			state := providerWindowState(cfg, workers)
+			state := providerWindowState(cfg, tt.workers)
 			state.FailureBreaker.Class = workAttemptErrorWorkspace
 			state.FailureBreaker.PreTurn = true
 			state.FailureBreaker.ResumeAt = now.Add(time.Hour)
@@ -46,19 +49,25 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 			tracker := &contextCheckedMergeConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}}
 			global := scheduler.NewRoundRobin(scheduler.Config{Capacity: 1})
 			globalGate := scheduler.NewGlobalDispatchGate(global)
-			_, acquired, err := globalGate.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "In Progress"}, now)
-			if err != nil || !acquired {
-				t.Fatalf("fill global capacity: acquired=%t err=%v", acquired, err)
+			if tt.full {
+				_, acquired, err := globalGate.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "In Progress"}, now)
+				if err != nil || !acquired {
+					t.Fatalf("fill global capacity: acquired=%t err=%v", acquired, err)
+				}
 			}
-			orch := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: globalGate, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: globalGate, supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
 			if len(tracker.merges) != 1 {
-				t.Fatalf("merges = %v, want one ready merge at full global capacity with %d validation waiters", tracker.merges, workers)
+				t.Fatalf("merges = %v, want one ready merge with %d validation waiters (global full %t)", tracker.merges, tt.workers, tt.full)
 			}
-			if pool := globalGate.PoolSnapshot(); pool.Used != 1 {
-				t.Fatalf("global pool used=%d, want unchanged validation worker", pool.Used)
+			wantUsed := 0
+			if tt.full {
+				wantUsed = 1
 			}
-			if len(state.Running) != workers || len(state.Claimed) != 0 {
+			if pool := globalGate.PoolSnapshot(); pool.Used != wantUsed {
+				t.Fatalf("global pool used=%d, want %d", pool.Used, wantUsed)
+			}
+			if len(state.Running) != tt.workers || len(state.Claimed) != 0 {
 				t.Fatalf("running=%d claimed=%d, want unchanged workers and released merge claim", len(state.Running), len(state.Claimed))
 			}
 		})

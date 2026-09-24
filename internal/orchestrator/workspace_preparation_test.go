@@ -133,6 +133,13 @@ func TestClassifyWorkspaceForgeReadFailure(t *testing.T) {
 			}
 		})
 	}
+	compound := &workspace.HookError{
+		Hook: "after_create", Command: "git fetch origin && curl https://github.com/status",
+		Output: "+ git fetch origin\n+ curl https://github.com/status\ncurl: (56) https://github.com/status: connection reset by peer", Err: errors.New("exit status 56"),
+	}
+	if _, ok := forgeavailability.As(classifyWorkspaceForgeReadFailure(fmt.Errorf("%w: %w", runpkg.ErrWorkspacePreparation, compound), "github.com")); ok {
+		t.Fatal("compound hook's later curl failure was misclassified as a Git read")
+	}
 }
 
 func TestWorkspaceSSHRefusalDoesNotTripProjectBreaker(t *testing.T) {
@@ -147,7 +154,8 @@ func TestWorkspaceSSHRefusalDoesNotTripProjectBreaker(t *testing.T) {
 	for attempt := 1; attempt <= 3; attempt++ {
 		at := base.Add(time.Duration(attempt) * time.Minute)
 		state.Running[issue.ID] = Running{Issue: issue, Attempt: attempt, WorkAttemptID: int64(attempt), StartedAt: at.Add(-time.Second)}
-		err := fmt.Errorf("%w: create workspace: after_create: git -C /source ls-remote --symref origin HEAD: git@github.com: Permission denied (publickey).", runpkg.ErrWorkspacePreparation)
+		hook := &workspace.HookError{Hook: "after_create", Command: "git -C /source ls-remote --symref origin HEAD", Output: "git@github.com: Permission denied (publickey).", Err: errors.New("exit status 128")}
+		err := fmt.Errorf("%w: create workspace: %w", runpkg.ErrWorkspacePreparation, hook)
 		orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: err, CompletedAt: at})
 		if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures[workAttemptErrorWorkspace]) != 0 {
 			t.Fatalf("attempt %d counted SSH refusal toward project breaker: %#v", attempt, state.FailureBreaker)

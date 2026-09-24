@@ -180,12 +180,16 @@ checks that these failures drain the instance without a forge condition or
 issue retry accounting. Actual remote write timeouts still use forge availability.
 Remote Git reads during workspace preparation use forge availability only when
 a matching forge host and `ls-remote` or `fetch` operation identify the failure.
+Structured Git command errors and direct `after_create` hook commands establish
+the operation; compound hooks need the Git-specific SSH refusal in their output.
+An unrelated later command in a compound hook cannot inherit an earlier Git read.
 SSH refusal, transport loss, and 5xx responses retain the original workspace
 error, enter the existing forge retry with backoff, and do not count toward the
 project breaker. Other preparation failures remain instance-owned; their breaker
 uses `agent.failure_breaker.cooldown_seconds` rather than the separate
 blocked-recovery cooldown. A checked clean merge that needs no new workspace
-may continue under that workspace breaker. The same checked merge may continue
+uses the no-workspace merge-control path under that breaker, even when worker
+capacity is free. The same checked merge may continue
 when the matching forge condition came from a Git read; forge write and
 credential conditions retain their existing merge hold.
 `TestClassifyWorkspaceForgeReadFailure`,
