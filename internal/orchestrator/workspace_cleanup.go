@@ -28,7 +28,10 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 	before := state.clone()
 	after := before.clone()
 	after.RecentEvents = nil
-	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, logger: o.logger, trimHostCache: o.trimHostCache}
+	if o.quarantineWarnings == nil {
+		o.quarantineWarnings = make(map[string]struct{})
+	}
+	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, logger: o.logger, trimHostCache: o.trimHostCache, quarantineWarnings: o.quarantineWarnings}
 	remaining := workspaceCleanupBatchSize
 	worker.workspaceCleanupRemaining = &remaining
 	cleanupCtx, cancel := context.WithCancel(ctx)
