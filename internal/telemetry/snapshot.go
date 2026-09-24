@@ -9,14 +9,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/observability"
-	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type Snapshot struct {
-	OpenQuestions      []operations.Decision       `json:"-"`
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
 
@@ -161,7 +159,6 @@ func (s Snapshot) AgeSeconds(now time.Time) int64 {
 }
 
 func (s Snapshot) WithFreshness(now time.Time) Snapshot {
-	s.OpenQuestions = operations.WithQuestionAges(s.OpenQuestions, now)
 	if len(s.Projects) == 0 {
 		s.Refresh = s.Refresh.WithFreshness(now)
 		return s
@@ -1264,9 +1261,8 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	HeadCommittedAt              *time.Time         `json:"head_committed_at"`
-	Checks                       []PullRequestCheck `json:"checks,omitempty"`
-	HumanQuestionWorkFingerprint string             `json:"human_question_work_fingerprint,omitempty"`
+	HeadCommittedAt *time.Time         `json:"head_committed_at"`
+	Checks          []PullRequestCheck `json:"checks,omitempty"`
 
 	Number                     int                         `json:"number,omitempty"`
 	URL                        string                      `json:"url,omitempty"`

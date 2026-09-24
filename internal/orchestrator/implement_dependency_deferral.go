@@ -137,7 +137,6 @@ func (o *Orchestrator) filterImplementDependencyDeferrals(
 		if !ok || !record.DependencyDeferral || record.Reason != implementDependencyDeferralReason || len(record.DependencyBlockers) == 0 {
 			continue
 		}
-		record.DependencyBlockers = o.withoutMigratedHumanBlockers(ctx, issue, record.DependencyBlockers)
 		if len(record.DependencyBlockers) == 0 {
 			continue
 		}

@@ -188,13 +188,9 @@ approval-denial classification through the existing instance-owned forge wait, w
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
 reports as write-path failures.
-`TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite` checks that
-credential and API-budget design questions reach durable recording (including write-access
-and manual-PR design choices). Explicit support requests remain rejected across polite
-auxiliaries and manual-open word order, while actual
-access failures and explicit write-enablement/manual-PR requests remain
-instance-owned. Question rejection shares the worker access-failure classifier;
-credential or authentication terminology alone is not failure evidence (#2616).
+Worker access failures remain classified as instance-owned. Product or design
+questions are expressed through a blocked Workpad `human_action`, not a worker
+question tool.
 Compound push commands whose follow-up GitHub CLI read cannot log in reuse the
 instance token-resolution wait (`worker_github_cli_auth` in the diagnostic), not
 the project forge outage. `TestCompoundPushCLIAuth` preserves this distinction
@@ -326,9 +322,9 @@ belongs to the existing instance controls, and the next eligible worker can
 re-verify the report. `TestRecordedBlockerDispatchOwnership` covers fresh and retry
 dispatch, mixed human-action holds, and preserved scheduler wait detail. Only
 explicit human actions in structured blocked Workpads share evaluated evidence
-with the existing Needs-you question projection, including PR-less cards and recorded age;
+with the existing Needs-you human-action projection, including PR-less cards and recorded age;
 `TestWorkpadHumanActionSnapshot` and `TestOperationsWorkpadHumanAction` cover that path.
-Legacy blocker prose does not become a human question or hide dependency decisions.
+Legacy blocker prose does not become a human action or hide dependency decisions.
 No timer, recovery path, or reason code is added.
 `TestSymbolicBlockerCompletion` and `TestSymbolicBlockerPromotion` cover attribution,
 retained diagnostic detail, final usage/diff accounting, CI scheduling after a pushed head,
@@ -478,7 +474,7 @@ The dispatch, CI parity, and duration regressions cover these boundaries (#2845)
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
 `awaiting_gate` decision no longer requires retained completion evidence for this
-case, so question waits cannot cause repeated sessions while a review is pending.
+case, preventing repeated sessions while a review is pending.
 `TestReworkLiveReviewGateDispatch` replays post-answer scheduler passes and checks
 that a current-head review or actionable PR state preserves dispatch eligibility.
 Failed current-head CI ends a completed gate wait when `ci_failure_action: rework`
@@ -487,27 +483,12 @@ routes repair (#2909), including when the card is already in Rework. The existin
 handoff without a redundant lane write. `TestCompletedReworkCIGateDispatch`
 covers immediate repair dispatch and preserves pending CI and review waits.
 
-Question closure resolution (#2793) uses the existing transition refresh and
-answer columns. Durable unanswered issue IDs join that refresh so questions
-left behind across restart resolve when the tracker reports closure or a terminal
-lane. No separate reconciliation loop is introduced. Closure markers never become
-authorized human replies; reopening requires a new question key.
-`TestRefreshResolvesTerminalHumanQuestions` covers terminal states, reopening,
-tracker failure, and the distinction between closure and human authorization.
-
-Question reporting (#2945) omits unanswered questions whose latest per-project,
-per-issue scheduler decision declines authorization. Operations and health share
-this read-only projection; stored questions and dispatch reply handling remain
-unchanged. `TestOpenHumanQuestionsAuthorization` covers declined and authorized
-waits, reauthorization, and project/issue isolation without a recovery mechanism.
-
 Human-owned Workpad blockers route through the existing completion Blocked
 transition on the first report (#2779). The repeated-report threshold is removed:
 live blocker evaluation already suppresses the next dispatch, so a second
 completion cannot be required. `TestFirstHumanBlockerCompletionReachesBlocked`
 replays that conflict with and without a PR and preserves human-owned recovery.
-Question waits retain their current lane; automated Blocked transitions do not
-renew the attempt allowance.
+Automated Blocked transitions do not renew the attempt allowance.
 
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
@@ -844,7 +825,7 @@ blocker evidence (#2813); other owners or evidence key presence alone do not suf
 Merge-worker attempts are excluded, including generic agent records with merge
 run-mode metadata and historical receipts routing the current head to Rework
 (#2907); those routing decisions are not implementation sessions.
-Question-ending successful waits and sessions with a live structured
+Previously recorded question-ending waits and sessions with a live structured
 human blocker are also excluded (#2789). Conflicted PR sessions count toward the
 allowance because conflict resolution is worker-owned Rework (#2807); a conflict
 does not override a genuine human-wait exclusion. The existing
@@ -1468,7 +1449,7 @@ the build cache or traverse the module cache; unmeasured module fields are omitt
 A board card renders exactly: the identity row (project, issue and PR references,
 origin, model and configured effort; Compact may hide effort before model), the title, at most one status line, and the existing priority controls.
 The status line is at most 48 Unicode characters and names the wait in words a
-human acts on, for example "Waiting on #2129", "CI running", "Needs your reply · 4h",
+human acts on, for example "Waiting on #2129", "CI running", "Needs you",
 "Blocked · 1", "Running". Scheduler evidence, tracker snapshot ages, timestamps,
 token counts, attempt counts, fact grids, and diagnostic text are not card
 content; they live in the detail sheet and hover titles. A change that adds a body
@@ -1479,6 +1460,27 @@ the same PR.
 invariant manifest, enforce the content, character budget, and detail preservation. Playwright
 checks one-line status layout in compact, cozy, and comfy densities, and verifies
 that effort is visible at Cozy/Comfy and may be hidden before model at Compact.
+
+## INV-14 — Workers never wait on a human question
+
+Workers receive no `ask_human_question` tool in any project. Dispatch and
+completion do not consult `human_questions` rows, including unanswered rows
+left by older versions. Detent no longer writes those rows, migrates generated
+questions into them, or projects them as active waits. Historical rows remain
+readable as receipts.
+
+A real product decision or physical action is recorded in the existing
+structured Workpad `detent-status` block with `status: blocked` and a concrete
+`human_action`. The card moves to Blocked and displays "Needs you". Instance and
+infrastructure failures remain instance-owned.
+
+`TestINV14DispatchQuestionTool` checks worker requests across automated,
+human-review, and disabled auto-promotion configurations.
+`TestINV14LegacyQuestionRowDispatch` checks dispatch with published and
+unconfirmed unanswered legacy rows. `TestLegacyHumanQuestionReceiptsReadable`
+checks historical access. `TestFirstHumanBlockerCompletionReachesBlocked`,
+`TestWorkpadHumanActionSnapshot`, `TestOperationsWorkpadHumanAction`, and
+`TestBoardCardSignalBudget` enforce the visible Blocked path.
 
 ## Check boundaries
 

@@ -3,7 +3,7 @@
 Use the filesystem workspace and configured output directory. No branch, PR,
 CI run, or merge is required unless the work item explicitly asks for one.
 Use the Detent-appended Blocked handoff block for the Workpad, dependencies,
-human questions, completion, and tracker ownership contract.
+human actions, completion, and tracker ownership contract.
 
 Read the work item title, description, fields, metadata, and deliverable data.
 Use the project source folder for instructions, scripts, media assets, product
