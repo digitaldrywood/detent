@@ -23,17 +23,21 @@ import (
 func TestApplyRunningUpdate(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		status  int
-		wantErr bool
-		legacy  bool
-		count   int
+		name             string
+		status           int
+		wantErr          bool
+		legacy           bool
+		count            int
+		large            bool
+		ignoreProjection bool
 	}{
-		{"accepted", http.StatusAccepted, false, false, 2},
-		{"large fleet", http.StatusAccepted, false, false, 202},
-		{"authorization denied", http.StatusForbidden, true, false, 2},
-		{"unavailable", http.StatusServiceUnavailable, true, false, 2},
-		{"old instance", http.StatusServiceUnavailable, true, true, 2},
+		{"accepted", http.StatusAccepted, false, false, 2, false, false},
+		{"large fleet", http.StatusAccepted, false, false, 202, false, false},
+		{"oversized fleet state", http.StatusAccepted, false, false, 202, true, false},
+		{"old large instance reports failed pre-check", 0, true, false, 202, true, true},
+		{"authorization denied", http.StatusForbidden, true, false, 2, false, false},
+		{"unavailable", http.StatusServiceUnavailable, true, false, 2, false, false},
+		{"old instance", http.StatusServiceUnavailable, true, true, 2, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reported := make(chan struct{})
@@ -46,13 +50,21 @@ func TestApplyRunningUpdate(t *testing.T) {
 					if test.legacy {
 						io.WriteString(w, `{"running":[{},{}]}`)
 					} else {
-						if err := json.NewEncoder(w).Encode(map[string]any{"running": make([]struct{}, test.count), "counts": map[string]int{"running": test.count}, "update": map[string]int{"active_attempts": test.count}}); err != nil {
+						state := map[string]any{"running": make([]struct{}, test.count), "counts": map[string]int{"running": test.count}, "update": map[string]int{"active_attempts": test.count}}
+						if test.large {
+							if r.URL.Query().Get("fields") == "update,counts" && !test.ignoreProjection {
+								delete(state, "running")
+							} else {
+								state["board_issues"] = strings.Repeat("x", 1<<20)
+							}
+						}
+						if err := json.NewEncoder(w).Encode(state); err != nil {
 							t.Error(err)
 						}
 					}
 					return
 				}
-				if test.legacy {
+				if test.legacy || test.ignoreProjection {
 					t.Error("sent update to legacy instance")
 					w.WriteHeader(http.StatusBadRequest)
 					return
@@ -87,10 +99,13 @@ func TestApplyRunningUpdate(t *testing.T) {
 			if (err != nil) != test.wantErr {
 				t.Fatalf("error = %v", err)
 			}
+			if test.ignoreProjection && !strings.Contains(err.Error(), "check running Detent update coordination: read dashboard API response: response exceeds 1048576 bytes") {
+				t.Fatalf("pre-check error = %v", err)
+			}
 			if !test.wantErr && status.Action != detentupdate.ActionUpdated {
 				t.Fatalf("status = %+v", status)
 			}
-			if !test.legacy && !strings.Contains(output.String(), "draining for update: "+strconv.Itoa(test.count)+" active attempts") {
+			if !test.legacy && !test.ignoreProjection && !strings.Contains(output.String(), "draining for update: "+strconv.Itoa(test.count)+" active attempts") {
 				t.Fatalf("output = %q", output.String())
 			}
 		})

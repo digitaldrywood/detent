@@ -63,6 +63,13 @@ paths:
     get:
       operationId: getFleetState
       summary: Get the fleet telemetry snapshot
+      parameters:
+        - name: fields
+          in: query
+          description: Return only update status and the running attempt count for coordinated updates.
+          schema:
+            type: string
+            enum: ["update,counts"]
       tags: [telemetry]
       security:
         - bearerAuth: []
@@ -78,6 +85,7 @@ paths:
               schema:
                 oneOf:
                   - $ref: "#/components/schemas/State"
+                  - $ref: "#/components/schemas/UpdateState"
                   - $ref: "#/components/schemas/SnapshotUnavailable"
         "401": {$ref: "#/components/responses/Problem"}
         "403": {$ref: "#/components/responses/Problem"}
@@ -1381,6 +1389,21 @@ components:
         stats: {$ref: "#/components/schemas/GenericObject"}
         board: {$ref: "#/components/schemas/BoardState"}
       additionalProperties: true
+    UpdateState:
+      type: object
+      required: [update, counts]
+      properties:
+        update:
+          type: object
+          required: [active_attempts]
+          properties:
+            active_attempts: {type: integer, minimum: 0}
+          additionalProperties: true
+        counts:
+          type: object
+          required: [running]
+          properties:
+            running: {type: integer, minimum: 0}
     BoardState:
       type: object
       properties:
