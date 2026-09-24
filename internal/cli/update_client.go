@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -57,15 +57,11 @@ func ApplyRunningUpdate(ctx context.Context, cmd *cobra.Command, apply detentupd
 }
 
 func (c *DashboardReadClient) applyRunningUpdate(ctx context.Context, apply detentupdate.ApplyOptions) (detentupdate.Status, error) {
-	state, err := c.State(ctx, "")
+	state, err := c.updateState(ctx)
 	if err != nil {
-		return detentupdate.Status{}, err
+		return detentupdate.Status{}, fmt.Errorf("check running Detent update coordination: %w", err)
 	}
-	update, ok := state.field("update").(map[string]any)
-	if !ok {
-		return detentupdate.Status{}, errors.New("running Detent does not support coordinated update draining")
-	}
-	if _, ok := update["active_attempts"]; !ok {
+	if state.Update.ActiveAttempts == nil {
 		return detentupdate.Status{}, errors.New("running Detent does not support coordinated update draining")
 	}
 
@@ -102,6 +98,29 @@ func (c *DashboardReadClient) applyRunningUpdate(ctx context.Context, apply dete
 	return status, err
 }
 
+type runningUpdateState struct {
+	Update struct {
+		ActiveAttempts *int `json:"active_attempts"`
+	} `json:"update"`
+	Counts struct {
+		Running int `json:"running"`
+	} `json:"counts"`
+	Running []struct{} `json:"running"`
+}
+
+func (c *DashboardReadClient) updateState(ctx context.Context) (runningUpdateState, error) {
+	if c == nil || c.baseURL == nil {
+		return runningUpdateState{}, errors.New("dashboard API client is not configured")
+	}
+	target := *c.baseURL
+	target.Path = "/api/v1/state"
+	target.RawPath = ""
+	target.RawQuery = url.Values{"fields": {"update,counts"}}.Encode()
+	var state runningUpdateState
+	_, err := c.readJSON(ctx, target, &state)
+	return state, err
+}
+
 func (c *DashboardReadClient) reportDrain(ctx context.Context, out io.Writer, reason string) func() {
 	progressCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -110,17 +129,13 @@ func (c *DashboardReadClient) reportDrain(ctx context.Context, out io.Writer, re
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
-			state, err := c.State(progressCtx, "")
-			if err == nil && out != nil {
-				if running, ok := state.field("running").([]any); ok {
-					count := strconv.Itoa(len(running))
-					if counts, ok := state.field("counts").(map[string]any); ok {
-						if total, ok := counts["running"].(json.Number); ok {
-							count = total.String()
-						}
-					}
-					fmt.Fprintf(out, "draining for %s: %s active attempts\n", reason, count)
+			state, err := c.updateState(progressCtx)
+			if err == nil && out != nil && (state.Update.ActiveAttempts != nil || state.Running != nil) {
+				count := state.Counts.Running
+				if state.Update.ActiveAttempts == nil {
+					count = len(state.Running)
 				}
+				fmt.Fprintf(out, "draining for %s: %d active attempts\n", reason, count)
 			}
 			select {
 			case <-progressCtx.Done():
