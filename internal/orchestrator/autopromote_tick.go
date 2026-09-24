@@ -2067,17 +2067,12 @@ func mergeWorkerHeadReady(issue connector.Issue, cfg Config) bool {
 func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	o.reconcileMergeReservations(state, issues, now)
 	candidates := []connector.Issue{}
-	consumedRepositories := activeMergeWorkerRepositories(state)
 	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
 		issueID := strings.TrimSpace(issue.ID)
-		repository := nativeMergeQueueRepositoryKey(issue)
 		if mergeWorkerCIFailed(issue.PullRequest) {
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
-			continue
-		}
-		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
 			continue
 		}
 		if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
@@ -2088,7 +2083,6 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 			continue
 		}
 		candidates = append(candidates, cloneIssue(issue))
-		consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 	}
 	return candidates
 }
