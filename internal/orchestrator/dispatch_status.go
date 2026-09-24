@@ -208,7 +208,7 @@ func dispatchStatusExcludesCandidate(decision dispatchPlanDecision) bool {
 		return false
 	}
 	switch strings.TrimSpace(decision.SkipReason) {
-	case dispatchSkipAlreadyRunning, dispatchSkipAlreadyClaimed:
+	case dispatchSkipAlreadyRunning, dispatchSkipAlreadyClaimed, "human_question_wait":
 		return true
 	default:
 		return false

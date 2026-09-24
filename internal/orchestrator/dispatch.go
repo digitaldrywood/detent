@@ -30,6 +30,9 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
+	planner.humanQuestionWaiting = func(issue *connector.Issue) (bool, error) {
+		return o.humanQuestionWaiting(ctx, issue)
+	}
 	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
 		return o.operatorRejectedHead(ctx, issue)
 	}
@@ -406,9 +409,11 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 			continue
 		}
 		issue = o.hydrateDispatchDependencies(ctx, issue, blockerCache)
-		if !o.liveDispatchPlanner(ctx).dispatchable(issue, state, now) {
+		decision := o.liveDispatchPlanner(ctx).dispatchableIssueDecision(issue, state, false, now, "")
+		if !decision.dispatchable {
 			continue
 		}
+		issue.Comments = decision.comments
 
 		o.dispatchIssue(ctx, state, issue, 0, now, "")
 	}
@@ -560,11 +565,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
-	}
-	if waiting, err := o.humanQuestionWaiting(ctx, &issue); err != nil {
-		return dispatchIssueOutcome{reason: "human_question_unavailable", waitReason: err.Error()}
-	} else if waiting {
-		return dispatchIssueOutcome{reason: "human_question_wait", waitReason: "waiting for a reply on the original issue"}
 	}
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}

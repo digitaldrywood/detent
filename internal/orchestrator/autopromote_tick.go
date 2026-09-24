@@ -136,6 +136,11 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 					o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
 				}
 			} else if !mergeWorkerIssue(issue) {
+				decision := o.liveDispatchPlanner(ctx).dispatchableIssueDecision(issue, state, false, now, "")
+				if !decision.dispatchable {
+					continue
+				}
+				issue.Comments = decision.comments
 				o.dispatchIssue(ctx, state, issue, 1, now, "")
 			}
 			continue

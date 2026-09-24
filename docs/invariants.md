@@ -193,7 +193,12 @@ credential and API-budget design questions reach durable recording (including wr
 and manual-PR design choices). Explicit support requests remain rejected across polite
 auxiliaries and manual-open word order, while actual
 access failures and explicit write-enablement/manual-PR requests remain
-instance-owned. Question rejection shares the worker access-failure classifier;
+instance-owned. The human-question tool tells workers to record CI runner, worker credential,
+host tool, and unchanged-main gate failures in the Workpad and end the turn;
+these are instance conditions, not questions for an issue owner (#2995).
+The credential classifier remains shared with final worker-report attribution,
+so removing it would weaken that existing instance boundary.
+Question rejection shares the worker access-failure classifier;
 credential or authentication terminology alone is not failure evidence (#2616).
 Compound push commands whose follow-up GitHub CLI read cannot log in reuse the
 instance token-resolution wait (`worker_github_cli_auth` in the diagnostic), not
@@ -486,6 +491,17 @@ routes repair (#2909), including when the card is already in Rework. The existin
 `ci_not_green` decision clears completion dispatch memory and supplies the worker
 handoff without a redundant lane write. `TestCompletedReworkCIGateDispatch`
 covers immediate repair dispatch and preserves pending CI and review waits.
+
+Question waits are evaluated in live candidate eligibility before selection
+(#2995), using the existing `human_question_wait` and
+`human_question_unavailable` reasons. There is no post-selection question refusal.
+Question waits precede capacity exits, so question-only waits do not count
+toward a project dispatch stall even when existing workers occupy all slots.
+Allowance triage also uses live eligibility;
+`TestHumanQuestionAllowanceTriageEligibility` covers ordinary and migrated
+question waits and permits triage after an authorized reply.
+`TestHumanQuestionCandidateEligibility` covers fresh candidates and due retries,
+changed work fingerprints, reply propagation, and unavailable question storage.
 
 Question closure resolution (#2793) uses the existing transition refresh and
 answer columns. Durable unanswered issue IDs join that refresh so questions
