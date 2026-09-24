@@ -91,9 +91,12 @@ func TestRetentionUnremovableQuarantineWarnsOnce(t *testing.T) {
 		}
 	})
 	var logs bytes.Buffer
-	o := &Orchestrator{reaper: &localRetentionReaper{LocalGit: backend}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
-	for range 3 {
-		o.sweepRetention(t.Context(), &State{}, now)
+	cfg := normalizeConfig(Config{WorkspaceCleanupSweepInterval: time.Hour})
+	o := &Orchestrator{cfg: cfg, connector: memory.New(memory.Config{}), reaper: &localRetentionReaper{LocalGit: backend}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	state := newState(cfg)
+	for pass := range 3 {
+		o.startWorkspaceCleanup(t.Context(), &state, now.Add(time.Duration(pass)*time.Hour))
+		finishTestWorkspaceCleanup(t, o, &state)
 	}
 	if got := strings.Count(logs.String(), "workspace retention failed"); got != 1 {
 		t.Fatalf("warnings=%d want=1: %s", got, logs.String())
