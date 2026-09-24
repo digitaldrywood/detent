@@ -509,6 +509,14 @@ func TestClassifyWorkerGitHubCredentialUnavailable(t *testing.T) {
 			wantClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable,
 		},
 		{
+			name: "final message manual PR support request",
+			err: &runpkg.DeliverableCommandError{
+				OperationClass: "pull_request", Operation: "create_pull_request",
+				Message: "Can I open the PR manually?", ApprovalDenied: true,
+			},
+			wantClass: forgeavailability.ClassWorkerGitHubCredentialUnavailable,
+		},
+		{
 			name: "unrelated executable failure",
 			err: &runpkg.DeliverableCommandError{
 				OperationClass: "pull_request", Operation: "gh pr create", Message: "exec: gh: executable file not found",

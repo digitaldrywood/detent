@@ -2297,7 +2297,8 @@ func workerCredentialBlockerError(message string) error {
 	firstLine = strings.TrimSpace(strings.TrimLeft(firstLine, "#>*_- "))
 	blocked := strings.HasPrefix(strings.ToLower(firstLine), "blocked") || strings.HasPrefix(strings.ToLower(firstLine), "work is blocked")
 	credentialBlocker := blocked && workerGitHubCredentialFailureDetail(message)
-	if !credentialBlocker && !workerGitHubSupportRequest(message) {
+	supportRequest := workerGitHubSupportRequest(message)
+	if !credentialBlocker && !supportRequest {
 		return nil
 	}
 	return &DeliverableCommandError{
@@ -2306,6 +2307,7 @@ func workerCredentialBlockerError(message string) error {
 		Status:         "blocked",
 		Message:        truncateDeliverableDetail(firstLine),
 		Body:           truncateDeliverableDetail(message),
+		ApprovalDenied: supportRequest,
 	}
 }
 
