@@ -748,17 +748,19 @@ lossless expiry, and repeated removal failures. See
 [workspace retention](workspace-retention.md) for limits and recovery instructions.
 
 The existing automated-review check retains stale and in-progress bot summary
-evidence (#2764): an established review cycle must complete at the current head
-before promotion. Native queue admission and programmatic merge wait for that
-cycle only when the effective gate requires automated review (#2905). Review
-requests are likewise posted only for a required automated review. Trusted quota
+evidence (#2764). Native queue admission and programmatic merge wait for an
+established cycle at the current head only when the effective gate requires
+automated review (#2905). Review requests are likewise posted only for a required
+automated review. Trusted quota
 or unavailable replies after the latest per-head request complete that head as
 COMMENTED with no findings; an unanswered request alone is not review evidence.
-An expired review deadline does not waive an established bot review cycle for
-promotion.
+The existing gate deadline also ends a pending-review wait, including when
+automated review is disabled.
 The existing `automated_review_missing` wait and PR comment publication are reused;
 a per-head comment marker deduplicates `@codex review` requests across ticks and
 restarts. No new gate, reason, or reconciliation loop is introduced.
+`TestEvaluateAutomatedReviewModes`,
+`TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions`,
 `TestAutoPromoteReviewAtHead`, `TestReviewHeadRequestAndWait`, and
 `TestReviewSummaryRetainsPendingHead` cover decision, request failures/deduplication,
 and trusted summary evidence respectively.
