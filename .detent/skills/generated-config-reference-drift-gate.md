@@ -1,7 +1,7 @@
 ---
 name: generated-config-reference-drift-gate
-description: Build exhaustive generated configuration docs from typed config, effective defaults, and real validators, then keep them current with a non-mutating check.
-when_to_use: Use when a Go project's YAML configuration surface is too large for a hand-maintained reference and new fields, defaults, or validation rules must fail CI if documentation drifts.
+description: "Generate and refresh Detent configuration references while verifying source, defaults, validation, and CI drift."
+when_to_use: "Use when a Go project's YAML configuration surface is too large for a hand-maintained reference and new fields, defaults, or validation rules must fail CI if documentation drifts. Also use for refresh generated config reference."
 ---
 
 # Generated config reference drift gate
@@ -33,3 +33,14 @@ Run the check-only target before any build prerequisite that regenerates files.
 Cover source-tag completeness, important capability discovery, validator rule
 surfacing, conditional requiredness, current generated artifacts, and
 human-authored samples parsed through the real loader.
+
+## Refresh generated config references reliably
+
+Use this case when a Detent config change passes local tests but fresh CI reports stale docs/config.md or config.reference.yaml.
+
+- Fetch current `origin/main` before diagnosing drift; the configdoc generator may have landed after the feature branch was created.
+- Rebase a clean issue branch when CI tests a newer base that contains configdoc code absent locally.
+- Run `make generate` and review the resulting `docs/config.md` and `config.reference.yaml` diff. Do not hand-edit generated reference text.
+- Clear only Go test-result caching with `go clean -testcache` when a prior local gate passed unexpectedly. The configdoc test inspects repository config sources that may not invalidate Go's package cache.
+- Run `go test ./internal/config/configdoc`.
+- Push the refreshed head and watch CI for that exact commit SHA; ignore failures attached only to the obsolete pre-rebase head.
