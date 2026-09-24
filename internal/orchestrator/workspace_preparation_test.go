@@ -27,6 +27,10 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 			name: "stale clean recovery",
 			err:  fmt.Errorf("%w: create workspace: recover stale clean workspace", runpkg.ErrWorkspacePreparation),
 		},
+		{
+			name: "after_create database timeout",
+			err:  fmt.Errorf("%w: create workspace: after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded", runpkg.ErrWorkspacePreparation),
+		},
 	}
 
 	for _, tt := range tests {
@@ -79,6 +83,9 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 				}
 				if len(state.Retry) != 0 || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
 					t.Fatal("workspace failure retained issue retry accounting")
+				}
+				if len(state.ForgeUnavailable) != 0 {
+					t.Fatalf("workspace failure started forge condition or canary: %#v", state.ForgeUnavailable)
 				}
 			}
 			if !state.FailureBreaker.Active() || projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {

@@ -1460,8 +1460,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
 			return RunResult{}, heldErr
 		}
-		classifiedErr := classifyForgeOperationError(fmt.Errorf("create workspace: %w", err), "git fetch", forgeHost)
-		return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, classifiedErr)
+		return RunResult{}, fmt.Errorf("%w: create workspace: %w", ErrWorkspacePreparation, err)
 	}
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
