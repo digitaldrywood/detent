@@ -1018,8 +1018,9 @@ without publishing issue findings. Findings publish to the PR
 before the existing lane writer routes to Rework; the trusted run marker prevents
 repeat publication after a failed lane write. Comments remain explanatory, never
 verdict evidence. Required-gate telemetry uses the same audit classifier.
-For an exact base and head, the durable trusted audit result takes precedence
-over the in-memory running-stage marker. Both the required-gate projection and
+For an exact base and head, a durable trusted pass takes precedence over the
+in-memory running-stage marker; failed or inconclusive reads retain the running
+wait. Both the required-gate projection and
 auto-promotion read that result on their next evaluation; an old-head result
 cannot satisfy either gate. `TestDurableAuditPassSupersedesRunningStageForGate`
 covers a pass recorded after an initially missing green-CI gate.

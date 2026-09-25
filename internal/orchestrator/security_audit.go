@@ -21,6 +21,12 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 		return securityaudit.Evaluation{}
 	}
 	identity := o.securityAuditIdentity(issue)
+	runningAudit := func() bool {
+		o.securityAuditMu.Lock()
+		defer o.securityAuditMu.Unlock()
+		_, running := o.securityAuditRuns[identity.cacheKey]
+		return running
+	}
 	if identity.key.HeadSHA == "" {
 		return securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}
 	}
@@ -29,13 +35,10 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 	}
 	run, err := o.securityAuditStore.LatestSecurityAuditRun(ctx, identity.key)
 	if err != nil {
+		if runningAudit() {
+			return securityaudit.Evaluation{Running: true}
+		}
 		if errors.Is(err, store.ErrNotFound) {
-			o.securityAuditMu.Lock()
-			_, running := o.securityAuditRuns[identity.cacheKey]
-			o.securityAuditMu.Unlock()
-			if running {
-				return securityaudit.Evaluation{Running: true}
-			}
 			return securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}
 		}
 		o.logSecurityAuditFailure(issue, "lookup_failed", err)
@@ -43,10 +46,16 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 	}
 	dispositions, err := o.securityAuditStore.ListSecurityAuditDispositions(ctx, run.ID)
 	if err != nil {
+		if runningAudit() {
+			return securityaudit.Evaluation{Running: true}
+		}
 		o.logSecurityAuditFailure(issue, "disposition_lookup_failed", err)
 		return securityaudit.Evaluation{RunID: run.ID, Reason: securityaudit.ReasonFailed}
 	}
 	evaluation := securityaudit.Evaluate(run, dispositions, identity.key, o.cfg.ServiceIdentity, cfg.BlockOn)
+	if !evaluation.Allowed && runningAudit() {
+		return securityaudit.Evaluation{Running: true}
+	}
 	if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings && run.Attempt < cfg.MaxAttempts {
 		return securityaudit.Evaluation{RunID: run.ID, Reason: securityaudit.ReasonMissing}
 	}

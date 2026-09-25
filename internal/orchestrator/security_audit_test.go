@@ -177,6 +177,58 @@ func TestDurableAuditPassSupersedesRunningStageForGate(t *testing.T) {
 	}
 }
 
+func TestRunningAuditWaitsOnUnusableDurableEvidence(t *testing.T) {
+	t.Parallel()
+	issue := securityAuditTestIssue()
+	for _, tc := range []struct {
+		name            string
+		run             *securityaudit.Run
+		lookupErr       error
+		dispositionsErr error
+	}{
+		{name: "lookup unavailable", lookupErr: errors.New("database busy")},
+		{name: "dispositions unavailable", run: new(securityaudit.Run), dispositionsErr: errors.New("database busy")},
+		{name: "inconclusive run", run: new(securityaudit.Run)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			memo := newSecurityAuditMemoryStore()
+			if tc.run != nil {
+				run := securityAuditPassingRun(issue)
+				if tc.name == "inconclusive run" {
+					run.ExitStatus = securityaudit.ExitStatusFailed
+				}
+				memo.runs = append(memo.runs, run)
+			}
+			o := securityAuditTestOrchestrator(&failingAuditLookupStore{SecurityAuditStore: memo, lookupErr: tc.lookupErr, dispositionsErr: tc.dispositionsErr})
+			o.securityAuditRuns[o.securityAuditIdentity(issue).cacheKey] = struct{}{}
+			got := o.securityAuditEvaluation(t.Context(), issue)
+			if !got.Running || got.Allowed {
+				t.Fatalf("evaluation = %+v, want running wait", got)
+			}
+		})
+	}
+}
+
+type failingAuditLookupStore struct {
+	store.SecurityAuditStore
+	lookupErr       error
+	dispositionsErr error
+}
+
+func (s *failingAuditLookupStore) LatestSecurityAuditRun(ctx context.Context, key securityaudit.Key) (securityaudit.Run, error) {
+	if s.lookupErr != nil {
+		return securityaudit.Run{}, s.lookupErr
+	}
+	return s.SecurityAuditStore.LatestSecurityAuditRun(ctx, key)
+}
+
+func (s *failingAuditLookupStore) ListSecurityAuditDispositions(ctx context.Context, runID int64) ([]securityaudit.Disposition, error) {
+	if s.dispositionsErr != nil {
+		return nil, s.dispositionsErr
+	}
+	return s.SecurityAuditStore.ListSecurityAuditDispositions(ctx, runID)
+}
+
 func TestDisposedFalsePositiveDoesNotProduceSecurityAuditRework(t *testing.T) {
 	t.Parallel()
 
