@@ -126,6 +126,109 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDurableAuditPassSupersedesRunningStageForGate(t *testing.T) {
+	t.Parallel()
+	issue := securityAuditTestIssue()
+	issue.State = "Human Review"
+	issue.PullRequest.State = "open"
+	issue.PullRequest.CIStatus = "success"
+	issue.PullRequest.MergeableState = "clean"
+	memo := newSecurityAuditMemoryStore()
+	o := securityAuditTestOrchestrator(memo)
+	o.cfg.AutoPromote.Enabled = true
+	o.cfg.AutoPromote.Gate.AutomatedReview = gate.AutomatedReviewOff
+	state := newState(o.cfg)
+	now := time.Now()
+	o.refreshRequiredGateEvidence(t.Context(), &state, []connector.Issue{issue})
+	if got := state.RequiredGates[issue.ID]; got.Reason != string(gate.ReasonSecurityAuditMissing) {
+		t.Fatalf("initial gate = %+v", got)
+	}
+	run := securityAuditPassingRun(issue)
+	if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	o.securityAuditRuns[o.securityAuditIdentity(issue).cacheKey] = struct{}{}
+	for _, tc := range []struct {
+		name       string
+		head       string
+		wantReason string
+		wantRun    int64
+		wantAction AutoPromoteAction
+	}{
+		{name: "exact head", head: issue.PullRequest.HeadSHA, wantReason: string(gate.ReasonReady), wantRun: run.ID, wantAction: AutoPromoteActionPromote},
+		{name: "old head", head: "next-head", wantReason: string(gate.ReasonSecurityAuditMissing), wantAction: AutoPromoteActionAwaitReview},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := cloneIssue(issue)
+			current.PullRequest.HeadSHA = tc.head
+			o.refreshRequiredGateEvidence(t.Context(), &state, []connector.Issue{current})
+			got := state.RequiredGates[current.ID]
+			if got.Reason != tc.wantReason || got.AuditRunID != tc.wantRun {
+				t.Fatalf("required gate = %+v, want reason %s run %d", got, tc.wantReason, tc.wantRun)
+			}
+			evaluation := o.securityAuditEvaluation(t.Context(), current)
+			summary := AutoPromoteSummaryFromIssue(current)
+			summary.SecurityAudit = evaluation
+			decision := EvaluateAutoPromote(current, summary, o.cfg.AutoPromote, now)
+			if decision.Action != tc.wantAction || string(decision.Reason) != tc.wantReason {
+				t.Fatalf("auto promotion = %+v, want %s/%s", decision, tc.wantAction, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestRunningAuditWaitsOnUnusableDurableEvidence(t *testing.T) {
+	t.Parallel()
+	issue := securityAuditTestIssue()
+	for _, tc := range []struct {
+		name            string
+		run             *securityaudit.Run
+		lookupErr       error
+		dispositionsErr error
+	}{
+		{name: "lookup unavailable", lookupErr: errors.New("database busy")},
+		{name: "dispositions unavailable", run: new(securityaudit.Run), dispositionsErr: errors.New("database busy")},
+		{name: "inconclusive run", run: new(securityaudit.Run)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			memo := newSecurityAuditMemoryStore()
+			if tc.run != nil {
+				run := securityAuditPassingRun(issue)
+				if tc.name == "inconclusive run" {
+					run.ExitStatus = securityaudit.ExitStatusFailed
+				}
+				memo.runs = append(memo.runs, run)
+			}
+			o := securityAuditTestOrchestrator(&failingAuditLookupStore{SecurityAuditStore: memo, lookupErr: tc.lookupErr, dispositionsErr: tc.dispositionsErr})
+			o.securityAuditRuns[o.securityAuditIdentity(issue).cacheKey] = struct{}{}
+			got := o.securityAuditEvaluation(t.Context(), issue)
+			if !got.Running || got.Allowed {
+				t.Fatalf("evaluation = %+v, want running wait", got)
+			}
+		})
+	}
+}
+
+type failingAuditLookupStore struct {
+	store.SecurityAuditStore
+	lookupErr       error
+	dispositionsErr error
+}
+
+func (s *failingAuditLookupStore) LatestSecurityAuditRun(ctx context.Context, key securityaudit.Key) (securityaudit.Run, error) {
+	if s.lookupErr != nil {
+		return securityaudit.Run{}, s.lookupErr
+	}
+	return s.SecurityAuditStore.LatestSecurityAuditRun(ctx, key)
+}
+
+func (s *failingAuditLookupStore) ListSecurityAuditDispositions(ctx context.Context, runID int64) ([]securityaudit.Disposition, error) {
+	if s.dispositionsErr != nil {
+		return nil, s.dispositionsErr
+	}
+	return s.SecurityAuditStore.ListSecurityAuditDispositions(ctx, runID)
+}
+
 func TestDisposedFalsePositiveDoesNotProduceSecurityAuditRework(t *testing.T) {
 	t.Parallel()
 

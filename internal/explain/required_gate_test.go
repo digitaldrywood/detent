@@ -22,7 +22,7 @@ func TestRequiredGateSeparatesCIFromAggregateEvidence(t *testing.T) {
 		{name: "capability blocker", required: &telemetry.RequiredGate{PRNumber: 11, HeadSHA: "head", BaseSHA: "base", State: "failed", Reason: "workpad_blocker", HumanAction: "Restore worker-github-cli-auth."}, want: GateFailed},
 		{name: "missing audit", required: &telemetry.RequiredGate{PRNumber: 11, HeadSHA: "head", BaseSHA: "base", State: "pending", Reason: "security_audit_missing"}, want: GatePending},
 		{name: "stale audit failure", required: &telemetry.RequiredGate{PRNumber: 11, HeadSHA: "old", BaseSHA: "base", State: "failed", Reason: "security_audit_findings"}, want: GatePending},
-		{name: "passed configured gate", required: &telemetry.RequiredGate{PRNumber: 11, HeadSHA: "head", BaseSHA: "base", State: "passed", Reason: "ready"}, want: GatePassed},
+		{name: "durable exact-head audit pass", required: &telemetry.RequiredGate{PRNumber: 11, HeadSHA: "head", BaseSHA: "base", State: "passed", Reason: "ready", AuditRunID: 476, AuditReason: "ready"}, want: GatePassed},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
