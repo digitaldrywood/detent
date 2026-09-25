@@ -17,6 +17,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -541,6 +542,84 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	}
 	if len(state.RecentEvents) != 0 {
 		t.Fatalf("RecentEvents = %#v, want none", state.RecentEvents)
+	}
+}
+
+func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 25, 12, 2, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name     string
+		ciStatus string
+	}{
+		{name: "CI pending", ciStatus: "pending"},
+		{name: "CI passed", ciStatus: "pass"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			completedAt := now.Add(-25 * time.Minute)
+			issue := completionTransitionIssue("In Progress", "OPEN")
+			issue.PullRequest.Number = 3074
+			issue.PullRequest.URL = "https://github.test/digitaldrywood/detent/pull/3074"
+			issue.PullRequest.HeadSHA = "published-head"
+			issue.PullRequest.MergeableState = "clean"
+			issue.PullRequest.CIStatus = tt.ciStatus
+			issue.PullRequest.CodexReviewState = "COMMENTED"
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+			cfg := normalizeConfig(Config{
+				AutoPromote:  AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}},
+				ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"},
+			})
+			entered := now.Add(-time.Hour)
+			issue.StageUpdatedAt = &entered
+			baseTracker := &autoPromoteTickConnector{
+				stateIssues:   []connector.Issue{issue},
+				issueComments: map[string][]connector.IssueComment{issue.ID: issue.Comments},
+			}
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: baseTracker}
+			attempts := &recordingWorkAttemptStore{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, recoveryInspector: strandedActiveRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"}}}
+			state := newState(cfg)
+			state.StrandedActiveThreshold = 10 * time.Minute
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement, DispatchSourceState: "In Progress", StartedAt: completedAt.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"}}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: completedAt.Add(-time.Minute)}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID, CompletedAt: completedAt,
+				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result:  runpkg.RunResult{FinalState: FinalStateCompleted, PullRequestUpdated: true, PullRequestHeadPushed: true, CITriggerLabelReapplied: true, DiffStats: DiffStats{Status: "clean"}},
+			})
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+				t.Fatalf("completions = %#v, want one successful attempt", attempts.completions)
+			}
+			if completed := state.Completed[issue.ID]; !completed.successfulAttemptPersisted {
+				t.Fatalf("completed = %#v, want persisted success", completed)
+			}
+			state.WorkAttempts = []telemetry.WorkAttempt{{IssueID: issue.ID, Status: "completed", CompletedAt: &completedAt}}
+
+			orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+			if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
+				t.Fatal("completed ready PR did not enter the existing gate wait")
+			}
+			if diagnostics := strandedActiveIssueSnapshots(state, issueSnapshots([]connector.Issue{issue}, 0, 0, now, state.laneEntries), now); len(diagnostics) != 1 || diagnostics[0].DurationSeconds != int64((25*time.Minute)/time.Second) {
+				t.Fatalf("stranded diagnostics = %#v, want the recorded 25-minute completion-to-recovery gap", diagnostics)
+			}
+			if recovered := orch.recoverStrandedActiveIssues(t.Context(), &state, []connector.Issue{issue}, now); len(recovered) != 0 {
+				t.Fatalf("completed issue recovered as stranded: %#v", recovered)
+			}
+			if len(baseTracker.updates) != 0 {
+				t.Fatalf("gate wait changed lanes before promotion: %#v", baseTracker.updates)
+			}
+			issue.PullRequest.CIStatus = "pass"
+			promoted := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
+			if _, ok := promoted.transitioned[issue.ID]; !ok {
+				t.Fatalf("green current head did not advance from the gate: decision = %#v", EvaluateAutoPromote(issue, AutoPromoteSummaryFromIssue(issue), cfg.AutoPromote, now.Add(time.Minute)))
+			}
+			if got, want := baseTracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("updates = %#v, want %#v", got, want)
+			}
+		})
 	}
 }
 

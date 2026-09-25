@@ -57,6 +57,16 @@ and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
 appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
 
+A persisted successful completion with a complete Workpad and ready PR remains
+owned by the existing active-lane gate while current-head CI is pending. Stranded
+active recovery excludes that completion instead of sending its open PR to
+Rework; an ended attempt without completion still recovers its open PR to
+Rework. The gate promotes a green head to Merging. This preserves the single
+orchestrator lane writer and removes an overlapping recovery decision (#3073).
+`TestCompletedReadyPullRequestEntersMergeGate` and
+`TestRecoverStrandedActiveIssues` cover the recorded completion and recovery
+sequence.
+
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
 head. Both completion and auto-promotion consume this durable rejection evidence:

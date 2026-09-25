@@ -171,6 +171,16 @@ func TestRecoverStrandedActiveIssues(t *testing.T) {
 			wantTarget: autoPromoteReworkState,
 		},
 		{
+			name: "ended attempt without completion and open pull request routes to Rework",
+			mutate: func(issue *connector.Issue, state *State) {
+				issue.PullRequest = &connector.PullRequest{Number: 1861, State: "OPEN"}
+				endedAt := now.Add(-15 * time.Minute)
+				state.WorkAttempts = []telemetry.WorkAttempt{{IssueID: issue.ID, Status: "timed_out", CompletedAt: &endedAt}}
+			},
+			workspace:  runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"},
+			wantTarget: autoPromoteReworkState,
+		},
+		{
 			name: "stranded with unpushed work routes to Rework",
 			workspace: runpkg.BlockedRecoverySnapshot{
 				WorkspaceStatus:  "present",
