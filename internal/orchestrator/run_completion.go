@@ -169,6 +169,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	delete(state.Running, event.IssueID)
 	event.Err = classifyWorkspaceForgeReadFailure(event.Err, o.cfg.ForgeHost)
 	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
+	if o.handleWorkspaceDiskExhaustion(ctx, state, event, running) {
+		return
+	}
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)

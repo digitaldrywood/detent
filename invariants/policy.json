@@ -28,6 +28,7 @@
       "TestPreTurnFailuresDrainInstance",
       "TestClassifyWorkspaceForgeReadFailure",
       "TestWorkspaceSSHRefusalDoesNotTripProjectBreaker",
+      "TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker",
       "TestWorkspaceBreakerHonorsFailureCooldown",
       "TestReadyMergeAtWorkerCapacity",
       "TestCheckedMergeUnderForgeCondition",

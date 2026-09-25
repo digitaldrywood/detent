@@ -169,6 +169,41 @@ func TestWorkspaceSSHRefusalDoesNotTripProjectBreaker(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "disk-full", State: "In Progress"}
+	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
+	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, FailureBreaker: FailureBreakerConfig{SameClassLimit: 3, Window: time.Hour, Cooldown: time.Hour}})
+	attempts := &terminalRetryWorkAttemptStore{}
+	orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+	state := newState(cfg)
+	base := time.Date(2026, 9, 24, 18, 12, 0, 0, time.UTC)
+	for attempt := 1; attempt <= 3; attempt++ {
+		at := base.Add(time.Duration(attempt) * time.Minute)
+		state.Running[issue.ID] = Running{Issue: issue, Attempt: attempt, WorkAttemptID: int64(attempt), StartedAt: at.Add(-time.Second)}
+		var cause error
+		if attempt == 1 {
+			cause = &workspace.CommandError{Command: "git", Args: []string{"write-tree"}, Output: "write temporary git index: no space left on device", Err: errors.New("exit status 128")}
+		} else {
+			cause = &workspace.HookError{Hook: "after_create", Command: "make setup", Output: "after_create: no space left on device", Err: errors.New("exit status 1")}
+		}
+		err := fmt.Errorf("%w: create workspace: %w", runpkg.ErrWorkspacePreparation, cause)
+		orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: err, CompletedAt: at})
+		if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures[workAttemptErrorWorkspace]) != 0 {
+			t.Fatalf("attempt %d charged disk exhaustion to project breaker: %#v", attempt, state.FailureBreaker)
+		}
+		if retry, ok := state.Retry[issue.ID]; !ok || !retry.DueAt.Equal(at.Add(orch.retryDelay(attempt+1, false))) || retry.Error != telemetry.WorkspaceDiskExhaustionMessage {
+			t.Fatalf("attempt %d did not use infrastructure backoff: %#v", attempt, state.Retry)
+		}
+		if len(state.ForgeUnavailable) != 0 || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
+			t.Fatalf("attempt %d charged issue or forge: forge=%#v blocked=%#v comments=%#v", attempt, state.ForgeUnavailable, state.Blocked, tracker.comments)
+		}
+		if got := attempts.completions[len(attempts.completions)-1].TerminalState; got != store.WorkAttemptTerminalCapacity {
+			t.Fatalf("attempt %d terminal state = %q, want capacity", attempt, got)
+		}
+	}
+}
+
 func TestWorkspaceBreakerHonorsFailureCooldown(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 9, 24, 15, 35, 0, 0, time.UTC)

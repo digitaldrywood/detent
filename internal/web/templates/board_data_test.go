@@ -3844,6 +3844,25 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 	}
 }
 
+func TestBoardAndHealthShowHostDiskExhaustionRetry(t *testing.T) {
+	t.Parallel()
+	data := boardTestData()
+	dueAt := data.Snapshot.GeneratedAt.Add(5 * time.Minute)
+	data.Snapshot.Queue = []telemetry.Queued{{Issue: telemetry.Issue{Identifier: "pyroapex#2589"}, Error: telemetry.WorkspaceDiskExhaustionMessage, WorkerHost: "build-host", QueueState: telemetry.QueueStateRetrying, DueAt: &dueAt}}
+	board := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{`data-board-alert="host-disk-full"`, "Host disk full", "build-host", "pyroapex#2589", "retry at " + dueAt.UTC().Format(time.RFC3339)} {
+		if !strings.Contains(board, want) {
+			t.Fatalf("board missing %q", want)
+		}
+	}
+	health := renderBoardComponent(t, HealthSnapshotV2(data))
+	for _, want := range []string{"Host disk is full", "Host disk", "build-host", "no space left on device"} {
+		if !strings.Contains(health, want) {
+			t.Fatalf("health missing %q", want)
+		}
+	}
+}
+
 func TestBoardSnapshotAttributesDeliverableFailureBreakerCommand(t *testing.T) {
 	t.Parallel()
 

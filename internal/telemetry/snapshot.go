@@ -1451,6 +1451,8 @@ type Queued struct {
 	WorkspaceDestroyCount int        `json:"workspace_destroy_count,omitempty"`
 }
 
+const WorkspaceDiskExhaustionMessage = "host disk full: no space left on device"
+
 const (
 	QueueStateRetrying         = "retrying"
 	QueueStateWaitingOnCI      = "waiting_on_ci"

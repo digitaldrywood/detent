@@ -44,6 +44,7 @@ const (
 	boardAlertKindDispatchStall          boardAlertKind = "dispatch-stall"
 	boardAlertKindTrackerUnavailable     boardAlertKind = "tracker-unavailable"
 	boardAlertKindForgeUnavailable       boardAlertKind = "forge-unavailable"
+	boardAlertKindHostDiskFull           boardAlertKind = "host-disk-full"
 	boardAlertKindCIUnavailable          boardAlertKind = "ci-unavailable"
 	boardAlertKindStaleness              boardAlertKind = "staleness-warning"
 	boardAlertKindBackendCapacity        boardAlertKind = "backend-capacity-outage"
@@ -61,6 +62,7 @@ const (
 	boardAlertSeverityCIUnavailable                     = 550
 	boardAlertSeverityTrackerUnavailable                = 560
 	boardAlertSeverityForgeUnavailable                  = 565
+	boardAlertSeverityHostDiskFull                      = 565
 	boardAlertSeverityDispatchStall                     = 575
 	boardAlertSeverityLastKnown                         = 600
 	boardAlertSeverityStrandedActive                    = 580
@@ -122,6 +124,9 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardForgeUnavailableAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardHostDiskFullAlert(snapshot.Queue); ok {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardDispatchStallAlert(snapshot); ok {
@@ -492,6 +497,39 @@ func boardForgeUnavailableAlert(snapshot telemetry.Snapshot) (boardAlert, bool) 
 		}
 	}
 	return alert, true
+}
+
+func hostDiskFullRetries(queue []telemetry.Queued) []telemetry.Queued {
+	retries := make([]telemetry.Queued, 0)
+	for _, entry := range queue {
+		if entry.QueueState == telemetry.QueueStateRetrying && entry.Error == telemetry.WorkspaceDiskExhaustionMessage {
+			retries = append(retries, entry)
+		}
+	}
+	return retries
+}
+
+func boardHostDiskFullAlert(queue []telemetry.Queued) (boardAlert, bool) {
+	retries := hostDiskFullRetries(queue)
+	if len(retries) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(retries))
+	for index, retry := range retries {
+		label := strings.TrimSpace(retry.WorkerHost)
+		if label == "" {
+			label = "Local host"
+		}
+		detail := strings.TrimSpace(retry.Identifier)
+		if retry.DueAt != nil {
+			detail += " · retry at " + retry.DueAt.UTC().Format(time.RFC3339)
+		}
+		rows = append(rows, boardAlertDetailRow{ID: "board-alert-host-disk-full-" + boardAlertRowSlug(label, index), Label: label, Summary: "Workspace preparation waiting for disk space", Detail: strings.Trim(detail, " ·")})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{ID: "board-alert-host-disk-full", Kind: boardAlertKindHostDiskFull, Severity: boardAlertSeverityHostDiskFull, Tone: primitives.KindErr,
+		TerseSummary: "Host disk full (" + boardCountLabel(len(retries), "retry", "retries") + ")", DetailSummary: "Workspace preparation is retrying with backoff. Free host disk space; the project breaker remains available for non-transient failures.",
+		DetailRows: rows, Overflow: overflow, DeepLink: "/health/ui"}, true
 }
 
 func ciUnavailableConditionDetail(condition telemetry.CICondition) string {

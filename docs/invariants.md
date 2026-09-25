@@ -185,7 +185,12 @@ the operation; compound hooks need the Git-specific SSH refusal in their output.
 An unrelated later command in a compound hook cannot inherit an earlier Git read.
 SSH refusal, transport loss, and 5xx responses retain the original workspace
 error, enter the existing forge retry with backoff, and do not count toward the
-project breaker. Other preparation failures remain instance-owned; their breaker
+project breaker. Workspace command and `after_create` hook ENOSPC failures use
+the existing retry backoff as instance-owned capacity failures, with a host disk
+alert on the board and health view; they do not count toward the project breaker.
+`TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker` reproduces the recorded
+Git-index and hook failures, and `TestBoardAndHealthShowHostDiskExhaustionRetry`
+checks the operator signal. Other preparation failures remain instance-owned; their breaker
 uses `agent.failure_breaker.cooldown_seconds` rather than the separate
 blocked-recovery cooldown. A checked clean merge that needs no new workspace
 uses the no-workspace merge-control path under that breaker, even when worker
