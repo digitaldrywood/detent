@@ -683,7 +683,7 @@ func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttem
 }
 
 func completionGateWaitEvidence(reason string, issue connector.Issue) connector.Issue {
-	if strings.TrimSpace(reason) != completedReworkGateWaitReason {
+	if strings.TrimSpace(reason) != completedReworkGateWaitReason && !issueHasOpenPullRequest(issue) {
 		return connector.Issue{}
 	}
 	return cloneIssue(issue)
@@ -779,8 +779,28 @@ func autoPromoteActiveGatePendingIssue(
 	}
 	autoCfg = normalizeAutoPromoteConfig(autoCfg)
 	operationalCompletionAccepted := completedOperationalCompletionAccepted(issue, completed.CompletionKind)
+	if completed.successfulAttemptPersisted && gateRequiresPullRequest(autoCfg.Gate) && !operationalCompletionAccepted &&
+		!completedActiveGateWaitCurrentHead(completed, issue) {
+		return false
+	}
 	return completedActiveFinalStateReviewEligible(completed.FinalState, autoCfg.SourceState) &&
 		completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate), operationalCompletionAccepted)
+}
+
+func completedActiveGateWaitCurrentHead(completed Completed, issue connector.Issue) bool {
+	previous := completed.gateWaitEvidence
+	if strings.TrimSpace(previous.ID) == "" {
+		previous = completed.Issue
+	}
+	if normalizeState(previous.State) != normalizeState(issue.State) ||
+		previous.PullRequest == nil || issue.PullRequest == nil ||
+		pullRequestNumber(previous) <= 0 || pullRequestNumber(previous) != pullRequestNumber(issue) ||
+		!strings.EqualFold(pullRequestRepository(previous), pullRequestRepository(issue)) ||
+		strings.TrimSpace(previous.PullRequest.HeadSHA) == "" ||
+		strings.TrimSpace(previous.PullRequest.HeadSHA) != strings.TrimSpace(issue.PullRequest.HeadSHA) {
+		return false
+	}
+	return issue.StageUpdatedAt == nil || completed.CompletedAt.IsZero() || !issue.StageUpdatedAt.After(completed.CompletedAt)
 }
 
 func autoPromoteActiveGateTrackedIssue(
