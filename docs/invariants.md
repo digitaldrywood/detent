@@ -60,8 +60,10 @@ consolidates existing completion evidence without adding a mechanism.
 A persisted successful completion with a complete Workpad and ready PR remains
 owned by the existing active-lane gate while current-head CI is pending. Stranded
 active recovery excludes that completion instead of sending its open PR to
-Rework; an ended attempt without completion still recovers its open PR to
-Rework. The gate promotes a green head to Merging. This preserves the single
+Rework only while the PR identity and head still match the completion-time
+snapshot. A replacement head or an ended attempt without completion still
+recovers its open PR to Rework. The gate promotes a green matching head to
+Merging. This preserves the single
 orchestrator lane writer and removes an overlapping recovery decision (#3073).
 `TestCompletedReadyPullRequestEntersMergeGate` and
 `TestRecoverStrandedActiveIssues` cover the recorded completion and recovery

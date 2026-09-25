@@ -41,6 +41,8 @@ func TestCompletedActiveReviewRequiresFinishedWork(t *testing.T) {
 			t.Run(tt.name+"/"+lane, func(t *testing.T) {
 				t.Parallel()
 				issue := completionTransitionIssue(lane, "OPEN")
+				issue.PullRequest.Number = 17
+				issue.PullRequest.HeadSHA = "ready-head"
 				issue.PullRequest.Draft = tt.draft
 				if tt.status != "" {
 					issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers: []\nhuman_action: null\n```\n\n" + tt.prose}}
@@ -550,11 +552,16 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 
 	now := time.Date(2026, 9, 25, 12, 2, 0, 0, time.UTC)
 	for _, tt := range []struct {
-		name     string
-		ciStatus string
+		name        string
+		ciStatus    string
+		replaceHead bool
+		replacePR   bool
 	}{
 		{name: "CI pending", ciStatus: "pending"},
 		{name: "CI passed", ciStatus: "pass"},
+		{name: "replacement head with pending CI", ciStatus: "pending", replaceHead: true},
+		{name: "replacement head with passed CI", ciStatus: "pass", replaceHead: true},
+		{name: "replacement PR with same head", ciStatus: "pending", replacePR: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -597,16 +604,38 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 				t.Fatalf("completed = %#v, want persisted success", completed)
 			}
 			state.WorkAttempts = []telemetry.WorkAttempt{{IssueID: issue.ID, Status: "completed", CompletedAt: &completedAt}}
+			if tt.replaceHead || tt.replacePR {
+				if tt.replaceHead {
+					issue.PullRequest.HeadSHA = "replacement-head"
+				} else {
+					issue.PullRequest.Number++
+				}
+				baseTracker.stateIssues[0] = cloneIssue(issue)
+				orch.updateTargetedIssueEntries(&state, issue)
+			}
 
 			orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
-			if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
-				t.Fatal("completed ready PR did not enter the existing gate wait")
+			staleCompletion := tt.replaceHead || tt.replacePR
+			if got := autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote); got == staleCompletion {
+				t.Fatalf("gate wait = %t, want %t for stale completion = %t", got, !staleCompletion, staleCompletion)
 			}
 			if diagnostics := strandedActiveIssueSnapshots(state, issueSnapshots([]connector.Issue{issue}, 0, 0, now, state.laneEntries), now); len(diagnostics) != 1 || diagnostics[0].DurationSeconds != int64((25*time.Minute)/time.Second) {
 				t.Fatalf("stranded diagnostics = %#v, want the recorded 25-minute completion-to-recovery gap", diagnostics)
 			}
+			if staleCompletion {
+				if promoted := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now); len(promoted.transitioned) != 0 {
+					t.Fatalf("replacement head promoted with stale completion: %#v", promoted.transitioned)
+				}
+				if recovered := orch.recoverStrandedActiveIssues(t.Context(), &state, []connector.Issue{issue}, now); len(recovered) != 1 {
+					t.Fatalf("replacement head recovery = %#v, want Rework", recovered)
+				}
+				if got, want := baseTracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+					t.Fatalf("updates = %#v, want %#v", got, want)
+				}
+				return
+			}
 			if recovered := orch.recoverStrandedActiveIssues(t.Context(), &state, []connector.Issue{issue}, now); len(recovered) != 0 {
-				t.Fatalf("completed issue recovered as stranded: %#v", recovered)
+				t.Fatalf("completed current head recovered as stranded: %#v", recovered)
 			}
 			if len(baseTracker.updates) != 0 {
 				t.Fatalf("gate wait changed lanes before promotion: %#v", baseTracker.updates)
