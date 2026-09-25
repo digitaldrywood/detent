@@ -126,6 +126,57 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDurableAuditPassSupersedesRunningStageForGate(t *testing.T) {
+	t.Parallel()
+	issue := securityAuditTestIssue()
+	issue.State = "Human Review"
+	issue.PullRequest.State = "open"
+	issue.PullRequest.CIStatus = "success"
+	issue.PullRequest.MergeableState = "clean"
+	memo := newSecurityAuditMemoryStore()
+	o := securityAuditTestOrchestrator(memo)
+	o.cfg.AutoPromote.Enabled = true
+	o.cfg.AutoPromote.Gate.AutomatedReview = gate.AutomatedReviewOff
+	state := newState(o.cfg)
+	now := time.Now()
+	o.refreshRequiredGateEvidence(t.Context(), &state, []connector.Issue{issue})
+	if got := state.RequiredGates[issue.ID]; got.Reason != string(gate.ReasonSecurityAuditMissing) {
+		t.Fatalf("initial gate = %+v", got)
+	}
+	run := securityAuditPassingRun(issue)
+	if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	o.securityAuditRuns[o.securityAuditIdentity(issue).cacheKey] = struct{}{}
+	for _, tc := range []struct {
+		name       string
+		head       string
+		wantReason string
+		wantRun    int64
+		wantAction AutoPromoteAction
+	}{
+		{name: "exact head", head: issue.PullRequest.HeadSHA, wantReason: string(gate.ReasonReady), wantRun: run.ID, wantAction: AutoPromoteActionPromote},
+		{name: "old head", head: "next-head", wantReason: string(gate.ReasonSecurityAuditMissing), wantAction: AutoPromoteActionAwaitReview},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := cloneIssue(issue)
+			current.PullRequest.HeadSHA = tc.head
+			o.refreshRequiredGateEvidence(t.Context(), &state, []connector.Issue{current})
+			got := state.RequiredGates[current.ID]
+			if got.Reason != tc.wantReason || got.AuditRunID != tc.wantRun {
+				t.Fatalf("required gate = %+v, want reason %s run %d", got, tc.wantReason, tc.wantRun)
+			}
+			evaluation := o.securityAuditEvaluation(t.Context(), current)
+			summary := AutoPromoteSummaryFromIssue(current)
+			summary.SecurityAudit = evaluation
+			decision := EvaluateAutoPromote(current, summary, o.cfg.AutoPromote, now)
+			if decision.Action != tc.wantAction || string(decision.Reason) != tc.wantReason {
+				t.Fatalf("auto promotion = %+v, want %s/%s", decision, tc.wantAction, tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestDisposedFalsePositiveDoesNotProduceSecurityAuditRework(t *testing.T) {
 	t.Parallel()
 

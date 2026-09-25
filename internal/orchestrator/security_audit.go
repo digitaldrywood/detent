@@ -21,12 +21,6 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 		return securityaudit.Evaluation{}
 	}
 	identity := o.securityAuditIdentity(issue)
-	o.securityAuditMu.Lock()
-	_, running := o.securityAuditRuns[identity.cacheKey]
-	o.securityAuditMu.Unlock()
-	if running {
-		return securityaudit.Evaluation{Running: true}
-	}
 	if identity.key.HeadSHA == "" {
 		return securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}
 	}
@@ -36,6 +30,12 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 	run, err := o.securityAuditStore.LatestSecurityAuditRun(ctx, identity.key)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			o.securityAuditMu.Lock()
+			_, running := o.securityAuditRuns[identity.cacheKey]
+			o.securityAuditMu.Unlock()
+			if running {
+				return securityaudit.Evaluation{Running: true}
+			}
 			return securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}
 		}
 		o.logSecurityAuditFailure(issue, "lookup_failed", err)
