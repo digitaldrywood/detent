@@ -190,11 +190,13 @@ sudo systemctl start detent-hub
 The running Hub holds its database in SQLite exclusive locking mode, so
 WAL-shipping replicators such as Litestream cannot attach to `hub.db` and fail
 with `database is locked`. Do not weaken the lock to enable them. For routine
-off-host copies, schedule this stop/backup/verify/start sequence (for example
-from a root-owned systemd timer at a quiet hour), compress the finished snapshot
-and upload only that file to encrypted object storage. The Hub is unavailable
-from stop until start, which grows with database size and storage speed; drain
-runners or choose a window where that outage cannot outlast active leases.
+off-host copies, schedule a script (for example from a root-owned systemd timer
+at a quiet hour) that stops the Hub, runs `hub backup`, and starts the Hub again
+immediately, restarting it even when the backup fails. Only then run `hub verify`
+against the detached snapshot, compress it and upload that file to encrypted
+object storage. The Hub is unavailable while `hub backup` checks and copies the
+database, which grows with database size and storage speed; drain runners or
+choose a window where that outage cannot outlast active leases.
 
 Replace angle-bracket placeholders before execution. Backup output must not
 exist and must differ from the source. Copy only the completed snapshot to the
