@@ -183,7 +183,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	}
 	if scope.credential.Runner.RunnerID != "" {
 		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now); err != nil {
+			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
 			return request, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)

@@ -52,6 +52,7 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/api/cloud/billing", s.hostedBilling)
 	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
 	e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
+	s.registerAppRoutes(e)
 }
 
 func (s *Service) renderHosted(c echo.Context, status int, data templates.HostedPageData) error {
