@@ -42,6 +42,7 @@ type Config struct {
 	ListenAddress string
 	Logger        *slog.Logger
 	Allocation    *AllocationConfig
+	Billing       *BillingConfig
 
 	now           func() time.Time
 	generateToken func() (string, error)
@@ -64,6 +65,9 @@ func (c Config) validate() error {
 	if ip := net.ParseIP(strings.Trim(host, "[]")); err != nil || host != "localhost" && (ip == nil || !ip.IsLoopback()) {
 		return errors.New("shared entry must listen on a loopback address behind the TLS proxy")
 	}
+	if err := c.Billing.validate(); err != nil {
+		return err
+	}
 	if err := c.Allocation.validate(); err != nil {
 		return err
 	}
@@ -85,6 +89,8 @@ type Service struct {
 	stopAllocator context.CancelFunc
 	allocatorDone chan struct{}
 	wake          chan struct{}
+	stopBilling   context.CancelFunc
+	billingDone   chan struct{}
 }
 
 func Open(ctx context.Context, cfg Config) (*Service, error) {
@@ -118,6 +124,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
 	service.routes()
 	service.startAllocator(ctx)
+	service.startBillingWorker(ctx)
 	return service, nil
 }
 
@@ -130,6 +137,7 @@ func (s *Service) Registry() *Registry {
 }
 
 func (s *Service) Close() error {
+	s.closeBillingWorker()
 	return errors.Join(s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
 }
 
@@ -187,6 +195,7 @@ func (s *Service) routes() {
 	e.POST("/organizations/:organization/logout", s.logout)
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
+	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
 	e.GET("/invite", s.startInvitation)
 	e.GET("/invitations/join", s.joinPage)
 	e.POST("/invitations/join", s.joinInvitation)

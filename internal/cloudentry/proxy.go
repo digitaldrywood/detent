@@ -199,40 +199,46 @@ func (s *Service) proxy(c echo.Context) error {
 }
 
 func (s *Service) serviceRequest(ctx context.Context, organization Organization, path string, payload any, identity func(*cloudassert.Claims)) (int, error) {
+	status, _, err := s.serviceCall(ctx, organization, path, payload, identity)
+	return status, err
+}
+
+func (s *Service) serviceCall(ctx context.Context, organization Organization, path string, payload any, identity func(*cloudassert.Claims)) (int, []byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	claims, err := s.claims(organization, cloudassert.KindService, http.MethodPost, path, body)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if identity != nil {
 		identity(&claims)
 	}
 	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	transport, err := s.config.transport(organization)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://tenant"+path, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(cloudassert.Header, assertion)
 	response, err := (&http.Client{Transport: transport, Timeout: 15 * time.Second}).Do(request)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer response.Body.Close()
-	if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10)); err != nil {
-		return 0, err
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return 0, nil, err
 	}
-	return response.StatusCode, nil
+	return response.StatusCode, raw, nil
 }
 
 func (s *Service) acceptInvitation(ctx context.Context, organization Organization, subject, email, providerSession, token string) error {

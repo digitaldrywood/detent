@@ -15,9 +15,23 @@ type Event struct {
 	ID       string
 	Type     string
 	Livemode *bool
+	Customer string `json:"-"`
+	Charge   string `json:"-"`
+	Data     struct {
+		Object struct {
+			ID       string          `json:"id"`
+			Object   string          `json:"object"`
+			Customer json.RawMessage `json:"customer"`
+			Charge   json.RawMessage `json:"charge"`
+		} `json:"object"`
+	} `json:"data"`
 }
 
 func VerifyEvent(body []byte, signature string, secret []byte, now time.Time) (Event, error) {
+	return VerifyModeEvent(body, signature, secret, now, false)
+}
+
+func VerifyModeEvent(body []byte, signature string, secret []byte, now time.Time, live bool) (Event, error) {
 	var timestamp string
 	var signatures []string
 	for part := range strings.SplitSeq(signature, ",") {
@@ -47,8 +61,20 @@ func VerifyEvent(body []byte, signature string, secret []byte, now time.Time) (E
 		}
 	}
 	var event Event
-	if !valid || json.Unmarshal(body, &event) != nil || !validID(event.ID, "evt_") || !testMode(event.Livemode) || event.Type == "" || len(event.Type) > 128 {
-		return Event{}, errors.New("stripe webhook is not a verified test event")
+	if !valid || json.Unmarshal(body, &event) != nil || !validID(event.ID, "evt_") || !modeMatches(event.Livemode, live) || event.Type == "" || len(event.Type) > 128 {
+		return Event{}, errors.New("stripe webhook is not a verified event for the configured mode")
+	}
+	var customer string
+	if json.Unmarshal(event.Data.Object.Customer, &customer) == nil && validID(customer, "cus_") {
+		event.Customer = customer
+	} else if event.Data.Object.Object == "customer" && validID(event.Data.Object.ID, "cus_") {
+		event.Customer = event.Data.Object.ID
+	}
+	var charge string
+	if json.Unmarshal(event.Data.Object.Charge, &charge) == nil && validID(charge, "ch_") {
+		event.Charge = charge
+	} else if event.Data.Object.Object == "charge" && validID(event.Data.Object.ID, "ch_") {
+		event.Charge = event.Data.Object.ID
 	}
 	return event, nil
 }

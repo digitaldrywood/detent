@@ -20,8 +20,8 @@ type stripePrice struct {
 	}
 }
 
-func (p stripePrice) supported() bool {
-	return validID(p.ID, "price_") && testMode(p.Livemode) && p.Type == "recurring" && p.BillingScheme == "per_unit" && p.Recurring.UsageType == "licensed"
+func (p stripePrice) supported(live bool) bool {
+	return validID(p.ID, "price_") && modeMatches(p.Livemode, live) && p.Type == "recurring" && p.BillingScheme == "per_unit" && p.Recurring.UsageType == "licensed"
 }
 
 func (s *stripeProvider) Checkout(ctx context.Context, request CheckoutRequest) (Session, error) {
@@ -35,7 +35,7 @@ func (s *stripeProvider) Checkout(ctx context.Context, request CheckoutRequest) 
 	if err := s.request(ctx, http.MethodGet, "prices/"+request.PriceID, "", nil, &price); err != nil {
 		return Session{}, err
 	}
-	if !price.supported() || !price.Active || price.ID != request.PriceID {
+	if !price.supported(s.live) || !price.Active || price.ID != request.PriceID {
 		return Session{}, errors.New("stripe checkout requires an active test recurring price")
 	}
 	form := url.Values{
@@ -56,8 +56,8 @@ func (s *stripeProvider) Checkout(ctx context.Context, request CheckoutRequest) 
 	if err := s.request(ctx, http.MethodPost, "checkout/sessions", request.IdempotencyKey, form, &response); err != nil {
 		return Session{}, err
 	}
-	if !validID(response.ID, "cs_test_") || !testMode(response.Livemode) || response.Customer != request.CustomerID || !sessionURL(response.URL, "checkout.stripe.com") || response.ExpiresAt != request.ExpiresAt.Unix() {
-		return Session{}, errors.New("stripe returned an invalid test checkout session")
+	if !validID(response.ID, s.sessionPrefix()) || !s.mode(response.Livemode) || response.Customer != request.CustomerID || !sessionURL(response.URL, "checkout.stripe.com") || response.ExpiresAt != request.ExpiresAt.Unix() {
+		return Session{}, errors.New("stripe returned an invalid checkout session for the configured mode")
 	}
 	return Session{ID: response.ID, URL: response.URL, ExpiresAt: time.Unix(response.ExpiresAt, 0).UTC()}, nil
 }
@@ -77,7 +77,7 @@ func (s *stripeProvider) Portal(ctx context.Context, binding Binding, configurat
 	if err := s.request(ctx, http.MethodGet, "billing_portal/configurations/"+configuration, "", nil, &config); err != nil {
 		return Session{}, err
 	}
-	if config.ID != configuration || !testMode(config.Livemode) || !config.Active {
+	if config.ID != configuration || !s.mode(config.Livemode) || !config.Active {
 		return Session{}, errors.New("stripe portal requires an active test configuration")
 	}
 	var response struct {
@@ -90,7 +90,7 @@ func (s *stripeProvider) Portal(ctx context.Context, binding Binding, configurat
 	if err := s.request(ctx, http.MethodPost, "billing_portal/sessions", "", form, &response); err != nil {
 		return Session{}, err
 	}
-	if !validID(response.ID, "bps_") || !testMode(response.Livemode) || response.Customer != binding.CustomerID || !sessionURL(response.URL, "billing.stripe.com") {
+	if !validID(response.ID, "bps_") || !s.mode(response.Livemode) || response.Customer != binding.CustomerID || !sessionURL(response.URL, "billing.stripe.com") {
 		return Session{}, errors.New("stripe returned an invalid test portal session")
 	}
 	return Session{ID: response.ID, URL: response.URL}, nil

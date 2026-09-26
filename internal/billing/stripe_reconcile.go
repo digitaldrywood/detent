@@ -61,7 +61,7 @@ func (s *stripeProvider) Reconcile(ctx context.Context, binding Binding) (Snapsh
 	}
 	var selected *stripeSubscription
 	for _, subscription := range subscriptions.Data {
-		if !validID(subscription.ID, "sub_") || !testMode(subscription.Livemode) || subscription.Customer != binding.CustomerID {
+		if !validID(subscription.ID, "sub_") || !s.mode(subscription.Livemode) || subscription.Customer != binding.CustomerID {
 			return Snapshot{}, errors.New("stripe returned a subscription outside the test customer binding")
 		}
 		if slices.Contains([]string{"canceled", "incomplete_expired"}, subscription.Status) {
@@ -88,7 +88,7 @@ func (s *stripeProvider) subscriptionSnapshot(ctx context.Context, binding Bindi
 		return result, nil
 	}
 	item := subscription.Items.Data[0]
-	if item.Quantity != 1 || !item.Price.supported() || item.CurrentPeriodEnd <= 0 {
+	if item.Quantity != 1 || !item.Price.supported(s.live) || item.CurrentPeriodEnd <= 0 {
 		result.Status = "unsupported_subscription"
 		return result, nil
 	}
@@ -98,7 +98,7 @@ func (s *stripeProvider) subscriptionSnapshot(ctx context.Context, binding Bindi
 	if invoice == nil {
 		return result, nil
 	}
-	if !validID(invoice.ID, "in_") || !testMode(invoice.Livemode) || invoice.Customer != binding.CustomerID || invoice.Parent.Type != "subscription_details" || invoice.Parent.SubscriptionDetails.Subscription != subscription.ID {
+	if !validID(invoice.ID, "in_") || !s.mode(invoice.Livemode) || invoice.Customer != binding.CustomerID || invoice.Parent.Type != "subscription_details" || invoice.Parent.SubscriptionDetails.Subscription != subscription.ID {
 		return Snapshot{}, errors.New("stripe returned an invoice outside the subscription binding")
 	}
 	result.InvoiceID, result.InvoiceStatus, result.InvoiceCreatedAt = invoice.ID, invoice.Status, stripeTime(invoice.Created)
@@ -142,7 +142,7 @@ func (s *stripeProvider) invoiceHold(ctx context.Context, binding Binding, invoi
 	var paid, refunded int64
 	hold := ""
 	for _, payment := range payments.Data {
-		if payment.Invoice != invoice.ID || !testMode(payment.Livemode) || payment.Status != "paid" || payment.AmountPaid <= 0 {
+		if payment.Invoice != invoice.ID || !s.mode(payment.Livemode) || payment.Status != "paid" || payment.AmountPaid <= 0 {
 			return "", errors.New("stripe returned an invalid invoice payment")
 		}
 		chargeID, err := s.paymentCharge(ctx, binding, payment)
@@ -187,7 +187,7 @@ func (s *stripeProvider) paymentCharge(ctx context.Context, binding Binding, pay
 		if err := s.request(ctx, http.MethodGet, "payment_intents/"+payment.Payment.PaymentIntent, "", nil, &intent); err != nil {
 			return "", err
 		}
-		if intent.ID == payment.Payment.PaymentIntent && intent.Customer == binding.CustomerID && testMode(intent.Livemode) && validID(intent.LatestCharge, "ch_") {
+		if intent.ID == payment.Payment.PaymentIntent && intent.Customer == binding.CustomerID && s.mode(intent.Livemode) && validID(intent.LatestCharge, "ch_") {
 			return intent.LatestCharge, nil
 		}
 	}
@@ -206,7 +206,7 @@ func (s *stripeProvider) chargeHold(ctx context.Context, binding Binding, id str
 	if err := s.request(ctx, http.MethodGet, "charges/"+id, "", nil, &charge); err != nil {
 		return 0, false, err
 	}
-	if charge.ID != id || charge.Customer != binding.CustomerID || !testMode(charge.Livemode) || charge.Amount < paid || charge.AmountRefunded < 0 || charge.AmountRefunded > charge.Amount {
+	if charge.ID != id || charge.Customer != binding.CustomerID || !s.mode(charge.Livemode) || charge.Amount < paid || charge.AmountRefunded < 0 || charge.AmountRefunded > charge.Amount {
 		return 0, false, errors.New("stripe returned an invalid charge binding")
 	}
 	if !charge.Disputed {
@@ -224,7 +224,7 @@ func (s *stripeProvider) chargeHold(ctx context.Context, binding Binding, id str
 		return 0, false, errors.New("stripe dispute evidence is incomplete")
 	}
 	for _, dispute := range disputes.Data {
-		if dispute.Charge != id || !testMode(dispute.Livemode) {
+		if dispute.Charge != id || !s.mode(dispute.Livemode) {
 			return 0, false, errors.New("stripe returned an invalid dispute binding")
 		}
 		if !slices.Contains([]string{"won", "warning_closed"}, dispute.Status) {

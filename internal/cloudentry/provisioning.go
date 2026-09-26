@@ -568,6 +568,13 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 	if !s.csrfValid(c, session, organization.ID) || c.FormValue("confirm") != organization.Name {
 		return s.denied(c, http.StatusUnprocessableEntity, "Type the organization name exactly to confirm deletion")
 	}
+	state, err := s.tenantBillingState(ctx, organization, true)
+	if err != nil {
+		return s.denied(c, http.StatusServiceUnavailable, "Billing status could not be confirmed; retry deletion later")
+	}
+	if billingBlocksDeletion(state, s.config.now()) {
+		return s.denied(c, http.StatusConflict, "Finish or let any pending checkout expire, and cancel the subscription in the billing portal, before deleting this organization")
+	}
 	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = 'deleting', updated_at = ? WHERE id = ? AND state = 'ready'", formatTime(s.config.now()), organization.ID); err != nil {
 		return s.denied(c, http.StatusServiceUnavailable, "Deletion could not start")
 	}
