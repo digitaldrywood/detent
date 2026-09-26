@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -19,6 +21,7 @@ import (
 
 const attemptAllowanceExhaustedReason = "attempt_allowance_exhausted"
 const sessionsWithoutMergeAllowance = 3
+const attemptFinalMessageLimit = 512
 
 type attemptAllowance struct {
 	Sessions int
@@ -258,6 +261,46 @@ func attemptTriageContext(issue connector.Issue, allowance attemptAllowance) (st
 	return string(data), err
 }
 
+func (o *Orchestrator) finalAssistantMessageMetadata(result runpkg.RunResult) map[string]any {
+	message := strings.TrimSpace(o.operatorText(result.FinalMessage))
+	if message == "" {
+		return nil
+	}
+	return map[string]any{"final_assistant_message": runtimeoutput.Truncate(message, attemptFinalMessageLimit).Value}
+}
+
+func attemptTriageFinalMessages(contextJSON string) string {
+	var context struct {
+		PriorSessions []store.WorkAttempt
+	}
+	if json.Unmarshal([]byte(contextJSON), &context) != nil || len(context.PriorSessions) == 0 {
+		return ""
+	}
+	attempts := append([]store.WorkAttempt(nil), context.PriorSessions...)
+	sort.SliceStable(attempts, func(i, j int) bool {
+		if attempts[i].StartedAt.Equal(attempts[j].StartedAt) {
+			return attempts[i].ID < attempts[j].ID
+		}
+		return attempts[i].StartedAt.Before(attempts[j].StartedAt)
+	})
+	var lines []string
+	for _, attempt := range attempts {
+		var metadata struct {
+			FinalAssistantMessage string `json:"final_assistant_message"`
+		}
+		if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil {
+			metadata.FinalAssistantMessage = ""
+		}
+		message := strings.Join(strings.Fields(metadata.FinalAssistantMessage), " ")
+		if message == "" {
+			message = "unavailable in stored attempt evidence"
+		}
+		message = runtimeoutput.Truncate(message, attemptFinalMessageLimit).Value
+		lines = append(lines, fmt.Sprintf("- Session %d (attempt %d): %q", len(lines)+1, attempt.ID, message))
+	}
+	return "\n\n## Final assistant messages\n" + strings.Join(lines, "\n")
+}
+
 func validAttemptTriageNote(note string) bool {
 	sections := []string{"## Why this stalled", "## What is blocking", "## Options"}
 	index := -1
@@ -303,7 +346,8 @@ func (o *Orchestrator) finishAttemptTriage(ctx context.Context, state *State, ev
 	} else if !validAttemptTriageNote(note) {
 		note = fallbackAttemptTriageNote(running.Issue, "invalid or missing output")
 	}
-	if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "read-only triage completed", map[string]any{"attempt_allowance_triage": note, "attempt_allowance_preserve_lane": running.CompletionLane != ""}) {
+	finalMessages := attemptTriageFinalMessages(event.Request.TriageContext)
+	if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "read-only triage completed", map[string]any{"attempt_allowance_triage": note, "attempt_allowance_final_messages": finalMessages, "attempt_allowance_preserve_lane": running.CompletionLane != ""}) {
 		return
 	}
 	o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
@@ -311,7 +355,7 @@ func (o *Orchestrator) finishAttemptTriage(ctx context.Context, state *State, ev
 	releaseProjectFailureBreakerCanary(state, running.Issue.ID)
 	releaseBackendCapacityProbe(state, running)
 	delete(state.Retry, running.Issue.ID)
-	if err := o.publishAttemptTriage(ctx, state, running.Issue, store.WorkAttempt{ID: running.WorkAttemptID, WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": note, "attempt_allowance_preserve_lane": running.CompletionLane != ""})}, event.CompletedAt); err != nil && o.logger != nil {
+	if err := o.publishAttemptTriage(ctx, state, running.Issue, store.WorkAttempt{ID: running.WorkAttemptID, WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": note, "attempt_allowance_final_messages": finalMessages, "attempt_allowance_preserve_lane": running.CompletionLane != ""})}, event.CompletedAt); err != nil && o.logger != nil {
 		o.logger.Warn("publish stalled issue triage", "issue_id", running.Issue.ID, "error", err)
 	}
 }
@@ -337,8 +381,9 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		}
 	}
 	var metadata struct {
-		Note         string `json:"attempt_allowance_triage"`
-		PreserveLane bool   `json:"attempt_allowance_preserve_lane"`
+		Note          string `json:"attempt_allowance_triage"`
+		FinalMessages string `json:"attempt_allowance_final_messages"`
+		PreserveLane  bool   `json:"attempt_allowance_preserve_lane"`
 	}
 	if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil {
 		metadata.Note = ""
@@ -403,7 +448,7 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		if !validAttemptTriageNote(metadata.Note) {
 			metadata.Note = fallbackAttemptTriageNote(issue, "triage interrupted before its result was persisted")
 		}
-		if err := o.connector.CreateComment(ctx, issue.ID, metadata.Note+"\n\n"+marker+attemptTriageObservedEvidence(issue, now)); err != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, metadata.Note+metadata.FinalMessages+"\n\n"+marker+attemptTriageObservedEvidence(issue, now)); err != nil {
 			return err
 		}
 	}
