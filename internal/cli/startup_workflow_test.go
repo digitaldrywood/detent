@@ -158,6 +158,84 @@ func TestStartupIsolatesWorkflowLoadFailure(t *testing.T) {
 	}
 }
 
+func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name    string
+		badRoot bool
+	}{
+		{name: "workspace root cannot be created", badRoot: true},
+		{name: "source root cannot be resolved"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			blockedHome := filepath.Join(root, "home")
+			if err := os.WriteFile(blockedHome, []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			badPath := filepath.Join(blockedHome, "user", "workspaces")
+			goodPath := filepath.Join(root, "workspaces")
+			workflowPath := filepath.Join(root, "WORKFLOW.md")
+			writeWorkflow := func(workspaceRoot, sourceRoot string) {
+				t.Helper()
+				content := "---\ntracker:\n  kind: memory\ncodex:\n  command: codex app-server\nworkspace:\n  root: " + workspaceRoot + "\n  source_root: " + sourceRoot + "\n---\n\nWork.\n"
+				if err := os.WriteFile(workflowPath, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.badRoot {
+				writeWorkflow(badPath, root)
+			} else {
+				writeWorkflow(goodPath, badPath)
+			}
+
+			healthyPath := writeWorkflowFile(t)
+			projects := []globalconfig.Project{
+				{ID: "invalid", Workflow: workflowPath, Workdir: root, Weight: 1},
+				{ID: "healthy", Workflow: healthyPath, Workdir: filepath.Dir(healthyPath), Weight: 1},
+			}
+			manager, err := project.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{
+				ProjectFactory: withRunnerFactory(project.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.Start(t.Context()); err != nil {
+				t.Fatalf("Start() error = %v, want isolated project failure", err)
+			}
+			t.Cleanup(func() {
+				for _, p := range manager.Registry().List() {
+					if err := p.Close(); err != nil {
+						t.Error(err)
+					}
+				}
+				manager.Wait()
+			})
+			pending, ok := manager.Registry().Pending("invalid")
+			if !ok || !pending.RetryStopped || !strings.Contains(pending.LastError, badPath) || !strings.Contains(pending.LastError, "not a directory") {
+				t.Fatalf("invalid project health = %+v, found = %v", pending, ok)
+			}
+			if healthy, ok := manager.Registry().Get("healthy"); !ok || !healthy.Running() {
+				t.Fatalf("healthy project = %v, found = %v, want running", healthy, ok)
+			}
+
+			writeWorkflow(goodPath, root)
+			if _, err := manager.Reconcile(t.Context(), project.ManagerConfig{Projects: projects}); err != nil {
+				t.Fatalf("Reconcile() error = %v", err)
+			}
+			if _, ok := manager.Registry().Pending("invalid"); ok {
+				t.Fatal("invalid project remains pending after path correction")
+			}
+			if recovered, ok := manager.Registry().Get("invalid"); !ok || !recovered.Running() {
+				t.Fatalf("recovered project = %v, found = %v, want running", recovered, ok)
+			}
+		})
+	}
+}
+
 type workflowStartupRunner struct{ started chan struct{} }
 
 func (r *workflowStartupRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {

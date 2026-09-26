@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -587,6 +588,38 @@ func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 	}
 	if got := readRunnerFile(t, filepath.Join(info.Path, "README.md")); got != "source repo\n" {
 		t.Fatalf("README.md = %q, want source repo", got)
+	}
+}
+
+func TestClassifyWorkspaceBackendError(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name           string
+		err            error
+		wantDefinition bool
+	}{
+		{name: "missing source root", err: &os.PathError{Op: "lstat", Path: "/missing/source", Err: syscall.ENOENT}, wantDefinition: true},
+		{name: "non-directory workspace ancestor", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOTDIR}, wantDefinition: true},
+		{name: "unsupported workspace path", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOTSUP}, wantDefinition: true},
+		{name: "symlink loop", err: &os.PathError{Op: "lstat", Path: "/loop/source", Err: syscall.ELOOP}, wantDefinition: true},
+		{name: "path too long", err: &os.PathError{Op: "mkdir", Path: "/long/workspace", Err: syscall.ENAMETOOLONG}, wantDefinition: true},
+		{name: "storage exhausted", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOSPC}},
+		{name: "storage I/O failure", err: &os.PathError{Op: "lstat", Path: "/home/user", Err: syscall.EIO}},
+		{name: "host permission failure", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.EACCES}},
+		{name: "backend failure", err: workspace.ErrUnsupportedBackend},
+		{name: "unscoped path errno", err: syscall.ENOTDIR},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyWorkspaceBackendError("create workspace backend", tt.err)
+			if gotDefinition := errors.Is(got, projectpkg.ErrProjectDefinition); gotDefinition != tt.wantDefinition {
+				t.Fatalf("classified as project definition = %v, want %v: %v", gotDefinition, tt.wantDefinition, got)
+			}
+			if !errors.Is(got, tt.err) {
+				t.Fatalf("error %v does not wrap original error %v", got, tt.err)
+			}
+		})
 	}
 }
 

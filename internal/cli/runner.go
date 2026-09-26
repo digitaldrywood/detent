@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
@@ -290,9 +292,26 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 		Logger: logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create workspace backend: %w", err)
+		context := fmt.Sprintf("create workspace backend for workspace root %q and source root %q", root, sourceRoot)
+		return nil, classifyWorkspaceBackendError(context, err)
 	}
 	return backend, nil
+}
+
+func classifyWorkspaceBackendError(context string, err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && (errors.Is(err, os.ErrNotExist) ||
+		isInvalidConfiguredPath(err)) {
+		return fmt.Errorf("%w: %s: %w", project.ErrProjectDefinition, context, err)
+	}
+	return fmt.Errorf("%s: %w", context, err)
+}
+
+func isInvalidConfiguredPath(err error) bool {
+	return errors.Is(err, syscall.ENOTDIR) ||
+		errors.Is(err, syscall.ELOOP) ||
+		errors.Is(err, syscall.ENAMETOOLONG) ||
+		errors.Is(err, syscall.ENOTSUP)
 }
 
 func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
