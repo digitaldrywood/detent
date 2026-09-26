@@ -193,7 +193,8 @@ with `database is locked`. Do not weaken the lock to enable them. For routine
 off-host copies, schedule this stop/backup/verify/start sequence (for example
 from a root-owned systemd timer at a quiet hour), compress the finished snapshot
 and upload only that file to encrypted object storage. The Hub is unavailable
-for the few seconds between stop and start; runners retry.
+from stop until start, which grows with database size and storage speed; drain
+runners or choose a window where that outage cannot outlast active leases.
 
 Replace angle-bracket placeholders before execution. Backup output must not
 exist and must differ from the source. Copy only the completed snapshot to the
