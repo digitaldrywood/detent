@@ -92,18 +92,26 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	if err != nil {
 		return http.StatusUnauthorized, err
 	}
+	subject, email := session.Subject, session.Email
+	if authorized.Support {
+		if !s.supportActor(session.Email) || authorized.EffectiveEmail == "" {
+			s.dropAuthorization(ctx, authorized)
+			return http.StatusForbidden, errNoSession
+		}
+		subject, email = authorized.Identity.Subject, authorized.EffectiveEmail
+	}
 	current, err := s.config.Provider.CurrentSession(ctx, authorized.Identity)
-	if err != nil || current.Subject != session.Subject || current.OrganizationID != organization.ProviderID || current.SessionID != authorized.Identity.SessionID || !current.ExpiresAt.After(s.config.now()) {
+	if err != nil || current.Subject != subject || current.SupportActor != authorized.Identity.SupportActor || current.SupportReason != authorized.Identity.SupportReason || current.OrganizationID != organization.ProviderID || current.SessionID != authorized.Identity.SessionID || !current.ExpiresAt.After(s.config.now()) {
 		s.dropAuthorization(ctx, authorized)
 		return http.StatusUnauthorized, errNoSession
 	}
-	memberships, err := s.config.Provider.Memberships(ctx, session.Subject, organization.ProviderID)
+	memberships, err := s.config.Provider.Memberships(ctx, subject, organization.ProviderID)
 	if err != nil {
 		return http.StatusServiceUnavailable, err
 	}
 	active := false
 	for _, membership := range memberships {
-		active = active || membership.UserID == session.Subject && membership.OrganizationID == organization.ProviderID && membership.Status == "active"
+		active = active || membership.UserID == subject && membership.OrganizationID == organization.ProviderID && membership.Status == "active"
 	}
 	if !active {
 		s.dropAuthorization(ctx, authorized)
@@ -114,7 +122,8 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 		identity.ExpiresAt = current.ExpiresAt
 	}
 	claims.Kind = cloudassert.KindBrowser
-	claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = session.Subject, session.Email, organization.ProviderID, identity.SessionID
+	claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = subject, email, organization.ProviderID, identity.SessionID
+	claims.SupportActor, claims.SupportReason = identity.SupportActor, identity.SupportReason
 	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.CreatedAt, identity.ExpiresAt
 	claims.Binding, claims.CSRF = authorized.Binding, cloudassert.CSRFToken(session.CSRFSecret, organization.ID)
 	return http.StatusOK, nil

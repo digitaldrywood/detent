@@ -129,7 +129,7 @@ configuration or local mode. The binding changes only through the offline
 
 ## Shared-origin route and session contract
 
-`detent cloud serve` implements sign-in, callback, chooser, invitations, sign-out and scoped routing for the organization shell, Work, projects, SSE and native APIs (see [shared entry](examples/hub/README.md#shared-entry)). Organization creation and provisioning (#2342), shared billing routes and webhooks (#2343), deletion, and temporary support access through the shared entry are not implemented yet; tenants in shared mode disable their own support start.
+`detent cloud serve` implements sign-in, callback, chooser, invitations, sign-out and scoped routing for the organization shell, Work, projects, SSE and native APIs (see [shared entry](examples/hub/README.md#shared-entry)). Organization creation and provisioning (#2342), shared billing routes and webhooks (#2343), and deletion are not implemented yet. Temporary support access runs through the shared entry: see [support access](#support-access).
 `ORG` and `PROJECT` stand for immutable opaque IDs, never organization names.
 
 | Surface | Public route/behavior |
@@ -348,6 +348,20 @@ limit; support sessions are never refreshed into ordinary sessions. Audit record
 contain opaque IDs, actual/effective identities, reason code, start/end or expiry
 and route-template action metadata. They exclude query strings, request bodies,
 raw errors, credentials and bearer capabilities. See [WorkOS impersonation](https://workos.com/docs/authkit/impersonation).
+
+On the shared origin the entry owns this flow. A staff session whose verified email
+is in the entry's `staff_emails` and `support_actors` opens `/support`, selects an
+organization and submits **Start support sign-in** (CSRF and exact Origin). The
+entry records a one-use, ten-minute transaction bound to that browser, staff
+session, actor and organization. The WorkOS impersonation callback must return in
+the same browser with the same actor, an allowed reason and the selected
+organization's provider ID; the resulting support authorization belongs only to
+that staff session and organization and never becomes an ordinary session. Every
+routed request rechecks the provider session, the support actor lists and the
+customer's active membership. The tenant, which must list the same actor in its
+own `staff_emails` and `support_actors`, shows the actual/effective identity banner,
+audits `session_started` when it first sees the support session, audits each
+content action as before, and audits `session_ended` when sign-out revokes it.
 
 This document describes required configuration; implementation and fixture
 validation do not enable impersonation or modify a live WorkOS account.

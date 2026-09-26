@@ -312,8 +312,16 @@ templ hostedSupport(data HostedPageData) {
 		} else if data.CanSupport {
 			<p class="text-sm text-sec">Start a support sign-in, then open the WorkOS dashboard using your authorized support account. Select the customer and organization and provide the required reason.</p>
 			<p class="text-sm text-sec">Customer content becomes available only after the temporary impersonation session is verified.</p>
-			<form method="post" action="/support/start">
+			<form method="post" action="/support/start" class="space-y-3">
 				@hostedCSRF(data.CSRF)
+				if data.SharedOrigin {
+					<label for="support-organization" class="block text-sm font-medium">Organization</label>
+					<select id="support-organization" name="organization" required class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+						for _, organization := range data.Organizations {
+							<option value={ organization.ID }>{ organization.Name + " (" + organization.ID + ")" }</option>
+						}
+					</select>
+				}
 				<button type="submit" class="min-h-11 rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Start support sign-in</button>
 			</form>
 		} else {

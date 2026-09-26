@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -22,9 +23,11 @@ type accountSession struct {
 }
 
 type authorization struct {
-	Binding      string
-	Organization string
-	Identity     auth.HostedIdentity
+	Binding        string
+	Organization   string
+	Identity       auth.HostedIdentity
+	Support        bool
+	EffectiveEmail string
 }
 
 type authStore struct {
@@ -58,7 +61,7 @@ func (a *authStore) session(ctx context.Context, hash string) (accountSession, e
 	return session, nil
 }
 
-func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity) (authorization, []authorization, error) {
+func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, effectiveEmail string) (authorization, []authorization, error) {
 	encoded, err := json.Marshal(identity)
 	if err != nil {
 		return authorization{}, nil, err
@@ -68,7 +71,7 @@ func (a *authStore) authorize(ctx context.Context, session accountSession, organ
 		return authorization{}, nil, err
 	}
 	defer tx.Rollback()
-	replaced, err := activeAuthorizations(ctx, tx, "SELECT binding,organization_id,identity_json,expires_at FROM authorizations WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
+	replaced, err := activeAuthorizations(ctx, tx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email FROM authorizations WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
 	if err != nil {
 		return authorization{}, nil, err
 	}
@@ -76,9 +79,9 @@ func (a *authStore) authorize(ctx context.Context, session accountSession, organ
 	if _, err := tx.ExecContext(ctx, "UPDATE authorizations SET revoked_at = ? WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", now, session.Hash, organization); err != nil {
 		return authorization{}, nil, err
 	}
-	result := authorization{Binding: cloudassert.AuthorizationBinding(session.Hash, organization, identity.SessionID), Organization: organization, Identity: identity}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO authorizations(binding,session_hash,organization_id,identity_json,created_at,expires_at) VALUES (?,?,?,?,?,?) ON CONFLICT(binding) DO UPDATE SET identity_json = excluded.identity_json, expires_at = excluded.expires_at, revoked_at = NULL",
-		result.Binding, session.Hash, organization, string(encoded), now, formatTime(identity.ExpiresAt)); err != nil {
+	result := authorization{Binding: cloudassert.AuthorizationBinding(session.Hash, organization, identity.SessionID), Organization: organization, Identity: identity, Support: identity.SupportActor != "", EffectiveEmail: effectiveEmail}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO authorizations(binding,session_hash,organization_id,identity_json,created_at,expires_at,support,effective_email) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(binding) DO UPDATE SET identity_json = excluded.identity_json, expires_at = excluded.expires_at, support = excluded.support, effective_email = excluded.effective_email, revoked_at = NULL",
+		result.Binding, session.Hash, organization, string(encoded), now, formatTime(identity.ExpiresAt), result.Support, effectiveEmail); err != nil {
 		return authorization{}, nil, err
 	}
 	var stale []authorization
@@ -104,7 +107,7 @@ func activeAuthorizations(ctx context.Context, query queryer, statement string, 
 	for rows.Next() {
 		var item authorization
 		var encoded, expires string
-		if err := rows.Scan(&item.Binding, &item.Organization, &encoded, &expires); err != nil {
+		if err := rows.Scan(&item.Binding, &item.Organization, &encoded, &expires, &item.Support, &item.EffectiveEmail); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(encoded), &item.Identity); err != nil {
@@ -116,8 +119,12 @@ func activeAuthorizations(ctx context.Context, query queryer, statement string, 
 }
 
 func (a *authStore) authorization(ctx context.Context, session accountSession, organization string) (authorization, error) {
-	items, err := activeAuthorizations(ctx, a.store.db, "SELECT binding,organization_id,identity_json,expires_at FROM authorizations WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
-	if err != nil || len(items) != 1 || !items[0].Identity.ExpiresAt.After(a.now()) || items[0].Identity.Subject != session.Subject {
+	items, err := activeAuthorizations(ctx, a.store.db, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email FROM authorizations WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
+	if err != nil || len(items) != 1 || !items[0].Identity.ExpiresAt.After(a.now()) {
+		return authorization{}, errNoSession
+	}
+	item := items[0]
+	if item.Support != (item.Identity.SupportActor != "") || item.Support && !strings.EqualFold(item.Identity.SupportActor, session.Email) || !item.Support && item.Identity.Subject != session.Subject {
 		return authorization{}, errNoSession
 	}
 	return items[0], nil
@@ -134,7 +141,7 @@ func (a *authStore) revokeSession(ctx context.Context, hash string) ([]authoriza
 		return nil, err
 	}
 	defer tx.Rollback()
-	items, err := activeAuthorizations(ctx, tx, "SELECT binding,organization_id,identity_json,expires_at FROM authorizations WHERE session_hash = ? AND revoked_at IS NULL", hash)
+	items, err := activeAuthorizations(ctx, tx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email FROM authorizations WHERE session_hash = ? AND revoked_at IS NULL", hash)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +156,8 @@ func (a *authStore) revokeSession(ctx context.Context, hash string) ([]authoriza
 }
 
 type loginTransaction struct {
+	SupportActor           string
+	SupportSession         string
 	ID                     string
 	State                  string
 	Verifier               string
@@ -159,8 +168,8 @@ type loginTransaction struct {
 }
 
 func (a *authStore) createTransaction(ctx context.Context, hash string, transaction loginTransaction) error {
-	_, err := a.store.db.ExecContext(ctx, "INSERT INTO transactions(token_hash,transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
-		hash, transaction.ID, transaction.State, transaction.Verifier, transaction.Organization, transaction.ReturnPath, transaction.InvitationToken, transaction.InvitationOrganization, formatTime(a.now().Add(10*time.Minute)))
+	_, err := a.store.db.ExecContext(ctx, "INSERT INTO transactions(token_hash,transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+		hash, transaction.ID, transaction.State, transaction.Verifier, transaction.Organization, transaction.ReturnPath, transaction.InvitationToken, transaction.InvitationOrganization, transaction.SupportActor, transaction.SupportSession, formatTime(a.now().Add(10*time.Minute)))
 	return err
 }
 
@@ -173,8 +182,8 @@ func (a *authStore) consumeTransaction(ctx context.Context, hash, id string) (lo
 	var result loginTransaction
 	var expires string
 	var consumed sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,expires_at,consumed_at FROM transactions WHERE token_hash = ? AND transaction_id = ?", hash, id).
-		Scan(&result.ID, &result.State, &result.Verifier, &result.Organization, &result.ReturnPath, &result.InvitationToken, &result.InvitationOrganization, &expires, &consumed)
+	err = tx.QueryRowContext(ctx, "SELECT transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,expires_at,consumed_at FROM transactions WHERE token_hash = ? AND transaction_id = ?", hash, id).
+		Scan(&result.ID, &result.State, &result.Verifier, &result.Organization, &result.ReturnPath, &result.InvitationToken, &result.InvitationOrganization, &result.SupportActor, &result.SupportSession, &expires, &consumed)
 	if err != nil || consumed.Valid {
 		return loginTransaction{}, errNoSession
 	}

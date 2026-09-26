@@ -32,7 +32,7 @@ func hostedSharedKey(seed byte) ed25519.PrivateKey {
 func hostedSharedTestConfig(path string, provider auth.HostedProvider, key ed25519.PrivateKey, generation int64) Config {
 	return Config{DatabasePath: path, GitHubDisabled: true, Hosted: &HostedConfig{
 		OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner",
-		PublicURL: "https://hub.example.test", StaffEmails: []string{"staff@example.test"}, Provider: provider,
+		PublicURL: "https://hub.example.test", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider,
 		SharedEntry: &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: generation},
 	}}
 }
@@ -493,5 +493,56 @@ func TestMigrateHostedSharedOrigin(t *testing.T) {
 	}
 	if _, err := shared.database.db.ExecContext(t.Context(), "UPDATE hosted_binding_migrations SET applied = 0"); err == nil {
 		t.Fatal("applied migration was reopened")
+	}
+}
+
+func TestHostedSharedSupportSessionAudit(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	f.member(t, "owner", "owner", "write")
+	now := time.Now().UTC().Truncate(time.Second)
+	support := hostedSecurityUser{identity: auth.Identity{Subject: "user_owner", Email: "owner@example.test", Hosted: &auth.HostedIdentity{
+		Subject: "user_owner", OrganizationID: "org_provider", SessionID: "session_support", CreatedAt: now, ExpiresAt: now.Add(time.Hour), SupportActor: "support@example.test", SupportReason: "troubleshooting",
+	}}}
+	f.provider.mu.Lock()
+	f.provider.sessions["session_support"] = *support.identity.Hosted
+	f.provider.mu.Unlock()
+	for range 2 {
+		if response := f.serve(t, hostedSharedRequest{user: &support, target: "/organizations/org_security/organization"}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "support@example.test is acting as owner@example.test") {
+			t.Fatalf("support page status = %d", response.Code)
+		}
+	}
+	unlisted := support
+	unlistedHosted := *support.identity.Hosted
+	unlistedHosted.SupportActor, unlistedHosted.SessionID = "outsider@example.test", "session_outsider"
+	unlisted.identity.Hosted = &unlistedHosted
+	f.provider.mu.Lock()
+	f.provider.sessions["session_outsider"] = unlistedHosted
+	f.provider.mu.Unlock()
+	if response := f.serve(t, hostedSharedRequest{user: &unlisted, target: "/organizations/org_security/organization"}); response.Code == http.StatusOK {
+		t.Fatal("tenant accepted a support actor it does not list")
+	}
+	binding := cloudassert.AuthorizationBinding("shared-user_owner", "org_security", "session_support")
+	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: `{"bindings":["` + binding + `"]}`}); response.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d", response.Code)
+	}
+	rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT event, actual_actor, effective_user, reason FROM hosted_audit WHERE event LIKE 'session_%' ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var events []string
+	for rows.Next() {
+		var event, actor, effective, reason string
+		if err := rows.Scan(&event, &actor, &effective, &reason); err != nil {
+			t.Fatal(err)
+		}
+		if actor != "support@example.test" || effective != "user_owner" || reason != "troubleshooting" {
+			t.Fatalf("audit row = %s %s %s %s", event, actor, effective, reason)
+		}
+		events = append(events, event)
+	}
+	if strings.Join(events, ",") != "session_started,session_ended" {
+		t.Fatalf("support audit events = %v", events)
 	}
 }

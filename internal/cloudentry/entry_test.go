@@ -62,6 +62,13 @@ func (*fakeProvider) AuthorizationURL(state, _, verifier string) string {
 func (p *fakeProvider) Exchange(_ context.Context, code, _, _ string) (auth.Identity, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if parts := strings.Split(code, "|"); len(parts) == 5 && parts[0] == "support" {
+		p.sequence++
+		now := time.Now().UTC().Truncate(time.Second)
+		hosted := auth.HostedIdentity{Subject: parts[2], OrganizationID: parts[3], SessionID: "support_session_" + string(rune('a'+p.sequence)), CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour), SupportActor: parts[1], SupportReason: parts[4]}
+		p.sessions[hosted.SessionID] = hosted
+		return auth.Identity{Subject: parts[2], Email: p.users[parts[2]], EmailVerified: true, Hosted: &hosted}, nil
+	}
 	user, organization, _ := strings.Cut(code, ":")
 	email, ok := p.users[user]
 	if !ok {
@@ -277,7 +284,7 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	t.Helper()
 	path := filepath.Join(t.TempDir(), id+".db")
 	hosted := func(shared bool) *hubserver.HostedConfig {
-		config := &hubserver.HostedConfig{OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test"}}
+		config := &hubserver.HostedConfig{OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
 		if shared {
 			config.PublicURL = testPublicURL
 			config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
@@ -321,6 +328,7 @@ func newEntryFixture(t *testing.T) entryFixture {
 	provider.users["user_alice"] = "alice@example.test"
 	provider.users["user_bob"] = "bob@example.test"
 	provider.users["user_carol"] = "carol@example.test"
+	provider.users["user_support"] = "support@example.test"
 	provider.member("user_alice", "porg_alpha", "owner")
 	provider.member("user_alice", "porg_beta", "owner")
 	provider.member("user_bob", "porg_beta", "member")
@@ -328,7 +336,7 @@ func newEntryFixture(t *testing.T) entryFixture {
 	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
 	tenants := map[string]http.Handler{"unix:/tenants/alpha.sock": alphaHandler, "unix:/tenants/beta.sock": betaHandler}
 	service, err := Open(t.Context(), Config{
-		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test"}, StateDir: t.TempDir(),
+		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
 		Logger: slog.New(slog.DiscardHandler),
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
@@ -434,6 +442,9 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 		t.Fatal("scoped mutation reached the wrong organization")
 	}
 	_, chooser := alice.get("/organizations")
+	if strings.Contains(chooser, `href="/organization"`) {
+		t.Fatal("entry pages link to the unscoped tenant route")
+	}
 	if !strings.Contains(chooser, `href="/organizations/org_alpha/organization"`) || !strings.Contains(chooser, `href="/organizations/org_beta/organization"`) {
 		t.Fatalf("chooser = %s", chooser)
 	}
@@ -651,5 +662,65 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 		if err := config.validate(); (err == nil) != test.ok {
 			t.Errorf("listen %q error = %v, want ok %v", test.listen, err, test.ok)
 		}
+	}
+}
+
+func TestSharedEntrySupportAccess(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	support := newBrowser(t, f.service.Handler())
+	support.login("/organizations", "user_support:")
+	if response, _ := support.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {
+		t.Fatal("staff session read customer content without support access")
+	}
+	response, page := support.get("/support")
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, `<option value="org_alpha">`) {
+		t.Fatalf("support page = %d %s", response.StatusCode, page)
+	}
+	start := support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "csrf": {csrfFrom(t, page)}}, nil)
+	if start.StatusCode != http.StatusOK || !strings.Contains(start.Body, "impersonate") {
+		t.Fatalf("support start = %d", start.StatusCode)
+	}
+	other := newBrowser(t, f.service.Handler())
+	other.login("/organizations", "user_support:")
+	if response, _ := other.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request")); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("support callback in another browser = %d", response.StatusCode)
+	}
+	callback, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request"))
+	if callback.StatusCode != http.StatusSeeOther || callback.Header.Get("Location") != "/organizations/org_alpha/organization" {
+		t.Fatalf("support callback = %d %q %s", callback.StatusCode, callback.Header.Get("Location"), callback.Body)
+	}
+	response, body := support.get("/organizations/org_alpha/organization")
+	if response.StatusCode != http.StatusOK || !strings.Contains(body, "support@example.test is acting as alice@example.test") || !strings.Contains(body, "Alpha secret project") {
+		t.Fatalf("support page = %d %s", response.StatusCode, body)
+	}
+	if response, _ := support.get("/organizations/org_beta/organization"); response.StatusCode == http.StatusOK {
+		t.Fatal("support access for alpha opened beta")
+	}
+	if replay, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request")); replay.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replayed support callback = %d", replay.StatusCode)
+	}
+	support.login("/auth/oidc/start", "user_support:")
+	if response, _ := support.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {
+		t.Fatal("an ordinary sign-in carried support access into the new session")
+	}
+	alice := newBrowser(t, f.service.Handler())
+	alice.login("/organizations", "user_alice:")
+	_, choices := alice.get("/support")
+	if denied := alice.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "csrf": {csrfFrom(t, choices)}}, nil); denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("customer support start = %d", denied.StatusCode)
+	}
+	for _, test := range []struct{ name, code string }{
+		{"invalid reason", "support|support@example.test|user_alice|porg_alpha|curiosity"},
+		{"other organization", "support|support@example.test|user_alice|porg_beta|customer-request"},
+		{"other actor", "support|staff@example.test|user_alice|porg_alpha|customer-request"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, page := support.get("/support")
+			support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "csrf": {csrfFrom(t, page)}}, nil)
+			if response, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape(test.code)); response.StatusCode != http.StatusForbidden {
+				t.Fatalf("status = %d", response.StatusCode)
+			}
+		})
 	}
 }

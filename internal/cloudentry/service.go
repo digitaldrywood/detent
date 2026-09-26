@@ -36,6 +36,7 @@ type Config struct {
 	SigningKey    ed25519.PrivateKey
 	Provider      auth.HostedProvider
 	StaffEmails   []string
+	SupportActors []string
 	StateDir      string
 	ListenAddress string
 	Logger        *slog.Logger
@@ -165,6 +166,8 @@ func (s *Service) routes() {
 	e.GET("/api/cloud/organizations", s.organizationsJSON)
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)
+	e.GET("/support", s.supportPage)
+	e.POST("/support/start", s.startSupport)
 	e.GET("/invite", s.startInvitation)
 	e.GET("/invitations/join", s.joinPage)
 	e.POST("/invitations/join", s.joinInvitation)
@@ -225,8 +228,16 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	return session, nil
 }
 
+func (s *Service) supportActor(email string) bool {
+	return s.staff(email) && listed(s.config.SupportActors, email)
+}
+
 func (s *Service) staff(email string) bool {
-	for _, staff := range s.config.StaffEmails {
+	return listed(s.config.StaffEmails, email)
+}
+
+func listed(values []string, email string) bool {
+	for _, staff := range values {
 		if strings.EqualFold(strings.TrimSpace(staff), strings.TrimSpace(email)) {
 			return true
 		}

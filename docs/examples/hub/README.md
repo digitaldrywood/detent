@@ -42,6 +42,7 @@ public_url: https://hub.detent.build
 listen: 127.0.0.1:8017
 state_directory: /var/lib/detent/cloud
 staff_emails: []
+support_actors: []
 assertion:
   issuer: detent-cloud
   signing_key_env: DETENT_CLOUD_ASSERTION_KEY
