@@ -205,13 +205,6 @@ func EvaluateAutoPromote(
 	} else if strings.TrimSpace(summary.ArtifactStatus) == "" {
 		summary.ArtifactStatus = artifactStatusFromIssue(issue, cfg.Gate.Artifact.StatusField)
 	}
-	// Merging owns audits that have not run yet. A known failing or running
-	// audit still holds Rework through the normal gate evaluation.
-	if normalizeState(issue.State) == normalizeState(cfg.ReworkState) && normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState) && autoPromoteReworkHeadReady(issue) {
-		if audit, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, summary.SecurityAudit); pending && audit.Reason == gate.ReasonSecurityAuditMissing {
-			cfg.Gate.SecurityAudit.Enabled = false
-		}
-	}
 	gateInput := gateSummary(summary)
 	if normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState) && issue.PullRequest != nil &&
 		summary.NativeQueueEligibleHeadSHA != "" && summary.NativeQueueEligibleHeadSHA == strings.TrimSpace(issue.PullRequest.HeadSHA) &&

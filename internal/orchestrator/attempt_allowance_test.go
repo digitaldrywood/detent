@@ -584,7 +584,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 	}{
 		{name: "merge discovered during hydration", merged: true, ci: "green", mergeable: "clean", want: "Done"},
 		{name: "validator pending", validator: true, pending: true, ci: "green", mergeable: "clean"},
-		{name: "audit missing defers to merging", audit: true, ci: "green", mergeable: "clean", want: "Merging"},
+		{name: "audit missing starts before merging", audit: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "audit missing for non-merging destination", audit: true, pending: true, ci: "green", mergeable: "clean", passState: "Done"},
 		{name: "audit running", audit: true, auditRunning: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "green replacement head promotes", newHead: true, ci: "green", mergeable: "clean", want: "Merging"},

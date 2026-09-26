@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestReworkLivePullRequestPromotion(t *testing.T) {
@@ -147,7 +148,7 @@ func TestReworkLiveSecurityAudit(t *testing.T) {
 		want      AutoPromoteAction
 	}{
 		{name: "non-merging destination requires audit", passState: "Done", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}, want: AutoPromoteActionAwaitReview},
-		{name: "not run", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}, want: AutoPromoteActionPromote},
+		{name: "not run", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}, want: AutoPromoteActionAwaitReview},
 		{name: "pass", audit: securityaudit.Evaluation{Allowed: true, Reason: securityaudit.ReasonReady}, want: AutoPromoteActionPromote},
 		{name: "running", audit: securityaudit.Evaluation{Running: true}, want: AutoPromoteActionAwaitReview},
 		{name: "failed", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonFailed}, want: AutoPromoteActionRework},
@@ -165,6 +166,60 @@ func TestReworkLiveSecurityAudit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCompletedReworkStartsCurrentHeadAuditBeforePromotion(t *testing.T) {
+	t.Parallel()
+	o, tracker, issue := mergingSecurityAuditFixture()
+	o.cfg.AutoPromote.Gate.RequireAutomatedReview = new(false)
+	o.cfg.AutoPromote.Gate.AutomatedReview = gate.AutomatedReviewOff
+	issue.State = "Rework"
+	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusComplete}
+	tracker.stateIssues = []connector.Issue{issue}
+	old := securityAuditPassingRun(issue)
+	old.HeadSHA = "previous-head"
+	if _, err := o.securityAuditStore.RecordSecurityAuditRun(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	auditor := &pendingReworkAuditor{started: make(chan struct{}), release: make(chan struct{})}
+	o.securityAuditor = auditor
+	t.Cleanup(func() { close(auditor.release); o.securityAuditWG.Wait() })
+	state := newState(o.cfg)
+	now := time.Now()
+	o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+	select {
+	case <-auditor.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("current-head audit did not start")
+	}
+	o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
+	if len(tracker.updates) != 0 || !o.securityAuditEvaluation(t.Context(), issue).Running {
+		t.Fatalf("promoted while current-head audit pending: updates=%+v", tracker.updates)
+	}
+	auditor.release <- struct{}{}
+	o.securityAuditWG.Wait()
+	if got := o.securityAuditEvaluation(t.Context(), issue); !got.Allowed || got.RunID == old.ID {
+		t.Fatalf("current-head audit = %+v", got)
+	}
+	o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(2*time.Minute))
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Merging" {
+		t.Fatalf("updates after trusted pass = %+v decisions=%+v", tracker.updates, state.AutoPromoteDecisions)
+	}
+}
+
+type pendingReworkAuditor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *pendingReworkAuditor) Audit(ctx context.Context, request SecurityAuditRequest) (SecurityAuditExecution, error) {
+	close(a.started)
+	select {
+	case <-a.release:
+	case <-ctx.Done():
+		return SecurityAuditExecution{}, ctx.Err()
+	}
+	return (&securityAuditTestAuditor{}).Audit(ctx, request)
 }
 
 func (c *liveReworkConnector) HydratePullRequestReviewThreads(_ context.Context, issue connector.Issue) (connector.Issue, error) {
