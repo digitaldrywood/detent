@@ -145,6 +145,15 @@ func (s *Service) requireRelayOrigin(c echo.Context) error {
 	return nil
 }
 
+// relayTicketRequest reports whether a request mints a relay ticket. Minting
+// is a POST only because it must carry the CSRF header; it grants nothing
+// beyond the project read the relay upgrade checks, so it needs read rather
+// than write. The writes a relay can carry -- a git commit or push and a
+// terminal -- are refused per frame against the person's grant.
+func relayTicketRequest(c echo.Context) bool {
+	return c.Request().Method == http.MethodPost && c.Path() == nativeBase+"/workspaces/:workspace/relay-tickets"
+}
+
 // mintWorkspaceRelayTicket implements POST .../workspaces/:workspace/relay-tickets.
 func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 	service, err := s.requireWorkspaces()

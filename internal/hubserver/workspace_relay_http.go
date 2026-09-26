@@ -985,7 +985,7 @@ func (w *workspaceService) readRunner(ctx context.Context, connection *relayConn
 			// output.
 			continue
 		}
-		stream, person := w.relay.runnerStream(connection.workspaceID, frame.Stream)
+		stream, person := w.relay.runnerStream(connection, frame.Stream)
 		if stream == nil {
 			continue
 		}
