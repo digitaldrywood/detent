@@ -39,6 +39,7 @@ type fakeProvider struct {
 	invitations    map[string]auth.Invitation
 	revoked        []string
 	sequence       int
+	authorizeBase  string
 }
 
 func newFakeProvider() *fakeProvider {
@@ -59,7 +60,10 @@ func (p *fakeProvider) removeMember(user, organization string) {
 	delete(p.memberships, "om_"+user+"_"+organization)
 }
 
-func (*fakeProvider) AuthorizationURL(state, _, verifier string) string {
+func (p *fakeProvider) AuthorizationURL(state, _, verifier string) string {
+	if p.authorizeBase != "" {
+		return p.authorizeBase + "/__preview/authorize?" + url.Values{"state": {state}}.Encode()
+	}
 	return "https://identity.example.test/authorize?" + url.Values{"state": {state}, "verifier": {verifier}}.Encode()
 }
 

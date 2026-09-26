@@ -90,6 +90,8 @@ allocation:
   allowed_domains: []
   allowed_emails: []
   entitlements: {}
+  entitlement_administrator: pilot-operator
+  entitlement_admin_token_env: DETENT_ENTITLEMENT_ADMIN_TOKEN
 ```
 
 `max_tenants` and the free-memory/disk floors are admission limits: a request that
@@ -99,13 +101,18 @@ tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pi
 empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
 plan every new organization starts on, and no Stripe customer or card is created.
+`entitlement_administrator` and `entitlement_admin_token_env` are optional; when set,
+each tenant accepts complimentary grants on `POST /api/v2/organizations/ORG/entitlements`
+with that token (at least 32 bytes, read from the entry's environment and passed to
+tenants as an environment variable, never written to `tenant.yaml`). Without them no
+operator can grant complimentary access on the shared deployment.
 
 For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
 generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
 token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
 as a supervised child (restarted with backoff; stopped when the entry stops). The
-child receives only `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`, the WorkOS key variable and its
-own admin token. Each tenant owns its SQLite file exclusively; never place
+child receives only `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`, the WorkOS key variable, the
+optional entitlement token variable and its own admin token. Each tenant owns its SQLite file exclusively; never place
 `tenant_root` on a network filesystem.
 
 Deletion is owner-only (`/organizations/ORG/delete`, current provider owner, typed

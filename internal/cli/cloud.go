@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -40,18 +41,20 @@ type cloudFileConfig struct {
 }
 
 type cloudAllocationFileConfig struct {
-	TenantRoot              string                       `yaml:"tenant_root"`
-	SocketRoot              string                       `yaml:"socket_root"`
-	Binary                  string                       `yaml:"binary"`
-	MaxTenants              int                          `yaml:"max_tenants"`
-	MaxConcurrentProvisions int                          `yaml:"max_concurrent_provisions"`
-	MaxPerIdentity          int                          `yaml:"max_organizations_per_identity"`
-	RetryLimit              int                          `yaml:"retry_limit"`
-	MinFreeDiskBytes        uint64                       `yaml:"min_free_disk_bytes"`
-	MinAvailableMemoryBytes uint64                       `yaml:"min_available_memory_bytes"`
-	AllowedEmails           []string                     `yaml:"allowed_emails"`
-	AllowedDomains          []string                     `yaml:"allowed_domains"`
-	Entitlements            *hubserver.HostedPlansConfig `yaml:"entitlements"`
+	TenantRoot               string                       `yaml:"tenant_root"`
+	SocketRoot               string                       `yaml:"socket_root"`
+	Binary                   string                       `yaml:"binary"`
+	MaxTenants               int                          `yaml:"max_tenants"`
+	MaxConcurrentProvisions  int                          `yaml:"max_concurrent_provisions"`
+	MaxPerIdentity           int                          `yaml:"max_organizations_per_identity"`
+	RetryLimit               int                          `yaml:"retry_limit"`
+	MinFreeDiskBytes         uint64                       `yaml:"min_free_disk_bytes"`
+	MinAvailableMemoryBytes  uint64                       `yaml:"min_available_memory_bytes"`
+	AllowedEmails            []string                     `yaml:"allowed_emails"`
+	AllowedDomains           []string                     `yaml:"allowed_domains"`
+	Entitlements             *hubserver.HostedPlansConfig `yaml:"entitlements"`
+	EntitlementAdministrator string                       `yaml:"entitlement_administrator"`
+	EntitlementAdminTokenEnv string                       `yaml:"entitlement_admin_token_env"`
 }
 
 func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]byte, error) {
@@ -59,11 +62,18 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 		tenant := hostedFileConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
 			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements,
+			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
 		}
 		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
 		return yaml.Marshal(tenant)
 	}
+}
+
+func entitlementActorValid(value string) bool {
+	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
+	}) == -1
 }
 
 func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Config, error) {
@@ -123,11 +133,22 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		if allocation.RetryLimit == 0 {
 			allocation.RetryLimit = 5
 		}
+		environment := []string{config.WorkOS.APIKeyEnv + "=" + lookupEnv(config.WorkOS.APIKeyEnv)}
+		name := allocation.EntitlementAdminTokenEnv
+		if name != "" || allocation.EntitlementAdministrator != "" {
+			if !validEnvName(name) || slices.Contains([]string{config.WorkOS.APIKeyEnv, config.Assertion.SigningKeyEnv, "DETENT_HUB_ADMIN_TOKEN", "PATH", "HOME", "TMPDIR", "LANG", "TZ"}, name) {
+				return cloudentry.Config{}, errors.New("entitlement token environment name is invalid")
+			}
+			if len(lookupEnv(name)) < 32 || !entitlementActorValid(allocation.EntitlementAdministrator) {
+				return cloudentry.Config{}, errors.New("entitlement administration requires an administrator ID and a token of at least 32 bytes")
+			}
+			environment = append(environment, name+"="+lookupEnv(name))
+		}
 		result.Allocation = &cloudentry.AllocationConfig{
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
 			MaxPerIdentity: allocation.MaxPerIdentity, RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
-			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: []string{config.WorkOS.APIKeyEnv + "=" + lookupEnv(config.WorkOS.APIKeyEnv)}, Configure: tenantConfiguration(config), Logger: slog.Default()},
+			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: environment, Configure: tenantConfiguration(config), Logger: slog.Default()},
 		}
 	}
 	return result, nil

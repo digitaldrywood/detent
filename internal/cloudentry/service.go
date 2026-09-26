@@ -291,7 +291,11 @@ func (s *Service) home(c echo.Context) error {
 }
 
 func (s *Service) sameOrigin(c echo.Context) bool {
-	origin := c.Request().Header.Get("Origin")
+	header := c.Request().Header
+	origin := header.Get("Origin")
+	if origin == "null" {
+		return header.Get("Sec-Fetch-Site") == "same-origin"
+	}
 	return origin != "" && origin == strings.TrimRight(s.config.PublicURL, "/")
 }
 
