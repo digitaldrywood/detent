@@ -122,12 +122,13 @@ func TestLocalGitWorkspaceSessionBranchIsolation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			branch := backend.branchName(tt.issue, issueKey(tt.issue))
+			key := issueKey(tt.issue)
+			branch := backend.branchName(tt.issue, key)
 			if !strings.HasPrefix(branch, tt.wantPre) {
 				t.Fatalf("branchName() = %q, want prefix %q", branch, tt.wantPre)
 			}
-			if got := isWorkspaceSessionBranch(branch); got != tt.issue.WorkspaceSession {
-				t.Fatalf("isWorkspaceSessionBranch(%q) = %t, want %t", branch, got, tt.issue.WorkspaceSession)
+			if got := sessionOwned(Info{Key: key, Branch: branch}, Issue{}); got != tt.issue.WorkspaceSession {
+				t.Fatalf("sessionOwned(%q) = %t, want %t", branch, got, tt.issue.WorkspaceSession)
 			}
 		})
 	}
@@ -227,6 +228,102 @@ func TestLocalGitReconcileWorkspaceSessionResidual(t *testing.T) {
 			}
 			if statErr != nil || !branchExists(t, source, info.Branch) {
 				t.Fatalf("retained session residual missing: %v", statErr)
+			}
+		})
+	}
+}
+
+// TestLocalGitSessionWithoutHeadPreservesUnreachableCommits covers a session
+// closed without the head_sha it opened on: a commit made on a detached HEAD in
+// the terminal is reachable from no ref, and cleanup must keep it.
+func TestLocalGitSessionWithoutHeadPreservesUnreachableCommits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		work          string
+		wantPreserved bool
+	}{
+		{name: "detached at the session branch", wantPreserved: false},
+		{name: "detached commit from the terminal", work: "detached commit", wantPreserved: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			issue := Issue{ProjectID: "detent", ID: "wi_0c1e9fe3", Identifier: "wi_0c1e9fe3-ws_1", WorkspaceSession: true}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			runGit(t, info.Path, "checkout", "--detach", "HEAD")
+			if tt.work == "detached commit" {
+				runGit(t, info.Path, "commit", "--allow-empty", "-m", "typed in the terminal")
+			}
+			_, err = backend.CleanupIssue(t.Context(), issue)
+			if got := errors.Is(err, ErrWorkspacePreserved); got != tt.wantPreserved {
+				t.Fatalf("CleanupIssue() error = %v, want preserved %t", err, tt.wantPreserved)
+			}
+			if !tt.wantPreserved && err != nil {
+				t.Fatalf("CleanupIssue() error = %v", err)
+			}
+			_, statErr := os.Stat(info.Path)
+			if tt.wantPreserved != (statErr == nil) {
+				t.Fatalf("worktree present = %t, want %t", statErr == nil, tt.wantPreserved)
+			}
+		})
+	}
+}
+
+// TestLocalGitExplicitWorkspaceBranchKeepsTheAttemptRule covers an ordinary
+// issue whose explicit branch happens to sit under detent/workspace/: it is not
+// a session, so its unpushed commit keeps the worktree and the branch.
+func TestLocalGitExplicitWorkspaceBranchKeepsTheAttemptRule(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		branch        string
+		commit        bool
+		wantPreserved bool
+	}{
+		{name: "unpushed commit on a workspace-looking branch", branch: "detent/workspace/feature", commit: true, wantPreserved: true},
+		{name: "unpushed commit on the ordinary auto branch", commit: true, wantPreserved: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			publishCleanupSource(t, source)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			issue := Issue{ProjectID: "detent", Identifier: "detent#2218", BranchName: tt.branch}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if sessionOwned(info, issue) {
+				t.Fatalf("an ordinary issue on %q was classified as a session", info.Branch)
+			}
+			if tt.commit {
+				runGit(t, info.Path, "commit", "--allow-empty", "-m", "unpushed work")
+				// A second local ref holding the commit satisfies the session
+				// rule, so only the attempt rule, which measures against the
+				// remote, still preserves it.
+				runGit(t, source, "branch", "local-copy", strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")))
+			}
+			_, err = backend.CleanupIssue(t.Context(), issue)
+			if got := errors.Is(err, ErrWorkspacePreserved); got != tt.wantPreserved {
+				t.Fatalf("CleanupIssue() error = %v, want preserved %t", err, tt.wantPreserved)
+			}
+			if tt.wantPreserved && !branchExists(t, source, info.Branch) {
+				t.Fatalf("branch %q was removed", info.Branch)
 			}
 		})
 	}

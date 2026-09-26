@@ -29,6 +29,9 @@ type cleanupOwnershipRecord struct {
 	Branch          string `json:"branch,omitempty"`
 	SourceCommonDir string `json:"source_common_dir"`
 	CleanupStarted  bool   `json:"cleanup_started,omitempty"`
+	// WorkspaceSession records that the worktree belongs to a workspace
+	// session, so a later pass does not have to infer it from a branch name.
+	WorkspaceSession bool `json:"workspace_session,omitempty"`
 }
 
 func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue Issue, isDir bool) error {
@@ -44,14 +47,15 @@ func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue 
 		return fmt.Errorf("resolve cleanup ownership source: %w", err)
 	}
 	record := cleanupOwnershipRecord{
-		Schema:          cleanupOwnershipSchema,
-		Path:            path,
-		Key:             info.Key,
-		ProjectID:       strings.TrimSpace(issue.ProjectID),
-		IssueID:         strings.TrimSpace(issue.ID),
-		Identifier:      strings.TrimSpace(issue.Identifier),
-		Branch:          strings.TrimSpace(info.Branch),
-		SourceCommonDir: sourceCommonDir,
+		Schema:           cleanupOwnershipSchema,
+		Path:             path,
+		Key:              info.Key,
+		ProjectID:        strings.TrimSpace(issue.ProjectID),
+		IssueID:          strings.TrimSpace(issue.ID),
+		Identifier:       strings.TrimSpace(issue.Identifier),
+		Branch:           strings.TrimSpace(info.Branch),
+		SourceCommonDir:  sourceCommonDir,
+		WorkspaceSession: sessionOwned(info, issue),
 	}
 	if record.Key == "" {
 		record.Key = filepath.Base(path)
@@ -287,7 +291,7 @@ func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnersh
 		ProjectID:        record.ProjectID,
 		ID:               record.IssueID,
 		Identifier:       record.Identifier,
-		WorkspaceSession: isWorkspaceSessionBranch(record.Branch),
+		WorkspaceSession: record.WorkspaceSession || sessionOwned(info, Issue{}),
 	}
 	cleaned, err := l.cleanupWorkspace(ctx, info, issue)
 	result.Removed += cleaned.Worktrees

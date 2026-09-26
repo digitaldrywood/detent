@@ -64,8 +64,16 @@ func workspaceSessionBranchName(key string) string {
 	return workspaceSessionBranchPrefix + strings.ToLower(key)
 }
 
-func isWorkspaceSessionBranch(branch string) bool {
-	return strings.HasPrefix(strings.TrimSpace(branch), workspaceSessionBranchPrefix)
+// sessionOwned reports whether a worktree belongs to a workspace session. The
+// caller's own issue says so for a session it is closing; otherwise the only
+// evidence is the branch this backend derives from the worktree's key, which
+// an ordinary issue on an explicit detent/workspace/ branch never matches.
+func sessionOwned(info Info, issue Issue) bool {
+	if issue.WorkspaceSession {
+		return true
+	}
+	key := strings.TrimSpace(info.Key)
+	return key != "" && strings.TrimSpace(info.Branch) == workspaceSessionBranchName(key)
 }
 
 var sourceOperationLocks = struct {
@@ -592,6 +600,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err
 	}
+	session := l.sessionRecorded(info, issue)
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
@@ -604,7 +613,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if pruneErr != nil {
 			return result, pruneErr
 		}
-		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch)
+		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session)
 		if branchErr != nil {
 			return result, branchErr
 		}
@@ -633,7 +642,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return result, err
 	}
-	branchRemoved, err := l.deleteBranch(ctx, info.Branch)
+	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session)
 	if err != nil {
 		return result, err
 	}
@@ -1518,7 +1527,7 @@ func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error
 	return false, err
 }
 
-func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error) {
+func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool) (bool, error) {
 	branch = strings.TrimSpace(branch)
 	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return false, nil
@@ -1530,7 +1539,7 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error
 	if !exists {
 		return false, nil
 	}
-	if err := l.checkCleanupBranch(ctx, branch, isWorkspaceSessionBranch(branch)); err != nil {
+	if err := l.checkCleanupBranch(ctx, branch, session); err != nil {
 		return false, err
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)
