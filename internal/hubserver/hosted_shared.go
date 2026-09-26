@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -185,6 +186,80 @@ func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
 	e.POST("/internal/v1/health", s.hostedSharedHealth)
 	e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
+	e.POST("/internal/v1/billing/binding", s.hostedSharedBillingBinding)
+	e.POST("/internal/v1/billing/events", s.hostedSharedBillingEvent)
+}
+
+type hostedSharedBilling struct {
+	Enabled         bool      `json:"enabled"`
+	AccountID       string    `json:"account_id,omitempty"`
+	Mode            string    `json:"mode,omitempty"`
+	CustomerID      string    `json:"customer_id,omitempty"`
+	Status          string    `json:"status"`
+	AccessUntil     time.Time `json:"access_until,omitzero"`
+	CheckoutPending bool      `json:"checkout_pending"`
+}
+
+type hostedSharedBillingQuery struct {
+	Reconcile bool `json:"reconcile"`
+}
+
+func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
+	cfg := s.config.Hosted.Billing
+	result := hostedSharedBilling{Status: "free"}
+	if cfg != nil {
+		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.mode()
+		binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
+		if err != nil && !errors.Is(err, errHostedBillingUnbound) {
+			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
+		}
+		result.CustomerID = binding.CustomerID
+		var query hostedSharedBillingQuery
+		if err := decodeAPIJSON(c, &query); err != nil {
+			return invalidAPIRequest(c, err)
+		}
+		if query.Reconcile && binding.CustomerID != "" && s.billing != nil {
+			s.billing.mu.Lock()
+			reconcileErr := s.billing.reconcile(c.Request().Context())
+			s.billing.mu.Unlock()
+			if reconcileErr != nil {
+				return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
+			}
+		}
+		var raw string
+		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
+			var checkout hostedCheckout
+			result.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
+		}
+		state, err := s.database.readHostedBilling(c.Request().Context())
+		if err != nil {
+			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
+		}
+		result.Status, result.AccessUntil = state.Status, state.AccessUntil
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+type hostedSharedBillingEventRequest struct {
+	EventID    string `json:"event_id"`
+	EventType  string `json:"event_type"`
+	CustomerID string `json:"customer_id"`
+}
+
+func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
+	cfg := s.config.Hosted.Billing
+	var request hostedSharedBillingEventRequest
+	if err := decodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
+		return invalidAPIRequest(c, errors.New("invalid billing event"))
+	}
+	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
+	if err != nil || binding.CustomerID != request.CustomerID {
+		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
+	}
+	if _, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING", request.EventID, request.EventType, formatHubTime(s.config.now())); err != nil {
+		return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (s *Service) hostedSharedHealth(c echo.Context) error {

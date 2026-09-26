@@ -59,6 +59,8 @@ func readHostedSharedEntry(config *hostedSharedEntryFileConfig) (*hubserver.Host
 }
 
 type hostedBillingFileConfig struct {
+	Mode                  string                         `yaml:"mode,omitempty"`
+	CheckoutDisabled      bool                           `yaml:"checkout_disabled,omitempty"`
 	AccountID             string                         `yaml:"account_id"`
 	CustomerID            string                         `yaml:"customer_id"`
 	PortalConfigurationID string                         `yaml:"portal_configuration_id"`
@@ -76,7 +78,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 	if !validEnvName(config.APIKeyEnv) || !validEnvName(config.WebhookSecretEnv) {
 		return nil, errors.New("billing secret environment variable names are required and must be valid")
 	}
-	provider, err := billing.NewStripe(billing.StripeConfig{APIKey: lookupEnv(config.APIKeyEnv)})
+	provider, err := billing.NewStripe(billing.StripeConfig{APIKey: lookupEnv(config.APIKeyEnv), Mode: config.Mode})
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +87,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 		return nil, errors.New("billing webhook secret is unavailable or invalid")
 	}
 	return &hubserver.HostedBillingConfig{
-		AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
+		Mode: config.Mode, CheckoutDisabled: config.CheckoutDisabled, AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
 		WebhookSecret: []byte(secret), GraceSeconds: config.GraceSeconds, ReconcileSeconds: config.ReconcileSeconds,
 		Prices: config.Prices, Provider: provider,
 	}, nil

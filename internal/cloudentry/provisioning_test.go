@@ -22,6 +22,8 @@ import (
 )
 
 type processLauncher struct {
+	billing  func() *hubserver.HostedBillingConfig
+	plans    *hubserver.HostedPlansConfig
 	provider *fakeProvider
 	key      ed25519.PrivateKey
 	mu       sync.Mutex
@@ -48,7 +50,11 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 			SharedEntry: &hubserver.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
+			Plans:       l.plans,
 		},
+	}
+	if l.billing != nil {
+		config.Hosted.Billing = l.billing()
 	}
 	go func() {
 		defer close(done)
@@ -84,6 +90,7 @@ func (l *processLauncher) Close() error {
 }
 
 type provisioningFixture struct {
+	billing  *BillingConfig
 	service  *Service
 	provider *fakeProvider
 	launcher *processLauncher
@@ -103,6 +110,10 @@ func shortTempDir(t *testing.T) string {
 }
 
 func newProvisioningFixture(t *testing.T, maxTenants int, mutate func(*AllocationConfig)) *provisioningFixture {
+	return newProvisioningFixtureWith(t, maxTenants, mutate, nil)
+}
+
+func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*AllocationConfig), configure func(*provisioningFixture)) *provisioningFixture {
 	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	seed[1] = 7
@@ -112,6 +123,9 @@ func newProvisioningFixture(t *testing.T, maxTenants int, mutate func(*Allocatio
 		f.provider.users["user_"+user] = user + "@example.test"
 	}
 	f.launcher = &processLauncher{provider: f.provider, key: f.key, running: map[string]func(){}}
+	if configure != nil {
+		configure(f)
+	}
 	f.open(t, maxTenants, mutate)
 	return f
 }
@@ -123,7 +137,7 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 		mutate(allocation)
 	}
 	service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation})
+		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing})
 	if err != nil {
 		t.Fatal(err)
 	}

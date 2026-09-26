@@ -133,3 +133,60 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 		t.Fatalf("tenant = %+v", tenant)
 	}
 }
+
+func TestCloudBillingConfiguration(t *testing.T) {
+	t.Parallel()
+	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
+	allocation := "allocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n  entitlements:\n    base: {id: free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free, version: 1, features: [collaboration], allowances: {projects: 3}}\n      - {id: team, version: 1, features: [collaboration], allowances: {projects: 30}}\n  billing:\n    mode: MODE\n    account_id: acct_fixture\n    portal_configuration_id: bpc_fixture\n    api_key_env: DETENT_STRIPE_TEST_KEY\n    webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET\n    grace_seconds: 3600\n    reconcile_seconds: 120\n    prices:\n      - {price_id: price_team, label: Team, plan: {id: team, version: 1}}\n"
+	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_STRIPE_TEST_KEY": "sk_test_fixture_value", "DETENT_STRIPE_TEST_WEBHOOK_SECRET": "whsec_fixture_secret_value", "DETENT_STRIPE_LIVE_KEY": "sk_live_fixture_value"}
+	for _, test := range []struct {
+		name, body string
+		wantError  bool
+	}{
+		{name: "test mode", body: base + "billing:\n  account_id: acct_fixture\n" + strings.Replace(allocation, "MODE", "test", 1)},
+		{name: "tenant mode differs", body: base + "billing:\n  account_id: acct_fixture\n" + strings.Replace(allocation, "MODE", "live", 1), wantError: true},
+		{name: "tenant billing without entry billing", body: base + strings.Replace(allocation, "MODE", "test", 1), wantError: true},
+		{name: "live mode needs live webhook secret", body: base + "billing:\n  mode: live\n  account_id: acct_fixture\n", wantError: true},
+		{name: "live key in test mode", body: base + "billing:\n  account_id: acct_fixture\n  api_key_env: DETENT_STRIPE_LIVE_KEY\n", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "cloud.yaml")
+			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			if (err != nil) != test.wantError {
+				t.Fatalf("error = %v, want error %v", err, test.wantError)
+			}
+			if err != nil {
+				return
+			}
+			if config.Billing == nil || config.Billing.Mode != "test" || string(config.Billing.WebhookSecret) != env["DETENT_STRIPE_TEST_WEBHOOK_SECRET"] {
+				t.Fatalf("billing = %+v", config.Billing)
+			}
+			launcher := config.Allocation.Launcher.(*cloudentry.ExecLauncher)
+			raw, err := launcher.Configure(cloudentry.TenantSpec{Organization: cloudentry.Organization{ID: "org_tenant", ProviderID: "org_workos", Generation: 1}, PublicURL: "https://hub.example.test", Issuer: "detent-cloud", PublicKey: "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{"sk_test_fixture_value", "whsec_fixture_secret_value"} {
+				if strings.Contains(string(raw), secret) {
+					t.Fatal("tenant configuration contains a secret")
+				}
+			}
+			if len(launcher.Environment) != 3 {
+				t.Fatalf("tenant environment = %d entries", len(launcher.Environment))
+			}
+			tenantPath := filepath.Join(t.TempDir(), "tenant.yaml")
+			if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
+			if err != nil || tenant.Billing == nil || tenant.Billing.Mode != "test" || tenant.Billing.CustomerID != "" {
+				t.Fatalf("tenant billing = %+v, %v\n%s", tenant, err, raw)
+			}
+		})
+	}
+}

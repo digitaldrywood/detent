@@ -13,19 +13,36 @@ import (
 
 const StripeAPIVersion = "2025-06-30.basil"
 
+const (
+	ModeTest = "test"
+	ModeLive = "live"
+)
+
 type StripeConfig struct {
 	APIKey string
+	Mode   string
 	Client *http.Client
 }
 
 type stripeProvider struct {
 	key    string
+	live   bool
 	client *http.Client
 }
 
+func ValidMode(mode string) bool {
+	return mode == ModeTest || mode == ModeLive
+}
+
 func NewStripe(config StripeConfig) (Provider, error) {
-	if (!strings.HasPrefix(config.APIKey, "sk_test_") && !strings.HasPrefix(config.APIKey, "rk_test_")) || len(config.APIKey) < 16 {
-		return nil, errors.New("stripe billing requires a test-mode secret key")
+	if config.Mode == "" {
+		config.Mode = ModeTest
+	}
+	if !ValidMode(config.Mode) {
+		return nil, errors.New("stripe billing mode must be test or live")
+	}
+	if (!strings.HasPrefix(config.APIKey, "sk_"+config.Mode+"_") && !strings.HasPrefix(config.APIKey, "rk_"+config.Mode+"_")) || len(config.APIKey) < 16 {
+		return nil, errors.New("stripe billing requires a secret key matching the configured " + config.Mode + " mode")
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	if config.Client != nil {
@@ -33,7 +50,7 @@ func NewStripe(config StripeConfig) (Provider, error) {
 		client.Timeout = 15 * time.Second
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &stripeProvider{key: config.APIKey, client: client}, nil
+	return &stripeProvider{key: config.APIKey, live: config.Mode == ModeLive, client: client}, nil
 }
 
 func (s *stripeProvider) request(ctx context.Context, method, path, key string, form url.Values, result any) error {
@@ -91,8 +108,8 @@ func (s *stripeProvider) verifyBinding(ctx context.Context, binding Binding) err
 	if err := s.request(ctx, http.MethodGet, "customers/"+binding.CustomerID, "", nil, &customer); err != nil {
 		return err
 	}
-	if customer.ID != binding.CustomerID || !testMode(customer.Livemode) || customer.Deleted || customer.Metadata["detent_organization_id"] != binding.OrganizationID {
-		return errors.New("stripe customer does not match the configured test organization")
+	if customer.ID != binding.CustomerID || !s.mode(customer.Livemode) || customer.Deleted || customer.Metadata["detent_organization_id"] != binding.OrganizationID {
+		return errors.New("stripe customer does not match the configured organization and mode")
 	}
 	return nil
 }
@@ -103,8 +120,19 @@ func validID(id, prefix string) bool {
 	}) == -1
 }
 
-func testMode(live *bool) bool {
-	return live != nil && !*live
+func modeMatches(livemode *bool, live bool) bool {
+	return livemode != nil && *livemode == live
+}
+
+func (s *stripeProvider) sessionPrefix() string {
+	if s.live {
+		return "cs_live_"
+	}
+	return "cs_test_"
+}
+
+func (s *stripeProvider) mode(livemode *bool) bool {
+	return modeMatches(livemode, s.live)
 }
 
 func sessionURL(value, host string) bool {

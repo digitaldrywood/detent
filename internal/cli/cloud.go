@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -37,6 +38,26 @@ type cloudFileConfig struct {
 		IssuerURL string `yaml:"issuer_url"`
 	} `yaml:"workos"`
 	Allocation *cloudAllocationFileConfig `yaml:"allocation"`
+	Billing    *cloudBillingFileConfig    `yaml:"billing"`
+}
+
+type cloudBillingFileConfig struct {
+	Mode             string `yaml:"mode"`
+	AccountID        string `yaml:"account_id"`
+	APIKeyEnv        string `yaml:"api_key_env"`
+	WebhookSecretEnv string `yaml:"webhook_secret_env"`
+}
+
+func (b *cloudBillingFileConfig) defaults() {
+	if b.Mode == "" {
+		b.Mode = billing.ModeTest
+	}
+	if b.APIKeyEnv == "" {
+		b.APIKeyEnv = "DETENT_STRIPE_" + strings.ToUpper(b.Mode) + "_KEY"
+	}
+	if b.WebhookSecretEnv == "" {
+		b.WebhookSecretEnv = "DETENT_STRIPE_" + strings.ToUpper(b.Mode) + "_WEBHOOK_SECRET"
+	}
 }
 
 type cloudAllocationFileConfig struct {
@@ -52,13 +73,28 @@ type cloudAllocationFileConfig struct {
 	AllowedEmails           []string                     `yaml:"allowed_emails"`
 	AllowedDomains          []string                     `yaml:"allowed_domains"`
 	Entitlements            *hubserver.HostedPlansConfig `yaml:"entitlements"`
+	Billing                 *hostedBillingFileConfig     `yaml:"billing"`
+}
+
+func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
+	names := []string{config.WorkOS.APIKeyEnv}
+	if tenantBilling := config.Allocation.Billing; tenantBilling != nil {
+		names = append(names, tenantBilling.APIKeyEnv, tenantBilling.WebhookSecretEnv)
+	}
+	var environment []string
+	for _, name := range names {
+		if validEnvName(name) {
+			environment = append(environment, name+"="+lookupEnv(name))
+		}
+	}
+	return environment
 }
 
 func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]byte, error) {
 	return func(spec cloudentry.TenantSpec) ([]byte, error) {
 		tenant := hostedFileConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
-			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements,
+			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements, Billing: config.Allocation.Billing,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
 		}
 		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
@@ -103,6 +139,14 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	if err != nil {
 		return cloudentry.Config{}, err
 	}
+	if config.Billing != nil {
+		config.Billing.defaults()
+	}
+	if config.Allocation != nil && config.Allocation.Billing != nil {
+		if config.Allocation.Billing.Mode == "" {
+			config.Allocation.Billing.Mode = billing.ModeTest
+		}
+	}
 	result := cloudentry.Config{
 		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(),
@@ -127,8 +171,34 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
 			MaxPerIdentity: allocation.MaxPerIdentity, RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
-			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: []string{config.WorkOS.APIKeyEnv + "=" + lookupEnv(config.WorkOS.APIKeyEnv)}, Configure: tenantConfiguration(config), Logger: slog.Default()},
+			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: tenantEnvironment(config, lookupEnv), Configure: tenantConfiguration(config), Logger: slog.Default()},
 		}
+		if tenantBilling := allocation.Billing; tenantBilling != nil {
+			if tenantBilling.CustomerID != "" || config.Billing == nil || tenantBilling.Mode != config.Billing.Mode || tenantBilling.AccountID != config.Billing.AccountID {
+				return cloudentry.Config{}, errors.New("allocated tenant billing must match the entry billing mode and account and must not name a customer")
+			}
+			if _, err := readHostedBillingConfig(tenantBilling, lookupEnv); err != nil {
+				return cloudentry.Config{}, err
+			}
+		}
+	}
+	if billingConfig := config.Billing; billingConfig != nil {
+		if !validEnvName(billingConfig.APIKeyEnv) || !validEnvName(billingConfig.WebhookSecretEnv) {
+			return cloudentry.Config{}, errors.New("shared billing secret environment variable names are invalid")
+		}
+		provider, err := billing.NewStripe(billing.StripeConfig{APIKey: lookupEnv(billingConfig.APIKeyEnv), Mode: billingConfig.Mode})
+		if err != nil {
+			return cloudentry.Config{}, err
+		}
+		customers, ok := provider.(billing.CustomerProvider)
+		if !ok {
+			return cloudentry.Config{}, errors.New("stripe provider cannot resolve customers")
+		}
+		secret := lookupEnv(billingConfig.WebhookSecretEnv)
+		if len(secret) < 16 || !strings.HasPrefix(secret, "whsec_") {
+			return cloudentry.Config{}, errors.New("shared billing webhook secret is unavailable or invalid")
+		}
+		result.Billing = &cloudentry.BillingConfig{Mode: billingConfig.Mode, AccountID: billingConfig.AccountID, WebhookSecret: []byte(secret), Provider: customers}
 	}
 	return result, nil
 }

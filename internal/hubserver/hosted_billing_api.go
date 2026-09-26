@@ -43,6 +43,9 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		return s.hostedError(c, http.StatusForbidden, "Organization ownership changed; sign in again")
 	}
 	cfg := s.config.Hosted.Billing
+	if cfg.CheckoutDisabled {
+		return s.hostedError(c, http.StatusServiceUnavailable, "New subscriptions are paused. Existing subscriptions and the billing portal keep working.")
+	}
 	priceID := c.FormValue("price")
 	approved := false
 	for _, price := range cfg.Prices {
@@ -53,6 +56,13 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 45*time.Second)
 	defer cancel()
+	binding, err := s.ensureHostedCustomer(ctx, credential.Hosted.Subject)
+	if errors.Is(err, billing.ErrCustomerConflict) {
+		return s.hostedError(c, http.StatusConflict, "Billing needs operator repair before a purchase. No charge was made.")
+	}
+	if err != nil {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Billing is temporarily unavailable. Retry to resume the same purchase.")
+	}
 	if err := w.reconcile(ctx); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Billing is temporarily unavailable. Your current access deadline is unchanged.")
 	}
@@ -68,7 +78,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		return s.hostedError(c, http.StatusConflict, "A checkout is already pending. Retry the same plan or wait for that checkout to expire.")
 	}
 	if checkout.Session.URL == "" {
-		session, err := cfg.Provider.Checkout(ctx, billing.CheckoutRequest{Binding: cfg.binding(s.config.Hosted.OrganizationID), PriceID: checkout.PriceID, IdempotencyKey: checkout.Key, ExpiresAt: checkout.ExpiresAt, ReturnURL: s.config.Hosted.PublicURL + s.hostedPath("/organization/billing")})
+		session, err := cfg.Provider.Checkout(ctx, billing.CheckoutRequest{Binding: binding, PriceID: checkout.PriceID, IdempotencyKey: checkout.Key, ExpiresAt: checkout.ExpiresAt, ReturnURL: s.config.Hosted.PublicURL + s.hostedPath("/organization/billing")})
 		if err != nil {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Checkout is temporarily unavailable. Retry to resume the same purchase.")
 		}
@@ -143,7 +153,14 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 45*time.Second)
 	defer cancel()
-	session, err := cfg.Provider.Portal(ctx, cfg.binding(s.config.Hosted.OrganizationID), cfg.PortalConfigurationID, s.config.Hosted.PublicURL+s.hostedPath("/organization/billing"))
+	binding, err := s.database.hostedBillingBinding(ctx, cfg)
+	if errors.Is(err, errHostedBillingUnbound) {
+		return s.hostedError(c, http.StatusConflict, "There is no subscription to manage yet. Choose a plan to start one.")
+	}
+	if err != nil {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Billing is temporarily unavailable")
+	}
+	session, err := cfg.Provider.Portal(ctx, binding, cfg.PortalConfigurationID, s.config.Hosted.PublicURL+s.hostedPath("/organization/billing"))
 	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The billing portal is temporarily unavailable. Existing data and exports remain available.")
 	}
@@ -160,4 +177,65 @@ func (s *Service) recordBillingAction(ctx context.Context, actor, action string)
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billing.Binding, error) {
+	cfg := s.config.Hosted.Billing
+	binding, err := s.database.hostedBillingBinding(ctx, cfg)
+	if !errors.Is(err, errHostedBillingUnbound) {
+		return binding, err
+	}
+	provider, ok := cfg.Provider.(billing.CustomerProvider)
+	if !ok {
+		return billing.Binding{}, errors.New("billing provider cannot create customers")
+	}
+	organization := s.config.Hosted.OrganizationID
+	key := "detent-customer-" + cfg.AccountID + "-" + cfg.mode() + "-" + organization
+	now := formatHubTime(s.config.now())
+	if _, err := s.database.db.ExecContext(ctx, "INSERT INTO hosted_billing_customer_intents(organization_id,account_id,mode,idempotency_key,state,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?) ON CONFLICT DO NOTHING", organization, cfg.AccountID, cfg.mode(), key, now, now); err != nil {
+		return billing.Binding{}, err
+	}
+	var account, mode, state string
+	if err := s.database.db.QueryRowContext(ctx, "SELECT account_id,mode,state FROM hosted_billing_customer_intents WHERE organization_id=?", organization).Scan(&account, &mode, &state); err != nil {
+		return billing.Binding{}, err
+	}
+	if state == "conflict" {
+		return billing.Binding{}, billing.ErrCustomerConflict
+	}
+	if account != cfg.AccountID || mode != cfg.mode() {
+		return billing.Binding{}, errors.New("a pending billing customer belongs to a different account or mode")
+	}
+	customer, err := provider.EnsureCustomer(ctx, billing.CustomerRequest{AccountID: cfg.AccountID, OrganizationID: organization, IdempotencyKey: key})
+	if errors.Is(err, billing.ErrCustomerConflict) {
+		if _, updateErr := s.database.db.ExecContext(ctx, "UPDATE hosted_billing_customer_intents SET state='conflict',updated_at=? WHERE organization_id=?", formatHubTime(s.config.now()), organization); updateErr != nil {
+			return billing.Binding{}, errors.Join(err, updateErr)
+		}
+		return billing.Binding{}, err
+	}
+	if err != nil {
+		return billing.Binding{}, err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Binding{}, err
+	}
+	defer tx.Rollback()
+	stamp := s.config.now()
+	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,mode) VALUES(?,?,?,?)", organization, cfg.AccountID, customer, cfg.mode()); err != nil {
+		return billing.Binding{}, err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE hosted_billing_customer_intents SET state='bound',customer_id=?,updated_at=? WHERE organization_id=?", customer, formatHubTime(stamp), organization); err != nil {
+		return billing.Binding{}, err
+	}
+	record, err := json.Marshal(map[string]string{"status": "customer_bound", "mode": cfg.mode()})
+	if err != nil {
+		return billing.Binding{}, err
+	}
+	if err := s.database.insertBillingAudit(ctx, tx, actor, "customer_bound", string(record), stamp); err != nil {
+		return billing.Binding{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Binding{}, err
+	}
+	return s.database.hostedBillingBinding(ctx, cfg)
 }

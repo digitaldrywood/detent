@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -67,7 +68,14 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 		return err
 	}
 	cfg := s.config.Hosted.Billing
-	snapshot, err := cfg.Provider.Reconcile(ctx, cfg.binding(s.config.Hosted.OrganizationID))
+	binding, err := s.database.hostedBillingBinding(ctx, cfg)
+	if errors.Is(err, errHostedBillingUnbound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	snapshot, err := cfg.Provider.Reconcile(ctx, binding)
 	if err != nil {
 		return err
 	}
@@ -83,7 +91,7 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 	if err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}
-	event, err := billing.VerifyEvent(body, c.Request().Header.Get("Stripe-Signature"), s.config.Hosted.Billing.WebhookSecret, s.config.now())
+	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), s.config.Hosted.Billing.WebhookSecret, s.config.now(), s.config.Hosted.Billing.mode() == billing.ModeLive)
 	if err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}
