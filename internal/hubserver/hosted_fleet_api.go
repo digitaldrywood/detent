@@ -45,6 +45,8 @@ type hostedFleetRunner struct {
 	ProviderCapacity []providercapacity.View `json:"provider_capacity"`
 	LastHeartbeatAt  time.Time               `json:"last_heartbeat_at"`
 	Leases           []hostedFleetLease      `json:"leases"`
+
+	machine string
 }
 
 type hostedFleetAllowance struct {
@@ -108,6 +110,13 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	var projects int
+	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if len(readable) < projects {
+		scopeHostUsage(runners)
+	}
 	usage, err := s.hostedFleetUsage(ctx)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -139,14 +148,32 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	fleet := make([]hostedFleetRunner, 0, len(runners))
+	machines := make([]string, 0, len(runners))
 	for _, entry := range runners {
 		runner, err := readRunner(ctx, s.database.db, organization, entry.id, s.config.now())
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
 		fleet = append(fleet, hostedFleetRunnerView(runner, entry.version, visible))
+		machines = append(machines, string(runner.MachineID))
+	}
+	for index := range fleet {
+		fleet[index].machine = machines[index]
 	}
 	return fleet, nil
+}
+
+// scopeHostUsage replaces each host's in-use count with the leases the reader
+// can see. The machine-wide count includes work from projects the reader has
+// no grant on, and publishing it would reveal that activity.
+func scopeHostUsage(runners []hostedFleetRunner) {
+	used := map[string]int{}
+	for _, runner := range runners {
+		used[runner.machine] += len(runner.Leases)
+	}
+	for index := range runners {
+		runners[index].HostUsed = used[runners[index].machine]
+	}
 }
 
 func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool) hostedFleetRunner {

@@ -67,7 +67,8 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.reserveHostedInvitation(c.Request().Context(), email); err != nil {
+	reserved, err := s.reserveHostedInvitationSeat(c.Request().Context(), email)
+	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
 			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
@@ -76,7 +77,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	}
 	invitation, err := s.config.Hosted.Provider.Invite(c.Request().Context(), credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
 	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		return s.hostedInvitationFailure(c, email, err)
+		return s.hostedInvitationFailure(c, email, reserved, err)
 	}
 	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, formatHubTime(s.config.now()))
 	if err != nil {

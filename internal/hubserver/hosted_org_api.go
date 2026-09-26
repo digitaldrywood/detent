@@ -2,7 +2,10 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -291,20 +294,26 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.reserveHostedInvitation(c.Request().Context(), email); err != nil {
+	ctx := c.Request().Context()
+	command := hostedCommand{actor: credential.ID, operation: c.Request().Method + " " + c.Request().URL.EscapedPath(), key: request.IdempotencyKey, input: struct{ Email, Role string }{email, request.Role}}
+	if replayed, err := s.replayHostedCommand(c, command, http.StatusCreated); replayed || err != nil {
+		return err
+	}
+	reserved, err := s.reserveHostedInvitationSeat(ctx, email)
+	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
 			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())
 		}
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	invitation, err := s.config.Hosted.Provider.Invite(c.Request().Context(), credential.Hosted.OrganizationID, email, request.Role, credential.Hosted.Subject)
+	invitation, err := s.config.Hosted.Provider.Invite(ctx, credential.Hosted.OrganizationID, email, request.Role, credential.Hosted.Subject)
 	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		s.releaseFailedHostedInvitation(c, email, err)
+		s.releaseFailedHostedInvitation(c, email, reserved, err)
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 	created := formatHubTime(s.config.now())
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, request.Role, created)
+	_, err = s.database.db.ExecContext(ctx, `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, request.Role, created)
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
 	}
@@ -312,7 +321,64 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	if !invitation.ExpiresAt.IsZero() {
 		view.ExpiresAt = invitation.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	return c.JSON(http.StatusCreated, view)
+	return s.recordHostedCommand(c, command, http.StatusCreated, view)
+}
+
+// hostedCommand identifies one idempotent hosted mutation: the actor's
+// principal, the route it called and the key it sent, with the request whose
+// hash a replay must match. It is stored in native_commands, the table every
+// native mutation replays from.
+type hostedCommand struct {
+	actor, operation, key string
+	input                 any
+}
+
+func (command hostedCommand) hash() (string, error) {
+	encoded, err := json.Marshal(command.input)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// replayHostedCommand answers a retried key with the stored response, or with
+// a conflict when the key was used for a different request. It reports false
+// when the key is new and the caller should perform the mutation.
+func (s *Service) replayHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
+	hash, err := command.hash()
+	if err != nil {
+		return true, s.nativeAPIError(c, err)
+	}
+	var storedHash, response string
+	err = s.database.db.QueryRowContext(c.Request().Context(), `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &response)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return true, s.nativeAPIError(c, err)
+	}
+	if storedHash != hash {
+		return true, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})
+	}
+	return true, c.JSONBlob(status, []byte(response))
+}
+
+// recordHostedCommand stores the response a replay of the key answers with,
+// then sends it.
+func (s *Service) recordHostedCommand(c echo.Context, command hostedCommand, status int, value any) error {
+	hash, err := command.hash()
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	response, err := marshalNative(value)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, response, formatHubTime(s.config.now())); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(status, []byte(response))
 }
 
 // revokeHostedMemberJSON answers DELETE /members/:member. The organization always
