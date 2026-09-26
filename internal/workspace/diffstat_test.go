@@ -134,6 +134,28 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 	}
 }
 
+func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
+	source := initSourceRepo(t)
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "review-tree"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.VerifyReviewTree(t.Context(), info, issue); err != nil {
+		t.Fatalf("clean review tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "untracked.txt"), []byte("hook change"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.VerifyReviewTree(t.Context(), info, issue); err == nil {
+		t.Fatal("untracked hook change accepted")
+	}
+}
+
 func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
 	source := initSourceRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")

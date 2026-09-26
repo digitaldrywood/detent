@@ -2990,6 +2990,11 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 				return gate.ValidatorResult{}, fmt.Errorf("%w: validation head mismatch: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, expected)
 			}
 		}
+		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
+			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
+				return gate.ValidatorResult{}, fmt.Errorf("%w: validation workspace changed before review: %w", ErrValidatorInfrastructure, err)
+			}
+		}
 	}
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
@@ -3199,6 +3204,14 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		r.logWorkerEvent(req.Issue, "worker_check_finished", checkFinishedAttrs...)
 	}
 
+	var treeErr error
+	if strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) != "" {
+		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
+			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
+				treeErr = fmt.Errorf("%w: validation workspace changed during review: %w", ErrValidatorInfrastructure, err)
+			}
+		}
+	}
 	r.afterRun(r.workspace, info, workspaceIssue)
 	afterRunPending = false
 	r.logWorkerEvent(req.Issue, "worker_check_after_run_finished",
@@ -3214,6 +3227,17 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			fmt.Errorf("run validator turn: %w", turnErr),
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
+	}
+	if strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) != "" {
+		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
+			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation workspace changed after review: %w", ErrValidatorInfrastructure, err))
+			}
+		}
+	}
+	if treeErr != nil {
+		return gate.ValidatorResult{}, errors.Join(treeErr,
+			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0))
 	}
 
 	validation, err := parseValidatorResult(output.String())

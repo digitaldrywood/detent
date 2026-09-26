@@ -24,8 +24,11 @@ workspace at that commit, and compare the current PR head again before storing
 the verdict. A changed head produces the existing wait verdict under the head
 that was actually reviewed; the next tick evaluates the new head. This keeps
 validation evidence attributable to its commit without giving workers lane
-ownership. `TestValidatorStageTracksHeadBeforeAndDuringReview` and
-`TestLocalGitSeedReviewHead` cover these boundaries (#3031).
+ownership. The runner also verifies the review tree after `before_run`, after
+the validator turn, and after `after_run`; uncommitted hook or validator changes
+are instance failures and cannot yield a verdict. `TestValidatorStageTracksHeadBeforeAndDuringReview`,
+`TestLocalGitSeedReviewHead`, and `TestLocalGitVerifyReviewTreeAfterSeeding`
+cover these boundaries (#3031).
 
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; current unfinished work cannot promote on completion or
