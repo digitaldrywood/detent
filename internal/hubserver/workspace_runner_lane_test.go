@@ -140,9 +140,9 @@ func laneGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func (f *workspaceLaneFixture) open(t *testing.T, requires []string) string {
+func (f *workspaceLaneFixture) open(t *testing.T, subject string, requires []string) string {
 	t.Helper()
-	issue := f.create(t, "lane-subject")
+	issue := f.create(t, subject)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/workspaces", f.token, map[string]any{
 		"idempotency_key": "lane-" + string(issue.WorkItemID), "work_item_id": string(issue.WorkItemID), "requires": requires,
 	})
@@ -281,7 +281,7 @@ func startCounter(t *testing.T, person *relayClient) string {
 func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 	t.Parallel()
 	f := newWorkspaceLaneFixture(t)
-	id := f.open(t, []string{workspacesession.CapabilityFiles, workspacesession.CapabilityGit})
+	id := f.open(t, "lease-subject", []string{workspacesession.CapabilityFiles, workspacesession.CapabilityGit})
 	ready := f.awaitReady(t, id)
 	if ready.WorktreePath == "" || ready.MachineHostname != "runner-host" {
 		t.Fatalf("ready workspace = %+v, want the runner's worktree path and host", ready)
@@ -339,7 +339,7 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 	t.Parallel()
 	f := newWorkspaceLaneFixture(t)
-	id := f.open(t, []string{workspacesession.CapabilityFiles})
+	id := f.open(t, "close-subject", []string{workspacesession.CapabilityFiles})
 	ready := f.awaitReady(t, id)
 	person := f.dialPerson(t, id)
 	var counter string
@@ -392,6 +392,33 @@ func TestNativeCapabilitiesAdvertiseWorkspaceSessionsOnlyWhenServed(t *testing.T
 			if got := slices.Contains(document.Features, tracker.NativeWorkspaceCapability); got != test.want {
 				t.Fatalf("features = %v, advertise workspace sessions = %t, want %t", document.Features, got, test.want)
 			}
+		})
+	}
+}
+
+// TestWorkspaceLaneClaimsWhatTheClientOpens opens workspaces with the requires
+// lists web/conversation sends (RightPanel's WORKSPACE_REQUIRES, headerGit's
+// GIT_REQUIRES) and with none at all, and expects this runner to claim each.
+func TestWorkspaceLaneClaimsWhatTheClientOpens(t *testing.T) {
+	t.Parallel()
+	f := newWorkspaceLaneFixture(t)
+	tests := []struct {
+		name     string
+		requires []string
+	}{
+		{name: "files panel", requires: []string{"files", "exec"}},
+		{name: "header git", requires: []string{"files", "git"}},
+		{name: "no requires", requires: nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			id := f.open(t, "client "+test.name, test.requires)
+			ready := f.awaitReady(t, id)
+			if !ready.Capabilities.Satisfies(ready.Requires) {
+				t.Fatalf("ready workspace requires %v beyond capabilities %+v", ready.Requires, ready.Capabilities)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/workspaces/"+id, f.token, nil), http.StatusNoContent)
+			f.awaitLaneIdle(t, 30*time.Second)
 		})
 	}
 }
