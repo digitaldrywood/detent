@@ -25,12 +25,61 @@ shared-site service and authorizes no deployment, DNS/account change or purchase
 | WorkOS fields | `client_id`, `api_key_env` (default `WORKOS_API_KEY`), optional `api_url`, `issuer_url` | Same explicit provider wiring under independent `auth`; one shared callback and invitation entry |
 | Pilot entitlements | Existing `entitlements` plans/assignments and separate administrator environment reference; see [allowances](../../hosted-allowances.md) | Allocator assigns a configured versioned free plan; no auth-provider inference |
 | Stripe | Optional `billing.account_id`, `customer_id`, `portal_configuration_id`, `api_key_env`, `webhook_secret_env`, `grace_seconds`, `reconcile_seconds`, `prices`; test keys only | Optional `billing.mode: test/live`; registry owns customer mappings; no root per-customer configuration |
-| Shared entry/registry/allocator | No supported YAML fields or CLI entry role yet | Versioned site configuration below; private entry/registry ownership and finite admission required |
+| Shared entry and registry | `detent cloud serve --entry-config PATH` (see [shared entry](#shared-entry)); tenant `shared_entry` block; `detent cloud registry register/list`; `detent hub migrate-shared-origin` | Self-service allocator and admission (#2342); billing mode (#2343) |
 
-The current hosted YAML parser rejects unknown fields. Do not pass the following
-proposed configuration to `--hosted-config`. #2341/#2342 must deliver a versioned
-parser and documented CLI wiring for the entry role; #2343 adds billing mode.
-Until then there is no command in this document that launches shared self-service.
+The current hosted YAML parser rejects unknown fields. Do not pass the proposed
+site configuration further below to `--hosted-config` or `--entry-config`; its
+allocation and billing blocks arrive with #2342/#2343.
+
+## Shared entry
+
+`detent cloud serve` runs the shared entry on a loopback port behind the public
+TLS proxy (nginx or Caddy forwards `hub.detent.build` to it unchanged; it never
+rewrites paths to choose a tenant). Its configuration:
+
+```yaml
+public_url: https://hub.detent.build
+listen: 127.0.0.1:8017
+state_directory: /var/lib/detent/cloud
+staff_emails: []
+assertion:
+  issuer: detent-cloud
+  signing_key_env: DETENT_CLOUD_ASSERTION_KEY
+workos:
+  client_id: client_example
+  api_key_env: WORKOS_API_KEY
+```
+
+`detent cloud assertion-key` prints a new signing seed and public key; put the seed
+in the entry's private environment and the public key in each tenant's
+`shared_entry.public_keys` (see [hosted identity](../../hosted-identity.md#shared-entry-tenant-configuration)).
+`state_directory` holds two single-owner SQLite files: `registry.db` (organization
+IDs, provider organization IDs, names, private endpoints, generations) and the
+private `auth.db` (hashed session and login-transaction references, per-organization
+provider sessions, content-free audit). Neither holds collaboration content.
+
+Register each tenant while the entry is stopped; registration is idempotent,
+refuses to reuse IDs or provider organizations, and changes an endpoint only with
+a higher generation:
+
+```sh
+detent cloud registry register --registry /var/lib/detent/cloud/registry.db \
+  --organization org_example --provider-organization org_workos_example \
+  --name "Example" --endpoint unix:/run/detent/tenants/org_example.sock --generation 1
+```
+
+The entry serves sign-in (`/auth/oidc/start`, `/auth/oidc/callback`), the chooser
+(`/organizations`, JSON at `/api/cloud/organizations`), invitations (`/invite`,
+`/invitations/join`) and sign-out, and routes `/organizations/ORG/...` and
+`/api/v2/organizations/ORG/...` to the registered tenant with a signed assertion.
+Browser requests need the host-only session cookie (`__Host-detent_session`), a
+per-organization authorization obtained through the common callback, a current
+provider session and active membership; mutations also need the exact
+`public_url` Origin and the per-organization CSRF token. Bearer requests are
+forwarded as machine requests without cookies and the tenant authenticates the
+token itself. Inbound forwarding and assertion headers are stripped, tenant
+`Set-Cookie` headers are dropped, and responses carry `no-store` and a restrictive
+Content Security Policy.
 
 ## Proposed site YAML contract
 

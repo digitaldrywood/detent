@@ -229,3 +229,10 @@ func CanonicalPath(u *url.URL) bool {
 	}
 	return true
 }
+
+func PublicKeyOf(key ed25519.PrivateKey) string {
+	if len(key) != ed25519.PrivateKeySize {
+		return ""
+	}
+	return EncodePublicKey(ed25519.PublicKey(key[ed25519.SeedSize:]))
+}

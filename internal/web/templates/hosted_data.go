@@ -104,6 +104,10 @@ func hostedPageTitle(data HostedPageData) string {
 		return "Project work"
 	case "denied":
 		return "Access denied"
+	case "chooser":
+		return "Organizations"
+	case "join":
+		return "Join organization"
 	case "support":
 		return "Support access"
 	default:
@@ -116,7 +120,7 @@ func hostedURL(data HostedPageData, path string) templ.SafeURL {
 }
 
 func hostedSignInURL(data HostedPageData) templ.SafeURL {
-	if data.SharedOrigin {
+	if data.SharedOrigin && data.Mode != "login" {
 		return templ.SafeURL("/organizations")
 	}
 	return templ.SafeURL("/auth/oidc/start")
