@@ -1708,7 +1708,31 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			},
 			available:  true,
 			wantStatus: doctorOK,
-			wantDetail: []string{"enabled=true", "path=.detent/skills", "max_skills_in_prompt=50", "loaded=1", "dropped=0"},
+			wantDetail: []string{"enabled=true", "path=.detent/skills", "max_skills_in_prompt=50", "files=1", "loaded=1", "dropped=0"},
+		},
+		{
+			name: "within limit reports all files",
+			configure: func(t *testing.T, root string, cfg *workflowconfig.Skills) {
+				cfg.MaxSkillsInPrompt = 2
+				writeDoctorSkill(t, root, "01-build.md", "build")
+				writeDoctorSkill(t, root, "02-test.md", "test")
+			},
+			available:  true,
+			wantStatus: doctorOK,
+			wantDetail: []string{"max_skills_in_prompt=2", "files=2", "loaded=2", "dropped=0"},
+		},
+		{
+			name: "over limit reports total and every dropped file",
+			configure: func(t *testing.T, root string, cfg *workflowconfig.Skills) {
+				cfg.MaxSkillsInPrompt = 2
+				writeDoctorSkill(t, root, "01-build.md", "build")
+				writeDoctorSkill(t, root, "02-test.md", "test")
+				writeDoctorSkill(t, root, "03-release.md", "release")
+				writeDoctorSkill(t, root, "04-diagnose.md", "diagnose")
+			},
+			available:  true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"max_skills_in_prompt=2", "files=4", "loaded=2", "dropped=2", ".detent/skills/03-release.md (max_skills_in_prompt:", ".detent/skills/04-diagnose.md (max_skills_in_prompt:"},
 		},
 		{
 			name: "invalid duplicate and over limit files warn with reasons",
@@ -1724,7 +1748,7 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			},
 			available:  true,
 			wantStatus: doctorWarn,
-			wantDetail: []string{"loaded=1", "dropped=3", "02-duplicate.md (duplicate:", "03-test.md (max_skills_in_prompt:", "04-invalid.md (invalid:"},
+			wantDetail: []string{"files=4", "loaded=1", "dropped=3", "02-duplicate.md (duplicate:", "03-test.md (max_skills_in_prompt:", "04-invalid.md (invalid:"},
 		},
 		{
 			name:       "missing source repository skips",

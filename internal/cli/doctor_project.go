@@ -1288,7 +1288,7 @@ func checkDoctorProjectSkills(id string, sourceRoot string, cfg workflowconfig.S
 		}
 	}
 
-	detail += fmt.Sprintf("; loaded=%d; dropped=%d", len(result.Skills), len(result.Dropped))
+	detail += fmt.Sprintf("; files=%d; loaded=%d; dropped=%d", len(result.Skills)+len(result.Dropped), len(result.Skills), len(result.Dropped))
 	if len(result.Dropped) == 0 {
 		return doctorCheck{Name: name, Status: doctorOK, Detail: detail}
 	}
@@ -1305,7 +1305,7 @@ func checkDoctorProjectSkills(id string, sourceRoot string, cfg workflowconfig.S
 		Name:   name,
 		Status: doctorWarn,
 		Detail: detail + "; drops: " + strings.Join(drops, "; "),
-		Hint:   "Fix invalid or duplicate skill files, or raise agent.skills.max_skills_in_prompt.",
+		Hint:   "Remove or consolidate excess skills, fix invalid or duplicate files, or raise agent.skills.max_skills_in_prompt.",
 	}
 }
 
