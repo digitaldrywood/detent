@@ -195,6 +195,37 @@ func TestRecoverDurableForgeAvailabilityWait(t *testing.T) {
 	}
 }
 
+func TestRecoverDurableWorkspaceGitReadWait(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 24, 15, 36, 0, 0, time.UTC)
+	issue := dispatchTestIssue("workspace-git-read-wait", "In Progress")
+	metadata := forgeWaitMetadata{
+		Host: "github.com", Operation: "git ls-remote", ErrorClass: forgeavailability.ClassTransport,
+		DetectedAt: now, NextProbeAt: now.Add(time.Minute),
+	}
+	attempts := &recordingWorkAttemptStore{recent: []store.WorkAttempt{{
+		ID: 1, ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier,
+		Lane: issue.State, AttemptNumber: 3, Status: store.WorkAttemptStatusTerminal,
+		CompletedAt: now, TerminalState: store.WorkAttemptTerminalCapacity,
+		ErrorClass: forgeUnavailableErrorClass, ErrorMessage: "git@github.com: Permission denied (publickey)",
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"forge_wait": metadata}),
+	}}}
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ForgeHost: "github.com", ActiveStates: []string{"In Progress"}})
+	orch := Orchestrator{cfg: cfg, connector: &forgeWaitRecoveryConnector{issues: []connector.Issue{issue}}, workAttempts: attempts, now: func() time.Time { return now }}
+	state := newState(cfg)
+	orch.recoverDurableWorkAttempts(t.Context(), &state, now)
+
+	condition, ok := state.ForgeUnavailable["github.com"]
+	if !ok || condition.Operation != "git ls-remote" || !condition.NextProbeAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("restored forge condition = %#v, want ls-remote wait", state.ForgeUnavailable)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok || !retry.ForgeUnavailable || retry.Attempt != 3 || retry.ForgeRetry == nil || retry.ForgeRetry.Operation != "git ls-remote" || !retry.DueAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("restored retry = %#v, want same-attempt ls-remote backoff", retry)
+	}
+}
+
 func TestForgeWaitMetadataRequiresStructuredAvailabilityEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -209,6 +240,8 @@ func TestForgeWaitMetadataRequiresStructuredAvailabilityEvidence(t *testing.T) {
 		want    bool
 	}{
 		{name: "valid", attempt: forgeWaitAttempt(valid), want: true},
+		{name: "workspace ls-remote read", attempt: forgeWaitAttempt(forgeWaitMetadata{Host: "github.com", Operation: "git ls-remote", ErrorClass: forgeavailability.ClassTransport}), want: true},
+		{name: "workspace fetch read", attempt: forgeWaitAttempt(forgeWaitMetadata{Host: "github.com", Operation: "git fetch", ErrorClass: forgeavailability.ClassTransport}), want: true},
 		{name: "malformed JSON", attempt: store.WorkAttempt{Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity, ErrorClass: forgeUnavailableErrorClass, WorkerMetadataJSON: `{`}},
 		{name: "missing host", attempt: forgeWaitAttempt(forgeWaitMetadata{Operation: "git push", ErrorClass: forgeavailability.ClassServer})},
 		{name: "tracker read operation", attempt: forgeWaitAttempt(forgeWaitMetadata{Host: "github.com", Operation: "search issues", ErrorClass: forgeavailability.ClassServer})},

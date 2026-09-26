@@ -536,7 +536,7 @@ func forgeWaitMetadataFromAttempt(attempt store.WorkAttempt) (forgeWaitMetadata,
 	metadata.ForgeWait.Operation = strings.TrimSpace(metadata.ForgeWait.Operation)
 	metadata.ForgeWait.Branch = strings.TrimSpace(metadata.ForgeWait.Branch)
 	metadata.ForgeWait.ErrorClass = strings.TrimSpace(metadata.ForgeWait.ErrorClass)
-	if metadata.ForgeWait.Host == "" || !forgeavailability.WriteOperation(metadata.ForgeWait.Operation) || !validForgeAvailabilityClass(metadata.ForgeWait.ErrorClass) {
+	if metadata.ForgeWait.Host == "" || (!forgeavailability.WriteOperation(metadata.ForgeWait.Operation) && !forgeRetryReadOperation(metadata.ForgeWait.Operation)) || !validForgeAvailabilityClass(metadata.ForgeWait.ErrorClass) {
 		return forgeWaitMetadata{}, false
 	}
 	return metadata.ForgeWait, true

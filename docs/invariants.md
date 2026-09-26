@@ -185,7 +185,9 @@ the operation; compound hooks need the Git-specific SSH refusal in their output.
 An unrelated later command in a compound hook cannot inherit an earlier Git read.
 SSH refusal, transport loss, and 5xx responses retain the original workspace
 error, enter the existing forge retry with backoff, and do not count toward the
-project breaker. Workspace command and `after_create` hook ENOSPC failures use
+project breaker. `TestRecoverDurableWorkspaceGitReadWait` verifies that an
+`ls-remote` wait restores its forge condition and retry deadline after restart.
+Workspace command and `after_create` hook ENOSPC failures use
 the existing retry backoff as instance-owned capacity failures, with a host disk
 alert on the board and health view; they do not count toward the project breaker.
 `TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker` reproduces the recorded
@@ -199,6 +201,7 @@ when the matching forge condition came from a Git read; forge write and
 credential conditions retain their existing merge hold.
 `TestClassifyWorkspaceForgeReadFailure`,
 `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
+`TestRecoverDurableWorkspaceGitReadWait`,
 `TestWorkspaceBreakerHonorsFailureCooldown`, `TestReadyMergeAtWorkerCapacity`,
 and `TestCheckedMergeUnderForgeCondition` cover these boundaries (#3067).
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
