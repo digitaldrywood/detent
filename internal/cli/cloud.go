@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -61,25 +62,30 @@ func (b *cloudBillingFileConfig) defaults() {
 }
 
 type cloudAllocationFileConfig struct {
-	TenantRoot              string                       `yaml:"tenant_root"`
-	SocketRoot              string                       `yaml:"socket_root"`
-	Binary                  string                       `yaml:"binary"`
-	MaxTenants              int                          `yaml:"max_tenants"`
-	MaxConcurrentProvisions int                          `yaml:"max_concurrent_provisions"`
-	MaxPerIdentity          int                          `yaml:"max_organizations_per_identity"`
-	RetryLimit              int                          `yaml:"retry_limit"`
-	MinFreeDiskBytes        uint64                       `yaml:"min_free_disk_bytes"`
-	MinAvailableMemoryBytes uint64                       `yaml:"min_available_memory_bytes"`
-	AllowedEmails           []string                     `yaml:"allowed_emails"`
-	AllowedDomains          []string                     `yaml:"allowed_domains"`
-	Entitlements            *hubserver.HostedPlansConfig `yaml:"entitlements"`
-	Billing                 *hostedBillingFileConfig     `yaml:"billing"`
+	TenantRoot               string                       `yaml:"tenant_root"`
+	SocketRoot               string                       `yaml:"socket_root"`
+	Binary                   string                       `yaml:"binary"`
+	MaxTenants               int                          `yaml:"max_tenants"`
+	MaxConcurrentProvisions  int                          `yaml:"max_concurrent_provisions"`
+	MaxPerIdentity           int                          `yaml:"max_organizations_per_identity"`
+	RetryLimit               int                          `yaml:"retry_limit"`
+	MinFreeDiskBytes         uint64                       `yaml:"min_free_disk_bytes"`
+	MinAvailableMemoryBytes  uint64                       `yaml:"min_available_memory_bytes"`
+	AllowedEmails            []string                     `yaml:"allowed_emails"`
+	AllowedDomains           []string                     `yaml:"allowed_domains"`
+	Entitlements             *hubserver.HostedPlansConfig `yaml:"entitlements"`
+	Billing                  *hostedBillingFileConfig     `yaml:"billing"`
+	EntitlementAdministrator string                       `yaml:"entitlement_administrator"`
+	EntitlementAdminTokenEnv string                       `yaml:"entitlement_admin_token_env"`
 }
 
 func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
 	names := []string{config.WorkOS.APIKeyEnv}
 	if tenantBilling := config.Allocation.Billing; tenantBilling != nil {
 		names = append(names, tenantBilling.APIKeyEnv, tenantBilling.WebhookSecretEnv)
+	}
+	if name := config.Allocation.EntitlementAdminTokenEnv; name != "" {
+		names = append(names, name)
 	}
 	var environment []string
 	for _, name := range names {
@@ -95,11 +101,40 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 		tenant := hostedFileConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
 			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements, Billing: config.Allocation.Billing,
+			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
 		}
 		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
 		return yaml.Marshal(tenant)
 	}
+}
+
+func entitlementActorValid(value string) bool {
+	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
+	}) == -1
+}
+
+func validateEntitlementAdministration(config cloudFileConfig, lookupEnv func(string) string) error {
+	allocation := config.Allocation
+	name := allocation.EntitlementAdminTokenEnv
+	if name == "" && allocation.EntitlementAdministrator == "" {
+		return nil
+	}
+	reserved := []string{config.WorkOS.APIKeyEnv, config.Assertion.SigningKeyEnv, "DETENT_HUB_ADMIN_TOKEN", "PATH", "HOME", "TMPDIR", "LANG", "TZ"}
+	if config.Billing != nil {
+		reserved = append(reserved, config.Billing.APIKeyEnv, config.Billing.WebhookSecretEnv)
+	}
+	if allocation.Billing != nil {
+		reserved = append(reserved, allocation.Billing.APIKeyEnv, allocation.Billing.WebhookSecretEnv)
+	}
+	if !validEnvName(name) || slices.Contains(reserved, name) {
+		return errors.New("entitlement token environment name is invalid")
+	}
+	if len(lookupEnv(name)) < 32 || !entitlementActorValid(allocation.EntitlementAdministrator) {
+		return errors.New("entitlement administration requires an administrator ID and a token of at least 32 bytes")
+	}
+	return nil
 }
 
 func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Config, error) {
@@ -166,6 +201,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		if allocation.RetryLimit == 0 {
 			allocation.RetryLimit = 5
+		}
+		if err := validateEntitlementAdministration(config, lookupEnv); err != nil {
+			return cloudentry.Config{}, err
 		}
 		result.Allocation = &cloudentry.AllocationConfig{
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
