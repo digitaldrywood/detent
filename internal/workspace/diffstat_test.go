@@ -70,6 +70,127 @@ func TestParseDiffStat(t *testing.T) {
 	}
 }
 
+func TestLocalGitSeedReviewHead(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		advance bool
+		dirty   bool
+		wantErr bool
+	}{
+		{name: "stable head"},
+		{name: "matching head with dirty review workspace", dirty: true, wantErr: true},
+		{name: "head changes before checkout", advance: true},
+		{name: "dirty review workspace", advance: true, dirty: true, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runGit(t, t.TempDir(), "clone", "--bare", source, remote)
+			runGit(t, source, "remote", "add", "origin", remote)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "review-head"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			runGit(t, info.Path, "push", "-u", "origin", info.Branch)
+			wanted := a
+			if tt.advance {
+				writer := filepath.Join(t.TempDir(), "writer")
+				runGit(t, t.TempDir(), "clone", "--branch", info.Branch, remote, writer)
+				if err := os.WriteFile(filepath.Join(writer, "review.txt"), []byte("B\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, writer, "add", "review.txt")
+				runGit(t, writer, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "B")
+				wanted = strings.TrimSpace(runGit(t, writer, "rev-parse", "HEAD"))
+				runGit(t, writer, "push", "origin", info.Branch)
+			}
+			if tt.dirty {
+				if err := os.WriteFile(filepath.Join(info.Path, "dirty.txt"), []byte("local"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			issue.PullRequestHeadSHA = wanted
+			err = backend.SeedReviewHead(t.Context(), info, issue)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("SeedReviewHead() error = %v, want error %t", err, tt.wantErr)
+			}
+			head, err := backend.Head(t.Context(), info, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantErr {
+				wanted = a
+			}
+			if strings.TrimSpace(head) != wanted {
+				t.Fatalf("HEAD = %s, want %s", head, wanted)
+			}
+		})
+	}
+}
+
+func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
+	source := initSourceRepo(t)
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "review-tree"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.VerifyReviewTree(t.Context(), info, issue); err != nil {
+		t.Fatalf("clean review tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "untracked.txt"), []byte("hook change"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.VerifyReviewTree(t.Context(), info, issue); err == nil {
+		t.Fatal("untracked hook change accepted")
+	}
+}
+
+func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
+	source := initSourceRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, t.TempDir(), "clone", "--bare", source, remote)
+	runGit(t, source, "remote", "add", "origin", remote)
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "review-pr-ref"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := filepath.Join(t.TempDir(), "writer")
+	runGit(t, t.TempDir(), "clone", remote, writer)
+	if err := os.WriteFile(filepath.Join(writer, "review.txt"), []byte("PR head\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, writer, "add", "review.txt")
+	runGit(t, writer, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "PR head")
+	wanted := strings.TrimSpace(runGit(t, writer, "rev-parse", "HEAD"))
+	runGit(t, writer, "push", "origin", "HEAD:refs/pull/119/head")
+	issue.PullRequestHeadSHA = wanted
+	issue.PullRequestNumber = 119
+	issue.PullRequestBranch = "human-authored-branch"
+	if err := backend.SeedReviewHead(t.Context(), info, issue); err != nil {
+		t.Fatal(err)
+	}
+	head, err := backend.Head(t.Context(), info, issue)
+	if err != nil || strings.TrimSpace(head) != wanted {
+		t.Fatalf("HEAD = %q, error = %v; want %q", head, err, wanted)
+	}
+}
+
 func TestLocalGitDiffStat(t *testing.T) {
 	t.Parallel()
 

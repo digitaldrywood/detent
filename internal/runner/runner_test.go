@@ -5923,6 +5923,37 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	}
 }
 
+func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		heads       []string
+		verifyErrAt int
+		turnErr     error
+	}{
+		{name: "changed head before cleanup", heads: []string{"head", "other", "head"}},
+		{name: "dirty tree with turn error", heads: []string{"head", "head", "head"}, verifyErrAt: 2, turnErr: errors.New("turn failed")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ws := &reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: tt.heads, verifyErrAt: tt.verifyErrAt}
+			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"pass"}`}}, result: AgentTurnResult{ThreadID: "thread", TurnID: "turn"}, err: tt.turnErr}
+			runner, err := NewRunner(Dependencies{
+				Workflow:  config.Workflow{Config: config.Config{Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "test"}}}}, Prompt: "Review"},
+				Workspace: ws, AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Validate(t.Context(), ValidatorRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{HeadSHA: "head", BranchName: "branch", State: "OPEN"}}})
+			if !errors.Is(err, ErrValidatorInfrastructure) {
+				t.Fatalf("Validate() error = %v, want infrastructure failure", err)
+			}
+			if !ws.afterRun {
+				t.Fatal("after_run was not called")
+			}
+		})
+	}
+}
+
 func TestRunnerAuditReturnsCatalogSelectionError(t *testing.T) {
 	t.Parallel()
 
@@ -7398,6 +7429,31 @@ type fakeWorkspaceBackend struct {
 	recoveryStates []workspace.RecoveryState
 	recoveryErr    error
 	recoveryCalls  int
+}
+
+type reviewMutationWorkspace struct {
+	*fakeWorkspaceBackend
+	heads       []string
+	headCalls   int
+	verifyCalls int
+	verifyErrAt int
+}
+
+func (w *reviewMutationWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
+	index := w.headCalls
+	w.headCalls++
+	if index >= len(w.heads) {
+		index = len(w.heads) - 1
+	}
+	return w.heads[index], nil
+}
+
+func (w *reviewMutationWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
+	w.verifyCalls++
+	if w.verifyCalls == w.verifyErrAt {
+		return errors.New("review workspace has local changes")
+	}
+	return nil
 }
 
 type fakeResidualWorkspaceBackend struct {

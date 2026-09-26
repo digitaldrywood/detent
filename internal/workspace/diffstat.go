@@ -48,6 +48,89 @@ type DiffProvider interface {
 	Diff(context.Context, Info, Issue, int) (Diff, error)
 }
 
+// HeadProvider reports the commit actually checked out for a review.
+type HeadProvider interface {
+	Head(context.Context, Info, Issue) (string, error)
+}
+
+// ReviewTreeVerifier checks that a review worktree contains only committed content.
+type ReviewTreeVerifier interface {
+	VerifyReviewTree(context.Context, Info, Issue) error
+}
+
+// ReviewHeadSeeder aligns an existing review worktree with the requested PR commit.
+type ReviewHeadSeeder interface {
+	SeedReviewHead(context.Context, Info, Issue) error
+}
+
+func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) error {
+	if strings.TrimSpace(issue.PullRequestHeadSHA) == "" {
+		return nil
+	}
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return err
+	}
+	branch := strings.TrimSpace(issue.PullRequestBranch)
+	if branch == "" {
+		branch = strings.TrimSpace(normalized.Branch)
+	}
+	if branch == "" && issue.PullRequestNumber == 0 {
+		return errors.New("review branch is empty")
+	}
+	remoteRef := "refs/remotes/origin/" + branch
+	sourceRef := "refs/heads/" + branch
+	if issue.PullRequestNumber > 0 {
+		remoteRef = fmt.Sprintf("refs/remotes/origin/pull/%d/head", issue.PullRequestNumber)
+		sourceRef = fmt.Sprintf("refs/pull/%d/head", issue.PullRequestNumber)
+	}
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-write-fetch-head", "origin", "+"+sourceRef+":"+remoteRef); err != nil {
+		return fmt.Errorf("fetch review head: %w", err)
+	}
+	remoteHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", remoteRef)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(remoteHead) != strings.TrimSpace(issue.PullRequestHeadSHA) {
+		return fmt.Errorf("review branch head mismatch: fetched %s, expected %s", strings.TrimSpace(remoteHead), strings.TrimSpace(issue.PullRequestHeadSHA))
+	}
+	localHead, err := l.Head(ctx, normalized, issue)
+	if err != nil {
+		return err
+	}
+	if err := l.VerifyReviewTree(ctx, normalized, issue); err != nil {
+		return err
+	}
+	if strings.TrimSpace(localHead) == strings.TrimSpace(remoteHead) {
+		return nil
+	}
+	_, err = runGitAt(ctx, normalized.Path, "reset", "--hard", strings.TrimSpace(remoteHead))
+	return err
+}
+
+func (l *LocalGit) VerifyReviewTree(ctx context.Context, info Info, issue Issue) error {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return err
+	}
+	changes, err := runGitAt(ctx, normalized.Path, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(changes) != "" {
+		return errors.New("review workspace has local changes")
+	}
+	return nil
+}
+
+func (l *LocalGit) Head(ctx context.Context, info Info, issue Issue) (string, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return "", err
+	}
+	return runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
+}
+
 func (l *LocalGit) DiffStat(ctx context.Context, info Info, issue Issue) (DiffStat, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {

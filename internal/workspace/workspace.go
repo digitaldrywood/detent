@@ -204,6 +204,8 @@ type Issue struct {
 	BaseRef            string
 	ProgressBaseRef    string
 	PullRequestHeadSHA string
+	PullRequestNumber  int
+	PullRequestBranch  string
 }
 
 type Info struct {
