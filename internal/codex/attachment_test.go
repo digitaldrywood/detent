@@ -125,3 +125,43 @@ func TestTurnInputItemsIgnoresTheAttachmentPath(t *testing.T) {
 		t.Fatalf("image path = %q, want no parent traversal", path)
 	}
 }
+
+func TestTurnInputItemsWritesEveryImageInsideTheTurnDirectory(t *testing.T) {
+	t.Parallel()
+	png := []byte("\x89PNG\r\n\x1a\nx")
+	tests := []struct {
+		name  string
+		files []runner.AgentAttachment
+		want  []string
+	}{
+		{name: "two files of one name", files: []runner.AgentAttachment{{Name: "shot.png"}, {Name: "shot.png"}}, want: []string{"01-shot.png", "02-shot.png"}},
+		{name: "dot-prefixed name with a traversing id", files: []runner.AgentAttachment{{ID: "../../escape", Name: ".hidden.png"}}, want: []string{"01-hidden.png"}},
+		{name: "only dots", files: []runner.AgentAttachment{{ID: "../x", Name: ".."}}, want: []string{"01-attachment"}},
+		{name: "windows traversal", files: []runner.AgentAttachment{{Name: `..\..\evil.png`}}, want: []string{"01-evil.png"}},
+		{name: "unsafe characters", files: []runner.AgentAttachment{{Name: "a b:c?.png"}}, want: []string{"01-a_b_c_.png"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			for i := range test.files {
+				test.files[i].MIME = "image/png"
+				test.files[i].Content = png
+			}
+			items, cleanup := turnInputItems("look", test.files, root)
+			t.Cleanup(cleanup)
+			if len(items) != len(test.want)+1 {
+				t.Fatalf("items = %#v", items)
+			}
+			for i, want := range test.want {
+				path, _ := items[i+1]["path"].(string)
+				if filepath.Base(path) != want || filepath.Dir(filepath.Dir(path)) != root {
+					t.Fatalf("image %d path = %q, want %s inside a turn directory under %s", i, path, want, root)
+				}
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("image %d was not written: %v", i, err)
+				}
+			}
+		})
+	}
+}

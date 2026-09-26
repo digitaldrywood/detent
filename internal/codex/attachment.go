@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/base64"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -45,14 +46,17 @@ func turnInputItems(prompt string, attachments []runner.AgentAttachment, tempDir
 			}
 		}
 	}
-	for _, image := range images {
+	for index, image := range images {
 		if err == nil {
-			// The user's file name is a label, never a path: only its base
-			// is used, and the turn directory is the whole location.
-			path := filepath.Join(directory, attachmentFileName(image))
-			if writeErr := os.WriteFile(path, image.Content, 0o600); writeErr == nil {
-				items = append(items, map[string]any{"type": "localImage", "path": path})
-				continue
+			// The user's file name is a label, never a path: it is reduced to
+			// safe characters, prefixed with its position so two files of
+			// one name never overwrite each other, and the result must stay
+			// inside the turn directory.
+			if path, ok := attachmentPath(directory, index, image); ok {
+				if writeErr := os.WriteFile(path, image.Content, 0o600); writeErr == nil {
+					items = append(items, map[string]any{"type": "localImage", "path": path})
+					continue
+				}
 			}
 		}
 		items = append(items, map[string]any{
@@ -63,16 +67,33 @@ func turnInputItems(prompt string, attachments []runner.AgentAttachment, tempDir
 	return items, cleanup
 }
 
-// attachmentFileName reduces an attachment to a safe base name inside the
-// turn directory. An attachment whose name is unusable is named by its
-// identifier instead.
+// attachmentPath is the file one image is written to inside directory. It
+// reports false when the name would not stay inside the directory.
+func attachmentPath(directory string, index int, attachment runner.AgentAttachment) (string, bool) {
+	path := filepath.Join(directory, fmt.Sprintf("%02d-%s", index+1, attachmentFileName(attachment)))
+	relative, err := filepath.Rel(directory, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || strings.ContainsRune(relative, filepath.Separator) {
+		return "", false
+	}
+	return path, true
+}
+
+// attachmentFileName reduces an attachment's name to a safe base name: only
+// letters, digits, '.', '-' and '_' survive, and leading dots are removed. A
+// name with nothing left is "attachment".
 func attachmentFileName(attachment runner.AgentAttachment) string {
 	name := filepath.Base(strings.ReplaceAll(strings.TrimSpace(attachment.Name), `\`, "/"))
-	if name == "" || name == "." || name == ".." || name == string(filepath.Separator) || strings.HasPrefix(name, ".") {
-		name = strings.TrimSpace(attachment.ID)
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, name)
+	safe = strings.TrimLeft(safe, ".")
+	if strings.Trim(safe, "_") == "" {
+		return "attachment"
 	}
-	if name == "" {
-		name = "attachment"
-	}
-	return name
+	return safe
 }
