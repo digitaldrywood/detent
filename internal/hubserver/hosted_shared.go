@@ -183,6 +183,57 @@ func (s *Service) hostedSharedCSRFValid(c echo.Context, value string) bool {
 func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
 	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
+	e.POST("/internal/v1/health", s.hostedSharedHealth)
+	e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
+}
+
+func (s *Service) hostedSharedHealth(c echo.Context) error {
+	if !s.ready.Load() || s.database.health(c.Request().Context()) != nil {
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "not_ready", Message: "Tenant is not ready"})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+type hostedSharedOwner struct {
+	OrganizationName string `json:"organization_name"`
+}
+
+func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
+	claims, _ := hostedSharedClaims(c)
+	var request hostedSharedOwner
+	name := ""
+	if err := decodeAPIJSON(c, &request); err == nil {
+		name = strings.TrimSpace(request.OrganizationName)
+	}
+	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 || hostedEmailListed(s.config.Hosted.StaffEmails, claims.Email) {
+		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
+	}
+	ctx := c.Request().Context()
+	s.hostedMutationMu.Lock()
+	defer s.hostedMutationMu.Unlock()
+	var members int
+	var owner string
+	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
+		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
+	}
+	if members != 0 {
+		if members == 1 && owner == claims.Subject {
+			return c.NoContent(http.StatusNoContent)
+		}
+		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+	}
+	provider, err := s.hostedProviderOrganization(ctx)
+	if err != nil || provider == "" {
+		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
+	}
+	membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
+	if err != nil || membership.Role.Slug != "owner" {
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
+	}
+	if err := s.storeHostedMember(ctx, auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}, membership, name); err != nil {
+		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 type hostedSharedRevocation struct {

@@ -141,6 +141,9 @@ func (s *Service) proxy(c echo.Context) error {
 	ctx := request.Context()
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil {
+		if pending, lookupErr := s.registry.Organization(ctx, c.Param("organization")); lookupErr == nil && pending.Managed && (pending.State == "requested" || pending.State == "allocating" || pending.State == "failed") && request.Method == http.MethodGet && !strings.HasPrefix(request.URL.Path, "/api/") {
+			return c.Redirect(http.StatusSeeOther, "/organizations/"+pending.ID+"/provisioning")
+		}
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
 	body, err := io.ReadAll(io.LimitReader(request.Body, cloudassert.MaxBodyBytes+1))

@@ -71,6 +71,61 @@ detent cloud registry register --registry /var/lib/detent/cloud/registry.db \
   --name "Example" --endpoint unix:/run/detent/tenants/org_example.sock --generation 1
 ```
 
+## Self-service provisioning
+
+Adding an `allocation` block lets verified users create organizations without
+operator YAML, a bootstrap user, DNS or a public port. It is opt-in operator
+functionality; self-hosted Detent never uses it.
+
+```yaml
+allocation:
+  tenant_root: /var/lib/detent/tenants
+  socket_root: /run/detent/tenants
+  max_tenants: 20
+  max_concurrent_provisions: 1
+  max_organizations_per_identity: 1
+  retry_limit: 5
+  min_free_disk_bytes: 2147483648
+  min_available_memory_bytes: 536870912
+  allowed_domains: []
+  allowed_emails: []
+  entitlements: {}
+```
+
+`max_tenants` and the free-memory/disk floors are admission limits: a request that
+does not fit is stored as a retryable `capacity` failure before any provider or
+filesystem effect, and ready tenants are never disturbed. Set them from measured
+tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pilot;
+empty lists admit any verified account. `entitlements` is the tenant's
+[versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
+plan every new organization starts on, and no Stripe customer or card is created.
+
+For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
+generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
+token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
+as a supervised child (restarted with backoff; stopped when the entry stops). The
+child receives only `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`, the WorkOS key variable and its
+own admin token. Each tenant owns its SQLite file exclusively; never place
+`tenant_root` on a network filesystem.
+
+Deletion is owner-only (`/organizations/ORG/delete`, current provider owner, typed
+name, CSRF). It marks the organization `deleting`, revokes every authorization and
+tenant session, stops the tenant and records a permanent `deleted` tombstone that
+cannot be routed or resurrected. Tenant data stays on disk for the operator's
+published retention process; the entry never erases customer data, including after
+a failed signup.
+
+### Backup and recovery
+
+Back up `state_directory/registry.db` and every `tenant_root/ORG/hub.db` together,
+with the entry and tenants quiesced or through each owner's online backup
+(`detent hub backup` for a stopped tenant). `auth.db` holds only sessions and login
+transactions and is not restored: a restore starts with no sessions, and every user
+signs in again. To restore one tenant, stop the entry, restore its `hub.db` with
+`detent hub restore`, and if its binding moved, re-register it with a higher
+generation; the registry refuses a lower generation or a reused ID, and deleted
+organizations stay tombstoned.
+
 The entry serves sign-in (`/auth/oidc/start`, `/auth/oidc/callback`), the chooser
 (`/organizations`, JSON at `/api/cloud/organizations`), invitations (`/invite`,
 `/invitations/join`) and sign-out, and routes `/organizations/ORG/...` and

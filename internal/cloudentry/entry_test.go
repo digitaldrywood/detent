@@ -28,13 +28,16 @@ const (
 )
 
 type fakeProvider struct {
-	mu          sync.Mutex
-	users       map[string]string
-	sessions    map[string]auth.HostedIdentity
-	memberships map[string]auth.Membership
-	invitations map[string]auth.Invitation
-	revoked     []string
-	sequence    int
+	organizations  map[string]auth.Organization
+	createFailures int
+	creates        int
+	mu             sync.Mutex
+	users          map[string]string
+	sessions       map[string]auth.HostedIdentity
+	memberships    map[string]auth.Membership
+	invitations    map[string]auth.Invitation
+	revoked        []string
+	sequence       int
 }
 
 func newFakeProvider() *fakeProvider {
@@ -112,8 +115,23 @@ func (*fakeProvider) Organization(_ context.Context, id string) (auth.Organizati
 	return auth.Organization{ID: id, Name: id}, nil
 }
 
-func (*fakeProvider) CreateOrganization(context.Context, string, string) (auth.Organization, error) {
-	return auth.Organization{}, auth.ErrHostedIdentity
+func (p *fakeProvider) CreateOrganization(_ context.Context, external, name string) (auth.Organization, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.createFailures > 0 {
+		p.createFailures--
+		return auth.Organization{}, auth.ErrHostedIdentity
+	}
+	if p.organizations == nil {
+		p.organizations = map[string]auth.Organization{}
+	}
+	if existing, ok := p.organizations[external]; ok {
+		return existing, nil
+	}
+	p.creates++
+	organization := auth.Organization{ID: "porg_" + external, ExternalID: external, Name: name}
+	p.organizations[external] = organization
+	return organization, nil
 }
 
 func (p *fakeProvider) CreateMembership(_ context.Context, user, organization, role string) (auth.Membership, error) {
