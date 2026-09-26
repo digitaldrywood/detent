@@ -80,7 +80,7 @@ func TestAppShellServing(t *testing.T) {
 		{name: "project issue", account: "owner", path: "/projects/prj_any/issues/wi_any", status: http.StatusOK, shell: true},
 		{name: "project issue change", account: "owner", path: "/projects/prj_any/issues/wi_any/changes/chg_any", status: http.StatusOK, shell: true},
 		{name: "project changes", account: "owner", path: "/projects/prj_any/changes", status: http.StatusOK, shell: true},
-		{name: "project events", account: "viewer", path: "/projects/prj_any/events", status: http.StatusOK, shell: true},
+		{name: "ungranted project events stay with the hub", account: "viewer", path: "/projects/prj_any/events", status: http.StatusForbidden},
 		{name: "anonymous project", path: "/projects/prj_any", status: http.StatusSeeOther, location: "/login"},
 		{name: "templ organization keeps its page", account: "owner", path: "/organization", status: http.StatusOK},
 		{name: "staff root keeps the organization page", account: "staff", path: "/", status: http.StatusOK},
