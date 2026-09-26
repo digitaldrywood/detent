@@ -494,8 +494,7 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 						return
 					}
 					response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{
-						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i),
-						"states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}},
+						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i), "grant_access": true,
 					})
 					results <- response.Code
 				})
@@ -505,7 +504,7 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 			close(results)
 			winners := 0
 			for status := range results {
-				if status == http.StatusOK {
+				if status == http.StatusOK || status == http.StatusCreated {
 					winners++
 				} else if status != http.StatusTooManyRequests {
 					t.Errorf("allocation status = %d", status)

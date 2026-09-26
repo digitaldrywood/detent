@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { makeAccountApi } from "../src/app/account/api.ts";
 import { checkForUpdates, resetUpdateCheckState } from "../src/app/adapters/detentUpdates.ts";
 import { makeRouter } from "../src/app/router.tsx";
+import { makeWorkHttp } from "../src/app/work/lib/workHttp.ts";
 import bootstrapFixture from "../src/contracts/fixtures/bootstrap.json";
 import {
   applyHubPaths,
@@ -158,6 +159,9 @@ describe("bootstrap under a base", () => {
     await api.logout();
     await api.projects().catch(() => undefined);
     expect(logout.urls).toEqual([`${base}/logout`, "/api/v2/organizations/org_a/projects"]);
+
+    const work = makeWorkHttp({ origin: "", apiBase: "/api/v2/organizations/org_a", csrfToken: "csrf" });
+    expect(work.eventsUrl("prj a")).toBe(`${base}/projects/prj%20a/events`);
   });
 });
 

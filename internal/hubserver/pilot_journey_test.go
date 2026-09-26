@@ -80,8 +80,6 @@ func TestPilotHostedHistoryAfterRunnerLossAndRestart(t *testing.T) {
 			{issue + "/comments", "Pilot discussion remains available"},
 			{issue + "/history", "run.finished"},
 			{change, "Pilot native Change Request"},
-			{templates.NativeIssuePath(f.project, tracker.NativeWorkItemID(strings.Split(issue, "/")[8])), "First native run"},
-			{"/projects/" + f.project, "Latest execution: succeeded"},
 		} {
 			response := f.page(t, "owner", test.path)
 			requireNativeStatus(t, response, http.StatusOK)

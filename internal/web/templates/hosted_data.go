@@ -4,9 +4,6 @@ import (
 	"net/url"
 
 	"github.com/a-h/templ"
-
-	"github.com/digitaldrywood/detent/internal/onboarding"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type HostedPageData struct {
@@ -15,10 +12,6 @@ type HostedPageData struct {
 	PendingOrganizations []HostedOrganizationChoice
 	Base                 string
 	SharedOrigin         bool
-	Issue                *tracker.NativeIssue
-	Change               *tracker.ChangeDetail
-	Changes              []tracker.ChangeRequest
-	NextChanges          string
 	BillingEnabled       bool
 	BillingCanPurchase   bool
 	BillingStatus        string
@@ -31,17 +24,6 @@ type HostedPageData struct {
 	UsageWindow          string
 	PlanGrants           []string
 	Allowances           []HostedAllowanceRow
-	Setup                *onboarding.Project
-	SetupAPI             string
-	CanWriteProject      bool
-	ProjectStates        []tracker.NativeState
-	IntegrationSummary   string
-	IntegrationRevision  string
-	GitHubRepository     string
-	GitHubIntake         string
-	GitHubProjection     string
-	GitHubPR             bool
-	GitHubAvailable      bool
 	Assets               AssetPaths
 	Title                string
 	Email                string
@@ -51,7 +33,6 @@ type HostedPageData struct {
 	Error                string
 	Notice               string
 	Mode                 string
-	SelectedProject      string
 	CanManage            bool
 	CanCreate            bool
 	CanManageRunners     bool
@@ -63,7 +44,6 @@ type HostedPageData struct {
 	Organizations        []HostedOrganizationChoice
 	Projects             []HostedProjectChoice
 	Members              []HostedMember
-	Issues               []tracker.NativeIssue
 }
 
 type HostedBillingPrice struct {
@@ -126,8 +106,6 @@ func hostedPageTitle(data HostedPageData) string {
 		return "Sign in"
 	case "onboarding":
 		return "Your organization"
-	case "project":
-		return "Project work"
 	case "denied":
 		return "Access denied"
 	case "chooser":
@@ -174,12 +152,8 @@ func hostedMemberPath(member string, action string) string {
 	return "/organization/members/" + url.PathEscape(member) + "/" + action
 }
 
-func hostedIssuePath(project string, issue tracker.NativeWorkItemID) string {
-	return NativeIssuePath(project, issue)
-}
-
 func hostedProjectMode(data HostedPageData) bool {
-	return data.OrganizationID != "" && (data.Mode == "organization" || data.Mode == "project" || data.Mode == "issue" || data.Mode == "change" || data.Mode == "changes")
+	return data.OrganizationID != "" && data.Mode == "organization"
 }
 
 type HostedAllowanceRow struct {

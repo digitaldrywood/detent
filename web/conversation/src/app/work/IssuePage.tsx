@@ -75,10 +75,27 @@ interface IssueData {
  * only when it has one — its change. They are issued together rather than in
  * sequence, so the page paints once.
  */
+/**
+ * The change the page opens: the one the link named when the issue has it,
+ * otherwise the latest. A link to a specific change (the hub's old
+ * `/projects/:project/issues/:item/changes/:change` page) keeps pointing at
+ * that change rather than whatever was published after it.
+ */
+export function selectChangeId(
+  changes: readonly { readonly change_id: string }[],
+  requested: string | null | undefined,
+): string | null {
+  if (requested !== undefined && requested !== null && requested.length > 0) {
+    if (changes.some((change) => change.change_id === requested)) return requested;
+  }
+  return changes.at(-1)?.change_id ?? null;
+}
+
 function useIssue(
   http: WorkHttp,
   projectId: string | null,
   workItemId: string,
+  requestedChange: string | null = null,
 ): {
   data: IssueData | null;
   error: string | null;
@@ -109,11 +126,11 @@ function useIssue(
             .catch(() => []),
           http.listChanges(projectId, workItemId).catch(() => []),
         ]);
-        const latest = changes.at(-1);
+        const selected = selectChangeId(changes, requestedChange);
         const change =
-          latest === undefined
+          selected === null
             ? null
-            : await http.getChange(projectId, workItemId, latest.change_id).catch(() => null);
+            : await http.getChange(projectId, workItemId, selected).catch(() => null);
         if (cancelled) return;
         setData({ issue, project, attempts, history, comments, change });
         setError(null);
@@ -127,7 +144,7 @@ function useIssue(
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, nonce]);
+  }, [http, projectId, workItemId, requestedChange, nonce]);
 
   return { data, error, loading, reload: () => setNonce((value) => value + 1), apply: setData };
 }
@@ -321,10 +338,10 @@ function IssueSurface({
   const client = useClient();
   const http = useWorkHttp();
   const now = useNow();
-  const search = useSearch({ strict: false }) as { panel?: string };
+  const search = useSearch({ strict: false }) as { panel?: string; change?: string };
 
   const projectId = projectHint ?? shell.projectId ?? null;
-  const { data, error, loading, reload, apply } = useIssue(http, projectId, workItemId);
+  const { data, error, loading, reload, apply } = useIssue(http, projectId, workItemId, search.change ?? null);
   const [saving, setSaving] = React.useState(false);
   const [posting, setPosting] = React.useState(false);
 

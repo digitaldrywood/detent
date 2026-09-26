@@ -99,7 +99,11 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET("/api/v2/capabilities", s.nativeCapabilities, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
 	e.GET("/api/v2/organizations", s.nativeOrganizations, admin)
 	e.POST("/api/v2/organizations", s.createNativeOrganization, admin)
-	e.POST("/api/v2/organizations/:organization/projects", s.createNativeProject, admin)
+	if s.config.Hosted != nil {
+		e.POST("/api/v2/organizations/:organization/projects", s.createHostedProjectJSON, admin)
+	} else {
+		e.POST("/api/v2/organizations/:organization/projects", s.createNativeProject, admin)
+	}
 	e.POST("/api/v2/tokens/:id/grants", s.grantNativeToken, admin)
 	e.GET(nativeBase, s.getNativeProject, read)
 	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
