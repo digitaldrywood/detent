@@ -534,3 +534,87 @@ func sha256Hex(body string) string {
 	digest := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(digest[:])
 }
+
+func TestAppBootstrapPreferenceChoices(t *testing.T) {
+	t.Parallel()
+	backend := newFakeCoordinatorBackend()
+	for _, test := range []struct {
+		name            string
+		conversation    *ConversationConfig
+		wantModels      string
+		wantModelLead   string
+		wantEfforts     string
+		wantEffortLead  string
+		wantAccess      string
+		wantCoordinator bool
+	}{
+		{name: "conversation disabled publishes empty pickers"},
+		{
+			name:         "no configured defaults leave auto as the default",
+			conversation: &ConversationConfig{Enabled: true},
+			wantModels:   "auto", wantModelLead: "auto",
+			wantEfforts: "auto,low,medium,high", wantEffortLead: "auto",
+			wantAccess: "auto,read_only,full",
+		},
+		{
+			name:         "configured coordinator model and effort become the defaults",
+			conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir(), Model: "gpt-6-astra", ReasoningEffort: "medium"},
+			wantModels:   "auto,gpt-6-astra", wantModelLead: "gpt-6-astra",
+			wantEfforts: "auto,low,medium,high", wantEffortLead: "medium",
+			wantAccess:      "auto,read_only,full",
+			wantCoordinator: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db", Conversation: test.conversation})
+			preferences, err := service.appBootstrapPreferences(t.Context(), "org", []appBootstrapProject{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range []struct {
+				name, want, lead string
+				choices          []appBootstrapChoice
+			}{
+				{name: "models", want: test.wantModels, lead: test.wantModelLead, choices: preferences.Models},
+				{name: "efforts", want: test.wantEfforts, lead: test.wantEffortLead, choices: preferences.Efforts},
+				{name: "access", want: test.wantAccess, lead: "auto", choices: preferences.Access},
+			} {
+				ids := make([]string, 0, len(check.choices))
+				defaults := []string{}
+				for _, choice := range check.choices {
+					ids = append(ids, choice.ID)
+					if choice.Default {
+						defaults = append(defaults, choice.ID)
+					}
+				}
+				if got := strings.Join(ids, ","); got != check.want {
+					t.Fatalf("%s = %q, want %q", check.name, got, check.want)
+				}
+				if check.want == "" {
+					continue
+				}
+				if len(defaults) != 1 || defaults[0] != check.lead {
+					t.Fatalf("%s defaults = %v, want [%s]", check.name, defaults, check.lead)
+				}
+			}
+			coordinator := service.conversations != nil && service.conversations.coordinator.Available()
+			if coordinator != test.wantCoordinator {
+				t.Fatalf("coordinator available = %t, want %t", coordinator, test.wantCoordinator)
+			}
+		})
+	}
+}
+
+func TestConversationChoiceLabel(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ value, want string }{
+		{value: "read_only", want: "Read only"},
+		{value: "high", want: "High"},
+		{value: "", want: ""},
+	} {
+		if got := conversationChoiceLabel(test.value); got != test.want {
+			t.Fatalf("conversationChoiceLabel(%q) = %q, want %q", test.value, got, test.want)
+		}
+	}
+}
