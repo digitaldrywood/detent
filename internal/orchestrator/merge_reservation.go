@@ -202,7 +202,7 @@ func (o *Orchestrator) recoverMergeReservations(state *State, attempts []store.W
 		state.Retry[issue.ID] = Retry{Issue: cloneIssue(issue), Attempt: attempt.AttemptNumber,
 			DueAt: now, WorkerHost: attempt.WorkerHost, Error: mergeWorkerCurrentHeadCIWaitReason(issue),
 			Wait: RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: reservation.StartedAt}}
-		state.MergeTimings[issue.ID] = MergeTiming{CIWaitStartedAt: reservation.StartedAt, CIWaitHeadSHA: reservation.HeadSHA}
+		state.MergeTimings[issue.ID] = MergeTiming{CIWaitStartedAt: reservation.StartedAt, CIWaitActiveAt: attempt.CompletedAt, CIWaitHeadSHA: reservation.HeadSHA}
 		if o.logger != nil {
 			o.logger.Info("merge_reservation_restored", mergeWorkerLogAttrs(issue, "expires_at", reservation.ExpiresAt)...)
 		}

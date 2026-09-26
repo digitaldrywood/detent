@@ -1742,6 +1742,7 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	issue connector.Issue,
 ) {
 	attempt := running.Attempt
+	reconcileMergeWorkerCurrentHeadCIWait(state, issue, event.CompletedAt)
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -1784,6 +1785,7 @@ func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
 		return retry, false, ""
 	}
 	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		finishMergeWorkerCurrentHeadCIWait(state, issue, now)
 		retry.Attempt = nextAttempt(retry.Attempt)
 		retry.Wait = RetryWait{}
 		state.Retry[issue.ID] = retry

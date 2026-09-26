@@ -685,6 +685,7 @@ func (p dispatchPlanner) previewCurrentHeadCIWait(
 	now time.Time,
 ) (Retry, bool) {
 	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		finishMergeWorkerCurrentHeadCIWait(state, issue, now)
 		retry.Attempt = nextAttempt(retry.Attempt)
 		retry.Wait = RetryWait{}
 		state.Retry[issue.ID] = retry
