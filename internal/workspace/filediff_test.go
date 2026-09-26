@@ -197,7 +197,7 @@ func TestGitFileDiffsClean(t *testing.T) {
 // patch is the hub's write-side filter, not the runner's git call, so the
 // runner reports them and the filter decides.
 func TestGitFileDiffsReportsDeniedPathsForTheFilter(t *testing.T) {
-	t.Parallel()
+	isolateFileDiffGitConfig(t)
 	dir, base := fileDiffRepo(t)
 	writeFileDiffFile(t, dir, ".env", "TOKEN=secret\n")
 	writeFileDiffFile(t, dir, "web/node_modules/pkg/index.js", "module.exports = 1\n")
@@ -285,4 +285,14 @@ func TestSplitGitPatchAndAttach(t *testing.T) {
 	if splitGitPatch("") != nil {
 		t.Fatal("an empty patch has no sections")
 	}
+}
+
+// isolateFileDiffGitConfig isolates one test's git commands from the host's global and system git
+// configuration, so a developer's global excludes file (which commonly lists
+// .env) cannot hide the files the test asserts on. It uses t.Setenv, so the
+// calling test must not run in parallel.
+func isolateFileDiffGitConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }

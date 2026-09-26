@@ -43,7 +43,7 @@ func attemptDiffFind(files []tracker.AttemptDiffFile, path string) (tracker.Atte
 // The source reports the base it diffed against, the worktree head, and every
 // changed file with its status, counts and patch.
 func TestAttemptDiffSourceComputesWorktreeDiff(t *testing.T) {
-	t.Parallel()
+	isolateAttemptDiffGitConfig(t)
 	source := initRunnerSourceRepo(t)
 	base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
@@ -152,4 +152,14 @@ func TestAttemptDiffSourceStripsPatchesWhenTruncated(t *testing.T) {
 	if stripped[0].Patch != "" || !stripped[0].Truncated || stripped[0].Additions != file.Additions {
 		t.Fatalf("stripped = %#v", stripped[0])
 	}
+}
+
+// isolateAttemptDiffGitConfig isolates one test's git commands from the host's global and system git
+// configuration, so a developer's global excludes file (which commonly lists
+// .env) cannot hide the files the test asserts on. It uses t.Setenv, so the
+// calling test must not run in parallel.
+func isolateAttemptDiffGitConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
