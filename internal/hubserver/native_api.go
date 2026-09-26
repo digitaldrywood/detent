@@ -143,7 +143,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
 	e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
 	e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
-	e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, write)
+	e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
 	e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
 	e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
 	e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
@@ -181,7 +181,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			write := !hostedReadRequest(c) && !artifactReadGrantRequest(c)
+			write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
 			if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
 				return s.nativeAPIError(c, err)
 			}

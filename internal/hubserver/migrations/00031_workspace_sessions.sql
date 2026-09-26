@@ -1,36 +1,7 @@
 -- +goose Up
 -- Workspace sessions, their dispatch association, their occupancy accounting,
--- the relay's tickets and its audit rows, and the typed project event log the
--- three of them publish on (decisions sections 18.1, 18.2 and 12).
-
--- The typed project event stream.
---
--- Section 12's project stream carried one integer: the project's highest issue
--- event sequence, on a one-second tick, with no id and no body. A client could
--- learn that something changed and nothing about what. Section 18.1 requires
--- the opposite -- "every transition emits workspace.<state> on the project
--- event stream with the resource as data, so a client observes readiness by
--- subscription and never by polling" -- so the stream needs a durable log
--- behind it: a subscriber is only woken, then reads from its own cursor, and a slow client therefore
--- loses nothing and reorders nothing.
---
--- seq is allocated per project inside the transaction that wrote the state the
--- event describes, so "snapshot plus events after cursor" is exact. The log is
--- swept rather than kept forever; a cursor older than the retained window is
--- answered with a re-snapshot.
-CREATE TABLE project_events (
-  organization_id TEXT NOT NULL,
-  project_id TEXT NOT NULL,
-  seq INTEGER NOT NULL CHECK (seq > 0),
-  type TEXT NOT NULL,
-  -- subject_id names what the event is about (a workspace id today) so a
-  -- sweep can drop a closed subject's events without parsing the body.
-  subject_id TEXT NOT NULL DEFAULT '',
-  data_json TEXT NOT NULL CHECK (json_valid(data_json)),
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, project_id, seq)
-);
-CREATE INDEX project_events_sweep_idx ON project_events(created_at);
+-- and the relay's tickets and its audit rows (decisions sections 18.1 and
+-- 18.2).
 
 -- One workspace session.
 --
@@ -207,4 +178,3 @@ DROP TABLE workspace_relay_tickets;
 DROP TABLE workspace_occupancy;
 DROP TABLE workspace_items;
 DROP TABLE workspace_sessions;
-DROP TABLE project_events;

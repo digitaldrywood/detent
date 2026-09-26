@@ -140,12 +140,10 @@ func (w *workspaceService) now() time.Time { return w.server.config.now().UTC() 
 
 // transition applies one move of the state machine inside the caller's
 // transaction: it validates the move, updates the row, keeps occupancy in
-// step, closes the dispatch association on a terminal state and appends the
-// workspace.<state> project event with the resource as data.
+// step and closes the dispatch association on a terminal state.
 //
-// It never notifies subscribers itself. The wake has to happen after the
-// commit, or a subscriber would read from its cursor and find nothing, so
-// every caller ends with committed().
+// It never closes relay connections itself. That has to happen after the
+// commit, so every caller ends with committed().
 func (w *workspaceService) transition(ctx context.Context, tx *sql.Tx, record workspaceRecord, to, reason string, now time.Time) (workspaceRecord, error) {
 	if !workspacesession.Transition(record.State, to) {
 		return record, nativeStaleExecution("A workspace cannot move from " + record.State + " to " + to)
@@ -187,10 +185,6 @@ func (w *workspaceService) transition(ctx context.Context, tx *sql.Tx, record wo
 		if err := w.closeWorkspaceDispatchItem(ctx, tx, record, now); err != nil {
 			return record, err
 		}
-	}
-	if _, err := appendProjectEvent(ctx, tx, record.OrganizationID, record.ProjectID,
-		workspacesession.EventType(to), record.ID, record.resource(), now); err != nil {
-		return record, err
 	}
 	w.logger.Info("workspace.transitioned", "workspace_id", record.ID, "from", previous, "to", to,
 		"reason", reason, "runner_id", record.RunnerID)
@@ -279,9 +273,6 @@ func (w *workspaceService) sweep(ctx context.Context) {
 		if changed {
 			w.committed(ctx, moved)
 		}
-	}
-	if _, err := sweepProjectEvents(ctx, w.server.database.db, now); err != nil {
-		w.logger.Warn("workspace.project_event_sweep_failed", "error", err)
 	}
 	w.relay.sweep(ctx, now)
 	if err := w.sweepRelayTickets(ctx, now); err != nil {

@@ -514,11 +514,15 @@ func (r *workspaceRelay) lookupStream(connection *relayConnection, id string) *r
 
 // runnerStream resolves a stream a runner frame names. The runner may address
 // any stream of the workspace; it is the hub that decides which person sees it.
-func (r *workspaceRelay) runnerStream(workspaceID, id string) (*relayStream, *relayConnection) {
+func (r *workspaceRelay) runnerStream(runner *relayConnection, id string) (*relayStream, *relayConnection) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	room := r.rooms[workspaceID]
-	if room == nil {
+	room := r.rooms[runner.workspaceID]
+	// Only the room's current runner connection may address its streams. A
+	// superseded connection is still draining its socket, and routing by
+	// workspace and stream id alone would let it write into a person's stream
+	// after another runner took the workspace.
+	if room == nil || room.runner != runner {
 		return nil, nil
 	}
 	if stream := room.streams[id]; stream != nil {

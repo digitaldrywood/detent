@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"database/sql"
-	"encoding/json"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -97,52 +96,6 @@ func (f workspaceFixture) list(t *testing.T, query string) workspaceListResponse
 	return listing
 }
 
-// projectEvent is one committed typed event as the tests read it.
-type projectEvent struct {
-	Seq       int64
-	Type      string
-	SubjectID string
-	Data      json.RawMessage
-}
-
-// projectEvents reads the typed project log directly rather than through the
-// stream: the point of the assertion is that the transition and its event
-// committed together, and a subscriber would only prove that they arrived.
-func (f workspaceFixture) projectEvents(t *testing.T, subject string) []projectEvent {
-	t.Helper()
-	rows, err := f.service.database.db.QueryContext(t.Context(),
-		`SELECT seq, type, subject_id, data_json FROM project_events
-WHERE organization_id = ? AND project_id = ? AND subject_id = ? ORDER BY seq`,
-		f.project.OrganizationID, f.project.ID, subject)
-	if err != nil {
-		t.Fatalf("read project events: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	events := []projectEvent{}
-	for rows.Next() {
-		var event projectEvent
-		var data string
-		if err := rows.Scan(&event.Seq, &event.Type, &event.SubjectID, &data); err != nil {
-			t.Fatalf("scan project event: %v", err)
-		}
-		event.Data = json.RawMessage(data)
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate project events: %v", err)
-	}
-	return events
-}
-
-func (f workspaceFixture) eventTypes(t *testing.T, subject string) []string {
-	t.Helper()
-	types := []string{}
-	for _, event := range f.projectEvents(t, subject) {
-		types = append(types, event.Type)
-	}
-	return types
-}
-
 // item resolves the dispatch issue a workspace was given, which is the handle
 // the runner is actually offered.
 func (f workspaceFixture) item(t *testing.T, workspaceID string) string {
@@ -229,9 +182,8 @@ func (f workspaceFixture) attempt(t *testing.T, name string, running bool) strin
 	return attempt
 }
 
-// A workspace request carries the default surfaces, records the resource on
-// the project stream in the same commit, and creates the dispatch item that a
-// runner -- and nothing else -- is meant to see.
+// A workspace request carries the default surfaces and creates the dispatch
+// item that a runner -- and nothing else -- is meant to see.
 func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 	t.Parallel()
 	f := newWorkspaceFixture(t, nil)
@@ -246,19 +198,6 @@ func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 		}
 		if session.CreatedBy != f.ownerID || session.IdleTimeoutSeconds != int(defaultWorkspaceIdleTimeout/time.Second) {
 			t.Fatalf("session provenance = %#v", session)
-		}
-		events := f.projectEvents(t, session.ID)
-		if len(events) != 1 || events[0].Type != "workspace.requested" {
-			t.Fatalf("events = %#v", events)
-		}
-		var carried workspacesession.Session
-		if err := json.Unmarshal(events[0].Data, &carried); err != nil {
-			t.Fatalf("decode event data: %v", err)
-		}
-		// The stream carries the resource, not a ping: section 18.1 says a
-		// client observes readiness by subscription and never by polling.
-		if carried.ID != session.ID || carried.State != session.State || carried.WorkItemID != session.WorkItemID {
-			t.Fatalf("event data = %#v", carried)
 		}
 	})
 
@@ -578,9 +517,6 @@ func TestWorkspaceWorkerBind(t *testing.T) {
 		if rows, open := f.occupancy(t, bind.Session.ID); rows != 1 || open != 1 {
 			t.Fatalf("occupancy rows = %d, open = %d, want one open row", rows, open)
 		}
-		if types := f.eventTypes(t, bind.Session.ID); len(types) != 2 || types[1] != "workspace.starting" {
-			t.Fatalf("events = %v", types)
-		}
 	})
 
 	t.Run("a lease held on a different work item cannot bind this workspace", func(t *testing.T) {
@@ -638,9 +574,6 @@ func TestWorkspaceWorkerHeartbeat(t *testing.T) {
 		// the idle clock starts from.
 		if beat.Session.OpenedAt == nil {
 			t.Fatal("a ready workspace has no opened_at")
-		}
-		if types := f.eventTypes(t, bind.Session.ID); len(types) != 3 || types[2] != "workspace.ready" {
-			t.Fatalf("events = %v", types)
 		}
 	})
 
@@ -884,12 +817,6 @@ func TestWorkspaceDeleteClosesSessionAndAccounting(t *testing.T) {
 		if closed.State != workspacesession.StateClosed || closed.Reason != workspacesession.ReasonClosedByActor {
 			t.Fatalf("session = %#v", closed)
 		}
-		// closing then closed, not a jump: a runner learns it must let go
-		// from the first and that the hub is done from the second.
-		types := f.eventTypes(t, bind.Session.ID)
-		if len(types) != 4 || types[2] != "workspace.closing" || types[3] != "workspace.closed" {
-			t.Fatalf("events = %v", types)
-		}
 	})
 
 	t.Run("the dispatch item closes so the claim gate stops offering it", func(t *testing.T) {
@@ -942,12 +869,6 @@ func TestWorkspaceRequestWithNoRunnerFailsWithTheReasonOnTheResource(t *testing.
 	}
 	if failed.RunnerID != "" {
 		t.Fatalf("a workspace no runner claimed reports runner %q", failed.RunnerID)
-	}
-	// The surface subscribes rather than polls (section 18.1), so the
-	// transition is only visible if it was published too.
-	types := f.eventTypes(t, opened.ID)
-	if len(types) == 0 || types[len(types)-1] != "workspace.failed" {
-		t.Fatalf("events = %v, want workspace.failed last", types)
 	}
 }
 

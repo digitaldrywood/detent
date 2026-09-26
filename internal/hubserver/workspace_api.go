@@ -16,9 +16,7 @@ import (
 
 // Operator endpoints for workspace sessions (decisions section 18.1). The
 // actor needs write on the project; terminal in requires also needs the
-// grant's runners flag. Every transition emits workspace.<state> on the
-// project event stream, so a client observes readiness by subscription and
-// never by polling: none of these handlers is a status poll.
+// grant's runners flag.
 
 // workspaceRequest is the body of POST /workspaces.
 type workspaceRequest struct {
@@ -176,10 +174,6 @@ func (w *workspaceService) openWorkspace(ctx context.Context, tx *sql.Tx, scope 
 		return workspaceRecord{}, err
 	}
 	if _, err := w.ensureWorkspaceItem(ctx, tx, scope, record, now); err != nil {
-		return workspaceRecord{}, err
-	}
-	if _, err := appendProjectEvent(ctx, tx, record.OrganizationID, record.ProjectID,
-		workspacesession.EventType(record.State), record.ID, record.resource(), now); err != nil {
 		return workspaceRecord{}, err
 	}
 	w.logger.Info("workspace.requested", "workspace_id", record.ID, "work_item_id", record.SubjectWorkItemID,

@@ -1304,3 +1304,140 @@ func TestRelayActorName(t *testing.T) {
 		})
 	}
 }
+
+// A superseded runner connection keeps reading its socket until the close
+// lands, so every frame it sends must be fenced against the room's current
+// runner rather than routed by workspace and stream id alone.
+func TestWorkspaceRelayRunnerStreamFencesSupersededRunners(t *testing.T) {
+	t.Parallel()
+	current := &relayConnection{id: "relayconn_current", workspaceID: "ws_1", runner: true}
+	superseded := &relayConnection{id: "relayconn_old", workspaceID: "ws_1", runner: true}
+	elsewhere := &relayConnection{id: "relayconn_other", workspaceID: "ws_2", runner: true}
+	person := &relayConnection{id: "relayconn_person", workspaceID: "ws_1"}
+	live := &relayStream{id: "relayconn_person:1", channel: workspacesession.ChannelFiles, connectionID: person.id}
+	parked := &relayStream{id: "relayconn_person:2", channel: workspacesession.ChannelFiles, connectionID: person.id}
+	relay := newWorkspaceRelay(nil)
+	relay.rooms["ws_1"] = &relayRoom{
+		workspaceID: "ws_1",
+		runner:      current,
+		people:      map[string]*relayConnection{person.id: person},
+		streams:     map[string]*relayStream{live.id: live},
+		detached:    map[string]*relayStream{parked.id: parked},
+		terminals:   map[string]*terminalStreamState{},
+	}
+	tests := []struct {
+		name       string
+		runner     *relayConnection
+		stream     string
+		wantStream *relayStream
+		wantPerson *relayConnection
+	}{
+		{name: "current runner reaches a live stream", runner: current, stream: live.id, wantStream: live, wantPerson: person},
+		{name: "current runner reaches a detached stream", runner: current, stream: parked.id, wantStream: parked},
+		{name: "current runner naming no stream", runner: current, stream: "relayconn_person:9"},
+		{name: "superseded runner is refused a live stream", runner: superseded, stream: live.id},
+		{name: "superseded runner is refused a detached stream", runner: superseded, stream: parked.id},
+		{name: "runner of another workspace", runner: elsewhere, stream: live.id},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			stream, owner := relay.runnerStream(test.runner, test.stream)
+			if stream != test.wantStream || owner != test.wantPerson {
+				t.Fatalf("runnerStream = (%v, %v), want (%v, %v)", stream, owner, test.wantStream, test.wantPerson)
+			}
+		})
+	}
+}
+
+// newHostedWorkspaceFixture is the hosted security fixture with workspaces and
+// the terminal turned on, so a hosted member's cookie session can reach the
+// workspace routes.
+func newHostedWorkspaceFixture(t *testing.T) hostedSecurityFixture {
+	t.Helper()
+	provider := newHostedSecurityProvider()
+	service := openTestService(t, Config{
+		DatabasePath:   hostedTestDatabasePath(t),
+		GitHubDisabled: true,
+		Workspace:      &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}},
+		Hosted: &HostedConfig{
+			OrganizationID:       "org_security",
+			WorkOSOrganizationID: "org_provider",
+			BootstrapSubject:     "user_owner",
+			PublicURL:            "http://127.0.0.1:7777",
+			Provider:             provider,
+		},
+	})
+	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
+	raw, err := json.Marshal(states)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := tracker.ProjectID("prj_security")
+	now := formatHubTime(time.Now())
+	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,'workspace-project','native',?,?,0)", project, service.config.Hosted.OrganizationID, string(raw), now); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range states {
+		if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
+}
+
+// A relay ticket is a read: the relay upgrade checks project read, and the
+// surfaces that write are refused per frame. So a read-only member and a
+// viewer can mint one and still cannot commit, push or open a terminal.
+func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
+	t.Parallel()
+	f := newHostedWorkspaceFixture(t)
+	writer := f.user(t, "writer", "member", "writer@example.test", "write", "")
+	issue := f.seedIssue(t, 1)
+	response := f.request(t, writer, http.MethodPost, f.base+"/workspaces", map[string]any{
+		"idempotency_key": newNativeID("wsk"), "work_item_id": string(issue),
+	})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var session workspacesession.Session
+	decodeHubResponse(t, response, &session)
+	record, err := readWorkspaceByID(t.Context(), f.service.database.db, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Capabilities = &workspacesession.Capabilities{Files: true, Diff: true, Terminal: true, Git: true}
+	tests := []struct {
+		name         string
+		role         string
+		grant        string
+		wantMint     int
+		wantWriteRef string
+	}{
+		{name: "viewer with read", role: "viewer", grant: "read", wantMint: http.StatusCreated, wantWriteRef: workspacesession.CodeForbidden},
+		{name: "member with read", role: "member", grant: "read", wantMint: http.StatusCreated, wantWriteRef: workspacesession.CodeForbidden},
+		{name: "member with write", role: "member", grant: "write", wantMint: http.StatusCreated},
+		{name: "member with no grant", role: "member", wantMint: http.StatusNotFound, wantWriteRef: workspacesession.CodeForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			name := strings.ReplaceAll(test.name, " ", "-")
+			user := f.user(t, name, test.role, name+"@example.test", test.grant, "")
+			minted := f.request(t, user, http.MethodPost, f.base+"/workspaces/"+session.ID+"/relay-tickets", nil)
+			if minted.Code != test.wantMint {
+				t.Fatalf("mint status = %d, want %d: %s", minted.Code, test.wantMint, minted.Body.String())
+			}
+			connection := &relayConnection{
+				id: "relayconn_" + name, workspaceID: session.ID, subject: user.identity.Subject,
+				sessionHash: "session_hash_" + name, hostedRole: test.role,
+			}
+			if code := f.service.workspaces.refuseGitWrite(t.Context(), record, connection, gitFrame(workspacesession.TypeGitCommit, "commit")); code != test.wantWriteRef {
+				t.Fatalf("git commit refusal = %q, want %q", code, test.wantWriteRef)
+			}
+			if code := f.service.workspaces.refuseGitWrite(t.Context(), record, connection, gitFrame(workspacesession.TypeGitStatus, "")); code != "" {
+				t.Fatalf("git status refusal = %q, want none", code)
+			}
+			if code := f.service.workspaces.refuseTerminal(t.Context(), record, connection, terminalOpenFrame()); code != workspacesession.CodeForbidden {
+				t.Fatalf("terminal refusal = %q, want forbidden (no runner grant)", code)
+			}
+		})
+	}
+}

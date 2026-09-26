@@ -140,9 +140,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"conversation_attachments",
 		"conversation_attachment_blobs",
 		"message_references",
-		// Workspace sessions, the relay and the typed project event stream
-		// (decisions sections 18.1, 18.2 and 12).
-		"project_events",
+		// Workspace sessions and the relay (decisions sections 18.1 and 18.2).
 		"workspace_sessions",
 		"workspace_items",
 		"workspace_occupancy",
