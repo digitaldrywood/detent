@@ -18,6 +18,7 @@ type CustomerRequest struct {
 type CustomerProvider interface {
 	EnsureCustomer(context.Context, CustomerRequest) (string, error)
 	CustomerOrganization(context.Context, string) (string, error)
+	ChargeCustomer(context.Context, string) (string, error)
 }
 
 type stripeCustomer struct {
@@ -87,4 +88,22 @@ func (s *stripeProvider) CustomerOrganization(ctx context.Context, id string) (s
 		return "", errors.New("stripe customer is not a Detent organization customer in this mode")
 	}
 	return organization, nil
+}
+
+func (s *stripeProvider) ChargeCustomer(ctx context.Context, id string) (string, error) {
+	if !validID(id, "ch_") {
+		return "", errors.New("stripe charge ID is invalid")
+	}
+	var charge struct {
+		ID       string `json:"id"`
+		Customer string `json:"customer"`
+		Livemode *bool  `json:"livemode"`
+	}
+	if err := s.request(ctx, http.MethodGet, "charges/"+id, "", nil, &charge); err != nil {
+		return "", err
+	}
+	if charge.ID != id || !s.mode(charge.Livemode) || !validID(charge.Customer, "cus_") {
+		return "", errors.New("stripe charge has no customer in this mode")
+	}
+	return charge.Customer, nil
 }

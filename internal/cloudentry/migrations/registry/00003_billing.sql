@@ -14,6 +14,7 @@ CREATE TABLE billing_events (
   mode TEXT NOT NULL CHECK (mode IN ('test', 'live')),
   event_type TEXT NOT NULL,
   customer_id TEXT NOT NULL,
+  charge_id TEXT NOT NULL DEFAULT '',
   organization_id TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'quarantined', 'ignored')),
   attempts INTEGER NOT NULL DEFAULT 0,

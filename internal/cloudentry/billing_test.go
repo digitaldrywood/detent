@@ -55,6 +55,10 @@ func (f *fakeBilling) EnsureCustomer(_ context.Context, request billing.Customer
 	return customer, nil
 }
 
+func (f *fakeBilling) ChargeCustomer(_ context.Context, charge string) (string, error) {
+	return "cus_" + strings.TrimPrefix(charge, "ch_"), nil
+}
+
 func (f *fakeBilling) CustomerOrganization(_ context.Context, customer string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -142,6 +146,10 @@ func TestSharedBillingJourney(t *testing.T) {
 	}
 	if code := post("test", body, signature); code != http.StatusOK {
 		t.Fatalf("duplicate event = %d", code)
+	}
+	refund, refundSignature := signedEvent(`{"id":"evt_refund","type":"charge.refunded","livemode":false,"data":{"object":{"id":"re_1","object":"refund","charge":"ch_` + strings.TrimPrefix(id, "org_") + `"}}}`)
+	if code := post("test", refund, refundSignature); code != http.StatusOK || status("evt_refund") != "delivered" {
+		t.Fatalf("refund routed through its charge = %d %q", code, status("evt_refund"))
 	}
 	body, signature = event("evt_unknown", "false", "cus_unknown")
 	if post("test", body, signature); status("evt_unknown") != "quarantined" {

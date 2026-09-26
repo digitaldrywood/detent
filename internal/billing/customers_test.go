@@ -49,6 +49,8 @@ func newCustomerProvider(t *testing.T, mode string, f *customerFixture) Customer
 			f.keys = append(f.keys, r.Header.Get("Idempotency-Key"))
 			f.metadata = append(f.metadata, r.PostForm.Get("metadata[detent_organization_id]"))
 			fmt.Fprint(w, strings.ReplaceAll(f.created, "LIVE", live))
+		case r.URL.Path == "/v1/charges/ch_a":
+			fmt.Fprint(w, strings.ReplaceAll(`{"id":"ch_a","customer":"cus_a","livemode":LIVE}`, "LIVE", live))
 		case r.URL.Path == "/v1/customers/cus_a":
 			fmt.Fprint(w, strings.ReplaceAll(`{"id":"cus_a","livemode":LIVE,"metadata":{"detent_organization_id":"org_a"}}`, "LIVE", live))
 		default:
@@ -169,6 +171,7 @@ func TestVerifyModeEvent(t *testing.T) {
 		{"live event on live endpoint", `{"id":"evt_3","type":"invoice.paid","livemode":true,"data":{"object":{"id":"in_1","object":"invoice","customer":"cus_a"}}}`, true, "cus_a", true},
 		{"test event on live endpoint", `{"id":"evt_4","type":"invoice.paid","livemode":false,"data":{"object":{"customer":"cus_a"}}}`, true, "", false},
 		{"customer object", `{"id":"evt_5","type":"customer.updated","livemode":false,"data":{"object":{"id":"cus_z","object":"customer"}}}`, false, "cus_z", true},
+		{"refund charge", `{"id":"evt_7","type":"charge.refunded","livemode":false,"data":{"object":{"id":"re_1","object":"refund","charge":"ch_1"}}}`, false, "", true},
 		{"expanded customer ignored", `{"id":"evt_6","type":"invoice.paid","livemode":false,"data":{"object":{"customer":{"id":"cus_a"}}}}`, false, "", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -177,6 +180,16 @@ func TestVerifyModeEvent(t *testing.T) {
 				t.Fatalf("event = %+v, %v", event, err)
 			}
 		})
+	}
+}
+
+func TestChargeCustomer(t *testing.T) {
+	t.Parallel()
+	if got, err := newCustomerProvider(t, "test", &customerFixture{}).ChargeCustomer(t.Context(), "ch_a"); err != nil || got != "cus_a" {
+		t.Fatalf("ChargeCustomer = %q, %v", got, err)
+	}
+	if _, err := newCustomerProvider(t, "live", &customerFixture{}).ChargeCustomer(t.Context(), "ch_a"); err == nil {
+		t.Fatal("test charge accepted in live mode")
 	}
 }
 

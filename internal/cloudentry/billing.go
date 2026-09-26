@@ -67,12 +67,12 @@ func (s *Service) stripeWebhook(c echo.Context) error {
 		return c.NoContent(http.StatusBadRequest)
 	}
 	status := "pending"
-	if !event.Relevant() || event.Customer == "" {
+	if !event.Relevant() || event.Customer == "" && event.Charge == "" {
 		status = "ignored"
 	}
 	now := formatTime(s.config.now())
-	inserted, err := s.registry.store.db.ExecContext(c.Request().Context(), "INSERT INTO billing_events(event_id,mode,event_type,customer_id,status,received_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
-		event.ID, config.Mode, event.Type, event.Customer, status, now, now)
+	inserted, err := s.registry.store.db.ExecContext(c.Request().Context(), "INSERT INTO billing_events(event_id,mode,event_type,customer_id,charge_id,status,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
+		event.ID, config.Mode, event.Type, event.Customer, event.Charge, status, now, now)
 	if err != nil {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}
@@ -118,13 +118,23 @@ var errQuarantine = errors.New("billing event cannot be routed to a verified org
 func (s *Service) deliverBillingEvent(parent context.Context, id string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
 	defer cancel()
-	var eventType, customer string
+	var eventType, customer, charge string
 	var attempts int
-	if err := s.registry.store.db.QueryRowContext(ctx, "SELECT event_type,customer_id,attempts FROM billing_events WHERE event_id = ? AND status = 'pending'", id).Scan(&eventType, &customer, &attempts); err != nil {
+	if err := s.registry.store.db.QueryRowContext(ctx, "SELECT event_type,customer_id,charge_id,attempts FROM billing_events WHERE event_id = ? AND status = 'pending'", id).Scan(&eventType, &customer, &charge, &attempts); err != nil {
 		return
 	}
 	status, organizationID := "pending", ""
-	organization, err := s.billingOrganization(ctx, customer)
+	var organization Organization
+	var err error
+	if customer == "" {
+		customer, err = s.config.Billing.Provider.ChargeCustomer(ctx, charge)
+		if err == nil {
+			_, err = s.registry.store.db.ExecContext(ctx, "UPDATE billing_events SET customer_id = ? WHERE event_id = ?", customer, id)
+		}
+	}
+	if err == nil {
+		organization, err = s.billingOrganization(ctx, customer)
+	}
 	switch {
 	case errors.Is(err, errQuarantine):
 		status = "quarantined"

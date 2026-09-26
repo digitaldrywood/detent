@@ -16,11 +16,13 @@ type Event struct {
 	Type     string
 	Livemode *bool
 	Customer string `json:"-"`
+	Charge   string `json:"-"`
 	Data     struct {
 		Object struct {
 			ID       string          `json:"id"`
 			Object   string          `json:"object"`
 			Customer json.RawMessage `json:"customer"`
+			Charge   json.RawMessage `json:"charge"`
 		} `json:"object"`
 	} `json:"data"`
 }
@@ -67,6 +69,12 @@ func VerifyModeEvent(body []byte, signature string, secret []byte, now time.Time
 		event.Customer = customer
 	} else if event.Data.Object.Object == "customer" && validID(event.Data.Object.ID, "cus_") {
 		event.Customer = event.Data.Object.ID
+	}
+	var charge string
+	if json.Unmarshal(event.Data.Object.Charge, &charge) == nil && validID(charge, "ch_") {
+		event.Charge = charge
+	} else if event.Data.Object.Object == "charge" && validID(event.Data.Object.ID, "ch_") {
+		event.Charge = event.Data.Object.ID
 	}
 	return event, nil
 }

@@ -39,6 +39,10 @@ func (p *hostedCustomerProvider) EnsureCustomer(_ context.Context, request billi
 	return "cus_fixture", nil
 }
 
+func (p *hostedCustomerProvider) ChargeCustomer(context.Context, string) (string, error) {
+	return "cus_fixture", nil
+}
+
 func (p *hostedCustomerProvider) CustomerOrganization(context.Context, string) (string, error) {
 	return "org_browser_preview", nil
 }
