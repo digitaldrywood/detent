@@ -166,7 +166,7 @@ func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 		t.Fatal(err)
 	}
 	p.service = service
-	var handler http.Handler = service.Handler()
+	handler := service.Handler()
 	p.handler.handler.Store(&handler)
 	t.Cleanup(func() { _ = service.Close() })
 }
@@ -409,6 +409,25 @@ func (s pilotStream) next(timeout time.Duration) (string, bool, error) {
 	}
 }
 
+func pumpEvents(response *http.Response, events chan<- string, done chan<- struct{}) {
+	defer close(done)
+	defer close(events)
+	defer response.Body.Close()
+	reader := bufio.NewReader(response.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if strings.HasPrefix(line, "data:") {
+			select {
+			case events <- strings.TrimSpace(line):
+			default:
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func (b *pilotBrowser) stream(t *testing.T, path string) pilotStream {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -418,33 +437,16 @@ func (b *pilotBrowser) stream(t *testing.T, path string) pilotStream {
 	}
 	client := *b.client
 	client.Timeout = 0
-	response, err := client.Do(request)
+	response, err := client.Do(request) //nolint:bodyclose // pumpEvents closes the streamed body.
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
 	stream := pilotStream{status: response.StatusCode, contentType: response.Header.Get("Content-Type"), events: make(chan string, 64)}
 	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer close(stream.events)
-		reader := bufio.NewReader(response.Body)
-		for {
-			line, err := reader.ReadString('\n')
-			if strings.HasPrefix(line, "data:") {
-				select {
-				case stream.events <- strings.TrimSpace(line):
-				default:
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+	go pumpEvents(response, stream.events, done)
 	t.Cleanup(func() {
 		cancel()
-		_ = response.Body.Close()
 		<-done
 	})
 	if response.StatusCode != http.StatusOK {
