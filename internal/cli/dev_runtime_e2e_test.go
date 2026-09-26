@@ -64,6 +64,92 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	}
 }
 
+func TestStartIsolatedRuntimePublishesBannerBeforeSnapshotLoad(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		demo string
+	}{
+		{name: "fixture runtime"},
+		{name: "screenshots demo", demo: devruntime.DemoScreenshots},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: tt.demo})
+			if err != nil {
+				t.Fatalf("devruntime.Build() error = %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			output := &lockedBuffer{}
+			store := &bannerObservingBoardSnapshotStore{
+				output: output, observed: make(chan string, 1), releaseLoad: make(chan struct{}),
+			}
+			done := make(chan error, 1)
+			runtimeDone := make(chan struct{})
+			go func() {
+				done <- startRunningWithDependencies(ctx,
+					devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output),
+					startRunningDependencies{boardSnapshotStore: store})
+				close(runtimeDone)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				store.release()
+				select {
+				case <-runtimeDone:
+				case <-time.After(10 * time.Second):
+					t.Error("timed out waiting for isolated runtime cleanup")
+				}
+			})
+
+			var bannerAtLoad string
+			select {
+			case bannerAtLoad = <-store.observed:
+			case err := <-done:
+				t.Fatalf("isolated runtime stopped before snapshot load: %v", err)
+			case <-time.After(bootDashboardURLTimeout):
+				t.Fatal("timed out waiting for snapshot load")
+			}
+
+			url := waitForIsolatedRuntimeURL(t, output, done)
+			if !strings.Contains(bannerAtLoad, "Dashboard: "+url) || !strings.Contains(bannerAtLoad, "Mode: isolated dev runtime") {
+				t.Fatalf("snapshot load began before bound-address banner:\n%s", bannerAtLoad)
+			}
+			store.release()
+			waitForDashboard(t, url+"/health", done)
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("startRunningWithDependencies() error = %v, want %v", err, context.Canceled)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("timed out waiting for isolated runtime to stop")
+			}
+		})
+	}
+}
+
+type bannerObservingBoardSnapshotStore struct {
+	output      *lockedBuffer
+	observed    chan string
+	releaseLoad chan struct{}
+	releaseOnce sync.Once
+}
+
+func (s *bannerObservingBoardSnapshotStore) Load(context.Context) (telemetry.Snapshot, bool, error) {
+	s.observed <- s.output.String()
+	<-s.releaseLoad
+	return telemetry.Snapshot{}, false, nil
+}
+
+func (*bannerObservingBoardSnapshotStore) Save(context.Context, telemetry.Snapshot) error {
+	return nil
+}
+
+func (s *bannerObservingBoardSnapshotStore) release() {
+	s.releaseOnce.Do(func() { close(s.releaseLoad) })
+}
+
 func TestDevRuntimeAuthConfig(t *testing.T) {
 	t.Parallel()
 
