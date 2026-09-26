@@ -230,22 +230,11 @@ func (s *Service) Open(
 	// #nosec G204 -- the shell is the project's configured one, and section
 	// 18.3 is explicit that what bounds a terminal is who may open it rather
 	// than what it may run.
-	cmd := exec.CommandContext(ctx, s.shell, interactiveArgs(s.shell)...)
+	// The command is not tied to ctx: cancellation is handled below through
+	// Close, so the whole process group gets the hangup and the delayed kill.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), s.shell, interactiveArgs(s.shell)...)
 	cmd.Dir = directory
 	cmd.Env = terminalEnvironment(os.Environ(), s.worktree, options.Cols, options.Rows)
-	// A cancelled context ends the shell the way Close does rather than the way
-	// exec would on its own.
-	//
-	// exec's default cancellation is an immediate SIGKILL to the process alone,
-	// and both halves of that are wrong here. SIGHUP first is what a real
-	// terminal sends when its window closes, so a shell receiving it runs its
-	// own exit path; and the signal goes to the group rather than the leader,
-	// because a build or a server the person started must not outlive the
-	// reason it was started. WaitDelay is what makes the promise
-	// unconditional: exec escalates to a kill if the group has not gone by
-	// then, which is the same grace the explicit teardown gives.
-	cmd.Cancel = func() error { return hangup(cmd) }
-	cmd.WaitDelay = KillGrace
 
 	file, err := startPTY(cmd, options.Cols, options.Rows)
 	if err != nil {
@@ -267,6 +256,17 @@ func (s *Service) Open(
 
 	go terminal.stream(emit)
 	go terminal.wait()
+	// A cancelled context ends the terminal exactly the way Close does:
+	// SIGHUP to the shell's process group, then SIGKILL to the whole group
+	// after KillGrace. exec's own cancellation would signal the leader alone,
+	// and a child that ignored the hangup would outlive the session.
+	go func() {
+		select {
+		case <-ctx.Done():
+			terminal.Close()
+		case <-terminal.done:
+		}
+	}()
 	return terminal, nil
 }
 

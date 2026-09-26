@@ -135,11 +135,11 @@ func (s *Service) Path() string { return s.path }
 // classifying all of it before answering, which is unbounded work for a
 // node_modules-sized tree.
 func (s *Service) List(ctx context.Context, request workspacesession.FilesRequest) (listed workspacesession.FilesListed, resultErr error) {
-	relative, err := s.resolve(request.Path)
+	relative, resolved, err := s.resolve(request.Path)
 	if err != nil {
 		return workspacesession.FilesListed{}, err
 	}
-	handle, info, err := s.openDirectory(relative)
+	handle, info, err := s.openDirectory(relative, resolved)
 	if err != nil {
 		return workspacesession.FilesListed{}, err
 	}
@@ -255,12 +255,12 @@ func (s *Service) describe(parent string, entry fs.DirEntry) (workspacesession.F
 }
 
 // Stat answers a stat frame.
-func (s *Service) Stat(_ context.Context, request workspacesession.FilesRequest) (workspacesession.FilesStat, error) {
-	relative, err := s.resolve(request.Path)
+func (s *Service) Stat(ctx context.Context, request workspacesession.FilesRequest) (workspacesession.FilesStat, error) {
+	relative, resolved, err := s.resolve(request.Path)
 	if err != nil {
 		return workspacesession.FilesStat{}, err
 	}
-	info, err := s.lstat(relative)
+	info, err := s.lstat(resolved)
 	if err != nil {
 		return workspacesession.FilesStat{}, err
 	}
@@ -279,6 +279,9 @@ func (s *Service) Stat(_ context.Context, request workspacesession.FilesRequest)
 	default:
 		return workspacesession.FilesStat{}, refuse(workspacesession.CodeForbidden, errors.New("not a regular file or directory"))
 	}
+	if relative != "" {
+		result.Ignored = s.ignoredPaths(ctx, []string{relative})[relative]
+	}
 	return result, nil
 }
 
@@ -288,7 +291,7 @@ func (s *Service) Stat(_ context.Context, request workspacesession.FilesRequest)
 // the final component, then a proof that what was opened is a regular file on
 // the worktree's own filesystem.
 func (s *Service) Read(_ context.Context, request workspacesession.FilesRequest) (content workspacesession.FilesContent, resultErr error) {
-	relative, err := s.resolve(request.Path)
+	relative, resolved, err := s.resolve(request.Path)
 	if err != nil {
 		return workspacesession.FilesContent{}, err
 	}
@@ -302,19 +305,9 @@ func (s *Service) Read(_ context.Context, request workspacesession.FilesRequest)
 		// see what is in it.
 		return workspacesession.FilesContent{}, refuse(workspacesession.CodeDenied, errors.New(relative))
 	}
-	info, err := s.lstat(relative)
+	handle, err := s.openRegular(resolved)
 	if err != nil {
 		return workspacesession.FilesContent{}, err
-	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return workspacesession.FilesContent{}, refuse(workspacesession.CodeForbidden, errors.New("symbolic links are not read"))
-	}
-	if !info.Mode().IsRegular() {
-		return workspacesession.FilesContent{}, refuse(workspacesession.CodeForbidden, errors.New("not a regular file"))
-	}
-	handle, err := s.root.OpenFile(relative, os.O_RDONLY|openNoFollow, 0)
-	if err != nil {
-		return workspacesession.FilesContent{}, translateOpenError(err)
 	}
 	defer func() { resultErr = errors.Join(resultErr, handle.Close()) }()
 	opened, err := handle.Stat()
@@ -375,19 +368,91 @@ func (s *Service) Read(_ context.Context, request workspacesession.FilesRequest)
 // denied path under an alias ("alias/config" for ".git/config") that os.Root
 // follows, so every directory component is resolved and the resolved path is
 // held to the denylist as well.
-func (s *Service) resolve(value string) (string, error) {
-	relative, err := workspacesession.NormalizePath(value)
+//
+// It returns the requested spelling, which is what a reply names, and the
+// resolved one, which is what the denylist was checked against and the only
+// path that is ever opened.
+func (s *Service) resolve(value string) (relative, resolved string, err error) {
+	relative, err = workspacesession.NormalizePath(value)
 	if err != nil {
-		return "", refuse(workspacesession.CodeNotFound, err)
+		return "", "", refuse(workspacesession.CodeNotFound, err)
 	}
-	resolved, err := s.resolveDirectories(relative)
+	resolved, err = s.resolveDirectories(relative)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if resolved != relative && s.deny.Denied(resolved) {
-		return "", refuse(workspacesession.CodeDenied, errors.New(relative))
+		return "", "", refuse(workspacesession.CodeDenied, errors.New(relative))
 	}
-	return relative, nil
+	return relative, resolved, nil
+}
+
+// walk opens resolved's parent directory one component at a time and calls fn
+// with it and the final name.
+//
+// Each component is lstat'd, opened as a root of its own, and proved to be the
+// same directory the lstat saw. A component swapped for a symlink after
+// resolve checked the path is therefore refused rather than followed, so what
+// is opened is always the path the denylist decided on.
+func (s *Service) walk(resolved string, fn func(dir *os.Root, name string) error) (resultErr error) {
+	if resolved == "" {
+		return fn(s.root, ".")
+	}
+	parts := strings.Split(resolved, "/")
+	dir := s.root
+	var opened []*os.Root
+	defer func() {
+		for _, child := range opened {
+			resultErr = errors.Join(resultErr, child.Close())
+		}
+	}()
+	for _, part := range parts[:len(parts)-1] {
+		info, err := dir.Lstat(part)
+		if err != nil {
+			return translateOpenError(err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+			return refuse(workspacesession.CodeForbidden, errors.New("a directory in the path changed while it was opened"))
+		}
+		child, err := dir.OpenRoot(part)
+		if err != nil {
+			return translateOpenError(err)
+		}
+		opened = append(opened, child)
+		childInfo, err := child.Stat(".")
+		if err != nil {
+			return translateOpenError(err)
+		}
+		if !os.SameFile(info, childInfo) {
+			return refuse(workspacesession.CodeForbidden, errors.New("a directory in the path changed while it was opened"))
+		}
+		dir = child
+	}
+	return fn(dir, parts[len(parts)-1])
+}
+
+// openRegular opens a regular file at resolved without following a symlink
+// anywhere along the path.
+func (s *Service) openRegular(resolved string) (*os.File, error) {
+	var handle *os.File
+	err := s.walk(resolved, func(dir *os.Root, name string) error {
+		info, err := dir.Lstat(name)
+		if err != nil {
+			return translateOpenError(err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return refuse(workspacesession.CodeForbidden, errors.New("symbolic links are not read"))
+		}
+		if !info.Mode().IsRegular() {
+			return refuse(workspacesession.CodeForbidden, errors.New("not a regular file"))
+		}
+		handle, err = dir.OpenFile(name, os.O_RDONLY|openNoFollow, 0)
+		if err != nil {
+			return translateOpenError(err)
+		}
+		return nil
+	})
+	return handle, err
 }
 
 // maxSymlinkHops bounds symlink resolution so a cycle is refused rather than
@@ -466,41 +531,45 @@ func (s *Service) worktreeRelativeTarget(target string) (string, error) {
 	return "/" + filepath.ToSlash(inside), nil
 }
 
-// lstat stats a path without following a final symlink.
-func (s *Service) lstat(relative string) (fs.FileInfo, error) {
-	name := relative
-	if name == "" {
-		name = "."
-	}
-	info, err := s.root.Lstat(name)
-	if err != nil {
-		return nil, translateOpenError(err)
-	}
-	return info, nil
+// lstat stats a resolved path without following a symlink anywhere along it.
+func (s *Service) lstat(resolved string) (fs.FileInfo, error) {
+	var info fs.FileInfo
+	err := s.walk(resolved, func(dir *os.Root, name string) error {
+		var err error
+		info, err = dir.Lstat(name)
+		if err != nil {
+			return translateOpenError(err)
+		}
+		return nil
+	})
+	return info, err
 }
 
 // openDirectory opens a directory for listing.
-func (s *Service) openDirectory(relative string) (*os.File, fs.FileInfo, error) {
+func (s *Service) openDirectory(relative, resolved string) (*os.File, fs.FileInfo, error) {
 	if s.deny.Denied(relative) {
 		return nil, nil, refuse(workspacesession.CodeDenied, errors.New(relative))
 	}
-	info, err := s.lstat(relative)
+	var handle *os.File
+	err := s.walk(resolved, func(dir *os.Root, name string) error {
+		info, err := dir.Lstat(name)
+		if err != nil {
+			return translateOpenError(err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return refuse(workspacesession.CodeForbidden, errors.New("symbolic links are not followed"))
+		}
+		if !info.IsDir() {
+			return refuse(workspacesession.CodeForbidden, errors.New("not a directory"))
+		}
+		handle, err = dir.OpenFile(name, os.O_RDONLY|openNoFollow, 0)
+		if err != nil {
+			return translateOpenError(err)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, nil, err
-	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return nil, nil, refuse(workspacesession.CodeForbidden, errors.New("symbolic links are not followed"))
-	}
-	if !info.IsDir() {
-		return nil, nil, refuse(workspacesession.CodeForbidden, errors.New("not a directory"))
-	}
-	name := relative
-	if name == "" {
-		name = "."
-	}
-	handle, err := s.root.OpenFile(name, os.O_RDONLY|openNoFollow, 0)
-	if err != nil {
-		return nil, nil, translateOpenError(err)
 	}
 	opened, err := handle.Stat()
 	if err != nil {

@@ -3,6 +3,7 @@
 package workspaceterminal
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,10 +22,13 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 	tests := []struct {
 		name          string
 		child         bool
+		cancel        bool
 		wantFullGrace bool
 	}{
-		{name: "a child ignoring SIGHUP outlives the shell", child: true, wantFullGrace: true},
-		{name: "a shell with no children", child: false},
+		{name: "close with a child ignoring SIGHUP", child: true, wantFullGrace: true},
+		{name: "context cancellation with a child ignoring SIGHUP", child: true, cancel: true, wantFullGrace: true},
+		{name: "close with no children", child: false},
+		{name: "context cancellation with no children", child: false, cancel: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -32,7 +36,9 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 			worktree := t.TempDir()
 			service := newTestService(t, worktree)
 			sink := &collector{}
-			terminal, err := service.Open(t.Context(), workspacesession.TerminalOpen{Cols: 80, Rows: 24}, sink.emit)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			terminal, err := service.Open(ctx, workspacesession.TerminalOpen{Cols: 80, Rows: 24}, sink.emit)
 			if err != nil {
 				t.Fatalf("Open() error = %v", err)
 			}
@@ -61,7 +67,21 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 			}
 
 			started := time.Now()
-			terminal.Close()
+			if test.cancel {
+				cancel()
+				select {
+				case <-terminal.Done():
+				case <-time.After(KillGrace + 20*time.Second):
+					t.Fatal("a cancelled context did not end the shell")
+				}
+				if childPID > 0 {
+					waitFor(t, "the child to be killed", func() bool {
+						return errors.Is(syscall.Kill(childPID, 0), syscall.ESRCH)
+					})
+				}
+			} else {
+				terminal.Close()
+			}
 			elapsed := time.Since(started)
 			if test.wantFullGrace && elapsed < KillGrace {
 				t.Fatalf("Close() returned after %v, before the grace ran out on a surviving child", elapsed)

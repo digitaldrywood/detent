@@ -134,8 +134,9 @@ func NormalizePath(value string) (string, error) {
 	if strings.ContainsRune(value, 0) {
 		return "", fmt.Errorf("%w: path contains a NUL byte", ErrInvalidPath)
 	}
-	trimmed := strings.TrimSpace(value)
-	trimmed = strings.TrimPrefix(trimmed, "./")
+	// Whitespace is part of a file name, so it is kept byte for byte: a
+	// listed " report " must be readable under the same name.
+	trimmed := strings.TrimPrefix(value, "./")
 	if trimmed == "" || trimmed == "." || trimmed == "/" {
 		return "", nil
 	}
