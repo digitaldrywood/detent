@@ -669,7 +669,7 @@ type result struct {
 func (s *Service) exec(ctx context.Context, timeout time.Duration, extraEnv []string, args ...string) result {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(runCtx, "git", args...)
+	command := exec.CommandContext(runCtx, "git", args...) // #nosec G204 -- git runs without a shell and every argument is a literal built by this package.
 	// The worktree is the working directory rather than a -C argument, for the
 	// same reason the files service does it: every argument then being a
 	// literal is what makes it plain, here and to a scanner, that nothing a

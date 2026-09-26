@@ -23,5 +23,5 @@ func fileDevice(info fs.FileInfo) (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return uint64(stat.Dev), true
+	return uint64(stat.Dev), true //nolint:unconvert // Stat_t.Dev is int32 on darwin and uint64 on linux.
 }
