@@ -14,6 +14,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { useAccountBootstrap } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
 import { newKey } from "./idempotency.ts";
+import { withoutBasePath } from "../../runtime/basePath.ts";
 
 /**
  * Which organization the session is being started against. The path wins
@@ -172,7 +173,7 @@ export function SupportRoute(): React.ReactElement {
     <SupportCard
       organization={
         supportOrganization({
-          pathname: globalThis.location?.pathname ?? "",
+          pathname: withoutBasePath(globalThis.location?.pathname ?? ""),
           search: globalThis.location?.search ?? "",
         }) ?? bootstrap?.organization.id ?? null
       }

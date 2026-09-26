@@ -176,6 +176,8 @@ export const AccountBootstrap = Schema.Struct({
   feature: Schema.Struct({ conversation: Schema.Boolean }),
   plan: Schema.NullOr(PlanSummary),
   api_base: Schema.String,
+  base_path: Schema.optional(Schema.String),
+  sign_in_path: Schema.optional(Schema.String),
   /** The build the hub is serving, where it publishes one. The About row. */
   version: Schema.optional(Schema.String),
 });

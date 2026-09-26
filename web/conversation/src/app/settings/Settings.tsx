@@ -55,6 +55,7 @@ import {
   type SettingsSectionId,
 } from "./sections.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
+import { signInPath } from "../../runtime/basePath.ts";
 
 /** The allowance label the plan report's keys become. */
 export function allowanceLabel(name: string): string {
@@ -178,7 +179,7 @@ export function GeneralSettings(): React.ReactElement {
   const api = useAccountApi();
   const signOut = useMutation(async () => {
     await api.logout();
-    globalThis.location?.assign("/login");
+    globalThis.location?.assign(signInPath());
     return null;
   });
 

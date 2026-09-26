@@ -11,6 +11,7 @@ import { ClientContext } from "./client.ts";
 import { makeRouter } from "./router.tsx";
 import { isLoginPath, LoginCard } from "./routes.account.tsx";
 import "./index.css";
+import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
 
 const container = document.getElementById("root");
 if (container === null) throw new Error("The conversation client has no mount point.");
@@ -25,7 +26,7 @@ function Failure({ message }: { message: string }): React.ReactElement {
       role="alert"
     >
       <p>{message}</p>
-      <a className="text-primary underline-offset-4 hover:underline" href="/organization">
+      <a className="text-primary underline-offset-4 hover:underline" href={hubPath("/organization")}>
         Back to Detent
       </a>
     </div>
@@ -47,7 +48,7 @@ void loadBootstrap()
     );
   })
   .catch((cause: unknown) => {
-    const pathname = globalThis.location?.pathname ?? "";
+    const pathname = withoutBasePath(globalThis.location?.pathname ?? "");
     const search = globalThis.location?.search ?? "";
     // `/login` and `/support` are the two paths the hub serves without
     // organization access (decisions.md §12, "Serving"), so a refused

@@ -120,8 +120,15 @@ function thirdPartyLicenses(): Plugin {
 const hubUrl = process.env.DETENT_HUB_URL || "http://127.0.0.1:4100";
 
 export default defineConfig({
-  // The hub serves the bundle from the embedded filesystem under this prefix.
-  base: "/static/app/conversation/",
+  // The bundle loads its chunks, workers and styles relative to its own URL,
+  // so one build serves at the root of an origin and under a tenant base
+  // (`/organizations/ORG`) behind the shared Cloud entry. The shell is the one
+  // file that names the prefix absolutely; the hub rewrites it per base.
+  base: "./",
+  experimental: {
+    renderBuiltUrl: (filename, { hostType }) =>
+      hostType === "html" ? `/static/app/conversation/${filename}` : { relative: true },
+  },
   plugins: [tailwindcss(), mitAttribution(), thirdPartyLicenses()],
   resolve: {
     alias: {

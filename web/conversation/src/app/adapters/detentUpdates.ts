@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 
 import { UpdatesReport } from "../../contracts/account.ts";
 import { initialUpdateCheckState, type UpdateCheckState } from "../lib/detentUpdates.ts";
+import { hubPath } from "../../runtime/basePath.ts";
 
 export const UPDATE_POLL_INTERVAL_MS = 4 * 60 * 1000;
 
@@ -32,7 +33,7 @@ export function readUpdateCheckState(): UpdateCheckState {
  * idle rather than showing an error nobody can act on.
  */
 async function readReport(fetchImpl: typeof globalThis.fetch): Promise<UpdatesReport | null> {
-  const response = await fetchImpl("/app/updates", {
+  const response = await fetchImpl(hubPath("/app/updates"), {
     credentials: "same-origin",
     headers: { Accept: "application/json" },
   });

@@ -15,6 +15,7 @@ import type { ExecutionSurface } from "../lib/execution.ts";
 import type { TimelineCards } from "../adapters/timelineEntries.ts";
 import { DeliveryChip } from "./DeliveryChip.tsx";
 import { RETRY_COPY } from "./Timeline.tsx";
+import { hubPath } from "../../runtime/basePath.ts";
 
 const ATTENTION_TONE: Record<string, string> = {
   waiting_input: "bg-warning",
@@ -149,7 +150,7 @@ function AttentionList({
           <li key={item.work_item_id} className="flex min-w-0 items-center gap-2 text-sm">
             <a
               className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-foreground no-underline hover:underline"
-              href={item.url ?? `/chat/issues/${item.work_item_id}`}
+              href={hubPath(item.url ?? `/chat/issues/${item.work_item_id}`)}
               onClick={(event) => {
                 if (onOpenIssue === undefined) return;
                 if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;

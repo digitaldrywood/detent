@@ -871,6 +871,8 @@ export const Bootstrap = Schema.Struct({
     attachments: Schema.Boolean,
   }),
   api_base: Schema.String,
+  base_path: Schema.optional(Schema.String),
+  sign_in_path: Schema.optional(Schema.String),
   /**
    * The choices the composer's pickers offer (§14). The hub always sends it;
    * it is optional here because the shared contract fixture cannot carry it
