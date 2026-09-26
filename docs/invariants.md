@@ -734,6 +734,8 @@ files, and commits absent from verified live remote heads. Stale tracking refs
 from deleted or force-pushed branches do not establish publication; unavailable
 remotes and unfetched tips retain work until it can be verified. Every running
 worker remains active through finalization, including terminal lane updates.
+Discovery compares canonical workspace paths with ownership records so Git's
+Windows path separators do not cause the same workspace to be swept twice.
 Legacy `preserve` JSON fields no
 longer exempt a workspace; checkpoint journals and filesystem retention remain.
 `TestLocalGitReconcileRechecksPreservation` covers restart, legacy records,
