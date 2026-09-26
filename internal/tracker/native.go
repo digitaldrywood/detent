@@ -190,6 +190,8 @@ func SetPriority(level *int) PriorityPatch {
 // Present reports whether the patch says anything about the priority at all.
 func (p PriorityPatch) Present() bool { return p.present }
 
+func (p PriorityPatch) IsZero() bool { return !p.present }
+
 // Level is the level the patch asks for, or nil where it asks for a clear.
 func (p PriorityPatch) Level() *int {
 	if p.level == nil {
@@ -245,7 +247,7 @@ type UpdateIssue struct {
 	ExpectedRevision Revision      `json:"expected_revision,string"`
 	Title            *string       `json:"title,omitempty"`
 	Body             *string       `json:"body,omitempty"`
-	Priority         PriorityPatch `json:"priority,omitempty"`
+	Priority         PriorityPatch `json:"priority,omitzero"`
 	Labels           *[]string     `json:"labels,omitempty"`
 	Assignees        *[]string     `json:"assignees,omitempty"`
 }

@@ -121,3 +121,45 @@ func TestPriorityPatchMarshals(t *testing.T) {
 }
 
 func level(value int) *int { return &value }
+
+func TestUpdateIssueRoundTripsPriorityIntent(t *testing.T) {
+	t.Parallel()
+	title := "renamed"
+	for _, test := range []struct {
+		name        string
+		request     UpdateIssue
+		wantMember  bool
+		wantPresent bool
+		wantLevel   *int
+	}{
+		{name: "an unrelated edit leaves the priority", request: UpdateIssue{ExpectedRevision: 1, Title: &title}},
+		{name: "a clear", request: UpdateIssue{ExpectedRevision: 1, Priority: ClearPriority()}, wantMember: true, wantPresent: true},
+		{name: "a level", request: UpdateIssue{ExpectedRevision: 1, Priority: SetPriority(level(3))}, wantMember: true, wantPresent: true, wantLevel: level(3)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			encoded, err := json.Marshal(test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var members map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &members); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := members["priority"]; ok != test.wantMember {
+				t.Fatalf("encoded %s: priority member present = %v, want %v", encoded, ok, test.wantMember)
+			}
+			var decoded UpdateIssue
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Priority.Present() != test.wantPresent {
+				t.Fatalf("Present() = %v, want %v", decoded.Priority.Present(), test.wantPresent)
+			}
+			got := decoded.Priority.Level()
+			if (got == nil) != (test.wantLevel == nil) || (got != nil && *got != *test.wantLevel) {
+				t.Fatalf("Level() = %v, want %v", got, test.wantLevel)
+			}
+		})
+	}
+}
