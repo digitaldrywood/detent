@@ -120,37 +120,39 @@ func (s *Service) hostedFleet(c echo.Context) error {
 
 func (s *Service) hostedFleetRunners(ctx context.Context, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? ORDER BY display_name, id", organization)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, '') FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
+WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	ids := []string{}
+	type listed struct{ id, version string }
+	runners := []listed{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var entry listed
+		if err := rows.Scan(&entry.id, &entry.version); err != nil {
 			return nil, fmt.Errorf("scan runner: %w", err)
 		}
-		ids = append(ids, id)
+		runners = append(runners, entry)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
-	fleet := make([]hostedFleetRunner, 0, len(ids))
-	for _, id := range ids {
-		runner, err := readRunner(ctx, s.database.db, organization, id, s.config.now())
+	fleet := make([]hostedFleetRunner, 0, len(runners))
+	for _, entry := range runners {
+		runner, err := readRunner(ctx, s.database.db, organization, entry.id, s.config.now())
 		if err != nil {
-			return nil, fmt.Errorf("read runner %s: %w", id, err)
+			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
-		fleet = append(fleet, hostedFleetRunnerView(runner, visible))
+		fleet = append(fleet, hostedFleetRunnerView(runner, entry.version, visible))
 	}
 	return fleet, nil
 }
 
-func hostedFleetRunnerView(runner runnerauth.Runner, visible map[tracker.ProjectID]bool) hostedFleetRunner {
+func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool) hostedFleetRunner {
 	view := hostedFleetRunner{
 		ID: runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Health,
-		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: runner.Version, HostCapacity: runner.HostCapacity,
+		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
 	}

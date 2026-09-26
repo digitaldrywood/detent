@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -419,7 +418,8 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 		{name: "reporting bearer", path: "/api/cloud/metadata", bearer: testHubAdminToken, want: http.StatusOK},
 		{name: "customer report", path: "/api/cloud/metadata", user: customer, want: http.StatusForbidden},
 		{name: "staff native content", path: f.base + "/work-items", user: staff, want: http.StatusForbidden},
-		{name: "staff project page", path: "/projects/" + string(f.project), user: staff, want: http.StatusForbidden},
+		{name: "staff organization members", path: "/api/v2/organizations/org_security/members", user: staff, want: http.StatusForbidden},
+		{name: "staff fleet", path: "/api/v2/organizations/org_security/fleet", user: staff, want: http.StatusForbidden},
 		{name: "bootstrap native content", path: f.base + "/work-items", bearer: testHubAdminToken, want: http.StatusNotFound},
 		{name: "staff legacy content", path: "/api/v1/work-items", user: staff, want: http.StatusNotFound},
 		{name: "legacy health", path: "/health", bearer: testHubAdminToken, want: http.StatusNotFound},
@@ -683,123 +683,6 @@ func TestHostedSecurityReplacementMembershipRequiresNewGrants(t *testing.T) {
 	}
 }
 
-func TestHostedSecuritySSEAudit(t *testing.T) {
-	t.Parallel()
-	for _, actor := range []string{"", "support@example.test"} {
-		t.Run(actor, func(t *testing.T) {
-			t.Parallel()
-			f := newHostedSecurityFixture(t)
-			f.seedIssue(t, 1)
-			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", actor)
-			server := httptest.NewServer(f.service.Handler())
-			t.Cleanup(server.Close)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/projects/"+string(f.project)+"/events", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-			response, err := server.Client().Do(request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer response.Body.Close()
-			scanner := bufio.NewScanner(response.Body)
-			if response.StatusCode != http.StatusOK || !scanner.Scan() || scanner.Text() != "event: activity" {
-				t.Fatalf("stream status=%d, error=%v", response.StatusCode, scanner.Err())
-			}
-			var actual, effective, organization, project, reason string
-			var count int
-			err = f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,project_id,reason,count(*) FROM hosted_audit WHERE session_id = ? AND route = ? GROUP BY actual_actor,effective_user,organization_id,project_id,reason", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&actual, &effective, &organization, &project, &reason, &count)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantActor := actor
-			if wantActor == "" {
-				wantActor = user.identity.Subject
-			}
-			if actual != wantActor || effective != user.identity.Subject || organization != "org_security" || project != string(f.project) || reason != user.identity.Hosted.SupportReason || count != 1 {
-				t.Fatalf("stream audit actor=%q effective=%q organization=%q project=%q reason=%q count=%d", actual, effective, organization, project, reason, count)
-			}
-			var record string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor || effective_user || organization_id || project_id || reason || event || route FROM hosted_audit WHERE session_id = ?", user.identity.Hosted.SessionID).Scan(&record); err != nil {
-				t.Fatal(err)
-			}
-			for _, forbidden := range []string{user.token, "private-project-sentinel", "private-issue-sentinel", "private-body-sentinel"} {
-				if strings.Contains(record, forbidden) {
-					t.Fatalf("stream audit exposed %q", forbidden)
-				}
-			}
-		})
-	}
-}
-
-func TestHostedSecuritySSERevocation(t *testing.T) {
-	t.Parallel()
-	for _, revocation := range []string{"provider session", "membership", "project grant"} {
-		t.Run(revocation, func(t *testing.T) {
-			t.Parallel()
-			f := newHostedSecurityFixture(t)
-			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
-			server := httptest.NewServer(f.service.Handler())
-			t.Cleanup(server.Close)
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/projects/"+string(f.project)+"/events", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-			response, err := server.Client().Do(request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer response.Body.Close()
-			if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-				t.Fatalf("stream response = %d %s", response.StatusCode, response.Header.Get("Content-Type"))
-			}
-			scanner := bufio.NewScanner(response.Body)
-			if !scanner.Scan() || scanner.Text() != "event: activity" || !scanner.Scan() || scanner.Text() != "data: 0" || !scanner.Scan() || scanner.Text() != "" {
-				t.Fatalf("initial event is invalid: %v", scanner.Err())
-			}
-			switch revocation {
-			case "provider session":
-				if err := f.provider.RevokeSession(t.Context(), user.identity.Hosted.SessionID); err != nil {
-					t.Fatal(err)
-				}
-			case "membership":
-				if err := f.provider.RevokeMembership(t.Context(), "membership_"+user.identity.Subject); err != nil {
-					t.Fatal(err)
-				}
-			case "project grant":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", user.identity.Subject); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if scanner.Scan() {
-				t.Fatalf("revoked stream produced %q", scanner.Text())
-			}
-			if err := scanner.Err(); err != nil {
-				t.Fatalf("stream did not close cleanly: %v", err)
-			}
-		})
-	}
-}
-
-func TestHostedSecuritySSEDeniesUnscopedProject(t *testing.T) {
-	t.Parallel()
-	f := newHostedSecurityFixture(t)
-	user := f.user(t, "viewer", "viewer", "viewer@example.test", "", "")
-	response := f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events", nil)
-	if response.Code != http.StatusForbidden && response.Code != http.StatusNotFound {
-		t.Fatalf("ungranted project stream returned %d", response.Code)
-	}
-	if strings.Contains(response.Body.String(), "event:") {
-		t.Fatal("ungranted project emitted an event")
-	}
-}
-
 func TestHostedSecurityLoginTransactions(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -926,7 +809,7 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 		t.Fatal("support session cookie was not set")
 	}
 	support := hostedSecurityUser{identity: customer.identity, token: sessionCookie.Value}
-	page := f.request(t, support, http.MethodGet, "/projects/"+string(f.project), nil)
+	page := f.request(t, support, http.MethodGet, "/organization", nil)
 	requireNativeStatus(t, page, http.StatusOK)
 	if !strings.Contains(page.Body.String(), "support@example.test") || !strings.Contains(page.Body.String(), "/logout") {
 		t.Fatal("support indicator or exit flow is missing")

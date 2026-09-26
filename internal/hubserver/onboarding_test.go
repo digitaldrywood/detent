@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -161,12 +162,20 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	for range 2 {
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding", request), http.StatusOK)
 	}
-	response := f.page(t, "owner", "/projects/"+first)
+	response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/projects")
 	requireNativeStatus(t, response, http.StatusOK)
-	for _, text := range []string{"Project setup", "existing", "No matching runner", "Missing artifact gateway", "Create your first native issue", "Repository review and merge policy"} {
-		if !strings.Contains(response.Body.String(), text) {
-			t.Errorf("missing %q", text)
-		}
+	var projects []hostedProjectView
+	decodeHubResponse(t, response, &projects)
+	index := slices.IndexFunc(projects, func(project hostedProjectView) bool { return project.ID == first })
+	if index < 0 || projects[index].Onboarding.Ready || len(projects[index].Onboarding.Steps) == 0 {
+		t.Fatalf("project list readiness = %+v", projects)
+	}
+	response = f.page(t, "owner", base+"/onboarding")
+	requireNativeStatus(t, response, http.StatusOK)
+	var setup onboarding.Project
+	decodeHubResponse(t, response, &setup)
+	if setup.Progress.Repository != "existing" || setup.Ready {
+		t.Fatalf("onboarding = %+v", setup)
 	}
 	issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-issue"}, Title: "First native issue", Body: "No GitHub issue required", State: "Todo"}
 	for range 2 {
@@ -254,11 +263,11 @@ func TestHostedOnboardingFirstRun(t *testing.T) {
 	t.Parallel()
 	f := seedOnboardingBrowserJourney(t)
 	for _, tt := range []struct{ project, contains string }{
-		{f.project, "Latest execution: succeeded"},
-		{f.privateProject, "gpu"},
+		{f.project, `"latest_run":"succeeded"`},
+		{f.privateProject, `"gpu"`},
 	} {
 		t.Run(tt.project, func(t *testing.T) {
-			response := f.page(t, "owner", "/projects/"+tt.project)
+			response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/projects/"+tt.project+"/onboarding")
 			requireNativeStatus(t, response, http.StatusOK)
 			if !strings.Contains(response.Body.String(), tt.contains) {
 				t.Fatalf("missing %q", tt.contains)

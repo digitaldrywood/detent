@@ -17,8 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The hosted organization API (decisions section 12). Everything the removed
-// Templ forms did is JSON here. requireAPIScope cannot carry these routes:
+// The hosted organization API (decisions section 12): the JSON the client's
+// organization, member and fleet screens read and write. requireAPIScope cannot carry these routes:
 // in hosted mode it rejects session credentials outside the native project
 // base, so each handler authenticates the hosted session itself. The shared
 // hosted boundary still supplies the CSRF check, the write lock and the
@@ -29,10 +29,11 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)
-	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMember, session)
-	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMember, session)
-	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRole, session)
-	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrant, session)
+	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, session)
+	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, session)
+	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, session)
+	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRoleJSON, session)
+	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, session)
 	e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, session)
 	e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, session)
 }
@@ -43,7 +44,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 func (s *Service) hostedSessionOnly(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
-			return s.hostedError(c, http.StatusForbidden, "This endpoint authenticates a hosted session")
+			return s.hostedJSONError(c, http.StatusForbidden, "This endpoint authenticates a hosted session")
 		}
 		return next(c)
 	}
@@ -143,7 +144,7 @@ func (s *Service) listHostedMembers(c echo.Context) error {
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")
 	}
 	emails, err := s.hostedMemberEmails(ctx)
 	if err != nil {
@@ -269,8 +270,8 @@ func (s *Service) hostedMemberResponse(ctx context.Context, member auth.Membersh
 	return view, nil
 }
 
-// inviteHostedMember answers POST /members/invitations.
-func (s *Service) inviteHostedMember(c echo.Context) error {
+// inviteHostedMemberJSON answers POST /members/invitations.
+func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
 		Email string `json:"email"`
@@ -284,27 +285,28 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	}
 	credential, err := s.hostedAdministrator(c)
 	if err != nil || !auth.ValidOrganizationRole(request.Role) || request.Role == "owner" && credential.HostedRole != "owner" {
-		return s.hostedError(c, http.StatusForbidden, "You cannot invite a member with this role")
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot invite a member with this role")
 	}
 	email := strings.ToLower(strings.TrimSpace(request.Email))
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
+		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
 	if err := s.reserveHostedInvitation(c.Request().Context(), email); err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
-			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
+			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())
 		}
-		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
 	invitation, err := s.config.Hosted.Provider.Invite(c.Request().Context(), credential.Hosted.OrganizationID, email, request.Role, credential.Hosted.Subject)
 	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		return s.hostedInvitationFailure(c, email, err)
+		s.releaseFailedHostedInvitation(c, email, err)
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 	created := formatHubTime(s.config.now())
 	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, request.Role, created)
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
 	}
 	view := hostedInvitationView{ID: invitation.ID, Email: email, Role: request.Role, CreatedAt: created}
 	if !invitation.ExpiresAt.IsZero() {
@@ -313,32 +315,28 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	return c.JSON(http.StatusCreated, view)
 }
 
-// revokeHostedMember answers DELETE /members/:member. The organization always
+// revokeHostedMemberJSON answers DELETE /members/:member. The organization always
 // keeps an owner.
-func (s *Service) revokeHostedMember(c echo.Context) error {
+func (s *Service) revokeHostedMemberJSON(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
 	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "You cannot remove organization members")
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
 	member, err := s.hostedManagedMember(c, credential, true)
 	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This member cannot be removed; the organization must retain an owner")
+		return s.hostedJSONError(c, http.StatusForbidden, "This member cannot be removed; the organization must retain an owner")
 	}
 	if err := s.revokeHostedMemberLocally(c.Request().Context(), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Membership removal is temporarily unavailable")
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Membership removal is temporarily unavailable")
 	}
-	// The member's local access is gone, so every relay connection they hold
-	// goes with it (decisions section 18.2): a socket that outlived the
-	// membership would be exactly the case the re-check exists to prevent.
-	s.authorityChanged(c.Request().Context(), member.UserID)
 	if err := s.config.Hosted.Provider.RevokeMembership(c.Request().Context(), member.ID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-// changeHostedRole answers PUT /members/:member/role.
-func (s *Service) changeHostedRole(c echo.Context) error {
+// changeHostedRoleJSON answers PUT /members/:member/role.
+func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
 		Role string `json:"role"`
@@ -351,19 +349,18 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 	}
 	credential, err := s.hostedAdministrator(c)
 	if err != nil || !auth.ValidOrganizationRole(request.Role) || request.Role == "owner" && credential.HostedRole != "owner" {
-		return s.hostedError(c, http.StatusForbidden, "You cannot assign this organization role")
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
 	member, err := s.hostedManagedMember(c, credential, request.Role != "owner")
 	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This role cannot be changed; the organization must retain an owner")
+		return s.hostedJSONError(c, http.StatusForbidden, "This role cannot be changed; the organization must retain an owner")
 	}
 	if err := s.config.Hosted.Provider.SetMembershipRole(c.Request().Context(), member.ID, request.Role); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be changed")
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The role could not be changed")
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_members SET role = ?,updated_at = ? WHERE user_id = ?", request.Role, formatHubTime(s.config.now()), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be recorded")
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The role could not be recorded")
 	}
-	s.authorityChanged(c.Request().Context(), member.UserID)
 	view, err := s.hostedMemberResponse(c.Request().Context(), member)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -371,10 +368,10 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 	return c.JSON(http.StatusOK, view)
 }
 
-// changeHostedGrant answers PUT /members/:member/grants. Authorization is the
-// administrator check the removed form carried; the owner protection in
+// changeHostedGrantJSON answers PUT /members/:member/grants. Authorization is
+// the administrator check the grant form carries; the owner protection in
 // hostedManagedMember guards membership changes, not project access.
-func (s *Service) changeHostedGrant(c echo.Context) error {
+func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
 		ProjectID string `json:"project_id"`
@@ -390,19 +387,18 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 	}
 	credential, err := s.hostedAdministrator(c)
 	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "You cannot manage project grants")
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot manage project grants")
 	}
 	member, err := s.hostedMemberByID(c.Request().Context(), credential, c.Param("member"))
 	if err != nil {
-		return s.hostedError(c, http.StatusNotFound, "This member is not part of the organization")
+		return s.hostedJSONError(c, http.StatusNotFound, "This member is not part of the organization")
 	}
 	if !hostedSafeID(member.UserID) || !hostedSafeID(request.ProjectID) {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Select a member and project")
+		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Select a member and project")
 	}
 	if err := s.hostedGrant(c.Request().Context(), credential, member.UserID, request.ProjectID, request.Write, request.Runner, request.Revoke); err != nil {
-		return s.hostedError(c, http.StatusForbidden, "The project grant could not be changed")
+		return s.hostedJSONError(c, http.StatusForbidden, "The project grant could not be changed")
 	}
-	s.authorityChanged(c.Request().Context(), member.UserID)
 	view, err := s.hostedMemberResponse(c.Request().Context(), member)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -468,7 +464,7 @@ type hostedProjectView struct {
 }
 
 // createHostedProjectJSON answers POST /projects for a hosted owner or admin.
-// The caller must grant itself access explicitly, as the removed form did.
+// The caller must grant itself access explicitly, as the project form does.
 func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
@@ -487,15 +483,15 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	}
 	name := strings.TrimSpace(request.Name)
 	if name == "" || len(name) > 120 || !request.GrantAccess {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
+		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
 	}
 	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
-			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
+			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())
 		}
-		return s.hostedError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
+		return s.hostedJSONError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
 	record, err := readNativeProject(c.Request().Context(), s.database.db, scope)
@@ -503,6 +499,49 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusCreated, record)
+}
+
+// hostedJSONError answers a hosted API failure with the native error shape.
+func (s *Service) hostedJSONError(c echo.Context, status int, message string) error {
+	return c.JSON(status, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
+}
+
+// revokeHostedInvitationJSON answers DELETE /members/invitations/:invitation.
+// The provider has no revocation call, so the invitation is withdrawn here:
+// acceptance and the invitation link both require the pending local record,
+// and the member seat it reserved is released.
+func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
+	var request hostedIdempotent
+	if c.Request().ContentLength != 0 {
+		if err := decodeAPIJSON(c, &request); err != nil {
+			return invalidAPIRequest(c, err)
+		}
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.hostedAdministrator(c); err != nil {
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot revoke invitations")
+	}
+	ctx := c.Request().Context()
+	var email string
+	err := s.database.db.QueryRowContext(ctx, "DELETE FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = '' RETURNING email", c.Param("invitation"), s.config.Hosted.OrganizationID).Scan(&email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s.hostedJSONError(c, http.StatusNotFound, "This invitation is not pending in the organization")
+	}
+	if err != nil {
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be revoked")
+	}
+	var remaining int
+	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE email = ? AND accepted_user_id = ''", email).Scan(&remaining); err != nil {
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be revoked")
+	}
+	if remaining == 0 {
+		if err := s.releaseHostedInvitation(ctx, email); err != nil {
+			return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation is revoked; its member seat could not be released")
+		}
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // hostedAPIError maps a credential failure onto the section 12 error shape.
