@@ -5589,6 +5589,112 @@ func TestConnectorPullRequestDiffFingerprintIsContentStableAndCached(t *testing.
 	}
 }
 
+func TestPullRequestValidationDiffConcurrentPRs(t *testing.T) {
+	t.Parallel()
+	type fixture struct {
+		base, head string
+		files      []string
+		contents   []string
+		patch      string
+	}
+	fixtures := map[int]fixture{
+		155: {base: "d8970cb2b42f2463a6f10f9f2b88151dd4b5d6c1", head: "236813f76fa510ff22d778fd1fd341f390cf15da", files: []string{"AGENTS.md", "README.md"}, contents: []string{"bench origin", "bench origin"}},
+		156: {base: "d8970cb2b42f2463a6f10f9f2b88151dd4b5d6c1", head: "178c860585360bf7056e76ebfbc6a68fe08afc44", files: []string{"WORKFLOW.md", "detent.yaml", "docs/detent-rework-cost.md"}, contents: []string{"workflow", "agent config", "rework cost"}},
+		220: {base: "1cc80a5a29fcc4269f89204a167216ae7591d2bd", head: "e5be6db5371bb1ebffeb440d8d27a9d8119026b9", files: []string{"WORKFLOW.md", "ui/build.gradle.kts", "ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt"}, contents: []string{"stall procedure", "timeout", "cleanup"}},
+		190: {base: "9ae69513839167f50336794c361ba0db627d995a", head: "fa96813851dda0908bb27560919dc30c9a5ca96b", files: []string{"core/src/iosTest/kotlin/pro/pyroapex/pos/core/db/IosDatabaseTest.kt"}, contents: []string{"iOS database"}},
+	}
+	for number, f := range fixtures {
+		var patch strings.Builder
+		for index, path := range f.files {
+			fmt.Fprintf(&patch, "diff --git a/%s b/%s\n@@ -0,0 +1 @@\n+%s\n", path, path, f.contents[index])
+		}
+		f.patch = patch.String()
+		fixtures[number] = f
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var number int
+		var filesEndpoint bool
+		if strings.HasSuffix(r.URL.Path, "/files") {
+			_, _ = fmt.Sscanf(r.URL.Path, "/repos/example/repo/pulls/%d/files", &number)
+			filesEndpoint = true
+		} else if _, err := fmt.Sscanf(r.URL.Path, "/repos/example/repo/pulls/%d", &number); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		f, ok := fixtures[number]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if filesEndpoint {
+			var files []map[string]string
+			for index, path := range f.files {
+				files = append(files, map[string]string{"filename": path, "patch": "@@ -0,0 +1 @@\n+" + f.contents[index]})
+			}
+			_ = json.NewEncoder(w).Encode(files)
+			return
+		}
+		if r.Header.Get("Accept") == "application/vnd.github.diff" {
+			_, _ = io.WriteString(w, f.patch)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"number":%d,"base":{"sha":%q},"head":{"sha":%q}}`, number, f.base, f.head)
+	}))
+	t.Cleanup(server.Close)
+	c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		number int
+		diff   connector.ValidationDiff
+		err    error
+	}
+	results := make(chan outcome, len(fixtures))
+	for number, fixture := range fixtures {
+		go func() {
+			issue := connector.Issue{Identifier: fmt.Sprintf("example/repo#%d", number), PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number, BaseSHA: fixture.base, HeadSHA: fixture.head}}
+			diff, err := c.PullRequestValidationDiff(t.Context(), issue)
+			results <- outcome{number, diff, err}
+		}()
+	}
+	for range fixtures {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		want := fixtures[got.number]
+		if !reflect.DeepEqual(got.diff.Files, want.files) || got.diff.Patch != want.patch || got.diff.HeadSHA != want.head || got.diff.PRNumber != got.number {
+			t.Fatalf("PR %d snapshot = %#v", got.number, got.diff)
+		}
+	}
+}
+
+func TestValidationDiffRejectsOtherPRFiles(t *testing.T) {
+	t.Parallel()
+	patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n@@ -0,0 +1 @@\n+workflow\n"
+	pr220Patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n+stall procedure\ndiff --git a/ui/build.gradle.kts b/ui/build.gradle.kts\n+timeout\ndiff --git a/ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt b/ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt\n+cleanup\n"
+	for _, tt := range []struct {
+		name  string
+		files []string
+		patch string
+		want  bool
+	}{
+		{name: "matching workflow", files: []string{"WORKFLOW.md"}, patch: patch, want: true},
+		{name: "docs PR list with workflow patch", files: []string{"AGENTS.md", "README.md"}, patch: patch},
+		{name: "missing file list", files: nil, patch: patch},
+		{name: "PR220 receipt files", files: []string{"WORKFLOW.md", "ui/build.gradle.kts", "ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt"}, patch: pr220Patch, want: true},
+		{name: "PR190 iOS files against PR220 patch", files: []string{"core/src/iosTest/kotlin/pro/pyroapex/pos/core/db/IosDatabaseTest.kt"}, patch: pr220Patch},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameValidationFiles(tt.files, tt.patch); got != tt.want {
+				t.Fatalf("sameValidationFiles(%v) = %t, want %t", tt.files, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConnectorSecurityAuditSnapshotUsesStableMetadataAndTextualDiff(t *testing.T) {
 	t.Parallel()
 

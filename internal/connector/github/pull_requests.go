@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -504,6 +505,86 @@ func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connec
 	fingerprint := pullRequestDiffFingerprint(files)
 	c.cachePullRequestDiffFingerprint(key, fingerprint)
 	return fingerprint, nil
+}
+
+// PullRequestValidationDiff collects one PR's files and patch between two
+// metadata reads. A moving head or inconsistent file response is retryable.
+func (c *Connector) PullRequestValidationDiff(ctx context.Context, issue connector.Issue) (connector.ValidationDiff, error) {
+	repo, number, ok := hydratedPullRequestRef(issue)
+	if !ok || issue.PullRequest == nil {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR identity is missing")
+	}
+	path := restPullRequestPath(repo, number)
+	var before, after restPullRequest
+	if err := c.client.REST(ctx, http.MethodGet, path, nil, &before); err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR metadata: %w", err)
+	}
+	base, head := strings.TrimSpace(before.Base.SHA), strings.TrimSpace(before.Head.SHA)
+	if base == "" || head == "" || base != strings.TrimSpace(issue.PullRequest.BaseSHA) || head != strings.TrimSpace(issue.PullRequest.HeadSHA) {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR base/head differs from hydrated issue")
+	}
+	files, err := fetchRESTList[restPullRequestFile](ctx, c.client, restPullRequestFilesPath(repo, number))
+	if err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR files: %w", err)
+	}
+	patch, truncated, _, err := c.client.RESTTextWithSize(ctx, path, "application/vnd.github.diff", 8<<20)
+	if err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR patch: %w", err)
+	}
+	if truncated {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR patch exceeds provenance limit")
+	}
+	if err := c.client.REST(ctx, http.MethodGet, path, nil, &after); err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("refresh validator PR metadata: %w", err)
+	}
+	if before.Base.SHA != after.Base.SHA || before.Head.SHA != after.Head.SHA {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR head changed while collecting diff")
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Filename)
+		if file.Patch != "" && !strings.Contains(patch, file.Patch) {
+			return connector.ValidationDiff{}, connector.NewRetryableError("validator PR patch differs from file patches")
+		}
+	}
+	if !sameValidationFiles(paths, patch) {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR patch file list differs from PR files")
+	}
+	sum := sha256.Sum256([]byte(patch))
+	return connector.ValidationDiff{Repository: pullRequestRepoName(repo), PRNumber: number, BaseSHA: base, HeadSHA: head, Files: paths, Patch: patch, Digest: hex.EncodeToString(sum[:])}, nil
+}
+
+func sameValidationFiles(files []string, patch string) bool {
+	actual := map[string]bool{}
+	for _, line := range strings.Split(patch, "\n") {
+		if !strings.HasPrefix(line, "diff --git ") {
+			continue
+		}
+		path := ""
+		if _, right, found := strings.Cut(line, " b/"); found {
+			path = right
+		} else if _, right, found := strings.Cut(line, " \"b/"); found {
+			quoted := "\"b/" + right
+			unquoted, err := strconv.Unquote(quoted)
+			if err != nil || !strings.HasPrefix(unquoted, "b/") {
+				return false
+			}
+			path = strings.TrimPrefix(unquoted, "b/")
+		}
+		if path == "" {
+			return false
+		}
+		actual[path] = true
+	}
+	if len(actual) != len(files) {
+		return false
+	}
+	for _, file := range files {
+		if !actual[file] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Connector) SecurityAuditSnapshot(ctx context.Context, issue connector.Issue, maxDiffBytes int) (securityaudit.Snapshot, error) {

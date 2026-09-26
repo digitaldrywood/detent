@@ -632,6 +632,10 @@ type ValidatorVerdict struct {
 	ProjectID       string
 	IssueID         string
 	HeadSHA         string
+	Repository      string
+	BaseSHA         string
+	DiffDigest      string
+	DiffFiles       []string
 	Identifier      string
 	IssueURL        string
 	PRNumber        *int64

@@ -51,7 +51,7 @@ func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 				case RoleCode:
 					_, err = runner.Run(t.Context(), RunRequest{Issue: issue})
 				case RoleValidator:
-					_, err = runner.Validate(t.Context(), ValidatorRequest{Issue: issue})
+					_, err = runner.Validate(t.Context(), testValidatorRequest(issue))
 				case RoleSecurityAudit:
 					_, err = runner.Audit(t.Context(), SecurityAuditRequest{
 						Issue: issue,
