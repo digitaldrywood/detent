@@ -43,6 +43,7 @@ type Service struct {
 	reconcileDone     chan struct{}
 	reconcileStopOnce sync.Once
 	pullRequests      *pullRequestCache
+	conversations     *conversationService
 	closeOnce         sync.Once
 	closeErr          error
 	clientBuild       appClientBuild
@@ -110,6 +111,14 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.Hosted != nil {
 		service.hostedSessions, err = auth.NewSessionService(auth.SessionConfig{SessionTTL: 30 * 24 * time.Hour, PublicURL: cfg.Hosted.PublicURL}, service)
 		if err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
+		service.conversations = newConversationService(service, cfg.Conversation.normalized())
+		if err := service.conversations.start(ctx); err != nil {
 			workerCancel()
 			reconcileCancel()
 			return nil, errors.Join(err, database.Close())
@@ -325,6 +334,9 @@ func (s *Service) Close() error {
 		s.stopHostedBilling()
 		if s.outbox != nil {
 			s.outbox.stop()
+		}
+		if s.conversations != nil {
+			s.conversations.stop()
 		}
 		s.closeErr = errors.Join(httpErr, webhookErr, reconcileErr, s.database.Close())
 	})

@@ -455,6 +455,36 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 	return capacity - active, nil
 }
 
+// notAlreadyAnsweredClause excludes an item whose most recent attempt already
+// succeeded against the item as it stands, for an issue query that aliases the
+// issues table as i.
+//
+// The item is offered again whenever any of the three is true, so the only
+// case this suppresses is the re-dispatch loop itself:
+//
+//   - the latest attempt did not succeed;
+//   - the item has moved on since that attempt: an edit, a comment or a
+//     workflow move bumps issues.revision;
+//   - somebody asked for another attempt: issues.dispatch_generation is ahead
+//     of the generation the attempt started under, which is how a conversation
+//     continuation, which bumps no revision, is honored.
+//
+// The latest attempt is the one with the highest fencing token. It applies to
+// native projects only: on a github_compatible project the issues row is a
+// projection whose writes never bump revision, so the clause would strand an
+// item whose lane moved on GitHub.
+const notAlreadyAnsweredClause = `(p.profile <> 'native' OR NOT EXISTS (SELECT 1 FROM native_attempts answered
+ WHERE answered.organization_id = i.organization_id
+   AND answered.project_id = i.project_id
+   AND answered.work_item_id = i.native_id
+   AND answered.status = 'succeeded'
+   AND answered.work_item_revision >= i.revision
+   AND answered.dispatch_generation >= i.dispatch_generation
+   AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
+     WHERE latest.organization_id = i.organization_id
+       AND latest.project_id = i.project_id
+       AND latest.work_item_id = i.native_id)))`
+
 func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	scope := query.Scope
 	organization, project := "", ""
@@ -496,6 +526,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
   AND ws.terminal = 0
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
+  AND `+notAlreadyAnsweredClause+`
   AND (? = '' OR q.id IS NOT NULL)
   AND (p.require_dependencies = 0 OR NOT EXISTS (
     SELECT 1
