@@ -1072,3 +1072,66 @@ func TestConversationTurnEventBatchIsIdempotent(t *testing.T) {
 		requireConversationErrorCode(t, batch(strings.Repeat("k", 129), events...), http.StatusUnprocessableEntity, "invalid_request")
 	})
 }
+
+// A turn that reported how it ended but whose worker then lost the lease
+// without unbinding still settles: the controls it was handed resolve and the
+// execution keeps the status the turn reported.
+func TestConversationReconcileSettlesTerminalTurnAfterLeaseLoss(t *testing.T) {
+	t.Parallel()
+	f := newConversationWorkerFixture(t)
+	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
+	handed := f.queue(t, conversation.MessageText, "text-1", "Handed over", nil)
+	requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "execution_status", "status": "failed", "error": "provider crashed"}), http.StatusAccepted)
+	if record := f.load(t); record.Execution.Status != conversation.ExecutionFailed || record.Execution.Settled {
+		t.Fatalf("execution before lease loss = %#v", record.Execution)
+	}
+
+	f.advance(11 * time.Minute)
+	if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		t.Fatalf("reconcileExecutions() error = %v", err)
+	}
+	record := f.load(t)
+	if record.Execution.Status != conversation.ExecutionFailed || record.Execution.Error != "provider crashed" || !record.Execution.Settled {
+		t.Fatalf("execution after lease loss = %#v", record.Execution)
+	}
+	if delivery := f.messages(t)[handed.ID].Delivery; delivery != conversation.DeliveryUnknown {
+		t.Fatalf("handed control = %s, want unknown", delivery)
+	}
+	seq := record.EventSeq
+	if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		t.Fatalf("second reconcileExecutions() error = %v", err)
+	}
+	if again := f.load(t); again.EventSeq != seq {
+		t.Fatalf("a settled execution was reconciled again: event_seq %d -> %d", seq, again.EventSeq)
+	}
+}
+
+// An answer to a question past its expires_at is refused even while the turn
+// that asked it is still live.
+func TestConversationAnswerRefusesExpiredQuestion(t *testing.T) {
+	t.Parallel()
+	f := newConversationWorkerFixture(t)
+	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+	requireNativeStatus(t, f.turnEvents(t,
+		map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"},
+		map[string]any{"type": "question_opened", "request_id": "req-1", "thread_id": "thread-1", "turn_id": "turn-1", "prompts": []map[string]any{{"id": "q", "question": "?", "free_text": true}}},
+	), http.StatusAccepted)
+	question := f.questions(t)[0]
+	answer := func(key string) *httptest.ResponseRecorder {
+		return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", f.token, conversation.Command{
+			Key: key, Kind: conversation.CommandAnswer, QuestionID: question.ID,
+			Answers: map[string][]string{"q": {"yes"}}, Expected: conversation.Expected{AttemptID: f.attempt},
+		})
+	}
+	setExpiry := func(at time.Time) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_questions SET expires_at = ? WHERE id = ?", conversationTime(at), question.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setExpiry(f.service.config.now().Add(-time.Second))
+	requireConversationErrorCode(t, answer("late"), http.StatusConflict, "stale_execution")
+	setExpiry(f.service.config.now().Add(time.Hour))
+	requireNativeStatus(t, answer("in-time"), http.StatusOK)
+}

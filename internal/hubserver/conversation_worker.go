@@ -1354,9 +1354,11 @@ type conversationExecutionRef struct {
 	project      tracker.ProjectID
 }
 
-// inFlightExecutions lists conversations whose execution is live. It runs
-// outside any transaction; settlement re-reads the state under one.
-const conversationInFlightQuery = "SELECT id, organization_id, project_id FROM conversations WHERE json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting') "
+// inFlightExecutions lists conversations whose execution is live, or ended by
+// a turn report but never settled by an unbind. It runs outside any
+// transaction; settlement re-reads the state under one.
+const conversationInFlightQuery = `SELECT id, organization_id, project_id FROM conversations WHERE (json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')
+ OR (json_extract(execution_json, '$.status') IN ('completed', 'interrupted', 'failed', 'unknown') AND COALESCE(json_extract(execution_json, '$.settled'), 0) = 0 AND COALESCE(json_extract(execution_json, '$.lease_id'), '') <> '')) `
 
 func (c *conversationService) inFlightExecutions(ctx context.Context, query string, args ...any) ([]conversationExecutionRef, error) {
 	rows, err := c.server.database.db.QueryContext(ctx, query, args...)
@@ -1390,7 +1392,7 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 			return err
 		}
 		execution := record.Execution
-		if execution.Status.Terminal() || execution.Status == conversation.ExecutionIdle || execution.Status == conversation.ExecutionWaitingForRunner {
+		if (execution.Status.Terminal() && execution.Settled) || execution.Status == conversation.ExecutionIdle || execution.Status == conversation.ExecutionWaitingForRunner {
 			return nil
 		}
 		if execution.Owner.LeaseID == "" && execution.Owner.AttemptID == "" {
@@ -1409,6 +1411,12 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 			}
 		}
 		changed = true
+		if execution.Status.Terminal() {
+			// The turn already reported how it ended; only the unbind that
+			// would have settled its controls is missing, and the lost lease
+			// means it will never arrive.
+			return c.finishExecution(ctx, tx, &record, execution.Status, execution.Error, true, now)
+		}
 		return c.finishExecution(ctx, tx, &record, conversation.ExecutionInterrupted, conversationLeaseLostError, false, now)
 	})
 	if err != nil {

@@ -502,3 +502,32 @@ func TestConversationAttachmentBodyError(t *testing.T) {
 		})
 	}
 }
+
+// An unsent upload past its expiry, or one its owner deleted, cannot be bound
+// to a message even before the sweep removes it.
+func TestConversationAttachmentCommandRefusesExpiredOrDeleted(t *testing.T) {
+	t.Parallel()
+	f := newConversationAPIFixture(t, nil)
+	id := f.create(t, f.token, map[string]any{"title": "Expiry"}).Conversation.ID
+	cases := []struct {
+		name   string
+		update string
+		status int
+	}{
+		{name: "expired", update: "UPDATE conversation_attachments SET expires_at = ? WHERE id = ?", status: http.StatusUnprocessableEntity},
+		{name: "deleted", update: "UPDATE conversation_attachments SET deleted_at = ? WHERE id = ?", status: http.StatusUnprocessableEntity},
+		{name: "fresh", status: http.StatusOK},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			uploaded := f.upload(t, f.token, id, test.name+".md", "text/markdown", []byte("# "+test.name+"\n"))
+			if test.update != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), test.update, conversationTime(time.Now().UTC().Add(-time.Minute)), uploaded.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := f.command(t, f.token, id, conversation.Command{Key: "cmd_" + test.name, Kind: conversation.CommandMessage, Text: "x", Attachments: []string{uploaded.ID}})
+			requireNativeStatus(t, response, test.status)
+		})
+	}
+}

@@ -864,7 +864,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 			message.AttemptID = record.Execution.Owner.AttemptID
 			message.TurnID = record.Execution.Owner.TurnID
 		}
-		attachments, err := c.loadCommandAttachments(ctx, tx, scope, *record, command.Attachments)
+		attachments, err := c.loadCommandAttachments(ctx, tx, scope, *record, command.Attachments, now)
 		if err != nil {
 			return receipt, err
 		}
@@ -895,6 +895,9 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 			return receipt, conversationQuestionAnswered()
 		default:
 			return receipt, conversationStale("The question is no longer open")
+		}
+		if question.ExpiresAt != nil && !now.Before(*question.ExpiresAt) {
+			return receipt, conversationStale("The question has expired")
 		}
 		if err := conversationRequireOwner(record.Execution.Owner, conversation.Expected{AttemptID: question.Owner.AttemptID}); err != nil {
 			return receipt, err

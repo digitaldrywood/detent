@@ -268,9 +268,9 @@ func (s *conversationStore) listExpiredAttachments(ctx context.Context, query na
 
 // loadCommandAttachments resolves the attachments a message command names and
 // enforces the rules only the hub knows: the attachment exists in this
-// conversation, the actor owns it, it is still unsent, and the set is within
-// the per-message total.
-func (c *conversationService) loadCommandAttachments(ctx context.Context, tx *sql.Tx, scope nativeScope, record conversationRecord, ids []string) ([]conversationAttachmentRecord, error) {
+// conversation, the actor owns it, it is still unsent and neither deleted nor
+// expired, and the set is within the per-message total.
+func (c *conversationService) loadCommandAttachments(ctx context.Context, tx *sql.Tx, scope nativeScope, record conversationRecord, ids []string, now time.Time) ([]conversationAttachmentRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -289,6 +289,9 @@ func (c *conversationService) loadCommandAttachments(ctx context.Context, tx *sq
 		}
 		if attachment.MessageID != "" {
 			return nil, nativeInvalid("Attachment " + id + " is already attached to a message")
+		}
+		if attachment.DeletedAt != nil || (attachment.ExpiresAt != nil && !now.Before(*attachment.ExpiresAt)) {
+			return nil, nativeInvalid("Attachment " + id + " is not available on this conversation")
 		}
 		total += attachment.Size
 		attachments = append(attachments, attachment)
