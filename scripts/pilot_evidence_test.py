@@ -46,6 +46,27 @@ class EvidenceCompletenessTests(unittest.TestCase):
                         self.assertEqual(evidence["required_tests"], 1)
                         self.assertEqual(evidence["passed_tests_and_subtests"], 2)
 
+    def test_shared_origin_suite_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "go.mod").write_text("module example.test/pilot\n\ngo 1.26\ntoolchain go1.26.6\n")
+            output = json.dumps({
+                "Action": "pass",
+                "Package": "github.com/digitaldrywood/detent/internal/cloudentry",
+                "Test": "TestSharedOriginPilotAcceptance",
+            })
+            result = subprocess.CompletedProcess([], 0, output, "")
+            suites = {"cloudentry": ["TestSharedOriginPilotAcceptance"]}
+            with mock.patch.object(pilot.subprocess, "run", return_value=result) as run, \
+                 mock.patch.object(pilot.subprocess, "check_output", return_value="fixture"):
+                evidence = pilot.collect(root, False, suites, "synthetic_local_shared_origin_evidence")
+            command = run.call_args.args[0]
+            self.assertIn("./internal/cloudentry", command)
+            self.assertNotIn("./internal/hubgithub", command)
+            self.assertEqual(evidence["kind"], "synthetic_local_shared_origin_evidence")
+            self.assertEqual(evidence["suites"], suites)
+            self.assertIn("cloudentry", pilot.SHARED_ORIGIN_SUITES)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,15 +78,46 @@ SUITES = {
     ],
 }
 
+SHARED_ORIGIN_SUITES = {
+    "cloudentry": [
+        "TestSharedOriginPilotAcceptance",
+        "TestSameOriginBrowserMutations",
+        "TestSharedEntryTwoOrganizationsOneOrigin",
+        "TestSharedEntryBoundaries",
+        "TestSharedEntryLoginTransactions",
+        "TestSharedEntryInvitation",
+        "TestSharedEntrySupportAccess",
+        "TestProvisioningSelfServiceJourney",
+        "TestProvisioningCapacityAndRecovery",
+        "TestProvisioningRejectsIneligibleCreators",
+        "TestProvisioningResumesInterruptedDeletionAndMemoryFloor",
+    ],
+    "hubserver": [
+        "TestPilotSelfHostedStaysFree",
+        "TestHostedSharedEntryRejectsBypass",
+        "TestHostedSharedEntryReplayIsDenied",
+        "TestHostedSharedEntryScopesPagesAndMutations",
+        "TestHostedSharedEntryRevokesSessionsAndChecksProvider",
+        "TestHostedPlansDisabledWithoutNetwork",
+    ],
+    "cli": [
+        "TestCloudAllocationGeneratesTenantConfiguration",
+        "TestCloudAllocationPassesEntitlementAdministration",
+        "TestSelfHostedIdentityNeverEnablesBilling",
+    ],
+}
 
-def collect(root, race):
-    expected = {(package, test) for package, tests in SUITES.items() for test in tests}
+
+def collect(root, race, suites=None, kind="synthetic_local_protocol_evidence"):
+    if suites is None:
+        suites = SUITES
+    expected = {(package, test) for package, tests in suites.items() for test in tests}
     pattern = "^(" + "|".join(sorted({test for _, test in expected})) + ")$"
     command = ["go", "test", "-json", "-count=1", "-timeout=5m"]
     if race:
         command.append("-race")
     command.extend(["-run", pattern])
-    command.extend("./internal/" + package for package in SUITES)
+    command.extend("./internal/" + package for package in suites)
     environment = dict(os.environ)
     environment.pop("DETENT_API_TOKEN", None)
     environment["GOTOOLCHAIN"] = next(
@@ -121,10 +152,10 @@ def collect(root, race):
         print(result.stderr)
         print(result.stdout)
         raise RuntimeError(f"Pilot evidence failed: missing={missing}, failed={failures}, skipped={skipped}")
-    files = [path for package in SUITES for path in (root / "internal" / package).glob("pilot*_test.go")]
+    files = [path for package in suites for path in (root / "internal" / package).glob("pilot*_test.go")]
     return {
         "schema": 1,
-        "kind": "synthetic_local_protocol_evidence",
+        "kind": kind,
         "release_authorized": False,
         "known_readiness_gaps": [line for line in measurements if line.startswith("readiness_gap ")],
         "captured_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -137,7 +168,7 @@ def collect(root, race):
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "required_tests": len(expected),
         "passed_tests_and_subtests": len(passed),
-        "suites": SUITES,
+        "suites": suites,
         "measurements": measurements,
         "workloads": samples,
         "hosted_costs": {
@@ -153,11 +184,15 @@ def main():
     parser = argparse.ArgumentParser(description="Collect synthetic pilot evidence without live provider or customer data")
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--race", action="store_true")
+    parser.add_argument("--shared-origin", action="store_true", help="collect the September 8 shared hosted-site acceptance suite")
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     if args.output.exists():
         parser.error("output already exists; choose a new evidence path")
-    evidence = collect(root, args.race)
+    if args.shared_origin:
+        evidence = collect(root, args.race, SHARED_ORIGIN_SUITES, "synthetic_local_shared_origin_evidence")
+    else:
+        evidence = collect(root, args.race)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x") as output:
         json.dump(evidence, output, indent=2, sort_keys=True)
