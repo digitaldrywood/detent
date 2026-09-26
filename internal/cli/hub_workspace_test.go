@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -119,7 +120,9 @@ func TestNewWorkspaceLanes(t *testing.T) {
 		// scheduling replaces the hub scheduler when it is not nil, to stand
 		// for a runner scheduling through something else entirely.
 		scheduling func(t *testing.T) orchestrator.SchedulingSource
-		want       int
+		// anonymous leaves the runner without an enrolled identity.
+		anonymous bool
+		want      int
 	}{
 		{name: "a configured project gets a lane", nativeProject: "orders", want: 1},
 		// The project is enrolled with the hub but is not one this runner
@@ -128,6 +131,7 @@ func TestNewWorkspaceLanes(t *testing.T) {
 		{name: "an unconfigured project is skipped", nativeProject: "unknown", want: 0},
 		{name: "no hub scheduler starts no lane", nativeProject: "orders", want: 0,
 			scheduling: func(*testing.T) orchestrator.SchedulingSource { return nil }},
+		{name: "a runner without an enrolled identity starts no lane", nativeProject: "orders", anonymous: true, want: 0},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -136,6 +140,9 @@ func TestNewWorkspaceLanes(t *testing.T) {
 				Projects: []globalconfig.Project{writeWorkspaceLaneProject(t, "orders")},
 			}
 			cfg.Client.NativeProjects = map[string]string{test.nativeProject: "prj_test"}
+			if !test.anonymous {
+				cfg.Client.IdentityFile = filepath.Join(t.TempDir(), "runner.json")
+			}
 			scheduling := newWorkspaceLaneTestScheduler(t, cfg.Client.NativeProjects)
 			if test.scheduling != nil {
 				scheduling = test.scheduling(t)
@@ -143,6 +150,42 @@ func TestNewWorkspaceLanes(t *testing.T) {
 			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, slog.New(slog.DiscardHandler))
 			if len(lanes) != test.want {
 				t.Fatalf("newWorkspaceLanes() returned %d lanes, want %d", len(lanes), test.want)
+			}
+		})
+	}
+}
+
+func TestWorkspaceLaneCapabilities(t *testing.T) {
+	t.Parallel()
+	served := workspacerunner.Capabilities(workspacerunner.DefaultSupport())
+	tests := []struct {
+		name   string
+		client globalconfig.HubClient
+		want   workspacesession.Capabilities
+	}{
+		{
+			name:   "an enrolled runner with native projects reports what it serves",
+			client: globalconfig.HubClient{IdentityFile: "/runner/identity.json", NativeProjects: map[string]string{"orders": "prj_test"}},
+			want:   served,
+		},
+		{
+			name:   "a token runner reports nothing",
+			client: globalconfig.HubClient{TokenEnvironment: "HUB_TOKEN", NativeProjects: map[string]string{"orders": "prj_test"}},
+		},
+		{
+			name:   "an enrolled runner without native projects reports nothing",
+			client: globalconfig.HubClient{IdentityFile: "/runner/identity.json"},
+		},
+		{
+			name:   "a blank identity path reports nothing",
+			client: globalconfig.HubClient{IdentityFile: "  ", NativeProjects: map[string]string{"orders": "prj_test"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := workspaceLaneCapabilities(test.client); got != test.want {
+				t.Fatalf("workspaceLaneCapabilities() = %+v, want %+v", got, test.want)
 			}
 		})
 	}

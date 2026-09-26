@@ -183,5 +183,7 @@ func (s *Scheduler) MachineID() tracker.MachineID {
 	if s == nil {
 		return ""
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.machine.ID
 }

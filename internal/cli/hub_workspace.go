@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -38,6 +39,20 @@ func workspaceLaneEnabled(capabilities workspacesession.Capabilities) bool {
 	return capabilities.Files
 }
 
+// workspaceLaneCapabilities is what this runner reports for workspace sessions
+// on its machine heartbeat, and the zero value when it runs no workspace lane.
+// The hub's claim gate reads the report from the enrolled runner's identity, so
+// a runner without an enrolled identity or without native projects could never
+// pass it: it reports nothing and starts no lane. The heartbeat report and the
+// lane start both read this, so the two can never disagree.
+func workspaceLaneCapabilities(client globalconfig.HubClient) workspacesession.Capabilities {
+	capabilities := workspacerunner.Capabilities(workspacerunner.DefaultSupport())
+	if strings.TrimSpace(client.IdentityFile) == "" || len(client.NativeProjects) == 0 || !workspaceLaneEnabled(capabilities) {
+		return workspacesession.Capabilities{}
+	}
+	return capabilities
+}
+
 // workspaceLaneScheduler is the part of the hub scheduler a workspace lane
 // needs. It is an interface so the boot path depends on the two accessors
 // rather than on the concrete scheduler.
@@ -69,7 +84,7 @@ func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if !workspaceLaneEnabled(workspacerunner.Capabilities(workspacerunner.DefaultSupport())) {
+	if !workspaceLaneEnabled(workspaceLaneCapabilities(cfg.Client)) {
 		return nil
 	}
 	scheduler, ok := scheduling.(workspaceLaneScheduler)

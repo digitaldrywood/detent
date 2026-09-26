@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -87,7 +86,7 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 			// never offered a workspace item, and the lane is started under
 			// exactly the same condition. Isolation is `user` because every
 			// channel this runner serves runs as the runner's own account.
-			WorkspaceCapabilities: workspacerunner.Capabilities(workspacerunner.DefaultSupport()),
+			WorkspaceCapabilities: workspaceLaneCapabilities(clientConfig),
 			WorkspaceIsolation:    workspacesession.IsolationUser,
 		},
 		HeartbeatInterval: clientConfig.HeartbeatInterval(),
