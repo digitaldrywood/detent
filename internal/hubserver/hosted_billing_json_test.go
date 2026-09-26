@@ -55,6 +55,10 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 	if returnURL := provider.checkouts[len(provider.checkouts)-1].ReturnURL; !strings.HasSuffix(returnURL, "/settings/billing") {
 		t.Fatalf("client checkout return URL = %q", returnURL)
 	}
+	form := f.form(t, "owner", "/organization/billing/checkout", map[string][]string{"price": {"price_fixture"}})
+	if form.Code != http.StatusSeeOther || form.Header().Get("Location") != destination.URL {
+		t.Fatalf("form checkout did not resume the same session: %d %q", form.Code, form.Header().Get("Location"))
+	}
 	if bad := f.billingAPI(t, "owner", http.MethodPost, "/billing/checkout", `{"price":"price_other","idempotency_key":"k3"}`); bad.Code != http.StatusBadRequest && bad.Code != http.StatusConflict {
 		t.Fatalf("unapproved price = %d %s", bad.Code, bad.Body.String())
 	}
@@ -78,5 +82,17 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 	f.service.Handler().ServeHTTP(recorder, noCSRF)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("checkout without CSRF = %d", recorder.Code)
+	}
+}
+
+func TestHostedBillingJSONRefusesCheckoutWithMultipleSubscriptions(t *testing.T) {
+	t.Parallel()
+	f, _ := newHostedCustomerFixture(t)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,mode,state_json) VALUES ('org_browser_preview','acct_fixture','cus_fixture','test','{\"status\":\"multiple_subscriptions\"}')"); err != nil {
+		t.Fatal(err)
+	}
+	report := f.billingAPI(t, "owner", http.MethodGet, "/billing", "")
+	if !strings.Contains(report.Body.String(), `"can_checkout":false`) {
+		t.Fatalf("multiple subscriptions offered checkout: %s", report.Body.String())
 	}
 }

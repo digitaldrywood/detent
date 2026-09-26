@@ -433,8 +433,12 @@ export function PlanSettings(): React.ReactElement {
 }
 
 /** A plain sentence for each billing state the hub reports. */
-export function billingStatusText(report: BillingReport): { title: string; description: string } {
+export function billingStatusText(
+  report: BillingReport,
+  now: Date = new Date(),
+): { title: string; description: string } {
   const state = report.state;
+  const passed = (value: string) => value !== "" && !value.startsWith("0001-") && new Date(value).getTime() <= now.getTime();
   const plan = state.plan.id === "" ? report.entitlement.effective_base.id : state.plan.id;
   const until = (value: string) => (value.startsWith("0001-") || value === "" ? "" : new Date(value).toLocaleDateString());
   switch (state.status) {
@@ -444,7 +448,18 @@ export function billingStatusText(report: BillingReport): { title: string; descr
         ? { title: "Complimentary access", description: `Plan ${plan}, granted by Detent.` }
         : { title: "Free plan", description: `Plan ${plan}. No payment details are on file.` };
     case "active":
+      if (passed(state.access_until)) {
+        return { title: "Access ended", description: "The paid period has ended. Renew or update payment in the billing portal." };
+      }
+      if (passed(state.paid_through)) {
+        return {
+          title: "Renewal pending",
+          description: `Waiting for Stripe to confirm the renewal. Access continues until ${until(state.access_until)}.`,
+        };
+      }
       return { title: "Subscribed", description: `Plan ${plan} · paid through ${until(state.paid_through)}` };
+    case "multiple_subscriptions":
+      return { title: "Billing needs attention", description: "More than one subscription is active. Manage them in the billing portal or contact Detent support." };
     case "trialing":
       return { title: "Trial", description: `Plan ${plan} · trial access until ${until(state.access_until)}` };
     case "canceling":
@@ -471,6 +486,32 @@ export function billingReturnNotice(search: string): string | null {
   return null;
 }
 
+/** Statuses Stripe's confirmation of a Checkout can move billing into. */
+const CONFIRMED_BILLING = new Set(["active", "trialing", "canceling", "multiple_subscriptions"]);
+
+/**
+ * After a Checkout return the payment may not be confirmed yet, so the report
+ * is re-read a bounded number of times until Stripe's confirmation arrives.
+ */
+export function useBillingConfirmation(
+  returned: boolean,
+  billing: { readonly value: BillingReport | undefined; readonly loading: boolean; readonly refresh: () => Promise<void> },
+  intervalMs = 3_000,
+  attempts = 10,
+): void {
+  const tries = React.useRef(0);
+  const { value, loading, refresh } = billing;
+  React.useEffect(() => {
+    if (!returned || loading || value === undefined) return;
+    if (CONFIRMED_BILLING.has(value.state.status) || tries.current >= attempts) return;
+    const timer = globalThis.setTimeout(() => {
+      tries.current += 1;
+      void refresh();
+    }, intervalMs);
+    return () => globalThis.clearTimeout(timer);
+  }, [returned, loading, value, refresh, intervalMs, attempts]);
+}
+
 export function BillingSettings(): React.ReactElement {
   const api = useAccountApi();
   const billing = useResource<BillingReport>(() => api.billing(), [api]);
@@ -486,6 +527,7 @@ export function BillingSettings(): React.ReactElement {
   });
   const notice = billingReturnNotice(globalThis.location?.search ?? "");
   const status = billing.value === undefined ? null : billingStatusText(billing.value);
+  useBillingConfirmation(notice !== null, billing);
 
   return (
     <SettingsPageContainer>

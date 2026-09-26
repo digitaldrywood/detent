@@ -68,8 +68,16 @@ describe("billing state text", () => {
     [report({ status: "payment_failed" }), "Payment failed"],
     [report({ status: "canceling", access_until: "2026-10-26T00:00:00Z" }), "Canceling"],
     [report({ status: "unapproved_plan" }), "Subscription unapproved plan"],
+    [report({ status: "multiple_subscriptions" }), "Billing needs attention"],
   ])("names %#", (value, title) => {
     expect(billingStatusText(value).title).toBe(title);
+  });
+
+  it("reads the access deadlines for an active subscription", () => {
+    const now = new Date("2026-10-15T00:00:00Z");
+    expect(billingStatusText(report({ status: "active", paid_through: "2026-10-01T00:00:00Z", access_until: "2026-10-01T00:00:00Z" }), now).title).toBe("Access ended");
+    expect(billingStatusText(report({ status: "active", paid_through: "2026-10-01T00:00:00Z", access_until: "2026-10-20T00:00:00Z" }), now).title).toBe("Renewal pending");
+    expect(billingStatusText(report({ status: "active", paid_through: "2026-11-01T00:00:00Z", access_until: "2026-11-02T00:00:00Z" }), now).title).toBe("Subscribed");
   });
 
   it("recognizes the Checkout return only", () => {
@@ -127,6 +135,22 @@ describe("billing screen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Billing portal" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://billing.stripe.com/p/session/test"));
   });
+
+  it("re-reads billing after a Checkout return until Stripe confirms it", async () => {
+    vi.stubGlobal("location", { assign, search: "?checkout=returned", pathname: "/settings/billing" });
+    const confirmed = report({ status: "active", plan: { id: "team", version: 1 }, paid_through: "2099-01-01T00:00:00Z", access_until: "2099-01-02T00:00:00Z" }, { can_manage: true, can_checkout: false });
+    let reads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        reads++;
+        return new Response(JSON.stringify(reads < 2 ? report() : confirmed), { status: 200 });
+      }),
+    );
+    renderBilling({ calls: [] });
+    expect(await screen.findByText("Free plan")).toBeTruthy();
+    expect(await screen.findByText("Subscribed", {}, { timeout: 5_000 })).toBeTruthy();
+  }, 10_000);
 
   it("shows the Checkout return notice", async () => {
     vi.stubGlobal("location", { assign, search: "?checkout=returned", pathname: "/settings/billing" });

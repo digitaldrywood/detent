@@ -188,7 +188,7 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 		for _, price := range cfg.Prices {
 			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: price.Label})
 		}
-		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == ""
+		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {
 			view.CanManage = true
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"strings"
 	"time"
@@ -267,8 +268,8 @@ func hostedBillingAPI(c echo.Context) bool {
 	return strings.HasPrefix(c.Path(), "/api/v2/")
 }
 
-func (s *Service) hostedBillingReturn(api bool) string {
-	if api {
+func (s *Service) hostedBillingReturn(bool) string {
+	if _, err := fs.Stat(conversationClientFS, conversationClientShell); err == nil {
 		return s.config.Hosted.PublicURL + s.hostedPath("/settings/billing")
 	}
 	return s.config.Hosted.PublicURL + s.hostedPath("/organization/billing")
