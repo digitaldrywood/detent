@@ -1130,7 +1130,9 @@ func (r *Runner) runAgentTurn(
 	}
 	turnStarted := false
 	workerProcessObserved := false
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
+	conversation := conversationRunFromContext(ctx)
+	turnRequest = conversation.prepareTurn(turnRequest)
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -1189,7 +1191,8 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		return nil
-	}, r.turnLimit)
+	}), r.turnLimit)
+	conversation.finishTurn(ctx, turnResult, turnErr)
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		ctx,
 		detentSessionID,
@@ -1690,6 +1693,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
+		}
+		if conversation := r.bindConversation(ctx, req, backend); conversation != nil {
+			ctx = conversation.attach(ctx)
+			defer func() { conversation.close(ctx, returnValue, returnErr) }()
 		}
 		if artifacts, ok := req.Execution.(ArtifactExecution); ok {
 			if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
