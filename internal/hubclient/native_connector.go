@@ -263,10 +263,16 @@ func (c *NativeConnector) dependency(ctx context.Context, id, blockerID, operati
 	return err
 }
 
+// nativeIssueIdentifier is the identifier a run of a native issue keys its
+// worktree on.
+func nativeIssueIdentifier(native tracker.NativeIssue) string {
+	return string(native.ProjectID) + "#" + strconv.Itoa(native.Number)
+}
+
 func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = string(native.WorkItemID)
-	issue.Identifier = string(native.ProjectID) + "#" + strconv.Itoa(native.Number)
+	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
 	issue.AuthorID = native.Actor.PrincipalID

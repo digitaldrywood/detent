@@ -154,7 +154,7 @@ type fixedWorktree struct {
 	mu       sync.Mutex
 }
 
-func (w *fixedWorktree) Prepare(context.Context, hubclient.WorkspaceCheckout) (string, error) {
+func (w *fixedWorktree) Prepare(context.Context, string, hubclient.WorkspaceCheckout) (string, error) {
 	if w.prepare != nil {
 		return "", w.prepare
 	}

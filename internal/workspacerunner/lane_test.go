@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -289,86 +286,6 @@ func TestLaneRequiresItsCollaborators(t *testing.T) {
 	if _, err := workspacerunner.NewLane(workspacerunner.LaneConfig{}); err == nil {
 		t.Fatal("a lane with no claimer, hub or worktree must be refused rather than fail later")
 	}
-}
-
-// TestGitWorktreeKeepsAFreshWorkspaceOffTheIssuesBranch is the decision section
-// 18 does not make. The backend keys a worktree's path and branch on the issue
-// identifier, so a workspace reusing it would hold the branch an ordinary run
-// of the same issue needs.
-func TestGitWorktreeKeepsAFreshWorkspaceOffTheIssuesBranch(t *testing.T) {
-	t.Parallel()
-	backend := &recordingBackend{root: t.TempDir()}
-	worktree := &workspacerunner.GitWorktree{Backend: backend, ProjectID: "prj"}
-	tests := []struct {
-		name       string
-		checkout   hubclient.WorkspaceCheckout
-		identifier string
-		released   bool
-	}{
-		{
-			name:       "a fresh workspace takes an identifier of its own",
-			checkout:   hubclient.WorkspaceCheckout{WorkItemID: "wi_1", Worktree: workspacesession.WorktreeFresh},
-			identifier: "wi_1-ws",
-			released:   true,
-		},
-		{
-			name:       "a retained workspace uses the attempt's own worktree",
-			checkout:   hubclient.WorkspaceCheckout{WorkItemID: "wi_2", Worktree: workspacesession.WorktreeRetained},
-			identifier: "wi_2",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			path, err := worktree.Prepare(t.Context(), test.checkout)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if backend.lastIssue.Identifier != test.identifier {
-				t.Fatalf("identifier = %q, want %q", backend.lastIssue.Identifier, test.identifier)
-			}
-			if err := worktree.Release(t.Context(), path, test.checkout); err != nil {
-				t.Fatal(err)
-			}
-			// Closing a workspace never deletes the attempt's artifacts, and
-			// the attempt's worktree is the largest of them.
-			if backend.cleaned != test.released {
-				t.Fatalf("cleaned = %v, want %v", backend.cleaned, test.released)
-			}
-			backend.cleaned = false
-		})
-	}
-}
-
-// recordingBackend is the worktree backend, reduced to what the adapter asks of
-// it: what it was told to create, and whether it was told to clean up.
-type recordingBackend struct {
-	root      string
-	lastIssue workspace.Issue
-	cleaned   bool
-}
-
-func (b *recordingBackend) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
-	b.lastIssue = issue
-	path := filepath.Join(b.root, issue.Identifier)
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		return workspace.Info{}, err
-	}
-	return workspace.Info{Path: path, Key: issue.Identifier, Created: true}, nil
-}
-
-func (b *recordingBackend) Cleanup(context.Context, string) error {
-	b.cleaned = true
-	return nil
-}
-
-func (b *recordingBackend) BeforeRun(context.Context, workspace.Info, workspace.Issue) error {
-	return nil
-}
-
-func (b *recordingBackend) AfterRun(context.Context, workspace.Info, workspace.Issue) {}
-
-func (b *recordingBackend) DiffStat(context.Context, workspace.Info, workspace.Issue) (workspace.DiffStat, error) {
-	return workspace.DiffStat{}, nil
 }
 
 type countingClaimer struct {

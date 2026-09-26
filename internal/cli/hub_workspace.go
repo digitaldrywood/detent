@@ -168,7 +168,7 @@ func newWorkspaceLane(
 	return workspacerunner.NewLane(workspacerunner.LaneConfig{
 		Claimer:  claimer,
 		Hub:      claimer.Native(),
-		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: projectID},
+		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: projectID, Resolve: claimer.RunIdentifier},
 		Logger:   logger,
 		Hostname: hostname,
 		// The same Support the heartbeat reports (hub_client.go), so the

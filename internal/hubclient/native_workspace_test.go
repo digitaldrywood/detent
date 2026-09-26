@@ -467,3 +467,53 @@ func TestWorkspaceClaimerClaimsOnlyFromAHubThatServesWorkspaces(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkspaceClaimerRunIdentifier(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		status  int
+		want    string
+		wantErr bool
+	}{
+		{name: "the run's project and number", status: http.StatusOK, want: "prj_test#7"},
+		{name: "an unknown work item", status: http.StatusNotFound, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if !strings.HasSuffix(r.URL.Path, "/work-items/wi_1") {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(test.status)
+				if test.status != http.StatusOK {
+					_ = json.NewEncoder(w).Encode(map[string]string{"code": "not_found", "message": "gone"})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_1", ProjectID: "prj_test", Number: 7}})
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimer, err := NewWorkspaceClaimer(native, WorkspaceLaneConfig{
+				PolicyID: "policy_1", MachineID: "machine_1", SessionID: func() (string, error) { return "s", nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := claimer.RunIdentifier(t.Context(), "wi_1")
+			if (err != nil) != test.wantErr || got != test.want {
+				t.Fatalf("RunIdentifier() = %q, %v; want %q, error %t", got, err, test.want, test.wantErr)
+			}
+		})
+	}
+}

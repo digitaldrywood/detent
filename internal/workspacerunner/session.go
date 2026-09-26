@@ -47,7 +47,7 @@ type Hub interface {
 // the workspace has ended, and must not remove a retained worktree that the
 // attempt's own lifecycle still owns.
 type Worktree interface {
-	Prepare(ctx context.Context, checkout hubclient.WorkspaceCheckout) (string, error)
+	Prepare(ctx context.Context, workspaceID string, checkout hubclient.WorkspaceCheckout) (string, error)
 	Release(ctx context.Context, path string, checkout hubclient.WorkspaceCheckout) error
 }
 
@@ -267,7 +267,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 		}
 	}()
 
-	path, err := s.config.Worktree.Prepare(ctx, bound.Checkout)
+	path, err := s.config.Worktree.Prepare(ctx, s.config.WorkspaceID, bound.Checkout)
 	if err != nil {
 		reason = workspacesession.ReasonCheckoutFailed
 		return fmt.Errorf("prepare workspace worktree: %w", err)

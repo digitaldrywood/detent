@@ -148,6 +148,16 @@ func (c *WorkspaceClaimer) ReleaseWorkspaceLease(ctx context.Context, lease trac
 	return workspaceError(c.native.Release(ctx, lease, reason))
 }
 
+// RunIdentifier is the identifier this runner's own runs of a work item key
+// their worktree on, which is how a retained workspace finds the attempt's.
+func (c *WorkspaceClaimer) RunIdentifier(ctx context.Context, workItemID string) (string, error) {
+	issue, err := c.native.Issue(ctx, tracker.NativeWorkItemID(workItemID))
+	if err != nil {
+		return "", err
+	}
+	return nativeIssueIdentifier(issue), nil
+}
+
 // Native exposes the client the lane hands its sessions, so one construction
 // site wires both halves.
 func (c *WorkspaceClaimer) Native() *NativeClient { return c.native }

@@ -1,7 +1,9 @@
 package workspacerunner_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -15,11 +17,48 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// TestGitWorktreePrepareRelease covers both halves of decisions 18.1: a fresh
-// workspace session gets a worktree of its own that closing removes without
-// leaving a branch behind, and a retained attempt worktree is left exactly
-// where it is, because closing a workspace never deletes the attempt's
-// artifacts.
+const attemptIdentifier = "prj_1#7"
+
+func newGitWorktree(t *testing.T) (*workspacerunner.GitWorktree, *workspace.LocalGit, string, string) {
+	t.Helper()
+	source := initWorktreeSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+	worktrees := &workspacerunner.GitWorktree{
+		Backend: backend, ProjectID: "dogfood",
+		Resolve: func(_ context.Context, workItemID string) (string, error) {
+			if workItemID != "wi_0c1e9fe3" {
+				return "", fmt.Errorf("unknown work item %s", workItemID)
+			}
+			return attemptIdentifier, nil
+		},
+	}
+	return worktrees, backend, source, root
+}
+
+// worktreeDirs lists the worktrees under root, leaving out the backend's own
+// bookkeeping directories.
+func worktreeDirs(t *testing.T, root string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			dirs = append(dirs, entry.Name())
+		}
+	}
+	return dirs
+}
+
 func TestGitWorktreePrepareRelease(t *testing.T) {
 	t.Parallel()
 
@@ -29,43 +68,29 @@ func TestGitWorktreePrepareRelease(t *testing.T) {
 		ref         string
 		wantRemoved bool
 	}{
-		// A session's ref names what to look at, so "main" must not become
-		// the worktree's branch and collide with the source checkout.
 		{name: "fresh session is removed", worktree: workspacesession.WorktreeFresh, ref: "main", wantRemoved: true},
 		{name: "unspecified worktree is a session", worktree: "", ref: "main", wantRemoved: true},
-		{name: "retained attempt is left alone", worktree: workspacesession.WorktreeRetained},
+		{name: "retained attempt is left alone", worktree: workspacesession.WorktreeRetained, ref: "someone-elses-branch"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			source := initWorktreeSourceRepo(t)
+			worktrees, backend, source, _ := newGitWorktree(t)
 			head := strings.TrimSpace(runWorktreeGit(t, source, "rev-parse", "HEAD"))
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
-				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
-			})
-			if err != nil {
-				t.Fatalf("NewLocalGit() error = %v", err)
-			}
-			worktrees := &workspacerunner.GitWorktree{Backend: backend, ProjectID: "dogfood"}
-			checkout := hubclient.WorkspaceCheckout{
-				WorkItemID: "wi_0c1e9fe3", Worktree: tt.worktree, HeadSHA: head, Ref: tt.ref,
-			}
+			checkout := hubclient.WorkspaceCheckout{WorkItemID: "wi_0c1e9fe3", Worktree: tt.worktree, HeadSHA: head, Ref: tt.ref}
 
+			var attempt workspace.Info
 			if tt.worktree == workspacesession.WorktreeRetained {
-				// The attempt made this worktree; the workspace only attaches
-				// to it, so it must already exist under the attempt's own
-				// identifier.
-				if _, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "dogfood", ID: "wi_0c1e9fe3", Identifier: "wi_0c1e9fe3"}); err != nil {
+				var err error
+				attempt, err = backend.Create(t.Context(), workspace.Issue{ProjectID: "dogfood", ID: "wi_0c1e9fe3", Identifier: attemptIdentifier})
+				if err != nil {
 					t.Fatalf("create attempt worktree: %v", err)
 				}
 			}
 
-			path, err := worktrees.Prepare(t.Context(), checkout)
+			path, err := worktrees.Prepare(t.Context(), "ws_1", checkout)
 			if err != nil {
 				t.Fatalf("Prepare() error = %v", err)
-			}
-			if _, statErr := os.Stat(path); statErr != nil {
-				t.Fatalf("prepared worktree missing: %v", statErr)
 			}
 			if err := worktrees.Release(t.Context(), path, checkout); err != nil {
 				t.Fatalf("Release() error = %v", err)
@@ -81,36 +106,82 @@ func TestGitWorktreePrepareRelease(t *testing.T) {
 				}
 				return
 			}
+			if path != attempt.Path {
+				t.Fatalf("retained workspace served %s, want the attempt's %s", path, attempt.Path)
+			}
 			if statErr != nil {
 				t.Fatalf("retained worktree removed: %v", statErr)
 			}
-			if branches := worktreeBranches(t, source); branches == "" {
-				t.Fatalf("retained attempt branch was removed")
+			if branch := strings.TrimSpace(runWorktreeGit(t, path, "rev-parse", "--abbrev-ref", "HEAD")); branch != attempt.Branch {
+				t.Fatalf("retained worktree is on %q, want the attempt's %q", branch, attempt.Branch)
 			}
 		})
 	}
 }
 
-// TestGitWorktreeReleaseSkipsWorktreesItDidNotMake keeps Release honest about
-// the one worktree it is allowed to remove: a path it never created is not
-// its to clean up, whatever the checkout says.
-func TestGitWorktreeReleaseSkipsWorktreesItDidNotMake(t *testing.T) {
+func TestGitWorktreeRetainedNeedsTheAttemptsWorktree(t *testing.T) {
 	t.Parallel()
 
-	source := initWorktreeSourceRepo(t)
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
-		Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewLocalGit() error = %v", err)
+	tests := []struct {
+		name       string
+		workItemID string
+		unresolved bool
+	}{
+		{name: "the attempt worktree is gone", workItemID: "wi_0c1e9fe3"},
+		{name: "the work item cannot be resolved", workItemID: "wi_unknown"},
+		{name: "no resolver is configured", workItemID: "wi_0c1e9fe3", unresolved: true},
 	}
-	issue := workspace.Issue{ProjectID: "dogfood", Identifier: "someone-else"}
-	info, err := backend.Create(t.Context(), issue)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			worktrees, _, _, root := newGitWorktree(t)
+			if tt.unresolved {
+				worktrees.Resolve = nil
+			}
+			_, err := worktrees.Prepare(t.Context(), "ws_1", hubclient.WorkspaceCheckout{
+				WorkItemID: tt.workItemID, Worktree: workspacesession.WorktreeRetained,
+			})
+			if err == nil {
+				t.Fatal("Prepare() error = nil, want a refusal")
+			}
+			if dirs := worktreeDirs(t, root); len(dirs) != 0 {
+				t.Fatalf("a refused retained workspace created worktrees %v", dirs)
+			}
+		})
+	}
+}
+
+func TestGitWorktreeFreshSessionsDoNotShareACheckout(t *testing.T) {
+	t.Parallel()
+	worktrees, _, _, _ := newGitWorktree(t)
+	checkout := hubclient.WorkspaceCheckout{WorkItemID: "wi_0c1e9fe3", Worktree: workspacesession.WorktreeFresh}
+
+	first, err := worktrees.Prepare(t.Context(), "ws_1", checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := worktrees.Prepare(t.Context(), "ws_2", checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("two sessions share the worktree %s", first)
+	}
+	if err := worktrees.Release(t.Context(), first, checkout); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("closing one session removed the other's worktree: %v", err)
+	}
+}
+
+func TestGitWorktreeReleaseSkipsWorktreesItDidNotMake(t *testing.T) {
+	t.Parallel()
+	worktrees, backend, _, _ := newGitWorktree(t)
+	info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "dogfood", Identifier: "someone-else"})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	worktrees := &workspacerunner.GitWorktree{Backend: backend, ProjectID: "dogfood"}
-
 	checkout := hubclient.WorkspaceCheckout{WorkItemID: "wi_0c1e9fe3", Worktree: workspacesession.WorktreeFresh}
 	if err := worktrees.Release(t.Context(), info.Path, checkout); err != nil {
 		t.Fatalf("Release() error = %v", err)
@@ -135,21 +206,15 @@ func TestGitWorktreePrepareRefusesAHeadThatIsNotACommitID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			source := initWorktreeSourceRepo(t)
-			root := filepath.Join(t.TempDir(), "workspaces")
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
-			if err != nil {
-				t.Fatalf("NewLocalGit() error = %v", err)
-			}
-			worktrees := &workspacerunner.GitWorktree{Backend: backend, ProjectID: "dogfood"}
-			_, err = worktrees.Prepare(t.Context(), hubclient.WorkspaceCheckout{
+			worktrees, _, source, root := newGitWorktree(t)
+			_, err := worktrees.Prepare(t.Context(), "ws_1", hubclient.WorkspaceCheckout{
 				WorkItemID: "wi_0c1e9fe3", Worktree: workspacesession.WorktreeFresh, HeadSHA: tt.head,
 			})
 			if err == nil {
 				t.Fatal("Prepare() error = nil, want a refusal")
 			}
-			if _, statErr := os.Stat(filepath.Join(root, "wi_0c1e9fe3-ws")); !errors.Is(statErr, fs.ErrNotExist) {
-				t.Fatalf("a refused checkout left a worktree behind: %v", statErr)
+			if dirs := worktreeDirs(t, root); len(dirs) != 0 {
+				t.Fatalf("a refused checkout left worktrees behind: %v", dirs)
 			}
 			if branches := worktreeBranches(t, source); branches != "" {
 				t.Fatalf("a refused checkout left branches behind: %s", branches)

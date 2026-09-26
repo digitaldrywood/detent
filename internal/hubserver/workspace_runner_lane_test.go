@@ -91,7 +91,7 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	}
 	f.lane, err = workspacerunner.NewLane(workspacerunner.LaneConfig{
 		Claimer: claimer, Hub: native, Logger: discardLogger(), Poll: 50 * time.Millisecond,
-		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: string(f.project.ID)},
+		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: string(f.project.ID), Resolve: claimer.RunIdentifier},
 		Support:  support, Shell: "/bin/sh", Hostname: "runner-host",
 	})
 	if err != nil {

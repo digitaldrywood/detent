@@ -16,44 +16,51 @@ import (
 // GitWorktree produces the checkout a workspace session serves, over the
 // runner's ordinary git worktree backend.
 //
-// The important decision here is that a "fresh" workspace gets a worktree of
-// its own rather than the issue's. The backend derives a worktree's path and
-// branch from the issue identifier, so a workspace reusing that identifier
-// would hold the branch an ordinary run of the same issue needs, and that run
-// would fail with "branch held by worktree at ...". Section 18 does not say
-// what should happen there; giving the workspace its own identifier means the
-// question never arises, and a person opening Files on an issue never blocks
-// the runner from working on it.
+// A "fresh" workspace gets a worktree keyed by the work item and the workspace
+// session, so it never holds the branch an ordinary run of the same issue
+// needs, and two sessions on one issue never share a checkout.
 //
-// A "retained" workspace is the opposite case and uses the issue's own
-// identifier on purpose: the whole point is to show the worktree the attempt
-// produced, and the attempt's own lifecycle still owns it. Such a worktree is
-// never removed when the workspace closes.
+// A "retained" workspace serves the worktree the attempt's run already has,
+// found under the run's own identifier and never created, moved or removed
+// here: the attempt's lifecycle owns it, including its branch.
 type GitWorktree struct {
 	// Backend is the runner's worktree backend.
 	Backend workspace.Backend
 	// ProjectID scopes the worktree key, as it does for a run.
 	ProjectID string
-	// Identify maps a work item onto the identifier the backend keys on. A
-	// nil value uses the work item id, which is what the hub sends.
-	Identify func(workItemID string) string
-	mu       sync.Mutex
+	// Resolve maps a work item onto the identifier the runner's own runs key
+	// their worktrees on. A retained workspace cannot be served without it.
+	Resolve func(ctx context.Context, workItemID string) (string, error)
+	mu      sync.Mutex
 	// created records which paths this type made, so Release removes only
 	// those: a retained worktree belongs to the attempt, not to us.
 	created map[string]workspace.Issue
 }
 
+// existingBackend is the backend lookup a retained workspace needs.
+type existingBackend interface {
+	Existing(workspace.Issue) (workspace.Info, error)
+}
+
 // Prepare produces the worktree the hub asked for.
-func (g *GitWorktree) Prepare(ctx context.Context, checkout hubclient.WorkspaceCheckout) (string, error) {
+func (g *GitWorktree) Prepare(ctx context.Context, workspaceID string, checkout hubclient.WorkspaceCheckout) (string, error) {
 	if g.Backend == nil {
 		return "", errors.New("workspacerunner: a worktree backend is required")
 	}
+	if checkout.Worktree == workspacesession.WorktreeRetained {
+		return g.retained(ctx, checkout)
+	}
+	if strings.TrimSpace(workspaceID) == "" {
+		return "", errors.New("workspacerunner: a fresh workspace needs its session id")
+	}
 	head := strings.TrimSpace(checkout.HeadSHA)
-	detach := checkout.Worktree == workspacesession.WorktreeFresh && head != ""
-	if detach && !commitID(head) {
+	if head != "" && !commitID(head) {
 		return "", fmt.Errorf("workspace head %q is not a commit id", head)
 	}
-	issue := g.issueFor(checkout)
+	issue := workspace.Issue{
+		ProjectID: g.ProjectID, ID: checkout.WorkItemID, Identifier: checkout.WorkItemID + "-" + workspaceID,
+		BaseRef: checkout.Ref, PullRequestHeadSHA: head, WorkspaceSession: true,
+	}
 	info, err := g.Backend.Create(ctx, issue)
 	if err != nil {
 		return "", fmt.Errorf("create workspace worktree: %w", err)
@@ -66,14 +73,31 @@ func (g *GitWorktree) Prepare(ctx context.Context, checkout hubclient.WorkspaceC
 		g.created[info.Path] = issue
 		g.mu.Unlock()
 	}
-	if detach {
-		// The retention window has passed, so the worktree is a new one and
+	if head != "" {
 		// head_sha is what the person asked to look at. Detaching onto it is
 		// deliberate: a workspace produces nothing, so there is no branch for
 		// it to be on.
 		if err := g.checkout(ctx, info.Path, head); err != nil {
 			return "", errors.Join(err, g.Release(ctx, info.Path, checkout))
 		}
+	}
+	return info.Path, nil
+}
+
+// retained finds the attempt's own worktree. The request's ref is ignored:
+// the worktree is served on whatever branch the attempt's run put it.
+func (g *GitWorktree) retained(ctx context.Context, checkout hubclient.WorkspaceCheckout) (string, error) {
+	existing, ok := g.Backend.(existingBackend)
+	if !ok || g.Resolve == nil {
+		return "", errors.New("workspacerunner: this runner cannot locate a retained attempt worktree")
+	}
+	identifier, err := g.Resolve(ctx, checkout.WorkItemID)
+	if err != nil {
+		return "", fmt.Errorf("resolve retained worktree for %s: %w", checkout.WorkItemID, err)
+	}
+	info, err := existing.Existing(workspace.Issue{ProjectID: g.ProjectID, ID: checkout.WorkItemID, Identifier: identifier})
+	if err != nil {
+		return "", fmt.Errorf("find retained worktree for %s: %w", identifier, err)
 	}
 	return info.Path, nil
 }
@@ -113,28 +137,6 @@ func (g *GitWorktree) Release(ctx context.Context, path string, checkout hubclie
 		return fmt.Errorf("clean up workspace worktree: %w", err)
 	}
 	return nil
-}
-
-// issueFor builds the backend's view of what to check out.
-func (g *GitWorktree) issueFor(checkout hubclient.WorkspaceCheckout) workspace.Issue {
-	identifier := checkout.WorkItemID
-	if g.Identify != nil {
-		identifier = g.Identify(checkout.WorkItemID)
-	}
-	session := checkout.Worktree != workspacesession.WorktreeRetained
-	if session {
-		// A workspace of its own, so it cannot hold the branch an ordinary run
-		// of the same issue needs.
-		identifier = identifier + "-ws"
-	}
-	return workspace.Issue{
-		ProjectID: g.ProjectID, ID: checkout.WorkItemID, Identifier: identifier,
-		BranchName: checkout.Ref, BaseRef: checkout.Ref, PullRequestHeadSHA: checkout.HeadSHA,
-		// The backend puts a session worktree in its own branch namespace, so
-		// closing one removes the branch instead of retaining it as an
-		// attempt's unpushed work.
-		WorkspaceSession: session,
-	}
 }
 
 // checkout detaches the worktree onto a commit.

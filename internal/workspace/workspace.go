@@ -688,6 +688,23 @@ func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 	}, nil
 }
 
+// Existing reports the worktree this backend keeps for issue without creating
+// one. It answers ErrMissingWorkspace when that worktree is not on disk.
+func (l *LocalGit) Existing(issue Issue) (Info, error) {
+	info, err := l.infoForIssue(issue)
+	if err != nil {
+		return Info{}, err
+	}
+	exists, isDir, err := pathExists(info.Path)
+	if err != nil {
+		return Info{}, err
+	}
+	if !exists || !isDir {
+		return Info{}, ErrMissingWorkspace
+	}
+	return info, nil
+}
+
 func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
 	info, err := l.infoForIssue(issue)
 	if err != nil {
