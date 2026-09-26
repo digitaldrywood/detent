@@ -76,6 +76,40 @@ legacy deployment/migration input; the shared product uses registry allocations
 and scoped navigation, not cross-origin redirects. See [the RFC routing trust
 boundary](cloud-hub-rfc.md#shared-site-control-and-tenant-storage).
 
+### Conversation coordinator
+
+The optional `conversation` section enables chat. With a `codex` subsection the
+Hub answers conversations that have no linked issue on its own Codex backend:
+
+```yaml
+conversation:
+  enabled: true
+  model: gpt-6-astra
+  reasoning_effort: low
+  workspace: /srv/detent-coordinator
+  codex:
+    command: codex app-server
+```
+
+`reasoning_effort` must be `low`, `medium` or `high`. `workspace` must be an
+existing directory dedicated to the coordinator. It must not contain Hub state:
+no Hub database, hosted configuration, secrets or backups, and the Hub refuses
+to start when the database or hosted configuration lies inside it. Codex's
+read-only sandbox blocks writes and network access but still permits reads of
+files the Hub user can read, so also run the Hub under an account that cannot
+read other tenants' data.
+
+The Hub starts the coordinator's Codex process in the workspace with an
+allowlisted environment: `PATH`, locale, TLS and proxy variables, and the
+provider's own `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`,
+`OPENAI_PROJECT` and `CODEX_API_KEY`. WorkOS, Stripe, admin token and database
+variables are never passed. `HOME`, `CODEX_HOME` and the temporary directory
+point at `.detent-coordinator/` inside the workspace, and the dedicated Codex
+home links only `auth.json` from the operator's Codex home (`CODEX_HOME`, or
+`~/.codex`), so no configuration, MCP servers or skills are loaded. Every
+coordinator turn runs with the `read-only` sandbox and the `never` approval
+policy regardless of `codex.options`.
+
 ### Shared-entry tenant configuration
 
 A dedicated tenant Hub behind the shared entry adds `shared_entry` to its hosted

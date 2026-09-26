@@ -26,7 +26,7 @@ func TestReadConversationConfig(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	builder := func(command string, _ workflowconfig.CodexOptions) (runnerpkg.AgentBackend, error) {
+	builder := func(command string, _ workflowconfig.CodexOptions, _ string) (runnerpkg.AgentBackend, error) {
 		return stubConversationBackend{command: command}, nil
 	}
 	codexSection := func(command, workspace string) *hostedConversationFileConfig {
@@ -57,11 +57,14 @@ func TestReadConversationConfig(t *testing.T) {
 		{name: "invalid settle window", section: &hostedConversationFileConfig{Enabled: true, SettleWindow: "eventually"}, wantErr: true},
 		{name: "negative settle window", section: &hostedConversationFileConfig{Enabled: true, SettleWindow: "-1h"}, wantErr: true},
 		{name: "negative queue size", section: &hostedConversationFileConfig{Enabled: true, ControlQueueSize: -1}, wantErr: true},
+		{name: "unsupported reasoning effort", section: &hostedConversationFileConfig{Enabled: true, ReasoningEffort: "xhigh"}, wantErr: true},
+		{name: "auto is not a configured reasoning effort", section: &hostedConversationFileConfig{Enabled: true, ReasoningEffort: "auto"}, wantErr: true},
+		{name: "misspelled reasoning effort", section: &hostedConversationFileConfig{Enabled: true, ReasoningEffort: "hihg"}, wantErr: true},
 		{name: "codex without workspace", section: codexSection("codex", ""), wantErr: true},
 		{name: "codex with missing workspace", section: codexSection("codex", filepath.Join(workspace, "missing")), wantErr: true},
 		{name: "codex with a file as workspace", section: codexSection("codex", file), wantErr: true},
 		{
-			name: "codex with the default command", section: codexSection("", workspace), wantEnabled: true, wantCommand: "codex",
+			name: "codex with the default command", section: codexSection("", workspace), wantEnabled: true, wantCommand: "codex app-server",
 			want: hubserver.ConversationConfig{Enabled: true, Model: "gpt-6-astra", ReasoningEffort: "low", Workspace: workspace, QuestionTimeout: 2 * time.Hour, SettleWindow: 6 * time.Hour, ControlQueueSize: 8},
 		},
 		{
@@ -108,7 +111,7 @@ func TestReadConversationConfigBackendFailure(t *testing.T) {
 	t.Parallel()
 	section := &hostedConversationFileConfig{Enabled: true, Workspace: t.TempDir(), Codex: &hostedConversationCodexFileConfig{}}
 	want := errors.New("boom")
-	_, _, err := readConversationConfig(section, func(string, workflowconfig.CodexOptions) (runnerpkg.AgentBackend, error) { return nil, want }, os.Stat)
+	_, _, err := readConversationConfig(section, func(string, workflowconfig.CodexOptions, string) (runnerpkg.AgentBackend, error) { return nil, want }, os.Stat)
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v, want %v", err, want)
 	}
