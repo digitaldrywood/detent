@@ -156,3 +156,50 @@ func hostedBillingMessage(state hostedBillingState, now time.Time) (string, stri
 		return "Subscription needs attention", "This subscription is paused or outside the approved plan configuration. Use the portal or contact your organization operator."
 	}
 }
+
+type hostedBillingPriceView struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+type hostedBillingView struct {
+	hostedBillingReport
+	Prices          []hostedBillingPriceView `json:"prices"`
+	CanCheckout     bool                     `json:"can_checkout"`
+	CanManage       bool                     `json:"can_manage"`
+	CheckoutPending bool                     `json:"checkout_pending"`
+}
+
+func (s *Service) hostedBillingJSON(c echo.Context) error {
+	credential, err := s.hostedBillingOwner(c)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
+	}
+	ctx := c.Request().Context()
+	if err := s.hostedAudit(ctx, credential.Hosted, "billing_viewed", c.Path(), "", http.StatusOK); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	report, err := s.hostedBillingReport(ctx)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing information is temporarily unavailable"})
+	}
+	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
+	if cfg := s.config.Hosted.Billing; cfg != nil {
+		for _, price := range cfg.Prices {
+			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: price.Label})
+		}
+		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == ""
+		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {
+			view.CanManage = true
+		}
+		var raw string
+		if err := s.database.db.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
+			var checkout hostedCheckout
+			view.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
+		}
+	}
+	if view.Audit == nil {
+		view.Audit = []templates.HostedBillingAudit{}
+	}
+	return c.JSON(http.StatusOK, view)
+}

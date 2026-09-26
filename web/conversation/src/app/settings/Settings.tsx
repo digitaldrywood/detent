@@ -432,6 +432,45 @@ export function PlanSettings(): React.ReactElement {
   );
 }
 
+/** A plain sentence for each billing state the hub reports. */
+export function billingStatusText(report: BillingReport): { title: string; description: string } {
+  const state = report.state;
+  const plan = state.plan.id === "" ? report.entitlement.effective_base.id : state.plan.id;
+  const until = (value: string) => (value.startsWith("0001-") || value === "" ? "" : new Date(value).toLocaleDateString());
+  switch (state.status) {
+    case "":
+    case "free":
+      return report.entitlement.source === "grant"
+        ? { title: "Complimentary access", description: `Plan ${plan}, granted by Detent.` }
+        : { title: "Free plan", description: `Plan ${plan}. No payment details are on file.` };
+    case "active":
+      return { title: "Subscribed", description: `Plan ${plan} · paid through ${until(state.paid_through)}` };
+    case "trialing":
+      return { title: "Trial", description: `Plan ${plan} · trial access until ${until(state.access_until)}` };
+    case "canceling":
+      return { title: "Canceling", description: `Plan ${plan} ends ${until(state.access_until)}` };
+    case "grace":
+      return {
+        title: "Payment needed",
+        description: `The last payment failed. Access continues until ${until(state.grace_until)}; update the payment method in the billing portal.`,
+      };
+    case "payment_failed":
+      return { title: "Payment failed", description: "Update the payment method in the billing portal. Existing work and exports stay available." };
+    default:
+      return { title: `Subscription ${state.status.replaceAll("_", " ")}`, description: `Plan ${plan}` };
+  }
+}
+
+/** The notice after Checkout sends the owner back with `?checkout=returned`. */
+export function billingReturnNotice(search: string): string | null {
+  const params = new URLSearchParams(search);
+  const checkout = params.get("checkout");
+  if (checkout === "returned" || checkout === "success") {
+    return "Back from checkout. Your plan changes as soon as Stripe confirms the payment.";
+  }
+  return null;
+}
+
 export function BillingSettings(): React.ReactElement {
   const api = useAccountApi();
   const billing = useResource<BillingReport>(() => api.billing(), [api]);
@@ -445,6 +484,8 @@ export function BillingSettings(): React.ReactElement {
     globalThis.location?.assign(result.url);
     return result;
   });
+  const notice = billingReturnNotice(globalThis.location?.search ?? "");
+  const status = billing.value === undefined ? null : billingStatusText(billing.value);
 
   return (
     <SettingsPageContainer>
@@ -453,6 +494,13 @@ export function BillingSettings(): React.ReactElement {
         title="Billing"
         icon={<CreditCardIcon className="size-3.5" />}
       >
+        {notice === null ? null : (
+          <SettingsRow title="">
+            <p role="status" className="pb-3 text-sm">
+              {notice}
+            </p>
+          </SettingsRow>
+        )}
         {billing.loading && billing.value === undefined ? (
           <SettingsRow title="Loading billing" />
         ) : billing.error !== null ? (
@@ -464,23 +512,29 @@ export function BillingSettings(): React.ReactElement {
                 : billing.error.message
             }
           />
-        ) : billing.value === undefined ? null : (
+        ) : billing.value === undefined || status === null ? null : (
           <>
             <SettingsRow
-              title={`Subscription ${billing.value.state.status}`}
-              description={`Plan ${billing.value.state.plan.id} · paid through ${billing.value.state.paid_through}`}
+              title={status.title}
+              description={status.description}
               status={`Reconciled ${billing.value.reconciled_at || "never"}`}
               control={
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={portal.pending}
+                  disabled={portal.pending || billing.value.can_manage === false}
                   onClick={() => void portal.call()}
                 >
                   {portal.pending ? "Opening…" : "Billing portal"}
                 </Button>
               }
             />
+            {billing.value.checkout_pending === true ? (
+              <SettingsRow
+                title="Checkout in progress"
+                description="A checkout is still open. Finish it, or wait for it to expire before choosing another plan."
+              />
+            ) : null}
             {billing.value.prices.map((price) => (
               <SettingsRow
                 key={price.id}
