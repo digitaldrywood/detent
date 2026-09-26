@@ -349,8 +349,16 @@ Known limitations and observations:
   applies the built-in pilot allowances (10 projects, 10 members, 5 concurrent
   work items) unless `entitlements` is configured. No billing is involved, but
   operators should know the default quota exists.
-- In shared mode tenants return 404 for `/webhooks/stripe`, so paid activation
-  needs its own routing (#2343).
+- Since #3092 the shared entry receives Stripe webhooks at
+  `/webhooks/stripe/:mode` and can provision hosted customers (tenants still
+  return 404 for their own `/webhooks/stripe`). That paid path is #2343 scope and
+  is not exercised here; this acceptance keeps Stripe unconfigured.
+- Since #3094 the entry serves the React client for sign-in, chooser and
+  provisioning screens when it is built. The Go acceptance pins the
+  server-rendered entry pages (`clientFS` empty) and the browser captures in
+  `shared-origin/` were taken before #3094 merged, so they show the
+  server-rendered pages. The client's JSON entry API is covered by
+  `TestEntryServesClientAndJSON`.
 - Hosted cost measurements remain unmeasured, as in the worksheet above.
 
 Operator prerequisites for a live shared-site run: WorkOS client ID and API key,

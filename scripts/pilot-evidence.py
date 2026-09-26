@@ -82,6 +82,7 @@ SHARED_ORIGIN_SUITES = {
     "cloudentry": [
         "TestSharedOriginPilotAcceptance",
         "TestSameOriginBrowserMutations",
+        "TestEntryServesClientAndJSON",
         "TestSharedEntryTwoOrganizationsOneOrigin",
         "TestSharedEntryBoundaries",
         "TestSharedEntryLoginTransactions",

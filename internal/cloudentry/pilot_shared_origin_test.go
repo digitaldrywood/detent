@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -161,7 +162,7 @@ func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	t.Helper()
 	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, MaxPerIdentity: 1, RetryLimit: retryLimit, Launcher: p.launcher}
 	service, err := Open(t.Context(), Config{PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), Allocation: allocation})
+		StaffEmails: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation})
 	if err != nil {
 		t.Fatal(err)
 	}
