@@ -37,6 +37,7 @@ type conversationHub struct {
 	hangEvents    chan struct{}
 	rejectKey     string
 	rejectType    string
+	bindHang      bool
 	unbinds       []ConversationUnbindRequest
 	staleCalls    int
 	controlsDeny  int
@@ -129,6 +130,16 @@ func (h *conversationHub) serveBind(w http.ResponseWriter, r *http.Request) {
 	var request ConversationBindRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		h.t.Errorf("decode bind: %v", err)
+	}
+	h.mu.Lock()
+	hang := h.bindHang
+	h.mu.Unlock()
+	if hang {
+		select {
+		case <-h.hangEvents:
+		case <-r.Context().Done():
+		}
+		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1060,9 +1071,121 @@ func TestNativeConversationDeclinesQuestionsTheHubDropped(t *testing.T) {
 				if err := command.Check(t.Context()); err != nil {
 					t.Fatalf("decline check = %v", err)
 				}
+				execution.scheduler.mu.Lock()
+				claim := execution.scheduler.nativeClaims[string(execution.claim.lease.WorkItemID)]
+				claim.deadline = time.Now().Add(-time.Minute)
+				execution.scheduler.nativeClaims[string(execution.claim.lease.WorkItemID)] = claim
+				execution.scheduler.mu.Unlock()
+				if err := command.Check(t.Context()); !errors.Is(err, runner.ErrStaleConversationControl) {
+					t.Fatalf("decline check after lease loss = %v, want stale", err)
+				}
 			case <-time.After(10 * time.Second):
 				t.Fatal("the dropped question was never declined to the provider")
 			}
 		})
 	}
+}
+
+func TestNativeBindConversationDoesNotHoldTheRun(t *testing.T) {
+	previous := conversationBindTimeout
+	conversationBindTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { conversationBindTimeout = previous })
+	for _, test := range []struct {
+		name    string
+		script  func(*conversationHub)
+		wantErr error
+	}{
+		{name: "hub never answers", script: func(h *conversationHub) { h.bindHang = true }, wantErr: context.DeadlineExceeded},
+		{name: "no conversation", script: func(h *conversationHub) { h.bindStatus, h.bindCode = http.StatusNotFound, "not_found" }, wantErr: runner.ErrNoConversation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub, execution := newConversationHub(t)
+			hub.mu.Lock()
+			test.script(hub)
+			hub.mu.Unlock()
+			started := time.Now()
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				t.Fatalf("bind held the run for %s", elapsed)
+			}
+			if session != nil || !errors.Is(err, test.wantErr) {
+				t.Fatalf("bind = %v, %v, want %v", session, err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestTrimConversationEvents(t *testing.T) {
+	t.Parallel()
+	delta := func(text string) runner.ConversationTurnEvent {
+		return runner.ConversationTurnEvent{Type: runner.ConversationEventDelta, ProviderItemID: "item", Text: text}
+	}
+	started := runner.ConversationTurnEvent{Type: runner.ConversationEventTurnStarted, TurnID: "turn-1"}
+	completed := runner.ConversationTurnEvent{Type: runner.ConversationEventTurnCompleted, TurnID: "turn-1", Status: "completed"}
+	tests := []struct {
+		name        string
+		events      []runner.ConversationTurnEvent
+		limit       int
+		wantTypes   []string
+		wantDropped int
+	}{
+		{name: "under the limit", events: []runner.ConversationTurnEvent{started, delta("ab"), completed}, limit: 10, wantTypes: []string{"turn_started", "delta", "turn_completed"}},
+		{name: "oldest deltas go first", events: []runner.ConversationTurnEvent{started, delta("aaaa"), delta("bbbb"), delta("cc"), completed}, limit: 6, wantTypes: []string{"turn_started", "delta", "delta", "turn_completed"}, wantDropped: 1},
+		{name: "non-delta events are never dropped", events: []runner.ConversationTurnEvent{started, {Type: runner.ConversationEventItem, Summary: "long summary"}, completed}, limit: 1, wantTypes: []string{"turn_started", "item", "turn_completed"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			kept, dropped := trimConversationEvents(test.events, test.limit)
+			types := make([]string, 0, len(kept))
+			for _, event := range kept {
+				types = append(types, event.Type)
+			}
+			if strings.Join(types, ",") != strings.Join(test.wantTypes, ",") || dropped != test.wantDropped {
+				t.Fatalf("kept %v dropped %d, want %v dropped %d", types, dropped, test.wantTypes, test.wantDropped)
+			}
+		})
+	}
+}
+
+func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
+	useFastConversationTimings(t)
+	previous := conversationMaxQueuedBytes
+	conversationMaxQueuedBytes = 4096
+	t.Cleanup(func() { conversationMaxQueuedBytes = previous })
+	hub, execution := newConversationHub(t)
+	hub.mu.Lock()
+	hub.hangReports = true
+	hub.mu.Unlock()
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	if err != nil {
+		t.Fatalf("bind error = %v", err)
+	}
+	native := session.(*conversationSession)
+	if err := session.Report(t.Context(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	hub.waitFor(t, "the first post to stall", func() bool { return hub.reportCallCount() > 0 })
+	for index := range 200 {
+		event := runner.ConversationTurnEvent{Type: runner.ConversationEventDelta, ProviderItemID: "item-" + strconv.Itoa(index%3), Text: strings.Repeat("x", 100)}
+		if err := session.Report(t.Context(), []runner.ConversationTurnEvent{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := session.Report(t.Context(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"}}); err != nil {
+		t.Fatal(err)
+	}
+	native.mu.Lock()
+	queued := conversationQueuedBytes(native.events)
+	last := native.events[len(native.events)-1]
+	native.mu.Unlock()
+	if queued > conversationMaxQueuedBytes {
+		t.Fatalf("queued %d bytes while the hub stalls, want at most %d", queued, conversationMaxQueuedBytes)
+	}
+	if last.Type != runner.ConversationEventTurnCompleted {
+		t.Fatalf("last queued event = %#v, want the turn completion kept", last)
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = session.Close(closeCtx, runner.ConversationOutcomeSucceeded, nil)
 }

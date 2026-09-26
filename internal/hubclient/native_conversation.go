@@ -37,6 +37,15 @@ var (
 	// that keeps failing repeats every backoff, so logging each one buries the
 	// runner log; one line a minute says the same thing and carries the count.
 	conversationPollWarnInterval = time.Minute
+	// conversationBindTimeout bounds the bind every native run makes before
+	// its first turn. The runner cannot tell a conversation-linked run from
+	// an ordinary one before asking, so a slow hub may delay an ordinary run
+	// by at most this much; a bind that fails runs without a conversation.
+	conversationBindTimeout = 2 * time.Second
+	// conversationMaxQueuedBytes bounds the event text a session holds while
+	// posting is slow or failing. Past it the oldest streamed deltas are
+	// dropped; every other event is kept.
+	conversationMaxQueuedBytes = 1 << 20
 )
 
 const (
@@ -211,7 +220,9 @@ func (e *nativeExecution) BindConversation(ctx context.Context, capabilities run
 		return nil, runner.ErrNoConversation
 	}
 	identity := ConversationIdentity{LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken, AttemptID: e.data.AttemptID}
-	response, err := e.claim.source.client.BindConversation(ctx, e.claim.lease.WorkItemID, ConversationBindRequest{ConversationIdentity: identity, RunID: e.data.RunID, Capabilities: capabilities})
+	bindCtx, cancel := context.WithTimeout(ctx, conversationBindTimeout)
+	response, err := e.claim.source.client.BindConversation(bindCtx, e.claim.lease.WorkItemID, ConversationBindRequest{ConversationIdentity: identity, RunID: e.data.RunID, Capabilities: capabilities})
+	cancel()
 	if err != nil {
 		return nil, err
 	}
@@ -414,11 +425,60 @@ func (s *conversationSession) Report(_ context.Context, events []runner.Conversa
 		}
 	}
 	s.events = append(s.events, events...)
+	s.boundQueuedLocked()
 	select {
 	case s.kick <- struct{}{}:
 	default:
 	}
 	return nil
+}
+
+// boundQueuedLocked keeps the queued events under conversationMaxQueuedBytes
+// while posting is slow or failing: adjacent deltas are merged first, then
+// the oldest deltas are dropped. Turn, question, item and control events are
+// never dropped. s.mu is held by the caller.
+func (s *conversationSession) boundQueuedLocked() {
+	if conversationQueuedBytes(s.events) <= conversationMaxQueuedBytes {
+		return
+	}
+	var dropped int
+	s.events, dropped = trimConversationEvents(coalesceConversationDeltas(s.events), conversationMaxQueuedBytes)
+	if dropped > 0 {
+		s.logger.Warn("conversation deltas dropped while the hub is slow", "dropped", dropped, "limit_bytes", conversationMaxQueuedBytes)
+	}
+}
+
+func conversationEventBytes(event runner.ConversationTurnEvent) int {
+	return len(event.Text) + len(event.Summary) + len(event.Error) + len(event.Prompts)
+}
+
+func conversationQueuedBytes(events []runner.ConversationTurnEvent) int {
+	total := 0
+	for _, event := range events {
+		total += conversationEventBytes(event)
+	}
+	return total
+}
+
+// trimConversationEvents drops the oldest deltas until the events fit limit,
+// keeping order and every event that is not a delta. It reports how many
+// deltas it dropped.
+func trimConversationEvents(events []runner.ConversationTurnEvent, limit int) ([]runner.ConversationTurnEvent, int) {
+	excess := conversationQueuedBytes(events) - limit
+	if excess <= 0 {
+		return events, 0
+	}
+	kept := make([]runner.ConversationTurnEvent, 0, len(events))
+	dropped := 0
+	for _, event := range events {
+		if excess > 0 && event.Type == runner.ConversationEventDelta {
+			excess -= conversationEventBytes(event)
+			dropped++
+			continue
+		}
+		kept = append(kept, event)
+	}
+	return kept, dropped
 }
 
 // Close stops polling, settles outstanding controls, flushes the remaining
@@ -551,16 +611,7 @@ func (s *conversationSession) deliver(ctx context.Context, control ConversationC
 		s.cursor = control.Cursor
 	}
 	s.mu.Unlock()
-	expected := control.Expected.AttemptID
-	command.Check = func(ctx context.Context) error {
-		if expected != "" && expected != s.identity.AttemptID {
-			return fmt.Errorf("%w: control expects attempt %q, this attempt is %q", runner.ErrStaleConversationControl, expected, s.identity.AttemptID)
-		}
-		if s.leaseCheck != nil {
-			return s.leaseCheck(ctx)
-		}
-		return nil
-	}
+	command.Check = s.ownerCheck(control.Expected.AttemptID)
 	s.waiters.Add(1)
 	go s.await(control.Key, command, ended)
 	select {
@@ -580,6 +631,21 @@ func (s *conversationSession) deliver(ctx context.Context, control ConversationC
 		s.drainCommands()
 	}
 	return true
+}
+
+// ownerCheck is the check a control runs immediately before it is written to
+// the provider: the control must be meant for this attempt, when it names one,
+// and the attempt's lease must still be current.
+func (s *conversationSession) ownerCheck(expected string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if expected != "" && expected != s.identity.AttemptID {
+			return fmt.Errorf("%w: control expects attempt %q, this attempt is %q", runner.ErrStaleConversationControl, expected, s.identity.AttemptID)
+		}
+		if s.leaseCheck != nil {
+			return s.leaseCheck(ctx)
+		}
+		return nil
+	}
 }
 
 // await turns a control's Reply into a control_result. A turn end or session
@@ -714,7 +780,7 @@ func (s *conversationSession) declineQuestions(events []runner.ConversationTurnE
 		}
 		command := runner.AgentControl{
 			Kind: runner.AgentControlAnswer, ThreadID: event.ThreadID, TurnID: event.TurnID, RequestID: event.RequestID,
-			Answers: answers, Check: func(context.Context) error { return nil }, Reply: make(chan error, 1),
+			Answers: answers, Check: s.ownerCheck(""), Reply: make(chan error, 1),
 		}
 		s.mu.Lock()
 		queued := false
@@ -794,6 +860,10 @@ func conversationBatchKey() string {
 // conversationBatchCounter keeps the fallback key unique within the process.
 var conversationBatchCounter atomic.Int64
 
+// conversationMaxDeltaBytes is the hub's limit on one delta's text; merged
+// deltas stay under it.
+const conversationMaxDeltaBytes = 64 * 1024
+
 // coalesceConversationDeltas merges adjacent deltas of the same provider
 // item so a streamed message costs one event per flush.
 func coalesceConversationDeltas(events []runner.ConversationTurnEvent) []runner.ConversationTurnEvent {
@@ -801,7 +871,7 @@ func coalesceConversationDeltas(events []runner.ConversationTurnEvent) []runner.
 	for _, event := range events {
 		if event.Type == runner.ConversationEventDelta && len(merged) > 0 {
 			last := &merged[len(merged)-1]
-			if last.Type == runner.ConversationEventDelta && last.ProviderItemID == event.ProviderItemID && last.MessageID == event.MessageID {
+			if last.Type == runner.ConversationEventDelta && last.ProviderItemID == event.ProviderItemID && last.MessageID == event.MessageID && len(last.Text)+len(event.Text) <= conversationMaxDeltaBytes {
 				last.Text += event.Text
 				continue
 			}
