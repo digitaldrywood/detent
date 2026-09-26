@@ -21,8 +21,19 @@ CREATE TABLE organizations_next (
 );
 INSERT INTO organizations_next(id,provider_id,name,state,endpoint,generation,created_at,updated_at)
   SELECT id,provider_id,name,state,endpoint,generation,created_at,updated_at FROM organizations;
+CREATE TABLE organization_events_next (
+  id INTEGER PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations_next(id),
+  event TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+INSERT INTO organization_events_next(id,organization_id,event,generation,recorded_at)
+  SELECT id,organization_id,event,generation,recorded_at FROM organization_events;
+DROP TABLE organization_events;
 DROP TABLE organizations;
 ALTER TABLE organizations_next RENAME TO organizations;
+ALTER TABLE organization_events_next RENAME TO organization_events;
 CREATE UNIQUE INDEX organizations_provider ON organizations(provider_id) WHERE provider_id != '';
 CREATE INDEX organizations_creator ON organizations(creator_subject, state);
 

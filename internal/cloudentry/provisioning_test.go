@@ -301,3 +301,27 @@ func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
 		}
 	}
 }
+
+func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
+	t.Parallel()
+	f := newProvisioningFixture(t, 3, nil)
+	dana := newBrowser(t, f.service.Handler())
+	dana.login("/auth/oidc/start", "user_dana:")
+	id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+	f.waitState(t, id, "ready")
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state = 'deleting' WHERE id = ?", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.open(t, 3, func(a *AllocationConfig) { a.MinAvailableMemoryBytes = 1 << 62 })
+	f.service.wakeAllocator()
+	f.waitState(t, id, "deleted")
+	eve := newBrowser(t, f.service.Handler())
+	eve.login("/auth/oidc/start", "user_eve:")
+	blocked := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
+	if failed := f.waitState(t, blocked, "failed"); failed.ErrorCode != "capacity" {
+		t.Fatalf("memory floor admission = %+v", failed)
+	}
+}

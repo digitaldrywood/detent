@@ -94,7 +94,7 @@ allocation:
 
 `max_tenants` and the free-memory/disk floors are admission limits: a request that
 does not fit is stored as a retryable `capacity` failure before any provider or
-filesystem effect, and ready tenants are never disturbed. Set them from measured
+filesystem effect, and ready tenants are never disturbed. The memory floor reads Linux `MemAvailable`; where memory cannot be measured a configured floor refuses admission, so leave it at 0 on other platforms. Set the limits from measured
 tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pilot;
 empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
@@ -111,7 +111,7 @@ own admin token. Each tenant owns its SQLite file exclusively; never place
 Deletion is owner-only (`/organizations/ORG/delete`, current provider owner, typed
 name, CSRF). It marks the organization `deleting`, revokes every authorization and
 tenant session, stops the tenant and records a permanent `deleted` tombstone that
-cannot be routed or resurrected. Tenant data stays on disk for the operator's
+cannot be routed or resurrected; an interrupted deletion resumes automatically. Tenant data stays on disk for the operator's
 published retention process; the entry never erases customer data, including after
 a failed signup.
 

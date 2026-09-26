@@ -86,6 +86,7 @@ func (s *Service) startAllocator(parent context.Context) {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
+			s.resumeDeletions(ctx)
 			s.provisionDue(ctx)
 			select {
 			case <-ctx.Done():
@@ -303,7 +304,7 @@ func (s *Service) admit(ctx context.Context, id string) error {
 		}
 	}
 	if allocation.MinAvailableMemoryBytes > 0 {
-		if available, ok := availableMemoryBytes(); ok && available < allocation.MinAvailableMemoryBytes {
+		if available, ok := availableMemoryBytes(); !ok || available < allocation.MinAvailableMemoryBytes {
 			return errCapacity
 		}
 	}
@@ -558,21 +559,55 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 	}
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	revoked, err := s.auth.revokeOrganization(detached, organization.ID)
-	if err == nil {
-		s.revokeAtTenants(detached, revoked)
-		err = s.config.Allocation.Launcher.Stop(organization.ID)
-	}
-	if err == nil {
-		_, err = s.registry.store.db.ExecContext(detached, "UPDATE organizations SET state = 'deleted', updated_at = ? WHERE id = ? AND state = 'deleting'", formatTime(s.config.now()), organization.ID)
-	}
-	if err != nil {
-		return s.denied(c, http.StatusServiceUnavailable, "Deletion is pending; retry to finish it")
+	if err := s.finishDeletion(detached, organization.ID); err != nil {
+		return s.denied(c, http.StatusServiceUnavailable, "Deletion is pending; it resumes automatically")
 	}
 	if err := s.auth.audit(detached, session.Subject, organization.ID, "organization_deleted"); err != nil {
 		s.config.Logger.Warn("organization deletion audit failed", "organization", organization.ID)
 	}
 	return c.Redirect(http.StatusSeeOther, "/organizations")
+}
+
+func (s *Service) finishDeletion(ctx context.Context, id string) error {
+	revoked, err := s.auth.revokeOrganization(ctx, id)
+	if err != nil {
+		return err
+	}
+	s.revokeAtTenants(ctx, revoked)
+	if err := s.config.Allocation.Launcher.Stop(id); err != nil {
+		return err
+	}
+	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = 'deleted', updated_at = ? WHERE id = ? AND state = 'deleting'", formatTime(s.config.now()), id)
+	return err
+}
+
+func (s *Service) deletingOrganizations(ctx context.Context) ([]string, error) {
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM organizations WHERE managed = 1 AND state = 'deleting'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *Service) resumeDeletions(ctx context.Context) {
+	ids, err := s.deletingOrganizations(ctx)
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		if err := s.finishDeletion(ctx, id); err != nil {
+			s.config.Logger.Warn("organization deletion is still pending", "organization", id)
+		}
+	}
 }
 
 func (a *authStore) revokeOrganization(ctx context.Context, organization string) ([]authorization, error) {
