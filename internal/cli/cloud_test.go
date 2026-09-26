@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry"
 )
 
 func TestReadCloudConfig(t *testing.T) {
@@ -85,5 +86,50 @@ func TestCloudRegistryAndKeyCommands(t *testing.T) {
 	output, err = run(map[string]string{"KEY": generated["signing_key"]}, "assertion-key", "--from-env", "KEY")
 	if err != nil || !strings.Contains(output, generated["public_key"]) || strings.Contains(output, generated["signing_key"]) {
 		t.Fatalf("public key output = %q, %v", output, err)
+	}
+}
+
+func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
+	t.Parallel()
+	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+	body := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nstaff_emails: [support@example.test]\nsupport_actors: [support@example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n"
+	path := filepath.Join(t.TempDir(), "cloud.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}
+	config, err := readCloudConfig(path, func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocation := config.Allocation
+	if allocation == nil || allocation.MaxTenants != 4 || allocation.MaxConcurrent != 1 || allocation.MaxPerIdentity != 1 || allocation.RetryLimit != 5 {
+		t.Fatalf("allocation = %+v", allocation)
+	}
+	launcher, ok := allocation.Launcher.(*cloudentry.ExecLauncher)
+	if !ok || launcher.Binary != "/usr/local/bin/detent" || len(launcher.Environment) != 1 || launcher.Environment[0] != "WORKOS_API_KEY=sk_test" {
+		t.Fatalf("launcher = %+v", allocation.Launcher)
+	}
+	key, err := cloudassert.ParsePrivateKey(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := launcher.Configure(cloudentry.TenantSpec{Organization: cloudentry.Organization{ID: "org_tenant", ProviderID: "org_workos", Generation: 1}, PublicURL: "https://hub.example.test", Issuer: "detent-cloud", PublicKey: cloudassert.PublicKeyOf(key)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk_test") || strings.Contains(string(raw), seed) {
+		t.Fatal("tenant configuration contains a secret")
+	}
+	tenantPath := filepath.Join(t.TempDir(), "tenant.yaml")
+	if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatalf("generated tenant configuration is invalid: %v\n%s", err, raw)
+	}
+	if tenant.OrganizationID != "org_tenant" || tenant.WorkOSOrganizationID != "org_workos" || tenant.SharedEntry == nil || tenant.SharedEntry.Generation != 1 || tenant.BootstrapSubject != "" {
+		t.Fatalf("tenant = %+v", tenant)
 	}
 }

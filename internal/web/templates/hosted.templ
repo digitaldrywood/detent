@@ -34,6 +34,12 @@ templ HostedPage(data HostedPageData) {
 						@hostedChooser(data)
 					case "join":
 						@hostedJoin(data)
+					case "create":
+						@hostedCreate(data)
+					case "provisioning":
+						@hostedProvisioningStatus(data)
+					case "delete":
+						@hostedDelete(data)
 					case "onboarding":
 						@hostedOnboarding(data)
 					case "plan":
@@ -176,6 +182,9 @@ templ hostedOnboarding(data HostedPageData) {
 }
 
 templ hostedOrganization(data HostedPageData) {
+	if data.SharedOrigin && data.CanManageOwnership && data.SupportActor == "" {
+		<a href={ hostedURL(data, "/delete") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium text-err focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Delete organization</a>
+	}
 	if data.CanManageOwnership && data.SupportActor == "" {
 		<a href={ hostedURL(data, "/organization/billing") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Billing and subscriptions</a>
 	}
@@ -377,7 +386,73 @@ templ hostedChooser(data HostedPageData) {
 				}
 			</ul>
 		}
-		<a href="/invitations/join" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join with invitation</a>
+		if len(data.PendingOrganizations) > 0 {
+			<h3 class="font-semibold">Being set up</h3>
+			<ul class="space-y-2">
+				for _, organization := range data.PendingOrganizations {
+					<li>
+						<a href={ templ.SafeURL("/organizations/" + organization.ID + "/provisioning") } class="flex min-h-11 items-center justify-between gap-3 break-words rounded-card border border-line px-4 text-sm hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+							<span>{ organization.Name }</span>
+							<span class="text-sec">{ hostedProvisioningLabel(organization.Status) }</span>
+						</a>
+					</li>
+				}
+			</ul>
+		}
+		<div class="flex flex-wrap gap-3">
+			if data.CanCreate {
+				<a href="/organizations/new" class="inline-flex min-h-11 items-center rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Create organization</a>
+			}
+			<a href="/invitations/join" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join with invitation</a>
+		</div>
+	</section>
+}
+
+templ hostedCreate(data HostedPageData) {
+	<section class="max-w-lg space-y-4 rounded-card border border-line bg-surface p-6">
+		<h2 class="text-lg font-semibold">Create an organization</h2>
+		<p class="text-sm text-sec">You become its owner. The free plan applies; no payment details are needed.</p>
+		<form method="post" action="/organizations" class="space-y-3">
+			@hostedCSRF(data.CSRF)
+			<input type="hidden" name="creation_key" value={ data.CreationKey }/>
+			<label for="organization-name" class="block text-sm font-medium">Organization name</label>
+			<input id="organization-name" name="name" required maxlength="120" autocomplete="organization" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"/>
+			<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Create organization</button>
+		</form>
+		<a href="/organizations" class="inline-flex min-h-11 items-center text-sm text-accent">Back to organizations</a>
+	</section>
+}
+
+templ hostedProvisioningStatus(data HostedPageData) {
+	if data.Provisioning.State == "requested" || data.Provisioning.State == "allocating" {
+		<meta http-equiv="refresh" content="3"/>
+	}
+	<section class="max-w-lg space-y-4 rounded-card border border-line bg-surface p-6" data-provisioning-state={ data.Provisioning.State }>
+		<h2 class="break-words text-lg font-semibold">{ data.Provisioning.Name }</h2>
+		<p class="text-sm" role="status">{ hostedProvisioningLabel(data.Provisioning.State) }</p>
+		if data.Provisioning.Error != "" {
+			<p class="break-words rounded-card border border-warn/50 bg-warn/10 p-3 text-sm" role="alert">{ data.Provisioning.Error }</p>
+		}
+		if data.Provisioning.CanResume {
+			<form method="post" action={ templ.SafeURL("/organizations/" + data.Provisioning.ID + "/provisioning/resume") }>
+				@hostedCSRF(data.CSRF)
+				<button type="submit" class="min-h-11 rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Resume setup</button>
+			</form>
+		}
+		<a href="/organizations" class="inline-flex min-h-11 items-center text-sm text-accent">Back to organizations</a>
+	</section>
+}
+
+templ hostedDelete(data HostedPageData) {
+	<section class="max-w-lg space-y-4 rounded-card border border-err/40 bg-surface p-6">
+		<h2 class="break-words text-lg font-semibold">Delete { data.OrganizationName }</h2>
+		<p class="text-sm text-sec">Deletion stops the organization's Hub, signs every member out of it and closes it to new work. Stored data is retained for the operator's documented retention process; it is not restored to you.</p>
+		<form method="post" action={ templ.SafeURL("/organizations/" + data.OrganizationID + "/delete") } class="space-y-3">
+			@hostedCSRF(data.CSRF)
+			<label for="delete-confirm" class="block text-sm font-medium">Type the organization name to confirm</label>
+			<input id="delete-confirm" name="confirm" required autocomplete="off" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"/>
+			<button type="submit" class="min-h-11 rounded-card border border-err/60 px-4 text-sm font-semibold text-err focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Delete organization</button>
+		</form>
 	</section>
 }
 

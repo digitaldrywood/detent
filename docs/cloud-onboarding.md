@@ -18,6 +18,21 @@ or host identity.
 
 ## Organization provisioning and recovery
 
+Implemented by `detent cloud serve` when its configuration has an `allocation`
+block (see [shared entry](examples/hub/README.md#self-service-provisioning)). Without
+that block the shared entry offers no creation and routes only registered tenants.
+The entry keeps each intent in its registry keyed by the verified subject and a
+per-form creation key, and advances it through the checkpoints below with bounded
+retries (`retry_limit`, exponential backoff up to five minutes). WorkOS creation is
+recovered by the organization's external ID, owner membership is looked up before it
+is created, the tenant database is initialized by the tenant process itself, and
+the tenant accepts the owner only after the provider reports that exact subject as
+an active owner. A restarted entry resumes pending intents and relaunches ready
+tenants. The shared web client screens for these states follow the
+web/conversation client; the entry currently serves minimal pages in the existing
+shell (`/organizations/new`, `/organizations/ORG/provisioning`,
+`/organizations/ORG/delete`) and JSON at `/api/cloud/organizations/ORG/provisioning`.
+
 A verified signed-in identity submits `POST /organizations` with a session-bound
 CSRF token and stable creation idempotency key. Persist a fingerprint of the
 validated creation input and an opaque organization ID before external effects.

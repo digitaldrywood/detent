@@ -27,7 +27,7 @@ import (
 const (
 	assertionLifetime = 20 * time.Second
 	sessionLifetime   = 30 * 24 * time.Hour
-	contentSecurity   = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://checkout.stripe.com https://billing.stripe.com"
+	contentSecurity   = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://checkout.stripe.com https://billing.stripe.com"
 )
 
 type Config struct {
@@ -40,6 +40,7 @@ type Config struct {
 	StateDir      string
 	ListenAddress string
 	Logger        *slog.Logger
+	Allocation    *AllocationConfig
 
 	now           func() time.Time
 	generateToken func() (string, error)
@@ -61,6 +62,9 @@ func (c Config) validate() error {
 	if ip := net.ParseIP(strings.Trim(host, "[]")); err != nil || host != "localhost" && (ip == nil || !ip.IsLoopback()) {
 		return errors.New("shared entry must listen on a loopback address behind the TLS proxy")
 	}
+	if err := c.Allocation.validate(); err != nil {
+		return err
+	}
 	if !safeID(c.Issuer) || len(c.SigningKey) != ed25519.PrivateKeySize || c.Provider == nil || strings.TrimSpace(c.StateDir) == "" {
 		return errors.New("shared entry requires an issuer, signing key, identity provider and state directory")
 	}
@@ -75,6 +79,10 @@ type Service struct {
 	secure     bool
 	transports sync.Map
 	mutationMu sync.Mutex
+
+	stopAllocator context.CancelFunc
+	allocatorDone chan struct{}
+	wake          chan struct{}
 }
 
 func Open(ctx context.Context, cfg Config) (*Service, error) {
@@ -107,6 +115,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.echo.HideBanner, service.echo.HidePort = true, true
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
 	service.routes()
+	service.startAllocator(ctx)
 	return service, nil
 }
 
@@ -119,7 +128,7 @@ func (s *Service) Registry() *Registry {
 }
 
 func (s *Service) Close() error {
-	return errors.Join(s.registry.Close(), s.auth.store.Close())
+	return errors.Join(s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
 }
 
 func Run(ctx context.Context, cfg Config) (resultErr error) {
@@ -163,6 +172,13 @@ func (s *Service) routes() {
 	e.GET("/auth/oidc/start", s.startLogin)
 	e.GET("/auth/oidc/callback", s.completeLogin)
 	e.GET("/organizations", s.chooser)
+	e.GET("/organizations/new", s.newOrganizationPage)
+	e.POST("/organizations", s.createOrganization)
+	e.GET("/organizations/:organization/provisioning", s.provisioningPage)
+	e.POST("/organizations/:organization/provisioning/resume", s.resumeProvisioning)
+	e.GET("/api/cloud/organizations/:organization/provisioning", s.provisioningJSON)
+	e.GET("/organizations/:organization/delete", s.deleteOrganizationPage)
+	e.POST("/organizations/:organization/delete", s.deleteOrganization)
 	e.GET("/api/cloud/organizations", s.organizationsJSON)
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)

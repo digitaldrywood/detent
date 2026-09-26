@@ -299,6 +299,14 @@ func (s *Service) chooser(c echo.Context) error {
 		return s.denied(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")
 	}
 	data := templates.HostedPageData{Mode: "chooser", Title: "Organizations", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, "")}
+	if s.config.Allocation != nil {
+		data.CanCreate = !s.staff(session.Email)
+		pending, err := s.pendingOrganizations(c.Request().Context(), session.Subject)
+		if err != nil {
+			return s.denied(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable")
+		}
+		data.PendingOrganizations = pending
+	}
 	for _, choice := range choices {
 		data.Organizations = append(data.Organizations, templates.HostedOrganizationChoice{ID: choice.ID, Name: choice.Name})
 	}

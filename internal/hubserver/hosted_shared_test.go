@@ -546,3 +546,45 @@ func TestHostedSharedSupportSessionAudit(t *testing.T) {
 		t.Fatalf("support audit events = %v", events)
 	}
 }
+
+func TestHostedSharedOwnerBootstrap(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	identity := func(subject string) *hostedSecurityUser {
+		return &hostedSecurityUser{identity: auth.Identity{Subject: subject, Email: subject + "@example.test", Hosted: &auth.HostedIdentity{Subject: subject}}}
+	}
+	if _, err := f.provider.CreateMembership(t.Context(), "user_member", "org_provider", "member"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.provider.CreateMembership(t.Context(), "user_creator", "org_provider", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"organization_name":"Created organization"}`
+	for _, test := range []struct {
+		name    string
+		subject string
+		body    string
+		status  int
+	}{
+		{"not a provider member", "user_stranger", body, http.StatusForbidden},
+		{"provider member without ownership", "user_member", body, http.StatusForbidden},
+		{"missing name", "user_creator", `{"organization_name":""}`, http.StatusUnprocessableEntity},
+		{"verified owner", "user_creator", body, http.StatusNoContent},
+		{"repeat", "user_creator", body, http.StatusNoContent},
+		{"second owner claim", "user_member", body, http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := f.serve(t, hostedSharedRequest{user: identity(test.subject), kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/owner/bootstrap", body: test.body})
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+		})
+	}
+	var name, role string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT o.name, m.role FROM organizations o, hosted_members m WHERE m.user_id = 'user_creator'").Scan(&name, &role); err != nil || name != "Created organization" || role != "owner" {
+		t.Fatalf("bootstrap result = %q %q %v", name, role, err)
+	}
+	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/health", body: `{}`}); response.Code != http.StatusNoContent {
+		t.Fatalf("health = %d", response.Code)
+	}
+}

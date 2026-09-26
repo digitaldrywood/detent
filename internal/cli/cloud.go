@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 type cloudFileConfig struct {
@@ -35,6 +36,34 @@ type cloudFileConfig struct {
 		APIURL    string `yaml:"api_url"`
 		IssuerURL string `yaml:"issuer_url"`
 	} `yaml:"workos"`
+	Allocation *cloudAllocationFileConfig `yaml:"allocation"`
+}
+
+type cloudAllocationFileConfig struct {
+	TenantRoot              string                       `yaml:"tenant_root"`
+	SocketRoot              string                       `yaml:"socket_root"`
+	Binary                  string                       `yaml:"binary"`
+	MaxTenants              int                          `yaml:"max_tenants"`
+	MaxConcurrentProvisions int                          `yaml:"max_concurrent_provisions"`
+	MaxPerIdentity          int                          `yaml:"max_organizations_per_identity"`
+	RetryLimit              int                          `yaml:"retry_limit"`
+	MinFreeDiskBytes        uint64                       `yaml:"min_free_disk_bytes"`
+	MinAvailableMemoryBytes uint64                       `yaml:"min_available_memory_bytes"`
+	AllowedEmails           []string                     `yaml:"allowed_emails"`
+	AllowedDomains          []string                     `yaml:"allowed_domains"`
+	Entitlements            *hubserver.HostedPlansConfig `yaml:"entitlements"`
+}
+
+func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]byte, error) {
+	return func(spec cloudentry.TenantSpec) ([]byte, error) {
+		tenant := hostedFileConfig{
+			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
+			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements,
+			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
+		}
+		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
+		return yaml.Marshal(tenant)
+	}
 }
 
 func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Config, error) {
@@ -74,10 +103,34 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	if err != nil {
 		return cloudentry.Config{}, err
 	}
-	return cloudentry.Config{
+	result := cloudentry.Config{
 		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(),
-	}, nil
+	}
+	if allocation := config.Allocation; allocation != nil {
+		binary := allocation.Binary
+		if binary == "" {
+			if binary, err = os.Executable(); err != nil {
+				return cloudentry.Config{}, err
+			}
+		}
+		if allocation.MaxConcurrentProvisions == 0 {
+			allocation.MaxConcurrentProvisions = 1
+		}
+		if allocation.MaxPerIdentity == 0 {
+			allocation.MaxPerIdentity = 1
+		}
+		if allocation.RetryLimit == 0 {
+			allocation.RetryLimit = 5
+		}
+		result.Allocation = &cloudentry.AllocationConfig{
+			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
+			MaxPerIdentity: allocation.MaxPerIdentity, RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
+			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
+			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: []string{config.WorkOS.APIKeyEnv + "=" + lookupEnv(config.WorkOS.APIKeyEnv)}, Configure: tenantConfiguration(config), Logger: slog.Default()},
+		}
+	}
+	return result, nil
 }
 
 func newCloudCommand(lookupEnv func(string) string) *cobra.Command {

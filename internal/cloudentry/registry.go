@@ -15,13 +15,20 @@ var (
 )
 
 type Organization struct {
-	ID         string    `json:"id"`
-	ProviderID string    `json:"provider_organization_id"`
-	Name       string    `json:"name"`
-	State      string    `json:"state"`
-	Endpoint   string    `json:"endpoint"`
-	Generation int64     `json:"generation"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	ProviderID     string    `json:"provider_organization_id"`
+	Name           string    `json:"name"`
+	State          string    `json:"state"`
+	Endpoint       string    `json:"endpoint"`
+	Generation     int64     `json:"generation"`
+	Managed        bool      `json:"managed"`
+	CreatorSubject string    `json:"-"`
+	CreatorEmail   string    `json:"-"`
+	Step           string    `json:"step,omitempty"`
+	Attempts       int       `json:"attempts,omitempty"`
+	NextAttemptAt  string    `json:"-"`
+	ErrorCode      string    `json:"error_code,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func ValidOrganizationID(id string) bool {
@@ -91,7 +98,7 @@ func (r *Registry) Register(ctx context.Context, organization Organization) (boo
 		}
 	case err != nil:
 		return false, err
-	case existing.ID != organization.ID || existing.ProviderID != organization.ProviderID || organization.Generation < existing.Generation:
+	case existing.ID != organization.ID || existing.ProviderID != organization.ProviderID || organization.Generation < existing.Generation || existing.Managed || existing.State == "deleted":
 		return false, ErrOrganizationConflict
 	case existing.Name == organization.Name && existing.State == organization.State && existing.Endpoint == organization.Endpoint && existing.Generation == organization.Generation:
 		return false, nil
@@ -109,7 +116,7 @@ func (r *Registry) Register(ctx context.Context, organization Organization) (boo
 	return true, tx.Commit()
 }
 
-const organizationSelect = "SELECT id,provider_id,name,state,endpoint,generation,updated_at FROM organizations"
+const organizationSelect = "SELECT id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,updated_at FROM organizations"
 
 type rowScanner interface {
 	Scan(...any) error
@@ -118,7 +125,8 @@ type rowScanner interface {
 func scanOrganization(row rowScanner) (Organization, error) {
 	var organization Organization
 	var updated string
-	if err := row.Scan(&organization.ID, &organization.ProviderID, &organization.Name, &organization.State, &organization.Endpoint, &organization.Generation, &updated); err != nil {
+	if err := row.Scan(&organization.ID, &organization.ProviderID, &organization.Name, &organization.State, &organization.Endpoint, &organization.Generation, &organization.Managed,
+		&organization.CreatorSubject, &organization.CreatorEmail, &organization.Step, &organization.Attempts, &organization.NextAttemptAt, &organization.ErrorCode, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Organization{}, ErrOrganizationNotFound
 		}
