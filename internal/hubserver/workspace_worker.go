@@ -232,6 +232,9 @@ func (w *workspaceService) bind(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if !request.Capabilities.Satisfies(record.Requires) {
 		return record, nativeInvalid("The runner does not serve every required surface")
 	}
+	if !terminalIsolationAllowed(record.Requires, w.config.Terminal.Isolation, request.Isolation) {
+		return record, workspaceIsolationRefused()
+	}
 	capabilities := request.Capabilities
 	record.RunnerID = runnerID
 	record.MachineID = scope.credential.Runner.MachineID
@@ -356,6 +359,16 @@ func (w *workspaceService) heartbeat(ctx context.Context, tx *sql.Tx, record wor
 	if workspacesession.Terminal(record.State) {
 		return record, false, nativeStaleExecution("The workspace has ended")
 	}
+	isolation := record.Isolation
+	if request.Isolation != "" {
+		isolation = request.Isolation
+	}
+	if !terminalIsolationAllowed(record.Requires, w.config.Terminal.Isolation, isolation) {
+		// The runner changed how its terminal is confined under a live
+		// workspace. The beat is refused rather than recorded, so the lease
+		// stops renewing and the workspace ends on lease_lost.
+		return record, false, workspaceIsolationRefused()
+	}
 	expected := record.Revision
 	beat := now
 	record.LastHeartbeatAt = &beat
@@ -419,13 +432,13 @@ func (s *Service) unbindWorkspaceWorker(c echo.Context) error {
 	ctx := c.Request().Context()
 	var ended workspaceRecord
 	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, _, err := service.loadWorkspaceForWorker(ctx, tx, scope, c.Param("workspace"), request.workspaceWorkerIdentity, now)
+		record, lease, err := service.loadWorkspaceForWorker(ctx, tx, scope, c.Param("workspace"), request.workspaceWorkerIdentity, now)
 		if err != nil {
 			return err
 		}
 		if workspacesession.Terminal(record.State) {
 			ended = record
-			return nil
+			return releaseLeaseRow(ctx, tx, lease, unbindReleaseReason(request.Reason, record), now)
 		}
 		// A runner restart unbinds every workspace it held and the workspace
 		// fails; a clean close reached closing first and ends closed. The
@@ -436,13 +449,31 @@ func (s *Service) unbindWorkspaceWorker(c echo.Context) error {
 			terminal = workspacesession.StateClosed
 		}
 		ended, err = service.endWorkspace(ctx, tx, record, terminal, request.Reason, now)
-		return err
+		if err != nil {
+			return err
+		}
+		// The runner has let go, so the lease goes with the workspace in the
+		// same transaction. Left alive it would keep one of the runner's
+		// capacity slots until it expired on its own.
+		return releaseLeaseRow(ctx, tx, lease, unbindReleaseReason(request.Reason, ended), now)
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	service.committed(ctx, ended)
 	return c.NoContent(http.StatusNoContent)
+}
+
+// unbindReleaseReason is the lease_released reason an unbind records: the
+// runner's own reason when it gave one, otherwise the workspace's end.
+func unbindReleaseReason(reason string, record workspaceRecord) string {
+	if reason != "" {
+		return reason
+	}
+	if record.Reason != "" {
+		return record.Reason
+	}
+	return record.State
 }
 
 // workspaceForWorkItem implements GET .../work-items/:item/workspace.

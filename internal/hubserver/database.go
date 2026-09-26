@@ -31,10 +31,14 @@ type database struct {
 	// the runner that produced it, and only that runner may serve a
 	// workspace on the attempt (decisions section 18.1).
 	workspaceRetainAfterRun time.Duration
-	now                     func() time.Time
-	newLeaseID              func() string
-	closeOnce               sync.Once
-	closeErr                error
+	// workspaceTerminalIsolation is workspaces.terminal.isolation, read by the
+	// claim gate so a runner whose terminal is less confined than the
+	// organization allows is never handed a workspace that requires one.
+	workspaceTerminalIsolation string
+	now                        func() time.Time
+	newLeaseID                 func() string
+	closeOnce                  sync.Once
+	closeErr                   error
 }
 
 func openDatabase(ctx context.Context, cfg Config) (*database, error) {
@@ -64,6 +68,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID}
 	if cfg.Workspace != nil {
 		store.workspaceRetainAfterRun = cfg.Workspace.RetainAfterRun
+		store.workspaceTerminalIsolation = cfg.Workspace.Terminal.Isolation
 	}
 	if err := store.configure(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, store.Close())

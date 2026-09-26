@@ -1173,44 +1173,224 @@ func (f *workspaceRunnerFixture) ordinaryClaim(t *testing.T, item, session strin
 func TestWorkspaceClaimable(t *testing.T) {
 	t.Parallel()
 	const runner = "runner_one"
-	record := workspaceRecord{Requires: []string{workspacesession.CapabilityFiles, workspacesession.CapabilityDiff}}
+	surfaces := []string{workspacesession.CapabilityFiles, workspacesession.CapabilityDiff}
+	terminal := []string{workspacesession.CapabilityFiles, workspacesession.CapabilityDiff, workspacesession.CapabilityTerminal}
+	withTerminal := workspacesession.Capabilities{Files: true, Diff: true, Terminal: true}
 	for _, test := range []struct {
 		name         string
+		requires     []string
 		capabilities workspacesession.Capabilities
 		fresh        bool
 		retained     string
+		isolation    string
+		configured   string
 		want         bool
 		reason       string
 	}{
 		{
-			name: "a runner with no fresh report serves nothing", capabilities: workspaceTestCapabilities,
+			name: "a runner with no fresh report serves nothing", requires: surfaces, capabilities: workspaceTestCapabilities,
 			want: false, reason: "the runner has no fresh workspace capability report",
 		},
 		{
-			name: "a runner missing a required surface is not offered the item",
+			name: "a runner missing a required surface is not offered the item", requires: surfaces,
 			// The request asked for a diff; handing it to a runner that only
 			// serves files would open a workspace that cannot do the job.
 			capabilities: workspacesession.Capabilities{Files: true}, fresh: true,
 			want: false, reason: "the runner does not serve every required surface",
 		},
 		{
-			name: "a retained worktree is only offered to the runner that produced it",
+			name: "a retained worktree is only offered to the runner that produced it", requires: surfaces,
 			// Nobody else has that tree, so a second runner would silently
 			// show the reader a fresh checkout of a different one.
 			capabilities: workspaceTestCapabilities, fresh: true, retained: "runner_two",
 			want: false, reason: "the attempt's retained worktree belongs to another runner",
 		},
 		{
-			name:         "an eligible runner holding the retained worktree may claim",
+			name: "an eligible runner holding the retained worktree may claim", requires: surfaces,
 			capabilities: workspaceTestCapabilities, fresh: true, retained: runner, want: true,
+		},
+		{
+			name: "a user-isolation runner is refused a terminal in a container organization", requires: terminal,
+			capabilities: withTerminal, fresh: true, isolation: workspacesession.IsolationUser,
+			configured: workspacesession.IsolationContainer,
+			want:       false, reason: "the runner's terminal isolation is not allowed by the organization",
+		},
+		{
+			name: "a container runner serves a terminal in a container organization", requires: terminal,
+			capabilities: withTerminal, fresh: true, isolation: workspacesession.IsolationContainer,
+			configured: workspacesession.IsolationContainer, want: true,
+		},
+		{
+			name: "a user-isolation runner serves a terminal where the organization chose user", requires: terminal,
+			capabilities: withTerminal, fresh: true, isolation: workspacesession.IsolationUser,
+			configured: workspacesession.IsolationUser, want: true,
+		},
+		{
+			name: "isolation does not matter without a terminal", requires: surfaces,
+			capabilities: workspaceTestCapabilities, fresh: true, isolation: workspacesession.IsolationUser,
+			configured: workspacesession.IsolationContainer, want: true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			claimable, reason := workspaceClaimable(record, test.capabilities, test.fresh, runner, test.retained)
+			record := workspaceRecord{Requires: test.requires}
+			claimable, reason := workspaceClaimable(record, test.capabilities, test.fresh, runner, test.retained, test.isolation, test.configured)
 			if claimable != test.want || reason != test.reason {
 				t.Fatalf("workspaceClaimable() = %v, %q, want %v, %q", claimable, reason, test.want, test.reason)
 			}
+		})
+	}
+}
+
+func TestTerminalIsolationAllowed(t *testing.T) {
+	t.Parallel()
+	terminal := []string{workspacesession.CapabilityFiles, workspacesession.CapabilityTerminal}
+	files := []string{workspacesession.CapabilityFiles}
+	const (
+		user      = workspacesession.IsolationUser
+		container = workspacesession.IsolationContainer
+	)
+	for _, test := range []struct {
+		name       string
+		requires   []string
+		configured string
+		reported   string
+		want       bool
+	}{
+		{name: "no terminal, no isolation", requires: files, want: true},
+		{name: "no terminal, user runner in container organization", requires: files, configured: container, reported: user, want: true},
+		{name: "container runner, container organization", requires: terminal, configured: container, reported: container, want: true},
+		{name: "container runner, user organization", requires: terminal, configured: user, reported: container, want: true},
+		{name: "user runner, user organization", requires: terminal, configured: user, reported: user, want: true},
+		{name: "user runner, container organization", requires: terminal, configured: container, reported: user},
+		{name: "user runner, unset organization", requires: terminal, reported: user},
+		{name: "runner reporting no isolation", requires: terminal, configured: user},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := terminalIsolationAllowed(test.requires, test.configured, test.reported); got != test.want {
+				t.Fatalf("terminalIsolationAllowed(%v, %q, %q) = %v, want %v", test.requires, test.configured, test.reported, got, test.want)
+			}
+		})
+	}
+}
+
+// requireTerminal makes a requested workspace require a terminal. A terminal
+// request needs a hosted session to create, so the row is changed directly:
+// what is under test is the runner side, not who may ask for one.
+func (f *workspaceRunnerFixture) requireTerminal(t *testing.T, id string) {
+	t.Helper()
+	if _, err := f.service.database.db.ExecContext(t.Context(),
+		`UPDATE workspace_sessions SET requires_json = '["files","diff","terminal"]' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// reportRunner re-registers the fixture's machine with a capacity, surfaces
+// and terminal isolation.
+func (f *workspaceRunnerFixture) reportRunner(t *testing.T, capacity int, capabilities workspacesession.Capabilities, isolation string) {
+	t.Helper()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", f.runner.redemption.Credential,
+		map[string]any{"id": f.runner.binding.MachineID, "hostname": "customer-host", "display_name": "Runner",
+			"capacity": capacity, "version": "test", "workspace_capabilities": capabilities,
+			"workspace_isolation": isolation}), http.StatusOK)
+}
+
+// A workspace that requires a terminal is served only by a runner whose
+// terminal is confined at least as tightly as the organization configured, and
+// that is checked at the claim, the bind and every heartbeat.
+func TestWorkspaceTerminalIsolationIsEnforced(t *testing.T) {
+	t.Parallel()
+	withTerminal := workspacesession.Capabilities{Files: true, Diff: true, Terminal: true}
+
+	t.Run("the claim gate skips a user-isolation runner", func(t *testing.T) {
+		t.Parallel()
+		f := newWorkspaceRunnerFixture(t)
+		f.reportRunner(t, 8, withTerminal, workspacesession.IsolationUser)
+		session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
+		f.requireTerminal(t, session.ID)
+		item := f.item(t, session.ID)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
+			tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID,
+				SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+				Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
+		if response.Code == http.StatusOK {
+			t.Fatalf("a user-isolation runner claimed a terminal workspace in a container organization: %s", response.Body.String())
+		}
+		f.reportRunner(t, 8, withTerminal, workspacesession.IsolationContainer)
+		f.claim(t, item)
+	})
+
+	for _, test := range []struct {
+		name          string
+		bindIsolation string
+		beatIsolation string
+		wantBind      int
+		wantBeat      int
+	}{
+		{name: "a container bind and beat are accepted", bindIsolation: workspacesession.IsolationContainer,
+			beatIsolation: workspacesession.IsolationContainer, wantBind: http.StatusOK, wantBeat: http.StatusOK},
+		{name: "a beat that omits isolation keeps the bound level", bindIsolation: workspacesession.IsolationContainer,
+			wantBind: http.StatusOK, wantBeat: http.StatusOK},
+		{name: "a user bind is refused", bindIsolation: workspacesession.IsolationUser, wantBind: http.StatusForbidden},
+		{name: "a bind reporting no isolation is refused", wantBind: http.StatusForbidden},
+		{name: "a beat that switches to user is refused", bindIsolation: workspacesession.IsolationContainer,
+			beatIsolation: workspacesession.IsolationUser, wantBind: http.StatusOK, wantBeat: http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkspaceRunnerFixture(t)
+			f.reportRunner(t, 8, withTerminal, workspacesession.IsolationContainer)
+			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
+			f.requireTerminal(t, session.ID)
+			lease := f.claim(t, f.item(t, session.ID))
+			identity := workspaceIdentity(lease)
+			bind := f.workerPost(t, session.ID, "bind", workspaceBindRequest{
+				workspaceWorkerIdentity: identity, Capabilities: withTerminal, Isolation: test.bindIsolation})
+			requireNativeStatus(t, bind, test.wantBind)
+			if test.wantBind != http.StatusOK {
+				if state := f.read(t, session.ID).State; state != workspacesession.StateRequested {
+					t.Fatalf("a refused bind moved the workspace to %q", state)
+				}
+				return
+			}
+			beat := f.workerPost(t, session.ID, "heartbeat", workspaceHeartbeatRequest{
+				workspaceWorkerIdentity: identity, State: workspacesession.StateReady,
+				Capabilities: withTerminal, Isolation: test.beatIsolation})
+			requireNativeStatus(t, beat, test.wantBeat)
+			if isolation := f.read(t, session.ID).Isolation; isolation != workspacesession.IsolationContainer {
+				t.Fatalf("stored isolation = %q, want container", isolation)
+			}
+		})
+	}
+}
+
+// An unbind gives the runner's slot back in the same transaction, so a
+// capacity-one runner can take its next job straight away rather than waiting
+// out the lease TTL.
+func TestWorkspaceUnbindReleasesTheLease(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{workspacesession.ReasonRunnerRestarted, workspacesession.ReasonClosedByActor, ""} {
+		t.Run("reason "+reason, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkspaceRunnerFixture(t)
+			f.reportRunner(t, 1, workspaceTestCapabilities, workspacesession.IsolationContainer)
+			bind, lease := f.bound(t)
+			second := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
+			secondItem := f.item(t, second.ID)
+			held := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
+				tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(secondItem), MachineID: f.runner.binding.MachineID,
+					SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+					Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
+			if held.Code == http.StatusOK {
+				t.Fatal("a capacity-one runner holding a workspace claimed a second one")
+			}
+			requireNativeStatus(t, f.workerPost(t, bind.Session.ID, "unbind", workspaceUnbindRequest{
+				workspaceWorkerIdentity: workspaceIdentity(lease), Reason: reason}), http.StatusNoContent)
+			if _, released := f.leaseWindow(t, lease.ID); !released {
+				t.Fatal("the unbound workspace's lease was not released")
+			}
+			f.claim(t, secondItem)
 		})
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -221,12 +223,15 @@ FROM runner_identities WHERE id = ?`, runnerID).Scan(&raw, &isolation, &heartbea
 // workspaceClaimable reports whether this runner may claim this workspace's
 // item, and why not when it may not. The reason is returned rather than logged
 // because it is the same sentence the workspace's failure would carry.
-func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Capabilities, fresh bool, runnerID string, retainedRunner string) (bool, string) {
+func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Capabilities, fresh bool, runnerID, retainedRunner, runnerIsolation, configuredIsolation string) (bool, string) {
 	if !fresh {
 		return false, "the runner has no fresh workspace capability report"
 	}
 	if !capabilities.Satisfies(record.Requires) {
 		return false, "the runner does not serve every required surface"
+	}
+	if !terminalIsolationAllowed(record.Requires, configuredIsolation, runnerIsolation) {
+		return false, "the runner's terminal isolation is not allowed by the organization"
 	}
 	if retainedRunner != "" && retainedRunner != runnerID {
 		// The worktree is still retained on the runner that produced it, and
@@ -249,7 +254,7 @@ func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Ca
 // itself, so this gate only ever narrows the lane's own candidates; it is
 // called with workspaceLane false as a second line of defence, and then skips
 // every workspace item unconditionally.
-func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, workspaceLane bool, retain time.Duration, now time.Time) (workspaceClaimGate, error) {
+func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, workspaceLane bool, retain time.Duration, terminalIsolation string, now time.Time) (workspaceClaimGate, error) {
 	items, err := workspaceIssues(ctx, tx)
 	if err != nil {
 		return workspaceClaimGate{}, err
@@ -271,7 +276,7 @@ func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, wor
 	if scope != nil {
 		runnerID = scope.credential.Runner.RunnerID
 	}
-	capabilities, _, fresh, err := runnerWorkspaceCapabilities(ctx, tx, runnerID, now)
+	capabilities, isolation, fresh, err := runnerWorkspaceCapabilities(ctx, tx, runnerID, now)
 	if err != nil {
 		return workspaceClaimGate{}, err
 	}
@@ -293,11 +298,38 @@ func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, wor
 		if err != nil {
 			return workspaceClaimGate{}, err
 		}
-		if claimable, _ := workspaceClaimable(item.record, capabilities, fresh, runnerID, retained); !claimable {
+		if claimable, _ := workspaceClaimable(item.record, capabilities, fresh, runnerID, retained, isolation, terminalIsolation); !claimable {
 			gate.skip[id] = struct{}{}
 		}
 	}
 	return gate, nil
+}
+
+// terminalIsolationAllowed reports whether a runner reporting isolation may
+// serve a workspace with these requires under the organization's configured
+// workspaces.terminal.isolation (decisions section 18.3). Only a terminal
+// depends on it. container is the stricter level and is always acceptable;
+// user runs the shell as the runner's own account and is acceptable only where
+// the organization configured user explicitly. A runner that reports no level
+// cannot say how its shell is confined, so it serves no terminal.
+func terminalIsolationAllowed(requires []string, configured, reported string) bool {
+	if !slices.Contains(requires, workspacesession.CapabilityTerminal) {
+		return true
+	}
+	switch reported {
+	case workspacesession.IsolationContainer:
+		return true
+	case workspacesession.IsolationUser:
+		return configured == workspacesession.IsolationUser
+	default:
+		return false
+	}
+}
+
+// workspaceIsolationRefused is the refusal a bind or heartbeat gets when the
+// runner's terminal isolation is not one the organization allows.
+func workspaceIsolationRefused() error {
+	return &nativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", status: http.StatusForbidden}
 }
 
 // workspaceClaimGate is what the claim loop needs to know about the workspace

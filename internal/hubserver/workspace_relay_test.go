@@ -1441,3 +1441,67 @@ func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
 		})
 	}
 }
+
+// A resume's last_seq is an acknowledgement: the frames the person already
+// has leave the replay buffer and the relay's memory budget at once, and a
+// later ack of the same seq has nothing left to release.
+func TestWorkspaceRelayResumeReleasesAcknowledgedFrames(t *testing.T) {
+	t.Parallel()
+	const frameBytes = int64(100)
+	for _, test := range []struct {
+		name       string
+		lastSeq    int64
+		wantKept   []int64
+		wantMemory int64
+	}{
+		{name: "nothing seen", lastSeq: 0, wantKept: []int64{1, 2, 3}, wantMemory: 3 * frameBytes},
+		{name: "first frame seen", lastSeq: 1, wantKept: []int64{2, 3}, wantMemory: 2 * frameBytes},
+		{name: "all but the last seen", lastSeq: 2, wantKept: []int64{3}, wantMemory: frameBytes},
+		{name: "everything seen", lastSeq: 3, wantKept: []int64{}, wantMemory: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			relay := newWorkspaceRelay(&workspaceService{config: WorkspaceConfig{RelayMemoryBytes: 1 << 20}})
+			stream := &relayStream{
+				id: "relayconn_old:1", channel: workspacesession.ChannelFiles, connectionID: "relayconn_old",
+				principalID: "principal", sessionID: "session", toPerson: 3, detachedAt: time.Now(),
+				bufferBytes: 3 * frameBytes,
+			}
+			for seq := int64(1); seq <= 3; seq++ {
+				stream.buffer = append(stream.buffer, relayBufferedFrame{seq: seq, bytes: frameBytes})
+			}
+			relay.memory = 3 * frameBytes
+			relay.rooms["ws_1"] = &relayRoom{
+				workspaceID: "ws_1", people: map[string]*relayConnection{},
+				streams: map[string]*relayStream{}, detached: map[string]*relayStream{stream.id: stream},
+				terminals: map[string]*terminalStreamState{},
+			}
+			connection := &relayConnection{id: "relayconn_new", workspaceID: "ws_1", principalID: "principal", sessionID: "session"}
+			resumed, replay, code := relay.resumeStream(connection, stream.id, test.lastSeq, time.Now())
+			if code != "" || resumed != stream {
+				t.Fatalf("resume = %v, %q", resumed, code)
+			}
+			if len(replay) != len(test.wantKept) {
+				t.Fatalf("replayed %d frames, want %d", len(replay), len(test.wantKept))
+			}
+			kept := []int64{}
+			for _, buffered := range stream.buffer {
+				kept = append(kept, buffered.seq)
+			}
+			if !slices.Equal(kept, test.wantKept) {
+				t.Fatalf("buffer holds %v, want %v", kept, test.wantKept)
+			}
+			if stream.bufferBytes != test.wantMemory || relay.memory != test.wantMemory {
+				t.Fatalf("stream bytes = %d, relay memory = %d, want %d", stream.bufferBytes, relay.memory, test.wantMemory)
+			}
+			relay.acknowledge(stream, test.lastSeq)
+			if relay.memory != test.wantMemory {
+				t.Fatalf("an ack of last_seq changed memory to %d", relay.memory)
+			}
+			relay.acknowledge(stream, 3)
+			if len(stream.buffer) != 0 || stream.bufferBytes != 0 || relay.memory != 0 {
+				t.Fatalf("after the final ack: buffer %d, stream bytes %d, relay memory %d", len(stream.buffer), stream.bufferBytes, relay.memory)
+			}
+		})
+	}
+}

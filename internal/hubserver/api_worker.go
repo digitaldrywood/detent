@@ -369,7 +369,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	// workspace requires and on whether its attempt's worktree is still
 	// retained on one particular runner, so the answer differs between two
 	// workspaces the same runner is looking at.
-	workspaceGate, err := gateWorkspaceClaim(ctx, tx, query.NativeScope, query.WorkspaceLane, d.workspaceRetainAfterRun, now)
+	workspaceGate, err := gateWorkspaceClaim(ctx, tx, query.NativeScope, query.WorkspaceLane, d.workspaceRetainAfterRun, d.workspaceTerminalIsolation, now)
 	if err != nil {
 		return tracker.Lease{}, err
 	}

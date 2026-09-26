@@ -615,7 +615,11 @@ func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, la
 	delete(room.detached, id)
 	stream.connectionID = connection.id
 	stream.detachedAt = time.Time{}
-	stream.ackedThrough = lastSeq
+	// last_seq is the person saying what it already has, which is an
+	// acknowledgement: those frames are never replayed again, so they leave
+	// the buffer and the relay's memory budget now rather than for the
+	// stream's whole life.
+	r.releaseThrough(stream, lastSeq)
 	room.streams[id] = stream
 	connection.streams++
 	return stream, replay, ""
@@ -645,6 +649,13 @@ func (r *workspaceRelay) bufferForPerson(workspaceID string, stream *relayStream
 func (r *workspaceRelay) acknowledge(stream *relayStream, through int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.releaseThrough(stream, through)
+}
+
+// releaseThrough drops every buffered frame through seq and gives its bytes
+// back to both the stream's and the relay's budget. The caller holds the relay
+// lock. A seq at or below what is already acknowledged releases nothing.
+func (r *workspaceRelay) releaseThrough(stream *relayStream, through int64) {
 	if through <= stream.ackedThrough {
 		return
 	}
