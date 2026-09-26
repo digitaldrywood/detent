@@ -63,6 +63,9 @@ type LaneConfig struct {
 	// deliberately unhurried: a person waiting for a workspace waits for this,
 	// and workspaces.request_timeout gives them five minutes.
 	Poll time.Duration
+	// IdlePoll is how often the lane asks again after the hub said it does not
+	// serve workspace sessions, which is the default for a hub.
+	IdlePoll time.Duration
 	// MaxOpen bounds how many workspaces this runner holds at once. It is the
 	// runner's own brake; the hub's capacity accounting is the other one, and
 	// neither is sufficient alone because they bound different things.
@@ -89,6 +92,9 @@ type LaneConfig struct {
 const (
 	// defaultLanePoll is how often an idle lane asks for work.
 	defaultLanePoll = 5 * time.Second
+	// defaultLaneIdlePoll is how often a lane on a hub without workspace
+	// sessions checks whether they have been turned on.
+	defaultLaneIdlePoll = 10 * time.Minute
 	// defaultLaneMaxOpen is how many workspaces one runner holds by default.
 	// It matches the per-person limit of section 18.1: one runner serving more
 	// open worktrees than one person may open is not a case the contract
@@ -99,6 +105,9 @@ const (
 func (c LaneConfig) normalized() LaneConfig {
 	if c.Poll <= 0 {
 		c.Poll = defaultLanePoll
+	}
+	if c.IdlePoll <= 0 {
+		c.IdlePoll = defaultLaneIdlePoll
 	}
 	if c.MaxOpen <= 0 {
 		c.MaxOpen = defaultLaneMaxOpen
@@ -141,15 +150,19 @@ func NewLane(config LaneConfig) (*Lane, error) {
 // a missed heartbeat, and a person would watch a ready panel go unreachable for
 // no reason anyone could see.
 func (l *Lane) Run(ctx context.Context) error {
-	ticker := time.NewTicker(l.config.Poll)
-	defer ticker.Stop()
+	timer := time.NewTimer(l.config.Poll)
+	defer timer.Stop()
 	for {
+		wait := l.config.Poll
 		if l.openCount() < l.config.MaxOpen {
 			if claimed, err := l.claimOnce(ctx); err != nil {
 				if ctx.Err() != nil {
 					break
 				}
-				if !noWorkspaceWork(err) {
+				switch {
+				case errors.Is(err, hubclient.ErrWorkspacesNotServed):
+					wait = l.config.IdlePoll
+				case !noWorkspaceWork(err):
 					l.logger.Warn("workspace.claim_failed", "error", err)
 				}
 			} else if claimed {
@@ -159,10 +172,11 @@ func (l *Lane) Run(ctx context.Context) error {
 				continue
 			}
 		}
+		timer.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return l.drain()
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 	return l.drain()

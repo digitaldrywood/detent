@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -266,6 +267,11 @@ func TestWorkspaceClaimerAsksOnlyForWorkspaceItems(t *testing.T) {
 	t.Parallel()
 	var claims []tracker.NativeClaim
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/capabilities" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"features": []string{tracker.NativeWorkspaceCapability}})
+			return
+		}
 		var claim tracker.NativeClaim
 		if err := json.NewDecoder(r.Body).Decode(&claim); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -391,6 +397,72 @@ func TestWorkspaceClaimerRefusesAnIncompleteConfiguration(t *testing.T) {
 			t.Parallel()
 			if _, err := NewWorkspaceClaimer(test.client, test.config); err == nil {
 				t.Fatal("an incomplete claimer must be refused at construction rather than fail on a claim")
+			}
+		})
+	}
+}
+
+func TestWorkspaceClaimerClaimsOnlyFromAHubThatServesWorkspaces(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		features     []string
+		wantErr      error
+		wantClaims   int
+		wantFeatures int
+	}{
+		{
+			name:     "a hub with workspace sessions is claimed from and asked once",
+			features: []string{"native_issues", tracker.NativeWorkspaceCapability}, wantClaims: 2, wantFeatures: 1,
+		},
+		{
+			name:     "a hub without workspace sessions is never claimed from",
+			features: []string{"native_issues"}, wantErr: ErrWorkspacesNotServed, wantFeatures: 2,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			claims, features := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/api/v2/capabilities" {
+					features++
+					_ = json.NewEncoder(w).Encode(map[string]any{"features": test.features})
+					return
+				}
+				claims++
+				_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: "lease_1", WorkItemID: "wi_1", FencingToken: 5})
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimer, err := NewWorkspaceClaimer(native, WorkspaceLaneConfig{
+				PolicyID: "policy_1", MachineID: "machine_1",
+				SessionID: func() (string, error) { return "session", nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				_, err := claimer.ClaimWorkspace(t.Context())
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("ClaimWorkspace() error = %v, want %v", err, test.wantErr)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if claims != test.wantClaims || features != test.wantFeatures {
+				t.Fatalf("claims = %d, capability reads = %d; want %d and %d", claims, features, test.wantClaims, test.wantFeatures)
 			}
 		})
 	}

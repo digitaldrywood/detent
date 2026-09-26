@@ -370,3 +370,71 @@ func (b *recordingBackend) AfterRun(context.Context, workspace.Info, workspace.I
 func (b *recordingBackend) DiffStat(context.Context, workspace.Info, workspace.Issue) (workspace.DiffStat, error) {
 	return workspace.DiffStat{}, nil
 }
+
+type countingClaimer struct {
+	err   error
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingClaimer) ClaimWorkspace(context.Context) (tracker.NativeLease, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return tracker.NativeLease{}, c.err
+}
+
+func (c *countingClaimer) WorkspaceForWorkItem(context.Context, tracker.NativeWorkItemID, hubclient.WorkspaceIdentity) (workspacesession.Session, error) {
+	return workspacesession.Session{}, errors.New("no session scripted")
+}
+
+func (c *countingClaimer) ReleaseWorkspaceLease(context.Context, tracker.NativeLease, string) error {
+	return nil
+}
+
+func (c *countingClaimer) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func TestLaneIdlesOnAHubWithoutWorkspaceSessions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		err      error
+		wantMany bool
+	}{
+		{name: "a hub that serves workspaces is polled", err: hubclient.ErrNoClaimableWork, wantMany: true},
+		{name: "a hub without workspace sessions waits the idle interval", err: hubclient.ErrWorkspacesNotServed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			claimer := &countingClaimer{err: test.err}
+			lane, err := workspacerunner.NewLane(workspacerunner.LaneConfig{
+				Claimer: claimer, Hub: newScriptedHub(t, defaultCheckout()), Worktree: &fixedWorktree{path: t.TempDir()},
+				Logger: discardLogger(), Poll: 10 * time.Millisecond, IdlePoll: time.Hour,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = lane.Run(ctx)
+			}()
+			time.Sleep(300 * time.Millisecond)
+			cancel()
+			<-done
+			calls := claimer.count()
+			if test.wantMany && calls < 3 {
+				t.Fatalf("the lane asked %d times, want it to keep polling", calls)
+			}
+			if !test.wantMany && calls != 1 {
+				t.Fatalf("the lane asked %d times, want once before the idle interval", calls)
+			}
+		})
+	}
+}

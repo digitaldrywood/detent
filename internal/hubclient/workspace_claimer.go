@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,10 +39,22 @@ type WorkspaceLaneConfig struct {
 	LeaseTTL time.Duration
 }
 
+// ErrWorkspacesNotServed reports that the hub does not advertise workspace
+// sessions, so there is nothing for a workspace lane to claim.
+var ErrWorkspacesNotServed = errors.New("hub does not serve workspace sessions")
+
+// workspaceServedRecheck is how long the hub's answer about serving workspace
+// sessions is trusted before it is asked again.
+const workspaceServedRecheck = 10 * time.Minute
+
 // WorkspaceClaimer claims and releases workspace items for one project.
 type WorkspaceClaimer struct {
 	native *NativeClient
 	config WorkspaceLaneConfig
+	now    func() time.Time
+
+	mu          sync.Mutex
+	servedUntil time.Time
 }
 
 // NewWorkspaceClaimer prepares the claimer.
@@ -58,7 +71,7 @@ func NewWorkspaceClaimer(native *NativeClient, config WorkspaceLaneConfig) (*Wor
 	if config.LeaseTTL <= 0 {
 		config.LeaseTTL = workspacesession.LeaseTTL
 	}
-	return &WorkspaceClaimer{native: native, config: config}, nil
+	return &WorkspaceClaimer{native: native, config: config, now: time.Now}, nil
 }
 
 // WorkspaceItemLabel is the label the hub puts on a workspace's dispatch issue.
@@ -66,7 +79,14 @@ func NewWorkspaceClaimer(native *NativeClient, config WorkspaceLaneConfig) (*Wor
 const WorkspaceItemLabel = "detent:workspace"
 
 // ClaimWorkspace takes the next claimable workspace item.
+//
+// The hub's capability document is read first, and again every
+// workspaceServedRecheck while it keeps advertising workspace sessions. A hub
+// that does not advertise them answers ErrWorkspacesNotServed without a claim.
 func (c *WorkspaceClaimer) ClaimWorkspace(ctx context.Context) (tracker.NativeLease, error) {
+	if err := c.requireServed(ctx); err != nil {
+		return tracker.NativeLease{}, err
+	}
 	session, err := c.config.SessionID()
 	if err != nil {
 		return tracker.NativeLease{}, fmt.Errorf("workspace claim session: %w", err)
@@ -89,6 +109,26 @@ func (c *WorkspaceClaimer) ClaimWorkspace(ctx context.Context) (tracker.NativeLe
 		return tracker.NativeLease{}, err
 	}
 	return lease, nil
+}
+
+func (c *WorkspaceClaimer) requireServed(ctx context.Context) error {
+	c.mu.Lock()
+	fresh := c.now().Before(c.servedUntil)
+	c.mu.Unlock()
+	if fresh {
+		return nil
+	}
+	served, err := c.native.HubFeature(ctx, tracker.NativeWorkspaceCapability)
+	if err != nil {
+		return fmt.Errorf("read hub capabilities: %w", err)
+	}
+	if !served {
+		return ErrWorkspacesNotServed
+	}
+	c.mu.Lock()
+	c.servedUntil = c.now().Add(workspaceServedRecheck)
+	c.mu.Unlock()
+	return nil
 }
 
 // WorkspaceForWorkItem resolves the workspace a claimed item dispatches.

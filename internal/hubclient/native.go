@@ -31,13 +31,31 @@ func (c *NativeClient) base() string {
 	return "/api/v2/organizations/" + string(c.organization) + "/projects/" + string(c.project)
 }
 
-func (c *NativeClient) Negotiate(ctx context.Context, required ...string) error {
-	var capabilities struct {
-		ProtocolMajors []int    `json:"protocol_majors"`
-		EventSchemas   []int    `json:"event_schema_versions"`
-		Features       []string `json:"features"`
+type nativeCapabilities struct {
+	ProtocolMajors []int    `json:"protocol_majors"`
+	EventSchemas   []int    `json:"event_schema_versions"`
+	Features       []string `json:"features"`
+}
+
+func (c *NativeClient) capabilities(ctx context.Context) (nativeCapabilities, error) {
+	var capabilities nativeCapabilities
+	err := c.client.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities)
+	return capabilities, err
+}
+
+// HubFeature reports whether the hub advertises a feature on its capability
+// document.
+func (c *NativeClient) HubFeature(ctx context.Context, feature string) (bool, error) {
+	capabilities, err := c.capabilities(ctx)
+	if err != nil {
+		return false, err
 	}
-	if err := c.client.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities); err != nil {
+	return slices.Contains(capabilities.Features, feature), nil
+}
+
+func (c *NativeClient) Negotiate(ctx context.Context, required ...string) error {
+	capabilities, err := c.capabilities(ctx)
+	if err != nil {
 		return err
 	}
 	if !slices.Contains(capabilities.ProtocolMajors, 2) || !slices.Contains(capabilities.EventSchemas, 1) || !slices.Contains(capabilities.Features, "native_issues") || !slices.Contains(capabilities.Features, "scoped_collaboration") {

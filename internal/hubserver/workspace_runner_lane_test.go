@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -363,5 +365,33 @@ func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 	}
 	if open != 0 {
 		t.Fatalf("%d leases remain held after the workspace closed", open)
+	}
+}
+
+func TestNativeCapabilitiesAdvertiseWorkspaceSessionsOnlyWhenServed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		workspace *WorkspaceConfig
+		want      bool
+	}{
+		{name: "workspaces enabled", workspace: &WorkspaceConfig{Enabled: true}, want: true},
+		{name: "workspaces disabled", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Workspace: test.workspace})
+			f := newNativeFixture(t, service, "", "capabilities")
+			response := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/capabilities", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var document struct {
+				Features []string `json:"features"`
+			}
+			decodeHubResponse(t, response, &document)
+			if got := slices.Contains(document.Features, tracker.NativeWorkspaceCapability); got != test.want {
+				t.Fatalf("features = %v, advertise workspace sessions = %t, want %t", document.Features, got, test.want)
+			}
+		})
 	}
 }
