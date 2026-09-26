@@ -78,6 +78,15 @@ func signalGroup(cmd *exec.Cmd, signal syscall.Signal) error {
 	return nil
 }
 
+// groupAlive reports whether any process remains in the group led by pid.
+func groupAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(-pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
 // exitSignal names the signal that ended the shell, or the empty string when it
 // exited on its own. The name is the signal's own ("SIGHUP") rather than Go's
 // prose for it, because it is carried to a person as the reason a terminal has

@@ -410,3 +410,111 @@ func TestListHonoursGitignoreUnlessTheReaderAsksForIt(t *testing.T) {
 		t.Fatal("show ignored must include the ignored file")
 	}
 }
+
+func TestSymlinkedDirectoriesCannotAliasDeniedPaths(t *testing.T) {
+	t.Parallel()
+	service, worktree, _ := newWorktree(t)
+	canonical, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{
+		"git-alias":      ".git",
+		"git-absolute":   filepath.Join(canonical, ".git"),
+		"modules-alias":  "node_modules",
+		"chain":          "git-alias",
+		"code":           "internal",
+		"nested/up":      "../.git",
+		"loop-a":         "loop-b",
+		"loop-b":         "loop-a",
+		"outside-parent": "..",
+	}
+	if err := os.MkdirAll(filepath.Join(worktree, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(worktree, filepath.FromSlash(name))); err != nil {
+			t.Skipf("this platform does not support symlinks: %v", err)
+		}
+	}
+	tests := []struct {
+		name     string
+		path     string
+		wantCode string
+		list     bool
+	}{
+		{name: "relative alias of .git reads config", path: "git-alias/config", wantCode: workspacesession.CodeDenied},
+		{name: "absolute alias of .git reads config", path: "git-absolute/config", wantCode: workspacesession.CodeDenied},
+		{name: "alias of .git reads objects", path: "git-alias/objects/pack", wantCode: workspacesession.CodeDenied},
+		{name: "alias of .git lists objects", path: "git-alias/objects", wantCode: workspacesession.CodeDenied, list: true},
+		{name: "alias of node_modules", path: "modules-alias/react.js", wantCode: workspacesession.CodeDenied},
+		{name: "chained alias", path: "chain/config", wantCode: workspacesession.CodeDenied},
+		{name: "alias through a parent reference", path: "nested/up/config", wantCode: workspacesession.CodeDenied},
+		{name: "symlink cycle", path: "loop-a/file", wantCode: workspacesession.CodeForbidden},
+		{name: "alias that leaves the worktree", path: "outside-parent/outside/passwords.txt", wantCode: workspacesession.CodeForbidden},
+		{name: "alias of an allowed directory still reads", path: "code/hubserver/svc.go"},
+		{name: "alias of .git reads a file the denylist allows", path: "git-alias/HEAD"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var err error
+			if test.list {
+				_, err = service.List(t.Context(), workspacesession.FilesRequest{Path: test.path})
+			} else {
+				_, err = service.Read(t.Context(), workspacesession.FilesRequest{Path: test.path})
+			}
+			if got := workspacefiles.ErrorCode(err); got != test.wantCode {
+				t.Fatalf("path %q code = %q (err %v), want %q", test.path, got, err, test.wantCode)
+			}
+		})
+	}
+}
+
+func TestListPagesALargeDirectoryInOrder(t *testing.T) {
+	t.Parallel()
+	service, worktree, _ := newWorktree(t)
+	crowded := filepath.Join(worktree, "crowded")
+	if err := os.MkdirAll(crowded, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	total := 3*workspacesession.DirectoryPage + 7
+	for index := total - 1; index >= 0; index-- {
+		name := filepath.Join(crowded, "f-"+strings.Repeat("0", 5-len(itoa(index)))+itoa(index))
+		if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name       string
+		cursor     string
+		wantFirst  string
+		wantCount  int
+		wantCursor bool
+	}{
+		{name: "first page", wantFirst: "f-00000", wantCount: workspacesession.DirectoryPage, wantCursor: true},
+		{name: "middle page", cursor: "f-00499", wantFirst: "f-00500", wantCount: workspacesession.DirectoryPage, wantCursor: true},
+		{name: "last page", cursor: "f-01499", wantFirst: "f-01500", wantCount: 7},
+		{name: "past the end", cursor: "f-99999", wantCount: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			listed, err := service.List(t.Context(), workspacesession.FilesRequest{Path: "crowded", Cursor: test.cursor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(listed.Entries) != test.wantCount || (listed.NextCursor != "") != test.wantCursor {
+				t.Fatalf("page = %d entries, cursor %q; want %d entries, cursor %v", len(listed.Entries), listed.NextCursor, test.wantCount, test.wantCursor)
+			}
+			if test.wantCount > 0 && listed.Entries[0].Name != test.wantFirst {
+				t.Fatalf("page starts at %q, want %q", listed.Entries[0].Name, test.wantFirst)
+			}
+			for index := 1; index < len(listed.Entries); index++ {
+				if listed.Entries[index-1].Name >= listed.Entries[index].Name {
+					t.Fatalf("entries out of order at %d: %q then %q", index, listed.Entries[index-1].Name, listed.Entries[index].Name)
+				}
+			}
+		})
+	}
+}

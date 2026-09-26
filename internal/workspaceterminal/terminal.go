@@ -385,18 +385,35 @@ func (t *Terminal) Close() {
 	if err := hangup(t.cmd); err != nil {
 		t.logger.Debug("workspace.terminal_hangup_failed", "error", err)
 	}
-	select {
-	case <-t.done:
-		t.closeFile()
-		return
-	case <-time.After(KillGrace):
+	// The shell leaving is not enough: a child that ignored the hangup keeps
+	// running in the group after its shell has gone. Close returns early only
+	// once the whole group is gone, and otherwise kills the group when the
+	// grace runs out.
+	deadline := time.NewTimer(KillGrace)
+	defer deadline.Stop()
+	poll := time.NewTicker(groupPollInterval)
+	defer poll.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			t.logger.Info("workspace.terminal_killed", "grace", KillGrace)
+			if err := kill(t.cmd); err != nil {
+				t.logger.Debug("workspace.terminal_kill_failed", "error", err)
+			}
+			t.closeFile()
+			return
+		case <-poll.C:
+			if t.ended() && !groupAlive(t.pid) {
+				t.closeFile()
+				return
+			}
+		}
 	}
-	t.logger.Info("workspace.terminal_killed", "grace", KillGrace)
-	if err := kill(t.cmd); err != nil {
-		t.logger.Debug("workspace.terminal_kill_failed", "error", err)
-	}
-	t.closeFile()
 }
+
+// groupPollInterval is how often Close checks whether the shell's process
+// group has emptied during the grace period.
+const groupPollInterval = 20 * time.Millisecond
 
 // closeFile releases the PTY. It ends the stream goroutine's read, which is
 // what makes a terminal whose shell is unreachable still stop producing.

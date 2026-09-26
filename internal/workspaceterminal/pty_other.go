@@ -41,4 +41,6 @@ func kill(cmd *exec.Cmd) error {
 // terminated there ends with an exit code and the exit code is the whole story,
 // so reporting an invented signal name would be reporting a fact the platform
 // does not have.
+func groupAlive(int) bool { return false }
+
 func exitSignal(*os.ProcessState) string { return "" }

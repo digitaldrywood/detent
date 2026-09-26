@@ -26,7 +26,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -147,18 +147,14 @@ func (s *Service) List(ctx context.Context, request workspacesession.FilesReques
 	if err := s.requireSameDevice(info); err != nil {
 		return workspacesession.FilesListed{}, err
 	}
-	entries, err := handle.ReadDir(0)
+	entries, err := nextPage(handle, request.Cursor)
 	if err != nil {
 		return workspacesession.FilesListed{}, refuse(workspacesession.CodeForbidden, err)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	listed = workspacesession.FilesListed{Path: relative, Entries: []workspacesession.FilesEntry{}}
 	page := make([]workspacesession.FilesEntry, 0, workspacesession.DirectoryPage)
 	paths := make([]string, 0, workspacesession.DirectoryPage)
 	for _, entry := range entries {
-		if request.Cursor != "" && entry.Name() <= request.Cursor {
-			continue
-		}
 		if len(page) == workspacesession.DirectoryPage {
 			listed.NextCursor = page[len(page)-1].Name
 			break
@@ -179,6 +175,53 @@ func (s *Service) List(ctx context.Context, request workspacesession.FilesReques
 		listed.Entries = append(listed.Entries, row)
 	}
 	return listed, nil
+}
+
+// readDirBatch is how many entries one ReadDir call returns while a page is
+// assembled.
+const readDirBatch = 256
+
+// nextPage reads a directory in bounded batches and keeps only the
+// DirectoryPage+1 smallest listable names after cursor, sorted. Memory stays
+// proportional to one page however large the directory is; the extra entry is
+// what tells the caller another page exists.
+func nextPage(handle *os.File, cursor string) ([]fs.DirEntry, error) {
+	keep := workspacesession.DirectoryPage + 1
+	kept := make([]fs.DirEntry, 0, 2*keep)
+	byName := func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) }
+	for {
+		batch, err := handle.ReadDir(readDirBatch)
+		for _, entry := range batch {
+			if cursor != "" && entry.Name() <= cursor {
+				continue
+			}
+			if !listable(entry.Type()) {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if len(kept) >= 2*keep {
+			slices.SortFunc(kept, byName)
+			kept = kept[:keep]
+		}
+		if errors.Is(err, io.EOF) || (err == nil && len(batch) == 0) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	slices.SortFunc(kept, byName)
+	if len(kept) > keep {
+		kept = kept[:keep]
+	}
+	return kept, nil
+}
+
+// listable reports whether an entry type is one a listing shows: symlinks,
+// directories and regular files.
+func listable(mode fs.FileMode) bool {
+	return mode&fs.ModeSymlink != 0 || mode.IsDir() || mode.IsRegular()
 }
 
 // describe builds one listing row. A symlink is listed as a symlink with no
@@ -327,12 +370,100 @@ func (s *Service) Read(_ context.Context, request workspacesession.FilesRequest)
 }
 
 // resolve normalizes a requested path and applies the request-string rules.
+//
+// A directory symlink inside the worktree would otherwise let a request name a
+// denied path under an alias ("alias/config" for ".git/config") that os.Root
+// follows, so every directory component is resolved and the resolved path is
+// held to the denylist as well.
 func (s *Service) resolve(value string) (string, error) {
 	relative, err := workspacesession.NormalizePath(value)
 	if err != nil {
 		return "", refuse(workspacesession.CodeNotFound, err)
 	}
+	resolved, err := s.resolveDirectories(relative)
+	if err != nil {
+		return "", err
+	}
+	if resolved != relative && s.deny.Denied(resolved) {
+		return "", refuse(workspacesession.CodeDenied, errors.New(relative))
+	}
 	return relative, nil
+}
+
+// maxSymlinkHops bounds symlink resolution so a cycle is refused rather than
+// followed forever.
+const maxSymlinkHops = 40
+
+// resolveDirectories follows every symlink among relative's directory
+// components and reports the worktree-relative path they lead to. The final
+// component is left as named: each operation lstats it and refuses or reports a
+// symlink there on its own terms.
+func (s *Service) resolveDirectories(relative string) (string, error) {
+	if relative == "" {
+		return "", nil
+	}
+	pending := strings.Split(relative, "/")
+	resolved := []string{}
+	hops := 0
+	for len(pending) > 0 {
+		part := pending[0]
+		pending = pending[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return "", refuse(workspacesession.CodeForbidden, errors.New("a symbolic link leaves the worktree"))
+			}
+			resolved = resolved[:len(resolved)-1]
+			continue
+		}
+		candidate := strings.Join(append(slices.Clone(resolved), part), "/")
+		if len(pending) == 0 {
+			resolved = append(resolved, part)
+			break
+		}
+		info, err := s.root.Lstat(candidate)
+		if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+			resolved = append(resolved, part)
+			continue
+		}
+		hops++
+		if hops > maxSymlinkHops {
+			return "", refuse(workspacesession.CodeForbidden, errors.New("too many symbolic links"))
+		}
+		target, err := s.root.Readlink(candidate)
+		if err != nil {
+			return "", translateOpenError(err)
+		}
+		target, err = s.worktreeRelativeTarget(target)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) || path.IsAbs(target) {
+			resolved = resolved[:0]
+			target = strings.TrimPrefix(filepath.ToSlash(target), "/")
+		}
+		pending = append(strings.Split(filepath.ToSlash(target), "/"), pending...)
+	}
+	return strings.Join(resolved, "/"), nil
+}
+
+// worktreeRelativeTarget turns an absolute link target inside the worktree
+// into a rooted worktree path ("/" plus the relative path) and refuses one
+// outside it. A relative target is returned unchanged.
+func (s *Service) worktreeRelativeTarget(target string) (string, error) {
+	if !filepath.IsAbs(target) {
+		return target, nil
+	}
+	inside, err := filepath.Rel(s.path, filepath.Clean(target))
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return "", refuse(workspacesession.CodeForbidden, errors.New("a symbolic link leaves the worktree"))
+	}
+	if inside == "." {
+		return "/", nil
+	}
+	return "/" + filepath.ToSlash(inside), nil
 }
 
 // lstat stats a path without following a final symlink.

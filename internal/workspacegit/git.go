@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -678,14 +679,85 @@ func (s *Service) exec(ctx context.Context, timeout time.Duration, extraEnv []st
 	// No standard input at all: a git that decided to ask for something gets
 	// end-of-file and fails instead of waiting.
 	command.Stdin = nil
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
+	stdout := &headBuffer{limit: maxStdoutBytes}
+	stderr := &tailBuffer{limit: maxStderrBytes}
+	command.Stdout, command.Stderr = stdout, stderr
+	// git runs in a process group of its own, and a timeout ends the whole
+	// group: a hook's background child killed with git's parent alone would
+	// keep the output pipes open. WaitDelay bounds the wait for pipes a
+	// surviving descendant still holds after git itself has exited.
+	procgroup.Configure(runCtx, command)
+	command.WaitDelay = gitWaitDelay
 	err := command.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// git exited successfully; only a descendant it left behind still
+		// held a pipe, and git's own output is already complete.
+		err = nil
+	}
+	if err == nil && stdout.truncated {
+		err = fmt.Errorf("git output exceeded %d bytes", maxStdoutBytes)
+	}
 	return result{
-		stdout: strings.TrimRight(stdout.String(), "\n"),
-		stderr: tail(stderr.String()),
+		stdout: strings.TrimRight(stdout.buffer.String(), "\n"),
+		stderr: stderr.String(),
 		err:    err,
 	}
+}
+
+// maxStdoutBytes bounds what one git command may write to standard output
+// before its answer is refused as too large to parse.
+const maxStdoutBytes = 16 << 20
+
+// gitWaitDelay is how long a finished or cancelled git process's pipes may stay
+// open before they are closed on it.
+const gitWaitDelay = 2 * time.Second
+
+// headBuffer keeps the first limit bytes written and records that more
+// arrived. It always reports a full write so the writer is never blocked.
+type headBuffer struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *headBuffer) Write(p []byte) (int, error) {
+	room := b.limit - b.buffer.Len()
+	if room < len(p) {
+		b.truncated = true
+		if room > 0 {
+			b.buffer.Write(p[:room])
+		}
+		return len(p), nil
+	}
+	b.buffer.Write(p)
+	return len(p), nil
+}
+
+// tailBuffer keeps the last limit bytes written, since git writes its progress
+// first and its verdict last.
+type tailBuffer struct {
+	data    []byte
+	limit   int
+	omitted bool
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.data = append(b.data, p...)
+	if excess := len(b.data) - b.limit; excess > 0 {
+		b.omitted = true
+		b.data = append(b.data[:0], b.data[excess:]...)
+	}
+	return len(p), nil
+}
+
+// String reports what was kept, marking the cut so a reader knows the
+// beginning is missing.
+func (b *tailBuffer) String() string {
+	trimmed := strings.TrimRight(string(b.data), "\n")
+	if b.omitted {
+		return "[earlier output omitted]\n" + trimmed
+	}
+	return trimmed
 }
 
 // environment is what every git command runs in.
@@ -699,16 +771,6 @@ func (s *Service) exec(ctx context.Context, timeout time.Duration, extraEnv []st
 // instead of waiting for a person who is not there.
 func (s *Service) environment() []string {
 	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS=")
-}
-
-// tail keeps the last maxStderrBytes of what git wrote, marking the cut so a
-// reader knows the beginning is missing.
-func tail(value string) string {
-	trimmed := strings.TrimRight(value, "\n")
-	if len(trimmed) <= maxStderrBytes {
-		return trimmed
-	}
-	return "[earlier output omitted]\n" + trimmed[len(trimmed)-maxStderrBytes:]
 }
 
 // pathspec makes one literal pathspec.
