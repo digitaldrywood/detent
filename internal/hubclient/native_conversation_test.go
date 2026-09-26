@@ -36,6 +36,7 @@ type conversationHub struct {
 	hangReports   bool
 	hangEvents    chan struct{}
 	rejectKey     string
+	rejectType    string
 	unbinds       []ConversationUnbindRequest
 	staleCalls    int
 	controlsDeny  int
@@ -236,7 +237,7 @@ func (h *conversationHub) serveTurnEvents(w http.ResponseWriter, r *http.Request
 	}
 	h.mu.Lock()
 	h.reportCalls++
-	hang, reject := h.hangReports, h.rejectKey
+	hang, reject, rejectType := h.hangReports, h.rejectKey, h.rejectType
 	failing := h.reportFailure > 0
 	if failing {
 		h.reportFailure--
@@ -256,7 +257,7 @@ func (h *conversationHub) serveTurnEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 	for _, event := range request.Events {
-		if reject != "" && event.Key == reject {
+		if (reject != "" && event.Key == reject) || (rejectType != "" && event.Type == rejectType) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"code":"invalid_event","message":"scripted rejection"}`))
 			return
@@ -1016,4 +1017,52 @@ func TestNativeConversationTurnEndLeavesNoControlQueued(t *testing.T) {
 		event, ok := hub.controlResult("k19")
 		return ok && event.Status == runner.ConversationControlUnknown
 	})
+}
+
+func TestNativeConversationDeclinesQuestionsTheHubDropped(t *testing.T) {
+	useFastConversationTimings(t)
+	for _, test := range []struct {
+		name   string
+		script func(*conversationHub)
+	}{
+		{name: "hub rejects the question", script: func(h *conversationHub) { h.rejectType = runner.ConversationEventQuestionOpened }},
+		{name: "hub stays unavailable", script: func(h *conversationHub) { h.reportFailure = 100 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub, execution := newConversationHub(t)
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Answer: true})
+			if err != nil {
+				t.Fatalf("bind error = %v", err)
+			}
+			defer func() { _ = session.Close(context.Background(), runner.ConversationOutcomeSucceeded, nil) }()
+			hub.mu.Lock()
+			test.script(hub)
+			hub.mu.Unlock()
+			control := session.Control(runner.ConversationTurnHooks{})
+			events := []runner.ConversationTurnEvent{
+				{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"},
+				{Type: runner.ConversationEventQuestionOpened, ThreadID: "thread-1", TurnID: "turn-1", RequestID: "req-1", Prompts: json.RawMessage(`[{"id":"approach","header":"","question":"Which?","options":[],"free_text":true}]`)},
+			}
+			if err := session.Report(t.Context(), events); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case command := <-control.Commands:
+				if err := command.Validate(); err != nil {
+					t.Fatalf("decline control is invalid: %v", err)
+				}
+				if command.Kind != runner.AgentControlAnswer || command.RequestID != "req-1" || command.ThreadID != "thread-1" || command.TurnID != "turn-1" {
+					t.Fatalf("decline control = %#v", command)
+				}
+				if answer := command.Answers["approach"]; len(answer) != 1 || !strings.Contains(answer[0], "could not show this question") {
+					t.Fatalf("decline answers = %#v", command.Answers)
+				}
+				if err := command.Check(t.Context()); err != nil {
+					t.Fatalf("decline check = %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the dropped question was never declined to the provider")
+			}
+		})
+	}
 }

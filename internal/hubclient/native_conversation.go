@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -663,19 +665,82 @@ func (s *conversationSession) flush(ctx context.Context) error {
 // post delivers one batch. A batch the hub refuses for its content is retried
 // event by event so a single rejected event is dropped alone and the events
 // around it keep their order.
+//
+// A question the hub never recorded can never be answered, so a dropped
+// question_opened event is declined to the provider straight away rather
+// than leaving the turn waiting for an answer nobody can give.
 func (s *conversationSession) post(ctx context.Context, batch []runner.ConversationTurnEvent) error {
 	err := s.postBatch(ctx, batch)
-	if err == nil || len(batch) < 2 || !conversationBatchRejected(err) {
+	if err == nil {
+		return nil
+	}
+	if len(batch) < 2 || !conversationBatchRejected(err) {
+		s.declineQuestions(batch, err)
 		return err
 	}
 	var errs []error
 	for _, event := range batch {
 		if err := s.postBatch(ctx, []runner.ConversationTurnEvent{event}); err != nil {
 			s.logger.Warn("conversation turn event dropped", "event_type", event.Type, "event_key", event.Key, "error", err)
+			s.declineQuestions([]runner.ConversationTurnEvent{event}, err)
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// conversationDeclineCauseBytes bounds the hub error quoted to the provider.
+const conversationDeclineCauseBytes = 500
+
+// declineQuestions answers every question the hub did not record with a
+// reason instead of an answer, through the turn's own control queue so the
+// transport writes it the way it writes a human answer. A session that is
+// closing has no live turn left to answer.
+func (s *conversationSession) declineQuestions(events []runner.ConversationTurnEvent, cause error) {
+	for _, event := range events {
+		if event.Type != runner.ConversationEventQuestionOpened || event.RequestID == "" {
+			continue
+		}
+		reason := "Detent could not show this question to the user (" + conversationTruncateBytes(cause.Error(), conversationDeclineCauseBytes) + "). No answer will come; continue without one."
+		var prompts []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(event.Prompts, &prompts); err != nil {
+			prompts = nil
+		}
+		answers := make(map[string][]string, len(prompts))
+		for _, prompt := range prompts {
+			answers[prompt.ID] = []string{reason}
+		}
+		command := runner.AgentControl{
+			Kind: runner.AgentControlAnswer, ThreadID: event.ThreadID, TurnID: event.TurnID, RequestID: event.RequestID,
+			Answers: answers, Check: func(context.Context) error { return nil }, Reply: make(chan error, 1),
+		}
+		s.mu.Lock()
+		queued := false
+		if !s.closing {
+			select {
+			case s.commands <- command:
+				queued = true
+			default:
+			}
+		}
+		s.mu.Unlock()
+		s.logger.Warn("conversation question declined to the provider", "request_id", event.RequestID, "queued", queued, "error", cause)
+	}
+}
+
+// conversationTruncateBytes cuts value to at most limit bytes on a rune
+// boundary.
+func conversationTruncateBytes(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut]
 }
 
 // conversationBatchRejected reports whether the hub refused a batch for what
