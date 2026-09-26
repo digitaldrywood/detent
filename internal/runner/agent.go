@@ -1364,6 +1364,9 @@ func (r *Runner) runRequestResumeState(
 		if agentResumeStateEmpty(req.ResumeState) {
 			return store.AgentResumeState{}, errors.New("resume retry requested without resume state")
 		}
+		if req.ResumeState.Orphaned && (req.WorkAttemptID <= 0 || req.Generation == 0) {
+			return store.AgentResumeState{}, errors.New("orphaned session resume requires completion attempt and generation")
+		}
 		return req.ResumeState, nil
 	default:
 		return r.agentResumeState(ctx, cfg, req, model, backendID, backendKind, agentRole), nil

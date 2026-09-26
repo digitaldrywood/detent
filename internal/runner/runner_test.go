@@ -34,6 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -3005,6 +3006,8 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 		{name: "resumed again", workAttemptID: 4925, generation: 19, orphaned: true},
 		{name: "native initial", workAttemptID: 4898, generation: 17, native: true},
 		{name: "native resumed", workAttemptID: 4917, generation: 18, orphaned: true, native: true},
+		{name: "orphan without attempt ID is rejected", generation: 20, orphaned: true},
+		{name: "orphan without generation is rejected", workAttemptID: 4931, orphaned: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -3035,7 +3038,18 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 					AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, Orphaned: true,
 				}
 			}
-			if _, err := runner.Run(context.Background(), req); err != nil {
+			completeIdentity := tt.workAttemptID > 0 && tt.generation > 0
+			_, err = runner.Run(context.Background(), req)
+			if tt.orphaned && !completeIdentity {
+				if err == nil || !strings.Contains(err.Error(), "completion attempt and generation") {
+					t.Fatalf("Run() error = %v, want missing completion identity", err)
+				}
+				if backend.request.Prompt != "" {
+					t.Fatal("orphaned session started a turn without completion identity")
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
 			prompt := backend.request.Prompt
@@ -3050,16 +3064,32 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 					}
 				}
 			}
-			for _, want := range []string{
-				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
-				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
-				"The orchestrator is the only writer of tracker lane state",
-			} {
-				if !strings.Contains(prompt, want) {
-					t.Errorf("prompt missing %q", want)
+			if !strings.Contains(prompt, "The orchestrator is the only writer of tracker lane state") {
+				t.Error("prompt missing lane ownership instruction")
+			}
+			fence := strings.LastIndex(prompt, "```detent-status\n")
+			if fence < 0 {
+				t.Fatal("prompt missing completion handoff")
+			}
+			block := strings.SplitN(prompt[fence+len("```detent-status\n"):], "```", 2)[0]
+			signal, err := workpad.ParseStatusBlock(block, "digitaldrywood/detent")
+			if err != nil {
+				t.Fatalf("ParseStatusBlock() error = %v", err)
+			}
+			if got := workpad.CurrentAttemptCompletion(signal, tt.workAttemptID, tt.generation); got != completeIdentity {
+				t.Errorf("CurrentAttemptCompletion() = %t, want %t", got, completeIdentity)
+			}
+			if completeIdentity {
+				for _, want := range []string{
+					fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
+					fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
+				} {
+					if !strings.Contains(block, want) {
+						t.Errorf("handoff missing %q", want)
+					}
 				}
 			}
-			if tt.orphaned {
+			if tt.orphaned && completeIdentity {
 				if backend.request.Resume.ThreadID != "original-thread" {
 					t.Errorf("resume thread = %q, want original-thread", backend.request.Resume.ThreadID)
 				}
@@ -3119,9 +3149,11 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 			Title:         "Resume orphaned session",
 			ModelOverride: "gpt-5.6-codex",
 		},
-		StartedAt:   startedAt,
-		RetryMode:   RetryModeResume,
-		ResumeState: resumeState,
+		StartedAt:     startedAt,
+		WorkAttemptID: 1156,
+		Generation:    1,
+		RetryMode:     RetryModeResume,
+		ResumeState:   resumeState,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -3129,8 +3161,10 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	if agentBackend.verifiedResume.ThreadID != "thread-1155" {
 		t.Fatalf("verified resume = %#v, want original thread", agentBackend.verifiedResume)
 	}
-	if agentBackend.request.Prompt != orphanResumePrompt {
-		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge", agentBackend.request.Prompt)
+	if !strings.HasPrefix(agentBackend.request.Prompt, orphanResumePrompt) ||
+		!strings.Contains(agentBackend.request.Prompt, `completion_work_attempt_id: "1156"`) ||
+		!strings.Contains(agentBackend.request.Prompt, `completion_generation: "1"`) {
+		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge and completion identity", agentBackend.request.Prompt)
 	}
 	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
 		t.Fatalf("SessionStart resume metadata = %#v", sessionStore.started)
@@ -3180,8 +3214,10 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 			Title:         "Resume orphaned session",
 			ModelOverride: "gpt-5.6-codex",
 		},
-		StartedAt: startedAt,
-		RetryMode: RetryModeResume,
+		StartedAt:     startedAt,
+		WorkAttemptID: 1157,
+		Generation:    2,
+		RetryMode:     RetryModeResume,
 		ResumeState: store.AgentResumeState{
 			DetentSessionID:  1155,
 			ProviderThreadID: "thread-missing",
@@ -3239,9 +3275,11 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 	}
 
 	_, err = runner.Run(context.Background(), RunRequest{
-		Issue:     connector.Issue{ID: "issue-1155", Identifier: "digitaldrywood/detent#1155", Title: "Resume orphaned session", ModelOverride: "gpt-5.6-codex"},
-		StartedAt: startedAt,
-		RetryMode: RetryModeResume,
+		Issue:         connector.Issue{ID: "issue-1155", Identifier: "digitaldrywood/detent#1155", Title: "Resume orphaned session", ModelOverride: "gpt-5.6-codex"},
+		StartedAt:     startedAt,
+		WorkAttemptID: 1158,
+		Generation:    3,
+		RetryMode:     RetryModeResume,
 		ResumeState: store.AgentResumeState{
 			DetentSessionID: 1155, ProviderThreadID: "thread-old", RequestedModel: "gpt-5.6-codex",
 			AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, Orphaned: true,
@@ -3253,7 +3291,7 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 	if len(agentBackend.requests) != 2 {
 		t.Fatalf("backend requests = %d, want resume and fresh", len(agentBackend.requests))
 	}
-	if agentBackend.requests[0].Prompt != orphanResumePrompt {
+	if !strings.HasPrefix(agentBackend.requests[0].Prompt, orphanResumePrompt) {
 		t.Fatalf("resume prompt = %q", agentBackend.requests[0].Prompt)
 	}
 	if agentBackend.requests[1].Prompt == orphanResumePrompt || !strings.Contains(agentBackend.requests[1].Prompt, "Implement the issue") {

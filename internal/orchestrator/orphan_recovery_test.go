@@ -2,14 +2,78 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
+
+func TestRestartResumeDispatchCompletionIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, lane := range []string{"In Progress", "Rework"} {
+		t.Run(lane, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 23, 17, 0, 0, 0, time.UTC)
+			issue := orphanRecoveryIssue()
+			issue.State = lane
+			session := orphanRecoverySession(now)
+			attempts := &orphanRecoveryAttemptStore{orphans: []store.OrphanedAgentSession{session}}
+			attempts.nextID = 2200
+			runner := newWorkerHostRunner()
+			orch, err := New(Config{
+				Project:                scheduler.ProjectCandidate{ID: "detent"},
+				ActiveStates:           []string{"In Progress", "Rework"},
+				ResumeOrphanedSessions: true,
+			}, Dependencies{
+				Connector:    hydratingDispatchConnector{issue: issue},
+				Runner:       runner,
+				WorkAttempts: attempts,
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			state := newState(orch.cfg)
+			orch.recoverDurableWorkAttempts(t.Context(), &state, now)
+			if !orch.dispatchIssue(t.Context(), &state, issue, state.Retry[issue.ID].Attempt, now, "") {
+				t.Fatal("restart resume dispatch failed")
+			}
+			request := receiveWorkerHostRunRequest(t, runner.started)
+			t.Cleanup(state.Running[issue.ID].cancel)
+			if request.RetryMode != runpkg.RetryModeResume || request.ResumeState.DetentSessionID != session.ResumeState.DetentSessionID {
+				t.Fatalf("dispatched retry = %#v, want orphaned provider resume", request)
+			}
+			if request.WorkAttemptID != 2200 || request.Generation == 0 {
+				t.Fatalf("completion identity = %d/%d, want new attempt 2200 and positive generation", request.WorkAttemptID, request.Generation)
+			}
+			prompt, err := runpkg.BuildPrompt(config.Workflow{Prompt: "Implement the issue"}, request.Issue, runpkg.PromptOptions{
+				WorkAttemptID: request.WorkAttemptID,
+				Generation:    request.Generation,
+			})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			fence := strings.LastIndex(prompt, "```detent-status\n")
+			if fence < 0 {
+				t.Fatal("prompt missing completion handoff")
+			}
+			block := strings.SplitN(prompt[fence+len("```detent-status\n"):], "```", 2)[0]
+			signal, err := workpad.ParseStatusBlock(block, "digitaldrywood/detent")
+			if err != nil {
+				t.Fatalf("ParseStatusBlock() error = %v", err)
+			}
+			if !workpad.CurrentAttemptCompletion(signal, request.WorkAttemptID, request.Generation) {
+				t.Fatalf("resumed completion rejected: fields %#v", signal.Fields)
+			}
+		})
+	}
+}
 
 func TestRecoverDurableWorkAttemptsQueuesOwnedOrphanedSessionResume(t *testing.T) {
 	t.Parallel()
