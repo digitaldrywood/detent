@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -560,6 +561,53 @@ func TestBuildCodexCommandUsesConfiguredShell(t *testing.T) {
 	cmd := buildCodexCommand(context.Background(), cfg)
 	if got := strings.Join(cmd.Args, "\x00"); got != "bash\x00-c\x00codex app-server --experimental" {
 		t.Fatalf("Args = %#v, want bash -c configured command", cmd.Args)
+	}
+}
+
+func TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		conversation bool
+		want         string
+	}{
+		{name: "ordinary turn keeps the configured command", want: "bash\x00-c\x00codex app-server"},
+		{name: "conversation turn enables questions", conversation: true, want: "bash\x00-c\x00codex app-server --enable default_mode_request_user_input"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			if test.conversation {
+				ctx = codex.WithConversationTurn(ctx)
+			}
+			cmd := buildCodexCommandFromConfig(ctx, " codex app-server ", "bash")
+			if got := strings.Join(cmd.Args, "\x00"); got != test.want {
+				t.Fatalf("Args = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWithCodexQuestionFeature(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, command, want string
+	}{
+		{name: "app-server gains the feature", command: "codex app-server", want: "codex app-server --enable default_mode_request_user_input"},
+		{name: "explicit stdio keeps its args", command: "codex app-server --stdio", want: "codex app-server --stdio --enable default_mode_request_user_input"},
+		{name: "already enabled", command: "codex app-server --enable default_mode_request_user_input", want: "codex app-server --enable default_mode_request_user_input"},
+		{name: "already set through config", command: "codex app-server -c features.default_mode_request_user_input=false", want: "codex app-server -c features.default_mode_request_user_input=false"},
+		{name: "other commands untouched", command: "codex exec", want: "codex exec"},
+		{name: "empty", command: "", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := withCodexQuestionFeature(test.command); got != test.want {
+				t.Fatalf("withCodexQuestionFeature(%q) = %q, want %q", test.command, got, test.want)
+			}
+		})
 	}
 }
 

@@ -26,6 +26,25 @@ const conversationControlRequestIDBase = 1000
 
 var errConversationTransportClosed = errors.New("conversation transport closed")
 
+type conversationTurnContextKey struct{}
+
+// WithConversationTurn marks ctx as starting the app-server process of a turn
+// bound to a live conversation.
+func WithConversationTurn(ctx context.Context) context.Context {
+	return context.WithValue(contextOrBackground(ctx), conversationTurnContextKey{}, true)
+}
+
+// ConversationTurn reports whether ctx starts the app-server process of a turn
+// bound to a live conversation. A command factory uses it to enable provider
+// features only such a turn can serve, such as questions for a human.
+func ConversationTurn(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	bound, ok := ctx.Value(conversationTurnContextKey{}).(bool)
+	return ok && bound
+}
+
 // optionalTransportCapabilities lists the optional transport interfaces the
 // app server probes with type assertions. Both the local transport and the
 // conversation wrapper must satisfy it so wrapping never hides a capability.

@@ -433,6 +433,9 @@ func WithTurnTimeout(timeout time.Duration) AppServerOption {
 
 func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate UpdateHandler) (result RunTurnResult, err error) {
 	ctx = contextOrBackground(ctx)
+	if req.ConversationControl != nil {
+		ctx = WithConversationTurn(ctx)
+	}
 
 	transport, err := s.transportFactory.NewTransport(ctx)
 	if err != nil {

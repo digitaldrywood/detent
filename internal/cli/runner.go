@@ -386,15 +386,19 @@ func buildCodexCommand(ctx context.Context, cfg workflowconfig.Config) *exec.Cmd
 }
 
 func buildCodexCommandFromConfig(ctx context.Context, command string, shell string) *exec.Cmd {
-	return commandshell.Command(ctx, withCodexQuestionFeature(strings.TrimSpace(command)), shell)
+	command = strings.TrimSpace(command)
+	if codex.ConversationTurn(ctx) {
+		command = withCodexQuestionFeature(command)
+	}
+	return commandshell.Command(ctx, command, shell)
 }
 
 // codexQuestionFeature is the Codex feature that lists request_user_input
 // among the tools of an ordinary turn. Codex 0.154 offers the tool in its
 // default collaboration mode only behind this flag, and a model that is told
 // to ask a question without the tool answers "I'll wait for your answer"
-// instead; the conversation product's questions (decisions section 5) need
-// it on every runner.
+// instead. Only a turn bound to a live conversation has a human to answer, so
+// only its app-server process gets the feature (decisions section 5).
 const codexQuestionFeature = "default_mode_request_user_input"
 
 // withCodexQuestionFeature appends the feature to an app-server command that
