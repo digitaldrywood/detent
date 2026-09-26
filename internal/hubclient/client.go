@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 const maxResponseBytes = 1 << 20
@@ -54,6 +55,28 @@ type Machine struct {
 	Capacity        int                       `json:"capacity"`
 	Version         string                    `json:"version"`
 	LastHeartbeatAt time.Time                 `json:"last_heartbeat_at,omitempty"`
+	// WorkspaceCapabilities and WorkspaceIsolation are what this runner can
+	// serve for a workspace session. The hub reads the report from the same
+	// row it stamps the heartbeat on, so the two travel together.
+	//
+	// They are not serialised with the rest of the struct: only the native
+	// machine endpoints accept them, and the v1 register/heartbeat pair
+	// rejects unknown fields. The native requests pick them up explicitly
+	// through workspaceReport instead.
+	WorkspaceCapabilities workspacesession.Capabilities `json:"-"`
+	WorkspaceIsolation    string                        `json:"-"`
+}
+
+// workspaceReport is what the native machine endpoints send for the workspace
+// claim gate, or nil when this runner serves no surface. The hub leaves a
+// stored report alone when a request omits it, so a runner without the
+// workspace lane behaves exactly as before.
+func (m Machine) workspaceReport() (*workspacesession.Capabilities, string) {
+	if m.WorkspaceCapabilities == (workspacesession.Capabilities{}) {
+		return nil, ""
+	}
+	capabilities := m.WorkspaceCapabilities
+	return &capabilities, m.WorkspaceIsolation
 }
 
 type MachineHeartbeat struct {

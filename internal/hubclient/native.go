@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type NativeClient struct {
@@ -182,6 +183,7 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 }
 
 func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) error {
+	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
 		ID              tracker.MachineID         `json:"id"`
@@ -191,7 +193,11 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 		Version         string                    `json:"version"`
 		OS              string                    `json:"os"`
 		Architecture    string                    `json:"architecture"`
-	}{machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
+		// Registration carries the same workspace report the heartbeat does,
+		// so a restarted runner is eligible before its first heartbeat.
+		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+	}{machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
 }
 

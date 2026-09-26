@@ -159,3 +159,29 @@ func nativeTrackerLease(lease tracker.NativeLease) tracker.Lease {
 	return tracker.Lease{LeaseSummary: tracker.LeaseSummary{PolicyID: lease.PolicyID, ID: lease.ID, FencingToken: lease.FencingToken,
 		Machine: tracker.MachineSummary{ID: lease.MachineID}, SessionID: lease.SessionID, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}}
 }
+
+// NativeClient returns the hub client the scheduler built for a configured
+// native project. The workspace lane claims through the same client the issue
+// lane does, so the two share one connection pool and one registered machine
+// rather than the runner opening a second identity for the same hub.
+func (s *Scheduler) NativeClient(project string) (*NativeClient, bool) {
+	if s == nil {
+		return nil, false
+	}
+	source, ok := s.nativeProjects[project]
+	if !ok || source == nil || source.client == nil {
+		return nil, false
+	}
+	return source.client, true
+}
+
+// MachineID is the machine identity this scheduler registers and claims under.
+// The workspace lane claims under the same one: decisions section 18.1 keys a
+// workspace's owner tuple on the machine, and a retained worktree may only be
+// served by the machine that produced it.
+func (s *Scheduler) MachineID() tracker.MachineID {
+	if s == nil {
+		return ""
+	}
+	return s.machine.ID
+}
