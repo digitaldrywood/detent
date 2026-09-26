@@ -596,7 +596,7 @@ func (s *Session) serve(ctx context.Context) error {
 		// so the shells behind them are still the ones their readers were
 		// looking at.
 		s.setSocket(socket)
-		s.attachTerminals()
+		s.attachTerminals(ctx)
 		err = s.readRelay(ctx, socket)
 		s.setSocket(nil)
 		// A terminal is the one thing on this session that a dropped socket

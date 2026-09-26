@@ -37,6 +37,69 @@ type terminalStream struct {
 	// the other half -- the runner's own socket dropping -- where no close can
 	// arrive because there is nothing to carry it.
 	reaper *time.Timer
+	// pending is output the PTY produced while no relay socket could carry
+	// it, oldest first and bounded by pendingLimit. It is sent ahead of any
+	// new output once a socket is attached again.
+	pending      []workspacesession.TerminalOutput
+	pendingBytes int
+	// out serialises delivery, so a flush of pending output and a new span
+	// never interleave.
+	out sync.Mutex
+}
+
+// pendingLimit bounds the output held for one PTY while the runner's socket is
+// down. It is the relay's own per-stream buffer, so a resumed reader never
+// receives more than the hub would have held for it.
+const pendingLimit = workspacesession.StreamBufferBytes
+
+// deliver sends one span, or holds it while no socket can carry it. Holding is
+// what keeps the PTY's reader alive across a redial: an error here would end
+// the reader for good and the shell would never produce output again.
+func (t *terminalStream) deliver(ctx context.Context, send func(workspacesession.TerminalOutput) error, span workspacesession.TerminalOutput) error {
+	t.out.Lock()
+	defer t.out.Unlock()
+	if err := t.flushLocked(send); err != nil || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		t.holdLocked(span)
+		return nil
+	}
+	if err := send(span); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		t.holdLocked(span)
+	}
+	return nil
+}
+
+// flush sends whatever was held while the socket was down.
+func (t *terminalStream) flush(send func(workspacesession.TerminalOutput) error) error {
+	t.out.Lock()
+	defer t.out.Unlock()
+	return t.flushLocked(send)
+}
+
+func (t *terminalStream) flushLocked(send func(workspacesession.TerminalOutput) error) error {
+	for len(t.pending) > 0 {
+		if err := send(t.pending[0]); err != nil {
+			return err
+		}
+		t.pendingBytes -= len(t.pending[0].Data)
+		t.pending = t.pending[1:]
+	}
+	return nil
+}
+
+// holdLocked keeps a span, dropping the oldest held output past the limit.
+func (t *terminalStream) holdLocked(span workspacesession.TerminalOutput) {
+	t.pending = append(t.pending, span)
+	t.pendingBytes += len(span.Data)
+	for t.pendingBytes > pendingLimit && len(t.pending) > 1 {
+		t.pendingBytes -= len(t.pending[0].Data)
+		t.pending = t.pending[1:]
+	}
 }
 
 // detach starts the resume window for one PTY.
@@ -175,14 +238,9 @@ func (s *Session) openTerminal(
 	// spans this closure writes go on arriving long after the open that
 	// installed it has returned.
 	sessionCtx := ctx
+	held := &terminalStream{channel: channel}
 	emit := func(span workspacesession.TerminalOutput) error {
-		payload, err := workspacesession.Encode(span)
-		if err != nil {
-			return err
-		}
-		return s.push(sessionCtx, workspacesession.Frame{
-			Channel: channel, Stream: stream, Type: workspacesession.TypeTerminalOutput, Payload: payload,
-		})
+		return held.deliver(sessionCtx, s.terminalSender(sessionCtx, channel, stream), span)
 	}
 
 	terminal, err := service.Open(ctx, request, emit)
@@ -195,7 +253,8 @@ func (s *Session) openTerminal(
 		s.answer(ctx, socket, workspacesession.ErrorFrame(channel, stream, code, terminalRefusalMessage(code)))
 		return
 	}
-	s.holdTerminal(stream, &terminalStream{channel: channel, terminal: terminal})
+	held.terminal = terminal
+	s.holdTerminal(stream, held)
 
 	cols, rows := terminal.Size()
 	opened, err := workspacesession.Encode(workspacesession.TerminalOpened{
@@ -441,16 +500,33 @@ func (s *Session) attachTerminal(stream string) {
 
 // attachTerminals cancels every resume window, which is what a redial means:
 // the hub still holds these streams, and the shells behind them are still the
-// ones their readers were looking at.
-func (s *Session) attachTerminals() {
+// ones their readers were looking at. Output held while the socket was down is
+// sent before anything new.
+func (s *Session) attachTerminals(ctx context.Context) {
 	s.mu.Lock()
-	held := make([]*terminalStream, 0, len(s.terminals))
-	for _, terminal := range s.terminals {
-		held = append(held, terminal)
+	held := make(map[string]*terminalStream, len(s.terminals))
+	for stream, terminal := range s.terminals {
+		held[stream] = terminal
 	}
 	s.mu.Unlock()
-	for _, terminal := range held {
+	for stream, terminal := range held {
 		terminal.attach()
+		if err := terminal.flush(s.terminalSender(ctx, terminal.channel, stream)); err != nil {
+			s.logger.Debug("workspace.terminal_output_held", "stream", stream, "error", err)
+		}
+	}
+}
+
+// terminalSender writes one output span for a stream to the current socket.
+func (s *Session) terminalSender(ctx context.Context, channel, stream string) func(workspacesession.TerminalOutput) error {
+	return func(span workspacesession.TerminalOutput) error {
+		payload, err := workspacesession.Encode(span)
+		if err != nil {
+			return err
+		}
+		return s.push(ctx, workspacesession.Frame{
+			Channel: channel, Stream: stream, Type: workspacesession.TypeTerminalOutput, Payload: payload,
+		})
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -402,4 +404,23 @@ func errorCode(t *testing.T, frame workspacesession.Frame) string {
 		t.Fatal(err)
 	}
 	return payload.Code
+}
+
+// TestSessionTerminalOutputSurvivesARelayRedial drops the runner's relay socket
+// while the shell is producing output and expects that output, and output
+// produced after the redial, to arrive on the new socket.
+func TestSessionTerminalOutputSurvivesARelayRedial(t *testing.T) {
+	t.Parallel()
+	requireSessionPTY(t)
+
+	f := startSession(t, withTerminal)
+	openTerminal(t, f, "conn:1")
+	f.send(t, terminalFrame(t, workspacesession.TypeTerminalInput, "conn:1", workspacesession.TerminalInput{
+		Data: "sleep 1; i=0; while [ $i -lt 400 ]; do i=$((i+1)); echo detent-tick-$i; sleep 0.02; done\n",
+	}))
+	if err := f.socket.Close(websocket.StatusGoingAway, "hub restarted"); err != nil {
+		t.Fatalf("close relay socket: %v", err)
+	}
+	f.socket = f.hub.waitForSocket()
+	awaitTerminalOutput(t, f, "detent-tick-400")
 }
