@@ -354,8 +354,10 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 			issue.Assignees = *request.Assignees
 			fields = append(fields, "assignees")
 		}
-		if request.Priority != nil {
-			issue.Priority = request.Priority
+		// A present patch either sets the level or clears it; an absent one
+		// leaves whatever the issue has (tracker.PriorityPatch).
+		if request.Priority.Present() {
+			issue.Priority = request.Priority.Level()
 			fields = append(fields, "priority")
 		}
 		if len(fields) == 0 {
