@@ -32,6 +32,7 @@ type nativeError struct {
 	Code            string           `json:"code"`
 	Message         string           `json:"message"`
 	CurrentRevision tracker.Revision `json:"current_revision,string,omitempty"`
+	Details         map[string]any   `json:"details,omitempty"`
 	status          int
 }
 
@@ -64,6 +65,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		if s.config.Hosted != nil {
+			if len(failure.Details) > 0 {
+				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
+			}
 			return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: "The requested operation is unavailable"})
 		}
 		return c.JSON(failure.status, failure)
@@ -118,6 +122,15 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
 	e.POST(nativeBase+"/work-items/:item/events", s.appendNativeRunEvent, worker)
+	// Stored attempt diffs and the pull request panel (decisions section
+	// 18.5 and 18.6). The diff write is a worker endpoint fenced by the
+	// producer's lease; every read follows the issue's read rule.
+	e.POST(nativeBase+"/attempts/:attempt/diff", s.postAttemptDiff, worker)
+	e.GET(nativeBase+"/attempts/:attempt/diff", s.getAttemptDiff, read)
+	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
+	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
+	e.POST(nativeBase+"/work-items/:item/pull-requests/actions", s.openPullRequestAction, write)
+	e.POST(nativeBase+"/work-items/:item/pull-requests/:number/actions", s.numberedPullRequestAction, write)
 }
 
 func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
@@ -207,7 +220,14 @@ func marshalNative(value any) (string, error) {
 	return string(encoded), err
 }
 
-func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
+func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
+	return s.nativeMutationStatus(c, http.StatusOK, command, input, operation)
+}
+
+// nativeMutationStatus is nativeMutation with the success status the route
+// reports. A replay answers with the same status as the first call, so a
+// created resource stays 201 on every retry of its key.
+func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, nativeInvalid("An idempotency key of at most 128 bytes is required"))
 	}
@@ -249,7 +269,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 		if err := tx.Commit(); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		return c.JSONBlob(http.StatusOK, []byte(response))
+		return c.JSONBlob(status, []byte(response))
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, err)
@@ -293,7 +313,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, []byte(response))
+	return c.JSONBlob(status, []byte(response))
 }
 
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
