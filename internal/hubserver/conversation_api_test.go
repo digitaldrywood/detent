@@ -933,3 +933,26 @@ func testTime(t *testing.T) time.Time {
 	t.Helper()
 	return time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 }
+
+// Messages saved before the link, when no coordinator answered them, are
+// queued for the linked issue's first attempt and handed to it on bind.
+func TestConversationLinkQueuesSavedMessages(t *testing.T) {
+	t.Parallel()
+	f := newConversationAPIFixture(t, nil)
+	created := f.create(t, f.token, map[string]any{"first_message": map[string]any{"key": "first", "text": "Fix the renewal"}})
+	id := created.Conversation.ID
+	if created.Receipt == nil || created.Receipt.Status != conversation.DeliverySaved {
+		t.Fatalf("receipt = %#v, want saved", created.Receipt)
+	}
+	requireNativeStatus(t, f.link(t, f.token, id, "link", true, "Fix the renewal"), http.StatusOK)
+	snapshot := f.snapshot(t, f.token, id)
+	var first *conversationMessageResource
+	for i := range snapshot.Messages {
+		if snapshot.Messages[i].ID == created.Receipt.MessageID {
+			first = &snapshot.Messages[i]
+		}
+	}
+	if first == nil || first.Delivery != conversation.DeliveryQueued {
+		t.Fatalf("first message after link = %#v, want queued", first)
+	}
+}

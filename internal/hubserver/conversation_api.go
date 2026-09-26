@@ -1180,6 +1180,19 @@ func (s *Service) linkConversation(c echo.Context) error {
 		if err := service.updateExecution(ctx, tx, &record, execution, now); err != nil {
 			return nil, err
 		}
+		// Messages saved while no coordinator answered the conversation are
+		// the linked issue's first controls: the first attempt receives them
+		// through the hand-off rather than leaving them saved forever.
+		saved, err := service.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'saved' AND kind = 'text' ORDER BY seq", record.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, message := range saved {
+			message.Delivery = conversation.DeliveryQueued
+			if err := service.updateMessage(ctx, tx, message, now); err != nil {
+				return nil, err
+			}
+		}
 		// The result of the handoff is a durable message, not only the link
 		// response: it survives a reload and reaches every other tab.
 		result, err := marshalNative(map[string]any{"issue": conversationIssueResult(record)})

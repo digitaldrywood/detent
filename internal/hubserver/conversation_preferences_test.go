@@ -128,7 +128,8 @@ func TestConversationModelChoicesFallBackToTheDefault(t *testing.T) {
 }
 
 // TestConversationPreferencesReachTheIssue proves the handoff writes the
-// conversation's explicit preferences into the issue's detent-agent block,
+// conversation's explicit effort into the issue's detent-agent block, never
+// its model,
 // and that a later change rewrites that block exactly once (section 14).
 func TestConversationPreferencesReachTheIssue(t *testing.T) {
 	t.Parallel()
@@ -150,8 +151,8 @@ func TestConversationPreferencesReachTheIssue(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("FromIssueBody() = %#v found %t error %v", override, found, err)
 	}
-	if override.Model != conversationPreferencesModel || override.Effort != conversation.EffortHigh {
-		t.Fatalf("override = %#v", override)
+	if override.Model != "" || override.Effort != conversation.EffortHigh {
+		t.Fatalf("override = %#v, want the effort and no block-level model", override)
 	}
 	if issue.Revision != 1 {
 		t.Fatalf("revision = %d, want the block written with the first revision", issue.Revision)
@@ -164,7 +165,7 @@ func TestConversationPreferencesReachTheIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromIssueBody() error = %v", err)
 	}
-	if override.Effort != conversation.EffortLow || override.Model != conversationPreferencesModel {
+	if override.Effort != conversation.EffortLow || override.Model != "" {
 		t.Fatalf("override after the change = %#v", override)
 	}
 	if changed.Revision != issue.Revision+1 {

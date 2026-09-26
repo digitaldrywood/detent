@@ -188,9 +188,12 @@ func conversationModelFromReport(report providercapacity.Report, model string) c
 
 // conversationAgentOverride is the detent-agent override a conversation's
 // preferences describe. Auto values are omitted: they mean "use the
-// project's configured default", which is exactly an absent field.
+// project's configured default", which is exactly an absent field. The model
+// is never written: a block-level model overrides every stage, including the
+// operator's planning and validation split, so the runner reads the model
+// from the bind's preferences for the conversation turn alone.
 func conversationAgentOverride(preferences conversation.Preferences) agentoverride.Override {
-	return agentoverride.Override{Model: preferences.ModelValue(), Effort: preferences.EffortValue()}
+	return agentoverride.Override{Effort: preferences.EffortValue()}
 }
 
 // conversationAgentOverrideBody returns body carrying the conversation's
