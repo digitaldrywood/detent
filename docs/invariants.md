@@ -190,6 +190,32 @@ and timeout text; the runner no longer presents every workspace failure as a
 `git fetch` failure. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
 checks that these failures drain the instance without a forge condition or
 issue retry accounting. Actual remote write timeouts still use forge availability.
+Remote Git reads during workspace preparation use forge availability only when
+a matching forge host and `ls-remote` or `fetch` operation identify the failure.
+Structured Git command errors and direct `after_create` hook commands establish
+the operation; compound hooks need the Git-specific SSH refusal in their output.
+An unrelated later command in a compound hook cannot inherit an earlier Git read.
+SSH refusal, transport loss, and 5xx responses retain the original workspace
+error, enter the existing forge retry with backoff, and do not count toward the
+project breaker. `TestRecoverDurableWorkspaceGitReadWait` verifies that an
+`ls-remote` wait restores its forge condition and retry deadline after restart.
+Workspace command and `after_create` hook ENOSPC failures use
+the existing retry backoff as instance-owned capacity failures, with a host disk
+alert on the board and health view; they do not count toward the project breaker.
+`TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker` reproduces the recorded
+Git-index and hook failures, and `TestBoardAndHealthShowHostDiskExhaustionRetry`
+checks the operator signal. Other preparation failures remain instance-owned; their breaker
+uses `agent.failure_breaker.cooldown_seconds` rather than the separate
+blocked-recovery cooldown. A checked clean merge that needs no new workspace
+uses the no-workspace merge-control path under that breaker, even when worker
+capacity is free. The same checked merge may continue
+when the matching forge condition came from a Git read; forge write and
+credential conditions retain their existing merge hold.
+`TestClassifyWorkspaceForgeReadFailure`,
+`TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
+`TestRecoverDurableWorkspaceGitReadWait`,
+`TestWorkspaceBreakerHonorsFailureCooldown`, `TestReadyMergeAtWorkerCapacity`,
+and `TestCheckedMergeUnderForgeCondition` cover these boundaries (#3067).
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
 completion handlers to triage workspace, startup, transport, protocol, and capacity
 failures. These failures publish no triage comment and do not consume the triage

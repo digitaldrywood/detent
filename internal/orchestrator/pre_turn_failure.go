@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -12,7 +14,42 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func workspaceDiskExhausted(err error) bool {
+	if !errors.Is(err, runpkg.ErrWorkspacePreparation) {
+		return false
+	}
+	if errors.Is(err, syscall.ENOSPC) || strings.Contains(strings.ToLower(err.Error()), "no space left on device") {
+		return true
+	}
+	var commandErr *workspace.CommandError
+	if errors.As(err, &commandErr) && strings.Contains(strings.ToLower(commandErr.Output), "no space left on device") {
+		return true
+	}
+	var hookErr *workspace.HookError
+	return errors.As(err, &hookErr) && strings.Contains(strings.ToLower(hookErr.Output), "no space left on device")
+}
+
+func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+	if !workspaceDiskExhausted(event.Err) || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
+		return false
+	}
+	o.finishForgeAvailabilityProbe(state, event, running)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCapacity,
+		workAttemptErrorWorkspace, event.Err.Error(), "waiting", telemetry.WorkspaceDiskExhaustionMessage)
+	releaseBackendCapacityProbe(state, running)
+	o.restorePreTurnIssue(ctx, state, running, event.CompletedAt)
+	attempt := nextAttempt(running.Attempt)
+	o.scheduleRetry(state, running.Issue, attempt, event.CompletedAt, telemetry.WorkspaceDiskExhaustionMessage, false, running.WorkerHost)
+	o.deferProjectFailureBreakerCanary(state, running.Issue.ID, event.CompletedAt, o.retryDelay(attempt, false))
+	recordStateEvent(state, telemetry.ActivityEvent{At: event.CompletedAt, Event: "workspace_host_disk_full", Message: telemetry.WorkspaceDiskExhaustionMessage + "; retrying " + issueLabel(running.Issue)})
+	if o.logger != nil {
+		o.logger.Log(ctx, slog.LevelWarn, "workspace preparation waiting for host disk space", "issue_id", running.Issue.ID, "worker_host", running.WorkerHost, "retry_at", state.Retry[running.Issue.ID].DueAt, "error", event.Err)
+	}
+	return true
+}
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
 	if issueConfigurationFailure(event.Err, "", "") || event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {

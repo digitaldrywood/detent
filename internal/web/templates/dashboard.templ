@@ -215,6 +215,13 @@ templ failureBreakerBanner(snapshot telemetry.Snapshot) {
 								<p class="mt-0.5 text-xs font-medium text-sec">{ "Pause scope: project " + strings.TrimSpace(breaker.ProjectID) + " only" }</p>
 							}
 							<p class="mt-0.5 text-xs text-sec">{ failureBreakerCauseLabel(breaker) }</p>
+							if !breaker.ResumeAt.IsZero() {
+								<p class="mt-0.5 text-xs text-sec">
+									Canary resumes
+									{ " " }
+									@LocalTime(breaker.ResumeAt, LocalTimeOptions{Style: LocalDateTimeZone, Relative: true})
+								</p>
+							}
 						</div>
 						if strings.TrimSpace(breaker.CanaryIssueID) == "" {
 							<form hx-post="/api/v1/failure-breaker/canary" hx-swap="none" class="shrink-0">

@@ -14,9 +14,75 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const forgeUnavailableErrorClass = forgeavailability.Condition
+
+// Workspace creation can fail before a worker turn when its Git read cannot
+// reach the forge. Keep that failure in the existing forge retry path.
+func classifyWorkspaceForgeReadFailure(err error, fallbackHost string) error {
+	if err == nil || !errors.Is(err, runpkg.ErrWorkspacePreparation) {
+		return err
+	}
+	detail := err.Error()
+	var commandErr *workspace.CommandError
+	operation := ""
+	if errors.As(err, &commandErr) && commandErr != nil && commandErr.Command == "git" {
+		for _, arg := range commandErr.Args {
+			if arg == "ls-remote" || arg == "fetch" {
+				operation = "git " + arg
+				break
+			}
+		}
+		detail += "\n" + commandErr.Output
+	} else {
+		var hookErr *workspace.HookError
+		if !errors.As(err, &hookErr) || hookErr == nil || hookErr.Hook != "after_create" {
+			return err
+		}
+		detail = hookErr.Output
+		if !strings.ContainsAny(hookErr.Command, "\n;&|`") {
+			operation = gitReadOperationInText(hookErr.Command)
+		}
+		if operation == "" && strings.Contains(strings.ToLower(detail), "permission denied (publickey)") {
+			operation = gitReadOperationInText(hookErr.Command)
+		}
+	}
+	host := forgeavailability.HostFromText(detail)
+	if operation == "" || host == "" {
+		return err
+	}
+	if configured := forgeavailability.NormalizeHost(fallbackHost); configured != "" && host != configured {
+		return err
+	}
+	if forgeavailability.GitHubCLIAuthFailure("git fetch", detail) {
+		return err
+	}
+	class, unavailable := forgeavailability.Classify("git fetch", detail)
+	if strings.Contains(strings.ToLower(detail), "permission denied (publickey)") || strings.Contains(strings.ToLower(detail), "authentication failed") {
+		class, unavailable = forgeavailability.ClassTransport, true
+	}
+	if !unavailable {
+		return err
+	}
+	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+}
+
+func gitReadOperationInText(value string) string {
+	value = strings.ToLower(value)
+	if !strings.Contains(value, "git ") {
+		return ""
+	}
+	switch {
+	case strings.Contains(value, "ls-remote"):
+		return "git ls-remote"
+	case strings.Contains(value, "git fetch"):
+		return "git fetch"
+	default:
+		return ""
+	}
+}
 
 type ForgeCondition = telemetry.ForgeCondition
 
@@ -141,6 +207,28 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 		return false
 	}
 	return retry.ForgeUnavailable || mergeWorkerIssue(issue)
+}
+
+// A checked clean PR can merge through the existing API path without the Git
+// read that opened this condition. Write failures still hold the merge lane.
+func (p dispatchPlanner) forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, now time.Time) bool {
+	if !forgeAvailabilityBlocks(state, issue, retry, p.cfg.ForgeHost, now) {
+		return false
+	}
+	return retry.ForgeUnavailable || !p.forgeReadAllowsMerge(state, issue)
+}
+
+func (p dispatchPlanner) forgeReadAllowsMerge(state *State, issue connector.Issue) bool {
+	if !p.readyMergeControlCandidate(state, issue) {
+		return false
+	}
+	condition, active := forgeCondition(state, forgeHostForIssue(issue, p.cfg.ForgeHost))
+	return active && forgeRetryReadOperation(condition.Operation) && condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable
+}
+
+func forgeRetryReadOperation(operation string) bool {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	return operation == "git fetch" || operation == "git ls-remote"
 }
 
 func workerGitHubCredentialAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, now time.Time) bool {
@@ -448,7 +536,7 @@ func forgeWaitMetadataFromAttempt(attempt store.WorkAttempt) (forgeWaitMetadata,
 	metadata.ForgeWait.Operation = strings.TrimSpace(metadata.ForgeWait.Operation)
 	metadata.ForgeWait.Branch = strings.TrimSpace(metadata.ForgeWait.Branch)
 	metadata.ForgeWait.ErrorClass = strings.TrimSpace(metadata.ForgeWait.ErrorClass)
-	if metadata.ForgeWait.Host == "" || !forgeavailability.WriteOperation(metadata.ForgeWait.Operation) || !validForgeAvailabilityClass(metadata.ForgeWait.ErrorClass) {
+	if metadata.ForgeWait.Host == "" || (!forgeavailability.WriteOperation(metadata.ForgeWait.Operation) && !forgeRetryReadOperation(metadata.ForgeWait.Operation)) || !validForgeAvailabilityClass(metadata.ForgeWait.ErrorClass) {
 		return forgeWaitMetadata{}, false
 	}
 	return metadata.ForgeWait, true

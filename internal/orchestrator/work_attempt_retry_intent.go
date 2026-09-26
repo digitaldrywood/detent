@@ -255,7 +255,7 @@ func (o *Orchestrator) currentWorkAttemptRecoveryBlockers(ctx context.Context, s
 	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
 		blockers = append(blockers, "CI unavailable")
 	}
-	if forgeAvailabilityBlocks(state, issue, Retry{}, o.cfg.ForgeHost, now) {
+	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, Retry{}, now) {
 		blockers = append(blockers, "forge unavailable")
 	}
 	if workerGitHubMonitorBlocks(state, issue.ID, Retry{}, now) {
@@ -279,7 +279,7 @@ func (o *Orchestrator) currentWorkAttemptRecoveryBlockers(ctx context.Context, s
 	if refusal, held := state.BudgetRefusals[issue.ID]; held {
 		blockers = append(blockers, "budget: "+refusal.Code)
 	}
-	if state.FailureBreaker.Active() && !projectFailureBreakerAllowsDispatch(state, now) {
+	if state.FailureBreaker.Active() && !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
 		blockers = append(blockers, "project_failure_breaker: "+state.FailureBreaker.Class+"; recheck "+state.FailureBreaker.ResumeAt.Format(time.RFC3339))
 	}
 	if state.Draining || o.dispatchQuiesced() {
