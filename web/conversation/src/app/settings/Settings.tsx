@@ -432,6 +432,86 @@ export function PlanSettings(): React.ReactElement {
   );
 }
 
+/** A plain sentence for each billing state the hub reports. */
+export function billingStatusText(
+  report: BillingReport,
+  now: Date = new Date(),
+): { title: string; description: string } {
+  const state = report.state;
+  const passed = (value: string) => value !== "" && !value.startsWith("0001-") && new Date(value).getTime() <= now.getTime();
+  const plan = state.plan.id === "" ? report.entitlement.effective_base.id : state.plan.id;
+  const until = (value: string) => (value.startsWith("0001-") || value === "" ? "" : new Date(value).toLocaleDateString());
+  switch (state.status) {
+    case "":
+    case "free":
+      return report.entitlement.source === "grant"
+        ? { title: "Complimentary access", description: `Plan ${plan}, granted by Detent.` }
+        : { title: "Free plan", description: `Plan ${plan}. No payment details are on file.` };
+    case "active":
+      if (passed(state.access_until)) {
+        return { title: "Access ended", description: "The paid period has ended. Renew or update payment in the billing portal." };
+      }
+      if (passed(state.paid_through)) {
+        return {
+          title: "Renewal pending",
+          description: `Waiting for Stripe to confirm the renewal. Access continues until ${until(state.access_until)}.`,
+        };
+      }
+      return { title: "Subscribed", description: `Plan ${plan} · paid through ${until(state.paid_through)}` };
+    case "multiple_subscriptions":
+      return { title: "Billing needs attention", description: "More than one subscription is active. Manage them in the billing portal or contact Detent support." };
+    case "trialing":
+      return { title: "Trial", description: `Plan ${plan} · trial access until ${until(state.access_until)}` };
+    case "canceling":
+      return { title: "Canceling", description: `Plan ${plan} ends ${until(state.access_until)}` };
+    case "grace":
+      return {
+        title: "Payment needed",
+        description: `The last payment failed. Access continues until ${until(state.grace_until)}; update the payment method in the billing portal.`,
+      };
+    case "payment_failed":
+      return { title: "Payment failed", description: "Update the payment method in the billing portal. Existing work and exports stay available." };
+    default:
+      return { title: `Subscription ${state.status.replaceAll("_", " ")}`, description: `Plan ${plan}` };
+  }
+}
+
+/** The notice after Checkout sends the owner back with `?checkout=returned`. */
+export function billingReturnNotice(search: string): string | null {
+  const params = new URLSearchParams(search);
+  const checkout = params.get("checkout");
+  if (checkout === "returned" || checkout === "success") {
+    return "Back from checkout. Your plan changes as soon as Stripe confirms the payment.";
+  }
+  return null;
+}
+
+/** Statuses Stripe's confirmation of a Checkout can move billing into. */
+const CONFIRMED_BILLING = new Set(["active", "trialing", "canceling", "multiple_subscriptions"]);
+
+/**
+ * After a Checkout return the payment may not be confirmed yet, so the report
+ * is re-read a bounded number of times until Stripe's confirmation arrives.
+ */
+export function useBillingConfirmation(
+  returned: boolean,
+  billing: { readonly value: BillingReport | undefined; readonly loading: boolean; readonly refresh: () => Promise<void> },
+  intervalMs = 3_000,
+  attempts = 10,
+): void {
+  const tries = React.useRef(0);
+  const { value, loading, refresh } = billing;
+  React.useEffect(() => {
+    if (!returned || loading || value === undefined) return;
+    if (CONFIRMED_BILLING.has(value.state.status) || tries.current >= attempts) return;
+    const timer = globalThis.setTimeout(() => {
+      tries.current += 1;
+      void refresh();
+    }, intervalMs);
+    return () => globalThis.clearTimeout(timer);
+  }, [returned, loading, value, refresh, intervalMs, attempts]);
+}
+
 export function BillingSettings(): React.ReactElement {
   const api = useAccountApi();
   const billing = useResource<BillingReport>(() => api.billing(), [api]);
@@ -445,6 +525,9 @@ export function BillingSettings(): React.ReactElement {
     globalThis.location?.assign(result.url);
     return result;
   });
+  const notice = billingReturnNotice(globalThis.location?.search ?? "");
+  const status = billing.value === undefined ? null : billingStatusText(billing.value);
+  useBillingConfirmation(notice !== null, billing);
 
   return (
     <SettingsPageContainer>
@@ -453,6 +536,13 @@ export function BillingSettings(): React.ReactElement {
         title="Billing"
         icon={<CreditCardIcon className="size-3.5" />}
       >
+        {notice === null ? null : (
+          <SettingsRow title="">
+            <p role="status" className="pb-3 text-sm">
+              {notice}
+            </p>
+          </SettingsRow>
+        )}
         {billing.loading && billing.value === undefined ? (
           <SettingsRow title="Loading billing" />
         ) : billing.error !== null ? (
@@ -464,23 +554,29 @@ export function BillingSettings(): React.ReactElement {
                 : billing.error.message
             }
           />
-        ) : billing.value === undefined ? null : (
+        ) : billing.value === undefined || status === null ? null : (
           <>
             <SettingsRow
-              title={`Subscription ${billing.value.state.status}`}
-              description={`Plan ${billing.value.state.plan.id} · paid through ${billing.value.state.paid_through}`}
+              title={status.title}
+              description={status.description}
               status={`Reconciled ${billing.value.reconciled_at || "never"}`}
               control={
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={portal.pending}
+                  disabled={portal.pending || billing.value.can_manage === false}
                   onClick={() => void portal.call()}
                 >
                   {portal.pending ? "Opening…" : "Billing portal"}
                 </Button>
               }
             />
+            {billing.value.checkout_pending === true ? (
+              <SettingsRow
+                title="Checkout in progress"
+                description="A checkout is still open. Finish it, or wait for it to expire before choosing another plan."
+              />
+            ) : null}
             {billing.value.prices.map((price) => (
               <SettingsRow
                 key={price.id}
