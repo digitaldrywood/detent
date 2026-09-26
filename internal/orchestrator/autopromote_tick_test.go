@@ -3067,6 +3067,65 @@ func TestTickAutoPromoteValidatorUnavailableRoutesRework(t *testing.T) {
 	}
 }
 
+func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-docs", Identifier: "digitaldrywood/pyroapex-mobile#153",
+		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
+	identity := validatorStageIdentityForIssue(issue)
+	for _, tt := range []struct {
+		name   string
+		repo   string
+		pr     int64
+		base   string
+		digest string
+		want   bool
+	}{
+		{name: "other PR", repo: "digitaldrywood/pyroapex-mobile", pr: 156, base: "base-docs", digest: "digest-workflow"},
+		{name: "other base", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-workflow", digest: "digest-workflow"},
+		{name: "missing digest", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs"},
+		{name: "exact PR", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", digest: "digest-docs", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			memo := openValidatorMemoStore(t)
+			at := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
+				ProjectID: "detent", IssueID: issue.ID, HeadSHA: "head-docs", Repository: tt.repo,
+				PRNumber: &tt.pr, BaseSHA: tt.base, DiffDigest: tt.digest, DiffFiles: []string{"AGENTS.md", "README.md"},
+				Submitted: true, Verdict: gate.ValidatorVerdictRework, RecordedAt: at,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			o := &Orchestrator{cfg: Config{Project: scheduler.ProjectCandidate{ID: "detent"}}, validatorMemo: memo}
+			_, ok := o.loadValidatorVerdict(t.Context(), issue, identity)
+			if ok != tt.want {
+				t.Fatalf("loaded wrong-PR verdict = %t, want %t", ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidatorProvenanceFailureStaysRetryable(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-220", Identifier: "digitaldrywood/pyroapex-mobile#218",
+		PullRequest: &connector.PullRequest{Number: 220, BaseSHA: "base-220", HeadSHA: "head-220"}}
+	cfg := autoPromoteValidatorTestConfig()
+	cfg.AutoPromote.Gate.Validator.MaxAttempts = 1
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	o := &Orchestrator{cfg: cfg, validator: &autoPromoteTickValidator{err: connector.NewRetryableError("validator PR file list differs from patch")},
+		validatorRuns: map[string]Running{}, validatorResults: map[string]validatorStageResult{}, validatorFailures: map[string]validatorStageFailure{},
+		now: func() time.Time { return now }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	o.startValidatorStage(t.Context(), &state, issue, now)
+	o.validatorWG.Wait()
+	if _, _, ready := o.validatorStageResult(t.Context(), issue); ready {
+		t.Fatal("provenance failure became a routable validator verdict")
+	}
+	failure, ok := o.validatorFailures[validatorStageIdentityForIssue(issue).Key]
+	if !ok || failure.NextRetryAt.IsZero() {
+		t.Fatalf("retryable provenance failure = %#v, present=%t", failure, ok)
+	}
+}
+
 func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) {
 	t.Parallel()
 
@@ -3080,6 +3139,7 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 		URL:                    "https://github.test/digitaldrywood/detent/pull/858",
 		BranchName:             "detent/digitaldrywood_detent_858",
 		HeadSHA:                "head-validator-restart",
+		BaseSHA:                "base-validator-restart",
 		State:                  "OPEN",
 		CIStatus:               "success",
 		CodexReviewState:       "COMMENTED",
@@ -3087,10 +3147,11 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 	})
 	validator := &autoPromoteTickValidator{
 		result: gate.ValidatorResult{
-			Submitted: true,
-			Verdict:   gate.ValidatorVerdictPass,
-			Score:     0.94,
-			Summary:   "Stored validator result.",
+			Submitted:  true,
+			Verdict:    gate.ValidatorVerdictPass,
+			Score:      0.94,
+			Summary:    "Stored validator result.",
+			Repository: "digitaldrywood/detent", PRNumber: 858, BaseSHA: "base-validator-restart", HeadSHA: "head-validator-restart", DiffDigest: "digest-restart", DiffFiles: []string{"README.md"},
 			Findings: []gate.Finding{{
 				Severity: "p2",
 				Body:     "non-blocking note",
@@ -3144,7 +3205,7 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 	if len(restartedTracker.prComments) != 1 {
 		t.Fatalf("pull request comments after restart = %#v, want one validator result comment", restartedTracker.prComments)
 	}
-	for _, fragment := range []string{"Validator verdict: pass", "score: 0.94", "Stored validator result.", "non-blocking note"} {
+	for _, fragment := range []string{"Validator verdict: pass", "score: 0.94", "Stored validator result.", "non-blocking note", "reviewed PR: digitaldrywood/detent#858", "diff SHA-256: digest-restart", "reviewed files: README.md"} {
 		if !strings.Contains(restartedTracker.prComments[0].body, fragment) {
 			t.Fatalf("pull request comment %q missing %q", restartedTracker.prComments[0].body, fragment)
 		}
@@ -6775,6 +6836,7 @@ func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T)
 		URL:                    "https://github.test/digitaldrywood/detent/pull/2530",
 		BranchName:             "detent/digitaldrywood_detent_2530",
 		HeadSHA:                "head-validator-after-workpad",
+		BaseSHA:                "base-validator-after-workpad",
 		State:                  "OPEN",
 		MergeableState:         "clean",
 		CIStatus:               "success",
@@ -6791,6 +6853,11 @@ func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T)
 		ProjectID:  "detent",
 		IssueID:    issue.ID,
 		HeadSHA:    issue.PullRequest.HeadSHA,
+		Repository: "digitaldrywood/detent",
+		PRNumber:   new(int64(2530)),
+		BaseSHA:    issue.PullRequest.BaseSHA,
+		DiffDigest: "digest-after-workpad",
+		DiffFiles:  []string{"README.md"},
 		Submitted:  true,
 		Verdict:    gate.ValidatorVerdictPass,
 		Score:      0.96,

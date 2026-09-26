@@ -41,6 +41,10 @@ func (s *sqliteStore) RecordValidatorVerdict(ctx context.Context, attrs Validato
 	if err != nil {
 		return err
 	}
+	filesJSON, err := json.Marshal(attrs.DiffFiles)
+	if err != nil {
+		return fmt.Errorf("encoding validator diff files: %w", err)
+	}
 	nextRetryAt, err := nullableTimestamp("next_retry_at", attrs.NextRetryAt)
 	if err != nil {
 		return err
@@ -50,6 +54,10 @@ func (s *sqliteStore) RecordValidatorVerdict(ctx context.Context, attrs Validato
 		ProjectID:       projectID,
 		IssueID:         issueID,
 		HeadSha:         headSHA,
+		Repository:      strings.TrimSpace(attrs.Repository),
+		BaseSha:         strings.TrimSpace(attrs.BaseSHA),
+		DiffDigest:      strings.TrimSpace(attrs.DiffDigest),
+		DiffFilesJson:   string(filesJSON),
 		Identifier:      nullString(attrs.Identifier),
 		IssueURL:        nullString(attrs.IssueURL),
 		PrNumber:        nullOptionalInt64(attrs.PRNumber),
@@ -176,11 +184,19 @@ func validatorVerdictFromRow(row sqlc.ValidatorVerdict) (ValidatorVerdict, error
 	if err != nil {
 		return ValidatorVerdict{}, err
 	}
+	var diffFiles []string
+	if err := json.Unmarshal([]byte(row.DiffFilesJson), &diffFiles); err != nil {
+		return ValidatorVerdict{}, fmt.Errorf("decoding validator diff files: %w", err)
+	}
 
 	return ValidatorVerdict{
 		ProjectID:       row.ProjectID,
 		IssueID:         row.IssueID,
 		HeadSHA:         row.HeadSha,
+		Repository:      row.Repository,
+		BaseSHA:         row.BaseSha,
+		DiffDigest:      row.DiffDigest,
+		DiffFiles:       diffFiles,
 		Identifier:      row.Identifier.String,
 		IssueURL:        row.IssueURL.String,
 		PRNumber:        optionalInt64Pointer(row.PrNumber),

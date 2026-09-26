@@ -61,7 +61,7 @@ func TestProviderIdentityFailureDoesNotCancelTurn(t *testing.T) {
 						t.Fatalf("result = %+v", result)
 					}
 				case "validator":
-					result, err := r.Validate(t.Context(), ValidatorRequest{Issue: issue})
+					result, err := r.Validate(t.Context(), testValidatorRequest(issue))
 					if err != nil {
 						t.Fatalf("Validate: %v", err)
 					}

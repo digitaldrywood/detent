@@ -2938,6 +2938,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := verifyValidatorDiff(req.Issue, req.Diff); err != nil {
+		return gate.ValidatorResult{}, err
+	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
 	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
@@ -2978,7 +2981,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}()
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
-	promptOptions := r.validatorPromptOptions(ctx, info, workspaceIssue, validatorMaxInlineDiffBytes(validator))
+	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
@@ -3212,7 +3215,43 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	validation.Repository = req.Diff.Repository
+	validation.PRNumber = req.Diff.PRNumber
+	validation.BaseSHA = req.Diff.BaseSHA
+	validation.HeadSHA = req.Diff.HeadSHA
+	validation.DiffDigest = req.Diff.Digest
+	validation.DiffFiles = append([]string(nil), req.Diff.Files...)
 	return validation, nil
+}
+
+func verifyValidatorDiff(issue connector.Issue, diff *connector.ValidationDiff) error {
+	if diff == nil || issue.PullRequest == nil {
+		return connector.NewRetryableError("validator PR diff provenance is missing")
+	}
+	repo := strings.TrimSpace(issue.PRRepository)
+	if repo == "" {
+		identifier := strings.TrimSpace(issue.Identifier)
+		if cut := strings.IndexByte(identifier, '#'); cut > 0 {
+			repo = identifier[:cut]
+		}
+	}
+	if repo == "" || diff.Repository != repo || diff.PRNumber <= 0 || diff.PRNumber != issue.PullRequest.Number ||
+		diff.BaseSHA == "" || diff.BaseSHA != issue.PullRequest.BaseSHA || diff.HeadSHA == "" || diff.HeadSHA != issue.PullRequest.HeadSHA || diff.Digest == "" {
+		return connector.NewRetryableError("validator PR diff identity differs from requested head/base")
+	}
+	return nil
+}
+
+func validatorPromptOptionsForPR(info workspace.Info, diff connector.ValidationDiff, maxBytes int) ValidatorPromptOptions {
+	opts := ValidatorPromptOptions{WorkspacePath: info.Path, Branch: info.Branch, MaxInlineDiffBytes: maxBytes,
+		Repository: diff.Repository, PRNumber: diff.PRNumber, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA,
+		DiffDigest: diff.Digest, DiffFiles: append([]string(nil), diff.Files...), DiffStat: &workspace.DiffStat{Files: len(diff.Files)}}
+	if maxBytes > 0 && len(diff.Patch) <= maxBytes {
+		opts.DiffPatch = diff.Patch
+	} else {
+		opts.DiffTruncated = true
+	}
+	return opts
 }
 
 func workerServiceEnvironment(mode string, connection serviceapi.Connection, info workspace.Info, issue workspace.Issue) procgroup.Environment {
@@ -3230,56 +3269,11 @@ func workerEnvironment(variables map[string]string, info workspace.Info, issue w
 	return procgroup.Environment{Variables: merged}
 }
 
-func (r *Runner) validatorPromptOptions(ctx context.Context, info workspace.Info, issue workspace.Issue, maxInlineDiffBytes int) ValidatorPromptOptions {
-	opts := ValidatorPromptOptions{
-		WorkspacePath:      info.Path,
-		Branch:             info.Branch,
-		MaxInlineDiffBytes: maxInlineDiffBytes,
-	}
-
-	if provider, ok := r.workspace.(workspace.DiffProvider); ok {
-		diff, err := provider.Diff(ctx, info, issue, maxInlineDiffBytes)
-		if err == nil {
-			opts.DiffStat = &diff.Stat
-			opts.DiffPatch = diff.Patch
-			opts.DiffTruncated = diff.Truncated
-			return opts
-		}
-		opts.DiffError = err.Error()
-		r.logValidatorDiffError(issue, info, "workspace diff failed", err)
-	}
-
-	stat, err := r.workspace.DiffStat(ctx, info, issue)
-	if err != nil {
-		if opts.DiffError == "" {
-			opts.DiffError = err.Error()
-		}
-		r.logValidatorDiffError(issue, info, "workspace diff stat failed", err)
-		return opts
-	}
-	opts.DiffStat = &stat
-	return opts
-}
-
 func validatorMaxInlineDiffBytes(cfg gate.ValidatorConfig) int {
 	if cfg.MaxInlineDiffBytes == nil {
 		return gate.DefaultValidatorMaxInlineDiffBytes
 	}
 	return *cfg.MaxInlineDiffBytes
-}
-
-func (r *Runner) logValidatorDiffError(issue workspace.Issue, info workspace.Info, message string, err error) {
-	if r == nil || r.logger == nil || err == nil {
-		return
-	}
-	r.logger.Warn(
-		message,
-		slog.String("issue_id", issue.ID),
-		slog.String("issue_identifier", issue.Identifier),
-		slog.String("workspace_path", info.Path),
-		slog.String("phase", "validator"),
-		slog.String("error", err.Error()),
-	)
 }
 
 type validatorJSONResult struct {
