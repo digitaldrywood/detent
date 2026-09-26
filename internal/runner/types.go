@@ -370,12 +370,9 @@ type AgentTurnRequest struct {
 	// ConversationControl, when set, connects a live conversation to the turn on
 	// backends that implement AgentLiveBackend.
 	ConversationControl *AgentConversationControl
-	// CollaborationMode selects the provider collaboration mode ("" or "plan").
-	// It is explicit and never implied by ConversationControl.
-	CollaborationMode string
-	Workspace         string
-	TempDir           string
-	Prompt            string
+	Workspace           string
+	TempDir             string
+	Prompt              string
 	// Attachments are the files the user attached to the message that starts
 	// this turn (decisions section 17.1). Images become provider image input;
 	// text files are appended to Prompt as a delimited data block.

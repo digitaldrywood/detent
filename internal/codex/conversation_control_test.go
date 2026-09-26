@@ -496,63 +496,7 @@ func TestConversationControlMismatchedQuestionFallsThrough(t *testing.T) {
 	}
 }
 
-func TestAppServerRunTurnCollaborationModeIsExplicit(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		req     RunTurnRequest
-		wantSet bool
-	}{
-		{name: "control without mode", req: RunTurnRequest{ConversationControl: &runner.AgentConversationControl{Commands: make(chan runner.AgentControl)}}},
-		{name: "no control no mode", req: RunTurnRequest{}},
-		{name: "plan without control", req: RunTurnRequest{CollaborationMode: "plan"}, wantSet: true},
-		{name: "plan with control", req: RunTurnRequest{CollaborationMode: "plan", ConversationControl: &runner.AgentConversationControl{Commands: make(chan runner.AgentControl)}}, wantSet: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			transport := newFakeAppServerTransport([]Message{
-				responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
-				responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
-				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
-				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-			})
-			server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
-			if err != nil {
-				t.Fatalf("NewAppServer() error = %v", err)
-			}
-			req := tt.req
-			req.Workspace = t.TempDir()
-			req.Prompt = "plan it"
-			req.Model = "gpt-6-astra"
-			req.ReasoningEffort = "medium"
-			if _, err := server.RunTurn(t.Context(), req, nil); err != nil {
-				t.Fatalf("RunTurn() error = %v", err)
-			}
-			var turnStart *Message
-			for _, msg := range transport.sentMessages() {
-				if msg.Method == "turn/start" {
-					turnStart = &msg
-					break
-				}
-			}
-			if turnStart == nil {
-				t.Fatal("turn/start not sent")
-			}
-			if !tt.wantSet {
-				assertJSONOmits(t, turnStart.Params, "collaborationMode")
-				return
-			}
-			assertJSONContains(t, turnStart.Params, "collaborationMode.mode", "plan")
-			assertJSONContains(t, turnStart.Params, "collaborationMode.settings.model", "gpt-6-astra")
-			assertJSONContains(t, turnStart.Params, "collaborationMode.settings.reasoning_effort", "medium")
-		})
-	}
-}
-
-func TestAgentBackendPassesConversationControlAndMode(t *testing.T) {
+func TestAgentBackendPassesConversationControl(t *testing.T) {
 	t.Parallel()
 
 	// A real app-server blocks the turn on requestUserInput until it is
@@ -589,10 +533,9 @@ func TestAgentBackendPassesConversationControlAndMode(t *testing.T) {
 	asked := make(chan runner.AgentInputRequest, 1)
 	answered := make(chan error, 1)
 	_, err = backend.RunTurn(t.Context(), runner.AgentTurnRequest{
-		Workspace:         t.TempDir(),
-		TempDir:           t.TempDir(),
-		Prompt:            "Ship it",
-		CollaborationMode: "plan",
+		Workspace: t.TempDir(),
+		TempDir:   t.TempDir(),
+		Prompt:    "Ship it",
 		ConversationControl: &runner.AgentConversationControl{
 			Commands: commands,
 			InputRequested: func(q runner.AgentInputRequest) error {
@@ -616,19 +559,12 @@ func TestAgentBackendPassesConversationControlAndMode(t *testing.T) {
 	if err := <-answered; err != nil {
 		t.Fatalf("answer reply = %v", err)
 	}
-	var sawAnswer, sawPlan bool
+	var sawAnswer bool
 	for _, msg := range transport.sentMessages() {
-		switch {
-		case msg.Method == "turn/start":
-			assertJSONContains(t, msg.Params, "collaborationMode.mode", "plan")
-			sawPlan = true
-		case msg.Method == "" && string(msg.ID) == "40":
+		if msg.Method == "" && string(msg.ID) == "40" {
 			assertJSONContains(t, msg.Result, "answers.q.answers", []any{"ok"})
 			sawAnswer = true
 		}
-	}
-	if !sawPlan {
-		t.Fatal("turn/start missing collaboration mode")
 	}
 	if !sawAnswer {
 		t.Fatalf("human answer not written to the provider: %+v", transport.sentMessages())

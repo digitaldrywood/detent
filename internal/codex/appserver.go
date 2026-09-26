@@ -183,11 +183,8 @@ type RunTurnRequest struct {
 	// ConversationControl, when set, wraps the transport so live conversation
 	// commands and provider questions are multiplexed into the turn.
 	ConversationControl *runner.AgentConversationControl
-	// CollaborationMode selects the provider collaboration mode ("" or "plan").
-	// It is explicit and never implied by ConversationControl.
-	CollaborationMode string
-	Workspace         string
-	Prompt            string
+	Workspace           string
+	Prompt              string
 	// Attachments are the files the user attached to the message that starts
 	// this turn. Images become image input items; text attachments already
 	// reached Prompt as a data block (decisions section 17.1).
@@ -1009,15 +1006,6 @@ func (s *AppServer) startTurn(
 	}
 	if req.ReasoningEffort != "" {
 		params["effort"] = req.ReasoningEffort
-	}
-	if req.CollaborationMode != "" {
-		params["collaborationMode"] = map[string]any{
-			"mode": req.CollaborationMode,
-			"settings": map[string]any{
-				"model":            req.Model,
-				"reasoning_effort": req.ReasoningEffort,
-			},
-		}
 	}
 
 	if err := sendRequest(ctx, transport, turnStartRequestID, "turn/start", params); err != nil {

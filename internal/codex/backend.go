@@ -105,7 +105,6 @@ func (b *AgentBackend) runTurn(
 	}
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		ConversationControl:     req.ConversationControl,
-		CollaborationMode:       req.CollaborationMode,
 		Workspace:               req.Workspace,
 		Prompt:                  req.Prompt,
 		Attachments:             req.Attachments,
