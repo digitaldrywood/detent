@@ -1126,6 +1126,17 @@ func (s *Service) linkConversation(c echo.Context) error {
 	if err := service.authorizeWrite(ctx, s.database.db, scope, preview); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	// A coordinator turn must not write into the conversation once it is
+	// linked and shared, nor overwrite the linked runner's execution, so the
+	// running turn is stopped and settled first and none starts until the
+	// link has committed.
+	if preview.WorkItemID == "" {
+		release, err := service.coordinator.Hold(id)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		defer release()
+	}
 	var linked conversationRecord
 	notify := false
 	err = s.nativeMutation(c, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {

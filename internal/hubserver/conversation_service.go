@@ -110,6 +110,9 @@ type conversationCoordinator interface {
 	// Cancel stops a running coordinator turn and reports whether one was
 	// running.
 	Cancel(conversationID string) bool
+	// Hold stops and settles a running turn and keeps new turns from
+	// starting until release is called.
+	Hold(conversationID string) (release func(), err error)
 	Stop()
 }
 

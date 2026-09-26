@@ -39,6 +39,10 @@ const (
 
 var errCoordinatorToolArguments = errors.New("invalid tool arguments")
 
+// errCoordinatorProjectUnreadable ends every tool call once the
+// conversation's owner has lost read access to its project.
+var errCoordinatorProjectUnreadable = errors.New("the conversation owner can no longer read this project")
+
 // coordinatorToolset executes the read-only coordination tools for one turn.
 // Every query is scoped to the conversation's organization; project access
 // follows the conversation owner's grants.
@@ -100,6 +104,13 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 	if err != nil {
 		return nil, err
 	}
+	readable, err := t.readableProjects(ctx, record)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(readable, record.ProjectID) {
+		return nil, errCoordinatorProjectUnreadable
+	}
 	switch call.Name {
 	case coordinatorToolListAttention:
 		var args struct {
@@ -109,7 +120,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
 			return nil, err
 		}
-		return t.listAttention(ctx, record, args.Scope, args.Limit)
+		return t.listAttention(ctx, record, readable, args.Scope, args.Limit)
 	case coordinatorToolExplainIssue:
 		var args struct {
 			WorkItemID string `json:"work_item_id"`
@@ -117,7 +128,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
 			return nil, err
 		}
-		return t.explainIssue(ctx, record, args.WorkItemID)
+		return t.explainIssue(ctx, record, readable, args.WorkItemID)
 	case coordinatorToolProposeIssue:
 		var args struct {
 			Title     string `json:"title"`
@@ -127,7 +138,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
 			return nil, err
 		}
-		return t.proposeIssue(ctx, record, args.Title, args.Objective, args.ProjectID)
+		return t.proposeIssue(ctx, record, readable, args.Title, args.Objective, args.ProjectID)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", call.Name)
 	}
@@ -152,21 +163,54 @@ func decodeCoordinatorArguments(raw json.RawMessage, target any) error {
 }
 
 // readableProjects returns the projects in the conversation's organization
-// the owner can read: hosted grants for the owner subject, token grants for
-// the owner principal, and always the conversation's own project.
+// the owner can read right now, by the rules the conversation API applies to
+// the owner's own requests: hosted grants of an active member for a hosted
+// owner; otherwise the owner token's grants, or every project for an
+// instance administrator token. A revoked or expired token reads nothing.
+// The conversation's own project is not assumed: a grant withdrawn after the
+// conversation started is honored on the next tool call.
 func (t *coordinatorToolset) readableProjects(ctx context.Context, record conversationRecord) ([]tracker.ProjectID, error) {
-	projects := []tracker.ProjectID{record.ProjectID}
 	db := t.coordinator.service.store.db
-	// A revoked token grants nothing, the same rule the conversation API
-	// applies on every request.
-	rows, err := db.QueryContext(ctx, `SELECT g.project_id FROM hosted_project_grants g JOIN hosted_members m ON m.user_id = g.user_id
-WHERE ? != '' AND m.user_id = ? AND m.active = 1 AND g.organization_id = ?
-UNION SELECT g.project_id FROM token_grants g JOIN api_tokens t ON t.id = g.token_id
-WHERE g.token_id = ? AND g.organization_id = ? AND t.revoked_at IS NULL`, record.OwnerSubject, record.OwnerSubject, record.OrganizationID, record.OwnerPrincipalID, record.OrganizationID)
+	query := `SELECT g.project_id FROM hosted_project_grants g JOIN hosted_members m ON m.user_id = g.user_id
+WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
+	args := []any{record.OwnerSubject, record.OrganizationID}
+	if record.OwnerSubject == "" {
+		var scope, createdAt string
+		var nativeOnly bool
+		var revokedAt, expiresAt sql.NullString
+		err := db.QueryRowContext(ctx, "SELECT scope, native_only, revoked_at, expires_at, created_at FROM api_tokens WHERE id = ?", record.OwnerPrincipalID).
+			Scan(&scope, &nativeOnly, &revokedAt, &expiresAt, &createdAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return []tracker.ProjectID{}, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read conversation owner: %w", err)
+		}
+		if revokedAt.Valid {
+			return []tracker.ProjectID{}, nil
+		}
+		if expiresAt.Valid {
+			now, err := t.coordinator.service.server.database.currentTime()
+			if err != nil {
+				return nil, err
+			}
+			if !runnerTimeValid(now, createdAt, expiresAt.String) {
+				return []tracker.ProjectID{}, nil
+			}
+		}
+		query = "SELECT project_id FROM token_grants WHERE token_id = ? AND organization_id = ?"
+		args = []any{record.OwnerPrincipalID, record.OrganizationID}
+		if apiScope(scope) == apiScopeAdmin && !nativeOnly {
+			query = "SELECT id FROM projects WHERE organization_id = ?"
+			args = []any{record.OrganizationID}
+		}
+	}
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list readable projects: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	projects := []tracker.ProjectID{}
 	for rows.Next() {
 		var project tracker.ProjectID
 		if err := rows.Scan(&project); err != nil {
@@ -217,7 +261,7 @@ type coordinatorAttention struct {
 // listAttention groups open issues by what they wait for. Classification
 // order: a pending question, a live lease, no workflow state (unavailable),
 // a non-terminal dependency or blocked state, a review state.
-func (t *coordinatorToolset) listAttention(ctx context.Context, record conversationRecord, scope string, limit int) (any, error) {
+func (t *coordinatorToolset) listAttention(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, scope string, limit int) (any, error) {
 	switch scope {
 	case "", "project":
 		scope = "project"
@@ -233,12 +277,15 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	}
 	projects := []tracker.ProjectID{record.ProjectID}
 	if scope == "all_projects" {
-		var err error
-		if projects, err = t.readableProjects(ctx, record); err != nil {
-			return nil, err
-		}
+		projects = readable
 	}
 	projectJSON, err := projectList(projects)
+	if err != nil {
+		return nil, err
+	}
+	// Blockers are named only when the owner can read them: a dependency in
+	// another project must not reveal that project's issues.
+	readableJSON, err := projectList(readable)
 	if err != nil {
 		return nil, err
 	}
@@ -257,10 +304,11 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	}
 	rows, err := db.QueryContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, ''), i.workflow_state_id IS NULL, i.native_updated_at,
  COALESCE((SELECT group_concat(b.native_id, ' ') FROM issue_dependencies d JOIN issues b ON b.id = d.blocker_issue_id LEFT JOIN workflow_states bs ON bs.id = b.workflow_state_id
-   WHERE d.dependent_issue_id = i.id AND COALESCE(bs.terminal, 0) = 0), '')
+   WHERE d.dependent_issue_id = i.id AND COALESCE(bs.terminal, 0) = 0
+    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM json_each(?))), '')
 FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND COALESCE(ws.terminal, 0) = 0
-ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, record.OrganizationID, projectJSON, coordinatorAttentionScan+1)
+ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.OrganizationID, projectJSON, coordinatorAttentionScan+1)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)
 	}
@@ -399,16 +447,12 @@ type coordinatorIssue struct {
 }
 
 // explainIssue describes one issue in a project the owner can read.
-func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversationRecord, workItemID string) (any, error) {
+func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, workItemID string) (any, error) {
 	workItemID = strings.TrimSpace(workItemID)
 	if workItemID == "" {
 		return nil, fmt.Errorf("%w: work_item_id is required", errCoordinatorToolArguments)
 	}
-	projects, err := t.readableProjects(ctx, record)
-	if err != nil {
-		return nil, err
-	}
-	projectJSON, err := projectList(projects)
+	projectJSON, err := projectList(readable)
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +542,7 @@ type coordinatorProposal struct {
 
 // proposeIssue validates a proposal and records it as an assistant status
 // message so the client can render a confirmation card. It creates nothing.
-func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversationRecord, title, objective, projectID string) (any, error) {
+func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, title, objective, projectID string) (any, error) {
 	title = strings.TrimSpace(title)
 	objective = strings.TrimSpace(objective)
 	if title == "" || len(title) > coordinatorProposalTitleBytes {
@@ -512,11 +556,7 @@ func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversati
 	if strings.TrimSpace(projectID) != "" {
 		target = tracker.ProjectID(strings.TrimSpace(projectID))
 	}
-	projects, err := t.readableProjects(ctx, record)
-	if err != nil {
-		return nil, err
-	}
-	if !slices.Contains(projects, target) {
+	if !slices.Contains(readable, target) {
 		return nil, fmt.Errorf("project %s is not readable in this conversation", target)
 	}
 	proposal := coordinatorProposal{ProjectID: target, Title: title, Objective: objective}

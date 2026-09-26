@@ -1031,3 +1031,349 @@ func TestAppendCoordinatorData(t *testing.T) {
 		})
 	}
 }
+
+// TestConversationCoordinatorToolsHonourReadAccess proves every tool call
+// rechecks the owner's current access: blockers in projects the owner cannot
+// read are not named, and a withdrawn grant or revoked token ends every tool.
+func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		tool     string
+		args     func(own tracker.NativeWorkItemID) string
+		setup    func(t *testing.T, f *coordinatorFixture) (dependent, blocker tracker.NativeWorkItemID)
+		revoke   string
+		success  bool
+		contains string
+		absent   bool
+	}{
+		{
+			name: "a blocker in the owner's project is named",
+			tool: "list_attention", args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` },
+			setup: func(t *testing.T, f *coordinatorFixture) (tracker.NativeWorkItemID, tracker.NativeWorkItemID) {
+				return f.create(t, "dependent").WorkItemID, f.create(t, "blocker").WorkItemID
+			},
+			success: true,
+		},
+		{
+			name: "a blocker in an unreadable project is not named",
+			tool: "list_attention", args: func(tracker.NativeWorkItemID) string { return `{"scope":"all_projects"}` },
+			setup: func(t *testing.T, f *coordinatorFixture) (tracker.NativeWorkItemID, tracker.NativeWorkItemID) {
+				other := newNativeFixture(t, f.service, f.organization, "unreadable")
+				return f.create(t, "dependent").WorkItemID, other.create(t, "secret blocker").WorkItemID
+			},
+			success: true, absent: true,
+		},
+		{
+			name: "a withdrawn grant ends list_attention", tool: "list_attention",
+			args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` }, revoke: "grant",
+			contains: "can no longer read this project",
+		},
+		{
+			name: "a withdrawn grant ends explain_issue", tool: "explain_issue",
+			args:   func(own tracker.NativeWorkItemID) string { return `{"work_item_id":"` + string(own) + `"}` },
+			revoke: "grant", contains: "can no longer read this project",
+		},
+		{
+			name: "a withdrawn grant ends propose_issue", tool: "propose_issue",
+			args:   func(tracker.NativeWorkItemID) string { return `{"title":"t","objective":"o"}` },
+			revoke: "grant", contains: "can no longer read this project",
+		},
+		{
+			name: "a revoked owner token ends every tool", tool: "list_attention",
+			args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` }, revoke: "token",
+			contains: "can no longer read this project",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "access")
+			own := f.create(t, "own")
+			var dependent, blocker tracker.NativeWorkItemID
+			if test.setup != nil {
+				dependent, blocker = test.setup(t, f)
+				f.transact(t, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(t.Context(), `INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
+SELECT b.id, d.id, 'native', ?, ? FROM issues b, issues d WHERE b.native_id = ? AND d.native_id = ?`, testTimestamp, testTimestamp, string(blocker), string(dependent))
+					return err
+				})
+			}
+			record := f.seed(t, test.name, nil)
+			switch test.revoke {
+			case "grant":
+				f.transact(t, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id = ?", f.owner)
+					return err
+				})
+			case "token":
+				f.transact(t, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", testTimestamp, f.owner)
+					return err
+				})
+			}
+			f.backend.setRun(callTool(test.tool, test.args(own.WorkItemID)))
+			f.say(t, &record, "go")
+			f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+			results := f.backend.toolResults()
+			if len(results) != 1 {
+				t.Fatalf("tool results = %#v, want one", results)
+			}
+			result := results[0]
+			if result.Success != test.success || !strings.Contains(result.Content, test.contains) {
+				t.Fatalf("result = %#v, want success=%t containing %q", result, test.success, test.contains)
+			}
+			if test.setup == nil {
+				return
+			}
+			if leaked := strings.Contains(result.Content, string(blocker)); leaked == test.absent {
+				t.Fatalf("result = %s, blocker %s named = %t, want %t", result.Content, blocker, leaked, !test.absent)
+			}
+		})
+	}
+}
+
+// TestConversationCoordinatorBoundsWorkers proves wakes beyond the worker
+// limit queue instead of spawning goroutines, repeated wakes coalesce, and
+// every queued conversation is still answered.
+func TestConversationCoordinatorBoundsWorkers(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		conversations int
+		wantWorkers   int
+		wantQueued    int
+	}{
+		{name: "below the limit every conversation runs", conversations: 2, wantWorkers: 2},
+		{name: "beyond the limit the rest queue once each", conversations: coordinatorConcurrency + 6, wantWorkers: coordinatorConcurrency, wantQueued: 6},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "bounded")
+			release := make(chan struct{})
+			f.backend.setRun(blockingRun(release, ""))
+			records := make([]conversationRecord, 0, test.conversations)
+			for index := range test.conversations {
+				record := f.seed(t, "bounded", nil)
+				f.history(t, &record, conversation.RoleUser, "hello "+string(rune('a'+index)), conversation.DeliverySaved)
+				records = append(records, record)
+			}
+			coordinator := f.coordinator().(*conversationTurnCoordinator)
+			for range 3 {
+				for _, record := range records {
+					coordinator.Wake(record.ID)
+				}
+			}
+			waitUntil(t, "workers started", func() bool { return f.backend.turns() == test.wantWorkers })
+			time.Sleep(50 * time.Millisecond)
+			coordinator.mu.Lock()
+			workers, queued := coordinator.workers, len(coordinator.queue)
+			coordinator.mu.Unlock()
+			if workers != test.wantWorkers || queued != test.wantQueued || f.backend.turns() != test.wantWorkers {
+				t.Fatalf("workers = %d, queued = %d, turns = %d; want %d, %d, %d", workers, queued, f.backend.turns(), test.wantWorkers, test.wantQueued, test.wantWorkers)
+			}
+			close(release)
+			for _, record := range records {
+				f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+			}
+			if got := f.backend.turns(); got != test.conversations {
+				t.Fatalf("turns = %d, want one per conversation", got)
+			}
+			waitUntil(t, "workers drained", func() bool {
+				coordinator.mu.Lock()
+				defer coordinator.mu.Unlock()
+				return coordinator.workers == 0 && len(coordinator.queue) == 0
+			})
+		})
+	}
+}
+
+// TestConversationCoordinatorSelectsByDelivery proves pending messages are
+// chosen by delivery alone: a retried message older than the last answer is
+// answered, and a backlog beyond one turn's bound is served across turns.
+func TestConversationCoordinatorSelectsByDelivery(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		seed      func(t *testing.T, f *coordinatorFixture, record *conversationRecord)
+		wantTurns int
+	}{
+		{
+			name: "a retried message before the last answer",
+			seed: func(t *testing.T, f *coordinatorFixture, record *conversationRecord) {
+				f.history(t, record, conversation.RoleUser, "retry me", conversation.DeliverySaved)
+				f.history(t, record, conversation.RoleAssistant, "a later answer", conversation.DeliveryCompleted)
+			},
+			wantTurns: 1,
+		},
+		{
+			name: "a backlog beyond one turn",
+			seed: func(t *testing.T, f *coordinatorFixture, record *conversationRecord) {
+				for index := range coordinatorPendingMessages + 5 {
+					f.history(t, record, conversation.RoleUser, "message "+strings.Repeat("x", index+1), conversation.DeliverySaved)
+				}
+			},
+			wantTurns: 2,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "delivery")
+			record := f.seed(t, test.name, nil)
+			test.seed(t, f, &record)
+			f.coordinator().Wake(record.ID)
+			waitUntil(t, "every user message delivered", func() bool {
+				for _, message := range f.messages(t, record.ID) {
+					if message.Role == conversation.RoleUser && message.Delivery != conversation.DeliveryDelivered {
+						return false
+					}
+				}
+				return true
+			})
+			waitUntil(t, "idle", func() bool { return f.conversation(t, record.ID).Execution.Status == conversation.ExecutionIdle })
+			if got := f.backend.turns(); got != test.wantTurns {
+				t.Fatalf("turns = %d, want %d", got, test.wantTurns)
+			}
+		})
+	}
+}
+
+// TestConversationCoordinatorAttachmentReadFailure proves a turn whose
+// attachment cannot be read ends through the normal failed completion, and
+// that a readable text attachment reaches the prompt as data.
+func TestConversationCoordinatorAttachmentReadFailure(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		breakStore    bool
+		wantDelivery  conversation.Delivery
+		wantExecution conversation.ExecutionStatus
+		wantTurns     int
+	}{
+		{name: "a readable attachment rides the prompt", wantDelivery: conversation.DeliveryCompleted, wantExecution: conversation.ExecutionIdle, wantTurns: 1},
+		{name: "an unreadable attachment fails the turn", breakStore: true, wantDelivery: conversation.DeliveryFailed, wantExecution: conversation.ExecutionFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "attachment")
+			record := f.seed(t, test.name, nil)
+			message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "read this", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
+			f.transact(t, func(tx *sql.Tx) error {
+				if err := f.conversations.appendMessage(t.Context(), tx, &record, &message, time.Now().UTC()); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_attachments (id, conversation_id, message_id, principal_id, name, mime, size, artifact_ref, created_at)
+VALUES ('att_1', ?, ?, ?, 'notes.txt', 'text/plain', 11, 'ref_1', ?)`, record.ID, message.ID, f.owner, testTimestamp); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO conversation_attachment_blobs (artifact_ref, content) VALUES ('ref_1', ?)", []byte("secret plan")); err != nil {
+					return err
+				}
+				if test.breakStore {
+					_, err := tx.ExecContext(t.Context(), "ALTER TABLE conversation_attachment_blobs RENAME TO conversation_attachment_blobs_gone")
+					return err
+				}
+				return nil
+			})
+			f.coordinator().Wake(record.ID)
+			assistant := f.waitAssistant(t, record.ID, test.wantDelivery)
+			waitUntil(t, "execution settled", func() bool { return f.conversation(t, record.ID).Execution.Status == test.wantExecution })
+			user := f.messages(t, record.ID)[0]
+			if want := map[bool]conversation.Delivery{true: conversation.DeliveryFailed, false: conversation.DeliveryDelivered}[test.breakStore]; user.Delivery != want {
+				t.Fatalf("user delivery = %s, want %s", user.Delivery, want)
+			}
+			if got := f.backend.turns(); got != test.wantTurns {
+				t.Fatalf("turns = %d, want %d", got, test.wantTurns)
+			}
+			if test.breakStore {
+				if !strings.Contains(string(assistant.Data), "read attachment notes.txt") {
+					t.Fatalf("assistant data = %s, want the attachment error", assistant.Data)
+				}
+				return
+			}
+			if prompt := f.backend.request(t, 0).Prompt; !strings.Contains(prompt, "<attachments>") || !strings.Contains(prompt, "secret plan") {
+				t.Fatalf("prompt = %q, want the attachment data block", prompt)
+			}
+		})
+	}
+}
+
+// TestConversationCoordinatorLinkSettlesTurn proves linking stops and
+// settles a running coordinator turn before the link commits, refuses the
+// link when the turn does not settle, and that no coordinator write lands in
+// a linked conversation.
+func TestConversationCoordinatorLinkSettlesTurn(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		ignoresCancel bool
+		wantStatus    int
+		wantAssistant conversation.Delivery
+		wantLinked    bool
+	}{
+		{name: "a running turn is interrupted and settled before the link", wantStatus: http.StatusOK, wantAssistant: conversation.DeliveryInterrupted, wantLinked: true},
+		{name: "a turn that will not settle refuses the link", ignoresCancel: true, wantStatus: http.StatusConflict, wantAssistant: conversation.DeliveryInterrupted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "link")
+			release := make(chan struct{})
+			run := blockingRun(release, "thinking")
+			if test.ignoresCancel {
+				run = func(_ context.Context, _ int, _ runner.AgentToolHandler, _ runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+					<-release
+					return runner.AgentTurnResult{ThreadID: "thread-late"}, nil
+				}
+			}
+			f.backend.setRun(run)
+			record := f.seed(t, test.name, nil)
+			f.say(t, &record, "hand this off")
+			f.backend.waitStarted(t)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
+				"key": "link-1", "share_history": true, "issue": map[string]any{"title": "Handed off", "description": "From the chat"},
+			})
+			close(release)
+			requireNativeStatus(t, response, test.wantStatus)
+			f.waitAssistant(t, record.ID, test.wantAssistant)
+			current := f.conversation(t, record.ID)
+			if linked := current.WorkItemID != ""; linked != test.wantLinked {
+				t.Fatalf("linked = %t, want %t", linked, test.wantLinked)
+			}
+			if test.wantLinked && (current.Execution.Status == conversation.ExecutionIdle || current.Execution.Status == conversation.ExecutionRunning) {
+				t.Fatalf("execution = %s, want the link's state rather than the coordinator's", current.Execution.Status)
+			}
+		})
+	}
+}
+
+func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
+	t.Parallel()
+	f := newCoordinatorFixture(t, "linked-write")
+	issue := f.create(t, "linked")
+	linkedAt := time.Now().UTC()
+	for _, test := range []struct {
+		name    string
+		linked  bool
+		wantErr error
+	}{
+		{name: "an unlinked conversation accepts the write"},
+		{name: "a linked conversation refuses the write", linked: true, wantErr: errCoordinatorLinked},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			record := f.seed(t, test.name, func(record *conversationRecord) {
+				if test.linked {
+					record.WorkItemID = string(issue.WorkItemID)
+					record.LinkedAt = &linkedAt
+					record.Visibility = conversation.VisibilityShared
+				}
+			})
+			called := false
+			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(context.Context, *sql.Tx, *conversationRecord, time.Time) error {
+				called = true
+				return nil
+			})
+			if !errors.Is(err, test.wantErr) || called == test.linked {
+				t.Fatalf("write() error = %v, called = %t; want %v, called = %t", err, called, test.wantErr, !test.linked)
+			}
+		})
+	}
+}
