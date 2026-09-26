@@ -56,6 +56,10 @@ func (c Config) validate() error {
 			return errors.New("shared entry public URL must use HTTPS except on loopback")
 		}
 	}
+	host, _, err := net.SplitHostPort(c.ListenAddress)
+	if ip := net.ParseIP(strings.Trim(host, "[]")); err != nil || host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return errors.New("shared entry must listen on a loopback address behind the TLS proxy")
+	}
 	if !safeID(c.Issuer) || len(c.SigningKey) != ed25519.PrivateKeySize || c.Provider == nil || strings.TrimSpace(c.StateDir) == "" {
 		return errors.New("shared entry requires an issuer, signing key, identity provider and state directory")
 	}

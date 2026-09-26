@@ -328,7 +328,7 @@ func newEntryFixture(t *testing.T) entryFixture {
 	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
 	tenants := map[string]http.Handler{"unix:/tenants/alpha.sock": alphaHandler, "unix:/tenants/beta.sock": betaHandler}
 	service, err := Open(t.Context(), Config{
-		PublicURL: testPublicURL, Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test"}, StateDir: t.TempDir(),
+		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test"}, StateDir: t.TempDir(),
 		Logger: slog.New(slog.DiscardHandler),
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
@@ -636,6 +636,20 @@ func TestValidReturnPath(t *testing.T) {
 	} {
 		if got := validReturnPath(test.path, test.organization); got != test.ok {
 			t.Errorf("validReturnPath(%q, %q) = %v, want %v", test.path, test.organization, got, test.ok)
+		}
+	}
+}
+
+func TestConfigRequiresLoopbackListener(t *testing.T) {
+	t.Parallel()
+	seed := make([]byte, ed25519.SeedSize)
+	for _, test := range []struct {
+		listen string
+		ok     bool
+	}{{"127.0.0.1:8017", true}, {"[::1]:8017", true}, {"localhost:8017", true}, {"0.0.0.0:8017", false}, {":8017", false}, {"10.0.0.5:8017", false}} {
+		config := Config{PublicURL: "https://hub.example.test", ListenAddress: test.listen, Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(), StateDir: "/state"}
+		if err := config.validate(); (err == nil) != test.ok {
+			t.Errorf("listen %q error = %v, want ok %v", test.listen, err, test.ok)
 		}
 	}
 }
