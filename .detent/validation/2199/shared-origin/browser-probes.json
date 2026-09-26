@@ -1,0 +1,18 @@
+{
+  "captured_at_utc": "2026-09-26T21:47Z",
+  "context": "member fay, one isolated browser context, Alpha tab after authorizing Beta in a second tab",
+  "event_source": {
+    "alpha_project_under_alpha": "activity:1",
+    "beta_project_under_alpha": "error",
+    "alpha_project_under_beta_status": 403
+  },
+  "fetch_mutations": {
+    "same_organization_with_alpha_csrf": 200,
+    "other_organization_with_alpha_csrf": 403
+  },
+  "form_post_before_origin_fix": {
+    "request_origin_header": "null",
+    "sec_fetch_site": "same-origin",
+    "status": 403
+  }
+}
