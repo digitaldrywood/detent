@@ -187,6 +187,14 @@ sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/ba
 sudo systemctl start detent-hub
 ```
 
+The running Hub holds its database in SQLite exclusive locking mode, so
+WAL-shipping replicators such as Litestream cannot attach to `hub.db` and fail
+with `database is locked`. Do not weaken the lock to enable them. For routine
+off-host copies, schedule this stop/backup/verify/start sequence (for example
+from a root-owned systemd timer at a quiet hour), compress the finished snapshot
+and upload only that file to encrypted object storage. The Hub is unavailable
+for the few seconds between stop and start; runners retry.
+
 Replace angle-bracket placeholders before execution. Backup output must not
 exist and must differ from the source. Copy only the completed snapshot to the
 backup system. Never copy live DB/WAL/SHM files. Record checksum, capture time,
