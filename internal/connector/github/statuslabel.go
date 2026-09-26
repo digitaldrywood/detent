@@ -150,12 +150,24 @@ func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.C
 }
 
 func (c *Connector) attachCachedLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue, includeState bool) error {
+	const operation = "DetentGitHubLabelIssuePullRequestReferences"
 	pending := make([]connector.Issue, 0, len(issues))
 	indexes := make([]int, 0, len(issues))
 	cacheable := make([]bool, 0, len(issues))
 	for index := range issues {
 		issue := &issues[index]
-		eligible := c.reusableLabelIssueReferenceState(issue.State) && issue.ID != "" && issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() && issue.PRNumber == nil && issue.PullRequest == nil
+		eligibleLane := c.reusableLabelIssueReferenceState(issue.State)
+		linkedPR := issue.PRNumber != nil || issue.PullRequest != nil
+		eligible := eligibleLane && issue.ID != "" && issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() && !linkedPR
+		reason := "cold"
+		switch {
+		case !eligibleLane:
+			reason = "lane_ineligible"
+		case linkedPR:
+			reason = "linked_pr"
+		case issue.ID == "" || issue.UpdatedAt == nil || issue.UpdatedAt.IsZero():
+			reason = "missing_identity"
+		}
 		if eligible {
 			key := labelIssueReferenceKey{ID: issue.ID, IncludeState: includeState}
 			c.labelReferencesMu.RLock()
@@ -165,9 +177,22 @@ func (c *Connector) attachCachedLabelIssuePullRequestReferences(ctx context.Cont
 				age := c.now().Sub(snapshot.HydratedAt)
 				if age >= 0 && age < labelIssueReferenceMaxAge {
 					snapshot.apply(issue)
+					connector.RecordGraphQLCache(ctx, operation, "hit")
 					continue
 				}
+				reason = "ttl_expired"
+			} else if ok && snapshot.HasPR {
+				reason = "linked_pr"
+			} else if ok {
+				reason = "changed"
 			}
+		}
+		if issue.ID != "" {
+			connector.RecordGraphQLCache(ctx, operation, "requery")
+		}
+		connector.RecordGraphQLCache(ctx, operation, reason)
+		if !eligibleLane && linkedPR {
+			connector.RecordGraphQLCache(ctx, operation, "linked_pr")
 		}
 		pending = append(pending, *issue)
 		indexes = append(indexes, index)

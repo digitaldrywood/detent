@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,7 @@ type refreshTiming struct {
 	progress     *atomic.Pointer[telemetry.RefreshProgress]
 	logger       *slog.Logger
 	projectID    string
+	refreshID    string
 	message      string
 	manual       bool
 	startedAt    time.Time
@@ -33,6 +35,7 @@ func newRefreshTiming(logger *slog.Logger, projectID string, manual bool) *refre
 		logger:       logger,
 		message:      "project refresh timing",
 		projectID:    strings.TrimSpace(projectID),
+		refreshID:    fmt.Sprintf("%s/%d", strings.TrimSpace(projectID), now.UnixNano()),
 		manual:       manual,
 		startedAt:    now,
 		phaseStarted: now,
@@ -70,6 +73,7 @@ func (t *refreshTiming) log(ctx context.Context, completed bool, state *State) t
 	}
 	attrs := []any{
 		"project_id", t.projectID,
+		"refresh_id", t.refreshID,
 		"manual", t.manual,
 		"completed", completed,
 		"total_duration", duration,
@@ -82,6 +86,27 @@ func (t *refreshTiming) log(ctx context.Context, completed bool, state *State) t
 	}
 	attrs = append(attrs, t.phases...)
 	t.logger.InfoContext(ctx, t.message, attrs...)
+	for _, operation := range t.points.Operations() {
+		denominator := operation.Cache["hit"] + operation.Cache["requery"]
+		var hitRate float64
+		if denominator > 0 {
+			hitRate = float64(operation.Cache["hit"]) / float64(denominator)
+		}
+		t.logger.InfoContext(ctx, "project refresh graphql operation",
+			"project_id", t.projectID,
+			"refresh_id", t.refreshID,
+			"operation", operation.Name,
+			"requests", operation.Requests,
+			"points", operation.Points,
+			"nodes_requested", operation.NodesRequested,
+			"nodes_returned", operation.NodesReturned,
+			"wall_time", operation.WallTime,
+			"cache_hits", operation.Cache["hit"],
+			"cache_requeries", operation.Cache["requery"],
+			"cache_hit_rate", hitRate,
+			"cache_outcomes", operation.Cache,
+		)
+	}
 	return duration
 }
 
