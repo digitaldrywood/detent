@@ -133,3 +133,104 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 		t.Fatalf("tenant = %+v", tenant)
 	}
 }
+
+func TestCloudAllocationPassesEntitlementAdministration(t *testing.T) {
+	t.Parallel()
+	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+	token := "entitlement-operator-token-0123456789abcdef"
+	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlements:\n    base: {id: pilot_free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: pilot_free, version: 1, features: [collaboration], allowances: {projects: 1}}\n"
+	administration := "  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: DETENT_ENTITLEMENT_TOKEN\n"
+	for _, test := range []struct {
+		name, body string
+		env        map[string]string
+		wantError  bool
+		wantGrants bool
+	}{
+		{name: "without entitlement administration", body: base},
+		{name: "operator grants", body: base + administration, env: map[string]string{"DETENT_ENTITLEMENT_TOKEN": token}, wantGrants: true},
+		{name: "missing token", body: base + administration, wantError: true},
+		{name: "short token", body: base + administration, env: map[string]string{"DETENT_ENTITLEMENT_TOKEN": "short"}, wantError: true},
+		{name: "missing administrator", body: base + "  entitlement_admin_token_env: DETENT_ENTITLEMENT_TOKEN\n", env: map[string]string{"DETENT_ENTITLEMENT_TOKEN": token}, wantError: true},
+		{name: "reuses provider secret", body: base + "  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: WORKOS_API_KEY\n", env: map[string]string{"WORKOS_API_KEY": token}, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}
+			for key, value := range test.env {
+				env[key] = value
+			}
+			path := filepath.Join(t.TempDir(), "cloud.yaml")
+			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			if (err != nil) != test.wantError {
+				t.Fatalf("error = %v, want error %v", err, test.wantError)
+			}
+			if err != nil {
+				if strings.Contains(err.Error(), token) {
+					t.Fatal("error exposes the entitlement token")
+				}
+				return
+			}
+			launcher, ok := config.Allocation.Launcher.(*cloudentry.ExecLauncher)
+			if !ok {
+				t.Fatalf("launcher = %T", config.Allocation.Launcher)
+			}
+			key, err := cloudassert.ParsePrivateKey(seed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := launcher.Configure(cloudentry.TenantSpec{Organization: cloudentry.Organization{ID: "org_tenant", ProviderID: "org_workos", Generation: 1}, PublicURL: "https://hub.example.test", Issuer: "detent-cloud", PublicKey: cloudassert.PublicKeyOf(key)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), token) {
+				t.Fatal("tenant configuration contains the entitlement token")
+			}
+			tenantEnv := map[string]string{}
+			for _, entry := range launcher.Environment {
+				name, value, _ := strings.Cut(entry, "=")
+				tenantEnv[name] = value
+			}
+			tenantPath := filepath.Join(t.TempDir(), "tenant.yaml")
+			if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return tenantEnv[name] })
+			if err != nil {
+				t.Fatalf("generated tenant configuration is invalid: %v\n%s", err, raw)
+			}
+			if got := string(tenant.EntitlementAdminToken) == token && tenant.EntitlementAdministrator == "pilot-operator"; got != test.wantGrants {
+				t.Fatalf("tenant entitlement administration = %v, want %v", got, test.wantGrants)
+			}
+			if tenant.Plans == nil || tenant.Billing != nil {
+				t.Fatalf("tenant plans = %v billing = %v", tenant.Plans, tenant.Billing)
+			}
+		})
+	}
+}
+
+func TestSelfHostedIdentityNeverEnablesBilling(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{"WORKOS_API_KEY": "sk_test_identity", "STRIPE_SECRET_KEY": "sk_test_billing", "STRIPE_WEBHOOK_SECRET": "whsec_0123456789abcdef"}
+	for _, test := range []struct{ name, body string }{
+		{name: "workos identity", body: "organization_id: org_self\nbootstrap_subject: user_owner\npublic_url: https://detent.example.test\nworkos:\n  client_id: client_example\n"},
+		{name: "workos identity with entitlements", body: "organization_id: org_self\nbootstrap_subject: user_owner\npublic_url: https://detent.example.test\nworkos:\n  client_id: client_example\nentitlements:\n  base: {id: team, version: 1}\n  window_seconds: 3600\n  retention_windows: 24\n  connected_seconds: 90\n  invitation_seconds: 86400\n  plans:\n    - {id: team, version: 1, features: [collaboration], allowances: {projects: 100}}\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "hosted.yaml")
+			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, ok, err := readHostedConfig(path, func(name string) string { return env[name] })
+			if err != nil || !ok {
+				t.Fatalf("readHostedConfig = %v %v", ok, err)
+			}
+			if config.Billing != nil {
+				t.Fatal("billing enabled without an explicit billing section")
+			}
+		})
+	}
+}
