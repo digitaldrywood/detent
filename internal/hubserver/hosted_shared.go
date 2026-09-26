@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/json"
@@ -141,11 +142,22 @@ func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, err
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	ctx := c.Request().Context()
-	inserted, err := s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at) VALUES (?,?,?,?,?) ON CONFLICT(token_hash) DO NOTHING", claims.Binding, claims.Email, string(encoded), formatHubTime(claims.SessionExpiresAt), formatHubTime(s.config.now()))
+	if identity.SupportActor != "" && (!hostedEmailListed(s.config.Hosted.StaffEmails, identity.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, identity.SupportActor)) {
+		return auth.Session{}, "", auth.ErrInvalidSession
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	if rows, err := inserted.RowsAffected(); err != nil || rows == 1 && identity.SupportActor != "" && s.hostedAudit(ctx, &identity, "session_started", "/auth/oidc/callback", "", http.StatusOK) != nil {
+	defer tx.Rollback()
+	inserted, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at) VALUES (?,?,?,?,?) ON CONFLICT(token_hash) DO NOTHING", claims.Binding, claims.Email, string(encoded), formatHubTime(claims.SessionExpiresAt), formatHubTime(s.config.now()))
+	if err != nil {
+		return auth.Session{}, "", auth.ErrInvalidSession
+	}
+	if rows, err := inserted.RowsAffected(); err != nil || rows == 1 && identity.SupportActor != "" && s.hostedAuditWith(ctx, tx, &identity, "session_started", "/auth/oidc/callback", "", http.StatusOK) != nil {
+		return auth.Session{}, "", auth.ErrInvalidSession
+	}
+	if err := tx.Commit(); err != nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	session, err := s.WebSession(ctx, claims.Binding, s.config.now())
@@ -188,18 +200,31 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 		if len(binding) != 64 {
 			return invalidAPIRequest(c, errors.New("invalid binding"))
 		}
-		var encoded string
-		var identity auth.HostedIdentity
-		if err := s.database.db.QueryRowContext(ctx, "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", binding).Scan(&encoded); err == nil && json.Unmarshal([]byte(encoded), &identity) == nil && identity.SupportActor != "" {
-			if err := s.hostedAudit(ctx, &identity, "session_ended", "/logout", "", http.StatusOK); err != nil {
-				return s.internalAPIError(c, "revocation_unavailable", "Sessions could not be revoked", err)
-			}
-		}
-		if _, err := s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,revoked_at) VALUES (?,'','{}',?,?,?) ON CONFLICT(token_hash) DO UPDATE SET revoked_at = COALESCE(revoked_at, excluded.revoked_at)", binding, now, now, now); err != nil {
+		if err := s.revokeHostedSharedBinding(ctx, binding, now); err != nil {
 			return s.internalAPIError(c, "revocation_unavailable", "Sessions could not be revoked", err)
 		}
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now string) error {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var encoded string
+	var identity auth.HostedIdentity
+	active := tx.QueryRowContext(ctx, "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", binding).Scan(&encoded) == nil
+	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,revoked_at) VALUES (?,'','{}',?,?,?) ON CONFLICT(token_hash) DO UPDATE SET revoked_at = COALESCE(revoked_at, excluded.revoked_at)", binding, now, now, now); err != nil {
+		return err
+	}
+	if active && json.Unmarshal([]byte(encoded), &identity) == nil && identity.SupportActor != "" {
+		if err := s.hostedAuditWith(ctx, tx, &identity, "session_ended", "/logout", "", http.StatusOK); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 type hostedSharedInvitation struct {

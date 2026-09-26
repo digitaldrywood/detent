@@ -512,6 +512,16 @@ func TestHostedSharedSupportSessionAudit(t *testing.T) {
 			t.Fatalf("support page status = %d", response.Code)
 		}
 	}
+	unlisted := support
+	unlistedHosted := *support.identity.Hosted
+	unlistedHosted.SupportActor, unlistedHosted.SessionID = "outsider@example.test", "session_outsider"
+	unlisted.identity.Hosted = &unlistedHosted
+	f.provider.mu.Lock()
+	f.provider.sessions["session_outsider"] = unlistedHosted
+	f.provider.mu.Unlock()
+	if response := f.serve(t, hostedSharedRequest{user: &unlisted, target: "/organizations/org_security/organization"}); response.Code == http.StatusOK {
+		t.Fatal("tenant accepted a support actor it does not list")
+	}
 	binding := cloudassert.AuthorizationBinding("shared-user_owner", "org_security", "session_support")
 	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: `{"bindings":["` + binding + `"]}`}); response.Code != http.StatusNoContent {
 		t.Fatalf("revoke status = %d", response.Code)

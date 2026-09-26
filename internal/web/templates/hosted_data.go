@@ -116,6 +116,9 @@ func hostedPageTitle(data HostedPageData) string {
 }
 
 func hostedURL(data HostedPageData, path string) templ.SafeURL {
+	if data.SharedOrigin && data.Base == "" && path == "/organization" {
+		return templ.SafeURL("/organizations")
+	}
 	return templ.SafeURL(data.Base + path)
 }
 

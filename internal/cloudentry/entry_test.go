@@ -442,6 +442,9 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 		t.Fatal("scoped mutation reached the wrong organization")
 	}
 	_, chooser := alice.get("/organizations")
+	if strings.Contains(chooser, `href="/organization"`) {
+		t.Fatal("entry pages link to the unscoped tenant route")
+	}
 	if !strings.Contains(chooser, `href="/organizations/org_alpha/organization"`) || !strings.Contains(chooser, `href="/organizations/org_beta/organization"`) {
 		t.Fatalf("chooser = %s", chooser)
 	}
@@ -696,6 +699,10 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 	}
 	if replay, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request")); replay.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replayed support callback = %d", replay.StatusCode)
+	}
+	support.login("/auth/oidc/start", "user_support:")
+	if response, _ := support.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {
+		t.Fatal("an ordinary sign-in carried support access into the new session")
 	}
 	alice := newBrowser(t, f.service.Handler())
 	alice.login("/organizations", "user_alice:")

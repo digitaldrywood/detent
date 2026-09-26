@@ -210,7 +210,7 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	s.setCookie(c, "session", token, s.config.now().Add(sessionLifetime))
 	session := accountSession{Hash: hash, CSRFSecret: csrfSecret, Subject: identity.Subject, Email: identity.Email, Identity: hosted}
 	for _, previous := range carried {
-		if previous.Identity.ExpiresAt.After(s.config.now()) {
+		if !previous.Support && previous.Identity.ExpiresAt.After(s.config.now()) {
 			if _, _, err := s.auth.authorize(ctx, session, previous.Organization, previous.Identity, previous.EffectiveEmail); err != nil {
 				return accountSession{}, err
 			}

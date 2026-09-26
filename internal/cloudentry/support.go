@@ -114,13 +114,13 @@ func (s *Service) completeSupport(c echo.Context) error {
 		!auth.ValidSupportReason(identity.Hosted.SupportReason) || identity.Hosted.OrganizationID != organization.ProviderID || s.staff(identity.Email) {
 		return s.denied(c, http.StatusForbidden, "Support access is not authorized")
 	}
-	if _, stale, err := s.auth.authorize(ctx, staff, organization.ID, *identity.Hosted, identity.Email); err != nil {
-		return s.denied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable")
-	} else {
-		s.revokeAtTenants(ctx, stale)
-	}
 	if err := s.auth.audit(ctx, staff.Subject, organization.ID, "support_started"); err != nil {
 		return s.denied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable")
 	}
+	_, stale, err := s.auth.authorize(ctx, staff, organization.ID, *identity.Hosted, identity.Email)
+	if err != nil {
+		return s.denied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable")
+	}
+	s.revokeAtTenants(ctx, stale)
 	return c.Redirect(http.StatusSeeOther, "/organizations/"+organization.ID+"/organization")
 }

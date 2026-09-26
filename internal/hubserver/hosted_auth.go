@@ -297,7 +297,15 @@ VALUES (?,?,?,?,1,?,?,?) ON CONFLICT(user_id) DO UPDATE SET email=excluded.email
 	return tx.Commit()
 }
 
+type hostedExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func (s *Service) hostedAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) error {
+	return s.hostedAuditWith(ctx, s.database.db, identity, event, route, project, status)
+}
+
+func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identity *auth.HostedIdentity, event, route, project string, status int) error {
 	if identity == nil {
 		return nil
 	}
@@ -305,7 +313,7 @@ func (s *Service) hostedAudit(ctx context.Context, identity *auth.HostedIdentity
 	if identity.SupportActor != "" {
 		actor = identity.SupportActor
 	}
-	_, err := s.database.db.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at)
+	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(s.config.now()))
 	return err
 }
