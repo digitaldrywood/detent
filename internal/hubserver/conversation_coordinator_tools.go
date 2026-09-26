@@ -260,7 +260,6 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
    WHERE d.dependent_issue_id = i.id AND COALESCE(bs.terminal, 0) = 0), '')
 FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND COALESCE(ws.terminal, 0) = 0
- AND `+notCoordinatorItemClause+`
 ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, record.OrganizationID, projectJSON, coordinatorAttentionScan+1)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)
@@ -415,13 +414,9 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 	}
 	db := t.coordinator.service.store.db
 	issue := coordinatorIssue{Comments: []coordinatorComment{}}
-	// A coordinator item carries someone's private chat and is not project
-	// work; it is invisible here for the same reason it is invisible in the
-	// issue list (decisions sections 9.2 and 10.1).
 	err = db.QueryRowContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), i.native_updated_at
 FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND i.native_id = ?
- AND `+notCoordinatorItemClause, record.OrganizationID, projectJSON, workItemID).Scan(
+WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND i.native_id = ?`, record.OrganizationID, projectJSON, workItemID).Scan(
 		&issue.WorkItemID, &issue.ProjectID, &issue.Number, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &issue.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("work item %s is not readable in this conversation", workItemID)
