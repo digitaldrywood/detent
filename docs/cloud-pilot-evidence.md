@@ -10,6 +10,13 @@ No deployment, customer invitations, billing, DNS or live identity changes were
 performed or authorized. Native diff delivery remains the immediate independent
 follow-up; billing is not a prerequisite for free access.
 
+The hosted product is one shared origin, `https://hub.detent.build`. Sections
+before [Shared hosted-site acceptance](#shared-hosted-site-acceptance) were
+captured on September 7 and 8 against **single-tenant fixtures**: one isolated Hub
+per preview with a pre-reserved organization on its own origin. They remain valid
+for the tenant Hub contracts they test, but they are not evidence for the shared
+site. The shared-site section below is the September 8 correction.
+
 ## Reproduce
 
 Start from the issue branch or its merged successor. Prerequisites #2194,
@@ -273,6 +280,85 @@ external GitHub gate, and the protected-merge regression verifies denial with
 zero merge execution effects. These results do not establish a live deployment,
 provider storage compatibility or measured hosting costs.
 
+## Shared hosted-site acceptance
+
+Added 2026-09-26 for the September 8 correction. Shared-origin organization
+sessions and tenant routing (#2341) and self-service provisioning (#2342) were
+verified merged into `origin/main` first. Everything here runs on one ephemeral
+loopback origin: the real shared entry (`internal/cloudentry`) proxies to one real
+tenant Hub per organization, each on a private unix socket with its own database
+and admin token. WorkOS is replaced by an in-process provider fixture; Stripe is
+not configured. No DNS, public port, operator tenant YAML, registry command or
+bootstrap user is involved.
+
+```sh
+python3 scripts/pilot-evidence.py --shared-origin --output tmp/shared-origin.json
+python3 scripts/pilot-evidence.py --shared-origin --race --output tmp/shared-origin-race.json
+mkdir -m 700 tmp/shared-origin-preview
+DETENT_SHARED_ORIGIN_PREVIEW=$PWD/tmp/shared-origin-preview go test ./internal/cloudentry -run '^TestSharedOriginPilotPreview$' -v -timeout 30m
+```
+
+Recorded evidence: `.detent/validation/2199/shared-origin-evidence.json` and
+`shared-origin-evidence-race.json` (20 required tests, 85 tests and subtests,
+clean tree at the recorded head), browser captures and probes in
+`.detent/validation/2199/shared-origin/`, and read-only live-origin facts in
+`shared-origin/live-origin.json`. `rebased-evidence.json` re-runs the original
+58-test suite on the rebased branch.
+
+| Checklist item | Result | Evidence |
+| --- | --- | --- |
+| Two unrelated verified users create separate organizations through one hostname without operator YAML, bootstrap users, DNS or public ports | Proven with fixtures | `TestSharedOriginPilotAcceptance` (`self_service`), browser `03` to `06` |
+| Durable provisioning and retry | Proven: an injected provider failure stops at `failed`, resumes to `ready`; the entry restarts, relaunches tenants and keeps sessions | `self_service`, `restart`, `TestProvisioningCapacityAndRecovery`, `TestProvisioningResumesInterruptedDeletionAndMemoryFloor` |
+| Capacity refusal | Proven: the request beyond `max_tenants` is stored as a resumable `capacity` failure with no provider call; ready organizations keep serving | `capacity`, browser `08` |
+| A third user in both organizations switches with independent concurrent tabs | Proven: 2 tabs, 32 concurrent requests, 8 issues per organization, zero cross-organization items; a second browser session stays scoped; signing out one browser leaves the other signed in | `membership`, `concurrent_tabs`, `sign_out`, browser `09`, `10` |
+| Sessions and mutations never cross organizations | Proven: distinct CSRF per organization; the other organization's token, a project under the wrong organization, a missing token, a cross-origin and a cross-site opaque origin are all refused and write nothing | `mutations`, `browser-probes.json` |
+| SSE never crosses organizations | Proven: cross-organization streams are refused; removing the member from one organization ends that stream while the other continues | `sse`, `browser-probes.json` |
+| Runner enrollment never crosses organizations | Proven: foreign owners cannot mint enrollments; an enrollment token and runner credential are rejected at the other organization; a runner claims, runs and releases work in its own organization only | `runners` |
+| Artifact grants never cross organizations | Partly proven: cross-organization listing, read-grant and upload-authority requests are refused. Issuing a positive read grant through the shared origin needs a bound customer artifact gateway and is only proven on single-tenant fixtures (`TestPilotHostedArtifactGatewayWithoutRunners`) | `artifacts` |
+| Billing never crosses organizations; free and complimentary access | Proven: new organizations start on the free base plan; an over-limit project returns 429; an operator complimentary grant lifts it for that organization only; another owner cannot read the report; checkout without a provider returns 503 | `entitlements` |
+| Self-hosted stays free with operator-selected auth | Proven for billing: local and WorkOS-identity Hubs have no billing provider, checkout and portal return 503, Stripe webhooks 404, and Stripe environment variables cannot enable billing without an explicit `billing` section | `TestPilotSelfHostedStaysFree`, `TestSelfHostedIdentityNeverEnablesBilling` |
+| Artifact modes | Unchanged: local-only, customer-managed and explicit opt-in hosted modes are the reviewed modes; DigitalOcean Spaces is the current hosted adapter choice. Local-only does not promise offline availability. Not re-exercised on the shared site | existing artifact suite |
+
+Defects found and fixed on this branch:
+
+- Every real browser mutation through the shared entry was rejected. The entry
+  sends `Referrer-Policy: no-referrer`, so Chrome sends `Origin: null` on
+  same-origin form posts and `fetch` calls, and the entry accepted only the exact
+  public origin. Organization creation failed with "Reload the page and try again"
+  (captured). The entry now also accepts `Origin: null` when the browser-set
+  `Sec-Fetch-Site` is `same-origin`; the per-organization CSRF token is still
+  required. Go tests had missed it because their client set `Origin` explicitly;
+  the acceptance client now sends real browser headers.
+- Shared-entry allocation could not configure entitlement administration, so no
+  operator could issue complimentary grants to self-service organizations.
+  `allocation.entitlement_administrator` and `allocation.entitlement_admin_token_env`
+  now pass through to tenants (token via environment only).
+
+Known limitations and observations:
+
+- Live hosted sign-in is not exercised. `https://hub.detent.build` currently
+  answers `/health` with 401 and `/` and `/organizations/new` with 404 over valid
+  TLS: it runs a token-protected self-hosted Hub, not the shared entry. It needs
+  `WORKOS_API_KEY` and `DETENT_CLOUD_ASSERTION_KEY`; paid activation (#2343) also
+  needs the Stripe test key and webhook secret named by the tenant `billing`
+  section. None exist yet.
+- Tenants run in-process through `hubserver.Run` on real unix sockets rather than
+  as `detent hub serve` children of `ExecLauncher`; the generated tenant
+  configuration is covered separately by the CLI tests.
+- A self-hosted Hub started with `--hosted-config` (for example WorkOS identity)
+  applies the built-in pilot allowances (10 projects, 10 members, 5 concurrent
+  work items) unless `entitlements` is configured. No billing is involved, but
+  operators should know the default quota exists.
+- In shared mode tenants return 404 for `/webhooks/stripe`, so paid activation
+  needs its own routing (#2343).
+- Hosted cost measurements remain unmeasured, as in the worksheet above.
+
+Operator prerequisites for a live shared-site run: WorkOS client ID and API key,
+an entry signing key, `allocation` limits set from measured tenant usage, an
+entitlement administrator and token if complimentary grants are needed, a TLS
+proxy forwarding the single origin to the loopback entry, and private
+`tenant_root`/`socket_root` directories on local disk.
+
 ## Release decision checklist
 
 - [x] Prerequisite implementation merges verified against current tracker/main.
@@ -286,6 +372,13 @@ provider storage compatibility or measured hosting costs.
   readiness verified, with external protected-merge denial covered separately.
 - [x] Organization creation, invited-user acceptance and explicit project access
   verified through the browser without changing the signed-in actor.
+- [x] Shared hosted-site acceptance with provider fixtures on one origin:
+  self-service organizations, retry, capacity refusal, multi-organization member,
+  scoped sessions/mutations/SSE/runners/entitlements, self-hosted without billing.
+- [ ] Shared hosted-site acceptance against `https://hub.detent.build` with live
+  WorkOS keys (blocked until the operator provisions them).
+- [ ] Positive artifact read grant through the shared origin with a bound
+  customer gateway.
 - [ ] Hosted idle/active infrastructure, retention, backup, network and support
   measurements recorded; operator approves pilot allowances.
 - [ ] Operator records gateway/provider configuration, TLS/proxy trust,
