@@ -90,6 +90,15 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 	if err := ensureLaunchdCodexProfile(profileHome); err != nil {
 		return "", nil, err
 	}
+	for _, name := range []string{"sessions", "archived_sessions"} {
+		path := filepath.Join(profileHome, name)
+		if _, err := removeManagedProfileLink(path); err != nil {
+			return "", nil, err
+		}
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return "", nil, fmt.Errorf("create worker transcript directory: %w", err)
+		}
+	}
 	profileEntries, err := os.ReadDir(profileHome)
 	if err != nil {
 		return "", nil, fmt.Errorf("read worker Codex profile: %w", err)
@@ -118,7 +127,7 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 		return "", nil, fmt.Errorf("read Codex home %s: %w", sourceHome, err)
 	}
 	for _, entry := range entries {
-		if codexInstructionFilename(entry.Name()) ||
+		if codexTranscriptDirectory(entry.Name()) || codexInstructionFilename(entry.Name()) ||
 			entry.Name() == workerCodexProfileDir || entry.Name() == launchdCodexProfileDir ||
 			(isLaunchd && entry.Name() == "skills") {
 			continue
@@ -399,4 +408,8 @@ func ensureWindowsCodexProfileLink(source string, destination string) error {
 		return nil
 	}
 	return createCodexProfileJunction(source, destination)
+}
+
+func codexTranscriptDirectory(name string) bool {
+	return name == "sessions" || name == "archived_sessions"
 }

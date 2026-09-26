@@ -48,6 +48,7 @@ type Config struct {
 }
 
 type Store interface {
+	ProtectedCodexThreadIDs(context.Context) ([]string, error)
 	auth.Store
 	StatsStore
 	FairShareStore
