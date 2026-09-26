@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io/fs"
 	"net/http"
 	"slices"
@@ -82,7 +83,7 @@ func (s *Service) appShell(c echo.Context) error {
 		// JSON API, which enforces membership. A session is enough here, so
 		// a staff account can still reach the support screen.
 		if _, _, err := s.hostedSession(c); err != nil {
-			return c.Redirect(http.StatusSeeOther, "/login")
+			return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 		}
 	}
 	content, err := fs.ReadFile(conversationClientFS, conversationClientShell)
@@ -93,7 +94,22 @@ func (s *Service) appShell(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "client_unavailable", Message: "The application client is not built on this hub"})
 	}
 	c.Response().Header().Set("Cache-Control", "no-cache")
-	return c.HTMLBlob(http.StatusOK, content)
+	return c.HTMLBlob(http.StatusOK, conversationClientShellFor(content, s.hostedBase(), s.hostedSignInPath()))
+}
+
+const conversationClientAssets = "/static/app/conversation/"
+
+func conversationClientShellFor(content []byte, base, signIn string) []byte {
+	meta := fmt.Sprintf(`<meta name="detent-base-path" content="%s"><meta name="detent-sign-in-path" content="%s">`, html.EscapeString(base), html.EscapeString(signIn))
+	shell := string(content)
+	if base != "" {
+		shell = strings.ReplaceAll(shell, `"`+conversationClientAssets, `"`+base+conversationClientAssets)
+	}
+	if head := strings.Index(shell, "<head>"); head >= 0 {
+		at := head + len("<head>")
+		return []byte(shell[:at] + meta + shell[at:])
+	}
+	return []byte(meta + shell)
 }
 
 // appClientBuild identifies the client build this hub serves. Version is the
@@ -339,6 +355,8 @@ type appBootstrap struct {
 	Feature       appBootstrapFeature        `json:"feature"`
 	Plan          *appBootstrapPlan          `json:"plan"`
 	APIBase       string                     `json:"api_base"`
+	BasePath      string                     `json:"base_path"`
+	SignInPath    string                     `json:"sign_in_path"`
 	Version       string                     `json:"version,omitempty"`
 }
 
@@ -356,8 +374,8 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
-	cookie, err := c.Cookie(hostedCookie)
-	if err != nil {
+	csrf := s.hostedPageCSRF(c)
+	if csrf == "" {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	ctx := c.Request().Context()
@@ -372,14 +390,16 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 			CanManageRunners: credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential),
 		},
 		Projects:  []appBootstrapProject{},
-		CSRFToken: hostedCSRF(cookie.Value),
+		CSRFToken: csrf,
 		Preferences: appBootstrapPreferences{
 			Models:  []appBootstrapChoice{},
 			Efforts: []appBootstrapChoice{},
 			Access:  []appBootstrapChoice{},
 		},
-		APIBase: "/api/v2/organizations/" + organization,
-		Version: s.config.Version,
+		APIBase:    "/api/v2/organizations/" + organization,
+		BasePath:   s.hostedBase(),
+		SignInPath: s.hostedSignInPath(),
+		Version:    s.config.Version,
 	}
 	if err := s.database.db.QueryRowContext(ctx, "SELECT name FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name); err != nil {
 		return s.nativeAPIError(c, fmt.Errorf("read organization name: %w", err))
@@ -463,7 +483,7 @@ WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential
 // subject belongs to. A support session never switches organizations.
 func (s *Service) hostedOrganizationChoices(ctx context.Context, session auth.Session) ([]appBootstrapOrganization, error) {
 	choices := []appBootstrapOrganization{}
-	if session.Identity == nil || session.Identity.SupportActor != "" {
+	if session.Identity == nil || session.Identity.SupportActor != "" || s.hostedShared() {
 		return choices, nil
 	}
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, session.Identity.Subject, "")

@@ -27,6 +27,7 @@ import {
   SupportResponse,
 } from "../../contracts/account.ts";
 import { isApiError } from "../../contracts/index.ts";
+import { hubPath } from "../../runtime/basePath.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
 export class AccountError extends Error {
@@ -210,7 +211,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     startSupport: (input: { key: string }) =>
       send(SupportResponse, "POST", `${base}/support/start`, { idempotency_key: input.key }),
     /** `POST /logout` answers 204 for a JSON caller (§12, "Serving"). */
-    logout: () => send(null, "POST", `/logout`, {}),
+    logout: () => send(null, "POST", hubPath("/logout"), {}),
 
     // --- Projects -----------------------------------------------------------
     projects: () => send(ProjectsResponse, "GET", `${base}/projects`),

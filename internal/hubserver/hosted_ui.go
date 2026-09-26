@@ -72,14 +72,20 @@ func (s *Service) renderHosted(c echo.Context, status int, data templates.Hosted
 			data.SupportExpiry = session.ExpiresAt.UTC().Format(time.RFC3339)
 		}
 	}
-	if data.SharedOrigin {
-		data.CSRF = s.hostedSharedCSRF(c)
-	} else if cookie, err := c.Cookie(hostedCookie); err == nil {
-		data.CSRF = hostedCSRF(cookie.Value)
-	}
+	data.CSRF = s.hostedPageCSRF(c)
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 	c.Response().WriteHeader(status)
 	return templates.HostedPage(data).Render(c.Request().Context(), c.Response())
+}
+
+func (s *Service) hostedPageCSRF(c echo.Context) string {
+	if s.hostedShared() {
+		return s.hostedSharedCSRF(c)
+	}
+	if cookie, err := c.Cookie(hostedCookie); err == nil {
+		return hostedCSRF(cookie.Value)
+	}
+	return ""
 }
 
 func (s *Service) hostedError(c echo.Context, status int, message string) error {

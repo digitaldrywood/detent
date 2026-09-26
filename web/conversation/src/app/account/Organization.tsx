@@ -29,6 +29,7 @@ import { ControlError, NativeSelect } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
+import { signInPath } from "../../runtime/basePath.ts";
 
 const ROLES = ["owner", "admin", "member", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((role) => ({
@@ -467,7 +468,7 @@ export function OrganizationRoute(): React.ReactElement {
 
   const exitSupport = useMutation(async () => {
     await api.logout();
-    globalThis.location?.assign("/login");
+    globalThis.location?.assign(signInPath());
     return null;
   });
 

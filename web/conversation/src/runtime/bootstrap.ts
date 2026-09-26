@@ -49,6 +49,7 @@ import {
 import { conversationKey, createConversationDetailAtoms } from "./state/conversations.ts";
 import { DraftStore } from "./state/drafts.ts";
 import { ConversationHandles } from "./state/handles.ts";
+import { applyHubPaths, hubPath } from "./basePath.ts";
 
 export interface ClientOptions {
   /** Origin the API is served from. Empty string for same-origin. */
@@ -105,7 +106,7 @@ export async function loadBootstrap(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<typeof Bootstrap.Type> {
   const request = (path: string) =>
-    fetchImpl(`${origin}${path}`, {
+    fetchImpl(`${origin}${hubPath(path)}`, {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     });
@@ -125,7 +126,9 @@ export async function loadBootstrap(
   const payload: unknown = await response.json();
   const account = decodeAccount(payload);
   latestAccount = account._tag === "Some" ? account.value : null;
-  return Schema.decodeUnknownSync(Bootstrap)(payload);
+  const bootstrap = Schema.decodeUnknownSync(Bootstrap)(payload);
+  applyHubPaths(bootstrap);
+  return bootstrap;
 }
 
 export interface SendMessageInput {

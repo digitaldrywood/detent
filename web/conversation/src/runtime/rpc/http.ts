@@ -26,6 +26,7 @@ import {
   Receipt,
   Conversation,
 } from "../../contracts/index.ts";
+import { hubPath } from "../basePath.ts";
 
 /** A decoded API failure. `retryable` is true only for `503 queue_full`. */
 export class ApiRequestError extends Schema.TaggedError<ApiRequestError>()("ApiRequestError", {
@@ -380,7 +381,7 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
       url(`${projectBase(projectId)}/conversations/${encodeURIComponent(conversationId)}/events`, {
         after,
       }),
-    bootstrap: send(Bootstrap, "GET", url("/chat/bootstrap")),
+    bootstrap: send(Bootstrap, "GET", url(hubPath("/chat/bootstrap"))),
     listOrganizationConversations: (input) =>
       send(
         ConversationListResponse,

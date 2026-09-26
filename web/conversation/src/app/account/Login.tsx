@@ -17,6 +17,7 @@ import { cn } from "../../lib/utils.ts";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
 import { useMutation } from "./useResource.ts";
+import { hubPath } from "../../runtime/basePath.ts";
 
 /** Where the browser goes to start a sign-in. */
 export const OIDC_START = "/auth/oidc/start";
@@ -122,13 +123,13 @@ export function LoginCard({
             <Button
               size="lg"
               className="w-full justify-center"
-              render={<a href={OIDC_START}>Continue with WorkOS</a>}
+              render={<a href={hubPath(OIDC_START)}>Continue with WorkOS</a>}
             />
             <Button
               size="lg"
               variant="outline"
               className="w-full justify-center"
-              render={<a href={OIDC_START_UNSCOPED}>Join with invitation</a>}
+              render={<a href={hubPath(OIDC_START_UNSCOPED)}>Join with invitation</a>}
             />
           </div>
 
@@ -139,7 +140,7 @@ export function LoginCard({
               const value = token.trim();
               if (value.length === 0) return;
               if (onAcceptInvitation != null) onAcceptInvitation(value);
-              else globalThis.location?.assign(`/invite?token=${encodeURIComponent(value)}`);
+              else globalThis.location?.assign(hubPath(`/invite?token=${encodeURIComponent(value)}`));
             }}
           >
             <Label htmlFor="login-invitation-token" className="text-sm font-medium">

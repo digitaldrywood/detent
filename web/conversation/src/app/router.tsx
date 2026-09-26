@@ -1,9 +1,11 @@
 // Routes.
 //
 // The hub serves the application shell for every non-API path
-// (decisions.md §12, "Serving"), so the router's basepath is `/` and every
-// path below is absolute. Chat lives under `/chat`, Work under `/work`, and
-// `routes.account.tsx` adds the account, settings, project and fleet screens.
+// (decisions.md §12, "Serving"). The router's basepath is the hub's base path
+// (`/` at the root of an origin, `/organizations/ORG` behind the shared Cloud
+// entry), and every path below is absolute within it. Chat lives under
+// `/chat`, Work under `/work`, and `routes.account.tsx` adds the account,
+// settings, project and fleet screens.
 import {
   createRootRoute,
   createRoute,
@@ -20,6 +22,7 @@ import { SupportRoute } from "./account/Support.tsx";
 import { ChangesPage } from "./work/ChangesPage.tsx";
 import { IssuePage } from "./work/IssuePage.tsx";
 import { WorkBoard } from "./work/WorkBoard.tsx";
+import { routerBasePath } from "../runtime/basePath.ts";
 
 const rootRoute = createRootRoute({ component: Shell });
 
@@ -144,8 +147,8 @@ const routeTree = rootRoute.addChildren([
 ] as unknown as AnyRoute[]);
 
 /** `history` is for tests, which have no browser location to navigate. */
-export function makeRouter(history?: RouterHistory) {
-  return createRouter({ routeTree, basepath: "/", ...(history === undefined ? {} : { history }) });
+export function makeRouter(history?: RouterHistory, basepath: string = routerBasePath()) {
+  return createRouter({ routeTree, basepath, ...(history === undefined ? {} : { history }) });
 }
 
 declare module "@tanstack/react-router" {

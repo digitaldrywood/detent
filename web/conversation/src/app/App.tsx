@@ -75,6 +75,7 @@ import { expectedOwner, isActive } from "./lib/execution.ts";
 import { shortcutFor } from "./lib/shortcuts.ts";
 import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
+import { hubPath } from "../runtime/basePath.ts";
 
 export interface ConnectionChip {
   readonly tone: "dc-ok" | "dc-warn" | "dc-err" | "";
@@ -946,7 +947,7 @@ export function ConversationView({
               ? "Your access to this conversation was removed."
               : "This conversation is not available."}
           </p>
-          <a className="text-primary underline-offset-4 hover:underline" href="/chat">
+          <a className="text-primary underline-offset-4 hover:underline" href={hubPath("/chat")}>
             Back to your chats
           </a>
         </div>

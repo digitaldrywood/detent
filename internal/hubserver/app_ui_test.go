@@ -15,11 +15,16 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const appShellTestBody = `<!doctype html><div id="root"></div>`
+const appShellTestBody = `<!doctype html><html><head><script type="module" crossorigin src="/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
+
+func appShellWant(base, signIn string) string {
+	return `<!doctype html><html><head><meta name="detent-base-path" content="` + base + `"><meta name="detent-sign-in-path" content="` + signIn + `"><script type="module" crossorigin src="` + base + `/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="` + base + `/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
+}
 
 func useAppClientFS(t *testing.T, fsys fs.FS) {
 	t.Helper()
@@ -98,7 +103,7 @@ func TestAppShellServing(t *testing.T) {
 			if got := response.Header().Get("Location"); got != test.location {
 				t.Fatalf("location = %q, want %q", got, test.location)
 			}
-			if got := response.Body.String() == appShellTestBody; got != test.shell {
+			if got := response.Body.String() == appShellWant("", "/login"); got != test.shell {
 				t.Fatalf("shell served = %t, want %t: %s", got, test.shell, response.Body.String())
 			}
 			if !test.shell {
@@ -120,6 +125,125 @@ func TestAppShellServing(t *testing.T) {
 		decodeHubResponse(t, response, &failure)
 		if failure.Code != "client_unavailable" {
 			t.Fatalf("code = %q", failure.Code)
+		}
+	})
+}
+
+func TestConversationClientShellFor(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		content string
+		base    string
+		signIn  string
+		want    string
+	}{
+		{name: "self-hosted", content: appShellTestBody, signIn: "/login", want: appShellWant("", "/login")},
+		{name: "shared entry", content: appShellTestBody, base: "/organizations/org_a", signIn: "/organizations", want: appShellWant("/organizations/org_a", "/organizations")},
+		{name: "no head", content: `<div id="root"></div>`, base: "/organizations/org_a", signIn: "/organizations", want: `<meta name="detent-base-path" content="/organizations/org_a"><meta name="detent-sign-in-path" content="/organizations"><div id="root"></div>`},
+		{name: "escaped", content: "<head></head>", base: `/o/"x"`, signIn: "/login", want: `<head><meta name="detent-base-path" content="/o/&#34;x&#34;"><meta name="detent-sign-in-path" content="/login"></head>`},
+		{name: "other static paths untouched", content: `<head><link href="/static/img/x.svg"></head>`, base: "/organizations/org_a", signIn: "/organizations", want: `<head><meta name="detent-base-path" content="/organizations/org_a"><meta name="detent-sign-in-path" content="/organizations"><link href="/static/img/x.svg"></head>`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := string(conversationClientShellFor([]byte(test.content), test.base, test.signIn)); got != test.want {
+				t.Fatalf("shell = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAppSharedEntry(t *testing.T) {
+	useAppClientFS(t, appClientBundle())
+	f := newHostedSharedFixture(t)
+	owner := f.member(t, "owner", "owner", "write")
+	viewer := f.member(t, "viewer", "viewer", "read")
+	revoked := f.member(t, "revoked", "member", "read")
+	revocation := `{"bindings":["` + cloudassert.AuthorizationBinding("shared-user_revoked", "org_security", "session_revoked") + `"]}`
+	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: revocation}); response.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d: %s", response.Code, response.Body.String())
+	}
+	prefix := "/organizations/org_security"
+	csrf := func(user hostedSecurityUser) string {
+		return cloudassert.CSRFToken("shared-"+user.identity.Subject, "org_security")
+	}
+	for _, test := range []struct {
+		name     string
+		user     *hostedSecurityUser
+		target   string
+		status   int
+		location string
+		shell    bool
+	}{
+		{name: "revoked work", user: &revoked, target: prefix + "/work", status: http.StatusSeeOther, location: "/organizations"},
+		{name: "revoked chat", user: &revoked, target: prefix + "/chat/c/conv_1", status: http.StatusSeeOther, location: "/organizations"},
+		{name: "work", user: &owner, target: prefix + "/work", status: http.StatusOK, shell: true},
+		{name: "chat", user: &owner, target: prefix + "/chat", status: http.StatusOK, shell: true},
+		{name: "viewer settings", user: &viewer, target: prefix + "/settings/general", status: http.StatusOK, shell: true},
+		{name: "unscoped client route", user: &owner, target: "/work", status: http.StatusNotFound},
+		{name: "unscoped bootstrap", user: &owner, target: "/app/bootstrap", status: http.StatusNotFound},
+		{name: "unscoped static", user: &owner, target: "/static/app/conversation/app.js", status: http.StatusNotFound},
+		{name: "scoped entry script", user: &owner, target: prefix + "/static/app/conversation/app.js", status: http.StatusOK},
+		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := f.serve(t, hostedSharedRequest{user: test.user, target: test.target})
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+			if got := response.Header().Get("Location"); got != test.location {
+				t.Fatalf("location = %q, want %q", got, test.location)
+			}
+			if got := response.Body.String() == appShellWant(prefix, "/organizations"); got != test.shell {
+				t.Fatalf("shell served = %t, want %t: %s", got, test.shell, response.Body.String())
+			}
+		})
+	}
+	for _, path := range []string{"/app/bootstrap", "/chat/bootstrap"} {
+		t.Run("bootstrap "+path, func(t *testing.T) {
+			response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + path})
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+			}
+			var payload appBootstrap
+			decodeHubResponse(t, response, &payload)
+			if payload.BasePath != prefix || payload.SignInPath != "/organizations" || payload.APIBase != "/api/v2/organizations/org_security" || payload.CSRFToken != csrf(owner) {
+				t.Fatalf("bootstrap = %#v", payload)
+			}
+			if payload.Actor.Subject != "user_owner" || payload.Actor.Role != "owner" || len(payload.Projects) != 1 || len(payload.Organizations) != 0 {
+				t.Fatalf("bootstrap = %#v", payload)
+			}
+		})
+	}
+	t.Run("bootstrap per session csrf", func(t *testing.T) {
+		response := f.serve(t, hostedSharedRequest{user: &viewer, target: prefix + "/app/bootstrap"})
+		var payload appBootstrap
+		decodeHubResponse(t, response, &payload)
+		if payload.CSRFToken != csrf(viewer) || payload.CSRFToken == csrf(owner) {
+			t.Fatalf("viewer csrf = %q", payload.CSRFToken)
+		}
+	})
+	t.Run("bootstrap revoked", func(t *testing.T) {
+		if response := f.serve(t, hostedSharedRequest{user: &revoked, target: prefix + "/app/bootstrap"}); response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+		}
+	})
+	t.Run("updates", func(t *testing.T) {
+		if response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + "/app/updates"}); response.Code != http.StatusNotFound {
+			t.Fatalf("ungranted status = %d: %s", response.Code, response.Body.String())
+		}
+		if response := f.serve(t, hostedSharedRequest{user: &revoked, target: prefix + "/app/updates"}); response.Code != http.StatusUnauthorized {
+			t.Fatalf("revoked status = %d: %s", response.Code, response.Body.String())
+		}
+		f.grant(t, owner, true, true)
+		response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + "/app/updates"})
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+		}
+		var payload appUpdates
+		decodeHubResponse(t, response, &payload)
+		if payload.Source != "hub" || payload.Client != f.service.clientBuild || len(payload.Runners) != 0 {
+			t.Fatalf("updates = %#v", payload)
 		}
 	})
 }
@@ -177,7 +301,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 				keys = append(keys, key)
 			}
 			slices.Sort(keys)
-			if want := "actor,api_base,capabilities,csrf_token,feature,organization,organizations,plan,preferences,projects,support"; strings.Join(keys, ",") != want {
+			if want := "actor,api_base,base_path,capabilities,csrf_token,feature,organization,organizations,plan,preferences,projects,sign_in_path,support"; strings.Join(keys, ",") != want {
 				t.Fatalf("keys = %v, want %s", keys, want)
 			}
 			for field, want := range map[string]string{
@@ -204,7 +328,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 			if len(payload.Projects) != 2 || !payload.Projects[0].CanWrite || payload.Projects[0].Profile != "native" {
 				t.Fatalf("projects = %#v", payload.Projects)
 			}
-			if payload.APIBase != "/api/v2/organizations/org_browser_preview" || payload.CSRFToken != hostedCSRF(f.cookies["owner"].Value) {
+			if payload.APIBase != "/api/v2/organizations/org_browser_preview" || payload.CSRFToken != hostedCSRF(f.cookies["owner"].Value) || payload.BasePath != "" || payload.SignInPath != "/login" {
 				t.Fatalf("bootstrap = %#v", payload)
 			}
 			if payload.Plan == nil || payload.Plan.ID == "" || payload.Plan.WindowEndsAt == "" {
