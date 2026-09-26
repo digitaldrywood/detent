@@ -1,6 +1,6 @@
 {
-  "captured_at_utc": "2026-09-26T21:54:18.304632+00:00",
-  "elapsed_seconds": 46.7,
+  "captured_at_utc": "2026-09-26T22:16:36.203684+00:00",
+  "elapsed_seconds": 23.233,
   "go": "go version go1.26.6 darwin/arm64",
   "hosted_costs": {
     "backups": null,
@@ -36,6 +36,8 @@
     "shared_origin mutations {\"cross-origin\":403,\"cross-site opaque origin\":403,\"missing token\":403,\"other organization token\":403,\"project under other organization\":404}",
     "shared_origin stage \"mutations reject the other organization\" passed",
     "shared_origin stage \"runners enroll and execute within one organization\" started",
+    "self_hosted mode=local billing_provider=false plans=false billing_routes=unavailable",
+    "self_hosted mode=hosted_identity billing_provider=false base_plan=pilot_free source=base default_project_allowance=10 checkout=503 portal=503 webhook=404 entitlement_admin=403",
     "shared_origin runners {\"claim_status\":200,\"foreign_enrollment_status\":401,\"identity\":{\"alpha runner at alpha\":200,\"alpha runner at beta\":401,\"beta runner at alpha\":401,\"beta runner at beta\":200},\"lease_released\":true,\"run_outcome\":\"succeeded\"}",
     "shared_origin stage \"runners enroll and execute within one organization\" passed",
     "shared_origin stage \"artifact endpoints stay scoped\" started",
@@ -49,9 +51,7 @@
     "shared_origin stage \"sign-out ends one browser session only\" passed",
     "shared_origin stage \"entry restart relaunches tenants and keeps sessions\" started",
     "shared_origin restart {\"sessions_survived\":true,\"tenant_starts_after\":4,\"tenant_starts_before\":2}",
-    "shared_origin stage \"entry restart relaunches tenants and keeps sessions\" passed",
-    "self_hosted mode=local billing_provider=false plans=false billing_routes=unavailable",
-    "self_hosted mode=hosted_identity billing_provider=false base_plan=pilot_free source=base default_project_allowance=10 checkout=503 portal=503 webhook=404 entitlement_admin=403"
+    "shared_origin stage \"entry restart relaunches tenants and keeps sessions\" passed"
   ],
   "passed_tests_and_subtests": 85,
   "platform": "Darwin/arm64",
@@ -60,7 +60,7 @@
   "required_tests": 20,
   "schema": 1,
   "source_dirty": false,
-  "source_head": "33eff58659937ba1b8a96445e5e9e572cf1d6381",
+  "source_head": "d77e6ae00391a7c8e9fbd39c0c7d34232eeeadb4",
   "suites": {
     "cli": [
       "TestCloudAllocationGeneratesTenantConfiguration",
@@ -90,7 +90,7 @@
     ]
   },
   "test_sha256": {
-    "internal/cloudentry/pilot_shared_origin_test.go": "a64fb945630095bbf2ea32adfd2b2569fb8cb76fd1f95f0cf8c5e9a2706fc2fe",
+    "internal/cloudentry/pilot_shared_origin_test.go": "c03861c8d207daa4adafe03cb61bb9d2b6e291bd5b4dcaba6ee411546fa2a2fe",
     "internal/hubserver/pilot_artifacts_test.go": "877c4affd03d76d8e008bec098ed6edf215303540f21319a778115e495afe85c",
     "internal/hubserver/pilot_journey_test.go": "68187ab525ac0191d2baed93680f6e4c8a1adc6ec50115d9fa73025f00469502",
     "internal/hubserver/pilot_review_test.go": "d7d7f113c0b1412d6e467adee15698aa41eec93e33888c7b541c32788ad200f4",
