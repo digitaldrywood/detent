@@ -12,6 +12,7 @@ import { makeRouter } from "./router.tsx";
 import { isLoginPath, LoginCard } from "./routes.account.tsx";
 import "./index.css";
 import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
+import { isEntrySurface, makeEntryRouter } from "./entry/router.tsx";
 
 const container = document.getElementById("root");
 if (container === null) throw new Error("The conversation client has no mount point.");
@@ -33,7 +34,18 @@ function Failure({ message }: { message: string }): React.ReactElement {
   );
 }
 
-void loadBootstrap()
+if (isEntrySurface()) {
+  root.render(
+    <React.StrictMode>
+      <RouterProvider router={makeEntryRouter() as never} />
+    </React.StrictMode>,
+  );
+} else {
+  startOrganizationClient();
+}
+
+function startOrganizationClient(): void {
+  void loadBootstrap()
   .then((bootstrap) => {
     const client = makeClient({ bootstrap });
     const router = makeRouter();
@@ -84,6 +96,7 @@ void loadBootstrap()
       <Failure message={cause instanceof Error ? cause.message : "The chat could not start."} />,
     );
   });
+}
 
 /** True for the support screen, with or without an organization segment. */
 function isSupportPath(pathname: string): boolean {

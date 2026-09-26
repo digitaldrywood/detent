@@ -260,9 +260,10 @@ func (s *Service) logout(c echo.Context) error {
 }
 
 type organizationChoice struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	State string `json:"state,omitempty"`
 }
 
 func (s *Service) organizationChoices(ctx context.Context, session accountSession) ([]organizationChoice, error) {
@@ -293,6 +294,9 @@ func (s *Service) chooser(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
+	}
+	if served, err := s.clientShell(c); served || err != nil {
+		return err
 	}
 	choices, err := s.organizationChoices(c.Request().Context(), session)
 	if err != nil {
@@ -325,7 +329,19 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 	if choices == nil {
 		choices = []organizationChoice{}
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices})
+	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices, "pending": []organizationChoice{}, "can_create": false}
+	if s.config.Allocation != nil {
+		pending, err := s.pendingOrganizations(c.Request().Context(), session.Subject)
+		if err != nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "membership_unavailable", "message": "Organization information is temporarily unavailable"})
+		}
+		items := []organizationChoice{}
+		for _, organization := range pending {
+			items = append(items, organizationChoice{ID: organization.ID, Name: organization.Name, URL: "/organizations/" + organization.ID + "/provisioning", State: organization.Status})
+		}
+		result["pending"], result["can_create"] = items, !s.staff(session.Email)
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) invitationOrganization(ctx context.Context, token string) (Organization, error) {
@@ -360,25 +376,28 @@ func (s *Service) joinPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Finvitations%2Fjoin")
 	}
+	if served, err := s.clientShell(c); served || err != nil {
+		return err
+	}
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "join", Title: "Join organization", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, "")})
 }
 
 func (s *Service) joinInvitation(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
-		return s.denied(c, http.StatusUnauthorized, "Sign in with the invited account to join this organization")
+		return s.refuse(c, http.StatusUnauthorized, "unauthenticated", "Sign in with the invited account to join this organization")
 	}
 	if !s.csrfValid(c, session, "") {
-		return s.denied(c, http.StatusForbidden, "Reload the page and try again")
+		return s.refuse(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again")
 	}
 	ctx := c.Request().Context()
 	token := c.FormValue("token")
 	organization, err := s.invitationOrganization(ctx, token)
 	if err != nil || s.acceptInvitation(ctx, organization, session.Subject, session.Email, session.Identity.SessionID, token) != nil {
-		return s.denied(c, http.StatusForbidden, "This invitation is expired, already used, or intended for another account or organization")
+		return s.refuse(c, http.StatusForbidden, "invitation_unavailable", "This invitation is expired, already used, or intended for another account or organization")
 	}
 	if err := s.auth.audit(ctx, session.Subject, organization.ID, "invitation_accepted"); err != nil {
-		return s.denied(c, http.StatusServiceUnavailable, "Invitation acceptance is temporarily unavailable")
+		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Invitation acceptance is temporarily unavailable")
 	}
-	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"organization": {organization.ID}, "return": {"/organizations/" + organization.ID + "/organization"}}.Encode())
+	return s.next(c, http.StatusOK, "/auth/oidc/start?"+url.Values{"organization": {organization.ID}, "return": {"/organizations/" + organization.ID + "/organization"}}.Encode(), nil)
 }

@@ -30,6 +30,7 @@ import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
 import { signInPath } from "../../runtime/basePath.ts";
+import { behindSharedEntry, ENTRY_CREATE_ORGANIZATION, ENTRY_ORGANIZATIONS, useSharedOrganizations } from "../entry/shared.ts";
 
 const ROLES = ["owner", "admin", "member", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((role) => ({
@@ -411,7 +412,9 @@ export function OrganizationRoute(): React.ReactElement {
 
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
-  const organizations = bootstrap?.organizations ?? [];
+  const shared = useSharedOrganizations();
+  const sharedEntry = behindSharedEntry();
+  const organizations = shared ?? bootstrap?.organizations ?? [];
   const projects = React.useMemo(
     () => (bootstrap?.projects ?? []).map((project) => ({ id: project.id, name: project.name })),
     [bootstrap],
@@ -455,12 +458,21 @@ export function OrganizationRoute(): React.ReactElement {
   });
 
   const create = useMutation(async (name: string) => {
+    if (sharedEntry) {
+      globalThis.location?.assign(ENTRY_CREATE_ORGANIZATION);
+      return null;
+    }
     const result = await api.createOrganization({ name, key: newKey() });
     globalThis.location?.assign(result.next);
     return result;
   });
 
   const switchTo = useMutation(async (organization: string) => {
+    const target = shared?.find((candidate) => candidate.id === organization);
+    if (target !== undefined) {
+      globalThis.location?.assign(target.url);
+      return null;
+    }
     const result = await api.switchOrganization({ organization, key: newKey() });
     globalThis.location?.assign(result.next);
     return result;
@@ -495,11 +507,16 @@ export function OrganizationRoute(): React.ReactElement {
         <h2 className="text-xl font-semibold tracking-[-0.01em]">
           {bootstrap?.organization.name ?? "Organization"}
         </h2>
-        <OrganizationSwitcher
-          organizations={organizations}
-          onSwitch={(id) => void switchTo.call(id)}
-          pending={switchTo.pending}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <OrganizationSwitcher
+            organizations={organizations}
+            onSwitch={(id) => void switchTo.call(id)}
+            pending={switchTo.pending}
+          />
+          {sharedEntry ? (
+            <Button size="sm" variant="outline" render={<a href={ENTRY_ORGANIZATIONS}>All organizations</a>} />
+          ) : null}
+        </div>
       </div>
 
       {bootstrap?.support == null ? null : (

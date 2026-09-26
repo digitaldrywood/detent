@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -355,7 +356,7 @@ func newEntryFixture(t *testing.T) entryFixture {
 	tenants := map[string]http.Handler{"unix:/tenants/alpha.sock": alphaHandler, "unix:/tenants/beta.sock": betaHandler}
 	service, err := Open(t.Context(), Config{
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
-		Logger: slog.New(slog.DiscardHandler),
+		Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
 		},
