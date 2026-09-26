@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -478,6 +479,41 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 			browserHostedDecode(t, f.api(t, test.account, http.MethodGet, organization+"/fleet", nil, http.StatusOK), &fleet)
 			if len(fleet.Runners) != 1 || fleet.Runners[0].HostUsed != test.used || len(fleet.Runners[0].Leases) != test.leases {
 				t.Fatalf("fleet = %#v", fleet.Runners)
+			}
+		})
+	}
+}
+
+func TestScopeProviderUsage(t *testing.T) {
+	t.Parallel()
+	codex := providercapacity.Report{Provider: "codex", AccountAlias: "team", SharedAccountAlias: "team", MaxConcurrent: 2, Availability: "available"}
+	other := providercapacity.Report{Provider: "codex", AccountAlias: "solo", SharedAccountAlias: "solo", MaxConcurrent: 2}
+	claude := providercapacity.Report{Provider: "claude", MaxConcurrent: 1}
+	full := "Shared provider concurrency is fully reserved; wait for lease release or expiry"
+	available := "Bounded concurrency available; quota is an observation, not transferable credit"
+	for _, test := range []struct {
+		name         string
+		state        string
+		reservations []providercapacity.Report
+		used         int
+		reason       string
+	}{
+		{name: "no visible reservations", state: "available", used: 0, reason: available},
+		{name: "one visible reservation", state: "available", reservations: []providercapacity.Report{codex}, used: 1, reason: available},
+		{name: "other accounts and providers do not count", state: "available", reservations: []providercapacity.Report{other, claude}, used: 0, reason: available},
+		{name: "visible reservations fill the account", state: "available", reservations: []providercapacity.Report{codex, codex}, used: 2, reason: full},
+		{name: "an exhausted account keeps its reason", state: "exhausted", reservations: []providercapacity.Report{codex}, used: 1, reason: "exhausted"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			runners := []hostedFleetRunner{{ProviderCapacity: []providercapacity.View{{Report: codex, Used: 2, State: test.state, Reason: test.state}}}}
+			if test.state != "exhausted" {
+				runners[0].ProviderCapacity[0].Reason = full
+			}
+			scopeProviderUsage(runners, test.reservations)
+			view := runners[0].ProviderCapacity[0]
+			if view.Used != test.used || view.Reason != test.reason {
+				t.Fatalf("view = used %d reason %q, want %d %q", view.Used, view.Reason, test.used, test.reason)
 			}
 		})
 	}
