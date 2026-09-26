@@ -33,9 +33,12 @@ type conversationRun struct {
 
 	mu               sync.Mutex
 	pendingDelivered bool
-	threadID         string
-	turnID           string
-	turnCompleted    bool
+	// promptIDs maps, per provider request of the current turn, each prompt
+	// id the runner generated to the id the provider asked with.
+	promptIDs     map[string]map[string]string
+	threadID      string
+	turnID        string
+	turnCompleted bool
 }
 
 type conversationRunContextKey struct{}
@@ -110,9 +113,13 @@ func (c *conversationRun) prepareTurn(request AgentTurnRequest) AgentTurnRequest
 	}
 	c.mu.Lock()
 	c.threadID, c.turnID, c.turnCompleted = "", "", false
+	c.promptIDs = nil
 	pendingDelivered := c.pendingDelivered
 	c.mu.Unlock()
 	request.ConversationControl = c.session.Control(ConversationTurnHooks{InputRequested: c.inputRequested})
+	if request.ConversationControl != nil {
+		request.ConversationControl.TranslateAnswers = c.translateAnswers
+	}
 	request = applyConversationPreferences(request, c.session.Preferences())
 	if request.Resume.ThreadID == "" && request.Resume.SessionID == "" {
 		request.Resume.ThreadID = c.session.ResumeThreadID()
@@ -211,8 +218,36 @@ func (c *conversationRun) observe(ctx context.Context, update AgentUpdate) {
 
 // inputRequested publishes a provider question to the conversation.
 func (c *conversationRun) inputRequested(request AgentInputRequest) error {
-	event := ConversationTurnEvent{Type: ConversationEventQuestionOpened, RequestID: request.ID, ThreadID: request.ThreadID, TurnID: request.TurnID, Prompts: conversationPrompts(request.Questions)}
+	prompts, generated := conversationPrompts(request.Questions)
+	if len(generated) > 0 {
+		c.mu.Lock()
+		if c.promptIDs == nil {
+			c.promptIDs = make(map[string]map[string]string)
+		}
+		c.promptIDs[request.ID] = generated
+		c.mu.Unlock()
+	}
+	event := ConversationTurnEvent{Type: ConversationEventQuestionOpened, RequestID: request.ID, ThreadID: request.ThreadID, TurnID: request.TurnID, Prompts: prompts}
 	return c.session.Report(context.Background(), []ConversationTurnEvent{event})
+}
+
+// translateAnswers rewrites the prompt ids of an answer the runner generated
+// back to the ids the provider asked with, so the provider can match them.
+func (c *conversationRun) translateAnswers(requestID string, answers map[string][]string) map[string][]string {
+	c.mu.Lock()
+	generated := c.promptIDs[requestID]
+	c.mu.Unlock()
+	if len(generated) == 0 {
+		return answers
+	}
+	translated := make(map[string][]string, len(answers))
+	for id, values := range answers {
+		if original, ok := generated[id]; ok {
+			id = original
+		}
+		translated[id] = values
+	}
+	return translated
 }
 
 // finishTurn reports the turn's end when the provider did not, and releases
@@ -336,7 +371,9 @@ const conversationTruncated = "…"
 // Every field is bounded to the limits the hub validates, so an oversized
 // question is shown truncated rather than refused: cut text ends with an
 // ellipsis, and omitted options or questions are named in the question text.
-func conversationPrompts(raw json.RawMessage) json.RawMessage {
+// It also returns each id it generated in place of a provider id that was too
+// long or repeated, mapped to that provider id.
+func conversationPrompts(raw json.RawMessage) (json.RawMessage, map[string]string) {
 	var questions []struct {
 		ID       string `json:"id"`
 		Header   string `json:"header"`
@@ -357,6 +394,7 @@ func conversationPrompts(raw json.RawMessage) json.RawMessage {
 	questions = questions[:min(len(questions), conversation.MaxPrompts)]
 	prompts := make([]conversation.Prompt, 0, max(len(questions), 1))
 	seen := make(map[string]struct{}, len(questions))
+	generated := make(map[string]string)
 	for i, question := range questions {
 		prompt := conversation.Prompt{ID: strings.TrimSpace(question.ID), Header: question.Header, Options: []conversation.Option{}}
 		if prompt.ID == "" || len(prompt.ID) > conversation.MaxPromptIDBytes {
@@ -369,6 +407,9 @@ func conversationPrompts(raw json.RawMessage) json.RawMessage {
 			prompt.ID = "q" + strconv.Itoa(i+1) + "-" + strconv.Itoa(suffix)
 		}
 		seen[prompt.ID] = struct{}{}
+		if original := strings.TrimSpace(question.ID); original != "" && original != prompt.ID {
+			generated[prompt.ID] = question.ID
+		}
 		omittedOptions := 0
 		for _, option := range question.Options {
 			label := strings.TrimSpace(option.Label)
@@ -411,9 +452,9 @@ func conversationPrompts(raw json.RawMessage) json.RawMessage {
 	}
 	encoded, err := json.Marshal(prompts)
 	if err != nil {
-		return json.RawMessage(`[{"id":"q1","header":"","question":"Input requested","options":[],"free_text":true}]`)
+		return json.RawMessage(`[{"id":"q1","header":"","question":"Input requested","options":[],"free_text":true}]`), nil
 	}
-	return encoded
+	return encoded, generated
 }
 
 // boundConversationBytes cuts value to at most limit bytes on a rune

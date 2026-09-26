@@ -491,8 +491,12 @@ func (w *conversationTransport) sendAnswerLocked(ctx context.Context, c runner.A
 	if !ok {
 		return runner.ErrStaleConversationControl
 	}
-	answers := make(map[string]any, len(c.Answers))
-	for key, values := range c.Answers {
+	given := c.Answers
+	if w.control.TranslateAnswers != nil {
+		given = w.control.TranslateAnswers(c.RequestID, given)
+	}
+	answers := make(map[string]any, len(given))
+	for key, values := range given {
 		answers[key] = map[string]any{"answers": values}
 	}
 	result, err := json.Marshal(map[string]any{"answers": answers})

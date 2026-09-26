@@ -100,10 +100,13 @@ type AgentInputRequest struct {
 // Commands feeds controls into the transport; InputRequested is invoked when
 // the provider asks a question that matches the bound thread and turn.
 // QuestionTimeout bounds the wait for an answer (default 24 hours).
+// TranslateAnswers, when set, rewrites an answer's prompt ids back to the ids
+// the provider asked with before the answer is written.
 type AgentConversationControl struct {
-	Commands        <-chan AgentControl
-	InputRequested  func(AgentInputRequest) error
-	QuestionTimeout time.Duration
+	Commands         <-chan AgentControl
+	InputRequested   func(AgentInputRequest) error
+	QuestionTimeout  time.Duration
+	TranslateAnswers func(requestID string, answers map[string][]string) map[string][]string
 }
 
 // EffectiveQuestionTimeout returns QuestionTimeout, or the default when unset

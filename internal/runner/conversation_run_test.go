@@ -379,7 +379,7 @@ func TestConversationPrompts(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := conversationPrompts(json.RawMessage(test.raw))
+			got, _ := conversationPrompts(json.RawMessage(test.raw))
 			if string(got) != test.want {
 				t.Fatalf("prompts = %s, want %s", got, test.want)
 			}
@@ -421,7 +421,8 @@ func TestConversationPromptsFitTheHubLimits(t *testing.T) {
 				t.Fatal(err)
 			}
 			var prompts []conversation.Prompt
-			if err := json.Unmarshal(conversationPrompts(raw), &prompts); err != nil {
+			encoded, _ := conversationPrompts(raw)
+			if err := json.Unmarshal(encoded, &prompts); err != nil {
 				t.Fatal(err)
 			}
 			if err := conversation.ValidatePrompts(prompts); err != nil {
@@ -442,6 +443,66 @@ func TestConversationPromptsFitTheHubLimits(t *testing.T) {
 				if !utf8.ValidString(last.Header) || len(last.Options) != conversation.MaxPromptOptions || !strings.HasSuffix(last.Options[0].Label, conversationTruncated) {
 					t.Fatalf("bounded prompt = %#v", last)
 				}
+			}
+		})
+	}
+}
+
+func TestConversationAnswersUseTheProviderPromptIDs(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", conversation.MaxPromptIDBytes+1)
+	tests := []struct {
+		name      string
+		questions string
+		answer    func(prompts []conversation.Prompt) map[string][]string
+		want      map[string][]string
+	}{
+		{
+			name:      "a generated id answers under the provider id",
+			questions: `[{"id":"` + long + `","question":"Long?"},{"id":"short","question":"Short?"}]`,
+			answer: func(prompts []conversation.Prompt) map[string][]string {
+				return map[string][]string{prompts[0].ID: {"yes"}, prompts[1].ID: {"no"}}
+			},
+			want: map[string][]string{long: {"yes"}, "short": {"no"}},
+		},
+		{
+			name:      "provider ids within the limits pass through",
+			questions: `[{"id":"short","question":"Short?"}]`,
+			answer: func(prompts []conversation.Prompt) map[string][]string {
+				return map[string][]string{prompts[0].ID: {"no"}}
+			},
+			want: map[string][]string{"short": {"no"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			session := newFakeConversationSession()
+			run := &conversationRun{session: session, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			control := run.prepareTurn(AgentTurnRequest{}).ConversationControl
+			if control == nil || control.TranslateAnswers == nil {
+				t.Fatal("the turn control has no answer translation")
+			}
+			if err := control.InputRequested(AgentInputRequest{ID: "req-1", ThreadID: "thread-1", TurnID: "turn-1", Questions: json.RawMessage(test.questions)}); err != nil {
+				t.Fatal(err)
+			}
+			var prompts []conversation.Prompt
+			for _, event := range session.events {
+				if event.Type == ConversationEventQuestionOpened {
+					if err := json.Unmarshal(event.Prompts, &prompts); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := conversation.ValidatePrompts(prompts); err != nil {
+				t.Fatalf("hub validation = %v", err)
+			}
+			got := control.TranslateAnswers("req-1", test.answer(prompts))
+			if fmt.Sprint(got) != fmt.Sprint(test.want) {
+				t.Fatalf("translated answers = %v, want %v", got, test.want)
+			}
+			if other := control.TranslateAnswers("req-2", map[string][]string{prompts[0].ID: {"x"}}); len(other[prompts[0].ID]) != 1 {
+				t.Fatalf("another request's answers were translated: %v", other)
 			}
 		})
 	}

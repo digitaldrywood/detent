@@ -758,3 +758,60 @@ func TestConversationControlQueuesControlsUntilTheTurnIsLive(t *testing.T) {
 	}
 	assertRequest(t, sent[1], 1001, "turn/steer")
 }
+
+func TestConversationControlTranslatesAnswerIDs(t *testing.T) {
+	t.Parallel()
+
+	transport := newConversationWire(8)
+	for _, msg := range []Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		serverRequestMessage(t, 40, "item/tool/requestUserInput", `{"threadId":"thread-1","turnId":"turn-1","questions":[{"id":"provider-id"}]}`),
+	} {
+		transport.incoming <- msg
+	}
+	transport.onSend = func(msg Message) {
+		if msg.Method == "" && string(msg.ID) == "40" {
+			transport.incoming <- notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`)
+		}
+	}
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+	commands := make(chan runner.AgentControl, 1)
+	answered := make(chan error, 1)
+	_, err = server.RunTurn(t.Context(), RunTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "Ask",
+		ConversationControl: &runner.AgentConversationControl{
+			Commands: commands,
+			InputRequested: func(q runner.AgentInputRequest) error {
+				commands <- runner.AgentControl{Kind: runner.AgentControlAnswer, ThreadID: q.ThreadID, TurnID: q.TurnID, RequestID: q.ID, Answers: map[string][]string{"q1": {"ok"}}, Check: passingCheck, Reply: answered}
+				return nil
+			},
+			TranslateAnswers: func(requestID string, answers map[string][]string) map[string][]string {
+				if requestID != "40" {
+					return answers
+				}
+				return map[string][]string{"provider-id": answers["q1"]}
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if err := <-answered; err != nil {
+		t.Fatalf("answer reply = %v", err)
+	}
+	for _, msg := range transport.sentMessages() {
+		if msg.Method == "" && string(msg.ID) == "40" {
+			assertJSONContains(t, msg.Result, "answers.provider-id.answers", []any{"ok"})
+			assertJSONOmits(t, msg.Result, "answers.q1")
+			return
+		}
+	}
+	t.Fatalf("answer not written to the provider: %+v", transport.sentMessages())
+}
