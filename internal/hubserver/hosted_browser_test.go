@@ -372,13 +372,9 @@ func TestHostedBrowserHTTPPages(t *testing.T) {
 		{name: "login", path: "/login", status: http.StatusOK, contains: "Continue with WorkOS"},
 		{name: "owner organization", account: "owner", path: "/organization", status: http.StatusOK, contains: "Members and invitations"},
 		{name: "viewer organization", account: "viewer", path: "/organization", status: http.StatusOK, contains: "Browser collaboration", excludes: "Owner private project"},
-		{name: "viewer project", account: "viewer", path: "/projects/" + f.project, status: http.StatusOK, contains: "Review the invitation flow", excludes: "Browser fixture private body"},
-		{name: "ungranted project", account: "viewer", path: "/projects/" + f.privateProject, status: http.StatusForbidden, contains: "unavailable", excludes: "Owner private project"},
-		{name: "ordinary staff", account: "staff", path: "/projects/" + f.project, status: http.StatusForbidden, excludes: "Review the invitation flow"},
-		{name: "support viewer", account: "support-viewer", path: "/projects/" + f.project, status: http.StatusOK, contains: "Exit support session"},
-		{name: "wrong organization", account: "wrong-organization", path: "/projects/" + f.project, status: http.StatusForbidden, excludes: "Review the invitation flow"},
-		{name: "revoked session", account: "revoked", path: "/projects/" + f.project, status: http.StatusUnauthorized, excludes: "Review the invitation flow"},
-		{name: "expired session", account: "expired", path: "/projects/" + f.project, status: http.StatusUnauthorized, excludes: "Review the invitation flow"},
+		{name: "ordinary staff", account: "staff", path: "/organization", status: http.StatusOK, contains: "Staff access is limited", excludes: "Browser collaboration"},
+		{name: "support viewer", account: "support-viewer", path: "/organization", status: http.StatusOK, contains: "Exit support session"},
+		{name: "wrong organization", account: "wrong-organization", path: "/organization", status: http.StatusOK, contains: "Create or join an organization", excludes: "Browser collaboration"},
 		{name: "support entry", account: "support-staff", path: "/support", status: http.StatusOK, contains: "Start support sign-in"},
 	}
 	for _, tt := range tests {
@@ -502,10 +498,10 @@ func TestHostedBrowserFirstOrganization(t *testing.T) {
 		}
 	}
 	project := f.createProject(t, "First browser project")
-	response = f.page(t, "owner", "/projects/"+project)
+	response = f.page(t, "owner", "/api/v2/organizations/org_browser_preview/projects")
 	browserHostedStatus(t, response, http.StatusOK)
-	if !strings.Contains(response.Body.String(), "No work items in this project yet") {
-		t.Error("new project did not open its empty work list")
+	if !strings.Contains(response.Body.String(), `"id":"`+project+`"`) {
+		t.Error("new project is not listed for its creator")
 	}
 }
 

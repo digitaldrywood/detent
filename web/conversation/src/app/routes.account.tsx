@@ -18,6 +18,7 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import React from "react";
 
 import { LoginRoute } from "./account/Login.tsx";
+import { writeLastProject } from "./client.ts";
 import { SetupRoute } from "./account/Setup.tsx";
 import { SettingsRoute } from "./settings/Settings.tsx";
 import { DEFAULT_SECTION, isSettingsSectionId } from "./settings/sections.tsx";
@@ -107,6 +108,44 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       },
     }),
     createRoute({ getParentRoute, path: "/projects/$project/setup", component: SetupScreen }),
+    ...legacyProjectRoutes(rootRoute),
+  ] as unknown as AnyRoute[];
+}
+
+/**
+ * The project, issue and Change pages the hub used to render itself. The hub
+ * now serves the application shell for them, and the links and bookmarks that
+ * point at them land here: each one redirects to the Work screen that replaced
+ * it, and remembers the project so the issue page resolves it.
+ */
+export const LEGACY_PROJECT_ROUTE_PATHS = [
+  "/projects/$project",
+  "/projects/$project/changes",
+  "/projects/$project/issues/$item",
+  "/projects/$project/issues/$item/changes/$change",
+] as const;
+
+function legacyProjectRoutes(rootRoute: AnyRoute): AnyRoute[] {
+  const getParentRoute = () => rootRoute;
+  const board = ({ params }: { params: unknown }) => {
+    const { project } = params as { project: string };
+    writeLastProject(project);
+    throw redirect({ to: "/work/p/$projectId", params: { projectId: project }, replace: true });
+  };
+  const changes = ({ params }: { params: unknown }) => {
+    writeLastProject((params as { project: string }).project);
+    throw redirect({ to: "/work/changes", replace: true });
+  };
+  const issue = ({ params }: { params: unknown }) => {
+    const { project, item } = params as { project: string; item: string };
+    writeLastProject(project);
+    throw redirect({ to: "/work/i/$workItemId", params: { workItemId: item }, replace: true });
+  };
+  return [
+    createRoute({ getParentRoute, path: "/projects/$project", beforeLoad: board }),
+    createRoute({ getParentRoute, path: "/projects/$project/changes", beforeLoad: changes }),
+    createRoute({ getParentRoute, path: "/projects/$project/issues/$item", beforeLoad: issue }),
+    createRoute({ getParentRoute, path: "/projects/$project/issues/$item/changes/$change", beforeLoad: issue }),
   ] as unknown as AnyRoute[];
 }
 

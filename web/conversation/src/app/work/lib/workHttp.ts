@@ -41,6 +41,7 @@ import {
   WorkspaceList,
   WorkItemDiff,
 } from "../../../contracts/work.ts";
+import { hubPath } from "../../../runtime/basePath.ts";
 
 /**
  * A failed request.
@@ -480,7 +481,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     origin: options.origin,
     apiBase: options.apiBase,
     eventsUrl: (projectId) =>
-      `${options.origin}/projects/${encodeURIComponent(projectId)}/events`,
+      `${options.origin}${hubPath(`/projects/${encodeURIComponent(projectId)}/events`)}`,
     getProject: (projectId) => send(NativeProject, "GET", url(projectBase(projectId))),
     listWorkItems: (input) =>
       send(

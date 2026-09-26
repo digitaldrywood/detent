@@ -419,7 +419,8 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 		{name: "reporting bearer", path: "/api/cloud/metadata", bearer: testHubAdminToken, want: http.StatusOK},
 		{name: "customer report", path: "/api/cloud/metadata", user: customer, want: http.StatusForbidden},
 		{name: "staff native content", path: f.base + "/work-items", user: staff, want: http.StatusForbidden},
-		{name: "staff project page", path: "/projects/" + string(f.project), user: staff, want: http.StatusForbidden},
+		{name: "staff organization members", path: "/api/v2/organizations/org_security/members", user: staff, want: http.StatusForbidden},
+		{name: "staff fleet", path: "/api/v2/organizations/org_security/fleet", user: staff, want: http.StatusForbidden},
 		{name: "bootstrap native content", path: f.base + "/work-items", bearer: testHubAdminToken, want: http.StatusNotFound},
 		{name: "staff legacy content", path: "/api/v1/work-items", user: staff, want: http.StatusNotFound},
 		{name: "legacy health", path: "/health", bearer: testHubAdminToken, want: http.StatusNotFound},
@@ -926,7 +927,7 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 		t.Fatal("support session cookie was not set")
 	}
 	support := hostedSecurityUser{identity: customer.identity, token: sessionCookie.Value}
-	page := f.request(t, support, http.MethodGet, "/projects/"+string(f.project), nil)
+	page := f.request(t, support, http.MethodGet, "/organization", nil)
 	requireNativeStatus(t, page, http.StatusOK)
 	if !strings.Contains(page.Body.String(), "support@example.test") || !strings.Contains(page.Body.String(), "/logout") {
 		t.Fatal("support indicator or exit flow is missing")
