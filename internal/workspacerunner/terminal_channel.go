@@ -239,6 +239,10 @@ func (s *Session) openTerminal(
 	// installed it has returned.
 	sessionCtx := ctx
 	held := &terminalStream{channel: channel}
+	// Output waits until the opened answer is written: a shell's prompt can
+	// arrive before Open returns, and a reader must see opened first.
+	held.out.Lock()
+	defer held.out.Unlock()
 	emit := func(span workspacesession.TerminalOutput) error {
 		return held.deliver(sessionCtx, s.terminalSender(sessionCtx, channel, stream), span)
 	}
