@@ -65,11 +65,14 @@ func (s *Service) releaseHostedInvitation(ctx context.Context, email string) err
 }
 
 func (s *Service) hostedInvitationFailure(c echo.Context, email string, cause error) error {
+	s.releaseFailedHostedInvitation(c, email, cause)
+	return s.hostedError(c, 503, "The invitation could not be sent")
+}
+
+func (s *Service) releaseFailedHostedInvitation(c echo.Context, email string, cause error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
 	defer cancel()
-	err := errors.Join(cause, s.releaseHostedInvitation(ctx, email))
-	if err != nil {
+	if err := errors.Join(cause, s.releaseHostedInvitation(ctx, email)); err != nil {
 		s.config.Logger.Warn("hosted invitation failed")
 	}
-	return s.hostedError(c, 503, "The invitation could not be sent")
 }
