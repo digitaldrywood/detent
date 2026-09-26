@@ -1,7 +1,9 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,7 +13,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -307,6 +313,172 @@ func TestHostedTenantContractFixtures(t *testing.T) {
 				t.Fatal(err)
 			}
 			compareConversationShape(t, "", want, got, conversationPathSet(nil), conversationPathSet(test.optional))
+		})
+	}
+}
+
+type failingInviteProvider struct {
+	*browserHostedProvider
+}
+
+func (failingInviteProvider) Invite(context.Context, string, string, string, string) (auth.Invitation, error) {
+	return auth.Invitation{}, errors.New("provider unavailable")
+}
+
+func (f *browserHostedFixture) invitationSeats(t *testing.T, email string) int {
+	t.Helper()
+	var seats int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_member_reservations WHERE email = ?", email).Scan(&seats); err != nil {
+		t.Fatal(err)
+	}
+	return seats
+}
+
+func (f *browserHostedFixture) providerInvitations() int {
+	f.provider.mu.Lock()
+	defer f.provider.mu.Unlock()
+	return len(f.provider.invitations)
+}
+
+func TestHostedInvitationIdempotency(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedFixture(t, true)
+	path := browserHostedOrganizationBase + "/members/invitations"
+	var first hostedInvitationView
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "retry@example.test", "role": "member", "idempotency_key": "retry"}, http.StatusCreated), &first)
+	for _, test := range []struct {
+		name        string
+		account     string
+		body        map[string]any
+		status      int
+		sameID      bool
+		invitations int
+	}{
+		{name: "retry replays the first invitation", account: "owner", body: map[string]any{"email": "retry@example.test", "role": "member", "idempotency_key": "retry"}, status: http.StatusCreated, sameID: true, invitations: 1},
+		{name: "retry with different case replays", account: "owner", body: map[string]any{"email": " Retry@Example.test", "role": "member", "idempotency_key": "retry"}, status: http.StatusCreated, sameID: true, invitations: 1},
+		{name: "same key for another address conflicts", account: "owner", body: map[string]any{"email": "other@example.test", "role": "member", "idempotency_key": "retry"}, status: http.StatusConflict, invitations: 1},
+		{name: "same key for another role conflicts", account: "owner", body: map[string]any{"email": "retry@example.test", "role": "viewer", "idempotency_key": "retry"}, status: http.StatusConflict, invitations: 1},
+		{name: "a new key is a new invitation", account: "owner", body: map[string]any{"email": "second@example.test", "role": "member", "idempotency_key": "second"}, status: http.StatusCreated, invitations: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := f.api(t, test.account, http.MethodPost, path, test.body, test.status)
+			if test.status == http.StatusCreated {
+				var view hostedInvitationView
+				browserHostedDecode(t, response, &view)
+				if (view.ID == first.ID) != test.sameID {
+					t.Fatalf("invitation %s, first %s, want same = %t", view.ID, first.ID, test.sameID)
+				}
+			}
+			if got := f.providerInvitations(); got != test.invitations {
+				t.Fatalf("provider invitations = %d, want %d", got, test.invitations)
+			}
+		})
+	}
+}
+
+func TestHostedInvitationFailureKeepsHeldSeat(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		pending bool
+		seats   int
+	}{
+		{name: "a new address gives its seat back", seats: 0},
+		{name: "a pending address keeps its seat", pending: true, seats: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBrowserHostedFixture(t, true)
+			path := browserHostedOrganizationBase + "/members/invitations"
+			if test.pending {
+				f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "first"}, http.StatusCreated)
+			}
+			f.service.config.Hosted.Provider = failingInviteProvider{f.provider}
+			f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "failed"}, http.StatusServiceUnavailable)
+			if got := f.invitationSeats(t, "seat@example.test"); got != test.seats {
+				t.Fatalf("seats = %d, want %d", got, test.seats)
+			}
+			form := f.form(t, "owner", "/organization/invite", url.Values{"email": {"seat@example.test"}, "role": {"member"}})
+			browserHostedStatus(t, form, http.StatusServiceUnavailable)
+			if got := f.invitationSeats(t, "seat@example.test"); got != test.seats {
+				t.Fatalf("form failure left %d seats, want %d", got, test.seats)
+			}
+		})
+	}
+}
+
+func TestScopeHostUsage(t *testing.T) {
+	t.Parallel()
+	lease := hostedFleetLease{LeaseID: "lease"}
+	for _, test := range []struct {
+		name    string
+		runners []hostedFleetRunner
+		want    []int
+	}{
+		{name: "no visible work", runners: []hostedFleetRunner{{HostUsed: 3, machine: "m1"}}, want: []int{0}},
+		{name: "visible work on one runner", runners: []hostedFleetRunner{{HostUsed: 3, machine: "m1", Leases: []hostedFleetLease{lease}}}, want: []int{1}},
+		{name: "runners sharing a host add up", runners: []hostedFleetRunner{
+			{HostUsed: 4, machine: "m1", Leases: []hostedFleetLease{lease}},
+			{HostUsed: 4, machine: "m1", Leases: []hostedFleetLease{lease, lease}},
+			{HostUsed: 2, machine: "m2"},
+		}, want: []int{3, 3, 0}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			scopeHostUsage(test.runners)
+			for index, runner := range test.runners {
+				if runner.HostUsed != test.want[index] {
+					t.Fatalf("runner %d host used = %d, want %d", index, runner.HostUsed, test.want[index])
+				}
+			}
+		})
+	}
+}
+
+func TestHostedFleetHostUsageScope(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedFixture(t, true)
+	organization := browserHostedOrganizationBase
+	for _, project := range []string{f.project, f.privateProject} {
+		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
+	}
+	base := organization + "/projects/" + f.privateProject
+	descriptor := hubTestPolicy()
+	descriptor.Gates.Kind, descriptor.Gates.AutomatedReview = "human_review", ""
+	descriptor = descriptor.WithID()
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+	binding := runnerauth.NewBinding()
+	enrollment := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900}
+	response := f.setupRequest(t, "owner", http.MethodPost, organization+"/runner-enrollments", enrollment)
+	requireNativeStatus(t, response, http.StatusCreated)
+	var issued runnerauth.Enrollment
+	decodeHubResponse(t, response, &issued)
+	credential, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "shared-host", DisplayName: "Shared runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
+	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-run"}, Title: "Private run", State: "Todo"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, response, &issue)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: "private-run", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+	requireNativeStatus(t, response, http.StatusOK)
+	for _, test := range []struct {
+		account string
+		used    int
+		leases  int
+	}{
+		{account: "owner", used: 1, leases: 1},
+		{account: "viewer", used: 0, leases: 0},
+	} {
+		t.Run(test.account, func(t *testing.T) {
+			var fleet hostedFleetResponse
+			browserHostedDecode(t, f.api(t, test.account, http.MethodGet, organization+"/fleet", nil, http.StatusOK), &fleet)
+			if len(fleet.Runners) != 1 || fleet.Runners[0].HostUsed != test.used || len(fleet.Runners[0].Leases) != test.leases {
+				t.Fatalf("fleet = %#v", fleet.Runners)
+			}
 		})
 	}
 }
