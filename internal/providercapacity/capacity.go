@@ -151,7 +151,7 @@ func validateModelDetails(r Report) error {
 			}
 			efforts[effort] = true
 		}
-		if detail.DefaultReasoningEffort != "" && !efforts[detail.DefaultReasoningEffort] {
+		if detail.DefaultReasoningEffort != "" && (!token.MatchString(detail.DefaultReasoningEffort) || len(efforts) > 0 && !efforts[detail.DefaultReasoningEffort]) {
 			return errors.New("a provider model's default reasoning effort must be one it supports")
 		}
 	}

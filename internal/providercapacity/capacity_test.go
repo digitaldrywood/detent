@@ -92,6 +92,9 @@ func TestReportValidation(t *testing.T) {
 		{"default effort outside the ladder", func(r *Report) {
 			r.ModelDetails = []ModelDetail{{ID: "sol", ReasoningEfforts: []string{"low"}, DefaultReasoningEffort: "max"}}
 		}},
+		{"default effort that is not a token without a ladder", func(r *Report) {
+			r.ModelDetails = []ModelDetail{{ID: "sol", DefaultReasoningEffort: "as much as you like"}}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := testReport()
@@ -101,8 +104,16 @@ func TestReportValidation(t *testing.T) {
 			}
 		})
 	}
-	if err := Validate([]Report{testReport()}); err != nil {
-		t.Fatal(err)
+	for _, details := range [][]ModelDetail{
+		nil,
+		{{ID: "sol", DefaultReasoningEffort: "high"}},
+		{{ID: "sol", ReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high"}},
+	} {
+		r := testReport()
+		r.ModelDetails = details
+		if err := Validate([]Report{r}); err != nil {
+			t.Fatalf("Validate(%+v) error = %v", details, err)
+		}
 	}
 	for _, reports := range [][]Report{{testReport(), testReport()}, make([]Report, 33)} {
 		if Validate(reports) == nil {
