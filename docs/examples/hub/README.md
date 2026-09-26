@@ -58,6 +58,8 @@ IDs, provider organization IDs, names, private endpoints, generations) and the
 private `auth.db` (hashed session and login-transaction references, per-organization
 provider sessions, content-free audit). Neither holds collaboration content.
 
+Tenant endpoints are Unix sockets only. Before every connection the entry checks that the socket and its directory are owned by the entry's service user and that the directory is private (mode 0700), so another local process cannot impersonate a restarting tenant. Run the entry and tenants as the same service user.
+
 Register each tenant while the entry is stopped; registration is idempotent,
 refuses to reuse IDs or provider organizations, and changes an endpoint only with
 a higher generation:
@@ -72,7 +74,7 @@ The entry serves sign-in (`/auth/oidc/start`, `/auth/oidc/callback`), the choose
 (`/organizations`, JSON at `/api/cloud/organizations`), invitations (`/invite`,
 `/invitations/join`) and sign-out, and routes `/organizations/ORG/...` and
 `/api/v2/organizations/ORG/...` to the registered tenant with a signed assertion.
-Browser requests need the host-only session cookie (`__Host-detent_session`), a
+Browser requests need the host-only session cookie (`__Host-detent_session`, rotated on every sign-in; the CSRF secret carries over so other tabs keep working), a
 per-organization authorization obtained through the common callback, a current
 provider session and active membership; mutations also need the exact
 `public_url` Origin and the per-organization CSRF token. Bearer requests are

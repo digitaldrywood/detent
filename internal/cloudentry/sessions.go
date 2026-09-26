@@ -14,10 +14,11 @@ import (
 var errNoSession = errors.New("shared session is missing, expired or revoked")
 
 type accountSession struct {
-	Hash     string
-	Subject  string
-	Email    string
-	Identity auth.HostedIdentity
+	Hash       string
+	CSRFSecret string
+	Subject    string
+	Email      string
+	Identity   auth.HostedIdentity
 }
 
 type authorization struct {
@@ -31,13 +32,13 @@ type authStore struct {
 	now   func() time.Time
 }
 
-func (a *authStore) createSession(ctx context.Context, hash string, identity auth.Identity) error {
+func (a *authStore) createSession(ctx context.Context, hash, csrfSecret string, identity auth.Identity) error {
 	encoded, err := json.Marshal(identity.Hosted)
 	if err != nil {
 		return err
 	}
-	_, err = a.store.db.ExecContext(ctx, "INSERT INTO sessions(token_hash,subject,email,identity_json,created_at,expires_at) VALUES (?,?,?,?,?,?)",
-		hash, identity.Subject, identity.Email, string(encoded), formatTime(a.now()), formatTime(identity.Hosted.ExpiresAt))
+	_, err = a.store.db.ExecContext(ctx, "INSERT INTO sessions(token_hash,subject,email,csrf_secret,identity_json,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
+		hash, identity.Subject, identity.Email, csrfSecret, string(encoded), formatTime(a.now()), formatTime(identity.Hosted.ExpiresAt))
 	return err
 }
 
@@ -45,8 +46,8 @@ func (a *authStore) session(ctx context.Context, hash string) (accountSession, e
 	var session accountSession
 	var encoded, expires string
 	var revoked sql.NullString
-	err := a.store.db.QueryRowContext(ctx, "SELECT token_hash,subject,email,identity_json,expires_at,revoked_at FROM sessions WHERE token_hash = ?", hash).
-		Scan(&session.Hash, &session.Subject, &session.Email, &encoded, &expires, &revoked)
+	err := a.store.db.QueryRowContext(ctx, "SELECT token_hash,subject,email,csrf_secret,identity_json,expires_at,revoked_at FROM sessions WHERE token_hash = ?", hash).
+		Scan(&session.Hash, &session.Subject, &session.Email, &session.CSRFSecret, &encoded, &expires, &revoked)
 	if err != nil || revoked.Valid {
 		return accountSession{}, errNoSession
 	}

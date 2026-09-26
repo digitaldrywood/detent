@@ -153,7 +153,7 @@ func newCloudRegistryCommand() *cobra.Command {
 	add.Flags().StringVar(&organization.ID, "organization", "", "immutable Detent organization ID (org_...)")
 	add.Flags().StringVar(&organization.ProviderID, "provider-organization", "", "WorkOS organization ID")
 	add.Flags().StringVar(&organization.Name, "name", "", "organization name shown in the chooser")
-	add.Flags().StringVar(&organization.Endpoint, "endpoint", "", "private tenant endpoint: unix:/absolute/socket or http://127.0.0.1:PORT")
+	add.Flags().StringVar(&organization.Endpoint, "endpoint", "", "private tenant endpoint: unix:/absolute/socket in a directory private to the service user")
 	add.Flags().Int64Var(&organization.Generation, "generation", 0, "allocation generation matching the tenant's shared_entry configuration")
 	add.Flags().BoolVar(&disabled, "disabled", false, "register the organization without routing traffic to it")
 	list := &cobra.Command{

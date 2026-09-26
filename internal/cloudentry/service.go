@@ -237,7 +237,7 @@ func (s *Service) render(c echo.Context, status int, data templates.HostedPageDa
 func (s *Service) denied(c echo.Context, status int, message string) error {
 	data := templates.HostedPageData{Mode: "denied", Title: "Access unavailable", Error: message}
 	if session, err := s.session(c); err == nil {
-		data.Email, data.CSRF = session.Email, cloudassert.CSRFToken(session.Hash, "")
+		data.Email, data.CSRF = session.Email, cloudassert.CSRFToken(session.CSRFSecret, "")
 	}
 	return s.render(c, status, data)
 }
@@ -263,5 +263,5 @@ func (s *Service) csrfValid(c echo.Context, session accountSession, organization
 		c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 64<<10)
 		value = c.FormValue("csrf")
 	}
-	return subtle.ConstantTimeCompare([]byte(value), []byte(cloudassert.CSRFToken(session.Hash, organization))) == 1
+	return subtle.ConstantTimeCompare([]byte(value), []byte(cloudassert.CSRFToken(session.CSRFSecret, organization))) == 1
 }

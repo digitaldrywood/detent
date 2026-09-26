@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -166,25 +165,19 @@ func (s *Service) completeLogin(c echo.Context) error {
 
 func (s *Service) establishSession(c echo.Context, identity auth.Identity) (accountSession, error) {
 	ctx := c.Request().Context()
+	var carried []authorization
+	var csrfSecret string
 	if cookie, err := c.Cookie(s.cookieName("session")); err == nil && len(cookie.Value) <= 256 {
 		hash := apikey.HashToken(cookie.Value)
 		if existing, err := s.auth.session(ctx, hash); err == nil {
-			if existing.Subject == identity.Subject {
-				encoded, err := json.Marshal(identity.Hosted)
-				if err != nil {
-					return accountSession{}, err
-				}
-				if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE sessions SET identity_json = ?, email = ?, expires_at = ? WHERE token_hash = ?", string(encoded), identity.Email, formatTime(s.config.now().Add(sessionLifetime)), hash); err != nil {
-					return accountSession{}, err
-				}
-				existing.Identity, existing.Email = *identity.Hosted, identity.Email
-				return existing, nil
-			}
 			revoked, err := s.auth.revokeSession(ctx, hash)
 			if err != nil {
 				return accountSession{}, err
 			}
 			s.revokeAtTenants(ctx, revoked)
+			if existing.Subject == identity.Subject {
+				carried, csrfSecret = revoked, existing.CSRFSecret
+			}
 		}
 	}
 	token, err := s.config.generateToken()
@@ -192,10 +185,17 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 		return accountSession{}, err
 	}
 	hash := apikey.HashToken(token)
+	if csrfSecret == "" {
+		secret, err := s.config.generateToken()
+		if err != nil {
+			return accountSession{}, err
+		}
+		csrfSecret = apikey.HashToken(secret)
+	}
 	stored := identity
 	hosted := *identity.Hosted
 	stored.Hosted = &hosted
-	if err := s.auth.createSession(ctx, hash, stored); err != nil {
+	if err := s.auth.createSession(ctx, hash, csrfSecret, stored); err != nil {
 		return accountSession{}, err
 	}
 	if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE sessions SET expires_at = ? WHERE token_hash = ?", formatTime(s.config.now().Add(sessionLifetime)), hash); err != nil {
@@ -205,7 +205,15 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 		return accountSession{}, err
 	}
 	s.setCookie(c, "session", token, s.config.now().Add(sessionLifetime))
-	return accountSession{Hash: hash, Subject: identity.Subject, Email: identity.Email, Identity: hosted}, nil
+	session := accountSession{Hash: hash, CSRFSecret: csrfSecret, Subject: identity.Subject, Email: identity.Email, Identity: hosted}
+	for _, previous := range carried {
+		if previous.Identity.ExpiresAt.After(s.config.now()) {
+			if _, _, err := s.auth.authorize(ctx, session, previous.Organization, previous.Identity); err != nil {
+				return accountSession{}, err
+			}
+		}
+	}
+	return session, nil
 }
 
 func (s *Service) logout(c echo.Context) error {
@@ -232,13 +240,15 @@ func (s *Service) logout(c echo.Context) error {
 	for _, item := range revoked {
 		sessions[item.Identity.SessionID] = true
 	}
+	revocation, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	var providerErr error
 	for id := range sessions {
 		if id != "" {
-			providerErr = errors.Join(providerErr, s.config.Provider.RevokeSession(ctx, id))
+			providerErr = errors.Join(providerErr, s.config.Provider.RevokeSession(revocation, id))
 		}
 	}
-	auditErr := s.auth.audit(ctx, session.Subject, "", "session_ended")
+	auditErr := s.auth.audit(revocation, session.Subject, "", "session_ended")
 	if providerErr != nil || auditErr != nil {
 		s.config.Logger.Warn("shared entry sign-out could not confirm provider revocation")
 		return s.render(c, http.StatusServiceUnavailable, templates.HostedPageData{Mode: "denied", Title: "Signed out", Error: "You are signed out of Detent. Provider sign-out could not be confirmed; retry sign-out from your identity provider."})
@@ -285,7 +295,7 @@ func (s *Service) chooser(c echo.Context) error {
 	if err != nil {
 		return s.denied(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")
 	}
-	data := templates.HostedPageData{Mode: "chooser", Title: "Organizations", Email: session.Email, CSRF: cloudassert.CSRFToken(session.Hash, "")}
+	data := templates.HostedPageData{Mode: "chooser", Title: "Organizations", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, "")}
 	for _, choice := range choices {
 		data.Organizations = append(data.Organizations, templates.HostedOrganizationChoice{ID: choice.ID, Name: choice.Name})
 	}
@@ -304,7 +314,7 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 	if choices == nil {
 		choices = []organizationChoice{}
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.Hash, ""), "organizations": choices})
+	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices})
 }
 
 func (s *Service) invitationOrganization(ctx context.Context, token string) (Organization, error) {
@@ -339,7 +349,7 @@ func (s *Service) joinPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Finvitations%2Fjoin")
 	}
-	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "join", Title: "Join organization", Email: session.Email, CSRF: cloudassert.CSRFToken(session.Hash, "")})
+	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "join", Title: "Join organization", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, "")})
 }
 
 func (s *Service) joinInvitation(c echo.Context) error {

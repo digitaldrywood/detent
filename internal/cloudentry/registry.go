@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"net"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -40,15 +38,8 @@ func safeID(value string) bool {
 }
 
 func ValidEndpoint(endpoint string) bool {
-	if path, ok := strings.CutPrefix(endpoint, "unix:"); ok {
-		return filepath.IsAbs(path) && filepath.Clean(path) == path
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Port() == "" {
-		return false
-	}
-	ip := net.ParseIP(u.Hostname())
-	return ip != nil && ip.IsLoopback()
+	path, ok := strings.CutPrefix(endpoint, "unix:")
+	return ok && filepath.IsAbs(path) && filepath.Clean(path) == path
 }
 
 func (o Organization) validate() error {

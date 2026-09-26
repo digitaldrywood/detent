@@ -3,6 +3,7 @@ CREATE TABLE sessions (
   token_hash TEXT PRIMARY KEY,
   subject TEXT NOT NULL,
   email TEXT NOT NULL,
+  csrf_secret TEXT NOT NULL,
   identity_json TEXT NOT NULL CHECK (json_valid(identity_json)),
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,

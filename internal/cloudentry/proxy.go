@@ -32,19 +32,15 @@ func (s *Service) tenantTransport(organization Organization) (http.RoundTripper,
 	if !ValidEndpoint(organization.Endpoint) {
 		return nil, errors.New("tenant endpoint is invalid")
 	}
-	transport := &http.Transport{MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: 30 * time.Second, DisableCompression: true}
-	if path, ok := strings.CutPrefix(organization.Endpoint, "unix:"); ok {
-		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+	path := strings.TrimPrefix(organization.Endpoint, "unix:")
+	transport := &http.Transport{MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: 30 * time.Second, DisableCompression: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if err := verifyPrivateSocket(path); err != nil {
+				return nil, err
+			}
 			var dialer net.Dialer
 			return dialer.DialContext(ctx, "unix", path)
-		}
-	} else {
-		address := strings.TrimPrefix(organization.Endpoint, "http://")
-		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var dialer net.Dialer
-			return dialer.DialContext(ctx, "tcp", address)
-		}
-	}
+		}}
 	actual, _ := s.transports.LoadOrStore(organization.Endpoint, transport)
 	if stored, ok := actual.(http.RoundTripper); ok {
 		return stored, nil
@@ -120,7 +116,7 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	claims.Kind = cloudassert.KindBrowser
 	claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = session.Subject, session.Email, organization.ProviderID, identity.SessionID
 	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.CreatedAt, identity.ExpiresAt
-	claims.Binding, claims.CSRF = authorized.Binding, cloudassert.CSRFToken(session.Hash, organization.ID)
+	claims.Binding, claims.CSRF = authorized.Binding, cloudassert.CSRFToken(session.CSRFSecret, organization.ID)
 	return http.StatusOK, nil
 }
 
@@ -240,7 +236,9 @@ func (s *Service) acceptInvitation(ctx context.Context, organization Organizatio
 	return nil
 }
 
-func (s *Service) revokeAtTenants(ctx context.Context, items []authorization) {
+func (s *Service) revokeAtTenants(parent context.Context, items []authorization) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 15*time.Second)
+	defer cancel()
 	byOrganization := make(map[string][]string)
 	for _, item := range items {
 		byOrganization[item.Organization] = append(byOrganization[item.Organization], item.Binding)

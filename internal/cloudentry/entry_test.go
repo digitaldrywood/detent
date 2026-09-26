@@ -391,7 +391,13 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 	if unauthorized.StatusCode != http.StatusSeeOther || !strings.HasPrefix(unauthorized.Header.Get("Location"), "/auth/oidc/start?organization=org_beta") {
 		t.Fatalf("unauthorized beta = %d %q", unauthorized.StatusCode, unauthorized.Header.Get("Location"))
 	}
+	base, _ := url.Parse(testPublicURL)
+	stale := newBrowser(t, f.service.Handler())
+	stale.jar.SetCookies(base, alice.jar.Cookies(base))
 	alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+	if response, _ := stale.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {
+		t.Fatal("the pre-authentication session cookie survived re-authentication")
+	}
 	_, betaPage := alice.get("/organizations/org_beta/organization")
 	if !strings.Contains(betaPage, "Beta secret project") || strings.Contains(betaPage, "Alpha secret project") {
 		t.Fatalf("beta page = %s", betaPage)
@@ -589,6 +595,7 @@ func TestRegistryRegister(t *testing.T) {
 		{"generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = "unix:/run/b.sock"; o.Generation = 2 }, true, false},
 		{"generation rollback", func(o *Organization) { o.Name = "A renamed"; o.Generation = 1 }, false, true},
 		{"public endpoint", func(o *Organization) { o.Endpoint = "http://10.0.0.1:80"; o.Generation = 3 }, false, true},
+		{"loopback tcp", func(o *Organization) { o.Endpoint = "http://127.0.0.1:7777"; o.Generation = 3 }, false, true},
 		{"relative socket", func(o *Organization) { o.Endpoint = "unix:run/a.sock"; o.Generation = 3 }, false, true},
 		{"bad id", func(o *Organization) { o.ID = "tenant"; o.ProviderID = "porg_x" }, false, true},
 	}
