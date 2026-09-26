@@ -42,6 +42,7 @@ var (
 type Config struct {
 	CredentialMaintenance      bool
 	Hosted                     *HostedConfig
+	Conversation               *ConversationConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
 	GitHubDisabled             bool
 	ImportBackend              ImportBackend

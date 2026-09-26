@@ -126,6 +126,17 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"sync_checkpoints",
 		"work_events",
 		"workflow_states",
+		"conversations",
+		"conversation_messages",
+		"conversation_questions",
+		"conversation_commands",
+		"conversation_events",
+		"conversation_starts",
+		"conversation_audience_events",
+		"conversation_turn_batches",
+		"conversation_attachments",
+		"conversation_attachment_blobs",
+		"message_references",
 	}
 	sort.Strings(wantTables)
 	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {

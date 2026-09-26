@@ -218,7 +218,14 @@ func marshalNative(value any) (string, error) {
 	return string(encoded), err
 }
 
-func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
+func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
+	return s.nativeMutationStatus(c, http.StatusOK, command, input, operation)
+}
+
+// nativeMutationStatus is nativeMutation with the success status the route
+// reports. A replay answers with the same status as the first call, so a
+// created resource stays 201 on every retry of its key.
+func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, nativeInvalid("An idempotency key of at most 128 bytes is required"))
 	}
@@ -260,7 +267,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 		if err := tx.Commit(); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		return c.JSONBlob(http.StatusOK, []byte(response))
+		return c.JSONBlob(status, []byte(response))
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, err)
@@ -304,7 +311,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, []byte(response))
+	return c.JSONBlob(status, []byte(response))
 }
 
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
