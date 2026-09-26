@@ -103,6 +103,9 @@ func (s *Service) startLogin(c echo.Context) error {
 func (s *Service) completeLogin(c echo.Context) error {
 	ctx := c.Request().Context()
 	state := c.QueryParam("state")
+	if state == "" {
+		return s.completeSupport(c)
+	}
 	id, _, _ := strings.Cut(state, ".")
 	if _, err := hex.DecodeString(id); err != nil || len(id) != 32 {
 		return s.denied(c, http.StatusUnauthorized, "This sign-in link is invalid or has already been used")
@@ -113,7 +116,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		return s.denied(c, http.StatusUnauthorized, "This sign-in link is invalid or has already been used")
 	}
 	transaction, err := s.auth.consumeTransaction(ctx, apikey.HashToken(cookie.Value), id)
-	if err != nil || c.QueryParam("error") != "" || subtle.ConstantTimeCompare([]byte(transaction.State), []byte(state)) != 1 {
+	if err != nil || transaction.SupportActor != "" || c.QueryParam("error") != "" || subtle.ConstantTimeCompare([]byte(transaction.State), []byte(state)) != 1 {
 		return s.denied(c, http.StatusUnauthorized, "This sign-in link is invalid or has already been used")
 	}
 	identity, err := s.config.Provider.Exchange(ctx, c.QueryParam("code"), transaction.Verifier, transaction.State)
@@ -134,7 +137,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		return s.denied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
 	}
 	if transaction.Organization != "" {
-		authorized, stale, err := s.auth.authorize(ctx, session, organization.ID, *identity.Hosted)
+		authorized, stale, err := s.auth.authorize(ctx, session, organization.ID, *identity.Hosted, identity.Email)
 		if err != nil {
 			return s.denied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
 		}
@@ -208,7 +211,7 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	session := accountSession{Hash: hash, CSRFSecret: csrfSecret, Subject: identity.Subject, Email: identity.Email, Identity: hosted}
 	for _, previous := range carried {
 		if previous.Identity.ExpiresAt.After(s.config.now()) {
-			if _, _, err := s.auth.authorize(ctx, session, previous.Organization, previous.Identity); err != nil {
+			if _, _, err := s.auth.authorize(ctx, session, previous.Organization, previous.Identity, previous.EffectiveEmail); err != nil {
 				return accountSession{}, err
 			}
 		}

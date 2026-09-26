@@ -24,6 +24,7 @@ type cloudFileConfig struct {
 	Listen         string   `yaml:"listen"`
 	StateDirectory string   `yaml:"state_directory"`
 	StaffEmails    []string `yaml:"staff_emails"`
+	SupportActors  []string `yaml:"support_actors"`
 	Assertion      struct {
 		Issuer        string `yaml:"issuer"`
 		SigningKeyEnv string `yaml:"signing_key_env"`
@@ -75,7 +76,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	}
 	return cloudentry.Config{
 		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
-		StaffEmails: config.StaffEmails, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(),
+		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(),
 	}, nil
 }
 
