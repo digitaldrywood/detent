@@ -309,6 +309,8 @@ func (w *workspaceService) sweep(ctx context.Context) {
 			w.committed(ctx, moved)
 		}
 	}
+	w.sweepActionRuns(ctx)
+	w.dispatchQueuedActionRuns(ctx)
 	w.relay.sweep(ctx, now)
 	if err := w.sweepRelayTickets(ctx, now); err != nil {
 		w.logger.Warn("workspace.ticket_sweep_failed", "error", err)

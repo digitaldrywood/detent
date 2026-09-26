@@ -463,7 +463,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		// project grant row, so none of the checks below can be asked of it.
 		// Its authority is the token, which the middleware already proved on
 		// the upgrade against the same scope this frame needs --- the same
-		// reasoning refuseGitWrite applies to a commit, which is the other
+		// reasoning refuseRelayWrite applies to a commit, which is the other
 		// frame on this relay that changes a worktree.
 		//
 		// Section 18.3's "a terminal requires a hosted session" is enforced
@@ -529,9 +529,10 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 	return workspacesession.ValidateTerminalOpen(open)
 }
 
-// refuseGitWrite is the per-frame half of section 18.2's `write` rule, and it
-// exists because the git channel is the first channel that writes. It reports
-// the code the frame is refused with, or "" when it may be forwarded.
+// refuseRelayWrite is the per-frame half of section 18.2's `write` rule for the
+// channels that write: a git commit or push, and an exec run, which executes
+// the project's command inside the worktree. It reports the code the frame is
+// refused with, or "" when it may be forwarded.
 //
 // channelPermitted already gates the channel on the capability the runner
 // reported, and that check cannot answer this one: the capability says the
@@ -540,11 +541,13 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 // the upgrade; a `commit` or a `push` needs `write`, which is a different
 // question asked per frame because a grant can be withdrawn under a live
 // socket.
-func (w *workspaceService) refuseGitWrite(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
-	if frame.Channel != workspacesession.ChannelGit || !workspacesession.GitWriteRequest(frame.Type) {
+func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
+	gitWrite := frame.Channel == workspacesession.ChannelGit && workspacesession.GitWriteRequest(frame.Type)
+	execRun := frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun
+	if !gitWrite && !execRun {
 		return ""
 	}
-	if record.ReadOnly {
+	if gitWrite && record.ReadOnly {
 		// A read-only workspace is one whose subject attempt is still running,
 		// and read_only is set at creation and never cleared, so the record
 		// captured at the upgrade is as current as a re-read would be.
@@ -655,7 +658,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		w.handlePersonResume(connection, frame)
 		return
 	}
-	if code := w.refuseGitWrite(ctx, record, connection, frame); code != "" {
+	if code := w.refuseRelayWrite(ctx, record, connection, frame); code != "" {
 		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
 		return
 	}

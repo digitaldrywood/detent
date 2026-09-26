@@ -1562,10 +1562,10 @@ func (f *relayFixture) seedHostedMember(t *testing.T, name, role, grant string) 
 	}
 }
 
-// The `write` half of section 18.2's authority list, which the git channel is
-// the first channel to need.
+// The `write` half of section 18.2's authority list, which a git commit or push
+// and an exec run need.
 //
-// It is driven through refuseGitWrite against the fixture's own database rather
+// It is driven through refuseRelayWrite against the fixture's own database rather
 // than over a socket, and the reason is the fixture's person: an operator
 // token, which the check permits by design because its authority is the token
 // the middleware already proved on the upgrade. Reaching the hosted branch
@@ -1583,10 +1583,14 @@ func TestWorkspaceRelayGitWriteAuthority(t *testing.T) {
 		grant     string
 		token     bool
 		readOnly  bool
+		exec      bool
 		frameType string
 		want      string
 	}{
 		{name: "member with write", role: "member", grant: "write", frameType: workspacesession.TypeGitCommit},
+		{name: "exec run with write", role: "member", grant: "write", exec: true},
+		{name: "exec run with read only", role: "member", grant: "read", exec: true, want: workspacesession.CodeForbidden},
+		{name: "exec run by a viewer", role: "viewer", grant: "write", exec: true, want: workspacesession.CodeForbidden},
 		{name: "push with write", role: "member", grant: "write", frameType: workspacesession.TypeGitPush},
 		{
 			// Read on the project is enough for any stream, so the status the
@@ -1629,8 +1633,11 @@ func TestWorkspaceRelayGitWriteAuthority(t *testing.T) {
 				connection = f.seedHostedMember(t, strings.ReplaceAll(test.name, " ", "-"), test.role, test.grant)
 			}
 			frame := gitFrame(test.frameType, "Commit from the authority table")
-			if code := f.service.workspaces.refuseGitWrite(t.Context(), record, connection, frame); code != test.want {
-				t.Fatalf("refuseGitWrite = %q, want %q", code, test.want)
+			if test.exec {
+				frame = execRunFrame(newNativeID("actionrun"), workspacesession.Action{ID: newNativeID("action"), Command: "make test"})
+			}
+			if code := f.service.workspaces.refuseRelayWrite(t.Context(), record, connection, frame); code != test.want {
+				t.Fatalf("refuseRelayWrite = %q, want %q", code, test.want)
 			}
 		})
 	}
@@ -1648,7 +1655,7 @@ func TestWorkspaceRelayGitWriteCheckIgnoresOtherChannels(t *testing.T) {
 	connection := f.seedHostedMember(t, "other-channel", "member", "read")
 	for _, channel := range []string{workspacesession.ChannelFiles, workspacesession.ChannelDiff, workspacesession.ChannelPreview} {
 		frame := workspacesession.Frame{Channel: channel, Type: workspacesession.TypeGitCommit}
-		if code := f.service.workspaces.refuseGitWrite(t.Context(), record, connection, frame); code != "" {
+		if code := f.service.workspaces.refuseRelayWrite(t.Context(), record, connection, frame); code != "" {
 			t.Fatalf("the %s channel was refused with %q", channel, code)
 		}
 	}
@@ -1872,10 +1879,10 @@ func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
 				id: "relayconn_" + name, workspaceID: session.ID, subject: user.identity.Subject,
 				sessionHash: "session_hash_" + name, hostedRole: test.role,
 			}
-			if code := f.service.workspaces.refuseGitWrite(t.Context(), record, connection, gitFrame(workspacesession.TypeGitCommit, "commit")); code != test.wantWriteRef {
+			if code := f.service.workspaces.refuseRelayWrite(t.Context(), record, connection, gitFrame(workspacesession.TypeGitCommit, "commit")); code != test.wantWriteRef {
 				t.Fatalf("git commit refusal = %q, want %q", code, test.wantWriteRef)
 			}
-			if code := f.service.workspaces.refuseGitWrite(t.Context(), record, connection, gitFrame(workspacesession.TypeGitStatus, "")); code != "" {
+			if code := f.service.workspaces.refuseRelayWrite(t.Context(), record, connection, gitFrame(workspacesession.TypeGitStatus, "")); code != "" {
 				t.Fatalf("git status refusal = %q, want none", code)
 			}
 			if code := f.service.workspaces.refuseTerminal(t.Context(), record, connection, terminalOpenFrame()); code != workspacesession.CodeForbidden {

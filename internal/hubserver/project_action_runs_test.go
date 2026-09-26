@@ -4,6 +4,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -261,6 +262,31 @@ func TestProjectActionRunListing(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet,
 			f.base+"/actions/"+newNativeID("action")+"/runs", f.token, nil), http.StatusNotFound)
 	})
+}
+
+func TestWorkspaceWorkerBindCarriesRunOnCreationActions(t *testing.T) {
+	t.Parallel()
+	f := newActionFixture(t)
+	install := f.authored(t, map[string]any{"name": "Install", "command": "npm install",
+		"run_on_worktree_creation": true})
+	f.authored(t, map[string]any{"name": "Lint", "command": "npm run lint"})
+	build := f.authored(t, map[string]any{"name": "Build", "command": "npm run build",
+		"run_on_worktree_creation": true})
+
+	session, lease := f.requested(t)
+	response := f.workerPost(t, session.ID, "bind", workspaceBindRequest{
+		workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: execCapabilities,
+		Isolation: workspacesession.IsolationContainer})
+	requireNativeStatus(t, response, http.StatusOK)
+	var bind workspaceBindResponse
+	decodeHubResponse(t, response, &bind)
+	got := []string{}
+	for _, action := range bind.Actions {
+		got = append(got, action.ID)
+	}
+	if want := []string{install.ID, build.ID}; !slices.Equal(got, want) {
+		t.Fatalf("bind actions = %v, want the run-on-creation set in authoring order %v", got, want)
+	}
 }
 
 // The worker report is how a run the runner started itself is recorded: a
