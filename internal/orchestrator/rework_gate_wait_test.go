@@ -302,6 +302,7 @@ func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T)
 			issue := reworkGateWaitTestIssue(workpad.StatusComplete)
 			issue.State = tt.reworkState
 			issue.PullRequest.HeadSHA = "current-head"
+			issue.PullRequest.BaseSHA = "current-base"
 			snapshot := cloneIssue(issue)
 			snapshot.PullRequest.HeadSHA = tt.snapshotHead
 
@@ -329,6 +330,10 @@ func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T)
 				ProjectID:  "detent",
 				IssueID:    issue.ID,
 				HeadSHA:    issue.PullRequest.HeadSHA,
+				Repository: "digitaldrywood/detent",
+				BaseSHA:    issue.PullRequest.BaseSHA,
+				DiffDigest: "digest-rework",
+				DiffFiles:  []string{"README.md"},
 				Identifier: issue.Identifier,
 				PRNumber:   attempt.PRNumber,
 				Submitted:  wantValidator.Submitted,

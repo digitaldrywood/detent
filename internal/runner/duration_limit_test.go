@@ -572,12 +572,10 @@ func TestRunnerValidatorUpdatePersistenceUsesSessionDurationContext(t *testing.T
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	_, err = runner.Validate(context.Background(), ValidatorRequest{
-		Issue: connector.Issue{
-			ID:         "issue-validator-duration",
-			Identifier: "digitaldrywood/detent#1496",
-		},
-	})
+	_, err = runner.Validate(context.Background(), testValidatorRequest(connector.Issue{
+		ID:         "issue-validator-duration",
+		Identifier: "digitaldrywood/detent#1496",
+	}))
 	if !errors.Is(err, ErrSessionDurationExceeded) {
 		t.Fatalf("Validate() error = %v, want ErrSessionDurationExceeded", err)
 	}

@@ -2102,7 +2102,7 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 }
 
 const getValidatorVerdict = `-- name: GetValidatorVerdict :one
-SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at
+SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at, repository, base_sha, diff_digest, diff_files_json
 FROM validator_verdicts
 WHERE project_id = ?
   AND issue_id = ?
@@ -2136,6 +2136,10 @@ func (q *Queries) GetValidatorVerdict(ctx context.Context, arg GetValidatorVerdi
 		&i.UpdatedAt,
 		&i.FailureAttempts,
 		&i.NextRetryAt,
+		&i.Repository,
+		&i.BaseSha,
+		&i.DiffDigest,
+		&i.DiffFilesJson,
 	)
 	return i, err
 }
@@ -4098,7 +4102,7 @@ func (q *Queries) ListSecurityAuditDispositions(ctx context.Context, auditRunID 
 }
 
 const listValidatorVerdicts = `-- name: ListValidatorVerdicts :many
-SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at
+SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at, repository, base_sha, diff_digest, diff_files_json
 FROM validator_verdicts
 WHERE (?1 = '' OR project_id = ?1)
   AND (?2 IS NULL OR updated_at >= ?2)
@@ -4139,6 +4143,10 @@ func (q *Queries) ListValidatorVerdicts(ctx context.Context, arg ListValidatorVe
 			&i.UpdatedAt,
 			&i.FailureAttempts,
 			&i.NextRetryAt,
+			&i.Repository,
+			&i.BaseSha,
+			&i.DiffDigest,
+			&i.DiffFilesJson,
 		); err != nil {
 			return nil, err
 		}
@@ -5122,6 +5130,10 @@ INSERT INTO validator_verdicts (
   project_id,
   issue_id,
   head_sha,
+  repository,
+  base_sha,
+  diff_digest,
+  diff_files_json,
   identifier,
   issue_url,
   pr_number,
@@ -5135,8 +5147,12 @@ INSERT INTO validator_verdicts (
   next_retry_at,
   recorded_at,
   updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
+  repository = excluded.repository,
+  base_sha = excluded.base_sha,
+  diff_digest = excluded.diff_digest,
+  diff_files_json = excluded.diff_files_json,
   identifier = excluded.identifier,
   issue_url = excluded.issue_url,
   pr_number = excluded.pr_number,
@@ -5150,13 +5166,17 @@ ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
   next_retry_at = excluded.next_retry_at,
   recorded_at = excluded.recorded_at,
   updated_at = excluded.updated_at
-RETURNING id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at
+RETURNING id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at, repository, base_sha, diff_digest, diff_files_json
 `
 
 type UpsertValidatorVerdictParams struct {
 	ProjectID       string         `json:"project_id"`
 	IssueID         string         `json:"issue_id"`
 	HeadSha         string         `json:"head_sha"`
+	Repository      string         `json:"repository"`
+	BaseSha         string         `json:"base_sha"`
+	DiffDigest      string         `json:"diff_digest"`
+	DiffFilesJson   string         `json:"diff_files_json"`
 	Identifier      sql.NullString `json:"identifier"`
 	IssueURL        sql.NullString `json:"issue_url"`
 	PrNumber        sql.NullInt64  `json:"pr_number"`
@@ -5177,6 +5197,10 @@ func (q *Queries) UpsertValidatorVerdict(ctx context.Context, arg UpsertValidato
 		arg.ProjectID,
 		arg.IssueID,
 		arg.HeadSha,
+		arg.Repository,
+		arg.BaseSha,
+		arg.DiffDigest,
+		arg.DiffFilesJson,
 		arg.Identifier,
 		arg.IssueURL,
 		arg.PrNumber,
@@ -5210,6 +5234,10 @@ func (q *Queries) UpsertValidatorVerdict(ctx context.Context, arg UpsertValidato
 		&i.UpdatedAt,
 		&i.FailureAttempts,
 		&i.NextRetryAt,
+		&i.Repository,
+		&i.BaseSha,
+		&i.DiffDigest,
+		&i.DiffFilesJson,
 	)
 	return i, err
 }

@@ -111,11 +111,17 @@ type Finding struct {
 }
 
 type ValidatorResult struct {
-	Submitted bool
-	Verdict   string
-	Score     float64
-	Summary   string
-	Findings  []Finding
+	Submitted  bool
+	Verdict    string
+	Score      float64
+	Summary    string
+	Findings   []Finding
+	Repository string
+	PRNumber   int
+	BaseSHA    string
+	HeadSHA    string
+	DiffDigest string
+	DiffFiles  []string
 }
 
 type EvaluationOptions struct {

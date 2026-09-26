@@ -68,6 +68,12 @@ type PromptOptions struct {
 type ValidatorPromptOptions struct {
 	WorkspacePath      string
 	Branch             string
+	Repository         string
+	PRNumber           int
+	BaseSHA            string
+	HeadSHA            string
+	DiffDigest         string
+	DiffFiles          []string
 	DiffStat           *workspace.DiffStat
 	DiffPatch          string
 	DiffTruncated      bool
@@ -323,6 +329,12 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
 		b.WriteString("\n")
 	}
+	if opts.Repository != "" {
+		fmt.Fprintf(&b, "Reviewed PR: %s#%d base=%s head=%s sha256=%s\n", opts.Repository, opts.PRNumber, opts.BaseSHA, opts.HeadSHA, opts.DiffDigest)
+		b.WriteString("Reviewed files: ")
+		b.WriteString(strings.Join(opts.DiffFiles, ", "))
+		b.WriteString("\n")
+	}
 	appendValidatorDiffContext(&b, opts)
 	b.WriteString("\nIssue: ")
 	b.WriteString(issue.Identifier)
@@ -339,7 +351,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	b.WriteString("Review instructions:\n")
-	b.WriteString("- Use the seeded diff context above first; when the full diff is omitted or you need more detail, inspect the PR diff with `git diff`.\n")
+	b.WriteString("- Review only the PR diff identified above. If the inline patch is omitted, use the named GitHub PR diff at the stated head; do not use workspace git diff.\n")
 	b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state.\n")
 	b.WriteString("- Use severities p1, p2, p3, or p4 for findings; p1 means the work must not merge.\n")
 	b.WriteString("- Score is a confidence/trust score from 0 to 1 that the implementation satisfies the acceptance criteria.\n")

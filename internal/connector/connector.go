@@ -228,6 +228,22 @@ type SecurityAuditSnapshotReader interface {
 	SecurityAuditSnapshot(context.Context, Issue, int) (securityaudit.Snapshot, error)
 }
 
+// ValidationDiff is a PR-scoped snapshot. Digest covers the complete patch, even
+// when a caller chooses to show only part of it to the validator.
+type ValidationDiff struct {
+	Repository string
+	PRNumber   int
+	BaseSHA    string
+	HeadSHA    string
+	Files      []string
+	Patch      string
+	Digest     string
+}
+
+type ValidationDiffReader interface {
+	PullRequestValidationDiff(context.Context, Issue) (ValidationDiff, error)
+}
+
 type PullRequestCheckRerunner interface {
 	RerunPullRequestChecks(context.Context, Issue, []PullRequestCheck) error
 }

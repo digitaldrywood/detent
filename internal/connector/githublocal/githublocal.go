@@ -650,6 +650,14 @@ func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connec
 	return reader.PullRequestDiffFingerprint(ctx, issue)
 }
 
+func (c *Connector) PullRequestValidationDiff(ctx context.Context, issue connector.Issue) (connector.ValidationDiff, error) {
+	reader, ok := c.github.(connector.ValidationDiffReader)
+	if !ok {
+		return connector.ValidationDiff{}, connector.NewRetryableError("GitHub validator diff reader unavailable")
+	}
+	return reader.PullRequestValidationDiff(ctx, issue)
+}
+
 func (c *Connector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, label string, stagger time.Duration) error {
 	reapplier, ok := c.github.(connector.PullRequestLabelReapplier)
 	if !ok {
