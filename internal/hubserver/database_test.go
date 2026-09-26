@@ -97,7 +97,6 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"native_comments",
 		"organizations",
 		"projects",
-		"pull_request_actions",
 		"token_grants",
 		"api_tokens",
 		"github_hydration_requests",

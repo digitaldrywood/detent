@@ -37,11 +37,6 @@ const (
 	// pullRequestRefreshInterval is the minimum spacing between forced
 	// refreshes, per organization.
 	pullRequestRefreshInterval = 10 * time.Second
-	// pullRequestActionLabel marks the native issue an action runs as. The
-	// merge queue claims it like any other issue; the label is what tells the
-	// dispatcher and a reader that the issue is a pull request action and not
-	// work someone wrote.
-	pullRequestActionLabel = "detent:pull-request-action"
 )
 
 // pullRequestMergeable is 18.6's three-valued mergeability: true, false, or
@@ -213,13 +208,6 @@ func pullRequestRefreshLimited() error {
 	}
 }
 
-func pullRequestHeadMoved(expected, current string) error {
-	return &nativeError{
-		Code: "head_moved", Message: "The head has moved since the action was prepared", status: http.StatusConflict,
-		Details: map[string]any{"expected_head_sha": expected, "head_sha": current},
-	}
-}
-
 // Reads.
 
 // projectConnector reads the project's GitHub connector binding. It answers a
@@ -269,23 +257,6 @@ FROM pull_requests WHERE repository_id = ? AND url = ?`, repositoryID, url).Scan
 		return summary, time.Time{}, false, fmt.Errorf("decode connector synchronized_at: %w", err)
 	}
 	return summary, fetched, true, nil
-}
-
-// readConnectorPullRequestByNumber resolves a pull request the client
-// addressed by number, so an action can be checked against the projection.
-func readConnectorPullRequestByNumber(ctx context.Context, query nativeQueryer, repositoryID int64, number int) (tracker.PullRequestSummary, bool, error) {
-	var summary tracker.PullRequestSummary
-	err := query.QueryRowContext(ctx, `SELECT github_number, title, url, github_state, draft, head_ref, head_sha, base_ref, base_sha, mergeable_state
-FROM pull_requests WHERE repository_id = ? AND github_number = ?`, repositoryID, number).Scan(
-		&summary.Number, &summary.Title, &summary.URL, &summary.State, &summary.Draft, &summary.HeadRef, &summary.HeadSHA,
-		&summary.BaseRef, &summary.BaseSHA, &summary.Merge.State)
-	if errors.Is(err, sql.ErrNoRows) {
-		return summary, false, nil
-	}
-	if err != nil {
-		return summary, false, fmt.Errorf("read connector pull request by number: %w", err)
-	}
-	return summary, true, nil
 }
 
 // changePullRequestView assembles one row from a change request and, when the

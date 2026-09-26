@@ -75,39 +75,6 @@ CREATE TABLE attempt_diff_files (
   PRIMARY KEY (diff_id, position)
 );
 
--- Pull request actions (decisions section 18.6).
---
--- An action is not executed by the hub. It is a native issue the existing
--- merge queue claims on a runner with a checkout, so this table is only the
--- association between that issue and what it was asked to do.
---
--- The action's own idempotency lives in native_commands, like every other
--- mutation, so this table carries no key: a replayed post answers with the
--- first call's work item instead of opening a second one.
---
--- expected_head_sha is what the actor believed the head was. It is recorded
--- rather than only compared, so a runner that picks the action up later can
--- refuse a head that moved between acceptance and execution exactly as the
--- endpoint refuses one that moved before acceptance.
-CREATE TABLE pull_request_actions (
-  id TEXT PRIMARY KEY,
-  work_item_id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
-  project_id TEXT NOT NULL,
-  subject_work_item_id TEXT NOT NULL,
-  action TEXT NOT NULL CHECK (action IN ('open', 'update_branch', 'merge')),
-  number INTEGER NOT NULL DEFAULT 0 CHECK (number >= 0),
-  expected_head_sha TEXT NOT NULL,
-  actor_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  closed_at TEXT,
-  FOREIGN KEY (organization_id, project_id, subject_work_item_id) REFERENCES issues(organization_id, project_id, native_id)
-);
--- The subject issue's panel lists the actions it has open.
-CREATE INDEX pull_request_actions_subject_idx ON pull_request_actions(organization_id, project_id, subject_work_item_id, created_at);
--- An action resolves from the issue the merge queue handed the runner.
-CREATE UNIQUE INDEX pull_request_actions_item_idx ON pull_request_actions(work_item_id);
-
 -- work_item_revision is the issues.revision an attempt ran against, captured
 -- at run.started. The work item change surface reports the highest revision a
 -- succeeded attempt recorded a change for, so a reader can tell a change that
@@ -118,6 +85,5 @@ ALTER TABLE native_attempts ADD COLUMN work_item_revision INTEGER NOT NULL DEFAU
 
 -- +goose Down
 ALTER TABLE native_attempts DROP COLUMN work_item_revision;
-DROP TABLE pull_request_actions;
 DROP TABLE attempt_diff_files;
 DROP TABLE attempt_diffs;
