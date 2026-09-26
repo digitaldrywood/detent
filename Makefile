@@ -249,7 +249,7 @@ check check-fast: check-migrations check-generated
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
 	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events "$$common_dir/detent-validation-events.jsonl" -- $(MAKE) $@-unlocked
 
-check-unlocked: check-invariants check-migrations check-generated build lint vet nilaway-audit test-race-cover
+check-unlocked: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
 
 .PHONY: check-fast check-fast-unlocked
