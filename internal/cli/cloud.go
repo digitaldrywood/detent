@@ -69,6 +69,12 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 	}
 }
 
+func entitlementActorValid(value string) bool {
+	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
+	}) == -1
+}
+
 func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -127,12 +133,13 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			allocation.RetryLimit = 5
 		}
 		environment := []string{config.WorkOS.APIKeyEnv + "=" + lookupEnv(config.WorkOS.APIKeyEnv)}
-		if name := allocation.EntitlementAdminTokenEnv; name != "" {
+		name := allocation.EntitlementAdminTokenEnv
+		if name != "" || allocation.EntitlementAdministrator != "" {
 			if !validEnvName(name) || name == config.WorkOS.APIKeyEnv || name == config.Assertion.SigningKeyEnv {
 				return cloudentry.Config{}, errors.New("entitlement token environment name is invalid")
 			}
-			if len(lookupEnv(name)) < 32 || strings.TrimSpace(allocation.EntitlementAdministrator) == "" {
-				return cloudentry.Config{}, errors.New("entitlement administration requires an administrator and a token of at least 32 bytes")
+			if len(lookupEnv(name)) < 32 || !entitlementActorValid(allocation.EntitlementAdministrator) {
+				return cloudentry.Config{}, errors.New("entitlement administration requires an administrator ID and a token of at least 32 bytes")
 			}
 			environment = append(environment, name+"="+lookupEnv(name))
 		}
