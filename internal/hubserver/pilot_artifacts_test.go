@@ -54,6 +54,12 @@ func pilotUploadArtifact(t *testing.T, f *browserHostedFixture, issue tracker.Na
 	requireNativeStatus(t, response, http.StatusOK)
 	var approved policy.Approval
 	decodeHubResponse(t, response, &approved)
+	item := base + "/work-items/" + string(issue.WorkItemID)
+	response = f.page(t, "owner", item)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &issue)
+	body := issue.Body + "\n\nFollow-up run uploads the pilot log."
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPatch, item, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pilot-upload-follow-up"}, ExpectedRevision: issue.Revision, Body: &body}), http.StatusOK)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", runner.Credential, tracker.NativeClaim{PolicyID: approved.Policy.ID, WorkItemID: issue.WorkItemID, MachineID: runner.MachineID, SessionID: "pilot-upload", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
