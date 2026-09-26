@@ -1,0 +1,36 @@
+{
+  "range": {
+    "from": "2026-08-12T00:00:00Z",
+    "to": "2026-09-11T00:00:00Z"
+  },
+  "total": {
+    "cost": 0,
+    "tokens": 0,
+    "sessions": 0
+  },
+  "providers": [],
+  "daily": [],
+  "totals": {
+    "processed": 0,
+    "cached_input": 0,
+    "uncached_input": 0,
+    "output": 0,
+    "cache_savings": 0
+  },
+  "breakdown": {
+    "by_model": [],
+    "by_day": []
+  },
+  "limits": {
+    "members": {
+      "used": 1,
+      "limit": 10
+    },
+    "projects": {
+      "used": 0,
+      "limit": 10
+    }
+  },
+  "runners": [],
+  "currency": "USD"
+}

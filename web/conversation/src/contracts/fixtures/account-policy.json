@@ -1,0 +1,29 @@
+{
+  "policy": {
+    "schema": 1,
+    "policy_id": "pol_9f2c4a",
+    "source_revision": "3f8f74e0",
+    "source_digest": "sha256:6ac1f0b7d2",
+    "config_digest": "sha256:1d90ae44c7",
+    "profile": "native",
+    "requirements": {
+      "required_tags": ["detent:mac-mini-1"],
+      "runner_id": "",
+      "machine_id": ""
+    },
+    "gates": {
+      "kind": "pull_request",
+      "plan_enabled": false,
+      "plan_review": "",
+      "plan_stop_digest": "",
+      "auto_promote": false,
+      "automated_review": "required",
+      "required_checks": 2,
+      "validator": true,
+      "security_audit": false,
+      "merge_method": "squash"
+    }
+  },
+  "approved_by": "michael@threefold.solutions",
+  "approved_at": "2026-09-08T09:12:44Z"
+}

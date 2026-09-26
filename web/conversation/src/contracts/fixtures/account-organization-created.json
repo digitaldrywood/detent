@@ -1,0 +1,8 @@
+{
+  "organization": {
+    "id": "org_newco",
+    "name": "Newco",
+    "public_url": "https://newco.detent.cloud"
+  },
+  "next": "/auth/oidc/start"
+}

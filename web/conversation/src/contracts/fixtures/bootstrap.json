@@ -1,0 +1,38 @@
+{
+  "organization": {
+    "id": "org_4d1f",
+    "name": "Threefold Solutions"
+  },
+  "actor": {
+    "principal_id": "tok_7b21",
+    "subject": "usr_michael",
+    "email": "info@threefold.solutions",
+    "role": "owner"
+  },
+  "projects": [
+    {
+      "id": "proj_parable",
+      "name": "parable",
+      "can_write": true
+    },
+    {
+      "id": "proj_port_app",
+      "name": "port-app",
+      "can_write": true
+    },
+    {
+      "id": "proj_church_kit",
+      "name": "church-kit",
+      "can_write": false
+    }
+  ],
+  "csrf_token": "csrf_5f0c8ad1c2b34e7a",
+  "capabilities": {
+    "coordinator": true,
+    "attachments": false
+  },
+  "api_base": "/api/v2/organizations/org_4d1f",
+  "feature": {
+    "conversation": true
+  }
+}

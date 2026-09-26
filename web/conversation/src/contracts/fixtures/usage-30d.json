@@ -1,0 +1,673 @@
+{
+  "range": {
+    "from": "2026-08-12T00:00:00.000Z",
+    "to": "2026-09-11T00:00:00.000Z"
+  },
+  "total": {
+    "cost": 36.78,
+    "tokens": 71529194,
+    "sessions": 94
+  },
+  "providers": [
+    {
+      "id": "codex",
+      "label": "Codex",
+      "sessions": 60,
+      "cost": 14.61,
+      "share": 0.3973,
+      "tokens": 45326413
+    },
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "sessions": 35,
+      "cost": 22.17,
+      "share": 0.6027,
+      "tokens": 26202781
+    }
+  ],
+  "daily": [
+    {
+      "day": "2026-08-12",
+      "cost": 0.67,
+      "tokens": 1317577,
+      "by_provider": {
+        "codex": 0.28,
+        "claude": 0.39
+      }
+    },
+    {
+      "day": "2026-08-13",
+      "cost": 0.51,
+      "tokens": 938969,
+      "by_provider": {
+        "codex": 0.16,
+        "claude": 0.35
+      }
+    },
+    {
+      "day": "2026-08-14",
+      "cost": 1.21,
+      "tokens": 2199148,
+      "by_provider": {
+        "codex": 0.38,
+        "claude": 0.83
+      }
+    },
+    {
+      "day": "2026-08-15",
+      "cost": 0.33,
+      "tokens": 656032,
+      "by_provider": {
+        "codex": 0.14,
+        "claude": 0.19
+      }
+    },
+    {
+      "day": "2026-08-16",
+      "cost": 0.41,
+      "tokens": 764540,
+      "by_provider": {
+        "codex": 0.17,
+        "claude": 0.24
+      }
+    },
+    {
+      "day": "2026-08-17",
+      "cost": 1.13,
+      "tokens": 2193983,
+      "by_provider": {
+        "codex": 0.49,
+        "claude": 0.63
+      }
+    },
+    {
+      "day": "2026-08-18",
+      "cost": 1.36,
+      "tokens": 2523003,
+      "by_provider": {
+        "codex": 0.5,
+        "claude": 0.86
+      }
+    },
+    {
+      "day": "2026-08-19",
+      "cost": 0.68,
+      "tokens": 1373434,
+      "by_provider": {
+        "codex": 0.32,
+        "claude": 0.35
+      }
+    },
+    {
+      "day": "2026-08-20",
+      "cost": 1.53,
+      "tokens": 3124207,
+      "by_provider": {
+        "codex": 0.76,
+        "claude": 0.77
+      }
+    },
+    {
+      "day": "2026-08-21",
+      "cost": 1.57,
+      "tokens": 3083325,
+      "by_provider": {
+        "codex": 0.65,
+        "claude": 0.92
+      }
+    },
+    {
+      "day": "2026-08-22",
+      "cost": 0.27,
+      "tokens": 510064,
+      "by_provider": {
+        "codex": 0.11,
+        "claude": 0.16
+      }
+    },
+    {
+      "day": "2026-08-23",
+      "cost": 0.59,
+      "tokens": 1022653,
+      "by_provider": {
+        "codex": 0.19,
+        "claude": 0.4
+      }
+    },
+    {
+      "day": "2026-08-24",
+      "cost": 0.95,
+      "tokens": 1925633,
+      "by_provider": {
+        "codex": 0.45,
+        "claude": 0.49
+      }
+    },
+    {
+      "day": "2026-08-25",
+      "cost": 1.32,
+      "tokens": 2818247,
+      "by_provider": {
+        "codex": 0.62,
+        "claude": 0.7
+      }
+    },
+    {
+      "day": "2026-08-26",
+      "cost": 1.82,
+      "tokens": 3875101,
+      "by_provider": {
+        "codex": 0.87,
+        "claude": 0.95
+      }
+    },
+    {
+      "day": "2026-08-27",
+      "cost": 1.99,
+      "tokens": 3812797,
+      "by_provider": {
+        "codex": 0.8,
+        "claude": 1.19
+      }
+    },
+    {
+      "day": "2026-08-28",
+      "cost": 1.78,
+      "tokens": 3290080,
+      "by_provider": {
+        "codex": 0.67,
+        "claude": 1.11
+      }
+    },
+    {
+      "day": "2026-08-29",
+      "cost": 0.6,
+      "tokens": 1223552,
+      "by_provider": {
+        "codex": 0.27,
+        "claude": 0.33
+      }
+    },
+    {
+      "day": "2026-08-30",
+      "cost": 0.64,
+      "tokens": 1272007,
+      "by_provider": {
+        "codex": 0.26,
+        "claude": 0.38
+      }
+    },
+    {
+      "day": "2026-08-31",
+      "cost": 2.13,
+      "tokens": 4506907,
+      "by_provider": {
+        "codex": 0.97,
+        "claude": 1.17
+      }
+    },
+    {
+      "day": "2026-09-01",
+      "cost": 1.41,
+      "tokens": 2519980,
+      "by_provider": {
+        "codex": 0.44,
+        "claude": 0.97
+      }
+    },
+    {
+      "day": "2026-09-02",
+      "cost": 2.24,
+      "tokens": 4473769,
+      "by_provider": {
+        "codex": 0.9,
+        "claude": 1.33
+      }
+    },
+    {
+      "day": "2026-09-03",
+      "cost": 1.35,
+      "tokens": 2316099,
+      "by_provider": {
+        "codex": 0.36,
+        "claude": 0.99
+      }
+    },
+    {
+      "day": "2026-09-04",
+      "cost": 1.02,
+      "tokens": 2007015,
+      "by_provider": {
+        "codex": 0.34,
+        "claude": 0.68
+      }
+    },
+    {
+      "day": "2026-09-05",
+      "cost": 0.61,
+      "tokens": 1144719,
+      "by_provider": {
+        "codex": 0.21,
+        "claude": 0.4
+      }
+    },
+    {
+      "day": "2026-09-06",
+      "cost": 0.84,
+      "tokens": 1560935,
+      "by_provider": {
+        "codex": 0.35,
+        "claude": 0.49
+      }
+    },
+    {
+      "day": "2026-09-07",
+      "cost": 2.34,
+      "tokens": 4439102,
+      "by_provider": {
+        "codex": 0.82,
+        "claude": 1.51
+      }
+    },
+    {
+      "day": "2026-09-08",
+      "cost": 1.83,
+      "tokens": 3415508,
+      "by_provider": {
+        "codex": 0.68,
+        "claude": 1.15
+      }
+    },
+    {
+      "day": "2026-09-09",
+      "cost": 1.96,
+      "tokens": 3612688,
+      "by_provider": {
+        "codex": 0.65,
+        "claude": 1.31
+      }
+    },
+    {
+      "day": "2026-09-10",
+      "cost": 1.7,
+      "tokens": 3608119,
+      "by_provider": {
+        "codex": 0.8,
+        "claude": 0.89
+      }
+    }
+  ],
+  "totals": {
+    "processed": 71529194,
+    "cached_input": 66828542,
+    "uncached_input": 3058255,
+    "output": 1642396,
+    "cache_savings": 112.67
+  },
+  "breakdown": {
+    "by_model": [
+      {
+        "model": "claude-opus-5",
+        "provider": "claude",
+        "cost": 13.45,
+        "share": 0.3656,
+        "tokens": 10715897
+      },
+      {
+        "model": "gpt-6-astra",
+        "provider": "codex",
+        "cost": 12.35,
+        "share": 0.3359,
+        "tokens": 30899611
+      },
+      {
+        "model": "claude-fable-5-1",
+        "provider": "claude",
+        "cost": 7.25,
+        "share": 0.197,
+        "tokens": 9624054
+      },
+      {
+        "model": "gpt-5.6-sol",
+        "provider": "codex",
+        "cost": 1.89,
+        "share": 0.0515,
+        "tokens": 9863710
+      },
+      {
+        "model": "claude-sonnet-5",
+        "provider": "claude",
+        "cost": 1.47,
+        "share": 0.04,
+        "tokens": 5862829
+      },
+      {
+        "model": "gpt-5.6-terra",
+        "provider": "codex",
+        "cost": 0.36,
+        "share": 0.0099,
+        "tokens": 4563092
+      }
+    ],
+    "by_day": [
+      {
+        "day": "2026-08-12",
+        "cost": 0.67,
+        "tokens": 1317577,
+        "by_provider": {
+          "codex": 0.28,
+          "claude": 0.39
+        }
+      },
+      {
+        "day": "2026-08-13",
+        "cost": 0.51,
+        "tokens": 938969,
+        "by_provider": {
+          "codex": 0.16,
+          "claude": 0.35
+        }
+      },
+      {
+        "day": "2026-08-14",
+        "cost": 1.21,
+        "tokens": 2199148,
+        "by_provider": {
+          "codex": 0.38,
+          "claude": 0.83
+        }
+      },
+      {
+        "day": "2026-08-15",
+        "cost": 0.33,
+        "tokens": 656032,
+        "by_provider": {
+          "codex": 0.14,
+          "claude": 0.19
+        }
+      },
+      {
+        "day": "2026-08-16",
+        "cost": 0.41,
+        "tokens": 764540,
+        "by_provider": {
+          "codex": 0.17,
+          "claude": 0.24
+        }
+      },
+      {
+        "day": "2026-08-17",
+        "cost": 1.13,
+        "tokens": 2193983,
+        "by_provider": {
+          "codex": 0.49,
+          "claude": 0.63
+        }
+      },
+      {
+        "day": "2026-08-18",
+        "cost": 1.36,
+        "tokens": 2523003,
+        "by_provider": {
+          "codex": 0.5,
+          "claude": 0.86
+        }
+      },
+      {
+        "day": "2026-08-19",
+        "cost": 0.68,
+        "tokens": 1373434,
+        "by_provider": {
+          "codex": 0.32,
+          "claude": 0.35
+        }
+      },
+      {
+        "day": "2026-08-20",
+        "cost": 1.53,
+        "tokens": 3124207,
+        "by_provider": {
+          "codex": 0.76,
+          "claude": 0.77
+        }
+      },
+      {
+        "day": "2026-08-21",
+        "cost": 1.57,
+        "tokens": 3083325,
+        "by_provider": {
+          "codex": 0.65,
+          "claude": 0.92
+        }
+      },
+      {
+        "day": "2026-08-22",
+        "cost": 0.27,
+        "tokens": 510064,
+        "by_provider": {
+          "codex": 0.11,
+          "claude": 0.16
+        }
+      },
+      {
+        "day": "2026-08-23",
+        "cost": 0.59,
+        "tokens": 1022653,
+        "by_provider": {
+          "codex": 0.19,
+          "claude": 0.4
+        }
+      },
+      {
+        "day": "2026-08-24",
+        "cost": 0.95,
+        "tokens": 1925633,
+        "by_provider": {
+          "codex": 0.45,
+          "claude": 0.49
+        }
+      },
+      {
+        "day": "2026-08-25",
+        "cost": 1.32,
+        "tokens": 2818247,
+        "by_provider": {
+          "codex": 0.62,
+          "claude": 0.7
+        }
+      },
+      {
+        "day": "2026-08-26",
+        "cost": 1.82,
+        "tokens": 3875101,
+        "by_provider": {
+          "codex": 0.87,
+          "claude": 0.95
+        }
+      },
+      {
+        "day": "2026-08-27",
+        "cost": 1.99,
+        "tokens": 3812797,
+        "by_provider": {
+          "codex": 0.8,
+          "claude": 1.19
+        }
+      },
+      {
+        "day": "2026-08-28",
+        "cost": 1.78,
+        "tokens": 3290080,
+        "by_provider": {
+          "codex": 0.67,
+          "claude": 1.11
+        }
+      },
+      {
+        "day": "2026-08-29",
+        "cost": 0.6,
+        "tokens": 1223552,
+        "by_provider": {
+          "codex": 0.27,
+          "claude": 0.33
+        }
+      },
+      {
+        "day": "2026-08-30",
+        "cost": 0.64,
+        "tokens": 1272007,
+        "by_provider": {
+          "codex": 0.26,
+          "claude": 0.38
+        }
+      },
+      {
+        "day": "2026-08-31",
+        "cost": 2.13,
+        "tokens": 4506907,
+        "by_provider": {
+          "codex": 0.97,
+          "claude": 1.17
+        }
+      },
+      {
+        "day": "2026-09-01",
+        "cost": 1.41,
+        "tokens": 2519980,
+        "by_provider": {
+          "codex": 0.44,
+          "claude": 0.97
+        }
+      },
+      {
+        "day": "2026-09-02",
+        "cost": 2.24,
+        "tokens": 4473769,
+        "by_provider": {
+          "codex": 0.9,
+          "claude": 1.33
+        }
+      },
+      {
+        "day": "2026-09-03",
+        "cost": 1.35,
+        "tokens": 2316099,
+        "by_provider": {
+          "codex": 0.36,
+          "claude": 0.99
+        }
+      },
+      {
+        "day": "2026-09-04",
+        "cost": 1.02,
+        "tokens": 2007015,
+        "by_provider": {
+          "codex": 0.34,
+          "claude": 0.68
+        }
+      },
+      {
+        "day": "2026-09-05",
+        "cost": 0.61,
+        "tokens": 1144719,
+        "by_provider": {
+          "codex": 0.21,
+          "claude": 0.4
+        }
+      },
+      {
+        "day": "2026-09-06",
+        "cost": 0.84,
+        "tokens": 1560935,
+        "by_provider": {
+          "codex": 0.35,
+          "claude": 0.49
+        }
+      },
+      {
+        "day": "2026-09-07",
+        "cost": 2.34,
+        "tokens": 4439102,
+        "by_provider": {
+          "codex": 0.82,
+          "claude": 1.51
+        }
+      },
+      {
+        "day": "2026-09-08",
+        "cost": 1.83,
+        "tokens": 3415508,
+        "by_provider": {
+          "codex": 0.68,
+          "claude": 1.15
+        }
+      },
+      {
+        "day": "2026-09-09",
+        "cost": 1.96,
+        "tokens": 3612688,
+        "by_provider": {
+          "codex": 0.65,
+          "claude": 1.31
+        }
+      },
+      {
+        "day": "2026-09-10",
+        "cost": 1.7,
+        "tokens": 3608119,
+        "by_provider": {
+          "codex": 0.8,
+          "claude": 0.89
+        }
+      }
+    ]
+  },
+  "limits": {
+    "members": {
+      "used": 3,
+      "limit": 10
+    },
+    "projects": {
+      "used": 3,
+      "limit": 10
+    },
+    "connected_runners": {
+      "used": 1,
+      "limit": 10
+    },
+    "concurrent_work": {
+      "used": 1,
+      "limit": 5
+    },
+    "api_mutations": {
+      "used": 11840,
+      "limit": 10000
+    },
+    "ingested_events": {
+      "used": 2044,
+      "limit": 10000
+    }
+  },
+  "runners": [
+    {
+      "id": "rnr_mock",
+      "display_name": "Mock MacBook Pro",
+      "sessions": 68,
+      "tokens": 51501019,
+      "cost": 26.48,
+      "busy_seconds": 578534,
+      "capacity_used": 0.45
+    },
+    {
+      "id": "rnr_mock_mini",
+      "display_name": "mock-mini-1",
+      "sessions": 26,
+      "tokens": 20028174,
+      "cost": 10.3,
+      "busy_seconds": 224986,
+      "capacity_used": 0.17
+    }
+  ],
+  "currency": "USD"
+}

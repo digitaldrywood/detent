@@ -1,0 +1,76 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "jsx": "react-jsx",
+    "types": ["node", "vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "~/*": ["src/*"],
+      "@t3tools/contracts": ["src/contracts/index.ts"],
+      "@t3tools/contracts/settings": ["src/app/adapters/settings.ts"],
+      "@t3tools/shared/relayTracing": ["src/runtime/support/relayTracing.ts"],
+      "@t3tools/shared/usageLimits": ["src/app/adapters/usageLimits.ts"],
+      "@t3tools/client-runtime/state/threads": ["src/state/threads.ts"],
+      "@t3tools/shared/projectFavicon": ["src/runtime/support/projectFavicon.ts"],
+      "@t3tools/shared/favicon": ["src/runtime/support/favicon.ts"],
+      "@t3tools/shared/terminalLabels": ["src/app/adapters/terminalLabels.ts"],
+      "@t3tools/client-runtime/state/thread-settled": ["src/runtime/state/threadSettled.ts"],
+      "@t3tools/client-runtime/state/thread-sort": ["src/runtime/state/threadSort.ts"],
+      "@t3tools/client-runtime/state/provider-instance-display": [
+        "src/runtime/state/providerInstanceDisplay.ts"
+      ],
+      "@t3tools/client-runtime/state/models": ["src/app/adapters/models.ts"],
+      "@t3tools/client-runtime/state/projects": ["src/app/adapters/projects.ts"],
+      "@t3tools/client-runtime/state/pull-requests": ["src/app/adapters/pullRequestVcs.ts"],
+      "@t3tools/client-runtime/state/project-grouping": ["src/app/adapters/projectGrouping.ts"],
+      "@t3tools/shared/sourceControl": ["src/runtime/support/sourceControl.ts"],
+      "@t3tools/client-runtime/environment": ["src/environment/scoped.ts"],
+      "@t3tools/client-runtime/state/shell": ["src/app/adapters/shell.ts"],
+      "@t3tools/client-runtime/state/subagentRuntime": ["src/app/adapters/subagentRuntime.ts"],
+      "@t3tools/client-runtime/state/runtime": ["src/runtime/state/runtime.ts"],
+      "@t3tools/client-runtime/state/filesystem": ["src/runtime/state/filesystem.ts"],
+      "@t3tools/client-runtime/codex-artifact-templates": ["src/runtime/codexArtifactTemplates.ts"],
+      "@t3tools/client-runtime/codex-markdown-directives": [
+        "src/runtime/codexMarkdownDirectives.ts"
+      ],
+      "@t3tools/client-runtime/markdown-images": ["src/runtime/markdownImages.ts"],
+      "@t3tools/client-runtime/markdown-links": ["src/runtime/markdownLinks.ts"],
+      "@t3tools/client-runtime/media-reference": ["src/runtime/mediaReference.ts"],
+      "@t3tools/client-runtime/media-actions": ["src/runtime/mediaActions.ts"],
+      "@t3tools/client-runtime/media-source": ["src/runtime/mediaSource.ts"],
+      "@t3tools/client-runtime/providerSkills": ["src/runtime/providerSkills.ts"],
+      "@t3tools/client-runtime/state/assets": ["src/state/assets.ts"],
+      "@t3tools/client-runtime/work-log/command-label": ["src/runtime/workLogCommandLabel.ts"],
+      "@t3tools/client-runtime/work-log/presentation": ["src/runtime/workLogPresentation.ts"],
+      "@t3tools/client-runtime/work-log/tool-presentation": [
+        "src/runtime/workLogToolPresentation.ts"
+      ],
+      "@t3tools/client-runtime/work-log/scroll-anchor": ["src/app/lib/scrollAnchor.ts"],
+      "@t3tools/shared/assistantCitations": ["src/runtime/support/assistantCitations.ts"],
+      "@t3tools/shared/chatList": ["src/runtime/support/chatList.ts"],
+      "@t3tools/shared/filePreview": ["src/runtime/support/filePreview.ts"],
+      "@t3tools/shared/hostClassification": ["src/runtime/support/hostClassification.ts"],
+      "@t3tools/shared/orchestrationTiming": ["src/runtime/support/orchestrationTiming.ts"],
+      "@t3tools/shared/path": ["src/runtime/support/path.ts"],
+      "@t3tools/shared/video": ["src/runtime/support/video.ts"],
+      "rehype-raw": ["src/app/adapters/rehypeRawDisabled.ts"],
+      "@pierre/diffs/utils/parsePatchFiles": [
+        "node_modules/@pierre/diffs/dist/utils/parsePatchFiles.d.ts"
+      ],
+      "@pierre/diffs/types": ["node_modules/@pierre/diffs/dist/types.d.ts"]
+    }
+  },
+  "include": ["src", "tests", "dev", "vite.config.ts"]
+}

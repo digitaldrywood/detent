@@ -19,6 +19,7 @@ TAILWIND_INPUT ?= static/css/input.css
 TAILWIND_OUTPUT ?= static/css/output.css
 SQLC_VERSION := v1.31.1
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+APP_DIR ?= web/conversation
 SQLC_CONFIG ?= sqlc/sqlc.yaml
 MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
@@ -56,7 +57,7 @@ GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 CHECK_LOCK_WAIT ?= 15m
 CHECK_LOCK_MAX_WAIT ?= 4h
 
-.PHONY: dev generate check-migrations check-generated css css-watch build test test-race test-race-hub test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-race test-race-hub test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -75,6 +76,7 @@ generate:
 	fi
 	@$(MAKE) sqlc
 	@$(MAKE) css
+	@$(MAKE) app
 
 check-migrations:
 	go run ./tools/migrationcheck
@@ -90,6 +92,55 @@ css:
 		node_modules/.bin/tailwindcss -i "$(TAILWIND_INPUT)" -o "$(TAILWIND_OUTPUT)" --minify; \
 	else \
 		echo "No Tailwind input at $(TAILWIND_INPUT); skipping CSS build."; \
+	fi
+
+app:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run build); \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping app build."; \
+	fi
+
+app-dev:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run dev); \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping app dev server."; \
+	fi
+
+# The client gate: types, unit tests, and a bundle that matches the committed
+# one. `static/app/conversation` is committed so `go build` never needs Node,
+# so a client change that was not rebuilt is drift the branch must not carry.
+# The build is deterministic (fixed output names, no hashes, no timestamps),
+# which is what makes the diff check meaningful.
+check-app:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run && npm run build); \
+		git diff --exit-code -- static/app/conversation || { \
+			echo "static/app/conversation is out of date; run make app and commit the result."; \
+			exit 1; \
+		}; \
+		if [ -n "$$(git ls-files --others --exclude-standard -- static/app/conversation)" ]; then \
+			echo "static/app/conversation has untracked build output; commit or remove it."; \
+			exit 1; \
+		fi; \
+		grep -q "MIT" static/app/conversation/app.js || { \
+			echo "static/app/conversation/app.js is missing the MIT attribution banner."; \
+			exit 1; \
+		}; \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping client checks."; \
+	fi
+
+app-test:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run typecheck && npm test); \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping app tests."; \
 	fi
 
 css-watch:
@@ -233,6 +284,7 @@ setup: $(GOLANGCI_LINT)
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	go install github.com/pressly/goose/v3/cmd/goose@latest
 	@if [ -f package.json ]; then npm install; fi
+	@if [ -f "$(APP_DIR)/package.json" ]; then (cd "$(APP_DIR)" && npm ci); fi
 
 clean:
 	rm -rf tmp
@@ -240,9 +292,13 @@ clean:
 help:
 	@echo "Available targets:"
 	@echo "  dev          Run Air with dev logging and combined log rotation"
-	@echo "  generate     Run go generate, templ, sqlc, and Tailwind"
+	@echo "  generate     Run go generate, templ, sqlc, Tailwind, and the conversation client"
 	@echo "  css          Build Tailwind CSS"
 	@echo "  css-watch    Watch and rebuild Tailwind CSS"
+	@echo "  app          Build the conversation client into static/app/conversation"
+	@echo "  app-dev      Run the conversation client dev server"
+	@echo "  app-test     Typecheck and test the conversation client"
+	@echo "  check-app    Client typecheck, tests, bundle drift and attribution gate"
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"

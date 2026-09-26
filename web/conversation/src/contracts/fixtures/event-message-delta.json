@@ -1,0 +1,8 @@
+{
+  "type": "message.delta",
+  "data": {
+    "message_id": "msg_6a20f1c5",
+    "seq": 3,
+    "text": " so the lease can lapse."
+  }
+}

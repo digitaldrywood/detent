@@ -1,0 +1,100 @@
+{
+  "latest_run": "succeeded",
+  "progress": {
+    "revision": "3",
+    "repository": "existing",
+    "doctor": true,
+    "provider": false,
+    "artifacts": "",
+    "updated_at": "2026-09-10T12:00:00Z"
+  },
+  "policy": {
+    "policy": {
+      "schema": 1,
+      "policy_id": "pol_9f2c4a",
+      "source_revision": "3f8f74e0",
+      "source_digest": "sha256:6ac1f0b7d2",
+      "config_digest": "sha256:1d90ae44c7",
+      "profile": "native",
+      "requirements": { "required_tags": ["detent:mac-mini-1"] },
+      "gates": {
+        "kind": "pull_request",
+        "plan_enabled": false,
+        "plan_review": "",
+        "plan_stop_digest": "",
+        "auto_promote": false,
+        "automated_review": "required",
+        "required_checks": 2,
+        "validator": true,
+        "security_audit": false,
+        "merge_method": "squash"
+      }
+    },
+    "approved_by": "michael@threefold.solutions",
+    "approved_at": "2026-09-08T09:12:44Z"
+  },
+  "runners": [
+    {
+      "runner": {
+        "runner_id": "rnr_macbook",
+        "machine_id": "mac_9df1",
+        "display_name": "Michael's MacBook Pro",
+        "tags": ["detent:macbook"],
+        "state": "enabled",
+        "capacity_limit": 2,
+        "project_ids": ["proj_parable"],
+        "revision": 4,
+        "hostname": "michaels-macbook-pro.local",
+        "health": "healthy",
+        "os": "darwin",
+        "architecture": "arm64",
+        "last_heartbeat_at": "2026-09-10T12:04:31Z"
+      },
+      "exclusions": []
+    },
+    {
+      "runner": {
+        "runner_id": "rnr_macmini",
+        "machine_id": "mac_2b7e",
+        "display_name": "mac-mini-1",
+        "tags": ["detent:mac-mini-1"],
+        "state": "paused",
+        "capacity_limit": 2,
+        "project_ids": ["proj_parable"],
+        "revision": 2,
+        "hostname": "mac-mini-1.local",
+        "health": "stale",
+        "os": "darwin",
+        "architecture": "arm64",
+        "last_heartbeat_at": "2026-09-10T10:02:00Z"
+      },
+      "exclusions": [
+        { "code": "runner_draining", "message": "Runner is paused and takes no new work" }
+      ]
+    }
+  ],
+  "artifact_services": [],
+  "steps": [
+    {
+      "name": "Repository configuration",
+      "state": "ready",
+      "detail": "Inspect detent.yaml and WORKFLOW.md on the customer host, then explicitly approve the resolved policy descriptor."
+    },
+    {
+      "name": "Local validation",
+      "state": "action_required",
+      "detail": "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local."
+    },
+    {
+      "name": "Execution runner",
+      "state": "ready",
+      "detail": "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity."
+    },
+    {
+      "name": "Artifact history",
+      "state": "action_required",
+      "detail": "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access."
+    }
+  ],
+  "ready": false
+}

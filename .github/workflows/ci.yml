@@ -97,6 +97,15 @@ jobs:
       - name: Verify committed generated sources
         run: make check-generated
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/conversation/package-lock.json
+
+      - name: Verify the Cloud client and its committed bundle
+        run: make check-app
+
       - name: Check integrated migration versions
         run: make check-migrations
 

@@ -1,0 +1,26 @@
+{
+  "messages": [
+    {
+      "id": "msg_6a20f1b9",
+      "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+      "seq": 1,
+      "role": "user",
+      "kind": "text",
+      "text": "Why does checkout lock renewal fail after a handoff?",
+      "data": {},
+      "delivery": "completed",
+      "attempt_id": null,
+      "turn_id": null,
+      "provider_item_id": null,
+      "actor": {
+        "kind": "human",
+        "principal_id": "tok_7b21"
+      },
+      "command_key": "cmd_01J8Z0V6C3M1",
+      "references": [],
+      "created_at": "2026-09-09T09:38:04Z",
+      "updated_at": "2026-09-09T09:38:06Z"
+    }
+  ],
+  "next_cursor": null
+}

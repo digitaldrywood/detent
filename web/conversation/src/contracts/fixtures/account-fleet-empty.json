@@ -1,0 +1,22 @@
+{
+  "runners": [],
+  "usage": {
+    "window_ends_at": "2026-09-10T13:00:00Z",
+    "allowances": {
+      "members": {
+        "used": 1,
+        "limit": 10
+      },
+      "projects": {
+        "used": 0,
+        "limit": 10
+      },
+      "connected_runners": {
+        "used": 0,
+        "limit": 10
+      }
+    }
+  },
+  "spend": null,
+  "current": "v0.9.1"
+}
