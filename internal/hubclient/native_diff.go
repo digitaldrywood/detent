@@ -25,9 +25,10 @@ func nativeAttemptDiffPath(attemptID string) (string, error) {
 // PostAttemptDiff stores one generation of an attempt's diff.
 //
 // A diff whose patches exceed the hub's whole-diff limit is refused with
-// diff_too_large; the method answers that by re-posting the same file list
-// without patches, which is what 18.5 says the producer does, so the file list
-// and its counts survive a change too large to store in full.
+// diff_too_large, and a body the transport refuses first answers
+// payload_too_large; the method answers either by re-posting the same file
+// list without patches, which is what 18.5 says the producer does, so the file
+// list and its counts survive a change too large to store in full.
 func (c *NativeClient) PostAttemptDiff(ctx context.Context, attemptID string, request tracker.AttemptDiffRequest) (tracker.AttemptDiffReceipt, error) {
 	var receipt tracker.AttemptDiffReceipt
 	path, err := nativeAttemptDiffPath(attemptID)
@@ -44,11 +45,12 @@ func (c *NativeClient) PostAttemptDiff(ctx context.Context, attemptID string, re
 	return receipt, err
 }
 
-// attemptDiffTooLarge reports whether err is the hub's diff_too_large refusal.
+// attemptDiffTooLarge reports whether err is the hub refusing the diff for its
+// size: the contract's diff_too_large or the transport's payload_too_large.
 func attemptDiffTooLarge(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr == nil {
 		return false
 	}
-	return apiErr.Code == "diff_too_large"
+	return apiErr.Code == "diff_too_large" || apiErr.Code == "payload_too_large"
 }

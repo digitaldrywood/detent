@@ -131,9 +131,12 @@ func readNativeChangeVersion(ctx context.Context, query nativeQueryer, request t
 }
 
 // readNativeChangeRevision reports the highest work item revision a succeeded
-// attempt recorded a change for: a stored attempt diff (section 18.5, posted
-// before the run event that references it, so the final diff lands before
-// run.finished) or a change version the attempt published.
+// attempt recorded a change for: a non-empty stored attempt diff at the
+// attempt's final sequence (section 18.5, posted before the run event that
+// references it, so the final diff lands before run.finished) or a change
+// version the attempt published. An empty diff is a clean worktree, and an
+// earlier checkpoint's diff is not what the attempt finished with when the
+// final post failed, so neither is credited.
 //
 // The revision is the attempt's own recorded work_item_revision, which is the
 // number section 9.2.1's claim clause already compares, so the two brakes
@@ -143,7 +146,8 @@ func readNativeChangeRevision(ctx context.Context, query nativeQueryer, scope na
 	var revision tracker.Revision
 	err := query.QueryRowContext(ctx, `SELECT COALESCE(MAX(a.work_item_revision), 0) FROM native_attempts a
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.status = 'succeeded'
-  AND (EXISTS (SELECT 1 FROM attempt_diffs d WHERE d.attempt_id = a.id)
+  AND (EXISTS (SELECT 1 FROM attempt_diffs d
+      WHERE d.attempt_id = a.id AND d.source = 'attempt' AND d.seq = a.sequence AND d.file_count > 0)
     OR EXISTS (SELECT 1 FROM change_versions v
       JOIN change_requests c ON c.id = v.change_id
       JOIN change_issue_links l ON l.change_id = c.id

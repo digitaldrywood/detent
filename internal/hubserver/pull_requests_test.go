@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,8 +60,14 @@ reviews_summary_json = '{"decision":"approved","approvals":1}'`,
 // publishExternal publishes a change version that names the pull request.
 func (f *pullRequestFixture) publishExternal(t *testing.T, key string) tracker.ChangeVersion {
 	t.Helper()
+	return f.publishReference(t, key, tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL})
+}
+
+// publishReference publishes a change version that names reference.
+func (f *pullRequestFixture) publishReference(t *testing.T, key string, reference tracker.ChangeExternalReference) tracker.ChangeVersion {
+	t.Helper()
 	input := changeTestInput()
-	input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL}
+	input.External = &reference
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.changeFixture.path+"/versions", f.token,
 		tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: key}, ChangeVersionInput: input})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -210,6 +217,63 @@ func TestPullRequestRefreshLimit(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?refresh=1", f.token, nil), http.StatusOK)
 	requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?refresh=2", f.token, nil),
 		http.StatusUnprocessableEntity, "invalid_request")
+}
+
+// A change can name a pull request the connector projection has not seen yet.
+// Its number comes from the change's own reference, so ?refresh=1 queues
+// hydration for exactly that pull request instead of skipping it.
+func TestPullRequestRefreshHydratesAnUnprojectedPullRequest(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		reference  tracker.ChangeExternalReference
+		wantNumber int
+	}{
+		{name: "numbered reference", reference: tracker.ChangeExternalReference{Provider: "github", ID: "42", URL: "https://github.com/example/repo/pull/42"}, wantNumber: 42},
+		{name: "second unprojected number", reference: tracker.ChangeExternalReference{Provider: "github", ID: "43", URL: "https://github.com/example/repo/pull/43"}, wantNumber: 43},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newPullRequestFixture(t, true)
+			f.publishReference(t, "external", test.reference)
+			views := f.list(t, "?refresh=1")
+			if len(views) != 1 || views[0].Number != test.wantNumber || views[0].Connector == nil {
+				t.Fatalf("views = %#v, want one connected row numbered %d", views, test.wantNumber)
+			}
+			var queued int
+			if err := f.service.database.db.QueryRowContext(t.Context(),
+				"SELECT count(*) FROM github_hydration_requests WHERE object_kind = 'pull_request' AND object_key = ? AND reason = 'client_refresh'",
+				strconv.Itoa(test.wantNumber)).Scan(&queued); err != nil {
+				t.Fatal(err)
+			}
+			if queued != 1 {
+				t.Fatalf("queued refreshes for #%d = %d, want 1", test.wantNumber, queued)
+			}
+		})
+	}
+}
+
+func TestExternalPullRequestNumber(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		reference tracker.ChangeExternalReference
+		want      int
+	}{
+		{name: "github number", reference: tracker.ChangeExternalReference{Provider: "github", ID: "42"}, want: 42},
+		{name: "padded provider and id", reference: tracker.ChangeExternalReference{Provider: " GitHub ", ID: " 7 "}, want: 7},
+		{name: "node id", reference: tracker.ChangeExternalReference{Provider: "github", ID: "PR_kwDO"}},
+		{name: "zero", reference: tracker.ChangeExternalReference{Provider: "github", ID: "0"}},
+		{name: "negative", reference: tracker.ChangeExternalReference{Provider: "github", ID: "-3"}},
+		{name: "other provider", reference: tracker.ChangeExternalReference{Provider: "gitlab", ID: "42"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := externalPullRequestNumber(test.reference); got != test.want {
+				t.Fatalf("externalPullRequestNumber(%#v) = %d, want %d", test.reference, got, test.want)
+			}
+		})
+	}
 }
 
 // The assembled view is served from memory for sixty seconds, so a client that

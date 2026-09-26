@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -25,6 +26,15 @@ type attemptDiffFixture struct {
 
 func newAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 	t.Helper()
+	fixture := newClaimedAttemptDiffFixture(t)
+	fixture.start(t)
+	return fixture
+}
+
+// newClaimedAttemptDiffFixture claims the issue and stops before run.started,
+// so a test can change the item between the claim and the start.
+func newClaimedAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
+	t.Helper()
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
 	f := newNativeFixture(t, service, "", "attempt-diff")
 	fixture := &attemptDiffFixture{nativeFixture: f}
@@ -42,14 +52,25 @@ func newAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 	decodeHubResponse(t, response, &fixture.lease)
 	fixture.attempt = newNativeID("attempt")
 	fixture.run = newNativeID("run")
+	return fixture
+}
+
+// start records run.started for the fixture's attempt.
+func (f *attemptDiffFixture) start(t *testing.T) {
+	t.Helper()
+	f.event(t, "run.started", 1, "")
+}
+
+// event appends one run event for the fixture's attempt.
+func (f *attemptDiffFixture) event(t *testing.T, kind string, sequence int64, outcome string) {
+	t.Helper()
 	event := tracker.NativeRunEvent{
-		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1,
-		Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
-			LeaseID: fixture.lease.ID, FencingToken: fixture.lease.FencingToken, RunID: fixture.run, AttemptID: fixture.attempt, PolicyID: fixture.policy},
+		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("event")}, Type: kind, SchemaVersion: 1,
+		Data: tracker.NativeRunData{Sequence: sequence, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
+			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: outcome},
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
-		f.base+"/work-items/"+string(fixture.issue.WorkItemID)+"/events", fixture.worker, event), http.StatusOK)
-	return fixture
+		f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 }
 
 func (f *attemptDiffFixture) producer() tracker.DiffProducer {
@@ -355,4 +376,38 @@ func TestAttemptDiffReadRule(t *testing.T) {
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "attempt-diff-other")
 	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/attempts/"+f.attempt+"/diff", other.token, nil)
 	requireNativeStatus(t, response, http.StatusNotFound)
+}
+
+// The diff route's body allowance must hold a diff at the contract's limit at
+// the worst case of JSON string escaping, or a diff the contract accepts is
+// refused by the transport instead. Each byte class the encoder escapes costs
+// at most six bytes, which is the factor the allowance is sized by.
+func TestAttemptDiffBodyAllowanceCoversEscaping(t *testing.T) {
+	t.Parallel()
+	const sample = 1 << 10
+	for _, test := range []struct {
+		name string
+		char string
+	}{
+		{name: "less than", char: "<"},
+		{name: "greater than", char: ">"},
+		{name: "ampersand", char: "&"},
+		{name: "escape", char: "\x1b"},
+		{name: "quote", char: "\""},
+		{name: "newline", char: "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			encoded, err := json.Marshal(strings.Repeat(test.char, sample))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if perByte := (len(encoded) - 2) / sample; perByte > 6 {
+				t.Fatalf("%q encodes to %d bytes per byte, above the allowance factor", test.char, perByte)
+			}
+		})
+	}
+	if want := int64(6*tracker.MaxDiffBytes + (1 << 20)); maxAttemptDiffRequestBytes != want {
+		t.Fatalf("allowance = %d, want %d", maxAttemptDiffRequestBytes, want)
+	}
 }

@@ -316,9 +316,12 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		// The change names a pull request the projection has not seen yet.
 		// The connector is reported, so the client shows the panel rather
 		// than the unavailable state, and the rest stays native.
+		// The number comes from the change's own external reference, so a
+		// forced refresh can queue hydration for exactly this pull request.
 		bound := *connector
 		view.Connector = &bound
 		view.URL = current.External.URL
+		view.Number = externalPullRequestNumber(*current.External)
 		return view, nil
 	}
 	bound := *connector
@@ -343,6 +346,19 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 	}
 	view.FetchedAt = fetched
 	return view, nil
+}
+
+// externalPullRequestNumber reads the pull request number a change's GitHub
+// external reference names, or zero when it names none.
+func externalPullRequestNumber(reference tracker.ChangeExternalReference) int {
+	if !strings.EqualFold(strings.TrimSpace(reference.Provider), "github") {
+		return 0
+	}
+	number, err := strconv.Atoi(strings.TrimSpace(reference.ID))
+	if err != nil || number <= 0 {
+		return 0
+	}
+	return number
 }
 
 // connectorPullRequestState normalizes GitHub's state onto 18.6's vocabulary.

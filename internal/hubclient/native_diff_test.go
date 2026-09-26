@@ -19,6 +19,8 @@ const testAttemptID = "attempt_00000000000000000000000000000001"
 type diffHub struct {
 	posts    []tracker.AttemptDiffRequest
 	statuses []int
+	// tooLargeCode is the code a 413 answers with; empty means diff_too_large.
+	tooLargeCode string
 }
 
 func newDiffClient(t *testing.T, hub *diffHub) *NativeClient {
@@ -47,6 +49,9 @@ func newDiffClient(t *testing.T, hub *diffHub) *NativeClient {
 		code := "stale_generation"
 		if status == http.StatusRequestEntityTooLarge {
 			code = "diff_too_large"
+			if hub.tooLargeCode != "" {
+				code = hub.tooLargeCode
+			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": "refused"})
 	}))
@@ -99,25 +104,31 @@ func TestPostAttemptDiffNormalizesBeforePosting(t *testing.T) {
 }
 
 // "A diff over 20 MB is rejected with diff_too_large and the runner posts the
-// file list without patches."
+// file list without patches." A body the transport refuses before the handler
+// reads it answers payload_too_large, and is retried the same way.
 func TestPostAttemptDiffRetriesWithoutPatchesWhenTooLarge(t *testing.T) {
 	t.Parallel()
-	hub := &diffHub{statuses: []int{http.StatusRequestEntityTooLarge, http.StatusAccepted}}
-	client := newDiffClient(t, hub)
-	if _, err := client.PostAttemptDiff(t.Context(), testAttemptID, diffRequest(
-		tracker.AttemptDiffFile{Path: "a.go", Status: tracker.DiffStatusModified, Additions: 7, Patch: "@@ big"},
-	)); err != nil {
-		t.Fatalf("PostAttemptDiff: %v", err)
-	}
-	if len(hub.posts) != 2 {
-		t.Fatalf("posts = %d, want 2", len(hub.posts))
-	}
-	if hub.posts[0].Files[0].Patch == "" {
-		t.Fatal("the first post carries the patches")
-	}
-	retried := hub.posts[1].Files[0]
-	if retried.Patch != "" || !retried.Truncated || retried.Additions != 7 {
-		t.Fatalf("retry = %#v", retried)
+	for _, code := range []string{"diff_too_large", "payload_too_large"} {
+		t.Run(code, func(t *testing.T) {
+			t.Parallel()
+			hub := &diffHub{statuses: []int{http.StatusRequestEntityTooLarge, http.StatusAccepted}, tooLargeCode: code}
+			client := newDiffClient(t, hub)
+			if _, err := client.PostAttemptDiff(t.Context(), testAttemptID, diffRequest(
+				tracker.AttemptDiffFile{Path: "a.go", Status: tracker.DiffStatusModified, Additions: 7, Patch: "@@ big"},
+			)); err != nil {
+				t.Fatalf("PostAttemptDiff: %v", err)
+			}
+			if len(hub.posts) != 2 {
+				t.Fatalf("posts = %d, want 2", len(hub.posts))
+			}
+			if hub.posts[0].Files[0].Patch == "" {
+				t.Fatal("the first post carries the patches")
+			}
+			retried := hub.posts[1].Files[0]
+			if retried.Patch != "" || !retried.Truncated || retried.Additions != 7 {
+				t.Fatalf("retry = %#v", retried)
+			}
+		})
 	}
 }
 

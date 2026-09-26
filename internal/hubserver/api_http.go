@@ -20,10 +20,12 @@ const maxAPIRequestBodyBytes = 1 << 20
 // maxAttemptDiffRequestBytes bounds the one endpoint whose body is legitimately
 // larger than every other: a stored attempt diff carries the patches
 // themselves, and decisions section 18.5 bounds those at tracker.MaxDiffBytes.
-// The allowance is that bound with room for the JSON framing and the escaping
-// a patch full of quotes and newlines costs, so a diff the contract accepts is
-// never refused by the transport instead.
-const maxAttemptDiffRequestBytes = 2*tracker.MaxDiffBytes + (1 << 20)
+// The allowance is that bound at the worst case of JSON string escaping plus
+// room for the framing, so a diff the contract accepts is never refused by the
+// transport instead. The factor is six because an encoder writes <, >, & and
+// every control byte as a six-byte \uXXXX sequence, and a patch of HTML or
+// generated code can be dense with them.
+const maxAttemptDiffRequestBytes = 6*tracker.MaxDiffBytes + (1 << 20)
 
 func (s *Service) registerRoutes(e *echo.Echo) {
 	if s.config.CredentialMaintenance {

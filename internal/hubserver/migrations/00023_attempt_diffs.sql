@@ -75,15 +75,20 @@ CREATE TABLE attempt_diff_files (
   PRIMARY KEY (diff_id, position)
 );
 
--- work_item_revision is the issues.revision an attempt ran against, captured
--- at run.started. The work item change surface reports the highest revision a
--- succeeded attempt recorded a change for, so a reader can tell a change that
--- covers the item as it stands from one that answered an older version. It
--- defaults to 0, which is below every real revision, so attempts recorded
--- before this migration never claim to cover anything.
+-- work_item_revision is the issues.revision a claim was granted against. The
+-- lease captures it in the claim transaction, before the runner hydrates the
+-- item, and the attempt copies it from its lease at run.started, so an edit
+-- that lands between the claim and the start is never credited to an attempt
+-- that did not see it. The work item change surface reports the highest
+-- revision a succeeded attempt recorded a change for, so a reader can tell a
+-- change that covers the item as it stands from one that answered an older
+-- version. Both default to 0, which is below every real revision, so leases
+-- and attempts recorded before this migration never claim to cover anything.
+ALTER TABLE leases ADD COLUMN work_item_revision INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE native_attempts ADD COLUMN work_item_revision INTEGER NOT NULL DEFAULT 0;
 
 -- +goose Down
 ALTER TABLE native_attempts DROP COLUMN work_item_revision;
+ALTER TABLE leases DROP COLUMN work_item_revision;
 DROP TABLE attempt_diff_files;
 DROP TABLE attempt_diffs;

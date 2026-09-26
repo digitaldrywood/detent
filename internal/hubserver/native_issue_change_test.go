@@ -226,3 +226,83 @@ func TestNativeIssueChangeIncluded(t *testing.T) {
 		})
 	}
 }
+
+// TestAttemptRecordsTheClaimedRevision pins the revision an attempt covers to
+// the one its lease was granted against. An edit between the claim and
+// run.started lands on an item the runner already hydrated, so crediting the
+// edited revision would report a change for a version nobody worked on.
+func TestAttemptRecordsTheClaimedRevision(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name            string
+		editBeforeStart bool
+	}{
+		{name: "unchanged item"},
+		{name: "edit between claim and start", editBeforeStart: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newClaimedAttemptDiffFixture(t)
+			claimed := f.issue.Revision
+			if test.editBeforeStart {
+				title := "Edited after the claim"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token,
+					tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("edit")}, ExpectedRevision: claimed, Title: &title}),
+					http.StatusOK)
+				if edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, ""); edited.Revision <= claimed {
+					t.Fatalf("edited revision = %d, want above the claimed %d", edited.Revision, claimed)
+				}
+			}
+			f.start(t)
+			var recorded tracker.Revision
+			if err := f.service.database.db.QueryRowContext(t.Context(),
+				"SELECT work_item_revision FROM native_attempts WHERE id = ?", f.attempt).Scan(&recorded); err != nil {
+				t.Fatal(err)
+			}
+			if recorded != claimed {
+				t.Fatalf("attempt revision = %d, want the claimed %d", recorded, claimed)
+			}
+		})
+	}
+}
+
+// TestWorkItemChangeSurfaceCreditsOnlyTheFinalDiff credits an attempt's
+// stored diff only when it is the diff the attempt finished with and it
+// changed something. A clean worktree's empty diff and an earlier checkpoint's
+// diff, left behind when the final post failed, cover nothing.
+func TestWorkItemChangeSurfaceCreditsOnlyTheFinalDiff(t *testing.T) {
+	t.Parallel()
+
+	changed := tracker.AttemptDiffFile{
+		Path: "main.go", Status: tracker.DiffStatusModified, Additions: 1, Deletions: 1,
+		Patch: "@@ -1 +1 @@\n-return \"Hello, \" + name\n+return \"Hello, \" + name + \"!\"\n",
+	}
+	for _, test := range []struct {
+		name    string
+		posts   []tracker.AttemptDiffRequest
+		covered bool
+	}{
+		{name: "non-empty diff at the final sequence", posts: []tracker.AttemptDiffRequest{{Generation: tracker.DiffGeneration{Seq: 2}, Files: []tracker.AttemptDiffFile{changed}}}, covered: true},
+		{name: "empty diff at the final sequence", posts: []tracker.AttemptDiffRequest{{Generation: tracker.DiffGeneration{Seq: 2}}}},
+		{name: "only an earlier checkpoint diff", posts: []tracker.AttemptDiffRequest{{Generation: tracker.DiffGeneration{Seq: 1}, Files: []tracker.AttemptDiffFile{changed}}}},
+		{name: "no diff"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newAttemptDiffFixture(t)
+			for _, post := range test.posts {
+				requireNativeStatus(t, f.post(t, f.request(post.Generation.Seq, post.Files...)), http.StatusAccepted)
+			}
+			f.event(t, "run.finished", 2, "succeeded")
+			issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
+			want := tracker.Revision(0)
+			if test.covered {
+				want = issue.Revision
+			}
+			if issue.Change.Revision != want {
+				t.Fatalf("change revision = %d, want %d", issue.Change.Revision, want)
+			}
+		})
+	}
+}

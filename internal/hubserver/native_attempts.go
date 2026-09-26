@@ -169,13 +169,14 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 		if conflicts != 0 {
 			return false, nativeExecutionConflict("Lease or run is already bound to another attempt or issue")
 		}
-		// The attempt records the item revision it was dispatched for, read
-		// inside this transaction, so an edit racing the start is either
-		// before this attempt or after it. The change review surface compares
-		// it back to tell whether a recorded change covers the item as it
-		// stands.
+		// The attempt records the item revision its lease was granted
+		// against, captured in the claim transaction before the runner
+		// hydrated the item. Reading the item's revision here instead would
+		// credit an edit made between the claim and the start to an attempt
+		// that never saw it. The change review surface compares it back to
+		// tell whether a recorded change covers the item as it stands.
 		var revision tracker.Revision
-		if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item).Scan(&revision); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT work_item_revision FROM leases WHERE lease_id = ?", data.LeaseID).Scan(&revision); err != nil {
 			return false, fmt.Errorf("read attempt work item revision: %w", err)
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision)
