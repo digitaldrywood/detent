@@ -154,7 +154,7 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 		if err != nil {
 			return err
 		}
-		request.Priority = &priority
+		request.Priority = tracker.SetPriority(&priority)
 	default:
 		return connector.ErrNotImplemented
 	}

@@ -98,6 +98,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST("/api/v2/organizations/:organization/projects", s.createNativeProject, admin)
 	e.POST("/api/v2/tokens/:id/grants", s.grantNativeToken, admin)
 	e.GET(nativeBase, s.getNativeProject, read)
+	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.POST(nativeBase+"/work-items", s.createNativeIssue, write)
 	e.GET(nativeBase+"/work-items/:item", s.getNativeIssue, read)
