@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -135,7 +136,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		environment := []string{config.WorkOS.APIKeyEnv + "=" + lookupEnv(config.WorkOS.APIKeyEnv)}
 		name := allocation.EntitlementAdminTokenEnv
 		if name != "" || allocation.EntitlementAdministrator != "" {
-			if !validEnvName(name) || name == config.WorkOS.APIKeyEnv || name == config.Assertion.SigningKeyEnv {
+			if !validEnvName(name) || slices.Contains([]string{config.WorkOS.APIKeyEnv, config.Assertion.SigningKeyEnv, "DETENT_HUB_ADMIN_TOKEN", "PATH", "HOME", "TMPDIR", "LANG", "TZ"}, name) {
 				return cloudentry.Config{}, errors.New("entitlement token environment name is invalid")
 			}
 			if len(lookupEnv(name)) < 32 || !entitlementActorValid(allocation.EntitlementAdministrator) {

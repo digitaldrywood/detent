@@ -153,6 +153,7 @@ func TestCloudAllocationPassesEntitlementAdministration(t *testing.T) {
 		{name: "missing administrator", body: base + "  entitlement_admin_token_env: DETENT_ENTITLEMENT_TOKEN\n", env: map[string]string{"DETENT_ENTITLEMENT_TOKEN": token}, wantError: true},
 		{name: "administrator without token environment", body: base + "  entitlement_administrator: pilot-operator\n", env: map[string]string{"DETENT_ENTITLEMENT_TOKEN": token}, wantError: true},
 		{name: "administrator with spaces", body: base + "  entitlement_administrator: pilot operator\n  entitlement_admin_token_env: DETENT_ENTITLEMENT_TOKEN\n", env: map[string]string{"DETENT_ENTITLEMENT_TOKEN": token}, wantError: true},
+		{name: "reuses tenant admin token", body: base + "  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: DETENT_HUB_ADMIN_TOKEN\n", env: map[string]string{"DETENT_HUB_ADMIN_TOKEN": token}, wantError: true},
 		{name: "reuses provider secret", body: base + "  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: WORKOS_API_KEY\n", env: map[string]string{"WORKOS_API_KEY": token}, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
