@@ -291,6 +291,14 @@ func TestHostedSharedEntryRevokesSessionsAndChecksProvider(t *testing.T) {
 	if response := f.serve(t, hostedSharedRequest{user: &owner, target: target}); response.Code == http.StatusOK {
 		t.Fatal("revoked shared authorization still reads tenant content")
 	}
+	early := hostedSharedRequest{user: &viewer, target: target}
+	earlyBinding := cloudassert.AuthorizationBinding("shared-user_viewer", "org_security", "session_viewer")
+	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/sessions/revoke", body: `{"bindings":["` + earlyBinding + `"]}`}); response.Code != http.StatusNoContent {
+		t.Fatalf("early revoke status = %d", response.Code)
+	}
+	if response := f.serve(t, early); response.Code == http.StatusOK {
+		t.Fatal("binding revoked before first use still reads tenant content")
+	}
 	f.provider.mu.Lock()
 	delete(f.provider.sessions, "session_viewer")
 	f.provider.mu.Unlock()
@@ -470,6 +478,10 @@ func TestMigrateHostedSharedOrigin(t *testing.T) {
 	moved.Hosted.PublicURL = "https://moved.example.test"
 	if _, err := MigrateHostedSharedOrigin(t.Context(), moved); !errors.Is(err, ErrHostedMigrationMismatch) {
 		t.Fatalf("same-generation move error = %v", err)
+	}
+	rebound := hostedSharedTestConfig(path, provider, key, 2)
+	if _, err := MigrateHostedSharedOrigin(t.Context(), rebound); !errors.Is(err, ErrHostedMigrationMismatch) {
+		t.Fatalf("shared rebind error = %v", err)
 	}
 	shared := openTestService(t, running)
 	var members, revoked int

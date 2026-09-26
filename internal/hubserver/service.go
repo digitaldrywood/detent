@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -221,8 +222,12 @@ func prepareUnixListener(ctx context.Context, path string) error {
 		return errors.New("hub Unix socket path exists and is not a socket")
 	}
 	dialer := net.Dialer{Timeout: time.Second}
-	if connection, err := dialer.DialContext(ctx, "unix", path); err == nil {
+	connection, err := dialer.DialContext(ctx, "unix", path)
+	if err == nil {
 		return errors.Join(errors.New("another process is serving the hub Unix socket"), connection.Close())
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		return errors.New("hub Unix socket may still be in use; remove it after confirming no Hub owns it")
 	}
 	return os.Remove(path)
 }

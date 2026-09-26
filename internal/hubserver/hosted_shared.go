@@ -184,7 +184,7 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 		if len(binding) != 64 {
 			return invalidAPIRequest(c, errors.New("invalid binding"))
 		}
-		if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL", now, binding); err != nil {
+		if _, err := s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,revoked_at) VALUES (?,'','{}',?,?,?) ON CONFLICT(token_hash) DO UPDATE SET revoked_at = COALESCE(revoked_at, excluded.revoked_at)", binding, now, now, now); err != nil {
 			return s.internalAPIError(c, "revocation_unavailable", "Sessions could not be revoked", err)
 		}
 	}

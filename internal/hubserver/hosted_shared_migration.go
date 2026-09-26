@@ -69,6 +69,9 @@ COALESCE((SELECT customer_id FROM hosted_billing_accounts WHERE organization_id 
 		result.AlreadyMigrated = true
 		return result, tx.Commit()
 	}
+	if result.FromDeployment != "origin" {
+		return HostedSharedMigration{}, fmt.Errorf("%w: the database is already bound to a different shared allocation", ErrHostedMigrationMismatch)
+	}
 	if result.Generation <= result.FromGeneration {
 		return HostedSharedMigration{}, fmt.Errorf("%w: the allocation generation must increase", ErrHostedMigrationMismatch)
 	}
