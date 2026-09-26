@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -148,9 +150,21 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		resultErr = errors.Join(resultErr, service.Close())
 	}()
 
-	listener, err := cfg.listen(ctx, "tcp", cfg.ListenAddress)
+	network, address := "tcp", cfg.ListenAddress
+	if path, ok := listenerUnixPath(cfg.ListenAddress); ok {
+		if err := prepareUnixListener(ctx, path); err != nil {
+			return err
+		}
+		network, address = "unix", path
+	}
+	listener, err := cfg.listen(ctx, network, address)
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
+	}
+	if network == "unix" {
+		if err := os.Chmod(address, 0o600); err != nil {
+			return errors.Join(fmt.Errorf("restrict hub socket: %w", err), listener.Close())
+		}
 	}
 	cfg.Logger.Info("hub serving", "address", listener.Addr().String())
 
@@ -183,10 +197,34 @@ func validateListenerSecurity(cfg Config) error {
 	if (certFile == "") != (keyFile == "") {
 		return errors.New("hub TLS certificate and key must be configured together")
 	}
-	if listenerAddressLoopback(cfg.ListenAddress) || certFile != "" || cfg.TrustedProxy {
+	if _, unix := listenerUnixPath(cfg.ListenAddress); unix || listenerAddressLoopback(cfg.ListenAddress) || certFile != "" || cfg.TrustedProxy {
 		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrInsecureListener, cfg.ListenAddress)
+}
+
+func listenerUnixPath(address string) (string, bool) {
+	path, ok := strings.CutPrefix(strings.TrimSpace(address), "unix:")
+	return path, ok && filepath.IsAbs(path) && filepath.Clean(path) == path
+}
+
+func prepareUnixListener(ctx context.Context, path string) error {
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("hub Unix socket directory must exist and be private to the service user (mode 0700)")
+	}
+	existing, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || existing.Mode()&os.ModeSocket == 0 {
+		return errors.New("hub Unix socket path exists and is not a socket")
+	}
+	dialer := net.Dialer{Timeout: time.Second}
+	if connection, err := dialer.DialContext(ctx, "unix", path); err == nil {
+		return errors.Join(errors.New("another process is serving the hub Unix socket"), connection.Close())
+	}
+	return os.Remove(path)
 }
 
 func listenerAddressLoopback(address string) bool {

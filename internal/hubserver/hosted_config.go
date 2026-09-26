@@ -28,6 +28,7 @@ type HostedConfig struct {
 	StaffEmails              []string
 	SupportActors            []string
 	Directory                []HostedDestination
+	SharedEntry              *HostedSharedEntry
 	Provider                 auth.HostedProvider
 	PlanID                   string
 	StorageQuotaBytes        int64
@@ -53,6 +54,12 @@ func (c *HostedConfig) validate() error {
 	if c.PlanID != "" && !hostedSafeID(c.PlanID) || c.StorageQuotaBytes < 0 || c.EventQuota < 0 {
 		return errors.New("hosted plan metadata is invalid")
 	}
+	if c.SharedEntry != nil && len(c.Directory) != 0 {
+		return errors.New("shared-entry tenants use the shared organization chooser instead of a directory")
+	}
+	if err := c.SharedEntry.validate(c.OrganizationID); err != nil {
+		return err
+	}
 	seen := make(map[string]bool)
 	for _, destination := range c.Directory {
 		if !hostedSafeID(destination.OrganizationID) || !hostedSafeID(destination.WorkOSOrganizationID) || !hostedPublicURL(destination.PublicURL) || seen[destination.OrganizationID] {
@@ -74,6 +81,13 @@ func (c *HostedConfig) validate() error {
 		}
 	}
 	return c.Billing.validate(c.Plans)
+}
+
+func (c *HostedConfig) deployment() (string, int64) {
+	if c.SharedEntry != nil {
+		return "shared", c.SharedEntry.Generation
+	}
+	return "origin", 0
 }
 
 func hostedPublicURL(value string) bool {

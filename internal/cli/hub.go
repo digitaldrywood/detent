@@ -58,6 +58,7 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	cmd.AddCommand(newHubPolicyCommand(lookupEnv))
 	cmd.AddCommand(newHubIssueCommand(lookupEnv))
 	cmd.AddCommand(newHubRecoveryCommands(lookupEnv)...)
+	cmd.AddCommand(newHubSharedMigrationCommand(lookupEnv))
 	return cmd
 }
 
@@ -137,7 +138,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 	cmd.Flags().StringVar(&databasePath, "database", "", "local filesystem path to the Hub SQLite database")
 	cmd.Flags().StringVar(&hostedConfigPath, "hosted-config", "", "hosted organization and WorkOS configuration file")
 	cmd.Flags().BoolVar(&githubDisabled, "github-disabled", false, "serve native collaboration without GitHub credentials or transport")
-	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address")
+	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address: host:port, or unix:/absolute/path in a private directory")
 	cmd.Flags().StringVar(&tlsCertificateFile, "tls-cert", "", "TLS certificate file")
 	cmd.Flags().StringVar(&tlsKeyFile, "tls-key", "", "TLS private key file")
 	cmd.Flags().BoolVar(&trustedProxy, "trusted-proxy", false, "declare that a trusted reverse proxy terminates TLS")

@@ -76,6 +76,57 @@ legacy deployment/migration input; the shared product uses registry allocations
 and scoped navigation, not cross-origin redirects. See [the RFC routing trust
 boundary](cloud-hub-rfc.md#shared-site-control-and-tenant-storage).
 
+### Shared-entry tenant configuration
+
+A dedicated tenant Hub behind the shared entry adds `shared_entry` to its hosted
+YAML. The tenant then accepts only requests carrying a signed entry assertion;
+it no longer serves its own login, callback, invitation, logout, support or
+directory routes, and it rejects every request without a valid assertion,
+including on loopback or its private Unix socket.
+
+```yaml
+organization_id: org_example_opaque_id
+workos_organization_id: org_workos_example
+public_url: https://hub.detent.build
+workos:
+  client_id: client_example
+  api_key_env: WORKOS_API_KEY
+shared_entry:
+  issuer: detent-cloud
+  public_keys:
+    - BASE64_ED25519_PUBLIC_KEY
+  allocation_generation: 1
+```
+
+Run the tenant on a private socket, for example
+`detent hub serve --hosted-config tenant.yaml --listen unix:/run/detent/tenants/org_example.sock`.
+The socket directory must be mode `0700` and owned by the service user; the Hub
+creates the socket with mode `0600` and refuses to replace a live socket.
+
+The assertion is an Ed25519 signature over the issuer, tenant audience
+(organization ID), allocation generation, principal kind, method, exact request
+path and query, request body digest, issue/expiry time (at most 30 seconds) and a
+one-use replay ID. Browser assertions also carry the provider subject, verified
+email, provider organization and session, and the per-organization authorization
+binding and CSRF value. The tenant materializes that binding as its local session,
+still validates the provider session and membership on every request, and applies
+its existing project grants, viewer limits and in-transaction mutation rechecks.
+Machine assertions carry no browser identity and require the request's own bearer
+credential; runner, reporter and artifact-service tokens keep their independent
+bindings. List up to four public keys to rotate the entry signing key with overlap.
+
+Tenant pages and redirects are scoped under `/organizations/ORG`, and the tenant
+strips that prefix only after verifying the assertion over the original path.
+Native APIs keep their explicit `/api/v2/organizations/ORG/...` routes. Runners
+enroll against `https://hub.detent.build/organizations/ORG` as their Hub URL.
+Non-canonical paths (encoded characters, empty or dot segments) and duplicate
+query parameters are rejected before routing.
+
+A database bound to an origin (`deployment = origin`) never opens in shared mode,
+and a shared database never reopens with another public URL, generation, origin
+configuration or local mode. The binding changes only through the offline
+[existing-origin migration](#existing-origin-migration).
+
 ## Shared-origin route and session contract
 
 These are target routes for #2341, not aliases already accepted by the binary.
@@ -327,9 +378,30 @@ No zero-knowledge guarantee is made.
 
 ## Existing-origin migration
 
-#2341 must deliver an explicit versioned offline migration, not manual SQL edits
-or a startup bypass. The current immutable origin check remains until that tool
-and its fixture tests ship; no migration command is available in this RFC.
+The migration is an explicit, versioned offline command, never manual SQL edits
+or a startup bypass. The tenant binding stays immutable except through this path:
+
+```sh
+detent hub migrate-shared-origin \
+  --database /var/lib/detent/tenants/org_example.db \
+  --hosted-config /etc/detent/tenants/org_example.yaml
+```
+
+The target YAML is the tenant's shared-entry configuration (see
+[shared-entry tenant configuration](#shared-entry-tenant-configuration)): the same
+organization, provider organization and bootstrap identity, the shared
+`public_url`, and an `allocation_generation` greater than the current one. The
+command requires exclusive database ownership, so a running tenant blocks it. In
+one transaction it records an immutable `hosted_binding_migrations` row, moves the
+binding to `deployment = shared` with the new generation, revokes all old browser
+sessions, closes unconsumed login/invitation transactions and expires outstanding
+artifact grants. It prints the preserved member, project, runner, issue and
+billing-customer counts. Mismatched organizations, unallocated provider bindings
+and non-increasing generations fail without changes; repeating the same migration
+reports `already_migrated`. Database triggers reject any other binding update and
+any change to migration history.
+
+The operator procedure:
 
 1. Inventory each old organization/provider mapping, bootstrap state, database,
    origin, runner/service bindings, plan and Stripe account/environment/customer

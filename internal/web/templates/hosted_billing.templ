@@ -13,7 +13,7 @@ templ hostedBilling(data HostedPageData) {
 		if data.BillingEnabled {
 			<p class="text-sm text-sec">Test billing pilot. Stripe shows the configured amount before purchase.</p>
 			if data.BillingCanPurchase {
-				<form method="post" action="/organization/billing/checkout" class="max-w-md space-y-3">
+				<form method="post" action={ hostedURL(data, "/organization/billing/checkout") } class="max-w-md space-y-3">
 					@hostedCSRF(data.CSRF)
 					<label for="billing-price" class="block text-sm font-medium">Subscription plan</label>
 					<select id="billing-price" name="price" required class="min-h-11 w-full min-w-0 rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
@@ -24,7 +24,7 @@ templ hostedBilling(data HostedPageData) {
 					<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Upgrade with Stripe</button>
 				</form>
 			}
-			<form method="post" action="/organization/billing/portal">
+			<form method="post" action={ hostedURL(data, "/organization/billing/portal") }>
 				@hostedCSRF(data.CSRF)
 				<button type="submit" class="min-h-11 rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Manage subscription and invoices</button>
 				<p class="mt-2 text-sm text-sec">Update payment details, view invoices, change plans, or cancel through Stripe.</p>
@@ -36,9 +36,9 @@ templ hostedBilling(data HostedPageData) {
 			<p class="break-words text-xs text-sec">Last verified with Stripe: { data.BillingCheckedAt }</p>
 		}
 		<div class="flex flex-wrap gap-3">
-			<a href="/organization/plan" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Plan and usage</a>
-			<a href="/api/cloud/billing/subscription" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Export billing status</a>
-			<a href="/api/cloud/billing" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Export hosted usage</a>
+			<a href={ hostedURL(data, "/organization/plan") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Plan and usage</a>
+			<a href={ hostedURL(data, "/api/cloud/billing/subscription") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Export billing status</a>
+			<a href={ hostedURL(data, "/api/cloud/billing") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Export hosted usage</a>
 		</div>
 	</section>
 	<section class="space-y-3 rounded-card border border-line bg-surface p-4 md:p-6" aria-label="Billing audit trail">

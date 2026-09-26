@@ -166,3 +166,32 @@ func TestHubServeIdentityModes(t *testing.T) {
 		})
 	}
 }
+
+func TestReadHostedSharedEntryConfig(t *testing.T) {
+	t.Parallel()
+	key := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+	base := "organization_id: org_customer\nworkos_organization_id: org_provider\npublic_url: https://hub.example.test\nworkos:\n  client_id: client_example\n"
+	for _, test := range []struct {
+		name, body string
+		wantError  bool
+	}{
+		{name: "shared entry", body: base + "shared_entry:\n  issuer: detent-cloud\n  public_keys: [" + key + "]\n  allocation_generation: 1\n"},
+		{name: "invalid key", body: base + "shared_entry:\n  issuer: detent-cloud\n  public_keys: [not-a-key]\n  allocation_generation: 1\n", wantError: true},
+		{name: "unknown field", body: base + "shared_entry:\n  upstream: http://127.0.0.1:1\n", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "hosted.yaml")
+			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, _, err := readHostedConfig(path, func(string) string { return "test-workos-key" })
+			if (err != nil) != test.wantError {
+				t.Fatalf("error = %v, want error %v", err, test.wantError)
+			}
+			if err == nil && (config.SharedEntry == nil || config.SharedEntry.Issuer != "detent-cloud" || config.SharedEntry.Generation != 1 || len(config.SharedEntry.PublicKeys) != 1) {
+				t.Fatalf("shared entry = %+v", config.SharedEntry)
+			}
+		})
+	}
+}

@@ -82,7 +82,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, removingOwner bool) (auth.Membership, error) {
@@ -124,7 +124,7 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 	if err := s.config.Hosted.Provider.RevokeMembership(c.Request().Context(), member.ID); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (resultErr error) {
@@ -170,7 +170,7 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_members SET role = ?,updated_at = ? WHERE user_id = ?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be recorded")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) changeHostedGrant(c echo.Context) error {
@@ -186,7 +186,7 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "The project grant could not be changed")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, user, project string, write, runner, revoke bool) (resultErr error) {
@@ -243,7 +243,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
 	}
-	return c.Redirect(http.StatusSeeOther, "/projects/"+project)
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/projects/"+project))
 }
 
 func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string) (project string, resultErr error) {
