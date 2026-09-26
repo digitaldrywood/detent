@@ -466,6 +466,14 @@ func TestConversationAnswersUseTheProviderPromptIDs(t *testing.T) {
 			want: map[string][]string{long: {"yes"}, "short": {"no"}},
 		},
 		{
+			name:      "a missing or blank id answers under the provider's own id",
+			questions: `[{"question":"None?"},{"id":"  ","question":"Blank?"}]`,
+			answer: func(prompts []conversation.Prompt) map[string][]string {
+				return map[string][]string{prompts[0].ID: {"a"}, prompts[1].ID: {"b"}}
+			},
+			want: map[string][]string{"": {"a"}, "  ": {"b"}},
+		},
+		{
 			name:      "provider ids within the limits pass through",
 			questions: `[{"id":"short","question":"Short?"}]`,
 			answer: func(prompts []conversation.Prompt) map[string][]string {

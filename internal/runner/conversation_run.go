@@ -371,8 +371,8 @@ const conversationTruncated = "…"
 // Every field is bounded to the limits the hub validates, so an oversized
 // question is shown truncated rather than refused: cut text ends with an
 // ellipsis, and omitted options or questions are named in the question text.
-// It also returns each id it generated in place of a provider id that was too
-// long or repeated, mapped to that provider id.
+// It also returns each id it generated or trimmed in place of the provider's
+// id, including a missing or blank one, mapped to that provider id.
 func conversationPrompts(raw json.RawMessage) (json.RawMessage, map[string]string) {
 	var questions []struct {
 		ID       string `json:"id"`
@@ -407,7 +407,7 @@ func conversationPrompts(raw json.RawMessage) (json.RawMessage, map[string]strin
 			prompt.ID = "q" + strconv.Itoa(i+1) + "-" + strconv.Itoa(suffix)
 		}
 		seen[prompt.ID] = struct{}{}
-		if original := strings.TrimSpace(question.ID); original != "" && original != prompt.ID {
+		if question.ID != prompt.ID {
 			generated[prompt.ID] = question.ID
 		}
 		omittedOptions := 0
