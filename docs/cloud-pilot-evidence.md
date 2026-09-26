@@ -299,7 +299,7 @@ DETENT_SHARED_ORIGIN_PREVIEW=$PWD/tmp/shared-origin-preview go test ./internal/c
 ```
 
 Recorded evidence: `.detent/validation/2199/shared-origin-evidence.json` and
-`shared-origin-evidence-race.json` (20 required tests, 85 tests and subtests,
+`shared-origin-evidence-race.json` (21 required tests, 89 tests and subtests,
 clean tree at the recorded head), browser captures and probes in
 `.detent/validation/2199/shared-origin/`, and read-only live-origin facts in
 `shared-origin/live-origin.json`. `rebased-evidence.json` re-runs the original
