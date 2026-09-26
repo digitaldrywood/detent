@@ -48,19 +48,15 @@ func (g *GitWorktree) Prepare(ctx context.Context, checkout hubclient.WorkspaceC
 	if g.Backend == nil {
 		return "", errors.New("workspacerunner: a worktree backend is required")
 	}
+	head := strings.TrimSpace(checkout.HeadSHA)
+	detach := checkout.Worktree == workspacesession.WorktreeFresh && head != ""
+	if detach && !commitID(head) {
+		return "", fmt.Errorf("workspace head %q is not a commit id", head)
+	}
 	issue := g.issueFor(checkout)
 	info, err := g.Backend.Create(ctx, issue)
 	if err != nil {
 		return "", fmt.Errorf("create workspace worktree: %w", err)
-	}
-	if checkout.Worktree == workspacesession.WorktreeFresh && strings.TrimSpace(checkout.HeadSHA) != "" {
-		// The retention window has passed, so the worktree is a new one and
-		// head_sha is what the person asked to look at. Detaching onto it is
-		// deliberate: a workspace produces nothing, so there is no branch for
-		// it to be on.
-		if err := g.checkout(ctx, info.Path, checkout.HeadSHA); err != nil {
-			return "", err
-		}
 	}
 	if info.Created {
 		g.mu.Lock()
@@ -70,7 +66,30 @@ func (g *GitWorktree) Prepare(ctx context.Context, checkout hubclient.WorkspaceC
 		g.created[info.Path] = issue
 		g.mu.Unlock()
 	}
+	if detach {
+		// The retention window has passed, so the worktree is a new one and
+		// head_sha is what the person asked to look at. Detaching onto it is
+		// deliberate: a workspace produces nothing, so there is no branch for
+		// it to be on.
+		if err := g.checkout(ctx, info.Path, head); err != nil {
+			return "", errors.Join(err, g.Release(ctx, info.Path, checkout))
+		}
+	}
 	return info.Path, nil
+}
+
+// commitID reports whether value is a hexadecimal object name, which is the
+// only shape the hub sends as head_sha and the only one handed to git.
+func commitID(value string) bool {
+	if len(value) < 7 || len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // Release removes a worktree this type created and leaves a retained one
@@ -120,7 +139,7 @@ func (g *GitWorktree) issueFor(checkout hubclient.WorkspaceCheckout) workspace.I
 
 // checkout detaches the worktree onto a commit.
 func (g *GitWorktree) checkout(ctx context.Context, path, sha string) error {
-	command := exec.CommandContext(ctx, "git", "-C", path, "checkout", "--detach", sha)
+	command := exec.CommandContext(ctx, "git", "-C", path, "checkout", "--detach", sha) // #nosec G204 -- sha is a validated hex commit id and git runs without a shell.
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("check out %s in the workspace worktree: %w: %s", sha, err, strings.TrimSpace(string(output)))
 	}

@@ -120,6 +120,44 @@ func TestGitWorktreeReleaseSkipsWorktreesItDidNotMake(t *testing.T) {
 	}
 }
 
+func TestGitWorktreePrepareRefusesAHeadThatIsNotACommitID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		head string
+	}{
+		{name: "an option is refused", head: "--orphan"},
+		{name: "a ref name is refused", head: "main"},
+		{name: "a short hex id is refused", head: "abc12"},
+		{name: "an unknown commit fails without leaving a worktree", head: strings.Repeat("0", 40)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initWorktreeSourceRepo(t)
+			root := filepath.Join(t.TempDir(), "workspaces")
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			worktrees := &workspacerunner.GitWorktree{Backend: backend, ProjectID: "dogfood"}
+			_, err = worktrees.Prepare(t.Context(), hubclient.WorkspaceCheckout{
+				WorkItemID: "wi_0c1e9fe3", Worktree: workspacesession.WorktreeFresh, HeadSHA: tt.head,
+			})
+			if err == nil {
+				t.Fatal("Prepare() error = nil, want a refusal")
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "wi_0c1e9fe3-ws")); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("a refused checkout left a worktree behind: %v", statErr)
+			}
+			if branches := worktreeBranches(t, source); branches != "" {
+				t.Fatalf("a refused checkout left branches behind: %s", branches)
+			}
+		})
+	}
+}
+
 func initWorktreeSourceRepo(t *testing.T) string {
 	t.Helper()
 
