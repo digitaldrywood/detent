@@ -122,9 +122,20 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 					conversation = &conversationConfig
 				}
 			}
+			var usage *hubserver.UsageConfig
+			if hosted != nil {
+				usageConfig, priced, err := readHostedUsageConfig(hostedConfigPath)
+				if err != nil {
+					return err
+				}
+				if priced {
+					usage = &usageConfig
+				}
+			}
 			return run(cmd.Context(), hubserver.Config{
 				Hosted:                     hosted,
 				Conversation:               conversation,
+				Usage:                      usage,
 				CredentialMaintenance:      credentialMaintenance,
 				GitHubDisabled:             githubDisabled || hosted != nil,
 				DatabasePath:               databasePath,

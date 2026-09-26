@@ -43,6 +43,7 @@ type Config struct {
 	CredentialMaintenance      bool
 	Hosted                     *HostedConfig
 	Conversation               *ConversationConfig
+	Usage                      *UsageConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
 	GitHubDisabled             bool
 	ImportBackend              ImportBackend
@@ -80,6 +81,10 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.Usage != nil {
+		normalized := c.Usage.normalized()
+		c.Usage = &normalized
+	}
 	if c.CredentialMaintenance {
 		c.GitHubDisabled = true
 	}

@@ -393,6 +393,10 @@ type NativeRunData struct {
 	PolicyID     string                   `json:"policy_id"`
 	Outcome      string                   `json:"outcome,omitempty"`
 	ArtifactIDs  []string                 `json:"artifact_ids,omitempty"`
+	// Usage is what the attempt has spent so far, one entry per provider and
+	// model (decisions section 17.5). A runner that reports none leaves the
+	// field out, so the event is byte-identical to what it was before.
+	Usage []NativeUsage `json:"usage,omitempty"`
 }
 
 type NativeRunEvent struct {
