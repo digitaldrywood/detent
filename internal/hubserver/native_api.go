@@ -56,6 +56,11 @@ func isNativeNotFound(err error) bool {
 	return errors.As(err, &failure) && failure != nil && failure.Code == "not_found"
 }
 
+func isNativeConflict(err error) bool {
+	var failure *nativeError
+	return errors.As(err, &failure) && failure != nil && failure.Code == "revision_conflict"
+}
+
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
@@ -153,6 +158,15 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
 	e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
 	e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
+	e.GET(nativeBase+"/actions", s.listProjectActions, read)
+	e.POST(nativeBase+"/actions", s.createProjectAction, write)
+	e.PATCH(nativeBase+"/actions/:action", s.patchProjectAction, write)
+	e.DELETE(nativeBase+"/actions/:action", s.deleteProjectAction, write)
+	e.GET(nativeBase+"/actions/:action/runs", s.listProjectActionRuns, read)
+	e.POST(nativeBase+"/actions/:action/runs", s.createProjectActionRun, write)
+	e.GET(nativeBase+"/actions/:action/runs/:run", s.getProjectActionRun, read)
+	e.GET(nativeBase+"/actions/:action/runs/:run/output", s.getProjectActionRunOutput, read)
 	// Terminal recordings (decisions section 18.3). They are mounted under the
 	// project's read scope like everything else, and then narrowed again by the
 	// handler: a recording's audience is the person who ran it plus owners and

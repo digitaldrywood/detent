@@ -76,6 +76,13 @@ type workspaceBindResponse struct {
 	Owner    workspacesession.Owner   `json:"owner"`
 	Checkout workspaceCheckout        `json:"checkout"`
 	Session  workspacesession.Session `json:"workspace"`
+	// Actions is the project's run-on-worktree-creation set, in authoring
+	// order (decisions section 18.12). The order is the contract: an author
+	// who wants install before build writes install first, and nothing else
+	// in the shape would say so. The runner starts them itself, which is why
+	// they arrive with the checkout rather than being asked for later -- a
+	// worktree that is ready before its setup ran is ready in name only.
+	Actions []workspacesession.Action `json:"actions,omitempty"`
 }
 
 // workspaceHeartbeatRequest renews the lease and carries the runner's report.
@@ -199,7 +206,14 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		actions, err := readRunOnCreationActions(ctx, tx, bound.OrganizationID, bound.ProjectID)
+		if err != nil {
+			return err
+		}
 		response = workspaceBindResponse{Owner: bound.owner(), Checkout: checkout, Session: bound.resource()}
+		for _, action := range actions {
+			response.Actions = append(response.Actions, action.resource())
+		}
 		return nil
 	})
 	if err != nil {
@@ -533,6 +547,156 @@ func (s *Service) workspaceForWorkItem(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, resource)
+}
+
+// workspaceActionRunReport is the body of POST
+// .../workspaces/:workspace/worker/action-runs (decisions section 18.12).
+//
+// It is how a run the runner started itself is recorded: a
+// run-on-worktree-creation action has no person watching and no exec stream to
+// carry its frames, so the runner reports the row instead. With no RunID the
+// report creates the run; with one it moves the run it names.
+//
+// The tuple is a named field rather than embedded, unlike the other worker
+// bodies. This body already carries a status, a reason and timestamps of its
+// own, and a bare lease_id beside them would read as the run's rather than the
+// workspace's.
+type workspaceActionRunReport struct {
+	WorkspaceIdentity workspaceWorkerIdentity `json:"workspace_identity"`
+	ActionID          string                  `json:"action_id"`
+	RunID             string                  `json:"run_id,omitempty"`
+	Status            string                  `json:"status"`
+	ExitCode          *int                    `json:"exit_code,omitempty"`
+	Reason            string                  `json:"reason,omitempty"`
+	StartedAt         *time.Time              `json:"started_at,omitempty"`
+	FinishedAt        *time.Time              `json:"finished_at,omitempty"`
+	Output            string                  `json:"output,omitempty"`
+	Truncated         bool                    `json:"truncated,omitempty"`
+}
+
+// reportWorkspaceActionRun implements POST .../worker/action-runs. It is
+// fenced by the workspace owner tuple exactly as the heartbeat is: a runner
+// may only write runs of the workspace it currently holds.
+func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
+	var request workspaceActionRunReport
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	service, err := s.requireWorkspaces()
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if !workspacesession.ValidRunStatus(request.Status) {
+		return s.nativeAPIError(c, nativeInvalid("status names no run status"))
+	}
+	if request.Reason != "" && !validActionRunReason(request.Reason) {
+		return s.nativeAPIError(c, nativeInvalid("reason names no run reason"))
+	}
+	scope := nativeRequestScope(c)
+	ctx := c.Request().Context()
+	var reported actionRunRecord
+	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		record, _, err := service.loadWorkspaceForWorker(ctx, tx, scope, c.Param("workspace"), request.WorkspaceIdentity, now)
+		if err != nil {
+			return err
+		}
+		reported, err = service.recordActionRunReport(ctx, tx, scope, record, request, now)
+		return err
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, reported.resource())
+}
+
+// recordActionRunReport applies one runner report: it creates the run when the
+// report names none, and otherwise moves the run it names.
+func (w *workspaceService) recordActionRunReport(ctx context.Context, tx *sql.Tx, scope nativeScope, record workspaceRecord, request workspaceActionRunReport, now time.Time) (actionRunRecord, error) {
+	action, err := readProjectAction(ctx, tx, scope, strings.TrimSpace(request.ActionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return actionRunRecord{}, nativeNotFound()
+	}
+	if err != nil {
+		return actionRunRecord{}, err
+	}
+	// The cap is applied here as well as in the runner, because the hub's
+	// column is what has to stay bounded whatever a runner reports.
+	output := request.Output
+	truncated := request.Truncated
+	if len(output) > workspacesession.MaxExecOutputBytes {
+		output = output[:workspacesession.MaxExecOutputBytes]
+		truncated = true
+	}
+	runID := strings.TrimSpace(request.RunID)
+	if runID == "" {
+		run := actionRunRecord{
+			ID: newNativeID("actionrun"), ActionID: action.ID, OrganizationID: record.OrganizationID,
+			ProjectID: record.ProjectID, WorkspaceID: record.ID, Command: action.Command,
+			Status: request.Status, ExitCode: request.ExitCode, Reason: request.Reason,
+			StartedAt: request.StartedAt, FinishedAt: request.FinishedAt, Output: output,
+			OutputBytes: int64(len(output)), Truncated: truncated,
+			// created_by stays empty: nobody asked for this run. The action
+			// carries run_on_worktree_creation and the runner started it --
+			// which is also what claimed_by says, so the column names an
+			// executor for every run that is not still queued rather than
+			// reading as unclaimed for this whole family of them.
+			ClaimedBy: workerActionRunClaimant(record),
+			Revision:  1, CreatedAt: now, UpdatedAt: now,
+		}
+		run.OutputArtifact = actionRunOutputPath(run)
+		if err := insertProjectActionRun(ctx, tx, run); err != nil {
+			return actionRunRecord{}, err
+		}
+		w.logger.Info("action_run.reported", "run_id", run.ID, "action_id", run.ActionID,
+			"workspace_id", run.WorkspaceID, "status", run.Status)
+		return run, nil
+	}
+	run, err := readWorkspaceActionRun(ctx, tx, record.ID, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return actionRunRecord{}, nativeNotFound()
+	}
+	if err != nil {
+		return actionRunRecord{}, err
+	}
+	if run.ActionID != action.ID {
+		return actionRunRecord{}, nativeNotFound()
+	}
+	if !forwardRunStatus(run.Status, request.Status) {
+		return actionRunRecord{}, nativeStaleExecution("A run cannot move from " + run.Status + " to " + request.Status)
+	}
+	if run.ClaimedBy == "" {
+		// A report is a claim too. The hub's own dispatch skips a run that is
+		// no longer queued, so this cannot take one out from under it; what it
+		// prevents is a row that is running with nothing named as running it.
+		run.ClaimedBy = workerActionRunClaimant(record)
+	}
+	run.Status = request.Status
+	if request.ExitCode != nil {
+		run.ExitCode = request.ExitCode
+	}
+	if request.Reason != "" {
+		run.Reason = request.Reason
+	}
+	if request.StartedAt != nil {
+		run.StartedAt = request.StartedAt
+	}
+	if request.FinishedAt != nil {
+		run.FinishedAt = request.FinishedAt
+	}
+	if output != "" {
+		run.Output = output
+		run.OutputBytes = int64(len(output))
+		run.Truncated = truncated
+	}
+	return applyActionRunStatus(ctx, tx, run, now)
+}
+
+// workerActionRunClaimant is what claimed_by holds for a run the runner
+// started itself and reported through the worker endpoint. It names the runner
+// rather than a stream because there is no stream: this run has no relay state
+// at all, which is exactly why the workspace sweep exists for it.
+func workerActionRunClaimant(record workspaceRecord) string {
+	return "runner:" + record.RunnerID
 }
 
 // workerRelayIdentity reads the workspace tuple from the upgrade's headers.
