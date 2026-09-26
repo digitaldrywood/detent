@@ -637,6 +637,10 @@ export const BillingReport = Schema.Struct({
   prices: Schema.Array(BillingPrice),
   /** False while impersonating: §12 refuses billing to a support session. */
   can_checkout: Schema.optional(Schema.Boolean),
+  /** True once the organization has a billing customer the portal can open. */
+  can_manage: Schema.optional(Schema.Boolean),
+  /** True while a Checkout session is still open for this organization. */
+  checkout_pending: Schema.optional(Schema.Boolean),
 });
 export type BillingReport = typeof BillingReport.Type;
 
