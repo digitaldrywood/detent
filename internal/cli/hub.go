@@ -132,10 +132,21 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 					usage = &usageConfig
 				}
 			}
+			var workspaces *hubserver.WorkspaceConfig
+			if hosted != nil {
+				workspaceConfig, workspacesEnabled, err := readHostedWorkspaceConfig(hostedConfigPath)
+				if err != nil {
+					return err
+				}
+				if workspacesEnabled {
+					workspaces = &workspaceConfig
+				}
+			}
 			return run(cmd.Context(), hubserver.Config{
 				Hosted:                     hosted,
 				Conversation:               conversation,
 				Usage:                      usage,
+				Workspace:                  workspaces,
 				CredentialMaintenance:      credentialMaintenance,
 				GitHubDisabled:             githubDisabled || hosted != nil,
 				DatabasePath:               databasePath,

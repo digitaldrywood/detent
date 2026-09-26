@@ -50,6 +50,12 @@ func nativeConflict(revision tracker.Revision) error {
 	return &nativeError{Code: "revision_conflict", Message: "Resource has changed", CurrentRevision: revision, status: http.StatusConflict}
 }
 
+// isNativeNotFound reports whether err is the opaque native not-found error.
+func isNativeNotFound(err error) bool {
+	var failure *nativeError
+	return errors.As(err, &failure) && failure != nil && failure.Code == "not_found"
+}
+
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
@@ -129,6 +135,27 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/attempts/:attempt/diff", s.getAttemptDiff, read)
 	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
 	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
+	// Workspace sessions (decisions section 18.1). The reads follow the
+	// issue's read rule; the writes need write on the project, and a
+	// terminal in requires needs the grant's runners flag on top.
+	e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
+	e.GET(nativeBase+"/workspaces", s.listWorkspaces, read)
+	e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
+	e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
+	e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
+	e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
+	e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
+	// Terminal recordings (decisions section 18.3). They are mounted under the
+	// project's read scope like everything else, and then narrowed again by the
+	// handler: a recording's audience is the person who ran it plus owners and
+	// admins, and a user-isolation recording's is owners alone, which is
+	// narrower than any scope the router can express.
+	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings", s.listWorkspaceTerminalRecordings, read)
+	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings/:recording", s.getWorkspaceTerminalRecording, read)
 }
 
 func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
@@ -154,7 +181,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			write := !hostedReadRequest(c) && !artifactReadGrantRequest(c)
+			write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
 			if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
 				return s.nativeAPIError(c, err)
 			}
