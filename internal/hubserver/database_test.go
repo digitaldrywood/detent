@@ -73,6 +73,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"collaboration_versions",
 		"attempt_diff_files",
 		"attempt_diffs",
+		"attempt_usage",
 		"hub_identity",
 		"hosted_tenant",
 		"hosted_members",
