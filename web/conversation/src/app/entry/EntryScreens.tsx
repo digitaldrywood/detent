@@ -17,6 +17,7 @@ import {
   currentStepIndex,
   type EntryApi,
   type EntryOrganizations,
+  type EntrySession,
   makeEntryApi,
   PROVISIONING_STEPS,
   type Provisioning,
@@ -185,7 +186,7 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
 
 export function CreateOrganization({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
   const api = useEntryApi();
-  const listing = useResource<EntryOrganizations>(() => api.organizations(), [api]);
+  const listing = useResource<EntrySession>(() => api.session(), [api]);
   const [name, setName] = React.useState("");
   // One key for this form: a retried submit after an uncertain response
   // returns the same organization instead of creating a second one.
@@ -250,7 +251,7 @@ export function ProvisioningProgress({
 }): React.ReactElement {
   const api = useEntryApi();
   const status = useResource<Provisioning>(() => api.provisioning(organization), [api, organization]);
-  const listing = useResource<EntryOrganizations>(() => api.organizations(), [api]);
+  const listing = useResource<EntrySession>(() => api.session(), [api]);
   const value = status.value;
   const next = value?.next;
   const active = value !== undefined && provisioningActive(value.state);
@@ -259,12 +260,15 @@ export function ProvisioningProgress({
     if (next !== undefined) assign(next);
   }, [next]);
 
+  // One read at a time: the next poll is scheduled only after the previous
+  // read settles, so a slow response is never superseded and discarded.
   const refresh = status.refresh;
+  const settled = !status.loading;
   React.useEffect(() => {
-    if (!active) return;
-    const timer = globalThis.setInterval(() => void refresh(), pollMs);
-    return () => globalThis.clearInterval(timer);
-  }, [active, refresh, pollMs]);
+    if (!active || !settled) return;
+    const timer = globalThis.setTimeout(() => void refresh(), pollMs);
+    return () => globalThis.clearTimeout(timer);
+  }, [active, settled, value, refresh, pollMs]);
 
   const resume = useMutation(async () => {
     await api.resume({ organization, csrf: listing.value?.csrf ?? "" });
@@ -333,7 +337,7 @@ export function ProvisioningProgress({
 
 export function JoinInvitation({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
   const api = useEntryApi();
-  const listing = useResource<EntryOrganizations>(() => api.organizations(), [api]);
+  const listing = useResource<EntrySession>(() => api.session(), [api]);
   const [token, setToken] = React.useState("");
   const join = useMutation(async (value: string) => {
     const result = await api.joinInvitation({ token: value, csrf: listing.value?.csrf ?? "" });

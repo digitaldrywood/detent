@@ -182,6 +182,7 @@ func (s *Service) routes() {
 	e.GET("/organizations/:organization/delete", s.deleteOrganizationPage)
 	e.POST("/organizations/:organization/delete", s.deleteOrganization)
 	e.GET("/api/cloud/organizations", s.organizationsJSON)
+	e.GET("/api/cloud/session", s.sessionJSON)
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)
 	e.GET("/support", s.supportPage)

@@ -154,13 +154,13 @@ func (s *Service) completeLogin(c echo.Context) error {
 		if err := s.auth.audit(ctx, identity.Subject, invited.ID, "invitation_accepted"); err != nil {
 			return s.denied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
 		}
-		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"organization": {invited.ID}, "return": {"/organizations/" + invited.ID + "/organization"}}.Encode())
+		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"organization": {invited.ID}, "return": {s.organizationHome(invited.ID)}}.Encode())
 	}
 	switch {
 	case transaction.ReturnPath != "":
 		return c.Redirect(http.StatusSeeOther, transaction.ReturnPath)
 	case transaction.Organization != "":
-		return c.Redirect(http.StatusSeeOther, "/organizations/"+transaction.Organization+"/organization")
+		return c.Redirect(http.StatusSeeOther, s.organizationHome(transaction.Organization))
 	default:
 		return c.Redirect(http.StatusSeeOther, "/organizations")
 	}
@@ -285,7 +285,7 @@ func (s *Service) organizationChoices(ctx context.Context, session accountSessio
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: "/organizations/" + organization.ID + "/organization"})
+		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationHome(organization.ID)})
 	}
 	return result, nil
 }
@@ -315,6 +315,14 @@ func (s *Service) chooser(c echo.Context) error {
 		data.Organizations = append(data.Organizations, templates.HostedOrganizationChoice{ID: choice.ID, Name: choice.Name})
 	}
 	return s.render(c, http.StatusOK, data)
+}
+
+func (s *Service) sessionJSON(c echo.Context) error {
+	session, err := s.session(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": s.config.Allocation != nil && !s.staff(session.Email)})
 }
 
 func (s *Service) organizationsJSON(c echo.Context) error {
@@ -399,5 +407,5 @@ func (s *Service) joinInvitation(c echo.Context) error {
 	if err := s.auth.audit(ctx, session.Subject, organization.ID, "invitation_accepted"); err != nil {
 		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Invitation acceptance is temporarily unavailable")
 	}
-	return s.next(c, http.StatusOK, "/auth/oidc/start?"+url.Values{"organization": {organization.ID}, "return": {"/organizations/" + organization.ID + "/organization"}}.Encode(), nil)
+	return s.next(c, http.StatusOK, "/auth/oidc/start?"+url.Values{"organization": {organization.ID}, "return": {s.organizationHome(organization.ID)}}.Encode(), nil)
 }

@@ -381,7 +381,15 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	}
 	f.waitState(t, id, "ready")
 	status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
-	if !strings.Contains(status.Body, `"next":"/organizations/`+id+`/"`) {
+	if !strings.Contains(status.Body, `"next":"/organizations/`+id+`/work"`) {
 		t.Fatalf("ready provisioning JSON = %s", status.Body)
+	}
+	session := dana.do(http.MethodGet, "/api/cloud/session", nil, map[string]string{"Accept": "application/json"})
+	if session.StatusCode != http.StatusOK || !strings.Contains(session.Body, `"csrf":"`+chooser.CSRF+`"`) {
+		t.Fatalf("session JSON = %d %s", session.StatusCode, session.Body)
+	}
+	dana.login("/organizations/"+id+"/work", "user_dana:porg_"+id)
+	if response, body := dana.get("/organizations/" + id + "/work"); response.StatusCode != http.StatusOK || !strings.Contains(body, `content="/organizations/`+id+`"`) {
+		t.Fatalf("organization client home = %d %s", response.StatusCode, body)
 	}
 }

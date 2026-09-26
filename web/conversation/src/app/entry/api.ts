@@ -23,6 +23,13 @@ export const EntryOrganizations = Schema.Struct({
 });
 export type EntryOrganizations = typeof EntryOrganizations.Type;
 
+export const EntrySession = Schema.Struct({
+  email: Schema.String,
+  csrf: Schema.String,
+  can_create: Schema.optional(Schema.Boolean),
+});
+export type EntrySession = typeof EntrySession.Type;
+
 export const Provisioning = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -99,6 +106,7 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
 
   return {
     organizations: () => read(EntryOrganizations, "/api/cloud/organizations"),
+    session: () => read(EntrySession, "/api/cloud/session"),
     provisioning: (organization: string) =>
       read(Provisioning, `/api/cloud/organizations/${encodeURIComponent(organization)}/provisioning`),
     createOrganization: (input: { name: string; key: string; csrf: string }) =>

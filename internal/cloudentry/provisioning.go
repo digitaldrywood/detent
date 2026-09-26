@@ -460,7 +460,7 @@ func (s *Service) provisioningPage(c echo.Context) error {
 		return s.denied(c, http.StatusNotFound, "This organization is unavailable")
 	}
 	if organization.State == "ready" {
-		return c.Redirect(http.StatusSeeOther, "/organizations/"+organization.ID+"/organization")
+		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization.ID))
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
@@ -476,7 +476,7 @@ func (s *Service) provisioningJSON(c echo.Context) error {
 	status := provisioningStatus(organization)
 	result := map[string]any{"id": status.ID, "name": status.Name, "state": status.State, "step": status.Step, "error": status.Error, "can_resume": status.CanResume}
 	if organization.State == "ready" {
-		result["next"] = "/organizations/" + organization.ID + "/"
+		result["next"] = s.organizationHome(organization.ID)
 	}
 	return c.JSON(http.StatusOK, result)
 }

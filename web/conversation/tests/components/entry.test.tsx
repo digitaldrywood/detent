@@ -51,6 +51,7 @@ const listing = {
 function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
   return {
     organizations: vi.fn(async () => listing),
+    session: vi.fn(async () => ({ email: listing.email, csrf: listing.csrf, can_create: true })),
     provisioning: vi.fn(async () => ({ id: "org_b", name: "Beta", state: "allocating", step: "admission", error: "", can_resume: false })),
     createOrganization: vi.fn(async () => ({ next: "/organizations/org_new/provisioning" })),
     resume: vi.fn(async () => ({ next: "/organizations/org_b/provisioning" })),
@@ -106,7 +107,7 @@ describe("create organization", () => {
     const api = fakeApi();
     const navigate = vi.fn();
     renderWith(api, <CreateOrganization onNavigate={navigate} />);
-    await waitFor(() => expect(api.organizations).toHaveBeenCalled());
+    await waitFor(() => expect(api.session).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "  Delta  " } });
     await waitFor(() => expect((screen.getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
@@ -157,6 +158,36 @@ describe("provisioning progress", () => {
       <ProvisioningProgress organization="org_b" onNavigate={vi.fn()} />,
     );
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_b/"));
+  });
+
+  it("keeps actions available when the organization list is unavailable", async () => {
+    const api = fakeApi({
+      organizations: vi.fn(async () => {
+        throw new AccountError({ status: 503, code: "membership_unavailable", message: "down" });
+      }),
+    });
+    renderWith(api, <JoinInvitation onNavigate={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Invitation token"), { target: { value: "inv_1" } });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Join organization" }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("never overlaps status reads when responses are slower than the poll interval", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let calls = 0;
+    const provisioning = vi.fn(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      calls++;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 30));
+      inFlight--;
+      return calls >= 3
+        ? { id: "org_b", name: "Beta", state: "ready", step: "publish", error: "", can_resume: false, next: "/organizations/org_b/work" }
+        : { id: "org_b", name: "Beta", state: "allocating", step: "admission", error: "", can_resume: false };
+    });
+    renderWith(fakeApi({ provisioning }), <ProvisioningProgress organization="org_b" onNavigate={vi.fn()} pollMs={5} />);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_b/work"));
+    expect(maxInFlight).toBe(1);
   });
 
   it("polls while setup is running", async () => {

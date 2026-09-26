@@ -12,12 +12,27 @@ import (
 
 const entryClientShell = "app/conversation/index.html"
 
-func (s *Service) clientShell(c echo.Context) (bool, error) {
-	client := s.config.clientFS
-	if client == nil {
-		client = detent.StaticFS()
+func (s *Service) clientFiles() fs.FS {
+	if s.config.clientFS != nil {
+		return s.config.clientFS
 	}
-	content, err := fs.ReadFile(client, entryClientShell)
+	return detent.StaticFS()
+}
+
+func (s *Service) clientBuilt() bool {
+	_, err := fs.Stat(s.clientFiles(), entryClientShell)
+	return err == nil
+}
+
+func (s *Service) organizationHome(id string) string {
+	if s.clientBuilt() {
+		return "/organizations/" + id + "/work"
+	}
+	return "/organizations/" + id + "/organization"
+}
+
+func (s *Service) clientShell(c echo.Context) (bool, error) {
+	content, err := fs.ReadFile(s.clientFiles(), entryClientShell)
 	if err != nil {
 		return false, nil
 	}
