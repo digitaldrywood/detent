@@ -296,11 +296,12 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	command := hostedCommand{actor: credential.ID, operation: c.Request().Method + " " + c.Request().URL.EscapedPath(), key: request.IdempotencyKey, input: struct{ Email, Role string }{email, request.Role}}
-	if replayed, err := s.replayHostedCommand(c, command, http.StatusCreated); replayed || err != nil {
+	if claimed, err := s.claimHostedCommand(c, command, http.StatusCreated); !claimed || err != nil {
 		return err
 	}
 	reserved, err := s.reserveHostedInvitationSeat(ctx, email)
 	if err != nil {
+		s.abandonHostedCommand(c, command)
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
 			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())
@@ -310,6 +311,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	invitation, err := s.config.Hosted.Provider.Invite(ctx, credential.Hosted.OrganizationID, email, request.Role, credential.Hosted.Subject)
 	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
 		s.releaseFailedHostedInvitation(c, email, reserved, err)
+		s.abandonHostedCommand(c, command)
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 	created := formatHubTime(s.config.now())
@@ -321,7 +323,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	if !invitation.ExpiresAt.IsZero() {
 		view.ExpiresAt = invitation.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	return s.recordHostedCommand(c, command, http.StatusCreated, view)
+	return s.completeHostedCommand(c, command, http.StatusCreated, view)
 }
 
 // hostedCommand identifies one idempotent hosted mutation: the actor's
@@ -342,43 +344,70 @@ func (command hostedCommand) hash() (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// replayHostedCommand answers a retried key with the stored response, or with
-// a conflict when the key was used for a different request. It reports false
-// when the key is new and the caller should perform the mutation.
-func (s *Service) replayHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
+// hostedPendingCommand is the response a claimed key holds until its
+// mutation completes. No real response has this shape.
+const hostedPendingCommand = `{"detent_pending_command":true}`
+
+// claimHostedCommand takes the key before the mutation runs. The insert is the
+// claim: the primary key on native_commands lets exactly one request own a
+// key. It reports true when the caller owns the key and should perform the
+// mutation. Otherwise it has already answered: the stored response for a
+// completed key, a conflict for a key used with different content, and a
+// retryable conflict for a key whose mutation is still pending. A pending
+// claim is never taken over, so a request that stopped after calling the
+// provider cannot be repeated under the same key; the caller retries with a
+// new key once it has checked the invitations list.
+func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
 	hash, err := command.hash()
 	if err != nil {
-		return true, s.nativeAPIError(c, err)
+		return false, s.nativeAPIError(c, err)
+	}
+	ctx := c.Request().Context()
+	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
+	if err != nil {
+		return false, s.nativeAPIError(c, err)
+	}
+	if claimed, err := result.RowsAffected(); err != nil || claimed == 1 {
+		if err != nil {
+			return false, s.nativeAPIError(c, err)
+		}
+		return true, nil
 	}
 	var storedHash, response string
-	err = s.database.db.QueryRowContext(c.Request().Context(), `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &response)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
+	err = s.database.db.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &response)
 	if err != nil {
-		return true, s.nativeAPIError(c, err)
+		return false, s.nativeAPIError(c, err)
 	}
 	if storedHash != hash {
-		return true, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})
+		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})
 	}
-	return true, c.JSONBlob(status, []byte(response))
+	if response == hostedPendingCommand {
+		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: "This request is still being processed; check the invitations before retrying with a new key"})
+	}
+	return false, c.JSONBlob(status, []byte(response))
 }
 
-// recordHostedCommand stores the response a replay of the key answers with,
-// then sends it.
-func (s *Service) recordHostedCommand(c echo.Context, command hostedCommand, status int, value any) error {
-	hash, err := command.hash()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
+// completeHostedCommand stores the response a replay of the claimed key
+// answers with, then sends it.
+func (s *Service) completeHostedCommand(c echo.Context, command hostedCommand, status int, value any) error {
 	response, err := marshalNative(value)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, response, formatHubTime(s.config.now())); err != nil {
+	if _, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, response, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(status, []byte(response))
+}
+
+// abandonHostedCommand gives back a claim whose mutation did not happen, so
+// the same key can be retried.
+func (s *Service) abandonHostedCommand(c echo.Context, command hostedCommand) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
+	defer cancel()
+	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
+		s.config.Logger.Warn("hosted command claim could not be released")
+	}
 }
 
 // revokeHostedMemberJSON answers DELETE /members/:member. The organization always

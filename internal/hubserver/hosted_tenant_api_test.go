@@ -11,7 +11,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -516,5 +520,141 @@ func TestScopeProviderUsage(t *testing.T) {
 				t.Fatalf("view = used %d reason %q, want %d %q", view.Used, view.Reason, test.used, test.reason)
 			}
 		})
+	}
+}
+
+func TestHostedInvitationKeyClaim(t *testing.T) {
+	t.Parallel()
+	path := browserHostedOrganizationBase + "/members/invitations"
+	body := map[string]any{"email": "claim@example.test", "role": "member", "idempotency_key": "claim"}
+	for _, test := range []struct {
+		name        string
+		prepare     func(t *testing.T, f *browserHostedFixture)
+		status      int
+		code        string
+		invitations int
+	}{
+		{
+			name:   "a pending claim left by an interrupted request answers a retryable conflict without inviting",
+			status: http.StatusConflict, code: "idempotency_in_progress", invitations: 0,
+			prepare: func(t *testing.T, f *browserHostedFixture) {
+				var actor string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = 'user_browser_owner'").Scan(&actor); err != nil {
+					t.Fatal(err)
+				}
+				hash, err := hostedCommand{input: struct{ Email, Role string }{"claim@example.test", "member"}}.hash()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "org_browser_preview", actor, "POST "+path, "claim", hash, hostedPendingCommand, formatHubTime(time.Now())); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:   "a provider failure gives the key back so the same key succeeds",
+			status: http.StatusCreated, invitations: 1,
+			prepare: func(t *testing.T, f *browserHostedFixture) {
+				provider := f.service.config.Hosted.Provider
+				f.service.config.Hosted.Provider = failingInviteProvider{f.provider}
+				f.api(t, "owner", http.MethodPost, path, body, http.StatusServiceUnavailable)
+				f.service.config.Hosted.Provider = provider
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBrowserHostedFixture(t, true)
+			test.prepare(t, f)
+			response := f.api(t, "owner", http.MethodPost, path, body, test.status)
+			if test.code != "" {
+				var failure apiErrorResponse
+				browserHostedDecode(t, response, &failure)
+				if failure.Code != test.code {
+					t.Fatalf("code = %q, want %q", failure.Code, test.code)
+				}
+			}
+			if got := f.providerInvitations(); got != test.invitations {
+				t.Fatalf("provider invitations = %d, want %d", got, test.invitations)
+			}
+		})
+	}
+}
+
+func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedFixture(t, true)
+	path := browserHostedOrganizationBase + "/members/invitations"
+	body := `{"email":"race@example.test","role":"member","idempotency_key":"race"}`
+	headers := map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["owner"].Value)}
+	const requests = 8
+	start := make(chan struct{})
+	responses := make(chan *httptest.ResponseRecorder, requests)
+	var group sync.WaitGroup
+	for range requests {
+		group.Go(func() {
+			<-start
+			responses <- f.rawAPI(t, "owner", http.MethodPost, path, body, headers)
+		})
+	}
+	close(start)
+	group.Wait()
+	close(responses)
+	ids := map[string]bool{}
+	for response := range responses {
+		if response.Code != http.StatusCreated {
+			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+		}
+		var view hostedInvitationView
+		browserHostedDecode(t, response, &view)
+		ids[view.ID] = true
+	}
+	if len(ids) != 1 || f.providerInvitations() != 1 {
+		t.Fatalf("invitations %v, provider invitations %d", ids, f.providerInvitations())
+	}
+}
+
+func TestClaimHostedCommandIsExclusive(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedFixture(t, true)
+	var actor string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = 'user_browser_owner'").Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	command := hostedCommand{actor: actor, operation: "POST /claim", key: "exclusive", input: "same"}
+	const callers = 8
+	results := make(chan bool, callers)
+	codes := make(chan int, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Go(func() {
+			recorder := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/claim", nil), recorder)
+			claimed, err := f.service.claimHostedCommand(c, command, http.StatusCreated)
+			if err != nil {
+				t.Error(err)
+			}
+			results <- claimed
+			if !claimed {
+				codes <- recorder.Code
+			}
+		})
+	}
+	group.Wait()
+	close(results)
+	close(codes)
+	owners := 0
+	for claimed := range results {
+		if claimed {
+			owners++
+		}
+	}
+	for code := range codes {
+		if code != http.StatusConflict {
+			t.Fatalf("losing claim answered %d, want a retryable conflict", code)
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("%d callers claimed the key, want exactly one", owners)
 	}
 }

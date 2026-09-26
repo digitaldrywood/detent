@@ -137,9 +137,14 @@ function legacyProjectRoutes(rootRoute: AnyRoute): AnyRoute[] {
     throw redirect({ to: "/work/changes", replace: true });
   };
   const issue = ({ params }: { params: unknown }) => {
-    const { project, item } = params as { project: string; item: string };
+    const { project, item, change } = params as { project: string; item: string; change?: string };
     writeLastProject(project);
-    throw redirect({ to: "/work/i/$workItemId", params: { workItemId: item }, replace: true });
+    throw redirect({
+      to: "/work/i/$workItemId",
+      params: { workItemId: item },
+      ...(change === undefined ? {} : { search: { change } }),
+      replace: true,
+    } as never);
   };
   return [
     createRoute({ getParentRoute, path: "/projects/$project", beforeLoad: board }),
