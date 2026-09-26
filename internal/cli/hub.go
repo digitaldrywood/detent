@@ -112,8 +112,19 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			if err != nil {
 				return err
 			}
+			var conversation *hubserver.ConversationConfig
+			if hosted != nil {
+				conversationConfig, enabled, err := readHostedConversationConfig(hostedConfigPath)
+				if err != nil {
+					return err
+				}
+				if enabled {
+					conversation = &conversationConfig
+				}
+			}
 			return run(cmd.Context(), hubserver.Config{
 				Hosted:                     hosted,
+				Conversation:               conversation,
 				CredentialMaintenance:      credentialMaintenance,
 				GitHubDisabled:             githubDisabled || hosted != nil,
 				DatabasePath:               databasePath,

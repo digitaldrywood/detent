@@ -30,6 +30,7 @@ type hostedFileConfig struct {
 	EventQuota               int64                         `yaml:"event_quota"`
 	Directory                []hubserver.HostedDestination `yaml:"directory"`
 	SharedEntry              *hostedSharedEntryFileConfig  `yaml:"shared_entry"`
+	Conversation             *hostedConversationFileConfig `yaml:"conversation"`
 	WorkOS                   struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
