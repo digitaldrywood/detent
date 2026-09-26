@@ -2988,11 +2988,13 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 		finalHead   string
 		wantVerdict string
 		probeError  bool
+		degraded    bool
 		workerError bool
 	}{
 		{name: "stable head", finalHead: "B", wantVerdict: gate.ValidatorVerdictPass},
 		{name: "head changes during evaluation", finalHead: "C", wantVerdict: gate.ValidatorVerdictWait},
 		{name: "final head unavailable", finalHead: "B", probeError: true},
+		{name: "final head degraded", finalHead: "B", degraded: true},
 		{name: "workspace infrastructure failure", finalHead: "B", workerError: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3017,6 +3019,9 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 				t.Fatal("validator did not start")
 			}
 			current.PullRequest.HeadSHA = tt.finalHead
+			if tt.degraded {
+				current.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+			}
 			tracker.hydratedIssues = []connector.Issue{current}
 			if tt.probeError {
 				tracker.hydrateErr = errors.New("temporary PR read failure")
@@ -3024,7 +3029,7 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 			validator.Release()
 			orch.validatorWG.Wait()
 			result, _, ok := orch.validatorStageResult(t.Context(), connector.Issue{ID: issue.ID, PullRequest: &connector.PullRequest{HeadSHA: "B"}})
-			if tt.probeError || tt.workerError {
+			if tt.probeError || tt.degraded || tt.workerError {
 				if ok {
 					t.Fatalf("unverified head cached verdict: %#v", result)
 				}

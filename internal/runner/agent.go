@@ -2987,8 +2987,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 				return gate.ValidatorResult{}, fmt.Errorf("%w: read validation workspace head: %w", ErrValidatorInfrastructure, err)
 			}
 			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
-				return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
-					Summary: fmt.Sprintf("validation head mismatch: workspace %s, PR evidence %s", checkedOut, expected)}, nil
+				return gate.ValidatorResult{}, fmt.Errorf("%w: validation head mismatch: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, expected)
 			}
 		}
 	}
@@ -3235,8 +3234,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 				)
 			}
 			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
-				validation = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
-					Summary: fmt.Sprintf("validation head mismatch: workspace %s, PR evidence %s", checkedOut, expected)}
+				return gate.ValidatorResult{}, errors.Join(
+					fmt.Errorf("%w: validation head mismatch: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, expected),
+					r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
+				)
 			}
 		}
 	}

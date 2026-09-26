@@ -494,6 +494,9 @@ func (o *Orchestrator) hydrateValidatorStagePullRequest(
 	if strings.TrimSpace(hydrated.ID) == "" || strings.TrimSpace(hydrated.ID) != strings.TrimSpace(issue.ID) {
 		return issue, false
 	}
+	if hydrated.PullRequest == nil || pullRequestHydrationBlocksProgress(hydrated.PullRequest) {
+		return issue, false
+	}
 	return hydrated, true
 }
 
@@ -2477,6 +2480,16 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
+	// An active run owns this head until it finishes. Avoid hydrating the PR
+	// again on every tick while that run is in progress.
+	if key := validatorStageIdentityForIssue(issue).Key; key != "" {
+		o.validatorMu.Lock()
+		_, running := o.validatorRuns[key]
+		o.validatorMu.Unlock()
+		if running {
+			return
+		}
+	}
 	if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
 		var ok bool
 		issue, ok = o.hydrateValidatorStagePullRequest(ctx, issue)
