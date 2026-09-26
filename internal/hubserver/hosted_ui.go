@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -41,6 +43,7 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.POST("/organization/members/:member/role", s.changeHostedRole)
 	e.POST("/organization/grants", s.changeHostedGrant)
 	e.POST("/projects", s.createHostedProject)
+	e.GET("/projects/:project/events", s.hostedEvents)
 	e.GET("/api/cloud/metadata", s.hostedMetadata)
 	e.GET("/api/cloud/billing", s.hostedBilling)
 	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
@@ -185,6 +188,46 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 		}
 	}
 	return nil
+}
+
+func (s *Service) hostedEvents(c echo.Context) error {
+	initial, status, err := s.hostedCredential(c)
+	if err != nil {
+		return c.NoContent(status)
+	}
+	initialScope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: initial}
+	if err := s.requireHostedProject(c.Request().Context(), s.database.db, initialScope, false); err != nil {
+		return c.NoContent(http.StatusForbidden)
+	}
+	if err := s.hostedAudit(c.Request().Context(), initial.Hosted, "action", "GET /projects/:project/events", string(initialScope.project), http.StatusOK); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	c.Response().Header().Set(echo.HeaderContentType, "text/event-stream")
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		credential, _, err := s.hostedCredential(c)
+		if err != nil {
+			return nil
+		}
+		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: credential}
+		if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, false); err != nil {
+			return nil
+		}
+		var sequence int64
+		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT COALESCE(MAX(event_sequence),0) FROM issues WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&sequence); err != nil {
+			return nil
+		}
+		if _, err := fmt.Fprintf(c.Response(), "event: activity\ndata: %d\n\n", sequence); err != nil {
+			return nil
+		}
+		c.Response().Flush()
+		select {
+		case <-c.Request().Context().Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Service) hostedMetadata(c echo.Context) error {
