@@ -647,7 +647,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				for i := range 8 {
-					page := fay.get("/organizations/" + tab.self.id + "/projects/" + tab.self.project)
+					page := fay.get(tab.self.projectAPI())
 					requests.Add(1)
 					if page.status != http.StatusOK || !strings.Contains(page.body, tab.self.projectName) || strings.Contains(page.body, tab.other.projectName) {
 						errs <- fmt.Errorf("tab %s read %d", tab.self.id, page.status)
