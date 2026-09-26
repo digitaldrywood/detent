@@ -2595,6 +2595,14 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			delete(o.validatorRuns, identity.Key)
 			if errors.Is(err, runpkg.ErrValidatorInfrastructure) {
 				o.validatorMu.Unlock()
+				if capacityProbeKey != "" {
+					o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+						Scope:         capacityScope,
+						ProbeErr:      err,
+						CapacityProbe: true,
+						CompletedAt:   completedAt,
+					})
+				}
 				if o.logger != nil {
 					o.logger.Error("validator infrastructure failure", "issue_id", identity.IssueID, "head_sha", identity.HeadSHA, "error", err)
 				}
