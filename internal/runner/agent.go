@@ -3205,10 +3205,18 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 
 	var treeErr error
-	if strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) != "" {
+	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
+			if err != nil {
+				treeErr = fmt.Errorf("%w: read validation workspace head before cleanup: %w", ErrValidatorInfrastructure, err)
+			} else if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
+				treeErr = fmt.Errorf("%w: validation head mismatch before cleanup: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, expected)
+			}
+		}
 		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
 			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
-				treeErr = fmt.Errorf("%w: validation workspace changed during review: %w", ErrValidatorInfrastructure, err)
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation workspace changed during review: %w", ErrValidatorInfrastructure, err))
 			}
 		}
 	}
@@ -3221,19 +3229,20 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 
 	finishedAt := r.now().UTC()
 	runResult.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if turnErr != nil {
-		runResult.FinalState = finalStateForTurnError(turnErr)
-		return gate.ValidatorResult{}, errors.Join(
-			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
-		)
-	}
 	if strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) != "" {
 		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
 			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
 				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation workspace changed after review: %w", ErrValidatorInfrastructure, err))
 			}
 		}
+	}
+	if turnErr != nil {
+		runResult.FinalState = finalStateForTurnError(turnErr)
+		return gate.ValidatorResult{}, errors.Join(
+			treeErr,
+			fmt.Errorf("run validator turn: %w", turnErr),
+			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
+		)
 	}
 	if treeErr != nil {
 		return gate.ValidatorResult{}, errors.Join(treeErr,

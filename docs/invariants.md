@@ -25,8 +25,10 @@ the verdict. A changed head produces the existing wait verdict under the head
 that was actually reviewed; the next tick evaluates the new head. This keeps
 validation evidence attributable to its commit without giving workers lane
 ownership. The runner also verifies the review tree after `before_run`, after
-the validator turn, and after `after_run`; uncommitted hook or validator changes
-are instance failures and cannot yield a verdict. `TestValidatorStageTracksHeadBeforeAndDuringReview`,
+the validator turn, and after `after_run`. It also checks HEAD before cleanup,
+so a cleanup hook cannot hide a commit change. Workspace failures remain instance
+failures even when the validator turn also fails, and cannot yield a verdict.
+`TestRunnerValidateRejectsReviewWorkspaceMutation`, `TestValidatorStageTracksHeadBeforeAndDuringReview`,
 `TestLocalGitSeedReviewHead`, and `TestLocalGitVerifyReviewTreeAfterSeeding`
 cover these boundaries (#3031).
 
