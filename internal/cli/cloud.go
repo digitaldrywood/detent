@@ -84,10 +84,11 @@ func newCloudCommand(lookupEnv func(string) string) *cobra.Command {
 		lookupEnv = os.Getenv
 	}
 	cmd := &cobra.Command{
-		Use:   "cloud",
-		Short: "Run the operator-hosted shared entry for Detent Cloud",
-		Long:  "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to dedicated tenant Hubs. Self-hosted Detent never needs it.",
-		Args:  NoArgs,
+		Use:     "cloud",
+		Short:   "Run the operator-hosted shared entry for Detent Cloud",
+		Example: "detent cloud serve --entry-config /etc/detent/cloud.yaml",
+		Long:    "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to dedicated tenant Hubs. Self-hosted Detent never needs it.",
+		Args:    NoArgs,
 	}
 	cmd.AddCommand(newCloudServeCommand(lookupEnv), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv))
 	return cmd
@@ -124,9 +125,10 @@ func newCloudRegistryCommand() *cobra.Command {
 	var organization cloudentry.Organization
 	var disabled bool
 	cmd := &cobra.Command{
-		Use:   "registry",
-		Short: "Administer the stopped shared entry's organization registry",
-		Args:  NoArgs,
+		Use:     "registry",
+		Short:   "Administer the stopped shared entry's organization registry",
+		Example: "detent cloud registry list --registry /var/lib/detent/cloud/registry.db",
+		Args:    NoArgs,
 	}
 	cmd.PersistentFlags().StringVar(&registryPath, "registry", "", "registry database (STATE_DIRECTORY/registry.db); the shared entry must be stopped")
 	add := &cobra.Command{
@@ -159,6 +161,7 @@ func newCloudRegistryCommand() *cobra.Command {
 	list := &cobra.Command{
 		Use:          "list",
 		Short:        "List registered organizations",
+		Example:      "detent cloud registry list --registry /var/lib/detent/cloud/registry.db",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -184,6 +187,7 @@ func newCloudAssertionKeyCommand(lookupEnv func(string) string) *cobra.Command {
 	var keyEnv string
 	cmd := &cobra.Command{
 		Use:          "assertion-key",
+		Example:      "detent cloud assertion-key --from-env DETENT_CLOUD_ASSERTION_KEY",
 		Short:        "Generate an entry signing key, or print the public key for the configured one",
 		Long:         "Without --from-env, prints a new base64 Ed25519 signing seed and its public key as JSON; store the seed in the entry's secret environment and list the public key in each tenant's shared_entry.public_keys. With --from-env, prints only the public key for the seed in that variable.",
 		Args:         NoArgs,

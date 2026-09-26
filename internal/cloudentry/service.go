@@ -202,7 +202,11 @@ func (s *Service) setCookie(c echo.Context, name, value string, expires time.Tim
 	if value == "" {
 		maxAge = -1
 	}
-	c.SetCookie(&http.Cookie{Name: s.cookieName(name), Value: value, Path: "/", Expires: expires, MaxAge: maxAge, HttpOnly: true, Secure: s.secure, SameSite: http.SameSiteLaxMode})
+	cookie := &http.Cookie{Name: s.cookieName(name), Value: value, Path: "/", Expires: expires, MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}
+	if !s.secure {
+		cookie.Secure = c.Request().TLS != nil
+	}
+	c.SetCookie(cookie)
 }
 
 func (s *Service) session(c echo.Context) (accountSession, error) {
