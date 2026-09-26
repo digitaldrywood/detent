@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestHostedPagesExcludeInstanceSurfaces(t *testing.T) {
@@ -19,7 +18,6 @@ func TestHostedPagesExcludeInstanceSurfaces(t *testing.T) {
 		{mode: "login", title: "Sign in"},
 		{mode: "onboarding", title: "Your organization"},
 		{mode: "organization", title: "Organization"},
-		{mode: "project", title: "Project work"},
 		{mode: "denied", title: "Access denied"},
 		{mode: "support", title: "Support access"},
 		{mode: "unknown", title: "Organization"},
@@ -39,13 +37,10 @@ func TestHostedPagesExcludeInstanceSurfaces(t *testing.T) {
 					t.Errorf("hosted page contains forbidden instance or support surface %q", forbidden)
 				}
 			}
-			if tt.mode != "project" && strings.Contains(html, "private issue") {
-				t.Error("non-project page exposed issue content")
-			}
 			if tt.mode == "login" && (!strings.Contains(html, `href="/auth/oidc/start?unscoped=1"`) || !strings.Contains(html, "Join with invitation")) {
 				t.Error("login page has no invitation sign-in path")
 			}
-			if tt.mode != "organization" && tt.mode != "project" && strings.Contains(html, "Private project") {
+			if tt.mode != "organization" && strings.Contains(html, "Private project") {
 				t.Error("page outside organization scope exposed project metadata")
 			}
 		})
@@ -76,7 +71,7 @@ func TestHostedFormsCarryCSRF(t *testing.T) {
 	t.Parallel()
 
 	forms := regexp.MustCompile(`(?s)<form\b([^>]*)>(.*?)</form>`)
-	for _, mode := range []string{"onboarding", "organization", "project", "support", "denied"} {
+	for _, mode := range []string{"onboarding", "organization", "support", "denied"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			data := hostedTestData(mode)
@@ -249,38 +244,28 @@ func TestHostedSupportIdentityIndicator(t *testing.T) {
 	}
 }
 
-func TestHostedProjectContentAndEscaping(t *testing.T) {
+func TestHostedOrganizationContentAndEscaping(t *testing.T) {
 	t.Parallel()
 
-	data := hostedTestData("project")
+	data := hostedTestData("organization")
 	data.Title = "<script>title</script>"
 	data.Error, data.Notice = "<script>error</script>", "<script>notice</script>"
-	data.Issues = append(data.Issues,
-		tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "other-org", ProjectID: "project-example"}, Title: "other organization content"},
-		tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org-example", ProjectID: "other-project"}, Title: "other project content"},
-	)
 	html := renderSSEFingerprintComponent(t, HostedPage(data))
-	for _, forbidden := range []string{"other organization content", "other project content", "private issue body", "<script>"} {
-		if strings.Contains(html, forbidden) {
-			t.Errorf("project page contains %q", forbidden)
-		}
+	if strings.Contains(html, "<script>") {
+		t.Error("organization page rendered unescaped markup")
 	}
-	for _, want := range []string{`href="/projects/project-example/issues/issue-example"`, "private issue", "&lt;script&gt;title&lt;/script&gt;", `role="alert"`, `role="status"`} {
+	for _, want := range []string{`href="/projects/project-example"`, "Private project", "&lt;script&gt;title&lt;/script&gt;", `role="alert"`, `role="status"`} {
 		if !strings.Contains(html, want) {
-			t.Errorf("project page missing %q", want)
+			t.Errorf("organization page missing %q", want)
 		}
 	}
 }
 
 func hostedTestData(mode string) HostedPageData {
 	return HostedPageData{
-		Mode: mode, Email: "customer@example.com", OrganizationID: "org-example", OrganizationName: "Example organization", SelectedProject: "project-example", CSRF: "csrf-example",
+		Mode: mode, Email: "customer@example.com", OrganizationID: "org-example", OrganizationName: "Example organization", CSRF: "csrf-example",
 		Organizations: []HostedOrganizationChoice{{ID: "org-example", Name: "Example organization"}},
 		Projects:      []HostedProjectChoice{{ID: "project-example", Name: "Private project"}},
 		Members:       []HostedMember{{ID: "member-example", UserID: "user-example", Role: "member"}},
-		Issues: []tracker.NativeIssue{{
-			NativeReference: tracker.NativeReference{OrganizationID: "org-example", ProjectID: "project-example", WorkItemID: "issue-example"},
-			Title:           "private issue", Body: "private issue body", State: "Todo",
-		}},
 	}
 }
