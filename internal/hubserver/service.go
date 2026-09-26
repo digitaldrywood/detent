@@ -41,6 +41,7 @@ type Service struct {
 	reconcileStopOnce sync.Once
 	closeOnce         sync.Once
 	closeErr          error
+	clientBuild       appClientBuild
 }
 
 type healthResponse struct {
@@ -96,6 +97,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		workerDone:      make(chan struct{}),
 		reconcileCancel: reconcileCancel,
 		reconcileDone:   make(chan struct{}),
+		clientBuild:     conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
