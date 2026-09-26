@@ -1,0 +1,9 @@
+{
+  "key": "cmd_01J8Z0V6C3N4",
+  "kind": "message",
+  "text": "Check whether the lock renewal waits on a healthy handoff.",
+  "expected": {
+    "attempt_id": "att_18f4",
+    "turn_id": "turn_5"
+  }
+}

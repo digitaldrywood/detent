@@ -1,0 +1,48 @@
+{
+  "organization_id": "org_threefold",
+  "state": {
+    "subscription": {
+      "subscription_id": "sub_01J9QX",
+      "price_id": "price_team_monthly",
+      "status": "active",
+      "invoice_id": "in_01J9QX",
+      "invoice_status": "paid",
+      "invoice_created_at": "2026-09-01T00:00:00Z",
+      "period_end": "2026-10-01T00:00:00Z",
+      "cancel_at_period_end": false,
+      "payment_hold": ""
+    },
+    "status": "active",
+    "plan": { "id": "pilot_team", "version": 2 },
+    "paid_through": "2026-10-01T00:00:00Z",
+    "access_until": "2026-10-01T00:00:00Z",
+    "grace_until": "2026-10-08T00:00:00Z"
+  },
+  "entitlement": {
+    "organization_id": "org_threefold",
+    "base": { "id": "pilot_free", "version": 1 },
+    "effective_base": { "id": "pilot_team", "version": 2 },
+    "source": "subscription",
+    "revision": 4,
+    "features": ["collaboration", "native_execution", "github_integration"],
+    "allowances": { "members": 25, "projects": 25, "concurrent_work": 10 },
+    "grants": [],
+    "usage": { "members": 3, "projects": 2, "concurrent_work": 1 },
+    "window_ends_at": "2026-09-10T13:00:00Z"
+  },
+  "reconciled_at": "2026-09-10T11:58:00Z",
+  "pending_events": 0,
+  "recent_audit": [
+    {
+      "actor": "michael@threefold.solutions",
+      "action": "checkout_started",
+      "summary": "active price_team_monthly",
+      "at": "2026-09-01T00:00:00Z"
+    }
+  ],
+  "prices": [
+    { "id": "price_team_monthly", "label": "Team · $40 per month" },
+    { "id": "price_team_yearly", "label": "Team · $400 per year" }
+  ],
+  "can_checkout": true
+}

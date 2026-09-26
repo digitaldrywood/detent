@@ -1,0 +1,28 @@
+{
+  "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+  "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+  "work_item_id": "wi_3363aa10bb4f4c2d8e7f6a5b4c3d2e1f",
+  "number": 3363,
+  "revision": "4",
+  "profile": "native",
+  "title": "Checkout lock renewal waits on a healthy handoff",
+  "body": "The renewal path returns before the handoff completes, so a runner that lost its lease still believes it holds one.\n\n## Acceptance\n\n- The renewal blocks until the handoff is acknowledged.\n- A lost lease is reported as lost within one tick.",
+  "state": "In Progress",
+  "terminal": false,
+  "priority": 1,
+  "labels": ["bug", "goal:reliability"],
+  "assignees": ["michaelhvisser"],
+  "actor": { "kind": "human", "principal_id": "tok_7b21" },
+  "created_at": "2026-09-07T18:04:00Z",
+  "updated_at": "2026-09-09T10:02:44Z",
+  "dependencies": ["wi_3401c2d3e4f5a6b7c8d9e0f1a2b3c4d5"],
+  "blockers": [
+    {
+      "work_item_id": "wi_3401c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
+      "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+      "state": "Todo",
+      "terminal": false
+    }
+  ],
+  "external_references": []
+}

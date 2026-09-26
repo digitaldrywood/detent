@@ -575,6 +575,10 @@ func TestCIDraftAndVerifyDependencies(t *testing.T) {
 			t.Errorf("aggregate must reject failed, cancelled and skipped dependencies: missing %q", want)
 		}
 	}
+	fast := workflowBetween(t, workflow, "  verify-fast:\n", "  verify-race:\n")
+	if !strings.Contains(fast, "run: make check-app") {
+		t.Error("verify-fast must gate the Cloud client and its committed bundle")
+	}
 	race := workflowBetween(t, workflow, "  verify-race:\n", "  test-cover:\n")
 	for _, want := range []string{"shard: [0, 1, 2, 3]", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
 		if !strings.Contains(race, want) {

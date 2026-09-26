@@ -1,0 +1,26 @@
+{
+  "current": "v0.9.1",
+  "source": "hub",
+  "runners": [
+    {
+      "runner_id": "rnr_macbook",
+      "display_name": "Michael's MacBook Pro",
+      "version": "v0.9.0",
+      "online": true,
+      "behind": true
+    },
+    {
+      "runner_id": "rnr_studio",
+      "display_name": "Studio",
+      "version": "v0.9.1",
+      "online": true,
+      "behind": false
+    }
+  ],
+  "behind_count": 1,
+  "client": {
+    "version": "v0.9.1",
+    "build": "2f1c9e6a4b8d0f3c5a7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f01",
+    "served_at": "2026-09-12T09:00:00Z"
+  }
+}

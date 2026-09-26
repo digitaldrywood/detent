@@ -1,0 +1,30 @@
+{
+  "id": "msg_6a20f1c9",
+  "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+  "seq": 12,
+  "role": "assistant",
+  "kind": "status",
+  "text": "Linked to parable#3363.",
+  "data": {
+    "issue": {
+      "id": "wi_3363",
+      "identifier": "parable#3363",
+      "title": "Checkout lock renewal waits on a healthy handoff",
+      "state": "Todo",
+      "lane": "Todo",
+      "runner_bound": false
+    }
+  },
+  "delivery": "completed",
+  "attempt_id": null,
+  "turn_id": null,
+  "provider_item_id": null,
+  "actor": {
+    "kind": "coordinator",
+    "principal_id": "tok_hub"
+  },
+  "command_key": null,
+  "references": [],
+  "created_at": "2026-09-09T10:04:10Z",
+  "updated_at": "2026-09-09T10:04:10Z"
+}

@@ -1,0 +1,132 @@
+{
+  "conversation": {
+    "id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+    "organization_id": "org_4d1f",
+    "project_id": "proj_parable",
+    "title": "Flaky checkout lock renewal",
+    "visibility": "shared",
+    "status": "active",
+    "work_item_id": "wi_3363",
+    "linked_at": "2026-09-09T09:41:12Z",
+    "work_item": {
+      "id": "wi_3363",
+      "identifier": "parable#3363",
+      "title": "Checkout lock renewal waits on a healthy handoff",
+      "lane": "Todo",
+      "runner_bound": true
+    },
+    "preferences": {
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "access": "read_only"
+    },
+    "owner": {
+      "principal_id": "tok_7b21",
+      "subject": "usr_michael"
+    },
+    "execution": {
+      "status": "running",
+      "attempt_id": "att_18f4",
+      "run_id": "run_2c9a",
+      "runner_id": "rnr_mac_studio",
+      "thread_id": "thr_0d7e",
+      "turn_id": "turn_5",
+      "capabilities": {
+        "steer": true,
+        "interrupt": true,
+        "answer": true,
+        "continue": true
+      },
+      "resume": "thread",
+      "error": null,
+      "updated_at": "2026-09-09T10:02:44Z"
+    },
+    "revision": 12,
+    "event_seq": 40,
+    "message_count": 14,
+    "created_at": "2026-09-09T09:38:00Z",
+    "updated_at": "2026-09-09T10:02:44Z",
+    "last_message_at": "2026-09-09T10:02:41Z"
+  },
+  "messages": [
+    {
+      "id": "msg_6a20f1c4",
+      "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+      "seq": 7,
+      "role": "user",
+      "kind": "text",
+      "text": "Check whether the lock renewal waits on a healthy handoff.",
+      "data": {},
+      "delivery": "delivered",
+      "attempt_id": "att_18f4",
+      "turn_id": "turn_5",
+      "provider_item_id": null,
+      "actor": {
+        "kind": "human",
+        "principal_id": "tok_7b21"
+      },
+      "command_key": "cmd_01J8Z0V6C3N4",
+      "references": [],
+      "created_at": "2026-09-09T10:02:41Z",
+      "updated_at": "2026-09-09T10:02:43Z"
+    },
+    {
+      "id": "msg_6a20f1c5",
+      "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+      "seq": 8,
+      "role": "assistant",
+      "kind": "text",
+      "text": "The renewal path returns before the handoff completes, so the lease can lapse.",
+      "data": {},
+      "delivery": "completed",
+      "attempt_id": "att_18f4",
+      "turn_id": "turn_5",
+      "provider_item_id": "item_9d1",
+      "actor": {
+        "kind": "runner",
+        "principal_id": "rnr_mac_studio"
+      },
+      "command_key": null,
+      "references": [],
+      "created_at": "2026-09-09T10:02:45Z",
+      "updated_at": "2026-09-09T10:03:02Z"
+    }
+  ],
+  "questions": [
+    {
+      "id": "q_4f81ba07",
+      "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+      "message_id": "msg_6a20f1c7",
+      "status": "pending",
+      "owner": {
+        "attempt_id": "att_18f4",
+        "turn_id": "turn_5"
+      },
+      "questions": [
+        {
+          "id": "renewal-window",
+          "header": "Renewal window",
+          "question": "Which renewal window should the lock use?",
+          "options": [
+            {
+              "label": "Half the lease",
+              "description": "Renew at 50 percent of the lease duration."
+            },
+            {
+              "label": "Fixed 20 seconds",
+              "description": "Renew on a fixed cadence regardless of lease length."
+            }
+          ],
+          "free_text": true
+        }
+      ],
+      "answers": {},
+      "answered_by": null,
+      "expires_at": "2026-09-10T10:03:20Z",
+      "created_at": "2026-09-09T10:03:20Z",
+      "updated_at": "2026-09-09T10:03:20Z"
+    }
+  ],
+  "cursor": 40,
+  "has_more": true
+}
