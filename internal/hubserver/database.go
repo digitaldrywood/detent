@@ -26,10 +26,15 @@ type database struct {
 	hostedOrganization tracker.OrganizationID
 	hostedPlans        *HostedPlansConfig
 	hostedBilling      bool
-	now                func() time.Time
-	newLeaseID         func() string
-	closeOnce          sync.Once
-	closeErr           error
+	// workspaceRetainAfterRun is workspaces.retain_after_run, read by the
+	// claim gate: inside that window an attempt's worktree still exists on
+	// the runner that produced it, and only that runner may serve a
+	// workspace on the attempt (decisions section 18.1).
+	workspaceRetainAfterRun time.Duration
+	now                     func() time.Time
+	newLeaseID              func() string
+	closeOnce               sync.Once
+	closeErr                error
 }
 
 func openDatabase(ctx context.Context, cfg Config) (*database, error) {
@@ -57,6 +62,9 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	db.SetMaxIdleConns(1)
 
 	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID}
+	if cfg.Workspace != nil {
+		store.workspaceRetainAfterRun = cfg.Workspace.RetainAfterRun
+	}
 	if err := store.configure(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}

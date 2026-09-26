@@ -13,6 +13,14 @@ const NativeProtocolMajor = 2
 
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
 
+// NativeWorkspaceCapability is declared by a runner's workspace lane on its
+// claim. It is what separates the lane that holds a workspace session open
+// from the lane that runs issues: a workspace is its own work item kind and
+// the ordinary claim never sees one (decisions section 18.1). The signal is a
+// declared capability rather than a label filter, because a label filter is a
+// preference an operator can set on any lane and this is an authority.
+const NativeWorkspaceCapability = "workspace_sessions"
+
 type OrganizationID string
 type ProjectID string
 type NativeWorkItemID string

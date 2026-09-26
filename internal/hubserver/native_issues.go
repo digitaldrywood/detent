@@ -187,6 +187,9 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
 		return nil, err
 	}
+	if err := requireUnreservedLabels(ctx, request.Labels); err != nil {
+		return nil, err
+	}
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
 		return nil, err
 	}
@@ -378,6 +381,9 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 			fields = append(fields, "body")
 		}
 		if request.Labels != nil {
+			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
+				return nil, err
+			}
 			issue.Labels = *request.Labels
 			fields = append(fields, "labels")
 		}

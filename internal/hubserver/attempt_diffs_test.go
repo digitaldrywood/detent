@@ -95,7 +95,7 @@ func (f *attemptDiffFixture) get(t *testing.T, query string) *httptest.ResponseR
 	return performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/attempts/"+f.attempt+"/diff"+query, f.token, nil)
 }
 
-func requireNativeCode(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
+func requireNativeCode(t *testing.T, response *httptest.ResponseRecorder, status int, code string) nativeError {
 	t.Helper()
 	requireNativeStatus(t, response, status)
 	var failure nativeError
@@ -103,6 +103,7 @@ func requireNativeCode(t *testing.T, response *httptest.ResponseRecorder, status
 	if failure.Code != code {
 		t.Fatalf("code = %q, want %q: %s", failure.Code, code, response.Body.String())
 	}
+	return failure
 }
 
 // The default read is the latest attempt-produced diff; ?at=<seq> reads that

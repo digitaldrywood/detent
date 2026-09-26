@@ -140,6 +140,15 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"conversation_attachments",
 		"conversation_attachment_blobs",
 		"message_references",
+		// Workspace sessions, the relay and the typed project event stream
+		// (decisions sections 18.1, 18.2 and 12).
+		"project_events",
+		"workspace_sessions",
+		"workspace_items",
+		"workspace_occupancy",
+		"workspace_relay_tickets",
+		"workspace_relay_sessions",
+		"workspace_terminal_recordings",
 	}
 	sort.Strings(wantTables)
 	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {
