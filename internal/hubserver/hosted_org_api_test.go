@@ -208,8 +208,6 @@ func TestListHostedMembersIsOrdered(t *testing.T) {
 	}
 }
 
-const browserHostedOrganizationBase = "/api/v2/organizations/org_browser_preview"
-
 func (f *browserHostedFixture) api(t *testing.T, account, method, path string, body any, status int) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader io.Reader
