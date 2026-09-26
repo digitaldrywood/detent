@@ -78,6 +78,13 @@ func TestAppShellServing(t *testing.T) {
 		{name: "reserved webhooks", account: "owner", path: "/webhooks/unknown", status: http.StatusNotFound},
 		{name: "reserved health", account: "owner", path: "/health", status: http.StatusNotFound},
 		{name: "reserved logout", account: "owner", path: "/logout", status: http.StatusNotFound},
+		{name: "reserved api root", account: "owner", path: "/api", status: http.StatusNotFound},
+		{name: "reserved app root", account: "owner", path: "/app", status: http.StatusNotFound},
+		{name: "reserved app subtree", account: "owner", path: "/app/unknown", status: http.StatusNotFound},
+		{name: "reserved auth root", account: "owner", path: "/auth", status: http.StatusNotFound},
+		{name: "reserved webhooks root", account: "owner", path: "/webhooks", status: http.StatusNotFound},
+		{name: "reserved static root", account: "owner", path: "/static", status: http.StatusNotFound},
+		{name: "reserved metrics", account: "owner", path: "/metrics", status: http.StatusNotFound},
 		{name: "mutation", account: "owner", method: http.MethodPost, path: "/work", status: http.StatusNotFound},
 		{name: "root mutation", account: "owner", method: http.MethodPost, path: "/", status: http.StatusNotFound},
 	} {
@@ -127,12 +134,21 @@ func TestAppReserved(t *testing.T) {
 		{path: "/auth/oidc/start", want: true},
 		{path: "/webhooks/stripe", want: true},
 		{path: "/static/app/conversation/app.js", want: true},
+		{path: "/api", want: true},
+		{path: "/app", want: true},
+		{path: "/app/bootstrap", want: true},
+		{path: "/auth", want: true},
+		{path: "/webhooks", want: true},
+		{path: "/static", want: true},
+		{path: "/metrics", want: true},
 		{path: "/health", want: true},
 		{path: "/invite", want: true},
 		{path: "/logout", want: true},
 		{path: "/healthy"},
 		{path: "/invites"},
 		{path: "/apis"},
+		{path: "/application"},
+		{path: "/metrics/x"},
 		{path: "/work"},
 		{path: "/"},
 	} {
@@ -264,7 +280,11 @@ func TestRunnerBehind(t *testing.T) {
 	}{
 		{name: "same build", current: "v1.2.3", reported: "v1.2.3"},
 		{name: "older build", current: "v1.2.4", reported: "v1.2.3", want: true},
-		{name: "newer build", current: "v1.2.3", reported: "v1.2.4", want: true},
+		{name: "older minor", current: "v1.10.0", reported: "v1.9.9", want: true},
+		{name: "prerelease of the hub's build", current: "v1.2.4", reported: "v1.2.4-rc.1", want: true},
+		{name: "newer build", current: "v1.2.3", reported: "v1.2.4"},
+		{name: "unprefixed versions", current: "1.2.4", reported: "1.2.3", want: true},
+		{name: "not a release version", current: "v1.2.3", reported: "abc123"},
 		{name: "runner never reported", current: "v1.2.3", reported: ""},
 		{name: "runner on a development build", current: "v1.2.3", reported: "dev"},
 		{name: "hub on a development build", current: "dev", reported: "v1.2.3"},
@@ -283,7 +303,6 @@ func TestRunnerBehind(t *testing.T) {
 func TestAppUpdates(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newBrowserHostedFixture(t, true)
-	browserHostedStatus(t, f.appRequest(t, "", http.MethodGet, "/app/updates"), http.StatusUnauthorized)
 	read := func(t *testing.T, account string) appUpdates {
 		t.Helper()
 		response := f.appRequest(t, account, http.MethodGet, "/app/updates")
@@ -292,6 +311,23 @@ func TestAppUpdates(t *testing.T) {
 		decodeHubResponse(t, response, &payload)
 		return payload
 	}
+	for _, test := range []struct {
+		account string
+		status  int
+	}{
+		{status: http.StatusUnauthorized},
+		{account: "staff", status: http.StatusForbidden},
+		{account: "wrong-organization", status: http.StatusForbidden},
+		{account: "invitee", status: http.StatusForbidden},
+		{account: "viewer", status: http.StatusNotFound},
+		{account: "owner", status: http.StatusNotFound},
+	} {
+		t.Run("denied "+test.account, func(t *testing.T) {
+			browserHostedStatus(t, f.appRequest(t, test.account, http.MethodGet, "/app/updates"), test.status)
+		})
+	}
+	grantAppRunners(t, f)
+	browserHostedStatus(t, f.appRequest(t, "viewer", http.MethodGet, "/app/updates"), http.StatusNotFound)
 	payload := read(t, "owner")
 	if payload.Source != "hub" || payload.Current != strings.TrimSpace(f.service.config.Version) {
 		t.Fatalf("report = %#v", payload)
@@ -304,35 +340,45 @@ func TestAppUpdates(t *testing.T) {
 	}
 
 	f.service.config.Version = "v1.2.4"
-	grantAppRunners(t, f)
 	behind := enrollAppRunner(t, f, "Athens", "v1.2.3")
 	offline := enrollAppRunner(t, f, "Cairo", "v1.2.3")
 	revoked := enrollAppRunner(t, f, "Delhi", "v1.0.0")
 	up := enrollAppRunner(t, f, "Dublin", "v1.2.4")
+	ahead := enrollAppRunner(t, f, "Essen", "v1.3.0")
 	stale := formatHubTime(f.service.config.now().Add(-2 * runnerauth.HeartbeatTimeout))
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", stale, offline); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", stale, offline.RunnerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = (SELECT token_id FROM runner_identities WHERE id = ?)", formatHubTime(f.service.config.now()), revoked); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = (SELECT token_id FROM runner_identities WHERE id = ?)", formatHubTime(f.service.config.now()), revoked.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 
 	payload = read(t, "owner")
-	if payload.Current != "v1.2.4" || payload.BehindCount != 2 || len(payload.Runners) != 3 {
+	if payload.Current != "v1.2.4" || payload.BehindCount != 2 || len(payload.Runners) != 4 {
 		t.Fatalf("report = %#v", payload)
 	}
 	for index, want := range []appUpdateRunner{
-		{RunnerID: behind, DisplayName: "Athens", Version: "v1.2.3", Online: true, Behind: true},
-		{RunnerID: offline, DisplayName: "Cairo", Version: "v1.2.3", Behind: true},
-		{RunnerID: up, DisplayName: "Dublin", Version: "v1.2.4", Online: true},
+		{RunnerID: behind.RunnerID, DisplayName: "Athens", Version: "v1.2.3", Online: true, Behind: true},
+		{RunnerID: offline.RunnerID, DisplayName: "Cairo", Version: "v1.2.3", Behind: true},
+		{RunnerID: up.RunnerID, DisplayName: "Dublin", Version: "v1.2.4", Online: true},
+		{RunnerID: ahead.RunnerID, DisplayName: "Essen", Version: "v1.3.0", Online: true},
 	} {
 		if payload.Runners[index] != want {
 			t.Fatalf("runner %d = %#v, want %#v", index, payload.Runners[index], want)
 		}
 	}
-	if viewer := read(t, "viewer"); viewer.BehindCount != payload.BehindCount {
-		t.Fatalf("viewer = %#v, owner = %#v", viewer, payload)
+
+	heartbeat := "/api/v2/organizations/org_browser_preview/projects/" + f.project + "/machines/" + string(behind.MachineID) + "/heartbeat"
+	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v1.2.4"}), http.StatusNoContent)
+	payload = read(t, "owner")
+	if payload.BehindCount != 1 || payload.Runners[0].Version != "v1.2.4" || payload.Runners[0].Behind {
+		t.Fatalf("after upgrade heartbeat = %#v", payload)
 	}
+}
+
+type appTestRunner struct {
+	runnerauth.Binding
+	Credential string
 }
 
 func grantAppRunners(t *testing.T, f *browserHostedFixture) {
@@ -342,7 +388,7 @@ func grantAppRunners(t *testing.T, f *browserHostedFixture) {
 	}
 }
 
-func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version string) string {
+func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version string) appTestRunner {
 	t.Helper()
 	organization := "/api/v2/organizations/org_browser_preview"
 	binding := runnerauth.NewBinding()
@@ -357,7 +403,7 @@ func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version
 	}
 	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: strings.ToLower(name) + ".example.test", DisplayName: name, Capacity: 1, Version: version}
 	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
-	return binding.RunnerID
+	return appTestRunner{Binding: binding, Credential: credential}
 }
 
 func sha256Hex(body string) string {

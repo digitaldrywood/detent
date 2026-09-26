@@ -179,7 +179,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	}
 	return s.runnerTransaction(c, http.StatusNoContent, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
-			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.OS, request.Architecture, now); err != nil {
+			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
 			return struct{}{}, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
@@ -196,7 +196,7 @@ func validRunnerPlatform(os, architecture string) bool {
 	return (os == "" || policy.ValidToken(os)) && (architecture == "" || policy.ValidToken(architecture))
 }
 
-func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, capacity int, os, architecture string, now time.Time) error {
+func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, capacity int, version, os, architecture string, now time.Time) error {
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return err
 	}
@@ -207,6 +207,6 @@ func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if err := requireRunnerUpdate(result, nil); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE machines SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?", formatHubTime(now), formatHubTime(now), scope.credential.Runner.MachineID)
+	_, err = tx.ExecContext(ctx, "UPDATE machines SET version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ?", version, formatHubTime(now), formatHubTime(now), scope.credential.Runner.MachineID)
 	return err
 }

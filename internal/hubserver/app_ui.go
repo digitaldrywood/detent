@@ -17,9 +17,9 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/update"
 )
 
 // conversationClientFS holds the built client under app/conversation. It is
@@ -37,17 +37,17 @@ const conversationClientEntry = "app/conversation/app.js"
 // exchange, webhooks, the static bundle, health and sign-out. Everything else
 // is a client route (decisions section 12).
 var (
-	appReservedPrefixes = []string{"/api/", "/auth/", "/webhooks/", "/static/"}
-	appReservedPaths    = []string{"/health", "/invite", "/logout"}
+	appReservedNamespaces = []string{"/api", "/app", "/auth", "/webhooks", "/static"}
+	appReservedPaths      = []string{"/health", "/invite", "/logout", "/metrics"}
 )
 
 // appReserved reports whether a path belongs to the hub rather than the
-// client. A reserved prefix owns its whole subtree; a reserved path owns only
-// itself, so a client route that merely starts with the same letters stays a
-// client route.
+// client. A reserved namespace owns its root and its whole subtree; a reserved
+// path owns only itself, so a client route that merely starts with the same
+// letters stays a client route.
 func appReserved(path string) bool {
-	return slices.Contains(appReservedPaths, path) || slices.ContainsFunc(appReservedPrefixes, func(prefix string) bool {
-		return strings.HasPrefix(path, prefix)
+	return slices.Contains(appReservedPaths, path) || slices.ContainsFunc(appReservedNamespaces, func(namespace string) bool {
+		return path == namespace || strings.HasPrefix(path, namespace+"/")
 	})
 }
 
@@ -180,27 +180,32 @@ func detentVersion(version string) string {
 	return strings.TrimSpace(version)
 }
 
-// runnerBehind reports whether a runner's build is behind the hub's. It is the
-// same comparison `detent doctor` makes between a running and an installed
-// binary (buildinfo.DetectDrift), so a placeholder version on either side is
-// "cannot tell" rather than "behind": an unversioned development build must
-// never light up an update badge on somebody's fleet.
+// runnerBehind reports whether a runner's build is older than the hub's. A
+// version that is not a release version on either side is "cannot tell"
+// rather than "behind": an unversioned development build must never light up
+// an update badge on somebody's fleet.
 func runnerBehind(current string, reported string) bool {
-	drift := buildinfo.DetectDrift(buildinfo.Info{Version: reported}, buildinfo.Info{Version: current})
-	return drift.Comparable && drift.Detected
+	order, err := update.CompareVersions(reported, current)
+	return err == nil && order < 0
 }
 
 // appUpdates implements GET /app/updates for the footer's pill: which enrolled
 // runners are not on the hub's build.
 //
-// It is gated on the session alone and reads one row per runner. The fleet
-// screen's own endpoint answers the same fact in much more detail — leases,
-// provider capacity, per-runner grants — and re-reading all of that every few
-// minutes for a badge would be the wrong trade. A revoked enrolment is not in
-// the answer: it is not a runner anybody is going to upgrade.
+// It needs the same authority as the runners list: a member of this
+// organization who is not a viewer and manages runners on every project. It
+// reads one row per runner. A revoked enrolment is not in the answer: it is
+// not a runner anybody is going to upgrade.
 func (s *Service) appUpdates(c echo.Context) error {
-	if _, _, err := s.hostedSession(c); err != nil {
+	credential, status, err := s.hostedCredential(c)
+	if err != nil {
+		if status == http.StatusForbidden {
+			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+		}
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
+	}
+	if credential.HostedRole == "viewer" || !s.hostedAllRunnerGrants(c.Request().Context(), credential) {
+		return s.nativeAPIError(c, nativeNotFound())
 	}
 	current := detentVersion(s.config.Version)
 	payload := appUpdates{Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
