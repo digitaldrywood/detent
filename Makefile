@@ -131,6 +131,10 @@ check-app:
 			echo "static/app/conversation/app.js is missing the MIT attribution banner."; \
 			exit 1; \
 		}; \
+		grep -q "^react@" static/app/conversation/THIRD_PARTY_LICENSES.txt || { \
+			echo "static/app/conversation/THIRD_PARTY_LICENSES.txt is missing bundled dependency licenses."; \
+			exit 1; \
+		}; \
 	else \
 		echo "No conversation client at $(APP_DIR); skipping client checks."; \
 	fi

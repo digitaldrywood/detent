@@ -60,13 +60,69 @@ function mitAttribution(): Plugin {
   };
 }
 
+/**
+ * Emits THIRD_PARTY_LICENSES.txt next to the bundle: the name, version,
+ * declared license, and every LICENSE/NOTICE/COPYING file of each npm package
+ * the build pulled in, sorted so the output is deterministic.
+ */
+function thirdPartyLicenses(): Plugin {
+  return {
+    name: "detent-third-party-licenses",
+    apply: "build",
+    async generateBundle(_options, bundle) {
+      const { existsSync, readdirSync } = await import("node:fs");
+      const { dirname, join, sep } = await import("node:path");
+      const marker = `${sep}node_modules${sep}`;
+      const roots = new Set<string>();
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        for (const id of output.moduleIds) {
+          const path = id.replace(/^\0/, "").split("?")[0] ?? "";
+          const at = path.lastIndexOf(marker);
+          if (at < 0) continue;
+          const rest = path.slice(at + marker.length).split(sep);
+          const depth = rest[0]?.startsWith("@") ? 2 : 1;
+          let root = join(path.slice(0, at + marker.length), ...rest.slice(0, depth));
+          while (!existsSync(join(root, "package.json")) && root !== dirname(root)) root = dirname(root);
+          roots.add(root);
+        }
+      }
+      const entries: string[] = [];
+      for (const root of [...roots].sort()) {
+        const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+          name?: string;
+          version?: string;
+          license?: string;
+        };
+        const files = readdirSync(root)
+          .filter((name) => /^(licen[cs]e|notice|copying)/i.test(name))
+          .sort();
+        const texts = files.map((name) => readFileSync(join(root, name), "utf8").trimEnd());
+        entries.push(
+          [
+            `${manifest.name ?? root}@${manifest.version ?? "unknown"}`,
+            `License: ${manifest.license ?? "see below"}`,
+            ...texts,
+          ].join("\n\n"),
+        );
+      }
+      const unique = [...new Set(entries)];
+      this.emitFile({
+        type: "asset",
+        fileName: "THIRD_PARTY_LICENSES.txt",
+        source: `Third-party software bundled in Detent Cloud.\n\n${unique.join(`\n\n${"-".repeat(72)}\n\n`)}\n`,
+      });
+    },
+  };
+}
+
 /** The hub the dev server proxies API and bootstrap requests to. */
 const hubUrl = process.env.DETENT_HUB_URL || "http://127.0.0.1:4100";
 
 export default defineConfig({
   // The hub serves the bundle from the embedded filesystem under this prefix.
   base: "/static/app/conversation/",
-  plugins: [tailwindcss(), mitAttribution()],
+  plugins: [tailwindcss(), mitAttribution(), thirdPartyLicenses()],
   resolve: {
     alias: {
       "~": fileURLToPath(new URL("./src", import.meta.url)),

@@ -14,3 +14,7 @@ Copyright 2025 Pierre Computer Company
 The full license and upstream copyright notice are reproduced in
 [LICENSE.pierre-diffs](./LICENSE.pierre-diffs), from version `1.3.0-beta.10`.
 Both licenses are included in the distributed client bundle.
+
+## Bundled npm dependencies
+
+The build writes `static/app/conversation/THIRD_PARTY_LICENSES.txt` with the name, version, declared license, and every LICENSE, NOTICE, and COPYING file of each npm package in the bundle. `make check-app` fails when it is missing.
