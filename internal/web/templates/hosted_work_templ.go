@@ -62,9 +62,9 @@ func hostedWork(data HostedPageData) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var4 templ.SafeURL
-		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(hostedProjectPath(data.SelectedProject)))
+		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(hostedURL(data, hostedProjectPath(data.SelectedProject)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 8, Col: 109}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 8, Col: 111}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -75,7 +75,7 @@ func hostedWork(data HostedPageData) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var5 templ.SafeURL
-		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(hostedProjectPath(data.SelectedProject) + "/changes"))
+		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinURLErrs(hostedURL(data, hostedProjectPath(data.SelectedProject)+"/changes"))
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 9, Col: 122}
 		}
@@ -93,9 +93,9 @@ func hostedWork(data HostedPageData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var6 templ.SafeURL
-			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(NativeIssuePath(data.SelectedProject, data.Issue.WorkItemID)))
+			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(hostedURL(data, NativeIssuePath(data.SelectedProject, data.Issue.WorkItemID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 11, Col: 131}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 11, Col: 133}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -127,9 +127,9 @@ func hostedWork(data HostedPageData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var7 templ.SafeURL
-				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(ChangePath(data.SelectedProject, change.WorkItemID, change.ID)))
+				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinURLErrs(hostedURL(data, ChangePath(data.SelectedProject, change.WorkItemID, change.ID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 21, Col: 147}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 21, Col: 149}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {
@@ -142,7 +142,7 @@ func hostedWork(data HostedPageData) templ.Component {
 				var templ_7745c5c3_Var8 string
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(change.Title)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 21, Col: 164}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 21, Col: 166}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
@@ -159,9 +159,9 @@ func hostedWork(data HostedPageData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var9 templ.SafeURL
-				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(data.NextChanges))
+				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(hostedURL(data, data.NextChanges))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 24, Col: 145}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hosted_work.templ`, Line: 24, Col: 147}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {

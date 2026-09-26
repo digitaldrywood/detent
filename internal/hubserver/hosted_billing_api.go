@@ -68,7 +68,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		return s.hostedError(c, http.StatusConflict, "A checkout is already pending. Retry the same plan or wait for that checkout to expire.")
 	}
 	if checkout.Session.URL == "" {
-		session, err := cfg.Provider.Checkout(ctx, billing.CheckoutRequest{Binding: cfg.binding(s.config.Hosted.OrganizationID), PriceID: checkout.PriceID, IdempotencyKey: checkout.Key, ExpiresAt: checkout.ExpiresAt, ReturnURL: s.config.Hosted.PublicURL + "/organization/billing"})
+		session, err := cfg.Provider.Checkout(ctx, billing.CheckoutRequest{Binding: cfg.binding(s.config.Hosted.OrganizationID), PriceID: checkout.PriceID, IdempotencyKey: checkout.Key, ExpiresAt: checkout.ExpiresAt, ReturnURL: s.config.Hosted.PublicURL + s.hostedPath("/organization/billing")})
 		if err != nil {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Checkout is temporarily unavailable. Retry to resume the same purchase.")
 		}
@@ -143,7 +143,7 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 45*time.Second)
 	defer cancel()
-	session, err := cfg.Provider.Portal(ctx, cfg.binding(s.config.Hosted.OrganizationID), cfg.PortalConfigurationID, s.config.Hosted.PublicURL+"/organization/billing")
+	session, err := cfg.Provider.Portal(ctx, cfg.binding(s.config.Hosted.OrganizationID), cfg.PortalConfigurationID, s.config.Hosted.PublicURL+s.hostedPath("/organization/billing"))
 	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The billing portal is temporarily unavailable. Existing data and exports remain available.")
 	}

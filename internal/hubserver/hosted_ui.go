@@ -57,6 +57,10 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 
 func (s *Service) renderHosted(c echo.Context, status int, data templates.HostedPageData) error {
 	data.OrganizationID = s.config.Hosted.OrganizationID
+	data.Base, data.SharedOrigin = s.hostedBase(), s.hostedShared()
+	if data.SharedOrigin {
+		data.CanSupport = false
+	}
 	data.Assets.Favicon = "/static/img/detent-mark.svg"
 	if data.OrganizationName == "" {
 		data.OrganizationName = data.OrganizationID
@@ -68,7 +72,9 @@ func (s *Service) renderHosted(c echo.Context, status int, data templates.Hosted
 			data.SupportExpiry = session.ExpiresAt.UTC().Format(time.RFC3339)
 		}
 	}
-	if cookie, err := c.Cookie(hostedCookie); err == nil {
+	if data.SharedOrigin {
+		data.CSRF = s.hostedSharedCSRF(c)
+	} else if cookie, err := c.Cookie(hostedCookie); err == nil {
 		data.CSRF = hostedCSRF(cookie.Value)
 	}
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
@@ -83,7 +89,7 @@ func (s *Service) hostedError(c echo.Context, status int, message string) error 
 func (s *Service) hostedHome(c echo.Context) error {
 	session, _, err := s.hostedSession(c)
 	if err != nil {
-		return c.Redirect(http.StatusSeeOther, "/login")
+		return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 	}
 	data := templates.HostedPageData{Mode: "onboarding", Title: "Your organization", Email: session.Email}
 	var members int
@@ -109,7 +115,7 @@ func (s *Service) hostedHome(c echo.Context) error {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable")
 		}
 	}
-	if session.Identity.SupportActor == "" {
+	if session.Identity.SupportActor == "" && !s.hostedShared() {
 		memberships, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), session.Identity.Subject, "")
 		if err != nil {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")

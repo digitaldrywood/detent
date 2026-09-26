@@ -68,6 +68,7 @@ type Config struct {
 	ReconcileInterval          time.Duration
 	FullRepairInterval         time.Duration
 
+	hostedBindingMigration     bool
 	validateDatabaseFilesystem func(string) error
 	listen                     func(context.Context, string, string) (net.Listener, error)
 	now                        func() time.Time

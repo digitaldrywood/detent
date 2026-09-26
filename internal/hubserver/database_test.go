@@ -83,6 +83,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"hosted_billing_audit",
 		"hosted_billing_events",
 		"hosted_billing_prices",
+		"hosted_binding_migrations",
 		"hosted_plans",
 		"hosted_plan_assignments",
 		"hosted_complimentary_grants",

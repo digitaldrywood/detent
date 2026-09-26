@@ -5,10 +5,10 @@ import "strconv"
 templ hostedWork(data HostedPageData) {
 	<div class="min-w-0 space-y-5 break-words [overflow-wrap:anywhere]" data-hosted-work data-api={ data.SetupAPI } data-csrf={ data.CSRF }>
 		<nav aria-label="Project work navigation" class="flex flex-wrap gap-x-5 gap-y-2 text-sm text-accent">
-			<a class="inline-flex min-h-11 items-center" href={ templ.SafeURL(hostedProjectPath(data.SelectedProject)) }>Project work</a>
-			<a class="inline-flex min-h-11 items-center" href={ templ.SafeURL(hostedProjectPath(data.SelectedProject) + "/changes") }>Changes</a>
+			<a class="inline-flex min-h-11 items-center" href={ hostedURL(data, hostedProjectPath(data.SelectedProject)) }>Project work</a>
+			<a class="inline-flex min-h-11 items-center" href={ hostedURL(data, hostedProjectPath(data.SelectedProject)+"/changes") }>Changes</a>
 			if data.Issue != nil {
-				<a class="inline-flex min-h-11 items-center" href={ templ.SafeURL(NativeIssuePath(data.SelectedProject, data.Issue.WorkItemID)) }>Issue</a>
+				<a class="inline-flex min-h-11 items-center" href={ hostedURL(data, NativeIssuePath(data.SelectedProject, data.Issue.WorkItemID)) }>Issue</a>
 			}
 		</nav>
 		if data.Mode == "changes" {
@@ -18,10 +18,10 @@ templ hostedWork(data HostedPageData) {
 					<p class="text-sm text-sec">No Changes in this project yet. Open an issue to start one.</p>
 				}
 				for _, change := range data.Changes {
-					<a class="flex min-h-11 items-center text-sm text-accent" href={ templ.SafeURL(ChangePath(data.SelectedProject, change.WorkItemID, change.ID)) }>{ change.Title }</a>
+					<a class="flex min-h-11 items-center text-sm text-accent" href={ hostedURL(data, ChangePath(data.SelectedProject, change.WorkItemID, change.ID)) }>{ change.Title }</a>
 				}
 				if data.NextChanges != "" {
-					<a class="inline-flex min-h-11 items-center rounded-card border border-line px-3 text-sm text-accent" href={ templ.SafeURL(data.NextChanges) }>Older Changes</a>
+					<a class="inline-flex min-h-11 items-center rounded-card border border-line px-3 text-sm text-accent" href={ hostedURL(data, data.NextChanges) }>Older Changes</a>
 				}
 			</section>
 		} else if data.Change != nil {

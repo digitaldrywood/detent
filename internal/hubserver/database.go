@@ -77,6 +77,9 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 			return nil, errors.Join(ErrHostedDatabaseBinding, store.Close())
 		}
 	}
+	if cfg.hostedBindingMigration {
+		return store, nil
+	}
 	if err := store.bindHostedDatabase(ctx, cfg.Hosted); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}

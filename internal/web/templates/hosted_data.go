@@ -3,11 +3,15 @@ package templates
 import (
 	"net/url"
 
+	"github.com/a-h/templ"
+
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type HostedPageData struct {
+	Base                string
+	SharedOrigin        bool
 	Issue               *tracker.NativeIssue
 	Change              *tracker.ChangeDetail
 	Changes             []tracker.ChangeRequest
@@ -105,6 +109,24 @@ func hostedPageTitle(data HostedPageData) string {
 	default:
 		return "Organization"
 	}
+}
+
+func hostedURL(data HostedPageData, path string) templ.SafeURL {
+	return templ.SafeURL(data.Base + path)
+}
+
+func hostedSignInURL(data HostedPageData) templ.SafeURL {
+	if data.SharedOrigin {
+		return templ.SafeURL("/organizations")
+	}
+	return templ.SafeURL("/auth/oidc/start")
+}
+
+func hostedJoinURL(data HostedPageData) templ.SafeURL {
+	if data.SharedOrigin {
+		return templ.SafeURL("/invitations/join")
+	}
+	return templ.SafeURL("/auth/oidc/start?unscoped=1")
 }
 
 func hostedProjectPath(project string) string {

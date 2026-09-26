@@ -23,6 +23,10 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		return
 	}
 	if s.config.Hosted != nil {
+		if s.hostedShared() {
+			e.Pre(s.hostedSharedEntry)
+			s.registerHostedSharedRoutes(e)
+		}
 		e.Use(s.hostedBoundary)
 		s.registerHostedRoutes(e)
 	}

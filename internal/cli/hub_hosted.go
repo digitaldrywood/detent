@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
@@ -28,12 +29,31 @@ type hostedFileConfig struct {
 	StorageQuotaBytes        int64                         `yaml:"storage_quota_bytes"`
 	EventQuota               int64                         `yaml:"event_quota"`
 	Directory                []hubserver.HostedDestination `yaml:"directory"`
+	SharedEntry              *hostedSharedEntryFileConfig  `yaml:"shared_entry"`
 	WorkOS                   struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
 		APIURL    string `yaml:"api_url"`
 		IssuerURL string `yaml:"issuer_url"`
 	} `yaml:"workos"`
+}
+
+type hostedSharedEntryFileConfig struct {
+	Issuer               string   `yaml:"issuer"`
+	PublicKeys           []string `yaml:"public_keys"`
+	AllocationGeneration int64    `yaml:"allocation_generation"`
+}
+
+func readHostedSharedEntry(config *hostedSharedEntryFileConfig) (*hubserver.HostedSharedEntry, error) {
+	entry := &hubserver.HostedSharedEntry{Issuer: config.Issuer, Generation: config.AllocationGeneration}
+	for _, value := range config.PublicKeys {
+		key, err := cloudassert.ParsePublicKey(value)
+		if err != nil {
+			return nil, err
+		}
+		entry.PublicKeys = append(entry.PublicKeys, key)
+	}
+	return entry, nil
 }
 
 type hostedBillingFileConfig struct {
@@ -115,6 +135,12 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 			return nil, false, errors.New("entitlement administration token is unavailable or too short")
 		}
 	}
+	var sharedEntry *hubserver.HostedSharedEntry
+	if config.SharedEntry != nil {
+		if sharedEntry, err = readHostedSharedEntry(config.SharedEntry); err != nil {
+			return nil, false, err
+		}
+	}
 	var billingConfig *hubserver.HostedBillingConfig
 	if config.Billing != nil {
 		billingConfig, err = readHostedBillingConfig(config.Billing, lookupEnv)
@@ -128,7 +154,7 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 		Plans:          config.Plans,
 		OrganizationID: config.OrganizationID, WorkOSOrganizationID: config.WorkOSOrganizationID,
 		BootstrapSubject: config.BootstrapSubject, PublicURL: config.PublicURL,
-		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, Provider: provider,
+		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, SharedEntry: sharedEntry, Provider: provider,
 		PlanID: config.PlanID, StorageQuotaBytes: config.StorageQuotaBytes, EventQuota: config.EventQuota,
 	}, true, nil
 }
