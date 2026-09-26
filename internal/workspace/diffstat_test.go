@@ -78,6 +78,7 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "stable head"},
+		{name: "matching head with dirty review workspace", dirty: true, wantErr: true},
 		{name: "head changes before checkout", advance: true},
 		{name: "dirty review workspace", advance: true, dirty: true, wantErr: true},
 	} {

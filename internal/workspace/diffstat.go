@@ -90,7 +90,7 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 		return fmt.Errorf("review branch head mismatch: fetched %s, expected %s", strings.TrimSpace(remoteHead), strings.TrimSpace(issue.PullRequestHeadSHA))
 	}
 	localHead, err := l.Head(ctx, normalized, issue)
-	if err != nil || strings.TrimSpace(localHead) == strings.TrimSpace(remoteHead) {
+	if err != nil {
 		return err
 	}
 	changes, err := runGitAt(ctx, normalized.Path, "status", "--porcelain")
@@ -99,6 +99,9 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 	}
 	if strings.TrimSpace(changes) != "" {
 		return errors.New("review workspace has local changes")
+	}
+	if strings.TrimSpace(localHead) == strings.TrimSpace(remoteHead) {
+		return nil
 	}
 	_, err = runGitAt(ctx, normalized.Path, "reset", "--hard", strings.TrimSpace(remoteHead))
 	return err
