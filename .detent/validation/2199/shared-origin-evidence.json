@@ -1,6 +1,6 @@
 {
-  "captured_at_utc": "2026-09-26T21:53:26.626307+00:00",
-  "elapsed_seconds": 8.371,
+  "captured_at_utc": "2026-09-26T22:16:12.697230+00:00",
+  "elapsed_seconds": 7.817,
   "go": "go version go1.26.6 darwin/arm64",
   "hosted_costs": {
     "backups": null,
@@ -16,6 +16,8 @@
   "kind": "synthetic_local_shared_origin_evidence",
   "known_readiness_gaps": [],
   "measurements": [
+    "self_hosted mode=local billing_provider=false plans=false billing_routes=unavailable",
+    "self_hosted mode=hosted_identity billing_provider=false base_plan=pilot_free source=base default_project_allowance=10 checkout=503 portal=503 webhook=404 entitlement_admin=403",
     "shared_origin origin {\"host_is_loopback\":true,\"hostnames_used\":1,\"scheme\":\"http\"}",
     "shared_origin stage \"unrelated users create organizations on one origin\" started",
     "shared_origin self_service {\"cross_user_page_status\":303,\"injected_failure\":\"provider_organization_failed\",\"operator_registry_calls\":0,\"organizations\":2,\"provider_organizations_created\":2,\"resumed_to\":\"ready\",\"tenant_endpoints\":\"private unix sockets\"}",
@@ -42,8 +44,6 @@
     "shared_origin artifacts {\"alpha item under beta\":404,\"beta owner lists alpha artifact services\":401,\"beta owner requests alpha grant\":401,\"beta runner requests alpha upload authority\":401,\"member lists alpha artifacts\":200,\"read grant with beta token\":403}",
     "shared_origin stage \"artifact endpoints stay scoped\" passed",
     "shared_origin stage \"event streams stay scoped and end on revocation\" started",
-    "self_hosted mode=local billing_provider=false plans=false billing_routes=unavailable",
-    "self_hosted mode=hosted_identity billing_provider=false base_plan=pilot_free source=base default_project_allowance=10 checkout=503 portal=503 webhook=404 entitlement_admin=403",
     "shared_origin sse {\"alpha_stream_ended_after_membership_removal\":true,\"beta_stream_continued\":true,\"denials\":{\"alpha project under beta\":403,\"beta owner streams alpha\":303,\"beta project under alpha\":403}}",
     "shared_origin stage \"event streams stay scoped and end on revocation\" passed",
     "shared_origin stage \"sign-out ends one browser session only\" started",
@@ -60,7 +60,7 @@
   "required_tests": 20,
   "schema": 1,
   "source_dirty": false,
-  "source_head": "33eff58659937ba1b8a96445e5e9e572cf1d6381",
+  "source_head": "d77e6ae00391a7c8e9fbd39c0c7d34232eeeadb4",
   "suites": {
     "cli": [
       "TestCloudAllocationGeneratesTenantConfiguration",
@@ -90,7 +90,7 @@
     ]
   },
   "test_sha256": {
-    "internal/cloudentry/pilot_shared_origin_test.go": "a64fb945630095bbf2ea32adfd2b2569fb8cb76fd1f95f0cf8c5e9a2706fc2fe",
+    "internal/cloudentry/pilot_shared_origin_test.go": "c03861c8d207daa4adafe03cb61bb9d2b6e291bd5b4dcaba6ee411546fa2a2fe",
     "internal/hubserver/pilot_artifacts_test.go": "877c4affd03d76d8e008bec098ed6edf215303540f21319a778115e495afe85c",
     "internal/hubserver/pilot_journey_test.go": "68187ab525ac0191d2baed93680f6e4c8a1adc6ec50115d9fa73025f00469502",
     "internal/hubserver/pilot_review_test.go": "d7d7f113c0b1412d6e467adee15698aa41eec93e33888c7b541c32788ad200f4",
