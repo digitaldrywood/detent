@@ -27,7 +27,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "migrationcheck accepts only -root")
 		return 2
 	}
-	if err := checkMigrations(os.DirFS(*root), []string{"internal/store/migrations", "internal/hubserver/migrations"}); err != nil {
+	if err := checkMigrations(os.DirFS(*root), []string{"internal/store/migrations", "internal/hubserver/migrations", "internal/cloudentry/migrations/registry", "internal/cloudentry/migrations/auth"}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

@@ -129,7 +129,7 @@ configuration or local mode. The binding changes only through the offline
 
 ## Shared-origin route and session contract
 
-These are target routes for #2341, not aliases already accepted by the binary.
+`detent cloud serve` implements sign-in, callback, chooser, invitations, sign-out and scoped routing for the organization shell, Work, projects, SSE and native APIs (see [shared entry](examples/hub/README.md#shared-entry)). Organization creation and provisioning (#2342), shared billing routes and webhooks (#2343), deletion, and temporary support access through the shared entry are not implemented yet; tenants in shared mode disable their own support start.
 `ORG` and `PROJECT` stand for immutable opaque IDs, never organization names.
 
 | Surface | Public route/behavior |

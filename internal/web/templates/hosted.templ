@@ -30,6 +30,10 @@ templ HostedPage(data HostedPageData) {
 							<a href={ hostedSignInURL(data) } class="inline-flex min-h-11 items-center rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Continue with WorkOS</a>
 							<a href={ hostedJoinURL(data) } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join with invitation</a>
 						</section>
+					case "chooser":
+						@hostedChooser(data)
+					case "join":
+						@hostedJoin(data)
 					case "onboarding":
 						@hostedOnboarding(data)
 					case "plan":
@@ -348,5 +352,37 @@ templ hostedPlanUsage(data HostedPageData) {
 			<a href={ hostedURL(data, "/organization/billing") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Manage billing</a>
 			<a href={ hostedURL(data, "/api/cloud/billing") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Billing usage export</a>
 		}
+	</section>
+}
+
+templ hostedChooser(data HostedPageData) {
+	<section class="space-y-5 rounded-card border border-line bg-surface p-6" data-organization-chooser>
+		<h2 class="text-lg font-semibold">Choose an organization</h2>
+		if len(data.Organizations) == 0 {
+			<p class="text-sm text-sec">Your account does not belong to an organization on this site yet. Use the invitation sent to you to join one.</p>
+		} else {
+			<ul class="space-y-2">
+				for _, organization := range data.Organizations {
+					<li>
+						<a href={ templ.SafeURL("/organizations/" + organization.ID + "/organization") } class="flex min-h-11 items-center break-words rounded-card border border-line px-4 text-sm font-medium hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">{ organization.Name }</a>
+					</li>
+				}
+			</ul>
+		}
+		<a href="/invitations/join" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join with invitation</a>
+	</section>
+}
+
+templ hostedJoin(data HostedPageData) {
+	<section class="max-w-lg space-y-4 rounded-card border border-line bg-surface p-6">
+		<h2 class="text-lg font-semibold">Join with invitation</h2>
+		<p class="text-sm text-sec">Paste the invitation token sent to your verified email address.</p>
+		<form method="post" action="/invitations/join" class="space-y-3">
+			@hostedCSRF(data.CSRF)
+			<label for="hosted-invitation-token" class="block text-sm font-medium">Invitation token</label>
+			<input id="hosted-invitation-token" name="token" type="password" required autocomplete="off" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"/>
+			<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join organization</button>
+		</form>
+		<a href="/organizations" class="inline-flex min-h-11 items-center text-sm text-accent">Back to organizations</a>
 	</section>
 }
