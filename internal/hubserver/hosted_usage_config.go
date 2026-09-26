@@ -44,9 +44,9 @@ func (c UsageConfig) normalized() UsageConfig {
 		if key == "" {
 			continue
 		}
-		if strings.TrimSpace(price.Currency) == "" {
-			price.Currency = currency
-		}
+		// A hub prices in one currency: the loader refuses a table that mixes
+		// them, so every entry carries the table's.
+		price.Currency = currency
 		prices[key] = price
 	}
 	return UsageConfig{Prices: prices, Currency: currency}
@@ -80,11 +80,14 @@ func (c UsageConfig) estimate(model string, input, cachedInput, output int64) (f
 	return cost, price.Currency, true
 }
 
-// cacheSaving is what serving cachedInput tokens from cache saved against
-// the full input rate. A model the table does not know saved nothing it can
+// cacheSaving is what serving cachedInput of input tokens from cache saved
+// against the full input rate. A model the table does not know saved nothing it can
 // prove (decisions section 17.5, totals.cache_savings).
-func (c UsageConfig) cacheSaving(model string, cachedInput int64) float64 {
+func (c UsageConfig) cacheSaving(model string, input, cachedInput int64) float64 {
 	price, found := c.price(model)
+	// Cached input beyond the input total is capped exactly as estimate
+	// caps it, so the saving never exceeds what was priced.
+	cachedInput = min(cachedInput, max(input, 0))
 	if !found || cachedInput <= 0 {
 		return 0
 	}

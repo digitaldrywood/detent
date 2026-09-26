@@ -20,7 +20,7 @@ import (
 
 func TestUsageRangeWindow(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 9, 10, 13, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 9, 10, 13, 25, 0, 0, time.UTC)
 	cases := []struct {
 		name    string
 		value   string
@@ -48,8 +48,12 @@ func TestUsageRangeWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("usageRangeWindow(%q) = %v, want nil", test.value, err)
 			}
-			if !window.To.Equal(now) || window.To.Sub(window.From) != test.span {
-				t.Fatalf("usageRangeWindow(%q) = %+v, want a %v window ending at %v", test.value, window, test.span, now)
+			wantFrom := now.Truncate(time.Hour).Add(time.Hour - test.span)
+			if !window.To.Equal(now) || !window.From.Equal(wantFrom) {
+				t.Fatalf("usageRangeWindow(%q) = %+v, want %v to %v", test.value, window, wantFrom, now)
+			}
+			if window.Hourly != (test.span <= 24*time.Hour) {
+				t.Fatalf("usageRangeWindow(%q) hourly = %t, want %t", test.value, window.Hourly, test.span <= 24*time.Hour)
 			}
 		})
 	}
@@ -83,7 +87,8 @@ func TestUsageConfigEstimate(t *testing.T) {
 		{name: "unknown model", model: "gpt-7", input: 1_000_000},
 		{
 			name: "cached exceeds input", model: "gpt-6-astra", input: 100, cached: 400,
-			wantCost: 100.0 / 1_000_000 * 1, wantFound: true, wantSaving: 400.0 / 1_000_000 * 9,
+			// Savings cap cached input at the input total, as pricing does.
+			wantCost: 100.0 / 1_000_000 * 1, wantFound: true, wantSaving: 100.0 / 1_000_000 * 9,
 		},
 	}
 	for _, test := range cases {
@@ -102,12 +107,12 @@ func TestUsageConfigEstimate(t *testing.T) {
 			if diff := cost - test.wantCost; diff > 1e-9 || diff < -1e-9 {
 				t.Fatalf("estimate(%q) = %v, want %v", test.model, cost, test.wantCost)
 			}
-			if saving := prices.cacheSaving(test.model, test.cached); saving-test.wantSaving > 1e-9 || saving-test.wantSaving < -1e-9 {
+			if saving := prices.cacheSaving(test.model, test.input, test.cached); saving-test.wantSaving > 1e-9 || saving-test.wantSaving < -1e-9 {
 				t.Fatalf("cacheSaving(%q, %d) = %v, want %v", test.model, test.cached, saving, test.wantSaving)
 			}
 		})
 	}
-	if saving := prices.cacheSaving("gpt-7", 1_000_000); saving != 0 {
+	if saving := prices.cacheSaving("gpt-7", 1_000_000, 1_000_000); saving != 0 {
 		t.Fatalf("cacheSaving for an unpriced model = %v, want 0", saving)
 	}
 }
@@ -118,9 +123,9 @@ func TestBuildUsageReport(t *testing.T) {
 	next := day.AddDate(0, 0, 1)
 	window := usageWindow{From: day, To: next.Add(24 * time.Hour)}
 	rows := []usageRow{
-		{AttemptID: "attempt_1", Day: day, Provider: "codex", Model: "gpt-6-astra", Input: 1_000_000, CachedInput: 400_000, Output: 100_000, Cost: 10, Currency: "USD", RunnerID: "rnr_1", RunnerName: "Studio", BusySeconds: 3600},
-		{AttemptID: "attempt_1", Day: day, Provider: "claude", Model: "claude-opus-5", Input: 200_000, Output: 50_000, Cost: 5, Currency: "USD", RunnerID: "rnr_1", RunnerName: "Studio", BusySeconds: 3600},
-		{AttemptID: "attempt_2", Day: next, Provider: "codex", Model: "gpt-6-astra", Input: 500_000, CachedInput: 100_000, Output: 20_000, Cost: 5, Currency: "USD", RunnerID: "rnr_2", RunnerName: "Mini", BusySeconds: 1800},
+		{AttemptID: "attempt_1", Period: day, Provider: "codex", Model: "gpt-6-astra", Input: 1_000_000, CachedInput: 400_000, Output: 100_000, Cost: 10, Currency: "USD", RunnerID: "rnr_1", RunnerName: "Studio", BusySeconds: 3600},
+		{AttemptID: "attempt_1", Period: day, Provider: "claude", Model: "claude-opus-5", Input: 200_000, Output: 50_000, Cost: 5, Currency: "USD", RunnerID: "rnr_1", RunnerName: "Studio", BusySeconds: 3600},
+		{AttemptID: "attempt_2", Period: next, Provider: "codex", Model: "gpt-6-astra", Input: 500_000, CachedInput: 100_000, Output: 20_000, Cost: 5, Currency: "USD", RunnerID: "rnr_2", RunnerName: "Mini", BusySeconds: 1800},
 	}
 	limits := map[string]usageLimit{"members": {Used: 3, Limit: 10}}
 	capacity := map[string]runnerCapacity{"rnr_1": {DisplayName: "Studio", Limit: 2}, "rnr_2": {DisplayName: "Mini", Limit: 1}}
@@ -241,7 +246,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	read := func() []row {
 		t.Helper()
 		result, err := f.service.database.db.QueryContext(t.Context(),
-			"SELECT provider, model, input, cached_input, output, cost_estimate, currency FROM attempt_usage WHERE attempt_id = ? ORDER BY provider, model", start.Data.AttemptID)
+			"SELECT provider, model, sum(input), sum(cached_input), sum(output), sum(cost_estimate), max(currency) FROM attempt_usage WHERE attempt_id = ? GROUP BY provider, model ORDER BY provider, model", start.Data.AttemptID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -348,8 +353,8 @@ func TestHostedUsageReportAccess(t *testing.T) {
 			if report.Providers == nil || report.Daily == nil || report.Runners == nil || report.Limits == nil {
 				t.Fatalf("report has a null collection: %+v", report)
 			}
-			if report.Range.To.Sub(report.Range.From) != 30*24*time.Hour {
-				t.Fatalf("range = %+v, want 30 days", report.Range)
+			if span := report.Range.To.Sub(report.Range.From); span <= 29*24*time.Hour || span > 30*24*time.Hour {
+				t.Fatalf("range = %+v, want 30 days of hours", report.Range)
 			}
 		})
 	}
@@ -383,7 +388,7 @@ func TestHostedUsageReportAggregatesStoredAttempts(t *testing.T) {
 		wantCached += entry.Cached * browserUsageDays
 		wantUncached += (entry.Input - entry.Cached) * browserUsageDays
 		wantOutput += entry.Output * browserUsageDays
-		wantSavings += prices.cacheSaving(entry.Model, entry.Cached) * browserUsageDays
+		wantSavings += prices.cacheSaving(entry.Model, entry.Input, entry.Cached) * browserUsageDays
 	}
 	// Money is compared within a rounding step: the report sums the stored
 	// rows one at a time, so the last decimal depends on the order.
@@ -671,6 +676,9 @@ func (f usageHostedFixture) seedUsage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners (lease_id, runner_id) VALUES (?, ?)", leaseID, "runner_browser_preview"); err != nil {
+				t.Fatalf("seed usage lease runner: %v", err)
+			}
 			data, err := json.Marshal(tracker.NativeRunData{RunID: "run_" + attemptID, AttemptID: attemptID, FencingToken: tracker.FencingToken(fencing), LeaseID: tracker.LeaseID(leaseID), MachineID: tracker.MachineID(machine), Outcome: "succeeded"})
 			if err != nil {
 				t.Fatal(err)
@@ -683,10 +691,10 @@ func (f usageHostedFixture) seedUsage(t *testing.T) {
 				t.Fatalf("seed usage attempt: %v", err)
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attempt_usage
- (attempt_id, organization_id, project_id, day, provider, model, input, cached_input, output, cost_estimate, currency, updated_at)
+ (attempt_id, organization_id, project_id, period, provider, model, input, cached_input, output, cost_estimate, currency, updated_at)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?)`,
 				attemptID, "org_browser_preview", f.project,
-				stamp.Format(usageDayLayout), entry.Provider, entry.Model,
+				usagePeriod(stamp), entry.Provider, entry.Model,
 				entry.Input, entry.Cached, entry.Output, cost, formatHubTime(stamp)); err != nil {
 				t.Fatalf("seed usage: %v", err)
 			}
@@ -720,6 +728,14 @@ func (f usageHostedFixture) enrollUsageRunner(t *testing.T) string {
 			[]any{enrollment, "org_browser_preview", identity, machine, strings.Repeat("b", 64), now, later, token, now}},
 		{`INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, '["claim"]', ?, ?, 2, 2, 'linux', 'arm64', ?)`,
 			[]any{identity, "org_browser_preview", machine, token, enrollment, now, "Preview runner", now}},
+		// A second runner on the same machine ran none of the seeded
+		// attempts: the report must not repeat their usage for it.
+		{`INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at, expires_at, native_only) VALUES (?, ?, ?, ?, 'worker', ?, ?, ?, 1)`,
+			[]any{token + "_shared", "Shared runner", strings.Repeat("c", 64), "shared", now, now, later}},
+		{`INSERT INTO runner_enrollments (id, organization_id, runner_id, machine_id, token_hash, operations_json, created_at, expires_at, created_by, redeemed_at) VALUES (?, ?, ?, ?, ?, '["claim"]', ?, ?, ?, ?)`,
+			[]any{enrollment + "_shared", "org_browser_preview", identity + "_shared", machine, strings.Repeat("d", 64), now, later, token, now}},
+		{`INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, '["claim"]', ?, ?, 2, 2, 'linux', 'arm64', ?)`,
+			[]any{identity + "_shared", "org_browser_preview", machine, token + "_shared", enrollment + "_shared", now, "Shared runner", now}},
 	} {
 		if _, err := f.service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
 			t.Fatalf("seed the preview runner: %v", err)
@@ -779,5 +795,167 @@ func compareUsageShape(t *testing.T, path string, want, got any) {
 		if fmt.Sprintf("%T", want) != fmt.Sprintf("%T", got) {
 			t.Errorf("%s: golden is %T, Go value is %T", label, want, got)
 		}
+	}
+}
+
+func TestUsageDelta(t *testing.T) {
+	t.Parallel()
+	prices := usageTestPrices()
+	cases := []struct {
+		name     string
+		total    tracker.NativeUsage
+		recorded tracker.NativeUsage
+		want     tracker.NativeUsage
+	}{
+		{
+			name:  "first report",
+			total: tracker.NativeUsage{Model: "gpt-6-astra", Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25, Currency: "USD"},
+			want:  tracker.NativeUsage{Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25},
+		},
+		{
+			name:     "increment over recorded",
+			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 3000, CachedInput: 1200, Output: 300, CostEstimate: 0.75, Currency: "USD"},
+			recorded: tracker.NativeUsage{Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25},
+			want:     tracker.NativeUsage{Input: 2000, CachedInput: 800, Output: 200, CostEstimate: 0.5},
+		},
+		{
+			name:     "redelivered total adds nothing",
+			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 1000, Output: 100, CostEstimate: 0.25, Currency: "USD"},
+			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25},
+		},
+		{
+			name:     "total that went backwards is not debt",
+			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 500, Output: 50},
+			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25},
+		},
+		{
+			name:     "unpriced increment priced by the hub",
+			total:    tracker.NativeUsage{Model: "claude-opus-5", Input: 3_000_000, Output: 1_000_000},
+			recorded: tracker.NativeUsage{Input: 2_000_000},
+			want:     tracker.NativeUsage{Input: 1_000_000, Output: 1_000_000, CostEstimate: 20 + 100},
+		},
+		{
+			name:  "foreign currency repriced by the hub",
+			total: tracker.NativeUsage{Model: "gpt-6-astra", Input: 1_000_000, CostEstimate: 99, Currency: "EUR"},
+			want:  tracker.NativeUsage{Input: 1_000_000, CostEstimate: 10},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := usageDelta(test.total, test.recorded, prices)
+			if diff := got.CostEstimate - test.want.CostEstimate; diff > 1e-9 || diff < -1e-9 {
+				t.Fatalf("usageDelta() cost = %v, want %v", got.CostEstimate, test.want.CostEstimate)
+			}
+			got.CostEstimate = test.want.CostEstimate
+			if got != test.want {
+				t.Fatalf("usageDelta() = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+// Spend reported after midnight on an attempt that started the day before is
+// filed under the hour it arrived, not the attempt's start.
+func TestRecordAttemptUsageAttributesIncrementsToTheirHour(t *testing.T) {
+	t.Parallel()
+	service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db"})
+	prices := usageTestPrices()
+	scope := nativeScope{organization: "org_usage", project: "prj_usage"}
+	evening := time.Date(2026, 9, 9, 23, 40, 0, 0, time.UTC)
+	morning := time.Date(2026, 9, 10, 0, 20, 0, 0, time.UTC)
+	reports := []struct {
+		at    time.Time
+		total tracker.NativeUsage
+	}{
+		{at: evening, total: tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Input: 1000, Output: 100, CostEstimate: 0.25, Currency: "USD"}},
+		{at: morning, total: tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Input: 3000, Output: 300, CostEstimate: 0.75, Currency: "USD"}},
+		{at: morning, total: tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Input: 3000, Output: 300, CostEstimate: 0.75, Currency: "USD"}},
+	}
+	for _, report := range reports {
+		tx, err := service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := tracker.NativeRunEvent{Type: "run.checkpointed", Data: tracker.NativeRunData{AttemptID: "attempt_midnight", Usage: []tracker.NativeUsage{report.total}}}
+		if err := recordAttemptUsage(t.Context(), tx, scope, event, prices, report.at); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]int64{"2026-09-09T23:00:00Z": 1000, "2026-09-10T00:00:00Z": 2000}
+	rows, err := service.database.db.QueryContext(t.Context(), "SELECT period, input FROM attempt_usage WHERE attempt_id = ?", "attempt_midnight")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	got := map[string]int64{}
+	for rows.Next() {
+		var period string
+		var input int64
+		if err := rows.Scan(&period, &input); err != nil {
+			t.Fatal(err)
+		}
+		got[period] = input
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("periods = %v, want %v", got, want)
+	}
+	for period, input := range want {
+		if got[period] != input {
+			t.Fatalf("periods = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestBuildUsageReportBuckets(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 10, 13, 25, 0, 0, time.UTC)
+	rows := []usageRow{
+		{AttemptID: "a1", Period: time.Date(2026, 9, 10, 1, 0, 0, 0, time.UTC), Provider: "codex", Model: "gpt-6-astra", Input: 10, Cost: 1, Currency: "USD"},
+		{AttemptID: "a1", Period: time.Date(2026, 9, 10, 2, 0, 0, 0, time.UTC), Provider: "codex", Model: "gpt-6-astra", Input: 10, Cost: 2, Currency: "USD"},
+		{AttemptID: "a2", Period: time.Date(2026, 9, 10, 2, 0, 0, 0, time.UTC), Provider: "codex", Model: "gpt-6-astra", Input: 10, Cost: 5, Currency: "EUR"},
+	}
+	cases := []struct {
+		name       string
+		rangeName  string
+		wantDays   []string
+		wantHourly bool
+	}{
+		{name: "24h is hourly", rangeName: "24h", wantDays: []string{`"2026-09-10T01:00:00.000Z"`, `"2026-09-10T02:00:00.000Z"`}, wantHourly: true},
+		{name: "7d is daily", rangeName: "7d", wantDays: []string{`"2026-09-10"`}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			window, err := usageRangeWindow(test.rangeName, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report := buildUsageReport(window, rows, nil, nil, usageTestPrices())
+			if len(report.Daily) != len(test.wantDays) {
+				t.Fatalf("daily = %+v, want %d buckets", report.Daily, len(test.wantDays))
+			}
+			for i, want := range test.wantDays {
+				encoded, err := json.Marshal(report.Daily[i].Day)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(encoded) != want || report.Daily[i].Day.Hourly != test.wantHourly {
+					t.Fatalf("bucket %d = %s, want %s", i, encoded, want)
+				}
+			}
+			// The EUR row keeps its tokens but its cost is not added to a USD
+			// report.
+			if report.Currency != "USD" || report.Total.Cost != 3 || report.Total.Tokens != 30 {
+				t.Fatalf("total = %+v %s, want 3 USD across 30 tokens", report.Total, report.Currency)
+			}
+		})
 	}
 }

@@ -95,6 +95,9 @@ WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, credential.Hosted.
 type usageWindow struct {
 	From time.Time `json:"from"`
 	To   time.Time `json:"to"`
+	// Hourly reports the series per hour rather than per day: the client
+	// draws the 24h range from hourly buckets (contracts/usage.ts, isHourly).
+	Hourly bool `json:"-"`
 }
 
 type usageTotal struct {
@@ -207,7 +210,7 @@ type usageReport struct {
 // to attribute it: the runner that ran the attempt and how long it was busy.
 type usageRow struct {
 	AttemptID   string
-	Day         time.Time
+	Period      time.Time
 	Provider    string
 	Model       string
 	Input       int64
@@ -276,13 +279,19 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	if !known {
 		return usageWindow{}, nativeInvalid("Range must be one of 24h, 7d, 30d or 90d")
 	}
+	// Usage is stored per UTC hour, so the window starts on an hour boundary:
+	// the current partial hour plus the full hours before it, span in all.
+	// Every stored period at or after From lies wholly inside the window.
 	to := now.UTC()
-	return usageWindow{From: to.Add(-span), To: to}, nil
+	from := to.Truncate(time.Hour).Add(time.Hour - span)
+	return usageWindow{From: from, To: to, Hourly: span <= 24*time.Hour}, nil
 }
 
 // usageRows reads the stored usage of one window, joined to the runner that
-// ran each attempt. The runner comes from the attempt's lease, which names
-// the machine, and runner_identities names the runner on that machine.
+// ran each attempt. The runner comes from lease_runners, which names exactly
+// one runner per lease; joining through the machine would repeat a row for
+// every runner that shares it. Periods are compared as fixed-width UTC
+// timestamps in the stored T format, not as dates.
 func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
 	if len(projects) == 0 {
 		return nil, nil
@@ -291,17 +300,17 @@ func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []
 	if err != nil {
 		return nil, fmt.Errorf("encode readable projects: %w", err)
 	}
-	query := `SELECT u.attempt_id, u.day, u.provider, u.model, u.input, u.cached_input, u.output, u.cost_estimate, u.currency,
+	query := `SELECT u.attempt_id, u.period, u.provider, u.model, u.input, u.cached_input, u.output, u.cost_estimate, u.currency,
  coalesce(r.id, ''), coalesce(r.display_name, ''), coalesce(a.started_at, ''), coalesce(a.updated_at, '')
 FROM attempt_usage u
 LEFT JOIN native_attempts a ON a.id = u.attempt_id
-LEFT JOIN leases l ON l.lease_id = a.lease_id
-LEFT JOIN runner_identities r ON r.machine_id = l.machine_id AND r.organization_id = u.organization_id
-WHERE u.organization_id = ? AND u.day >= ? AND u.day <= ?
+LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
+LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
+WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
  AND u.project_id IN (SELECT value FROM json_each(?))
-ORDER BY u.day, u.provider, u.model, u.attempt_id`
+ORDER BY u.period, u.provider, u.model, u.attempt_id`
 	result, err := s.database.db.QueryContext(ctx, query,
-		s.config.Hosted.OrganizationID, window.From.UTC().Format(usageDayLayout), window.To.UTC().Format(usageDayLayout), encoded)
+		s.config.Hosted.OrganizationID, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded)
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
@@ -309,16 +318,16 @@ ORDER BY u.day, u.provider, u.model, u.attempt_id`
 	rows := []usageRow{}
 	for result.Next() {
 		var row usageRow
-		var day, started, updated string
-		if err := result.Scan(&row.AttemptID, &day, &row.Provider, &row.Model, &row.Input, &row.CachedInput, &row.Output,
+		var period, started, updated string
+		if err := result.Scan(&row.AttemptID, &period, &row.Provider, &row.Model, &row.Input, &row.CachedInput, &row.Output,
 			&row.Cost, &row.Currency, &row.RunnerID, &row.RunnerName, &started, &updated); err != nil {
 			return nil, fmt.Errorf("read usage: %w", err)
 		}
-		parsed, err := time.Parse(usageDayLayout, day)
+		parsed, err := time.Parse(usagePeriodLayout, period)
 		if err != nil {
-			return nil, fmt.Errorf("decode usage day %q: %w", day, err)
+			return nil, fmt.Errorf("decode usage period %q: %w", period, err)
 		}
-		row.Day = parsed.UTC()
+		row.Period = parsed.UTC()
 		row.BusySeconds = usageBusySeconds(started, updated)
 		rows = append(rows, row)
 	}
@@ -429,16 +438,19 @@ func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usa
 	for _, row := range rows {
 		tokens := row.tokens()
 		attempts[row.AttemptID] = true
+		// A hub reports in one currency. A row stored under another (the
+		// table's currency changed since) still counts its tokens, but its
+		// cost cannot be added without a conversion the hub does not have.
+		if row.Currency != "" && row.Currency != report.Currency {
+			row.Cost = 0
+		}
 		report.Total.Cost += row.Cost
 		report.Total.Tokens += tokens
 		report.Totals.Processed += tokens
 		report.Totals.CachedInput += row.CachedInput
 		report.Totals.UncachedInput += usageUncached(row.Input, row.CachedInput)
 		report.Totals.Output += row.Output
-		report.Totals.CacheSavings += prices.cacheSaving(row.Model, row.CachedInput)
-		if row.Currency != "" {
-			report.Currency = row.Currency
-		}
+		report.Totals.CacheSavings += prices.cacheSaving(row.Model, row.Input, row.CachedInput)
 
 		provider, known := providers[row.Provider]
 		servedAttempts := providerAttempts[row.Provider]
@@ -461,11 +473,15 @@ func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usa
 		model.Cost += row.Cost
 		model.Tokens += tokens
 
-		dayKey := row.Day.Format(usageDayLayout)
-		day, known := days[dayKey]
+		bucket := usageBucketTime{Time: row.Period.Truncate(time.Hour), Hourly: true}
+		if !window.Hourly {
+			bucket = usageBucketTime{Time: time.Date(row.Period.Year(), row.Period.Month(), row.Period.Day(), 0, 0, 0, 0, time.UTC)}
+		}
+		bucketKey := bucket.UTC().Format(usagePeriodLayout)
+		day, known := days[bucketKey]
 		if !known {
-			day = &usageDay{Day: usageBucketTime{Time: row.Day}, ByProvider: map[string]float64{}}
-			days[dayKey] = day
+			day = &usageDay{Day: bucket, ByProvider: map[string]float64{}}
+			days[bucketKey] = day
 		}
 		day.Cost += row.Cost
 		day.Tokens += tokens

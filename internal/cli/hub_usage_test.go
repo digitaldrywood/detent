@@ -33,7 +33,7 @@ func TestReadHostedUsageConfig(t *testing.T) {
       input: 5
       cached_input: 0.5
       output: 25
-      currency: EUR
+      currency: usd
 `,
 			wantPrice: 1.25, wantUnit: "USD",
 		},
@@ -41,6 +41,7 @@ func TestReadHostedUsageConfig(t *testing.T) {
 		{name: "negative price", file: "usage:\n  prices:\n    gpt-6-astra:\n      input: -1\n", wantErr: true},
 		{name: "unnamed model", file: "usage:\n  prices:\n    \"\":\n      input: 1\n", wantErr: true},
 		{name: "unknown field", file: "usage:\n  prices:\n    gpt-6-astra:\n      inputs: 1\n", wantErr: true},
+		{name: "mixed currencies", file: "usage:\n  currency: USD\n  prices:\n    gpt-6-astra:\n      input: 1\n    claude-opus-5:\n      input: 1\n      currency: EUR\n", wantErr: true},
 		{name: "bad currency", file: "usage:\n  currency: dollars\n  prices:\n    gpt-6-astra:\n      input: 1\n", wantErr: true},
 	}
 	for _, test := range cases {
@@ -73,8 +74,8 @@ func TestReadHostedUsageConfig(t *testing.T) {
 			if !found || price.Input != test.wantPrice || price.Currency != test.wantUnit {
 				t.Fatalf("gpt-6-astra = %+v (found %t), want %v %s", price, found, test.wantPrice, test.wantUnit)
 			}
-			if other := config.Prices["claude-opus-5"]; other.Currency != "EUR" {
-				t.Fatalf("claude-opus-5 currency = %q, want EUR", other.Currency)
+			if other := config.Prices["claude-opus-5"]; other.Currency != "USD" {
+				t.Fatalf("claude-opus-5 currency = %q, want USD", other.Currency)
 			}
 		})
 	}

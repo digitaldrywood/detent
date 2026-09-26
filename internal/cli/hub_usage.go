@@ -92,6 +92,9 @@ func convertUsageConfig(section *hostedUsageFileConfig) (hubserver.UsageConfig, 
 		if unit == "" {
 			unit = currency
 		}
+		if unit != currency {
+			return hubserver.UsageConfig{}, false, errors.New("usage prices for " + name + " must be in the table currency " + currency + ": a hub reports in one currency")
+		}
 		prices[name] = hubserver.UsagePrice{Input: price.Input, CachedInput: price.CachedInput, Output: price.Output, Currency: unit}
 	}
 	return hubserver.UsageConfig{Currency: currency, Prices: prices}, true, nil
