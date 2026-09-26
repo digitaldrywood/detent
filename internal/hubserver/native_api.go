@@ -32,6 +32,7 @@ type nativeError struct {
 	Code            string           `json:"code"`
 	Message         string           `json:"message"`
 	CurrentRevision tracker.Revision `json:"current_revision,string,omitempty"`
+	Details         map[string]any   `json:"details,omitempty"`
 	status          int
 }
 
@@ -64,6 +65,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		if s.config.Hosted != nil {
+			if len(failure.Details) > 0 {
+				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
+			}
 			return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: "The requested operation is unavailable"})
 		}
 		return c.JSON(failure.status, failure)
@@ -118,6 +122,13 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
 	e.POST(nativeBase+"/work-items/:item/events", s.appendNativeRunEvent, worker)
+	// Stored attempt diffs and the pull request panel (decisions section
+	// 18.5 and 18.6). The diff write is a worker endpoint fenced by the
+	// producer's lease; every read follows the issue's read rule.
+	e.POST(nativeBase+"/attempts/:attempt/diff", s.postAttemptDiff, worker)
+	e.GET(nativeBase+"/attempts/:attempt/diff", s.getAttemptDiff, read)
+	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
+	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
 }
 
 func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {

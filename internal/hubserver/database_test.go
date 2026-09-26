@@ -71,6 +71,8 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"github_imports",
 		"collaboration_events",
 		"collaboration_versions",
+		"attempt_diff_files",
+		"attempt_diffs",
 		"hub_identity",
 		"hosted_tenant",
 		"hosted_members",

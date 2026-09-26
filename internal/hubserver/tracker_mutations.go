@@ -101,8 +101,8 @@ func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request t
 	}
 	expiresAt := now.Add(request.TTL)
 	result, err := tx.ExecContext(ctx, `
-INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, created_at, updated_at, work_item_revision)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT revision FROM issues WHERE id = ?))`,
 		leaseID,
 		request.WorkItemID,
 		request.MachineID,
@@ -112,6 +112,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		formatHubTime(now),
 		formatHubTime(now),
 		formatHubTime(now),
+		request.WorkItemID,
 	)
 	if err != nil {
 		return tracker.Lease{}, fmt.Errorf("insert hub claim: %w", err)

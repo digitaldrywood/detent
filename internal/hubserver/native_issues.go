@@ -99,11 +99,42 @@ ORDER BY i.native_id`, internalID, scope.organization, scope.credential.Scope ==
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
-	issue, _, err := readNativeIssue(c.Request().Context(), s.database.db, nativeRequestScope(c), c.Param("item"))
+	ctx := c.Request().Context()
+	scope := nativeRequestScope(c)
+	issue, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	// The change review surface is absent unless the caller asked for it, so
+	// the default resource is byte-for-byte what it was and only a caller
+	// that needs it pays for the extra reads.
+	included, err := nativeIssueChangeIncluded(c.QueryParam("include"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if included {
+		if issue.Change, err = readNativeIssueChange(ctx, s.database.db, scope, string(issue.WorkItemID)); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	return c.JSON(http.StatusOK, issue)
+}
+
+// nativeIssueChangeIncluded reads the work item resource's include query. The
+// resource supports one member, and an unknown one is refused rather than
+// ignored so a client typo is visible.
+func nativeIssueChangeIncluded(value string) (bool, error) {
+	included := false
+	for name := range strings.SplitSeq(value, ",") {
+		switch name = strings.TrimSpace(name); name {
+		case "":
+		case "change":
+			included = true
+		default:
+			return false, nativeInvalid("include supports change")
+		}
+	}
+	return included, nil
 }
 
 func validateNativeContent(title, body string, labels, assignees []string, priority *int) error {

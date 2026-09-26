@@ -42,6 +42,7 @@ type Service struct {
 	reconcileCancel   context.CancelFunc
 	reconcileDone     chan struct{}
 	reconcileStopOnce sync.Once
+	pullRequests      *pullRequestCache
 	closeOnce         sync.Once
 	closeErr          error
 	clientBuild       appClientBuild
@@ -101,6 +102,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		reconcileCancel: reconcileCancel,
 		reconcileDone:   make(chan struct{}),
 		clientBuild:     conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
+		pullRequests:    newPullRequestCache(),
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
