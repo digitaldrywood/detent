@@ -8,7 +8,9 @@
 -- hour it happened and a redelivered event adds nothing. period is the hour
 -- start as a fixed-width UTC timestamp (2006-01-02T15:00:00Z) that sorts and
 -- compares as a string. attempt_id carries no foreign key because usage may
--- arrive on a checkpoint the attempt recorder did not order.
+-- arrive on a checkpoint the attempt recorder did not order. currency is part
+-- of the key: a hub whose currency changes mid-hour starts a new row rather
+-- than relabelling spend recorded in the old one.
 CREATE TABLE attempt_usage (
   attempt_id TEXT NOT NULL,
   organization_id TEXT NOT NULL,
@@ -22,7 +24,7 @@ CREATE TABLE attempt_usage (
   cost_estimate REAL NOT NULL DEFAULT 0 CHECK (cost_estimate >= 0),
   currency TEXT NOT NULL DEFAULT 'USD',
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (attempt_id, period, provider, model)
+  PRIMARY KEY (attempt_id, period, provider, model, currency)
 );
 -- The usage report sums one organization over a period range, optionally for
 -- one project.

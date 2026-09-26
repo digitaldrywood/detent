@@ -41,6 +41,8 @@ func TestReadHostedUsageConfig(t *testing.T) {
 		{name: "negative price", file: "usage:\n  prices:\n    gpt-6-astra:\n      input: -1\n", wantErr: true},
 		{name: "unnamed model", file: "usage:\n  prices:\n    \"\":\n      input: 1\n", wantErr: true},
 		{name: "unknown field", file: "usage:\n  prices:\n    gpt-6-astra:\n      inputs: 1\n", wantErr: true},
+		{name: "models differing by case", file: "usage:\n  prices:\n    gpt-6-astra:\n      input: 1\n    GPT-6-Astra:\n      input: 2\n", wantErr: true},
+		{name: "models differing by whitespace", file: "usage:\n  prices:\n    gpt-6-astra:\n      input: 1\n    \" gpt-6-astra \":\n      input: 2\n", wantErr: true},
 		{name: "mixed currencies", file: "usage:\n  currency: USD\n  prices:\n    gpt-6-astra:\n      input: 1\n    claude-opus-5:\n      input: 1\n      currency: EUR\n", wantErr: true},
 		{name: "bad currency", file: "usage:\n  currency: dollars\n  prices:\n    gpt-6-astra:\n      input: 1\n", wantErr: true},
 	}

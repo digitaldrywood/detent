@@ -78,8 +78,8 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 		provider := tracker.UsageProviderID(entry.Provider)
 		model := strings.TrimSpace(entry.Model)
 		var recorded tracker.NativeUsage
-		if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(input), 0), coalesce(sum(cached_input), 0), coalesce(sum(output), 0), coalesce(sum(cost_estimate), 0)
- FROM attempt_usage WHERE attempt_id = ? AND provider = ? AND model = ?`, attempt, provider, model).
+		if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(input), 0), coalesce(sum(cached_input), 0), coalesce(sum(output), 0), coalesce(sum(CASE WHEN currency = ? THEN cost_estimate ELSE 0 END), 0)
+ FROM attempt_usage WHERE attempt_id = ? AND provider = ? AND model = ?`, currency, attempt, provider, model).
 			Scan(&recorded.Input, &recorded.CachedInput, &recorded.Output, &recorded.CostEstimate); err != nil {
 			return fmt.Errorf("read recorded attempt usage: %w", err)
 		}
@@ -90,9 +90,9 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_usage
  (attempt_id, organization_id, project_id, period, provider, model, input, cached_input, output, cost_estimate, currency, updated_at)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
- ON CONFLICT (attempt_id, period, provider, model) DO UPDATE SET
+ ON CONFLICT (attempt_id, period, provider, model, currency) DO UPDATE SET
  input = input + excluded.input, cached_input = cached_input + excluded.cached_input, output = output + excluded.output,
- cost_estimate = cost_estimate + excluded.cost_estimate, currency = excluded.currency, updated_at = excluded.updated_at`,
+ cost_estimate = cost_estimate + excluded.cost_estimate, updated_at = excluded.updated_at`,
 			attempt, scope.organization, scope.project, period, provider, model,
 			delta.Input, delta.CachedInput, delta.Output, delta.CostEstimate, currency, formatHubTime(now)); err != nil {
 			return fmt.Errorf("record attempt usage: %w", err)

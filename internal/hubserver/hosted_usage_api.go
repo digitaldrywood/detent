@@ -328,7 +328,7 @@ ORDER BY u.period, u.provider, u.model, u.attempt_id`
 			return nil, fmt.Errorf("decode usage period %q: %w", period, err)
 		}
 		row.Period = parsed.UTC()
-		row.BusySeconds = usageBusySeconds(started, updated)
+		row.BusySeconds = usageBusySeconds(started, updated, window)
 		rows = append(rows, row)
 	}
 	if err := errors.Join(result.Err(), result.Close()); err != nil {
@@ -337,9 +337,12 @@ ORDER BY u.period, u.provider, u.model, u.attempt_id`
 	return rows, nil
 }
 
-// usageBusySeconds is how long an attempt held its runner. An attempt whose
-// timestamps the hub cannot read contributes nothing rather than a guess.
-func usageBusySeconds(started, updated string) int64 {
+// usageBusySeconds is how long an attempt held its runner inside the report
+// window: the attempt's interval is clamped to the window, so an attempt that
+// started before it or ran past it cannot report more busy time than the
+// window holds. An attempt whose timestamps the hub cannot read contributes
+// nothing rather than a guess.
+func usageBusySeconds(started, updated string, window usageWindow) int64 {
 	if strings.TrimSpace(started) == "" || strings.TrimSpace(updated) == "" {
 		return 0
 	}
@@ -350,6 +353,12 @@ func usageBusySeconds(started, updated string) int64 {
 	to, err := parseTimeValue(updated)
 	if err != nil {
 		return 0
+	}
+	if !window.From.IsZero() && from.Before(window.From) {
+		from = window.From
+	}
+	if !window.To.IsZero() && to.After(window.To) {
+		to = window.To
 	}
 	seconds := int64(to.Sub(from).Seconds())
 	if seconds < 0 {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -77,11 +78,18 @@ func convertUsageConfig(section *hostedUsageFileConfig) (hubserver.UsageConfig, 
 		currency = defaultUsageCurrency
 	}
 	prices := make(map[string]hubserver.UsagePrice, len(section.Prices))
+	keys := make(map[string]string, len(section.Prices))
 	for model, price := range section.Prices {
 		name := strings.TrimSpace(model)
 		if name == "" {
 			return hubserver.UsageConfig{}, false, errors.New("usage prices must name a model")
 		}
+		key := strings.ToLower(name)
+		if other, taken := keys[key]; taken {
+			first, second := min(other, model), max(other, model)
+			return hubserver.UsageConfig{}, false, errors.New("usage prices name model " + strconv.Quote(first) + " and " + strconv.Quote(second) + ", which match the same model")
+		}
+		keys[key] = model
 		if price.Input < 0 || price.CachedInput < 0 || price.Output < 0 {
 			return hubserver.UsageConfig{}, false, errors.New("usage prices for " + name + " must not be negative")
 		}

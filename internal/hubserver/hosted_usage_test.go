@@ -959,3 +959,95 @@ func TestBuildUsageReportBuckets(t *testing.T) {
 		})
 	}
 }
+
+func TestUsageBusySecondsClampsToWindow(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	window := usageWindow{From: from, To: from.Add(24 * time.Hour)}
+	stamp := func(offset time.Duration) string { return formatHubTime(from.Add(offset)) }
+	cases := []struct {
+		name             string
+		started, updated string
+		want             int64
+	}{
+		{name: "inside", started: stamp(time.Hour), updated: stamp(2 * time.Hour), want: 3600},
+		{name: "started before the window", started: stamp(-48 * time.Hour), updated: stamp(time.Hour), want: 3600},
+		{name: "ran past the window", started: stamp(23 * time.Hour), updated: stamp(30 * time.Hour), want: 3600},
+		{name: "spans the whole window", started: stamp(-time.Hour), updated: stamp(48 * time.Hour), want: 24 * 3600},
+		{name: "wholly before the window", started: stamp(-3 * time.Hour), updated: stamp(-2 * time.Hour), want: 0},
+		{name: "unreadable", started: "yesterday", updated: stamp(time.Hour), want: 0},
+		{name: "missing", started: "", updated: stamp(time.Hour), want: 0},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := usageBusySeconds(test.started, test.updated, window); got != test.want {
+				t.Fatalf("usageBusySeconds() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+// A hub whose currency changes mid-hour starts a new row; spend already
+// recorded in the old currency keeps its label and amount.
+func TestRecordAttemptUsageKeepsCurrenciesApart(t *testing.T) {
+	t.Parallel()
+	service := openTestService(t, Config{DatabasePath: t.TempDir() + "/hub.db"})
+	scope := nativeScope{organization: "org_usage", project: "prj_usage"}
+	at := time.Date(2026, 9, 10, 9, 10, 0, 0, time.UTC)
+	usd := usageTestPrices()
+	eur := UsageConfig{Currency: "EUR", Prices: map[string]UsagePrice{"gpt-6-astra": {Input: 10, CachedInput: 1, Output: 40}}}.normalized()
+	reports := []struct {
+		prices UsageConfig
+		at     time.Time
+		input  int64
+	}{
+		{prices: usd, at: at, input: 1_000_000},
+		{prices: eur, at: at.Add(20 * time.Minute), input: 3_000_000},
+	}
+	for _, report := range reports {
+		tx, err := service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := tracker.NativeRunEvent{Type: "run.checkpointed", Data: tracker.NativeRunData{AttemptID: "attempt_currency", Usage: []tracker.NativeUsage{
+			{Provider: "codex", Model: "gpt-6-astra", Input: report.input},
+		}}}
+		if err := recordAttemptUsage(t.Context(), tx, scope, event, report.prices, report.at); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]struct {
+		input int64
+		cost  float64
+	}{"USD": {input: 1_000_000, cost: 10}, "EUR": {input: 2_000_000, cost: 20}}
+	rows, err := service.database.db.QueryContext(t.Context(), "SELECT currency, input, cost_estimate FROM attempt_usage WHERE attempt_id = ?", "attempt_currency")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	seen := 0
+	for rows.Next() {
+		var currency string
+		var input int64
+		var cost float64
+		if err := rows.Scan(&currency, &input, &cost); err != nil {
+			t.Fatal(err)
+		}
+		expected, found := want[currency]
+		if !found || input != expected.input || cost-expected.cost > 1e-9 || expected.cost-cost > 1e-9 {
+			t.Fatalf("row %s = %d tokens at %v, want %+v", currency, input, cost, expected)
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != len(want) {
+		t.Fatalf("rows = %d, want %d", seen, len(want))
+	}
+}
