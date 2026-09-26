@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func runnerOperationAllowed(c echo.Context, operations []string) bool {
@@ -34,6 +35,12 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		operation = runnerauth.Claim
 	case path == nativeBase+"/machines/register", path == nativeBase+"/machines/:machine/heartbeat":
 		operation = runnerauth.Heartbeat
+	case strings.HasPrefix(path, nativeBase+"/workspaces/:workspace/worker/"):
+		// Binding, heartbeating and serving a workspace session is the same
+		// authority as claiming work: the runner is taking and holding a
+		// dispatched item, and the item happens to be a worktree rather than
+		// a turn (decisions section 18.1).
+		operation = runnerauth.Claim
 	case path == nativeBase+"/work-items/:item/events":
 		operation = runnerauth.Events
 	case strings.HasPrefix(path, nativeBase+"/work-items"):
@@ -166,9 +173,20 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		Version         string                    `json:"version"`
 		OS              string                    `json:"os,omitempty"`
 		Architecture    string                    `json:"architecture,omitempty"`
+		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
+		// can serve for a workspace session (decisions section 18.10). They
+		// ride the heartbeat beside the provider reports because the claim
+		// gate asks one question -- can this runner serve this workspace, and
+		// was it saying so recently -- and freshness means nothing unless the
+		// answer and the heartbeat are the same row.
+		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
+	}
+	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
+		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be user or container"))
 	}
 	scope := nativeRequestScope(c)
 	if scope.credential.Runner.RunnerID != "" && string(scope.credential.Runner.MachineID) != c.Param("machine") {
@@ -182,10 +200,16 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
+			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
+				return nil, err
+			}
 			return struct{}{}, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
 		}
 		if len(request.ProviderReports) != 0 {
 			return nil, nativeInvalid("Provider reports require an enrolled runner")
+		}
+		if request.WorkspaceCapabilities != nil {
+			return nil, nativeInvalid("Workspace capabilities require an enrolled runner")
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE machines SET display_name = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND token_id = ?`, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), c.Param("machine"), scope.organization, scope.credential.ID)
 		return struct{}{}, requireRunnerUpdate(result, err)

@@ -94,8 +94,27 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 	return nil
 }
 
+// parseNativeIssueIncludes reads the include query and reports whether it asks
+// for workspace items. Unknown members are refused rather than ignored so a
+// client typo is visible.
+func parseNativeIssueIncludes(value string) (bool, error) {
+	if value == "" {
+		return false, nil
+	}
+	for name := range strings.SplitSeq(value, ",") {
+		if strings.TrimSpace(name) != "workspace" {
+			return false, nativeInvalid("include supports workspace")
+		}
+	}
+	return true, nil
+}
+
 func (s *Service) listNativeIssues(c echo.Context) error {
-	if err := validateNativeQuery(c.QueryParams(), "state", "label", "assignee", "priority"); err != nil {
+	if err := validateNativeQuery(c.QueryParams(), "state", "label", "assignee", "priority", "include"); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	includeWorkspace, err := parseNativeIssueIncludes(c.QueryParam("include"))
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	limit, cursor, key, err := s.nativePage(c)
@@ -106,6 +125,12 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGER)`
 	args := []any{scope.organization, scope.project, cursor.After}
+	if !includeWorkspace {
+		// Workspace items hold a worktree open for a person's surfaces, not
+		// project work (decisions section 18.1): the board would otherwise
+		// fill with one card per opened Files panel.
+		query += " AND " + notWorkspaceItemClause
+	}
 	var clauses []string
 	for _, filter := range []struct{ name, clause string }{
 		{"state", "ws.detent_state = ?"},

@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -47,6 +48,13 @@ type claimCandidateQuery struct {
 	LabelInclude       []string
 	LabelExclude       []string
 	Scope              string
+	// WorkspaceLane reports that the claim came from a runner's workspace
+	// lane, which asked for workspace items by declaring the workspace
+	// capability. Every other claim, and the provider candidate preview, is
+	// an ordinary issue claim and never sees a workspace item: a workspace
+	// is its own work item kind and not project work (decisions section
+	// 18.1).
+	WorkspaceLane bool
 }
 
 type renewLeaseAPIRequest struct {
@@ -356,9 +364,21 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err != nil {
 		return tracker.Lease{}, err
 	}
+	// Workspace items are gated per candidate rather than per credential
+	// (decisions section 18.1): eligibility depends on the surfaces the
+	// workspace requires and on whether its attempt's worktree is still
+	// retained on one particular runner, so the answer differs between two
+	// workspaces the same runner is looking at.
+	workspaceGate, err := gateWorkspaceClaim(ctx, tx, query.NativeScope, query.WorkspaceLane, d.workspaceRetainAfterRun, now)
+	if err != nil {
+		return tracker.Lease{}, err
+	}
 	var providerWait error
 	for _, id := range ids {
 		if request.WorkItemID > 0 && id != request.WorkItemID {
+			continue
+		}
+		if _, ineligible := workspaceGate.skip[id]; ineligible {
 			continue
 		}
 		current, found, err := readUnreleasedLease(ctx, tx, id)
@@ -371,16 +391,24 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 			continue
 		}
-		reservation, reserved, err := selectProviderCapacity(ctx, tx, query, id, now)
-		if err != nil {
-			if errors.Is(err, ErrNoClaimableWork) {
-				continue
+		// A workspace claim reserves one slot of the runner's capacity and
+		// nothing else (decisions section 18.1): the session serves files
+		// over the relay and runs no model, so it never goes through provider
+		// requirement matching and never carries a provider reservation.
+		var reservation providercapacity.Reservation
+		reserved := false
+		if !workspaceGate.skipsProviderReservation(id) {
+			reservation, reserved, err = selectProviderCapacity(ctx, tx, query, id, now)
+			if err != nil {
+				if errors.Is(err, ErrNoClaimableWork) {
+					continue
+				}
+				if isProviderWait(err) {
+					providerWait = err
+					continue
+				}
+				return tracker.Lease{}, err
 			}
-			if isProviderWait(err) {
-				providerWait = err
-				continue
-			}
-			return tracker.Lease{}, err
 		}
 		request.WorkItemID = id
 		lease, err = d.claimInTransaction(ctx, tx, request, now)
@@ -485,6 +513,24 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR NOT EXISTS (SELECT 1
        AND latest.project_id = i.project_id
        AND latest.work_item_id = i.native_id)))`
 
+// claimWorkspaceExclusionArg binds the candidate query's workspace exclusion.
+// A workspace session's dispatch issue is not project work and never becomes
+// project work: closing the workspace closes the association, it does not hand
+// the issue to the issue lane (decisions section 18.1). Only a claim that
+// declared the workspace capability is offered one, and the exclusion lives in
+// the candidate query rather than in a skip set so that the provider candidate
+// preview, which shares this query, does not offer one either.
+//
+// It is a bound argument over a constant clause rather than a clause spliced
+// into the statement, so the query the driver prepares stays one constant
+// string.
+func claimWorkspaceExclusionArg(query claimCandidateQuery) int {
+	if query.WorkspaceLane {
+		return 1
+	}
+	return 0
+}
+
 func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	scope := query.Scope
 	organization, project := "", ""
@@ -526,6 +572,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
   AND ws.terminal = 0
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
+  AND (? = 1 OR `+notWorkspaceItemClause+`)
   AND `+notAlreadyAnsweredClause+`
   AND (? = '' OR q.id IS NOT NULL)
   AND (p.require_dependencies = 0 OR NOT EXISTS (
@@ -539,7 +586,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 ORDER BY
   CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, organization, organization, project, scope)
+  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, organization, organization, project, claimWorkspaceExclusionArg(query), scope)
 	if err != nil {
 		return nil, fmt.Errorf("query hub claim candidates: %w", err)
 	}

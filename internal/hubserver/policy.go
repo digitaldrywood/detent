@@ -101,6 +101,25 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// executingLeaseCountQuery counts the unexpired leases in a scope that would
+// actually run under the policy being replaced: attempt and claim leases, the
+// ones a model or a command executes beneath.
+//
+// A workspace session lease is deliberately not one of them. Section 18.1 gives
+// a workspace its own lease so the runner's capacity accounting, renewal and
+// expiry sweep apply to it with no second mechanism, and section 18.2 says what
+// runs under it: a person reading files, a diff, a preview, a shell. No policy
+// decides any of that -- there is no model, no gate and no command -- so a
+// workspace holds nothing the approval could invalidate. Counting one was worse
+// than merely strict: a workspace renews its lease for as long as it is open,
+// so an open Files panel blocked every policy change in the project until
+// somebody deleted the workspace, with no wait that ended.
+const executingLeaseCountQuery = `SELECT count(*) FROM lease_policies p
+JOIN leases l ON l.lease_id = p.lease_id
+JOIN issues i ON i.id = l.issue_id
+WHERE p.scope = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)
+ AND ` + notWorkspaceItemClause
+
 func (d *database) approvePolicy(ctx context.Context, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -125,8 +144,7 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	}
 	if current != change.Policy.ID {
 		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM lease_policies p JOIN leases l ON l.lease_id = p.lease_id
-WHERE p.scope = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)`, scope, formatHubTime(now)).Scan(&active); err != nil {
+		if err := tx.QueryRowContext(ctx, executingLeaseCountQuery, scope, formatHubTime(now)).Scan(&active); err != nil {
 			return result, err
 		}
 		if active != 0 {
