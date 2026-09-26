@@ -5,6 +5,7 @@ package cloudentry
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -121,7 +123,7 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 		mutate(allocation)
 	}
 	service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), Allocation: allocation})
+		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,5 +325,71 @@ func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
 	blocked := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
 	if failed := f.waitState(t, blocked, "failed"); failed.ErrorCode != "capacity" {
 		t.Fatalf("memory floor admission = %+v", failed)
+	}
+}
+
+func TestEntryServesClientAndJSON(t *testing.T) {
+	t.Parallel()
+	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.MaxPerIdentity = 1 })
+	f.service.config.clientFS = fstest.MapFS{"app/conversation/index.html": {Data: []byte(`<html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)}}
+	stranger := newBrowser(t, f.service.Handler())
+	if response, body := stranger.get("/"); response.StatusCode != http.StatusOK || !strings.Contains(body, `<meta name="detent-surface" content="entry">`) || !strings.Contains(body, `content=""`) {
+		t.Fatalf("sign-in shell = %d %s", response.StatusCode, body)
+	}
+	if response, _ := stranger.get("/organizations"); response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("chooser without a session = %d", response.StatusCode)
+	}
+	if response := stranger.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"}); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("organizations JSON without a session = %d", response.StatusCode)
+	}
+	dana := newBrowser(t, f.service.Handler())
+	dana.login("/auth/oidc/start", "user_dana:")
+	for _, path := range []string{"/organizations", "/organizations/new", "/invitations/join"} {
+		if response, body := dana.get(path); response.StatusCode != http.StatusOK || !strings.Contains(body, "detent-surface") {
+			t.Fatalf("%s shell = %d", path, response.StatusCode)
+		}
+	}
+	listing := dana.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
+	var chooser struct {
+		CSRF      string               `json:"csrf"`
+		CanCreate bool                 `json:"can_create"`
+		Pending   []organizationChoice `json:"pending"`
+	}
+	if err := json.Unmarshal([]byte(listing.Body), &chooser); err != nil || !chooser.CanCreate || chooser.CSRF == "" {
+		t.Fatalf("organizations JSON = %s %v", listing.Body, err)
+	}
+	jsonHeaders := map[string]string{"Accept": "application/json", "X-CSRF-Token": chooser.CSRF}
+	created := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Delta"}, "creation_key": {"key_0123456789abcdef"}}, jsonHeaders)
+	var result struct {
+		Next         string            `json:"next"`
+		Organization map[string]string `json:"organization"`
+	}
+	if created.StatusCode != http.StatusCreated || json.Unmarshal([]byte(created.Body), &result) != nil || !strings.HasSuffix(result.Next, "/provisioning") {
+		t.Fatalf("JSON create = %d %s", created.StatusCode, created.Body)
+	}
+	id := result.Organization["id"]
+	if response, body := dana.get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
+		t.Fatalf("provisioning shell = %s", body)
+	}
+	quota := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, jsonHeaders)
+	if quota.StatusCode != http.StatusTooManyRequests || !strings.Contains(quota.Body, `"code":"quota_reached"`) {
+		t.Fatalf("JSON quota = %d %s", quota.StatusCode, quota.Body)
+	}
+	missing := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, map[string]string{"Accept": "application/json"})
+	if missing.StatusCode != http.StatusForbidden || !strings.Contains(missing.Body, `"code":"invalid_csrf"`) {
+		t.Fatalf("JSON missing CSRF = %d %s", missing.StatusCode, missing.Body)
+	}
+	f.waitState(t, id, "ready")
+	status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+	if !strings.Contains(status.Body, `"next":"/organizations/`+id+`/work"`) {
+		t.Fatalf("ready provisioning JSON = %s", status.Body)
+	}
+	session := dana.do(http.MethodGet, "/api/cloud/session", nil, map[string]string{"Accept": "application/json"})
+	if session.StatusCode != http.StatusOK || !strings.Contains(session.Body, `"csrf":"`+chooser.CSRF+`"`) {
+		t.Fatalf("session JSON = %d %s", session.StatusCode, session.Body)
+	}
+	dana.login("/organizations/"+id+"/work", "user_dana:porg_"+id)
+	if response, body := dana.get("/organizations/" + id + "/work"); response.StatusCode != http.StatusOK || !strings.Contains(body, `content="/organizations/`+id+`"`) {
+		t.Fatalf("organization client home = %d %s", response.StatusCode, body)
 	}
 }

@@ -335,6 +335,9 @@ func (s *Service) newOrganizationPage(c echo.Context) error {
 	if err != nil {
 		return s.denied(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
 	}
+	if served, err := s.clientShell(c); served || err != nil {
+		return err
+	}
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "create", Title: "Create organization", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CreationKey: key})
 }
 
@@ -342,34 +345,38 @@ func (s *Service) createOrganization(c echo.Context) error {
 	if s.config.Allocation == nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
+	wantJSON := wantsJSON(c)
 	session, err := s.session(c)
 	if err != nil {
-		return s.denied(c, http.StatusUnauthorized, "Sign in to create an organization")
+		return s.refuse(c, http.StatusUnauthorized, "unauthenticated", "Sign in to create an organization")
 	}
 	if !s.csrfValid(c, session, "") {
-		return s.denied(c, http.StatusForbidden, "Reload the page and try again")
+		return s.refuse(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again")
 	}
 	if s.staff(session.Email) || session.Identity.SupportActor != "" {
-		return s.denied(c, http.StatusForbidden, "Staff and support sessions cannot create customer organizations")
+		return s.refuse(c, http.StatusForbidden, "staff_session", "Staff and support sessions cannot create customer organizations")
 	}
 	name, key := strings.TrimSpace(c.FormValue("name")), c.FormValue("creation_key")
 	if name == "" || len(name) > 120 || len(key) < 16 || len(key) > 128 || !safeID(key) {
-		return s.denied(c, http.StatusUnprocessableEntity, "Enter an organization name of at most 120 characters")
+		return s.refuse(c, http.StatusUnprocessableEntity, "invalid_name", "Enter an organization name of at most 120 characters")
 	}
 	if !s.signupAllowed(session.Email) {
-		return s.denied(c, http.StatusForbidden, "Organization creation is limited to invited pilot accounts")
+		return s.refuse(c, http.StatusForbidden, "not_eligible", "Organization creation is limited to invited pilot accounts")
 	}
 	fingerprint := sha256.Sum256([]byte(name))
 	id, err := s.recordIntent(c.Request().Context(), session, key, hex.EncodeToString(fingerprint[:]), name)
 	switch {
 	case errors.Is(err, errIntentConflict):
-		return s.denied(c, http.StatusConflict, "This creation request was already used with a different name")
+		return s.refuse(c, http.StatusConflict, "intent_conflict", "This creation request was already used with a different name")
 	case errors.Is(err, errQuota):
-		return s.denied(c, http.StatusTooManyRequests, "Your account has reached its organization limit. Open your existing organization from the organization list.")
+		return s.refuse(c, http.StatusTooManyRequests, "quota_reached", "Your account has reached its organization limit. Open your existing organization from the organization list.")
 	case err != nil:
-		return s.denied(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
+		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Organization creation is temporarily unavailable")
 	}
 	s.wakeAllocator()
+	if wantJSON {
+		return s.next(c, http.StatusCreated, "/organizations/"+id+"/provisioning", map[string]any{"organization": map[string]string{"id": id, "name": name}})
+	}
 	return c.Redirect(http.StatusSeeOther, "/organizations/"+id+"/provisioning")
 }
 
@@ -453,7 +460,10 @@ func (s *Service) provisioningPage(c echo.Context) error {
 		return s.denied(c, http.StatusNotFound, "This organization is unavailable")
 	}
 	if organization.State == "ready" {
-		return c.Redirect(http.StatusSeeOther, "/organizations/"+organization.ID+"/organization")
+		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization.ID))
+	}
+	if served, err := s.clientShell(c); served || err != nil {
+		return err
 	}
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "provisioning", Title: "Setting up " + organization.Name, Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), Provisioning: provisioningStatus(organization)})
 }
@@ -464,29 +474,33 @@ func (s *Service) provisioningJSON(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
 	status := provisioningStatus(organization)
-	return c.JSON(http.StatusOK, map[string]any{"id": status.ID, "name": status.Name, "state": status.State, "step": status.Step, "error": status.Error, "can_resume": status.CanResume})
+	result := map[string]any{"id": status.ID, "name": status.Name, "state": status.State, "step": status.Step, "error": status.Error, "can_resume": status.CanResume}
+	if organization.State == "ready" {
+		result["next"] = s.organizationHome(organization.ID)
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) resumeProvisioning(c echo.Context) error {
 	session, organization, err := s.creatorOrganization(c)
 	if err != nil {
-		return s.denied(c, http.StatusNotFound, "This organization is unavailable")
+		return s.refuse(c, http.StatusNotFound, "not_found", "This organization is unavailable")
 	}
 	if !s.csrfValid(c, session, "") {
-		return s.denied(c, http.StatusForbidden, "Reload the page and try again")
+		return s.refuse(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again")
 	}
 	if !provisioningRetryable(organization) {
-		return c.Redirect(http.StatusSeeOther, "/organizations/"+organization.ID+"/provisioning")
+		return s.next(c, http.StatusOK, "/organizations/"+organization.ID+"/provisioning", nil)
 	}
 	state := "allocating"
 	if organization.Step == "" {
 		state = "requested"
 	}
 	if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
-		return s.denied(c, http.StatusServiceUnavailable, "Setup could not be resumed")
+		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Setup could not be resumed")
 	}
 	s.wakeAllocator()
-	return c.Redirect(http.StatusSeeOther, "/organizations/"+organization.ID+"/provisioning")
+	return s.next(c, http.StatusOK, "/organizations/"+organization.ID+"/provisioning", nil)
 }
 
 func (s *Service) pendingOrganizations(ctx context.Context, subject string) ([]templates.HostedOrganizationChoice, error) {

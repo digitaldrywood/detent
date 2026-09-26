@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,6 +46,7 @@ type Config struct {
 	now           func() time.Time
 	generateToken func() (string, error)
 	transport     func(Organization) (http.RoundTripper, error)
+	clientFS      fs.FS
 }
 
 func (c Config) validate() error {
@@ -180,6 +182,7 @@ func (s *Service) routes() {
 	e.GET("/organizations/:organization/delete", s.deleteOrganizationPage)
 	e.POST("/organizations/:organization/delete", s.deleteOrganization)
 	e.GET("/api/cloud/organizations", s.organizationsJSON)
+	e.GET("/api/cloud/session", s.sessionJSON)
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)
 	e.GET("/support", s.supportPage)
@@ -280,6 +283,9 @@ func (s *Service) denied(c echo.Context, status int, message string) error {
 func (s *Service) home(c echo.Context) error {
 	if _, err := s.session(c); err == nil {
 		return c.Redirect(http.StatusSeeOther, "/organizations")
+	}
+	if served, err := s.clientShell(c); served || err != nil {
+		return err
 	}
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "login", Title: "Sign in"})
 }

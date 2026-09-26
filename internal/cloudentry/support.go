@@ -122,5 +122,5 @@ func (s *Service) completeSupport(c echo.Context) error {
 		return s.denied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable")
 	}
 	s.revokeAtTenants(ctx, stale)
-	return c.Redirect(http.StatusSeeOther, "/organizations/"+organization.ID+"/organization")
+	return c.Redirect(http.StatusSeeOther, s.organizationHome(organization.ID))
 }
