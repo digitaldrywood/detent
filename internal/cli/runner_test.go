@@ -557,11 +557,9 @@ func TestBuildCodexCommandUsesConfiguredShell(t *testing.T) {
 	cfg.Codex.Command = "codex app-server --experimental"
 	cfg.Codex.Shell = "bash"
 
-	// The configured command runs through the configured shell, with the
-	// question feature the runner appends to every app-server launch.
 	cmd := buildCodexCommand(context.Background(), cfg)
-	if got := strings.Join(cmd.Args, "\x00"); got != "bash\x00-c\x00codex app-server --experimental --enable default_mode_request_user_input" {
-		t.Fatalf("Args = %#v, want bash -c configured command plus the question feature", cmd.Args)
+	if got := strings.Join(cmd.Args, "\x00"); got != "bash\x00-c\x00codex app-server --experimental" {
+		t.Fatalf("Args = %#v, want bash -c configured command", cmd.Args)
 	}
 }
 
@@ -2512,24 +2510,6 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 			}
 			if snapshot.HostCache == nil || snapshot.HostCache.BuildBytes != 47<<30 {
 				t.Fatalf("host cache = %+v", snapshot.HostCache)
-
-func TestWithCodexQuestionFeature(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name, command, want string
-	}{
-		{name: "app-server gains the feature", command: "codex app-server", want: "codex app-server --enable default_mode_request_user_input"},
-		{name: "explicit stdio keeps its args", command: "codex app-server --stdio", want: "codex app-server --stdio --enable default_mode_request_user_input"},
-		{name: "already enabled", command: "codex app-server --enable default_mode_request_user_input", want: "codex app-server --enable default_mode_request_user_input"},
-		{name: "already set through config", command: "codex app-server -c features.default_mode_request_user_input=false", want: "codex app-server -c features.default_mode_request_user_input=false"},
-		{name: "other commands untouched", command: "codex exec", want: "codex exec"},
-		{name: "empty", command: "", want: ""},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			if got := withCodexQuestionFeature(test.command); got != test.want {
-				t.Fatalf("withCodexQuestionFeature(%q) = %q, want %q", test.command, got, test.want)
 			}
 		})
 	}

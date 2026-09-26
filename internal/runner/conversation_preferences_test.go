@@ -4,15 +4,13 @@ import "testing"
 
 // TestPrepareTurnAppliesPreferences proves the conversation's turn
 // preferences reach the turn request: an explicit model and effort replace
-// the run's own selection, read-only access forbids writes, and a
-// coordinator turn stays read-only whatever access says (decisions
+// the run's own selection and read-only access forbids writes (decisions
 // section 14).
 func TestPrepareTurnAppliesPreferences(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
 		preferences ConversationPreferences
-		coordinator bool
 		request     AgentTurnRequest
 		wantModel   string
 		wantEffort  string
@@ -52,21 +50,12 @@ func TestPrepareTurnAppliesPreferences(t *testing.T) {
 			wantModel:   "gpt-6-astra",
 			wantRead:    true,
 		},
-		{
-			name:        "a coordinator turn is read only whatever access says",
-			preferences: ConversationPreferences{Access: "full"},
-			coordinator: true,
-			request:     AgentTurnRequest{Model: "gpt-6-astra"},
-			wantModel:   "gpt-6-astra",
-			wantRead:    true,
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			session := newFakeConversationSession()
 			session.preferences = test.preferences
-			session.coordinator = test.coordinator
 			run := &conversationRun{session: session}
 			got := run.prepareTurn(test.request)
 			if got.Model != test.wantModel {

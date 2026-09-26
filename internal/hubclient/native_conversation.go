@@ -64,7 +64,6 @@ type ConversationBindRequest struct {
 // bounded transcript for the runner to prepend as data.
 type ConversationBindResponse struct {
 	ConversationID string `json:"conversation_id"`
-	Coordinator    bool   `json:"coordinator"`
 	// Preferences are the conversation's turn preferences: the runner
 	// applies the explicit ones to every turn it runs for this attempt.
 	Preferences runner.ConversationPreferences `json:"preferences"`
@@ -238,7 +237,6 @@ type conversationSession struct {
 	resume       string
 	resumeMode   string
 	threadOrigin string
-	coordinator  bool
 	preferences  runner.ConversationPreferences
 	pending      string
 	pendingKey   []string
@@ -278,7 +276,6 @@ func newConversationSession(ctx context.Context, client *NativeClient, item trac
 		client: client, item: item, id: response.ConversationID, identity: identity, resume: response.Resume.ThreadID,
 		resumeMode:   conversationResumeMode(response),
 		threadOrigin: response.Resume.ThreadOrigin,
-		coordinator:  response.Coordinator,
 		preferences:  response.Preferences,
 		leaseCheck:   leaseCheck, logger: logger.With("conversation", response.ConversationID),
 		commands:    make(chan runner.AgentControl, conversationCommandQueueSize),
@@ -355,24 +352,10 @@ func (s *conversationSession) LastTurnStatus() string {
 	return s.lastStatus
 }
 
-// Coordinator reports whether the hub bound a coordinator work item.
-func (s *conversationSession) Coordinator() bool { return s.coordinator }
-
 // Preferences are the conversation's turn preferences as the bind reported
 // them. They are fixed for the life of the attempt: a change mid-attempt
 // reaches the next turn through the next bind.
 func (s *conversationSession) Preferences() runner.ConversationPreferences { return s.preferences }
-
-// PostStatus queues a structured status item addressed to the live turn.
-func (s *conversationSession) PostStatus(ctx context.Context, data map[string]any, summary string) error {
-	s.mu.Lock()
-	event := runner.ConversationTurnEvent{
-		Type: runner.ConversationEventItem, Kind: runner.ConversationItemStatus,
-		ThreadID: s.thread, TurnID: s.turn, Summary: summary, Data: data,
-	}
-	s.mu.Unlock()
-	return s.Report(ctx, []runner.ConversationTurnEvent{event})
-}
 
 func (s *conversationSession) PendingPrompt() (string, []string) {
 	return s.pending, append([]string(nil), s.pendingKey...)

@@ -660,18 +660,18 @@ func TestNativeConversationPollStopsOnStaleExecution(t *testing.T) {
 	}
 }
 
-// coordinatorBindBody is a bind response for a coordinator work item whose
-// provider thread was produced by another runner: no resume thread, a bounded
+// transcriptBindBody is a bind response for a conversation whose provider
+// thread was produced by another runner: no resume thread, a bounded
 // transcript instead.
-const coordinatorBindBody = `{"conversation_id":"conv_1","coordinator":true,"resume":{"thread_id":"","transcript":[` +
+const transcriptBindBody = `{"conversation_id":"conv_1","resume":{"thread_id":"","thread_origin":"worker","transcript":[` +
 	`{"role":"user","kind":"text","text":"How is the release going?"},` +
 	`{"role":"assistant","kind":"text","text":"Two issues are in review."}` +
 	`]},"pending":[{"cursor":4,"key":"k1","kind":"message","message_id":"msg_1","text":"Anything blocked?"}],"cursor":4}`
 
-func TestNativeConversationBindDecodesCoordinatorAndTranscript(t *testing.T) {
+func TestNativeConversationBindDecodesTranscript(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
-	hub.bindBody = coordinatorBindBody
+	hub.bindBody = transcriptBindBody
 	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
 	if err != nil {
 		t.Fatalf("bind error = %v", err)
@@ -681,8 +681,8 @@ func TestNativeConversationBindDecodesCoordinatorAndTranscript(t *testing.T) {
 			t.Errorf("close error = %v", err)
 		}
 	}()
-	if !session.Coordinator() {
-		t.Fatal("session did not decode coordinator: true")
+	if origin := session.(interface{ ThreadOrigin() string }).ThreadOrigin(); origin != "worker" {
+		t.Fatalf("thread origin = %q, want worker", origin)
 	}
 	if session.ResumeThreadID() != "" {
 		t.Fatalf("resume thread = %q, want empty when the hub sends a transcript", session.ResumeThreadID())
@@ -723,70 +723,11 @@ func TestNativeConversationBindKeepsResumeThreadOverTranscript(t *testing.T) {
 			t.Errorf("close error = %v", err)
 		}
 	}()
-	if session.ResumeThreadID() != "thread-9" || session.Coordinator() {
-		t.Fatalf("resume thread = %q coordinator = %v", session.ResumeThreadID(), session.Coordinator())
+	if session.ResumeThreadID() != "thread-9" {
+		t.Fatalf("resume thread = %q", session.ResumeThreadID())
 	}
 	if prompt, _ := session.PendingPrompt(); prompt != "" {
 		t.Fatalf("pending prompt = %q, want empty: the provider thread already carries the history", prompt)
-	}
-}
-
-func TestNativeConversationPostStatusPostsItemWithData(t *testing.T) {
-	useFastConversationTimings(t)
-	hub, execution := newConversationHub(t)
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
-	if err != nil {
-		t.Fatalf("bind error = %v", err)
-	}
-	if err := session.Report(t.Context(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-c", TurnID: "turn-c"}}); err != nil {
-		t.Fatalf("report turn_started: %v", err)
-	}
-	proposal := map[string]any{"project_id": "prj_1", "title": "Ship it"}
-	if err := session.PostStatus(t.Context(), map[string]any{"proposal": proposal}, "Proposed issue: Ship it"); err != nil {
-		t.Fatalf("post status: %v", err)
-	}
-	if err := session.Close(context.Background(), runner.ConversationOutcomeSucceeded, nil); err != nil {
-		t.Fatalf("close error = %v", err)
-	}
-	var status runner.ConversationTurnEvent
-	for _, event := range hub.events() {
-		if event.Type == runner.ConversationEventItem {
-			status = event
-		}
-	}
-	if status.Kind != runner.ConversationItemStatus || status.ThreadID != "thread-c" || status.TurnID != "turn-c" {
-		t.Fatalf("status item = %#v", status)
-	}
-	if status.Summary != "Proposed issue: Ship it" {
-		t.Fatalf("status summary = %q", status.Summary)
-	}
-	decoded, _ := status.Data["proposal"].(map[string]any)
-	if decoded["title"] != "Ship it" || decoded["project_id"] != "prj_1" {
-		t.Fatalf("status data = %#v", status.Data)
-	}
-}
-
-func TestSchedulerCoordinatorReader(t *testing.T) {
-	_, execution := newConversationHub(t)
-	scheduler := execution.scheduler
-	item := string(execution.claim.lease.WorkItemID)
-	reader := scheduler.CoordinatorReader(item)
-	if reader == nil {
-		t.Fatal("claimed work item has no coordinator reader")
-	}
-	if reader != runner.CoordinatorHubReader(execution.claim.source.client) {
-		t.Fatalf("coordinator reader = %#v, want the claim's native client", reader)
-	}
-	if got := scheduler.CoordinatorReader("wi_unknown"); got != nil {
-		t.Fatalf("unclaimed work item returned a reader: %#v", got)
-	}
-	// The tools report the hub's own project id, so a proposal can name the
-	// project an issue read reported.
-	if got := scheduler.CoordinatorProject(item); got != "prj_test" {
-		t.Fatalf("coordinator project = %q, want the claim's hub project", got)
-	}
-	if got := scheduler.CoordinatorProject("wi_unknown"); got != "" {
-		t.Fatalf("unclaimed work item returned project %q", got)
 	}
 }
 

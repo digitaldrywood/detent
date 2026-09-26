@@ -179,8 +179,31 @@ func (c *Client) Release(ctx context.Context, lease tracker.Lease, reason string
 }
 
 func (c *Client) request(ctx context.Context, method string, path string, input any, output any) error {
+	return c.requestWithHeaders(ctx, method, path, nil, input, output)
+}
+
+// requestWithHeaders performs one Hub request, adding the caller's headers for
+// endpoints that carry the owner tuple outside the body. The client's own
+// Authorization, Accept and Content-Type always win.
+func (c *Client) requestWithHeaders(ctx context.Context, method string, path string, headers http.Header, input any, output any) error {
+	return c.requestWithDeadline(ctx, 0, method, path, headers, input, output)
+}
+
+// requestWithDeadline performs one Hub request that carries its own deadline
+// instead of the client's default request timeout. A long poll is the caller
+// that needs it: the server is expected to hold the request open for the wait
+// it was asked for, which is longer than any ordinary Hub call. Passing zero
+// keeps the client's own timeout.
+func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration, method string, path string, headers http.Header, input any, output any) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	httpClient := c.httpClient
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+		httpClient = clientWithTimeout(httpClient, timeout)
 	}
 	var body io.Reader
 	if input != nil {
@@ -198,24 +221,21 @@ func (c *Client) request(ctx context.Context, method string, path string, input 
 	if err != nil {
 		return fmt.Errorf("build Hub request: %w", err)
 	}
-	var token string
-	if c.runner != nil {
-		token, err = c.runnerToken(ctx)
-		if err != nil {
-			return err
+	token, err := c.bearerToken(ctx)
+	if err != nil {
+		return err
+	}
+	for name, values := range headers {
+		for _, value := range values {
+			request.Header.Add(name, value)
 		}
-	} else {
-		token = strings.TrimSpace(c.tokenSource())
 	}
-	if token == "" {
-		return errors.New("hub token is unavailable")
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Authorization", token)
 	request.Header.Set("Accept", "application/json")
 	if input != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := c.httpClient.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
@@ -261,4 +281,93 @@ func (e *APIError) UnmarshalJSON(data []byte) error {
 	e.Message = value.Message
 	e.CurrentRevision = value.CurrentRevision
 	return nil
+}
+
+// bearerToken resolves this client's Authorization header value, so a request
+// that does not go through the JSON path presents the same credential and
+// rotation behaviour as every other call.
+func (c *Client) bearerToken(ctx context.Context) (string, error) {
+	var token string
+	if c.runner != nil {
+		resolved, err := c.runnerToken(ctx)
+		if err != nil {
+			return "", err
+		}
+		token = resolved
+	} else {
+		token = strings.TrimSpace(c.tokenSource())
+	}
+	if token == "" {
+		return "", errors.New("hub token is unavailable")
+	}
+	return "Bearer " + token, nil
+}
+
+// clientWithTimeout returns an HTTP client whose own Timeout cannot cut a
+// request short of the deadline the caller asked for. http.Client.Timeout is a
+// hard cap that a longer context deadline cannot lift, so a long poll needs a
+// copy rather than the caller's client. The copy shares the transport, so it
+// shares the connection pool.
+func clientWithTimeout(client *http.Client, timeout time.Duration) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if client.Timeout <= 0 || client.Timeout >= timeout {
+		return client
+	}
+	copied := *client
+	copied.Timeout = timeout
+	return &copied
+}
+
+// download fetches a blob from the Hub with the client's own credential. It
+// is separate from request because a response body here is a file, not JSON:
+// the JSON path caps a response at maxResponseBytes, which no attachment
+// would fit under. target must be a Hub path, never an absolute URL: the
+// client follows its own base and never a host the Hub names.
+func (c *Client) download(ctx context.Context, target string, limit int64) ([]byte, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
+		return nil, "", fmt.Errorf("hub download target %q is not a Hub path", target)
+	}
+	endpoint := *c.baseURL
+	requestPath, requestQuery, _ := strings.Cut(target, "?")
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + requestPath
+	endpoint.RawQuery = requestQuery
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("build Hub download: %w", err)
+	}
+	token, err := c.bearerToken(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	request.Header.Set("Authorization", token)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: read download: %w", ErrUnavailable, err)
+	}
+	if int64(len(payload)) > limit {
+		return nil, "", fmt.Errorf("%w: download exceeds %d bytes", ErrUnavailable, limit)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		apiErr := &APIError{Status: response.StatusCode}
+		if len(payload) > 0 && strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
+			if err := json.Unmarshal(payload, apiErr); err != nil {
+				return nil, "", fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err)
+			}
+		}
+		if response.StatusCode >= 500 {
+			return nil, "", errors.Join(ErrUnavailable, apiErr)
+		}
+		return nil, "", apiErr
+	}
+	return payload, response.Header.Get("Content-Type"), nil
 }

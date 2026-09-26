@@ -131,15 +131,9 @@ type ConversationSession interface {
 	// LastTurnStatus is the status of the last turn_completed event reported
 	// through the session, or an empty string when no turn has completed.
 	LastTurnStatus() string
-	// Coordinator reports whether the hub bound a coordinator work item
-	// rather than an ordinary issue.
-	Coordinator() bool
 	// Preferences are the conversation's turn preferences: the model, the
 	// reasoning effort and the access level its turns should use.
 	Preferences() ConversationPreferences
-	// PostStatus queues a structured status item for the current turn, such
-	// as an issue proposal a tool prepared. It never blocks on the network.
-	PostStatus(ctx context.Context, data map[string]any, summary string) error
 	// PendingPrompt returns user messages that were queued before binding,
 	// rendered for inclusion in the first turn prompt, and the control keys
 	// of those messages so they can be reported delivered once a turn starts.
@@ -234,7 +228,7 @@ func RenderConversationTranscript(entries []ConversationTranscriptEntry) string 
 		b.WriteString("[")
 		b.WriteString(escapeConversationData(role))
 		b.WriteString("] ")
-		b.WriteString(escapeConversationData(boundCoordinatorRunes(text, conversationTranscriptRunes)))
+		b.WriteString(escapeConversationData(boundConversationRunes(text, conversationTranscriptRunes)))
 		b.WriteString("\n")
 	}
 	if b.Len() == 0 {
@@ -263,4 +257,12 @@ func RenderConversationFollowUps(messages []string) string {
 		return ""
 	}
 	return conversationPendingHeader + "\n<pending-follow-ups>\n" + b.String() + "\n</pending-follow-ups>\n"
+}
+
+func boundConversationRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
 }

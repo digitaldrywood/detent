@@ -88,7 +88,6 @@ type fakeConversationSession struct {
 	pending            string
 	pendingKeys        []string
 	resume             string
-	coordinator        bool
 	preferences        ConversationPreferences
 	thread             string
 	turn               string
@@ -111,7 +110,6 @@ func (s *fakeConversationSession) ResumeThreadID() string            { return s.
 func (s *fakeConversationSession) PendingPrompt() (string, []string) { return s.pending, s.pendingKeys }
 
 func (s *fakeConversationSession) PendingAttachments() []AgentAttachment { return s.pendingAttachments }
-func (s *fakeConversationSession) Coordinator() bool                     { return s.coordinator }
 
 func (s *fakeConversationSession) Preferences() ConversationPreferences { return s.preferences }
 
@@ -121,15 +119,6 @@ func (s *fakeConversationSession) LastTurnStatus() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastStatus
-}
-
-// PostStatus mirrors the hub client: the session addresses the status item to
-// the turn it last saw start.
-func (s *fakeConversationSession) PostStatus(ctx context.Context, data map[string]any, summary string) error {
-	s.mu.Lock()
-	event := ConversationTurnEvent{Type: ConversationEventItem, Kind: ConversationItemStatus, ThreadID: s.thread, TurnID: s.turn, Summary: summary, Data: data}
-	s.mu.Unlock()
-	return s.Report(ctx, []ConversationTurnEvent{event})
 }
 
 func (s *fakeConversationSession) Control(turn ConversationTurnHooks) *AgentConversationControl {

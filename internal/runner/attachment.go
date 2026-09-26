@@ -11,7 +11,7 @@ import (
 // downloads them, and the provider sees an image as image input and a text
 // file as a delimited data block. The block is data, never instructions:
 // the delimiters inside it are escaped so quoted content cannot close its own
-// fence, the same rule the coordinator transcript follows (section 10.6).
+// fence, the same rule the conversation transcript follows (section 10.6).
 
 const (
 	// maxAttachmentBlockBytes bounds the text a single turn's data block
@@ -51,12 +51,6 @@ func AttachmentImages(attachments []AgentAttachment) []AgentAttachment {
 		return nil
 	}
 	return images
-}
-
-// AttachmentDataBlock renders the text attachments as one delimited data
-// block, for a caller that builds its own prompt.
-func AttachmentDataBlock(attachments []AgentAttachment) string {
-	return attachmentDataBlock(attachments)
 }
 
 // attachmentDataBlock renders the text attachments as one delimited data

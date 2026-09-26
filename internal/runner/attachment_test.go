@@ -111,29 +111,3 @@ func TestAttachmentImages(t *testing.T) {
 		t.Fatalf("AttachmentImages() = %+v, want only the non-empty image", images)
 	}
 }
-
-// AttachmentDataBlock is the exported form the hub-side coordinator builds
-// its own prompt with, and it renders the same block as a runner turn.
-func TestAttachmentDataBlockExported(t *testing.T) {
-	t.Parallel()
-	attachments := []AgentAttachment{
-		{ID: "att_1", Name: "shot.png", MIME: "image/png", Content: []byte("png")},
-		{ID: "att_2", Name: "notes.md", MIME: "text/markdown", Content: []byte("lease log")},
-	}
-	block := AttachmentDataBlock(attachments)
-	if block != attachmentDataBlock(attachments) {
-		t.Fatal("AttachmentDataBlock and attachmentDataBlock disagree")
-	}
-	if !strings.Contains(block, "notes.md") || !strings.Contains(block, "lease log") {
-		t.Fatalf("block does not carry the text file: %q", block)
-	}
-	if strings.Contains(block, "shot.png") {
-		t.Fatalf("block carries the image: %q", block)
-	}
-	if got := AttachmentDataBlock(attachments[:1]); got != "" {
-		t.Fatalf("AttachmentDataBlock(images only) = %q, want empty", got)
-	}
-	if got := AttachmentDataBlock(nil); got != "" {
-		t.Fatalf("AttachmentDataBlock(nil) = %q, want empty", got)
-	}
-}

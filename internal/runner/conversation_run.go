@@ -61,15 +61,15 @@ func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend A
 	if session == nil {
 		return nil
 	}
-	r.logWorkerEvent(req.Issue, "worker_conversation_bound", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "conversation_id", session.ConversationID(), "thread_id", session.ResumeThreadID(), "resume", session.ResumeMode(), "thread_origin", conversationThreadOrigin(session), "coordinator", session.Coordinator())
+	r.logWorkerEvent(req.Issue, "worker_conversation_bound", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "conversation_id", session.ConversationID(), "thread_id", session.ResumeThreadID(), "resume", session.ResumeMode(), "thread_origin", conversationThreadOrigin(session))
 	return &conversationRun{session: session, logger: r.logger, issue: req.Issue}
 }
 
 // conversationThreadOrigin reports the kind of turn the bound thread belongs
 // to when the session exposes it. The hub decides what a bind resumes
-// (decisions section 9.3); the origin is recorded on the run so an inherited
-// coordinator thread is visible in the log rather than only in the answer the
-// model gives.
+// (decisions section 9.3); the origin is recorded on the run so a thread of
+// another kind is visible in the log rather than only in the answer the model
+// gives.
 func conversationThreadOrigin(session ConversationSession) string {
 	origin, ok := session.(interface{ ThreadOrigin() string })
 	if !ok {
@@ -110,7 +110,7 @@ func (c *conversationRun) prepareTurn(request AgentTurnRequest) AgentTurnRequest
 	pendingDelivered := c.pendingDelivered
 	c.mu.Unlock()
 	request.ConversationControl = c.session.Control(ConversationTurnHooks{InputRequested: c.inputRequested})
-	request = applyConversationPreferences(request, c.session.Preferences(), c.session.Coordinator())
+	request = applyConversationPreferences(request, c.session.Preferences())
 	if request.Resume.ThreadID == "" && request.Resume.SessionID == "" {
 		request.Resume.ThreadID = c.session.ResumeThreadID()
 	}
@@ -141,18 +141,6 @@ func appendConversationData(prompt string, data string) string {
 		return data
 	default:
 		return prompt + "\n\n" + data
-	}
-}
-
-// statusPoster exposes the session's structured status channel to tools that
-// publish a card for the user, such as propose_issue. A run without a bound
-// conversation has none, and the tool reports that itself.
-func (c *conversationRun) statusPoster() CoordinatorStatusPoster {
-	if c == nil {
-		return nil
-	}
-	return func(ctx context.Context, data map[string]any, summary string) error {
-		return c.session.PostStatus(ctx, data, summary)
 	}
 }
 
@@ -403,16 +391,16 @@ func conversationPrompts(raw json.RawMessage) json.RawMessage {
 // to the request the run built. An explicit model or effort replaces the
 // run's own selection; "auto" leaves it alone. Access only ever tightens:
 // read_only forbids writes, and full never re-enables what the run already
-// forbade, because a coordinator turn and a routine run are read-only by
-// their mode (decisions section 14).
-func applyConversationPreferences(request AgentTurnRequest, preferences ConversationPreferences, coordinator bool) AgentTurnRequest {
+// forbade, because a routine run is read-only by its mode (decisions
+// section 14).
+func applyConversationPreferences(request AgentTurnRequest, preferences ConversationPreferences) AgentTurnRequest {
 	if model := preferences.ModelValue(); model != "" {
 		request.Model = model
 	}
 	if effort := preferences.EffortValue(); effort != "" {
 		request.ReasoningEffort = effort
 	}
-	if preferences.ReadOnly() || coordinator {
+	if preferences.ReadOnly() {
 		request.ReadOnly = true
 	}
 	return request
