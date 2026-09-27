@@ -28,6 +28,17 @@ type nativeExecution struct {
 	// every checkpoint and before the finish (decisions section 18.5). It is
 	// nil for a run with no worktree to describe.
 	diffSource runner.AttemptDiffSource
+	// lastDiff is the most recent diff the source produced. It stands in for
+	// the finish generation when the worktree is gone by then: the agent has
+	// stopped, so nothing changed after the last diff that could be read.
+	lastDiff *tracker.AttemptDiffRequest
+	// role and conversation decide whether a finished run is work the runner
+	// opens a Change Request for: a code or rework run that no conversation
+	// owns the continuation of.
+	role         string
+	conversation bool
+	settled      bool
+	change       *runner.NativeChange
 }
 
 type nativeMutationAuthorityKey struct{}
@@ -175,6 +186,7 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 		return e.flush(ctx)
 	}
 	e.data.Identity = &identity
+	e.role = identity.Role
 	return e.append(ctx, "run.started", "", nil)
 }
 
@@ -207,10 +219,27 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
-	if e.data.Identity == nil || e.data.Outcome != "" {
+	if e.data.Identity == nil {
 		return nil
 	}
-	return e.append(ctx, "run.finished", outcome, nil)
+	if e.data.Outcome == "" {
+		if err := e.append(ctx, "run.finished", outcome, nil); err != nil {
+			return err
+		}
+	}
+	e.settle(ctx)
+	return nil
+}
+
+// NativeChange reports what the finished run left for review.
+func (e *nativeExecution) NativeChange() *runner.NativeChange {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.change == nil {
+		return nil
+	}
+	change := *e.change
+	return &change
 }
 
 // SetDiffSource installs the source the execution calls before every run event
@@ -235,7 +264,13 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) {
 		return
 	}
 	request, ok := e.diffSource(ctx)
-	if !ok {
+	switch {
+	case ok:
+		last := request
+		e.lastDiff = &last
+	case e.lastDiff != nil:
+		request = *e.lastDiff
+	default:
 		return
 	}
 	request.Producer = tracker.DiffProducer{

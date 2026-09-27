@@ -47,6 +47,23 @@ func (c *NativeConnector) FetchCandidateIssues(ctx context.Context) ([]connector
 	return c.FetchIssuesByStates(ctx, states)
 }
 
+// WorkflowStates reports the native project's workflow, which is the state
+// model the hub enforces on every transition.
+func (c *NativeConnector) WorkflowStates(ctx context.Context) ([]connector.WorkflowState, error) {
+	project, err := c.client.Project(ctx)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]connector.WorkflowState, 0, len(project.States))
+	for _, state := range project.States {
+		states = append(states, connector.WorkflowState{
+			Name: state.Name, Terminal: state.Terminal, Dispatchable: state.Dispatchable,
+			OperatorOnly: state.OperatorOnly, Transitions: append([]string(nil), state.Transitions...),
+		})
+	}
+	return states, nil
+}
+
 func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
 	var issues []connector.Issue
 	for _, state := range states {

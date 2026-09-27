@@ -226,6 +226,9 @@ func (e *nativeExecution) BindConversation(ctx context.Context, capabilities run
 	if err != nil {
 		return nil, err
 	}
+	e.mu.Lock()
+	e.conversation = true
+	e.mu.Unlock()
 	logger := slog.Default().With("work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID)
 	return newConversationSession(ctx, e.claim.source.client, e.claim.lease.WorkItemID, identity, response, e.leaseCheck, logger), nil
 }
