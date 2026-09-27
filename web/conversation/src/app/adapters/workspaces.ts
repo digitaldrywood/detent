@@ -59,7 +59,20 @@ const IDLE: WorkspaceHandle = {
   mintTicket: null,
 };
 
-const KEY_STORAGE_PREFIX = "detent:workspace-key:v1";
+const KEY_STORAGE_PREFIX = "detent:workspace-key:v2";
+
+/**
+ * The capabilities the hub relays to a runner (§18.1). The hub drops every
+ * other entry of `requires` when it creates a workspace, because it has no diff
+ * or preview channel, so a runner reports neither and reuse must not wait for
+ * one.
+ */
+const RELAYED_CAPABILITIES: readonly string[] = ["files", "exec", "git", "terminal"];
+
+/** The part of `requires` the hub keeps, sorted and without duplicates. */
+export function relayedRequires(requires: readonly string[]): readonly string[] {
+  return [...new Set(requires.filter((entry) => RELAYED_CAPABILITIES.includes(entry)))].sort();
+}
 
 /**
  * The idempotency key for "open a workspace for this issue", persisted.
@@ -71,8 +84,15 @@ const KEY_STORAGE_PREFIX = "detent:workspace-key:v1";
  * retry of that one intent the same request — which is what an idempotency key
  * is for.
  */
-function workspaceKey(projectId: string, workItemId: string): string {
-  const storageKey = `${KEY_STORAGE_PREFIX}:${projectId}:${workItemId}`;
+export function workspaceKey(
+  projectId: string,
+  workItemId: string,
+  requires: readonly string[],
+): string {
+  // Panels asking for different surfaces send different bodies, and the hub
+  // refuses one key carrying two bodies, so each relayed set has its own key.
+  const surfaces = relayedRequires(requires).join(",");
+  const storageKey = `${KEY_STORAGE_PREFIX}:${projectId}:${workItemId}:${surfaces}`;
   try {
     const existing = globalThis.localStorage?.getItem(storageKey);
     if (existing !== null && existing !== undefined && existing.length > 0) return existing;
@@ -121,12 +141,10 @@ export function workspaceFromEvent(data: string, workspaceId: string): Workspace
  * requested capability must be one the runner that claimed this workspace
  * actually reported.
  *
- * §18.12 writes down why it is needed and why it was latent until now. While
- * every workspace was a files workspace the question could not come up. With
- * two capabilities it can: a workspace already open with `requires: ["files"]`
- * would be reused for a caller asking for `["files", "exec"]`, the exec frames
- * would then be refused by the hub's channel gate, and the reader would see an
- * action that never produces output with nothing saying why.
+ * Only the relayed capabilities count: a workspace already open with
+ * `requires: ["files"]` must not be reused for a caller asking for
+ * `["files", "exec"]` unless its runner reported exec, while diff and preview
+ * are never reported by any runner and are dropped by the hub.
  *
  * An absent or null `capabilities` is "not yet known", not "none": a workspace
  * in `requested` has not been claimed, so no runner has reported anything. It
@@ -137,7 +155,7 @@ export function workspaceSatisfies(
   workspace: Workspace,
   requires: readonly string[],
 ): boolean {
-  const wanted = requires.filter((entry) => entry.length > 0);
+  const wanted = relayedRequires(requires);
   if (wanted.length === 0) return true;
   const capabilities = workspace.capabilities ?? null;
   if (capabilities === null) return false;
@@ -173,7 +191,7 @@ async function acquire(
   try {
     return await http.createWorkspace({
       projectId,
-      key: workspaceKey(projectId, workItemId),
+      key: workspaceKey(projectId, workItemId, requires),
       workItemId,
       requires,
     });

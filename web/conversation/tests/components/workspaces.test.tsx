@@ -13,7 +13,10 @@ import type { Workspace } from "../../src/contracts/work.ts";
 import {
   isWorkspaceLive,
   isWorkspaceUsable,
+  relayedRequires,
   useWorkspace,
+  workspaceKey,
+  workspaceSatisfies,
   workspaceFromEvent,
   workspaceReasonSentence,
 } from "../../src/app/adapters/workspaces.ts";
@@ -222,25 +225,44 @@ describe("useWorkspace", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  // §18.12: reuse is only correct where the workspace can serve the surface.
-  // A files-only workspace reused for an action would have its exec frames
-  // refused by the hub's channel gate, and the reader would see an action that
-  // never produces output with nothing saying why.
-  it("opens a second workspace rather than reusing one that cannot run an action", async () => {
+  // Reuse is only correct where the workspace can serve the surface: a
+  // files-only workspace reused for the header's git group would have every
+  // git frame refused.
+  it("opens a second workspace rather than reusing one that cannot serve git", async () => {
     fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "GET") {
         return Promise.resolve(
           json(200, { workspaces: [workspace({ id: "ws_files_only", state: "ready" })] }),
         );
       }
+      return Promise.resolve(json(201, workspace({ id: "ws_git", state: "requested" })));
+    });
+    mount(<Probe requires={["files", "git"]} />);
+    await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_git"));
+    const post = fetchMock.mock.calls.find((call) => (call[1] as RequestInit).method === "POST");
+    expect(JSON.parse(String((post?.[1] as RequestInit).body))).toMatchObject({
+      requires: ["files", "git"],
+    });
+  });
+
+  it("does not reuse a files workspace for the files panel, which needs exec", async () => {
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return Promise.resolve(json(200, { workspaces: [workspace({ id: "ws_files", state: "ready" })] }));
+      }
       return Promise.resolve(json(201, workspace({ id: "ws_exec", state: "requested" })));
     });
     mount(<Probe requires={["files", "exec"]} />);
     await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_exec"));
-    const post = fetchMock.mock.calls.find((call) => (call[1] as RequestInit).method === "POST");
-    expect(JSON.parse(String((post?.[1] as RequestInit).body))).toMatchObject({
-      requires: ["exec", "files"],
-    });
+  });
+
+  it("reuses a files workspace for a reader asking only for files and diff", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(json(200, { workspaces: [workspace({ id: "ws_files", state: "ready" })] })),
+    );
+    mount(<Probe requires={["files", "diff"]} />);
+    await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_files"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("reuses a workspace whose runner reported both capabilities", async () => {
@@ -256,15 +278,15 @@ describe("useWorkspace", () => {
                 files: true,
                 diff: false,
                 preview: false,
-                exec: true,
-                git: false,
+                exec: false,
+                git: true,
               },
             }),
           ],
         }),
       ),
     );
-    mount(<Probe requires={["files", "exec"]} />);
+    mount(<Probe requires={["files", "git"]} />);
     await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_both"));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -283,13 +305,13 @@ describe("useWorkspace", () => {
       }
       return Promise.resolve(json(201, workspace({ id: "ws_new", state: "requested" })));
     });
-    mount(<Probe requires={["files", "exec"]} />);
+    mount(<Probe requires={["files", "git"]} />);
     await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_new"));
   });
 
   // The same bug by a different route: adopting the workspace a 409 names,
   // when it cannot serve the surface, is no better than reusing one.
-  it("reports the conflict rather than adopting a 409's workspace that cannot run an action", async () => {
+  it("reports the conflict rather than adopting a 409's workspace that cannot serve git", async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "POST") {
         return Promise.resolve(
@@ -305,7 +327,7 @@ describe("useWorkspace", () => {
       }
       return Promise.resolve(json(200, { workspaces: [] }));
     });
-    mount(<Probe requires={["files", "exec"]} />);
+    mount(<Probe requires={["files", "git"]} />);
     await waitFor(() => expect(screen.getByTestId("error").textContent).toBe("already open"));
     expect(screen.getByTestId("id").textContent).toBe("none");
   });
@@ -322,6 +344,39 @@ describe("useWorkspace", () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(screen.getByTestId("state").textContent).toBe("requested");
+  });
+});
+
+describe("relayed requires", () => {
+  it.each([
+    { requires: ["files", "exec"], relayed: ["exec", "files"] },
+    { requires: ["files", "exec", "terminal"], relayed: ["exec", "files", "terminal"] },
+    { requires: ["git", "files", "git"], relayed: ["files", "git"] },
+    { requires: ["files", "diff", "preview"], relayed: ["files"] },
+  ])("keeps only what the hub relays from $requires", ({ requires, relayed }) => {
+    expect(relayedRequires(requires)).toEqual(relayed);
+  });
+
+  it.each([
+    { name: "the files panel", requires: ["files", "exec"], reusable: true },
+    { name: "the terminal tab", requires: ["files", "exec", "terminal"], reusable: false },
+    { name: "the header git group", requires: ["files", "git"], reusable: true },
+    { name: "a reader asking for a diff", requires: ["files", "diff"], reusable: true },
+  ])("decides reuse for $name by the relayed surfaces alone", ({ requires, reusable }) => {
+    const served = workspace({
+      state: "ready",
+      capabilities: { terminal: false, files: true, diff: false, preview: false, exec: true, git: true },
+    });
+    expect(workspaceSatisfies(served, requires)).toBe(reusable);
+  });
+
+  it("gives panels asking for different surfaces different idempotency keys", () => {
+    const files = workspaceKey("proj_1", "item_1", ["files", "exec"]);
+    expect(workspaceKey("proj_1", "item_1", ["exec", "files"])).toBe(files);
+    expect(workspaceKey("proj_1", "item_1", ["files", "exec", "diff"])).toBe(files);
+    expect(workspaceKey("proj_1", "item_1", ["files"])).not.toBe(files);
+    expect(workspaceKey("proj_1", "item_1", ["files", "git"])).not.toBe(files);
+    expect(workspaceKey("proj_1", "item_1", ["files", "exec", "terminal"])).not.toBe(files);
   });
 });
 

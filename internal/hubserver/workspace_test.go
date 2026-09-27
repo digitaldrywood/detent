@@ -193,8 +193,8 @@ func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 		if session.State != workspacesession.StateRequested || session.ReadOnly || session.Revision != 1 {
 			t.Fatalf("session = %#v", session)
 		}
-		if len(session.Requires) != 2 || session.Requires[0] != workspacesession.CapabilityFiles || session.Requires[1] != workspacesession.CapabilityDiff {
-			t.Fatalf("requires = %v, want the section 18.1 default", session.Requires)
+		if len(session.Requires) != 1 || session.Requires[0] != workspacesession.CapabilityFiles {
+			t.Fatalf("requires = %v, want the section 18.1 default narrowed to what the relay serves", session.Requires)
 		}
 		if session.CreatedBy != f.ownerID || session.IdleTimeoutSeconds != int(defaultWorkspaceIdleTimeout/time.Second) {
 			t.Fatalf("session provenance = %#v", session)
