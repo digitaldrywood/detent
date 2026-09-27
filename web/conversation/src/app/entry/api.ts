@@ -20,6 +20,7 @@ export const EntryOrganizations = Schema.Struct({
   organizations: Schema.Array(EntryOrganization),
   pending: Schema.optional(Schema.Array(EntryOrganization)),
   can_create: Schema.optional(Schema.Boolean),
+  staff: Schema.optional(Schema.Boolean),
 });
 export type EntryOrganizations = typeof EntryOrganizations.Type;
 
@@ -27,6 +28,7 @@ export const EntrySession = Schema.Struct({
   email: Schema.String,
   csrf: Schema.String,
   can_create: Schema.optional(Schema.Boolean),
+  staff: Schema.optional(Schema.Boolean),
 });
 export type EntrySession = typeof EntrySession.Type;
 
@@ -44,7 +46,69 @@ export type Provisioning = typeof Provisioning.Type;
 export const NextResult = Schema.Struct({ next: Schema.String });
 export type NextResult = typeof NextResult.Type;
 
+export const PlatformOrganization = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  state: Schema.String,
+  step: Schema.String,
+  attempts: Schema.Number,
+  error_code: Schema.String,
+  managed: Schema.Boolean,
+  creator_email: Schema.String,
+  created_at: Schema.String,
+  updated_at: Schema.String,
+  billing: Schema.Struct({ available: Schema.Boolean, status: Schema.optional(Schema.String) }),
+  can_support: Schema.Boolean,
+  plan: Schema.NullOr(Schema.String),
+  grants: Schema.NullOr(Schema.Number),
+  member_count: Schema.NullOr(Schema.Number),
+  runner_count: Schema.NullOr(Schema.Number),
+});
+export type PlatformOrganization = typeof PlatformOrganization.Type;
+
+export const PlatformOrganizations = Schema.Struct({
+  email: Schema.String,
+  csrf: Schema.String,
+  can_support: Schema.Boolean,
+  organizations: Schema.Array(PlatformOrganization),
+  unavailable: Schema.Array(Schema.String),
+});
+export type PlatformOrganizations = typeof PlatformOrganizations.Type;
+
+export const PlatformAllowlist = Schema.Struct({
+  self_service: Schema.Boolean,
+  open: Schema.optional(Schema.Boolean),
+  allowed_emails: Schema.Array(Schema.String),
+  allowed_domains: Schema.Array(Schema.String),
+  source: Schema.Struct({ file: Schema.String, keys: Schema.Array(Schema.String) }),
+});
+export type PlatformAllowlist = typeof PlatformAllowlist.Type;
+
+export const PlatformHealth = Schema.Struct({
+  registry: Schema.Struct({ ok: Schema.Boolean }),
+  tenants: Schema.optional(Schema.Struct({ expected: Schema.Number, running: Schema.Number })),
+  admission: Schema.optional(
+    Schema.Struct({
+      tenants: Schema.Number,
+      max_tenants: Schema.Number,
+      allocating: Schema.Number,
+      max_concurrent: Schema.Number,
+      disk_measured: Schema.Boolean,
+      free_disk_bytes: Schema.Number,
+      min_free_disk_bytes: Schema.Number,
+      memory_measured: Schema.Boolean,
+      available_memory_bytes: Schema.Number,
+      min_available_memory_bytes: Schema.Number,
+    }),
+  ),
+});
+export type PlatformHealth = typeof PlatformHealth.Type;
+
+export const PLATFORM = "/platform";
+export const SUPPORT_REASONS = ["customer-request", "account-recovery", "troubleshooting"] as const;
+
 export const SIGN_IN_ORGANIZATIONS = "/auth/oidc/start?return=%2Forganizations";
+export const SIGN_IN_PLATFORM = "/auth/oidc/start?return=%2Fplatform";
 
 function statusMessage(status: number): string {
   if (status === 401) return "Your session has expired. Sign in again.";
@@ -115,6 +179,9 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
       submit(NextResult, `/organizations/${encodeURIComponent(input.organization)}/provisioning/resume`, input.csrf, {}),
     joinInvitation: (input: { token: string; csrf: string }) =>
       submit(NextResult, "/invitations/join", input.csrf, { token: input.token }),
+    platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),
+    platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
+    platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
   };
 }
 

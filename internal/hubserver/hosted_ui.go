@@ -93,6 +93,12 @@ func (s *Service) hostedError(c echo.Context, status int, message string) error 
 	return s.renderHosted(c, status, templates.HostedPageData{Mode: "denied", Title: "Access unavailable", Error: message})
 }
 
+func (s *Service) hostedDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {
+	denial.Status = status
+	auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), denial)
+	return s.hostedError(c, status, message)
+}
+
 // hostedLanding serves the root. A member, or a support session acting as
 // one, gets the client application; a session with no organization access
 // still gets the organization page, which carries the chooser, create and

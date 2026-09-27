@@ -43,6 +43,7 @@ type Config struct {
 	Logger        *slog.Logger
 	Allocation    *AllocationConfig
 	Billing       *BillingConfig
+	ConfigPath    string
 
 	now           func() time.Time
 	generateToken func() (string, error)
@@ -50,6 +51,7 @@ type Config struct {
 	clientFS      fs.FS
 
 	tenantStartTimeout time.Duration
+	platformDeadline   time.Duration
 }
 
 func (c Config) validate() error {
@@ -198,6 +200,10 @@ func (s *Service) routes() {
 	e.GET("/api/cloud/session", s.sessionJSON)
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)
+	e.GET(platformPath, s.platformPage)
+	e.GET("/api/cloud/platform/organizations", s.platformOrganizationsJSON)
+	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
+	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
@@ -256,6 +262,11 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	}
 	current, err := s.config.Provider.CurrentSession(c.Request().Context(), session.Identity)
 	if err != nil || current.Subject != session.Subject || !current.ExpiresAt.After(s.config.now()) {
+		reason := auth.HostedIdentityReason(err)
+		if err == nil {
+			reason = auth.HostedReasonSessionInvalid
+		}
+		s.config.Logger.InfoContext(c.Request().Context(), "hosted session revalidation failed", "reason", reason, "request_id", auth.HostedRequestID(c.Response(), c.Request()))
 		return accountSession{}, errNoSession
 	}
 	return session, nil
@@ -263,6 +274,13 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 
 func (s *Service) supportActor(email string) bool {
 	return s.staff(email) && listed(s.config.SupportActors, email)
+}
+
+func (s *Service) landing(email string, identity auth.HostedIdentity) string {
+	if s.platformIdentity(email, identity) {
+		return platformPath
+	}
+	return "/organizations"
 }
 
 func (s *Service) staff(email string) bool {
@@ -294,9 +312,21 @@ func (s *Service) denied(c echo.Context, status int, message string) error {
 	return s.render(c, status, data)
 }
 
+func (s *Service) loginDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {
+	denial.Status = status
+	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
+	return s.denied(c, status, message)
+}
+
+func (s *Service) loginRefused(c echo.Context, status int, code, message string, denial auth.HostedDenial) error {
+	denial.Status = status
+	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
+	return s.refuse(c, status, code, message)
+}
+
 func (s *Service) home(c echo.Context) error {
-	if _, err := s.session(c); err == nil {
-		return c.Redirect(http.StatusSeeOther, "/organizations")
+	if session, err := s.session(c); err == nil {
+		return c.Redirect(http.StatusSeeOther, s.landing(session.Email, session.Identity))
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err

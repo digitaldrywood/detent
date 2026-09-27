@@ -17,6 +17,14 @@ Detent uses two long-lived branches.
 `develop` is the staging line and `main` is what production hosts install and
 self-update to.
 
+Every push to `develop` redeploys the operator staging Hub through
+`.github/workflows/deploy-staging.yml`. It runs on a GitHub-hosted runner, never
+for pull requests, and uses the `staging` environment, whose deployment policy
+admits only `develop`. The workflow streams the built binary to a restricted SSH
+key whose only command is the staging deploy script; that script rolls back when
+https health does not report the pushed commit. Production is not deployed
+automatically.
+
 ## Promotion
 
 Promote `develop` to `main` with one pull request from `develop` into `main`

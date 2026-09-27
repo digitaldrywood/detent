@@ -1,10 +1,13 @@
 package auth_test
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -90,7 +93,7 @@ func TestWorkOSAuthorizationAndExchange(t *testing.T) {
 		{name: "support", noPKCE: true}, {name: "support-email", noPKCE: true},
 		{name: "support-short-expiry", noPKCE: true},
 		{name: "ordinary-no-pkce", noPKCE: true, wantErr: true},
-		{name: "wrong-issuer", wantErr: true}, {name: "wrong-client", wantErr: true}, {name: "missing-client", wantErr: true},
+		{name: "wrong-issuer", wantErr: true}, {name: "legacy-issuer", wantErr: true}, {name: "wrong-client", wantErr: true}, {name: "missing-client", wantErr: true},
 		{name: "wrong-audience", wantErr: true}, {name: "invalid-signature", wantErr: true}, {name: "missing-token", wantErr: true},
 		{name: "empty-audience", wantErr: true}, {name: "null-audience", wantErr: true},
 		{name: "expired-token", wantErr: true}, {name: "missing-iat", wantErr: true}, {name: "future-iat", wantErr: true},
@@ -235,6 +238,151 @@ func TestWorkOSConfiguredIssuer(t *testing.T) {
 				t.Fatalf("configured issuer exchange error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestWorkOSIssuerDefault(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		apiSuffix  string
+		issuer     string
+		tokenIss   func(api string) string
+		wantReason string
+	}{
+		{name: "default issuer", tokenIss: func(api string) string { return api + "/user_management/client_detent" }},
+		{name: "default issuer token trailing slash", tokenIss: func(api string) string { return api + "/user_management/client_detent/" }},
+		{name: "API URL trailing slash", apiSuffix: "/", tokenIss: func(api string) string { return api + "/user_management/client_detent" }},
+		{name: "explicit override", issuer: "https://auth.example.com", tokenIss: func(string) string { return "https://auth.example.com" }},
+		{name: "override trailing slash", issuer: "https://auth.example.com/", tokenIss: func(string) string { return "https://auth.example.com" }},
+		{name: "legacy bare API issuer rejected", tokenIss: func(api string) string { return api }, wantReason: auth.HostedReasonIssuerMismatch},
+		{name: "other client issuer rejected", tokenIss: func(api string) string { return api + "/user_management/client_other" }, wantReason: auth.HostedReasonIssuerMismatch},
+		{name: "override rejects default", issuer: "https://auth.example.com", tokenIss: func(api string) string { return api + "/user_management/client_detent" }, wantReason: auth.HostedReasonIssuerMismatch},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newWorkOSFixture(t)
+			fixture.mode.Store("fixed-issuer")
+			fixture.issuer.Store(tt.tokenIss(fixture.server.URL))
+			provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
+				APIURL: fixture.server.URL + tt.apiSuffix, IssuerURL: tt.issuer, ClientID: "client_detent", APIKey: "fixture-secret",
+				RedirectURL: "https://app.example.com/auth/callback", HTTPClient: fixture.server.Client(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.Exchange(t.Context(), "fixed-issuer", "verifier", "")
+			if tt.wantReason == "" {
+				if err != nil {
+					t.Fatalf("Exchange() error = %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, auth.ErrHostedIdentity) || auth.HostedIdentityReason(err) != tt.wantReason {
+				t.Fatalf("Exchange() error = %v, reason = %q, want %q", err, auth.HostedIdentityReason(err), tt.wantReason)
+			}
+			if _, issuer := auth.HostedIdentityDetails(err); issuer != tt.tokenIss(fixture.server.URL) {
+				t.Fatalf("token issuer detail = %q", issuer)
+			}
+		})
+	}
+	if got := auth.DefaultWorkOSIssuer("https://api.workos.com/", "client_example"); got != "https://api.workos.com/user_management/client_example" {
+		t.Fatalf("DefaultWorkOSIssuer() = %q", got)
+	}
+}
+
+func TestWorkOSDenialReasons(t *testing.T) {
+	t.Parallel()
+	f := newWorkOSFixture(t)
+	provider := f.provider(t)
+	for _, tt := range []struct {
+		mode     string
+		verifier string
+		want     string
+	}{
+		{mode: "legacy-issuer", verifier: "verifier", want: auth.HostedReasonIssuerMismatch},
+		{mode: "wrong-issuer", verifier: "verifier", want: auth.HostedReasonIssuerMismatch},
+		{mode: "wrong-client", verifier: "verifier", want: auth.HostedReasonClientMismatch},
+		{mode: "wrong-audience", verifier: "verifier", want: auth.HostedReasonAudienceMismatch},
+		{mode: "invalid-signature", verifier: "verifier", want: auth.HostedReasonTokenInvalid},
+		{mode: "expired-token", verifier: "verifier", want: auth.HostedReasonTokenInvalid},
+		{mode: "wrong-subject", verifier: "verifier", want: auth.HostedReasonSubjectMismatch},
+		{mode: "wrong-org-response", verifier: "verifier", want: auth.HostedReasonOrganizationMismatch},
+		{mode: "ordinary-no-pkce", want: auth.HostedReasonPKCEMissing},
+		{mode: "unverified-email", verifier: "verifier", want: auth.HostedReasonEmailUnverified},
+		{mode: "missing-email", verifier: "verifier", want: auth.HostedReasonEmailInvalid},
+		{mode: "support-wrong-act", want: auth.HostedReasonSupportActorInvalid},
+		{mode: "session-missing", verifier: "verifier", want: auth.HostedReasonSessionNotFound},
+		{mode: "session-revoked", verifier: "verifier", want: auth.HostedReasonSessionInvalid},
+		{mode: "http-error", verifier: "verifier", want: auth.HostedReasonExchangeFailed},
+		{mode: "malformed", verifier: "verifier", want: auth.HostedReasonExchangeFailed},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			f.mode.Store(tt.mode)
+			_, err := provider.Exchange(t.Context(), tt.mode+"-reason", tt.verifier, "")
+			if !errors.Is(err, auth.ErrHostedIdentity) || auth.HostedIdentityReason(err) != tt.want {
+				t.Fatalf("Exchange() error = %v, reason = %q, want %q", err, auth.HostedIdentityReason(err), tt.want)
+			}
+			if strings.Contains(err.Error(), "fixture-secret") || strings.Contains(err.Error(), "customer@example.com") {
+				t.Fatalf("error exposed private values: %v", err)
+			}
+		})
+	}
+	if _, err := provider.Exchange(t.Context(), "", "verifier", ""); auth.HostedIdentityReason(err) != auth.HostedReasonCodeMissing {
+		t.Fatalf("empty code reason = %q", auth.HostedIdentityReason(err))
+	}
+	f.mode.Store("http-error")
+	if _, err := provider.Exchange(t.Context(), "status-reason", "verifier", ""); err != nil {
+		if status, _ := auth.HostedIdentityDetails(err); status != http.StatusBadGateway {
+			t.Fatalf("exchange status detail = %d", status)
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "nil", want: ""},
+		{name: "bare sentinel", err: auth.ErrHostedIdentity, want: auth.HostedReasonUnknown},
+		{name: "wrapped", err: fmt.Errorf("outer: %w", &auth.HostedIdentityError{Reason: auth.HostedReasonSessionExpired}), want: auth.HostedReasonSessionExpired},
+		{name: "unrelated", err: errors.New("other"), want: auth.HostedReasonUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := auth.HostedIdentityReason(tt.err); got != tt.want {
+				t.Fatalf("HostedIdentityReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkOSRequestDebugLogging(t *testing.T) {
+	t.Parallel()
+	f := newWorkOSFixture(t)
+	var output bytes.Buffer
+	provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
+		APIURL: f.server.URL, ClientID: "client_detent", APIKey: "fixture-secret",
+		RedirectURL: "https://app.example.com/auth/callback", HTTPClient: f.server.Client(),
+		Logger: slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Exchange(t.Context(), "valid-logging-code", "verifier", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Invitation(t.Context(), "invitation_token"); err != nil {
+		t.Fatal(err)
+	}
+	logged := output.String()
+	for _, want := range []string{`"path":"/user_management/authenticate"`, `"status":200`, `"method":"POST"`, `"path":"/user_management/invitations/by_token/redacted"`, `"path":"/user_management/users/user_customer/sessions"`} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("debug log missing %s:\n%s", want, logged)
+		}
+	}
+	for _, secret := range []string{"fixture-secret", "valid-logging-code", "invitation_token", "limit=", "customer@example.com", "access_token"} {
+		if strings.Contains(logged, secret) {
+			t.Errorf("debug log exposed %q:\n%s", secret, logged)
+		}
 	}
 }
 
@@ -438,6 +586,7 @@ type workosFixture struct {
 	now      time.Time
 	mode     atomic.Value
 	redirect atomic.Value
+	issuer   atomic.Value
 	accepted atomic.Int64
 	mu       sync.Mutex
 	codes    map[string]bool
@@ -456,6 +605,7 @@ func newWorkOSFixture(t *testing.T) *workosFixture {
 	f := &workosFixture{t: t, key: key, wrongKey: wrongKey, now: time.Now().UTC().Truncate(time.Second), codes: make(map[string]bool)}
 	f.mode.Store("valid")
 	f.redirect.Store("")
+	f.issuer.Store("")
 	f.server = httptest.NewServer(http.HandlerFunc(f.serveHTTP))
 	t.Cleanup(f.server.Close)
 	return f
@@ -590,7 +740,7 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		return
 	}
 	claims := map[string]any{
-		"iss": f.server.URL, "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
+		"iss": f.server.URL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
 		"org_id": "org_customer", "iat": f.now.Unix(), "exp": f.now.Add(10 * time.Minute).Unix(),
 	}
 	user := map[string]any{"id": "user_customer", "email": "Customer@Example.com", "email_verified": true}
@@ -602,7 +752,11 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 	}
 	switch mode {
 	case "issuer-slash":
-		claims["iss"] = f.server.URL + "/"
+		claims["iss"] = f.server.URL + "/user_management/client_detent/"
+	case "legacy-issuer":
+		claims["iss"] = f.server.URL
+	case "fixed-issuer":
+		claims["iss"] = f.issuer.Load().(string)
 	case "custom-issuer":
 		claims["iss"] = "https://auth.example.com/user_management/client_default"
 	case "audience":

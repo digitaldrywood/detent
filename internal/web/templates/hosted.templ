@@ -300,6 +300,13 @@ templ hostedSupport(data HostedPageData) {
 							<option value={ organization.ID }>{ organization.Name + " (" + organization.ID + ")" }</option>
 						}
 					</select>
+					<label for="support-reason" class="block text-sm font-medium">Reason</label>
+					<select id="support-reason" name="reason" required class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+						<option value="" disabled selected>Choose a reason</option>
+						<option value="customer-request">customer-request</option>
+						<option value="account-recovery">account-recovery</option>
+						<option value="troubleshooting">troubleshooting</option>
+					</select>
 				}
 				<button type="submit" class="min-h-11 rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Start support sign-in</button>
 			</form>

@@ -93,6 +93,9 @@ func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []
 			environment = append(environment, name+"="+lookupEnv(name))
 		}
 	}
+	if level := lookupEnv("LOG_LEVEL"); level != "" {
+		environment = append(environment, "LOG_LEVEL="+level)
+	}
 	return environment
 }
 
@@ -184,7 +187,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	}
 	result := cloudentry.Config{
 		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
-		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(),
+		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
 	}
 	if allocation := config.Allocation; allocation != nil {
 		binary := allocation.Binary
@@ -268,7 +271,21 @@ func newCloudServeCommand(lookupEnv func(string) string) *cobra.Command {
 			if _, err := OutputForCommand(cmd); err != nil {
 				return err
 			}
-			config, err := readCloudConfig(configPath, lookupEnv)
+			logger, level, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			slog.SetDefault(logger)
+			// Tenant Hubs run at the level this process resolved, not at
+			// whatever LOG_LEVEL the environment carried under a --log-level
+			// override.
+			tenantLookup := func(name string) string {
+				if name == "LOG_LEVEL" {
+					return level
+				}
+				return lookupEnv(name)
+			}
+			config, err := readCloudConfig(configPath, tenantLookup)
 			if err != nil {
 				return err
 			}

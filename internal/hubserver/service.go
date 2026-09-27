@@ -29,6 +29,7 @@ const (
 type Service struct {
 	billing           *hostedBillingWorker
 	hostedMutationMu  sync.Mutex
+	hostedAuthLogger  *slog.Logger
 	hostedSessions    *auth.Service
 	echo              *echo.Echo
 	database          *database
@@ -69,6 +70,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := cfg.Hosted.validate(); err != nil {
 		return nil, err
 	}
+	hostedAuthLogger := cfg.Logger
 	if cfg.Hosted != nil {
 		cfg.Logger = slog.New(hostedLogHandler{output: cfg.Logger.Handler()})
 	}
@@ -95,16 +97,17 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	workerContext, workerCancel := context.WithCancel(context.Background())
 	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
-		echo:            e,
-		database:        database,
-		tracker:         workTracker,
-		config:          cfg,
-		workerCancel:    workerCancel,
-		workerDone:      make(chan struct{}),
-		reconcileCancel: reconcileCancel,
-		reconcileDone:   make(chan struct{}),
-		clientBuild:     conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
-		pullRequests:    newPullRequestCache(),
+		echo:             e,
+		hostedAuthLogger: hostedAuthLogger,
+		database:         database,
+		tracker:          workTracker,
+		config:           cfg,
+		workerCancel:     workerCancel,
+		workerDone:       make(chan struct{}),
+		reconcileCancel:  reconcileCancel,
+		reconcileDone:    make(chan struct{}),
+		clientBuild:      conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
+		pullRequests:     newPullRequestCache(),
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)

@@ -158,6 +158,7 @@ func (a *authStore) revokeSession(ctx context.Context, hash string) ([]authoriza
 type loginTransaction struct {
 	SupportActor           string
 	SupportSession         string
+	SupportReason          string
 	ID                     string
 	State                  string
 	Verifier               string
@@ -168,8 +169,8 @@ type loginTransaction struct {
 }
 
 func (a *authStore) createTransaction(ctx context.Context, hash string, transaction loginTransaction) error {
-	_, err := a.store.db.ExecContext(ctx, "INSERT INTO transactions(token_hash,transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-		hash, transaction.ID, transaction.State, transaction.Verifier, transaction.Organization, transaction.ReturnPath, transaction.InvitationToken, transaction.InvitationOrganization, transaction.SupportActor, transaction.SupportSession, formatTime(a.now().Add(10*time.Minute)))
+	_, err := a.store.db.ExecContext(ctx, "INSERT INTO transactions(token_hash,transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,support_reason,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+		hash, transaction.ID, transaction.State, transaction.Verifier, transaction.Organization, transaction.ReturnPath, transaction.InvitationToken, transaction.InvitationOrganization, transaction.SupportActor, transaction.SupportSession, transaction.SupportReason, formatTime(a.now().Add(10*time.Minute)))
 	return err
 }
 

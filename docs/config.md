@@ -302,6 +302,11 @@ their configured session ceilings before applying and restarting. Add
 `[detent-critical]` to a GitHub release body to bypass the idle wait and start
 that drain immediately.
 
+`detent cloud serve` and `detent hub serve` read no `global.yaml`; they resolve
+the log level from `--log-level`, then `LOG_LEVEL`, then `DETENT_LOG_LEVEL`,
+default to `info`, reject any value other than `debug`, `info`, `warn` or
+`error`, and write JSON logs to stderr for journald.
+
 The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level
 `global.yaml` key.
