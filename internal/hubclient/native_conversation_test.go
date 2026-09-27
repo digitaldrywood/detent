@@ -575,6 +575,7 @@ func TestNativeConversationReportBatchesAndRetries(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	session.FinishTurn()
 	hub.waitFor(t, "batched report", func() bool { return hub.batchCount() == 1 })
 	events := hub.events()
 	types := make([]string, 0, len(events))
@@ -919,6 +920,7 @@ func TestNativeConversationReportsCarryBatchKeys(t *testing.T) {
 	if err := session.Report(t.Context(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnCompleted, TurnID: "turn-1", Status: runner.ConversationTurnCompleted}}); err != nil {
 		t.Fatal(err)
 	}
+	session.FinishTurn()
 	hub.waitFor(t, "the second batch", func() bool { return hub.batchCount() == 2 })
 	if err := session.Close(context.Background(), runner.ConversationOutcomeSucceeded, nil); err != nil {
 		t.Fatal(err)
@@ -1175,6 +1177,7 @@ func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
 	if err := session.Report(t.Context(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"}}); err != nil {
 		t.Fatal(err)
 	}
+	session.FinishTurn()
 	native.mu.Lock()
 	queued := conversationQueuedBytes(native.events)
 	last := native.events[len(native.events)-1]
@@ -1211,6 +1214,76 @@ func TestNativeBindConversationSendsTheResumeThread(t *testing.T) {
 			defer hub.mu.Unlock()
 			if len(hub.binds) != 1 || hub.binds[0].ThreadID != test.want {
 				t.Fatalf("bind requests = %#v, want thread %q", hub.binds, test.want)
+			}
+		})
+	}
+}
+
+// The hub refuses turn events once a turn has ended, so a control's result
+// must be posted before the turn's end, however late its waiter runs.
+func TestNativeConversationReportsControlResultsBeforeTheTurnEnds(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		reply      error
+		consume    bool
+		wantStatus string
+	}{
+		{name: "control acknowledged after the provider ended the turn", consume: true, wantStatus: runner.ConversationControlDelivered},
+		{name: "control refused after the provider ended the turn", consume: true, reply: runner.ErrStaleConversationControl, wantStatus: runner.ConversationControlRejected},
+		{name: "control never consumed", wantStatus: runner.ConversationControlUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			useFastConversationTimings(t)
+			hub, execution := newConversationHub(t)
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Interrupt: true}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			native := session.(*conversationSession)
+			control := session.Control(runner.ConversationTurnHooks{})
+			if err := session.Report(t.Context(), []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"}}); err != nil {
+				t.Fatal(err)
+			}
+			hub.push(ConversationControl{Cursor: 1, Key: "k1", Kind: "interrupt", MessageID: "msg_1"})
+			var command runner.AgentControl
+			select {
+			case command = <-control.Commands:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the control never reached the turn")
+			}
+			completed := runner.ConversationTurnEvent{Type: runner.ConversationEventTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "interrupted"}
+			if err := session.Report(t.Context(), []runner.ConversationTurnEvent{completed}); err != nil {
+				t.Fatal(err)
+			}
+			native.mu.Lock()
+			held := len(native.held)
+			native.mu.Unlock()
+			if held != 1 {
+				t.Fatalf("held events = %d, want the turn end held until the turn finishes", held)
+			}
+			if test.consume {
+				command.Reply <- test.reply
+			} else {
+				native.drainCommands()
+			}
+			session.FinishTurn()
+			if err := session.Close(context.Background(), runner.ConversationOutcomeInterrupted, nil); err != nil {
+				t.Fatal(err)
+			}
+			var order []string
+			for _, event := range hub.events() {
+				switch event.Type {
+				case runner.ConversationEventControlResult:
+					if event.Status != test.wantStatus {
+						t.Fatalf("control result = %#v, want %s", event, test.wantStatus)
+					}
+					order = append(order, event.Type)
+				case runner.ConversationEventTurnCompleted:
+					order = append(order, event.Type)
+				}
+			}
+			if strings.Join(order, ",") != "control_result,turn_completed" {
+				t.Fatalf("posted order = %v, want the control result before the turn end", order)
 			}
 		})
 	}

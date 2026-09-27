@@ -887,20 +887,25 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		}
 		p.open(t, 2, 1)
 		deadline := time.Now().Add(30 * time.Second)
-		for {
-			response := alpha.owner.get(alpha.page())
-			if response.status == http.StatusOK && strings.Contains(response.body, "Alpha secret project") {
-				break
+		for _, tenant := range []struct {
+			name    string
+			org     pilotOrganization
+			content string
+		}{{"alpha", alpha, "Alpha secret project"}, {"beta", beta, ""}} {
+			for {
+				response := tenant.org.owner.get(tenant.org.page())
+				if response.status == http.StatusOK && strings.Contains(response.body, tenant.content) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("%s after restart = %d: %.200s", tenant.name, response.status, response.body)
+				}
+				time.Sleep(50 * time.Millisecond)
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("alpha after restart = %d", response.status)
-			}
-			time.Sleep(50 * time.Millisecond)
 		}
 		if p.launcher.starts <= starts {
 			t.Fatalf("restart did not relaunch tenants: %d -> %d", starts, p.launcher.starts)
 		}
-		pilotStatus(t, "beta after restart", beta.owner.get(beta.page()), http.StatusOK)
 		pilotRecord(t, "restart", map[string]any{"tenant_starts_before": starts, "tenant_starts_after": p.launcher.starts, "sessions_survived": true})
 	})
 }
