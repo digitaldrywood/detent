@@ -215,6 +215,18 @@ func (s *Service) serviceCall(ctx context.Context, organization Organization, pa
 	if identity != nil {
 		identity(&claims)
 	}
+	return s.signedCall(ctx, organization, claims, body, "")
+}
+
+func (s *Service) machineCall(ctx context.Context, organization Organization, method, path string, body []byte, bearer string) (int, []byte, error) {
+	claims, err := s.claims(organization, cloudassert.KindMachine, method, path, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.signedCall(ctx, organization, claims, body, bearer)
+}
+
+func (s *Service) signedCall(ctx context.Context, organization Organization, claims cloudassert.Claims, body []byte, bearer string) (int, []byte, error) {
 	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
 	if err != nil {
 		return 0, nil, err
@@ -223,11 +235,16 @@ func (s *Service) serviceCall(ctx context.Context, organization Organization, pa
 	if err != nil {
 		return 0, nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://tenant"+path, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, claims.Method, "http://tenant"+claims.Path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, err
 	}
-	request.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if bearer != "" {
+		request.Header.Set(echo.HeaderAuthorization, "Bearer "+bearer)
+	}
 	request.Header.Set(cloudassert.Header, assertion)
 	response, err := (&http.Client{Transport: transport, Timeout: 15 * time.Second}).Do(request)
 	if err != nil {

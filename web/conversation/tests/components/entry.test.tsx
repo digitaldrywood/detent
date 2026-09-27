@@ -59,6 +59,10 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
     platformHealth: vi.fn(async () => ({ registry: { ok: true } })),
+    platformEntitlements: vi.fn(async () => ({
+      organization_id: "", base: { id: "", version: 1 }, effective_base: { id: "", version: 1 }, source: "base", revision: 1, grants: [], plans: [],
+    })),
+    changePlatformEntitlement: vi.fn(async () => ({ action: "grant", grant_id: "" })),
     ...overrides,
   };
 }

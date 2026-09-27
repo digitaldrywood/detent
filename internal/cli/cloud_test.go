@@ -46,6 +46,47 @@ func TestReadCloudConfig(t *testing.T) {
 	}
 }
 
+func TestCloudEntitlementAdministrators(t *testing.T) {
+	t.Parallel()
+	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+	token := "entitlement-admin-token-0123456789abcdef"
+	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nstaff_emails: [ops@example.test, Plans@Example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
+	allocation := "allocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: DETENT_ENTITLEMENT_ADMIN_TOKEN\n"
+	for _, test := range []struct {
+		name, body, wantError string
+	}{
+		{"staff administrator", base + "entitlement_administrators: [plans@example.test]\n" + allocation, ""},
+		{"no administrators", base + allocation, ""},
+		{"administrator outside staff", base + "entitlement_administrators: [plans@example.test, finance@example.test]\n" + allocation, `"finance@example.test" is not listed in staff_emails`},
+		{"administrator without tenant credential", base + "entitlement_administrators: [plans@example.test]\n", "requires allocation.entitlement_admin_token_env"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "cloud.yaml")
+			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_ENTITLEMENT_ADMIN_TOKEN": token}
+			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.Allocation == nil || string(config.Allocation.EntitlementAdminToken) != token {
+				t.Fatalf("allocation = %+v", config.Allocation)
+			}
+			if strings.Contains(test.body, "entitlement_administrators") && strings.Join(config.EntitlementAdministrators, ",") != "plans@example.test" {
+				t.Fatalf("administrators = %v", config.EntitlementAdministrators)
+			}
+		})
+	}
+}
+
 func TestCloudRegistryAndKeyCommands(t *testing.T) {
 	t.Parallel()
 	registry := filepath.Join(t.TempDir(), "registry.db")

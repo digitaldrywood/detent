@@ -163,7 +163,7 @@ func (s *Service) platformOrganizationsJSON(c echo.Context) error {
 		}
 	})
 	return c.JSON(http.StatusOK, map[string]any{
-		"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_support": canSupport,
+		"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_support": canSupport, "can_grant": s.entitlementAdministrator(session),
 		"organizations": organizations, "unavailable": platformUnavailable,
 	})
 }
