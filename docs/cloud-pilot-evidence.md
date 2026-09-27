@@ -298,6 +298,18 @@ mkdir -m 700 tmp/shared-origin-preview
 DETENT_SHARED_ORIGIN_PREVIEW=$PWD/tmp/shared-origin-preview go test ./internal/cloudentry -run '^TestSharedOriginPilotPreview$' -v -timeout 30m
 ```
 
+`TestSharedOriginClientPreview` serves the same entry with the real embedded
+Cloud client, a fixture Stripe provider in test mode and conversations on, and
+seeds no organization, so a browser can walk the whole journey from sign-in:
+create an organization, a project and a native issue, enroll a real `detent`
+runner against `<origin>/organizations/<org>`, and open the billing page.
+
+```sh
+mkdir -m 700 tmp/shared-origin-client-preview
+DETENT_SHARED_ORIGIN_CLIENT_PREVIEW=$PWD/tmp/shared-origin-client-preview go test ./internal/cloudentry -run '^TestSharedOriginClientPreview$' -v -timeout 40m
+# the origin is in tmp/shared-origin-client-preview/shared-origin-client-preview.json; POST its "stop" URL to end it
+```
+
 Recorded evidence: `.detent/validation/2199/shared-origin-evidence.json` and
 `shared-origin-evidence-race.json` (21 required tests, 89 tests and subtests,
 clean tree at the recorded head), browser captures and probes in
