@@ -46,6 +46,13 @@ type DiffExecution interface {
 	SetDiffSource(AttemptDiffSource)
 }
 
+// ChangeExecution is an Execution that opens a successful work run's Change
+// Request while it still holds the run's lease, when it finishes. It reports
+// what it found, or nil when it had nothing to decide on.
+type ChangeExecution interface {
+	NativeChange() *NativeChange
+}
+
 // attemptDiffSource returns the source for one run's worktree. A diff is
 // best-effort: a failure is logged and reported as "nothing to post", so a
 // worktree the runner cannot read never fails the run it is describing.
@@ -104,6 +111,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	defer cancel()
 	if err := req.Execution.Finish(finishCtx, outcome); err != nil {
 		runErr = errors.Join(runErr, err)
+	}
+	if changes, ok := req.Execution.(ChangeExecution); ok && runErr == nil {
+		result.NativeChange = changes.NativeChange()
 	}
 	return result, runErr
 }

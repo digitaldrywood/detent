@@ -382,6 +382,17 @@ and create a project with
 ```
 
 Project state names and transitions are explicit; there is no prescribed workflow.
+A project created through the hosted client starts from a fixed template instead:
+`Todo` and `In Progress` (dispatchable), `Human Review` (neither dispatchable nor
+terminal, and not `operator_only`, so the orchestrator can move a completed run's
+Change Request there) and `Done` (terminal). `In Progress` may move to `Todo`,
+`Human Review` or `Done`; `Human Review` may move to `Done` or back to `In Progress`.
+Hub migration 36 moves projects whose workflow is exactly the earlier
+`Todo`/`In Progress`/`Done` template onto it and leaves customized workflows
+unchanged. A native project's Change Requests wait in the lane named by the
+runner's `auto_promote.source_state` (default `Human Review`), so a customized
+workflow needs that lane, non-`operator_only` and reachable from its active
+lanes, for completed runs to reach review.
 `operator_only` prevents workers from creating an issue in, or transitioning to,
 that state. `require_dependencies` defaults to true. Setting it false disables
 dependency readiness gating for that project while retaining scope and cycle

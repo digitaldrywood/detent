@@ -586,6 +586,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
+	if terminalState == store.WorkAttemptTerminalSuccess && !repairRun && o.completeNativeChangeRun(ctx, state, event, running, finalState) {
+		return
+	}
 	dispatchedIssue := cloneIssue(running.Issue)
 	if terminalState == store.WorkAttemptTerminalSuccess {
 		running.Issue = o.applyArtifactGateCompletionFields(ctx, running.Issue, running.DispatchWorkpadHash, running.DispatchWorkpadRead)

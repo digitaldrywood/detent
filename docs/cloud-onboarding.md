@@ -16,6 +16,18 @@ same name and creator's write grant resumes that project. Return to its scoped
 page to resume setup; infrastructure errors do not require another organization
 or host identity.
 
+A new hosted project starts with the workflow `Todo` → `In Progress` →
+`Human Review` → `Done`. `Todo` and `In Progress` dispatch work; `Human Review`
+neither dispatches nor ends it and is where a completed run's Change Request
+waits. The runner's orchestrator moves a run that committed a change there
+(`Human Review` is the default `auto_promote.source_state`), and moves a run
+that committed nothing to `Done`. A person accepts the change to `Done` or
+sends it back to `In Progress`. Hub migration 36 moves projects whose workflow
+is exactly the earlier `Todo`/`In Progress`/`Done` template onto this one. A
+customized workflow is left unchanged; it needs a lane matching the runner's
+`auto_promote.source_state` that `In Progress` can move to, or a completed
+run's Change Request has no review lane and its completion waits.
+
 ## Organization provisioning and recovery
 
 Implemented by `detent cloud serve` when its configuration has an `allocation`
