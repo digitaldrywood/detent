@@ -56,6 +56,14 @@ func (s *Service) startSupport(c echo.Context) error {
 		denial.Reason = "organization_unavailable"
 		return s.loginDenied(c, http.StatusForbidden, "Select an allocated organization before starting support access", denial)
 	}
+	reasons := "customer-request, account-recovery, or troubleshooting"
+	if reason := c.FormValue("reason"); reason != "" {
+		if !auth.ValidSupportReason(reason) {
+			denial.Reason = auth.HostedReasonSupportActorInvalid
+			return s.loginDenied(c, http.StatusUnprocessableEntity, "Choose customer-request, account-recovery, or troubleshooting as the support reason", denial)
+		}
+		reasons = reason
+	}
 	denial.Reason = "transaction_failed"
 	token, err := s.config.generateToken()
 	if err != nil {
@@ -71,7 +79,7 @@ func (s *Service) startSupport(c echo.Context) error {
 	}
 	s.setCookie(c, supportCookie, token, s.config.now().Add(10*time.Minute))
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "support", Title: "Start temporary support access", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""),
-		Notice: "Open " + organization.Name + " in the WorkOS dashboard and impersonate the customer using reason customer-request, account-recovery, or troubleshooting. Return in this browser within ten minutes."})
+		Notice: "Open " + organization.Name + " in the WorkOS dashboard and impersonate the customer using reason " + reasons + ". Return in this browser within ten minutes."})
 }
 
 func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (loginTransaction, error) {

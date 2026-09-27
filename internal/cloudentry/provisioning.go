@@ -283,12 +283,16 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 	return errors.New("unknown provisioning step")
 }
 
-func (s *Service) admit(ctx context.Context, id string) error {
-	allocation := s.config.Allocation
-	var holding, allocating int
-	err := s.registry.store.db.QueryRowContext(ctx, `SELECT
+func (s *Service) admissionLoad(ctx context.Context, id string) (holding, allocating int, err error) {
+	err = s.registry.store.db.QueryRowContext(ctx, `SELECT
   (SELECT count(*) FROM organizations WHERE managed = 1 AND id != ? AND (state IN ('allocating','ready','disabled','deleting') OR state = 'failed' AND step NOT IN ('', 'admission'))),
   (SELECT count(*) FROM organizations WHERE managed = 1 AND id != ? AND state = 'allocating')`, id, id).Scan(&holding, &allocating)
+	return holding, allocating, err
+}
+
+func (s *Service) admit(ctx context.Context, id string) error {
+	allocation := s.config.Allocation
+	holding, allocating, err := s.admissionLoad(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -330,6 +334,9 @@ func (s *Service) newOrganizationPage(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
+	}
+	if s.staff(session.Email) {
+		return c.Redirect(http.StatusSeeOther, platformPath)
 	}
 	key, err := cloudassert.NewID()
 	if err != nil {
