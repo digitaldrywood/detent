@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react";
 
 import { useSidebarData } from "../../app/adapters/sidebarData.tsx";
+import { ClientContext } from "../../app/client.ts";
 import {
   checkForUpdates,
   readUpdateCheckState,
@@ -26,7 +27,18 @@ import {
   shouldShowDesktopUpdateCheckIcon,
 } from "./DesktopUpdateStatusIcon.tsx";
 
+/**
+ * The pill reports runner versions, which the hub shows only to a reader who
+ * manages runners; for anyone else `/app/updates` answers 404 and the pill
+ * would poll for nothing.
+ */
 export const SidebarUpdatePill = memo(function SidebarUpdatePill() {
+  const account = useContext(ClientContext)?.account;
+  if (account != null && !account.actor.can_manage_runners) return null;
+  return <RunnerUpdatePill />;
+});
+
+const RunnerUpdatePill = memo(function RunnerUpdatePill() {
   const state = useSyncExternalStore(subscribeToUpdateCheck, readUpdateCheckState);
   const navigate = useSidebarData()?.navigation?.onNavigate;
   const [checkAnimationKey, setCheckAnimationKey] = useState(0);
