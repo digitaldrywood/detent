@@ -5980,7 +5980,7 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = runner.Validate(t.Context(), ValidatorRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{HeadSHA: "head", BranchName: "branch", State: "OPEN"}}})
+			_, err = runner.Validate(t.Context(), testValidatorRequest(connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{Number: 1, BaseSHA: "base", HeadSHA: "head", BranchName: "branch", State: "OPEN"}}))
 			if !errors.Is(err, ErrValidatorInfrastructure) {
 				t.Fatalf("Validate() error = %v, want infrastructure failure", err)
 			}

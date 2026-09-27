@@ -3028,7 +3028,9 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 			}
 			validator.Release()
 			orch.validatorWG.Wait()
-			result, _, ok := orch.validatorStageResult(t.Context(), connector.Issue{ID: issue.ID, PullRequest: &connector.PullRequest{HeadSHA: "B"}})
+			validatedIssue := cloneIssue(issue)
+			validatedIssue.PullRequest.HeadSHA = "B"
+			result, _, ok := orch.validatorStageResult(t.Context(), validatedIssue)
 			if tt.probeError || tt.degraded || tt.workerError {
 				if ok {
 					t.Fatalf("unverified head cached verdict: %#v", result)
@@ -3140,19 +3142,21 @@ func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
 		repo   string
 		pr     int64
 		base   string
+		head   string
 		digest string
 		want   bool
 	}{
-		{name: "other PR", repo: "digitaldrywood/pyroapex-mobile", pr: 156, base: "base-docs", digest: "digest-workflow"},
-		{name: "other base", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-workflow", digest: "digest-workflow"},
-		{name: "missing digest", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs"},
-		{name: "exact PR", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", digest: "digest-docs", want: true},
+		{name: "other PR", repo: "digitaldrywood/pyroapex-mobile", pr: 156, base: "base-docs", head: "head-docs", digest: "digest-workflow"},
+		{name: "other base", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-workflow", head: "head-docs", digest: "digest-workflow"},
+		{name: "old head", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", head: "old-head", digest: "digest-docs"},
+		{name: "missing digest", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", head: "head-docs"},
+		{name: "exact PR", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", head: "head-docs", digest: "digest-docs", want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			memo := openValidatorMemoStore(t)
 			at := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
-				ProjectID: "detent", IssueID: issue.ID, HeadSHA: "head-docs", Repository: tt.repo,
+				ProjectID: "detent", IssueID: issue.ID, HeadSHA: tt.head, Repository: tt.repo,
 				PRNumber: &tt.pr, BaseSHA: tt.base, DiffDigest: tt.digest, DiffFiles: []string{"AGENTS.md", "README.md"},
 				Submitted: true, Verdict: gate.ValidatorVerdictRework, RecordedAt: at,
 			}); err != nil {

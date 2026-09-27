@@ -757,7 +757,7 @@ func appendClosingReferenceInstruction(prompt string, issue connector.Issue) str
 	}
 
 	return strings.TrimRight(prompt, " \t\r\n") +
-		"\n\n## Pull request\n\nWhen creating or updating the pull request body, include `" +
+		"\n\n## Pull request\n\nIn the pull request body, include `" +
 		reference + "`."
 }
 
