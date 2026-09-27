@@ -245,11 +245,22 @@ describe("useWorkspace", () => {
     });
   });
 
-  it("reuses a files workspace for the files panel, which also names exec", async () => {
+  it("does not reuse a files workspace for the files panel, which needs exec", async () => {
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return Promise.resolve(json(200, { workspaces: [workspace({ id: "ws_files", state: "ready" })] }));
+      }
+      return Promise.resolve(json(201, workspace({ id: "ws_exec", state: "requested" })));
+    });
+    mount(<Probe requires={["files", "exec"]} />);
+    await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_exec"));
+  });
+
+  it("reuses a files workspace for a reader asking only for files and diff", async () => {
     fetchMock.mockImplementation(() =>
       Promise.resolve(json(200, { workspaces: [workspace({ id: "ws_files", state: "ready" })] })),
     );
-    mount(<Probe requires={["files", "exec"]} />);
+    mount(<Probe requires={["files", "diff"]} />);
     await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_files"));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -338,10 +349,10 @@ describe("useWorkspace", () => {
 
 describe("relayed requires", () => {
   it.each([
-    { requires: ["files", "exec"], relayed: ["files"] },
-    { requires: ["files", "exec", "terminal"], relayed: ["files", "terminal"] },
+    { requires: ["files", "exec"], relayed: ["exec", "files"] },
+    { requires: ["files", "exec", "terminal"], relayed: ["exec", "files", "terminal"] },
     { requires: ["git", "files", "git"], relayed: ["files", "git"] },
-    { requires: ["diff", "preview"], relayed: [] },
+    { requires: ["files", "diff", "preview"], relayed: ["files"] },
   ])("keeps only what the hub relays from $requires", ({ requires, relayed }) => {
     expect(relayedRequires(requires)).toEqual(relayed);
   });
@@ -350,10 +361,11 @@ describe("relayed requires", () => {
     { name: "the files panel", requires: ["files", "exec"], reusable: true },
     { name: "the terminal tab", requires: ["files", "exec", "terminal"], reusable: false },
     { name: "the header git group", requires: ["files", "git"], reusable: true },
+    { name: "a reader asking for a diff", requires: ["files", "diff"], reusable: true },
   ])("decides reuse for $name by the relayed surfaces alone", ({ requires, reusable }) => {
     const served = workspace({
       state: "ready",
-      capabilities: { terminal: false, files: true, diff: false, preview: false, exec: false, git: true },
+      capabilities: { terminal: false, files: true, diff: false, preview: false, exec: true, git: true },
     });
     expect(workspaceSatisfies(served, requires)).toBe(reusable);
   });
@@ -361,7 +373,8 @@ describe("relayed requires", () => {
   it("gives panels asking for different surfaces different idempotency keys", () => {
     const files = workspaceKey("proj_1", "item_1", ["files", "exec"]);
     expect(workspaceKey("proj_1", "item_1", ["exec", "files"])).toBe(files);
-    expect(workspaceKey("proj_1", "item_1", ["files"])).toBe(files);
+    expect(workspaceKey("proj_1", "item_1", ["files", "exec", "diff"])).toBe(files);
+    expect(workspaceKey("proj_1", "item_1", ["files"])).not.toBe(files);
     expect(workspaceKey("proj_1", "item_1", ["files", "git"])).not.toBe(files);
     expect(workspaceKey("proj_1", "item_1", ["files", "exec", "terminal"])).not.toBe(files);
   });

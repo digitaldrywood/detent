@@ -27,6 +27,7 @@ type workspaceHub struct {
 	binds    []WorkspaceBindRequest
 	beats    []WorkspaceHeartbeatRequest
 	unbinds  []WorkspaceUnbindRequest
+	reports  []WorkspaceActionRunReport
 	statuses []int
 	code     string
 	state    string
@@ -62,6 +63,13 @@ func newWorkspaceClient(t *testing.T, hub *workspaceHub) *NativeClient {
 				return
 			}
 			hub.unbinds = append(hub.unbinds, request)
+		case strings.HasSuffix(r.URL.Path, "/worker/action-runs"):
+			var request WorkspaceActionRunReport
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			hub.reports = append(hub.reports, request)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -71,6 +79,13 @@ func newWorkspaceClient(t *testing.T, hub *workspaceHub) *NativeClient {
 				code = "invalid_request"
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": "refused"})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/worker/action-runs") {
+			_ = json.NewEncoder(w).Encode(workspacesession.Run{
+				ID: "actionrun_1", ActionID: "action_1", WorkspaceID: testWorkspaceID,
+				Command: "npm install", Status: workspacesession.RunRunning,
+			})
 			return
 		}
 		state := hub.state
@@ -513,6 +528,82 @@ func TestWorkspaceClaimerRunIdentifier(t *testing.T) {
 			got, err := claimer.RunIdentifier(t.Context(), "wi_1")
 			if (err != nil) != test.wantErr || got != test.want {
 				t.Fatalf("RunIdentifier() = %q, %v; want %q, error %t", got, err, test.want, test.wantErr)
+			}
+		})
+	}
+}
+
+// The action run report (decisions section 18.12). It is how a
+// run-on-worktree-creation run becomes a row: nobody asked for it, so nothing
+// else would ever write one.
+func TestReportWorkspaceActionRunCarriesTheTupleAndAnswersTheRun(t *testing.T) {
+	t.Parallel()
+	hub := &workspaceHub{}
+	client := newWorkspaceClient(t, hub)
+
+	run, err := client.ReportWorkspaceActionRun(t.Context(), testWorkspaceID, WorkspaceActionRunReport{
+		WorkspaceIdentity: testIdentity(), ActionID: "action_1", Status: workspacesession.RunRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The answer carries the id the hub allocated, which is what every later
+	// report of the same run has to name.
+	if run.ID != "actionrun_1" || run.Status != workspacesession.RunRunning {
+		t.Fatalf("run = %+v", run)
+	}
+	base := "/api/v2/organizations/org_test/projects/prj_test/workspaces/" + testWorkspaceID
+	if len(hub.paths) != 1 || hub.paths[0] != base+"/worker/action-runs" {
+		t.Fatalf("paths = %v", hub.paths)
+	}
+	if len(hub.reports) != 1 || hub.reports[0].WorkspaceIdentity != testIdentity() {
+		t.Fatalf("report = %+v", hub.reports)
+	}
+	if hub.reports[0].ActionID != "action_1" || hub.reports[0].Status != workspacesession.RunRunning {
+		t.Fatalf("report = %+v", hub.reports[0])
+	}
+
+	t.Run("an identifier the hub never issued does not reach a URL", func(t *testing.T) {
+		if _, err := client.ReportWorkspaceActionRun(t.Context(), "ws_short", WorkspaceActionRunReport{
+			WorkspaceIdentity: testIdentity(), ActionID: "action_1", Status: workspacesession.RunRunning,
+		}); err == nil {
+			t.Fatal("a malformed workspace id was accepted")
+		}
+	})
+}
+
+// A report the hub fences off has to be distinguishable from a transport
+// failure: the first means stop reporting, the second means try again.
+func TestReportWorkspaceActionRunMapsAFencedRefusalOntoTheStaleSentinel(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		status int
+		code   string
+		want   error
+	}{
+		{name: "stale execution", status: http.StatusConflict, code: "stale_execution", want: ErrStaleWorkspace},
+		{name: "workspace gone", status: http.StatusNotFound, code: "not_found", want: ErrNoWorkspace},
+		{name: "unavailable", status: http.StatusServiceUnavailable, code: "unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := &workspaceHub{statuses: []int{test.status}, code: test.code}
+			client := newWorkspaceClient(t, hub)
+			_, err := client.ReportWorkspaceActionRun(t.Context(), testWorkspaceID, WorkspaceActionRunReport{
+				WorkspaceIdentity: testIdentity(), ActionID: "action_1", Status: workspacesession.RunRunning,
+			})
+			if err == nil {
+				t.Fatal("a refused report must be an error")
+			}
+			if test.want == nil {
+				if errors.Is(err, ErrStaleWorkspace) || errors.Is(err, ErrNoWorkspace) {
+					t.Fatalf("%v was read as a lost workspace", err)
+				}
+				return
+			}
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
 			}
 		})
 	}

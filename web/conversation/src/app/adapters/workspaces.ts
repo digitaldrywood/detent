@@ -63,11 +63,11 @@ const KEY_STORAGE_PREFIX = "detent:workspace-key:v2";
 
 /**
  * The capabilities the hub relays to a runner (§18.1). The hub drops every
- * other entry of `requires` when it creates a workspace, because it never
- * serves exec and has no diff or preview channel, so a runner reports none of
- * them and reuse must not wait for one.
+ * other entry of `requires` when it creates a workspace, because it has no diff
+ * or preview channel, so a runner reports neither and reuse must not wait for
+ * one.
  */
-const RELAYED_CAPABILITIES: readonly string[] = ["files", "git", "terminal"];
+const RELAYED_CAPABILITIES: readonly string[] = ["files", "exec", "git", "terminal"];
 
 /** The part of `requires` the hub keeps, sorted and without duplicates. */
 export function relayedRequires(requires: readonly string[]): readonly string[] {
@@ -143,8 +143,8 @@ export function workspaceFromEvent(data: string, workspaceId: string): Workspace
  *
  * Only the relayed capabilities count: a workspace already open with
  * `requires: ["files"]` must not be reused for a caller asking for
- * `["files", "git"]` unless its runner reported git, while exec, diff and
- * preview are never reported by any runner and are dropped by the hub.
+ * `["files", "exec"]` unless its runner reported exec, while diff and preview
+ * are never reported by any runner and are dropped by the hub.
  *
  * An absent or null `capabilities` is "not yet known", not "none": a workspace
  * in `requested` has not been claimed, so no runner has reported anything. It

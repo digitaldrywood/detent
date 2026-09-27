@@ -176,6 +176,23 @@ func newWorkspaceLane(
 		// bind with can never disagree.
 		Support: workspacerunner.DefaultSupport(),
 		Shell:   workflow.Config.Hooks.Shell,
+		// The reporter turns a run nobody watched into a row somebody can read
+		// (section 18.12).
+		Reporter: workspaceActionRunReporter{native: claimer.Native()},
+	})
+}
+
+// workspaceActionRunReporter adapts the native client onto the lane's
+// ActionRunReporter seam.
+type workspaceActionRunReporter struct {
+	native *hubclient.NativeClient
+}
+
+func (r workspaceActionRunReporter) ReportActionRun(ctx context.Context, workspaceID string, identity hubclient.WorkspaceIdentity, run workspacerunner.ActionRun) (workspacesession.Run, error) {
+	return r.native.ReportWorkspaceActionRun(ctx, workspaceID, hubclient.WorkspaceActionRunReport{
+		WorkspaceIdentity: identity, ActionID: run.ActionID, RunID: run.RunID, Status: run.Status,
+		ExitCode: run.ExitCode, Reason: run.Reason, StartedAt: run.StartedAt,
+		FinishedAt: run.FinishedAt, Output: run.Output, Truncated: run.Truncated,
 	})
 }
 

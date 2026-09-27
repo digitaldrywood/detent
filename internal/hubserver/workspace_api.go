@@ -56,15 +56,14 @@ func (s *Service) requireWorkspaces() (*workspaceService, error) {
 }
 
 // relayedRequires drops the capabilities this hub never relays to a runner:
-// exec, because channelPermitted refuses project actions, and diff and preview,
-// which have no channel protocol. Requiring one of them would only keep every
-// runner from claiming the workspace, while the surface itself is refused by
-// the relay whatever the runner reports.
+// diff and preview, which have no channel protocol. Requiring one of them would
+// only keep every runner from claiming the workspace, while the surface itself
+// is refused by the relay whatever the runner reports.
 func relayedRequires(requires []string) []string {
 	relayed := make([]string, 0, len(requires))
 	for _, name := range requires {
 		switch name {
-		case workspacesession.CapabilityExec, workspacesession.CapabilityDiff, workspacesession.CapabilityPreview:
+		case workspacesession.CapabilityDiff, workspacesession.CapabilityPreview:
 			continue
 		}
 		relayed = append(relayed, name)

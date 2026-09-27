@@ -1,7 +1,8 @@
 // Package workspacerunner is the runner's half of a workspace session
-// (decisions sections 18.1, 18.2, 18.3, 18.4 and 18.12): it claims a worktree,
-// binds to the hub, heartbeats, holds the relay open and serves the files, git
-// and terminal channels for as long as the workspace lives.
+// (decisions sections 18.1, 18.2, 18.4 and 18.12): it claims a worktree, binds
+// to the hub, heartbeats, holds the relay open, serves the read-only files
+// channel, runs the project's actions and serves the git channel for as long
+// as the workspace lives.
 //
 // It is deliberately not a run. A run creates a worktree, produces a
 // deliverable and finishes; a workspace session creates or keeps a worktree,
@@ -23,6 +24,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/workspaceexec"
 	"github.com/digitaldrywood/detent/internal/workspacefiles"
 	"github.com/digitaldrywood/detent/internal/workspacegit"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -67,10 +69,21 @@ type Config struct {
 	// Deny is the project's extra files denylist. The hub sends it on bind;
 	// this is the runner's own configured addition, applied on top.
 	Deny []string
-	// Shell is the shell a terminal opens, and it is the project's configured
-	// one -- the same shell its workspace hooks already use. An empty value
-	// takes shell.Default().
+	// Shell is the shell an action's command runs through, and it is the
+	// project's configured one -- the same shell its workspace hooks already
+	// use -- rather than a guess made here. An action's command is shell syntax
+	// by construction (section 18.12), so a command an author wrote and tested
+	// against their project's shell must not be handed to a different one
+	// because the runner picked the platform default. An empty value takes
+	// shell.Default(), which is the only honest answer when the project never
+	// said.
 	Shell string
+	// Reporter records project action runs with the hub (section 18.12). It is
+	// optional: a runner with no reporter still runs the actions, because the
+	// command's effect on the worktree is the point and the run row is how a
+	// person watches it happen. A nil reporter loses the watching, not the
+	// worktree.
+	Reporter ActionRunReporter
 	// Support is what this runner offers, which today is only whether it serves
 	// a terminal at all (section 18.3). The zero value serves none, so a caller
 	// that has not thought about handing out a shell does not hand one out.
@@ -121,16 +134,16 @@ func DefaultSupport() Support {
 // session, because whether the git or terminal channel can actually be served
 // is a fact about one worktree rather than about the runner.
 //
-// The files, git and terminal channels are implemented (section 18.11 step 2:
-// "files first, then terminal"; section 18.13's git action group). Project
-// actions are not, so exec is never reported. Reporting exec, diff or preview
-// here would make the hub hand this runner workspaces it would then have to
-// refuse frame by frame, which is worse for the person than never being offered them: an
+// The files, exec, git and terminal channels are implemented (section 18.11
+// step 2: "files first, then terminal"; section 18.12's project actions;
+// section 18.13's git action group). Reporting diff or preview here would make
+// the hub hand this runner workspaces it would then have to refuse frame by
+// frame, which is worse for the person than never being offered them: an
 // unclaimed workspace fails with no_runner and says so, while a claimed one
 // that cannot serve its channel looks broken.
 func Capabilities(support Support) workspacesession.Capabilities {
 	return workspacesession.Capabilities{
-		Files: true, Git: true,
+		Files: true, Exec: true, Git: true,
 		Terminal: support.Terminal && workspaceterminal.Supported,
 	}
 }
@@ -140,6 +153,12 @@ type Session struct {
 	config Config
 	logger *slog.Logger
 	files  *workspacefiles.Service
+	exec   *workspaceexec.Service
+	// path is the worktree this session serves. It is kept rather than left
+	// local to Run because an action's working directory is it: the reader is
+	// looking at this tree and the command they started has to run in the same
+	// one.
+	path string
 
 	mu sync.Mutex
 	// terminal opens PTYs for this workspace, and is nil when this runner
@@ -171,16 +190,34 @@ type Session struct {
 	closing bool
 	state   string
 	headSHA string
+	// runs is the action running on each stream, keyed by stream id. It is
+	// what a close, a lost lease, a dead socket or the end of the session
+	// reaches for: a run is the one thing on this surface that outlives the
+	// frame that asked for it, so something has to hold its cancel.
+	runs map[string]*execRun
 	// worktreePath is what Worktree.Prepare returned. The heartbeat carries it
 	// and the heartbeat has no other way to see it, because Prepare's answer
-	// lives in Run's own frame. The heartbeat goroutine reads it while Run is
-	// still running, so it is under the mutex.
+	// lives in Run's own frame.
+	//
+	// It holds the same string as `path` above, and the duplication is
+	// deliberate rather than an oversight of the merge that introduced it.
+	// `path` is written once in Run before any goroutine reads it and is read
+	// unsynchronised by the exec channel; this one is read by the heartbeat
+	// goroutine while Run is still running, so it has to be under the mutex.
+	// Making `path` mutex-guarded instead would put a lock on the exec
+	// channel's hot path for a value that never changes, and reading this one
+	// without the lock would be a race the detector is right to flag.
 	worktreePath string
 	// checkout is what the hub told this runner to produce. The git channel
 	// consults it on every write, so it is held here rather than passed down:
 	// read_only is the whole difference between a person looking at a worktree
 	// and a person changing one.
 	checkout hubclient.WorkspaceCheckout
+}
+
+// execRun is one running action.
+type execRun struct {
+	cancel context.CancelFunc
 }
 
 // New prepares a session. It does not touch the hub.
@@ -197,13 +234,15 @@ func New(config Config) (*Session, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	// The shell is normalized once, here, so every terminal in this session
-	// opens the same one and a log line naming it is naming what actually ran.
+	// The shell is normalized once, here, so every run of every action in this
+	// session goes through the same one and a log line naming it is naming what
+	// actually ran.
 	config.Shell = shell.Normalize(config.Shell)
 	return &Session{
 		config:    config,
 		logger:    config.Logger.With("component", "workspace_session", "workspace_id", config.WorkspaceID),
 		state:     workspacesession.StateRequested,
+		runs:      map[string]*execRun{},
 		terminals: map[string]*terminalStream{},
 	}, nil
 }
@@ -300,6 +339,21 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 		}
 	}()
 
+	// The exec service is opened from the same path the files service serves,
+	// because an action's working directory is the tree the reader is looking
+	// at and not one of its own.
+	runner, err := workspaceexec.New(path, s.config.Shell, s.logger)
+	if err != nil {
+		reason = workspacesession.ReasonWorktreeMissing
+		return fmt.Errorf("open workspace exec: %w", err)
+	}
+	s.path, s.exec = path, runner
+
+	// The run-on-worktree-creation set runs before the workspace is reported
+	// ready, so a person who opens a fresh worktree finds the project's setup
+	// already done rather than racing it.
+	s.runCreationActions(ctx, bound.Checkout, bound.Actions)
+
 	// A worktree that is not a git repository is not a failed workspace. The
 	// files channel serves it perfectly well, and the header disables the git
 	// group with a reason, which is a better answer for the person than losing
@@ -313,7 +367,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	}
 
 	// A runner that cannot open terminals is not a failed workspace either. The
-	// files and git channels serve it perfectly well, and section 18.3
+	// files, exec and git channels serve it perfectly well, and section 18.3
 	// says in so many words what a runner that cannot provide the level asked
 	// for does: it reports the capability it can serve and the card stays
 	// disabled with the reason. A read-only workspace opens no service at all,
@@ -498,9 +552,14 @@ func (s *Session) markStale() {
 	s.mu.Lock()
 	s.stale = true
 	s.mu.Unlock()
-	// Section 18.3 kills the PTY when the lease is lost: a person typing into a
-	// worktree this generation no longer owns is the failure the fencing token
-	// exists to prevent.
+	// A lost lease stops every run under it. That is the whole point of the
+	// fencing token: a generation that no longer owns the worktree stops
+	// touching it, and a running command is the loudest way to touch it.
+	s.cancelRuns(workspacesession.RunReasonLeaseLost)
+	// A shell is the same fact held open. Section 18.3 kills the PTY when the
+	// lease is lost, for the reason the runs are cancelled: a person typing
+	// into a worktree this generation no longer owns is the failure the fencing
+	// token exists to prevent.
 	s.closeTerminals(workspacesession.RunReasonLeaseLost)
 }
 
@@ -599,6 +658,11 @@ func (s *Session) serve(ctx context.Context) error {
 		s.attachTerminals(ctx)
 		err = s.readRelay(ctx, socket)
 		s.setSocket(nil)
+		// A stream belongs to one connection, so a socket that ended took
+		// every stream on it with it. Runs on those streams are stopped rather
+		// than left working in a worktree whose reader is gone: their output
+		// has nowhere to arrive and nobody asked for their writes to continue.
+		s.cancelRuns(workspacesession.RunReasonStreamClosed)
 		// A terminal is the one thing on this session that a dropped socket
 		// does not end. Section 18.2 gives 60 seconds to come back and says the
 		// runner keeps a disconnected PTY alive exactly that long, so the
@@ -656,6 +720,11 @@ func (s *Session) handle(ctx context.Context, socket *websocket.Conn, frame work
 	case workspacesession.TypeAck, workspacesession.TypeResumed, workspacesession.TypeClosed:
 		return
 	case workspacesession.TypeClose:
+		// The person ended this stream, and a run on it ends with them: the
+		// command was started for a reader who is no longer there, and a
+		// process that outlived its stream would keep writing to a worktree
+		// nobody is watching (section 18.12).
+		s.cancelRun(frame.Stream, workspacesession.RunReasonStreamClosed)
 		// A terminal on this stream ends with it, and that covers two different
 		// arrivals: the person's own close, and the close the hub's sweep sends
 		// once a parked stream has gone unresumed for the window (section 18.2).
@@ -672,14 +741,16 @@ func (s *Session) handle(ctx context.Context, socket *websocket.Conn, frame work
 		s.handleTerminal(ctx, socket, frame)
 	case workspacesession.ChannelFiles:
 		s.handleFiles(ctx, socket, frame)
+	case workspacesession.ChannelExec:
+		s.handleExec(ctx, socket, frame)
 	case workspacesession.ChannelGit:
 		s.handleGit(ctx, socket, frame)
 	default:
-		// Only terminal, files and git are served. Anything else is answered
-		// rather than ignored, so a client that asked for a diff, a preview or
-		// a project action on a runner that has none is told why.
+		// Only terminal, files, exec and git are served in this slice. Anything
+		// else is answered rather than ignored, so a client that asked for a
+		// diff or a preview on a runner that has neither is told why.
 		s.answer(ctx, socket, workspacesession.ErrorFrame(frame.Channel, frame.Stream,
-			workspacesession.CodeUnsupported, "This runner serves the terminal, files and git channels only"))
+			workspacesession.CodeUnsupported, "This runner serves the terminal, files, exec and git channels only"))
 	}
 }
 
@@ -912,6 +983,238 @@ func (s *Session) serveFiles(ctx context.Context, frame workspacesession.Frame, 
 		return answer, fmt.Errorf("unhandled files frame %q", frame.Type)
 	}
 	return answer, nil
+}
+
+// maxConcurrentRuns bounds how many actions this session runs at once.
+//
+// It is the relay's own per-workspace stream cap rather than a second number
+// invented here. A run occupies one stream for its whole life, and the relay
+// already refuses the stream a thirty-third run would need (eight per
+// connection, thirty-two per workspace), so a tighter bound here would refuse
+// a run whose client had every reason to believe it could start one. The bound
+// exists at all because a stream limit the hub enforces is no bound on the
+// processes this runner would have started before hearing about it.
+const maxConcurrentRuns = workspacesession.MaxStreamsPerWorkspace
+
+// runLeaseInterval is how often a running action's lease is re-checked. It is
+// short relative to LeaseTTL on purpose: the window between losing the lease
+// and stopping the command is the window in which two generations could be
+// writing to one worktree.
+const runLeaseInterval = time.Second
+
+// handleExec starts one run on its own stream.
+//
+// A run is not request/response, which is why nothing is answered here: the
+// output spans, the exit and the stream's close are written by serveExec as
+// they happen, and this function's whole job is to refuse what should not
+// start and to get out of the read loop's way.
+func (s *Session) handleExec(ctx context.Context, socket *websocket.Conn, frame workspacesession.Frame) {
+	if !workspacesession.ValidExecRequest(frame.Type) {
+		s.answer(ctx, socket, workspacesession.ErrorFrame(frame.Channel, frame.Stream,
+			workspacesession.CodeUnknownFrame, "The exec channel does not define "+frame.Type))
+		return
+	}
+	var request workspacesession.ExecRun
+	if len(frame.Payload) > 0 {
+		if err := json.Unmarshal(frame.Payload, &request); err != nil {
+			s.answer(ctx, socket, workspacesession.ErrorFrame(frame.Channel, frame.Stream,
+				workspacesession.CodeInvalidFrame, "The request payload could not be read"))
+			return
+		}
+	}
+	// The lease is validated immediately before the process starts, the same
+	// rule every files frame follows: a run frame that arrives after lease loss
+	// is refused and never executed, so a worktree is only ever written to by
+	// the generation that owns it.
+	if !s.leaseValid() {
+		s.answer(ctx, socket, workspacesession.ErrorFrame(frame.Channel, frame.Stream,
+			workspacesession.CodeStaleExecution, execRefusalMessage(workspacesession.CodeStaleExecution)))
+		return
+	}
+	runCtx, code, message := s.startRun(ctx, frame.Stream)
+	if code != "" {
+		s.answer(ctx, socket, workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, message))
+		return
+	}
+	// The command runs on a goroutine of its own because the read loop is what
+	// carries the close that stops it: serving a run inline would mean a
+	// session that cannot hear "stop" until the thing being stopped is over.
+	go func() {
+		defer s.finishRun(frame.Stream)
+		s.serveExec(ctx, runCtx, socket, frame, request)
+	}()
+}
+
+// serveExec streams one run: each output span as its own frame, then the exit,
+// then the close that gives the stream back.
+func (s *Session) serveExec(
+	sessionCtx context.Context,
+	runCtx context.Context,
+	socket *websocket.Conn,
+	frame workspacesession.Frame,
+	request workspacesession.ExecRun,
+) {
+	// Frames are written on the session's context and not the run's. A run that
+	// was killed still owes the person an exited and a closed frame, and a
+	// write on the cancelled context that killed it would send neither.
+	emit := func(span workspacesession.ExecOutput) error {
+		payload, err := workspacesession.Encode(span)
+		if err != nil {
+			return err
+		}
+		s.answer(sessionCtx, socket, workspacesession.Frame{
+			Channel: frame.Channel, Stream: frame.Stream,
+			Type: workspacesession.TypeExecOutput, Payload: payload,
+		})
+		return nil
+	}
+	// The lease is re-checked while the process runs, not only before it
+	// starts: a run outlives the frame that asked for it, so the check that
+	// makes a files read safe is not enough on its own here.
+	go s.watchRunLease(runCtx, frame.Stream)
+
+	// The command is the one the hub relayed with this run, and the runner has
+	// no action store of its own to check it against. What bounds it is who may
+	// write an action and where it runs, which is section 18.12's own answer to
+	// the same question about the hub.
+	result, err := s.exec.Run(runCtx, request.Command, emit)
+	switch {
+	case err == nil, errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// A killed run still ended, and its code and signal are how it ended.
+		s.answerExecExited(sessionCtx, socket, frame, result)
+	default:
+		code := workspaceexec.ErrorCode(err)
+		if code == "" {
+			code = workspacesession.CodeForbidden
+		}
+		s.logger.Debug("workspace.action_refused", "stream", frame.Stream, "code", code, "error", err)
+		s.answer(sessionCtx, socket, workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, execRefusalMessage(code)))
+	}
+	// The hub releases a stream's slot on close or closed and never on exited.
+	// A runner that stopped at exited would leak one slot per run until the
+	// workspace hit its stream cap and started refusing the next one, and the
+	// person would see a workspace that runs nothing for no visible reason.
+	s.answer(sessionCtx, socket, workspacesession.Frame{
+		Channel: frame.Channel, Stream: frame.Stream, Type: workspacesession.TypeClosed,
+	})
+}
+
+// answerExecExited reports how a run ended.
+func (s *Session) answerExecExited(
+	ctx context.Context,
+	socket *websocket.Conn,
+	frame workspacesession.Frame,
+	result workspaceexec.Result,
+) {
+	payload, err := workspacesession.Encode(workspacesession.ExecExited{Code: result.ExitCode, Signal: result.Signal})
+	if err != nil {
+		s.logger.Warn("workspace.action_exit_not_encoded", "stream", frame.Stream, "error", err)
+		return
+	}
+	s.answer(ctx, socket, workspacesession.Frame{
+		Channel: frame.Channel, Stream: frame.Stream, Type: workspacesession.TypeExecExited, Payload: payload,
+	})
+}
+
+// startRun registers a run for a stream and answers with the context that
+// stops it, or with the code and sentence that refuse it.
+func (s *Session) startRun(ctx context.Context, stream string) (context.Context, string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runs == nil {
+		s.runs = map[string]*execRun{}
+	}
+	if _, running := s.runs[stream]; running {
+		// One stream is one run. A second run frame on a stream that is
+		// already running one would leave the person with two interleaved
+		// output streams and one exited frame to explain both.
+		return nil, workspacesession.CodeInvalidFrame, "This stream is already running an action"
+	}
+	if len(s.runs) >= maxConcurrentRuns {
+		return nil, workspacesession.CodeStreamLimit, execRefusalMessage(workspacesession.CodeStreamLimit)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	s.runs[stream] = &execRun{cancel: cancel}
+	return runCtx, "", ""
+}
+
+// finishRun forgets a run that has ended and releases its context.
+func (s *Session) finishRun(stream string) {
+	s.mu.Lock()
+	run, running := s.runs[stream]
+	delete(s.runs, stream)
+	s.mu.Unlock()
+	if running {
+		run.cancel()
+	}
+}
+
+// cancelRun stops the run on one stream, if there is one. The process group
+// goes with it: a command that started a build or a server must not outlive
+// the reason it was started.
+func (s *Session) cancelRun(stream, reason string) {
+	s.mu.Lock()
+	run, running := s.runs[stream]
+	s.mu.Unlock()
+	if !running {
+		return
+	}
+	s.logger.Debug("workspace.action_stopped", "stream", stream, "reason", reason)
+	run.cancel()
+}
+
+// cancelRuns stops every run this session is holding.
+func (s *Session) cancelRuns(reason string) {
+	s.mu.Lock()
+	streams := make([]*execRun, 0, len(s.runs))
+	for _, run := range s.runs {
+		streams = append(streams, run)
+	}
+	s.mu.Unlock()
+	if len(streams) == 0 {
+		return
+	}
+	s.logger.Debug("workspace.actions_stopped", "runs", len(streams), "reason", reason)
+	for _, run := range streams {
+		run.cancel()
+	}
+}
+
+// watchRunLease stops a run whose lease this runner has lost mid-command.
+func (s *Session) watchRunLease(ctx context.Context, stream string) {
+	ticker := time.NewTicker(runLeaseInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !s.leaseValid() {
+			s.cancelRun(stream, workspacesession.RunReasonLeaseLost)
+			return
+		}
+	}
+}
+
+// execRefusalMessage is the sentence that goes with an exec refusal. It says
+// what this runner would not do without repeating the command back, which a
+// person may be reading in a shared panel.
+func execRefusalMessage(code string) string {
+	switch code {
+	case workspacesession.CodeStaleExecution:
+		return "The workspace lease is no longer held by this runner"
+	case workspacesession.CodeInvalidFrame:
+		return "The run frame did not carry a command to run"
+	case workspacesession.CodeStreamLimit:
+		return "This workspace is already running as many actions as it may"
+	case workspacesession.CodeTooLarge:
+		return "The command is longer than this surface runs"
+	case workspacesession.CodeUnsupported:
+		return "This runner cannot run the project's shell"
+	default:
+		return "The action could not be run"
+	}
 }
 
 // serveGit dispatches one git request.

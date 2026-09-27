@@ -67,6 +67,10 @@ type WorkspaceBindResponse struct {
 	Owner    workspacesession.Owner   `json:"owner"`
 	Checkout WorkspaceCheckout        `json:"checkout"`
 	Session  workspacesession.Session `json:"workspace"`
+	// Actions is the project's run-on-worktree-creation set, in authoring
+	// order (decisions section 18.12). The runner starts them itself once the
+	// worktree exists, in the order they arrive.
+	Actions []workspacesession.Action `json:"actions,omitempty"`
 }
 
 // WorkspaceHeartbeatRequest renews the lease and carries the runner's report.
@@ -130,6 +134,49 @@ func (c *NativeClient) HeartbeatWorkspace(ctx context.Context, workspaceID strin
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path, request, &response)
 	return response.Session, workspaceError(err)
+}
+
+// WorkspaceActionRunReport records one project action run with the hub
+// (decisions section 18.12).
+//
+// It is how a run the runner started itself becomes visible: a
+// run-on-worktree-creation action has no person watching and no exec stream to
+// carry its frames, so the row is written by a report rather than by the relay.
+// An empty RunID creates the run and the answer carries its id; every later
+// report of the same run names it.
+//
+// The tuple is a named field rather than embedded, unlike the other worker
+// bodies: this one already carries a status, a reason and timestamps of its
+// own, and a bare lease_id beside them would read as the run's rather than the
+// workspace's.
+type WorkspaceActionRunReport struct {
+	WorkspaceIdentity WorkspaceIdentity `json:"workspace_identity"`
+	ActionID          string            `json:"action_id"`
+	RunID             string            `json:"run_id,omitempty"`
+	Status            string            `json:"status"`
+	ExitCode          *int              `json:"exit_code,omitempty"`
+	Reason            string            `json:"reason,omitempty"`
+	StartedAt         *time.Time        `json:"started_at,omitempty"`
+	FinishedAt        *time.Time        `json:"finished_at,omitempty"`
+	Output            string            `json:"output,omitempty"`
+	Truncated         bool              `json:"truncated,omitempty"`
+}
+
+// ReportWorkspaceActionRun records a project action run and answers with the
+// run as stored.
+//
+// The refusal mapping is the other worker calls': a report the hub fences off
+// answers stale_execution and comes back as ErrStaleWorkspace, so a runner can
+// tell "you no longer hold this workspace" -- stop reporting -- from a
+// transport failure worth retrying.
+func (c *NativeClient) ReportWorkspaceActionRun(ctx context.Context, workspaceID string, request WorkspaceActionRunReport) (workspacesession.Run, error) {
+	var run workspacesession.Run
+	path, err := workspacePath(workspaceID, "/worker/action-runs")
+	if err != nil {
+		return run, err
+	}
+	err = c.client.request(ctx, http.MethodPost, c.base()+path, request, &run)
+	return run, workspaceError(err)
 }
 
 // UnbindWorkspace releases the workspace.

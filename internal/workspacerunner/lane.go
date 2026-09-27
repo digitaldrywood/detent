@@ -73,9 +73,12 @@ type LaneConfig struct {
 	// Deny is the runner's configured addition to the files denylist.
 	Deny []string
 	// Shell is the project's configured shell, carried through to every
-	// session so a terminal opens the shell the project uses. An empty value
-	// takes the platform default.
+	// session so an action's command and a terminal run through the shell the
+	// project uses. An empty value takes the platform default.
 	Shell string
+	// Reporter records project action runs with the hub. It is optional: a
+	// runner without one still runs the project's actions.
+	Reporter ActionRunReporter
 	// Hostname is the host this runner is on, reported on every workspace
 	// heartbeat so the header's Open picker can tell a worktree on the
 	// reader's own machine from one somewhere else (section 18.13).
@@ -219,7 +222,7 @@ func (l *Lane) claimOnce(ctx context.Context) (bool, error) {
 	worker, err := New(Config{
 		WorkspaceID: session.ID, Identity: identity, Hub: l.config.Hub,
 		Worktree: l.config.Worktree, Logger: l.config.Logger, Now: l.config.Now, Deny: l.config.Deny,
-		Shell:    l.config.Shell,
+		Shell: l.config.Shell, Reporter: l.config.Reporter,
 		Hostname: l.config.Hostname, Support: l.config.Support,
 	})
 	if err != nil {

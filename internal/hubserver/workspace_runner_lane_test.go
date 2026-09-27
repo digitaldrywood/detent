@@ -93,6 +93,7 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 		Claimer: claimer, Hub: native, Logger: discardLogger(), Poll: 50 * time.Millisecond,
 		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: string(f.project.ID), Resolve: claimer.RunIdentifier},
 		Support:  support, Shell: "/bin/sh", Hostname: "runner-host",
+		Reporter: laneActionReporter{native: native},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -286,8 +287,8 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 	if ready.WorktreePath == "" || ready.MachineHostname != "runner-host" {
 		t.Fatalf("ready workspace = %+v, want the runner's worktree path and host", ready)
 	}
-	if ready.Capabilities == nil || !ready.Capabilities.Files || !ready.Capabilities.Git || ready.Capabilities.Exec {
-		t.Fatalf("ready capabilities = %+v, want files and git without exec", ready.Capabilities)
+	if ready.Capabilities == nil || !ready.Capabilities.Files || !ready.Capabilities.Git || !ready.Capabilities.Exec {
+		t.Fatalf("ready capabilities = %+v, want files, git and exec", ready.Capabilities)
 	}
 	if f.lane.Open() != 1 {
 		t.Fatalf("lane holds %d workspaces, want 1", f.lane.Open())
@@ -421,4 +422,95 @@ func TestWorkspaceLaneClaimsWhatTheClientOpens(t *testing.T) {
 			f.awaitLaneIdle(t, 30*time.Second)
 		})
 	}
+}
+
+func (f *workspaceLaneFixture) action(t *testing.T, body map[string]any) workspacesession.Action {
+	t.Helper()
+	body["idempotency_key"] = newNativeID("actkey")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions", f.token, body)
+	requireNativeStatus(t, response, http.StatusCreated)
+	var authored workspacesession.Action
+	decodeHubResponse(t, response, &authored)
+	return authored
+}
+
+func (f *workspaceLaneFixture) awaitRun(t *testing.T, action workspacesession.Action, dispatch bool) workspacesession.Run {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if dispatch {
+			f.service.workspaces.sweep(t.Context())
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/actions/"+action.ID+"/runs", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var runs projectActionRunList
+		decodeHubResponse(t, response, &runs)
+		if len(runs.Items) == 1 && runs.Items[0].Status != workspacesession.RunQueued && runs.Items[0].Status != workspacesession.RunRunning {
+			return runs.Items[0]
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("action %s never finished a run", action.Name)
+	return workspacesession.Run{}
+}
+
+// TestWorkspaceLaneRunsProjectActions covers both ways a runner starts a
+// project action: the run-on-worktree-creation set it runs before reporting
+// ready, and a run queued through the API that the hub hands it over the relay.
+func TestWorkspaceLaneRunsProjectActions(t *testing.T) {
+	t.Parallel()
+	if !terminalAvailable() {
+		t.Skip("the action commands are POSIX shell syntax")
+	}
+	f := newWorkspaceLaneFixture(t)
+	setup := f.action(t, map[string]any{"name": "Setup", "command": "echo setup > setup-ran", "run_on_worktree_creation": true})
+	id := f.open(t, "actions-subject", []string{"files", "exec"})
+	ready := f.awaitReady(t, id)
+	if run := f.awaitRun(t, setup, false); run.Status != workspacesession.RunSucceeded || run.WorkspaceID != id {
+		t.Fatalf("setup run = %+v, want a succeeded run on %s", run, id)
+	}
+	if _, err := os.Stat(filepath.Join(ready.WorktreePath, "setup-ran")); err != nil {
+		t.Fatalf("the setup action did not run in the worktree: %v", err)
+	}
+
+	build := f.action(t, map[string]any{"name": "Build", "command": "echo built > build-ran"})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions/"+build.ID+"/runs", f.token,
+		map[string]any{"idempotency_key": newNativeID("runkey"), "workspace_id": id})
+	requireNativeStatus(t, response, http.StatusAccepted)
+	time.Sleep(actionRunDispatchGrace + 100*time.Millisecond)
+	if run := f.awaitRun(t, build, true); run.Status != workspacesession.RunSucceeded {
+		t.Fatalf("dispatched run = %+v, want succeeded", run)
+	}
+	if _, err := os.Stat(filepath.Join(ready.WorktreePath, "build-ran")); err != nil {
+		t.Fatalf("the dispatched action did not run in the worktree: %v", err)
+	}
+}
+
+func TestRelayedRequiresDropsOnlyUnservedSurfaces(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		requires []string
+		want     []string
+	}{
+		{requires: []string{"files", "exec"}, want: []string{"files", "exec"}},
+		{requires: []string{"files", "diff"}, want: []string{"files"}},
+		{requires: []string{"terminal", "preview", "git"}, want: []string{"terminal", "git"}},
+	}
+	for _, test := range tests {
+		if got := relayedRequires(test.requires); !slices.Equal(got, test.want) {
+			t.Errorf("relayedRequires(%v) = %v, want %v", test.requires, got, test.want)
+		}
+	}
+}
+
+type laneActionReporter struct {
+	native *hubclient.NativeClient
+}
+
+func (r laneActionReporter) ReportActionRun(ctx context.Context, workspaceID string, identity hubclient.WorkspaceIdentity, run workspacerunner.ActionRun) (workspacesession.Run, error) {
+	return r.native.ReportWorkspaceActionRun(ctx, workspaceID, hubclient.WorkspaceActionRunReport{
+		WorkspaceIdentity: identity, ActionID: run.ActionID, RunID: run.RunID, Status: run.Status,
+		ExitCode: run.ExitCode, Reason: run.Reason, StartedAt: run.StartedAt,
+		FinishedAt: run.FinishedAt, Output: run.Output, Truncated: run.Truncated,
+	})
 }
