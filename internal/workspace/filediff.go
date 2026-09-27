@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Per-file diffs (decisions section 18.5). GitDiffFrom answers one patch blob,
@@ -271,11 +272,32 @@ func attachGitPatches(files []FileDiff, sections []string) {
 // otherwise the commit checked out when the run started. Without it the diff
 // would be taken against HEAD and show only uncommitted edits, so a run that
 // committed its work would report no change at all.
+//
+// The default branch is read from the local origin/HEAD first. Only when that
+// is unset is the remote asked, and that question is bounded so a slow remote
+// delays a run's start by seconds rather than stalling it.
 func AttemptBase(ctx context.Context, workspacePath string) string {
-	if branch, err := remoteDefaultBranch(ctx, workspacePath, defaultGitRemote); err == nil {
+	if branch := attemptDefaultBranch(ctx, workspacePath); branch != "" {
 		if output, err := runGitAt(ctx, workspacePath, "merge-base", "HEAD", "refs/remotes/"+defaultGitRemote+"/"+branch); err == nil && strings.TrimSpace(output) != "" {
 			return strings.TrimSpace(output)
 		}
 	}
 	return gitResolve(ctx, workspacePath, "HEAD")
+}
+
+const attemptRemoteTimeout = 5 * time.Second
+
+func attemptDefaultBranch(ctx context.Context, workspacePath string) string {
+	if output, err := runGitAt(ctx, workspacePath, "symbolic-ref", "--quiet", "--short", "refs/remotes/"+defaultGitRemote+"/HEAD"); err == nil {
+		if branch := strings.TrimPrefix(strings.TrimSpace(output), defaultGitRemote+"/"); branch != "" {
+			return branch
+		}
+	}
+	remoteCtx, cancel := context.WithTimeout(ctx, attemptRemoteTimeout)
+	defer cancel()
+	branch, err := remoteDefaultBranch(remoteCtx, workspacePath, defaultGitRemote)
+	if err != nil {
+		return ""
+	}
+	return branch
 }

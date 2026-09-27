@@ -300,11 +300,13 @@ func isolateFileDiffGitConfig(t *testing.T) {
 func TestAttemptBase(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		remote bool
+		name      string
+		remote    bool
+		localHead bool
 	}{
 		{name: "no remote uses the current commit"},
 		{name: "a tracked remote default branch uses the merge base", remote: true},
+		{name: "a local origin HEAD answers without the remote", remote: true, localHead: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -318,6 +320,10 @@ func TestAttemptBase(t *testing.T) {
 				writeFileDiffFile(t, dir, "ahead.txt", "ahead\n")
 				runGit(t, dir, "add", "ahead.txt")
 				runGit(t, dir, "commit", "-m", "ahead of the remote")
+				if test.localHead {
+					runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+					runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unreachable.git"))
+				}
 			}
 			if got := AttemptBase(t.Context(), dir); got != want {
 				t.Fatalf("AttemptBase() = %q, want %q", got, want)
