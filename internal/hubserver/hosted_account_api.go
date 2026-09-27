@@ -1,0 +1,117 @@
+package hubserver
+
+import (
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/labstack/echo/v4"
+)
+
+type hostedNextResponse struct {
+	Next string `json:"next"`
+}
+
+type hostedSupportView struct {
+	Actor     string    `json:"actor"`
+	Reason    string    `json:"reason"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type hostedSupportResponse struct {
+	Support hostedSupportView `json:"support"`
+}
+
+// hostedEntryOwned refuses the account flows the shared entry owns. Behind the
+// shared entry, switching, joining and starting support are entry routes, so
+// a tenant Hub answers them as absent rather than running a second copy.
+func (s *Service) hostedEntryOwned(c echo.Context) (bool, error) {
+	if s.hostedShared() {
+		return true, s.nativeAPIError(c, nativeNotFound())
+	}
+	return false, nil
+}
+
+func (s *Service) hostedPlanJSON(c echo.Context) error {
+	if _, _, err := s.hostedCredential(c); err != nil {
+		return s.hostedAPIError(c, err)
+	}
+	if _, err := s.hostedAdministrator(c); err != nil {
+		return s.hostedJSONError(c, http.StatusForbidden, "Organization plan and usage require owner or admin access")
+	}
+	entitlement, err := s.database.hostedPlanUsage(c.Request().Context(), s.config.now())
+	if err != nil {
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Plan information is temporarily unavailable")
+	}
+	return c.JSON(http.StatusOK, entitlement)
+}
+
+func (s *Service) switchHostedOrganizationJSON(c echo.Context) error {
+	if owned, err := s.hostedEntryOwned(c); owned {
+		return err
+	}
+	var request struct {
+		hostedIdempotent
+		Organization string `json:"organization"`
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, _, err := s.hostedSession(c); err != nil {
+		return s.hostedAPIError(c, err)
+	}
+	next, message := s.hostedSwitchDestination(c, strings.TrimSpace(request.Organization))
+	if next == "" {
+		return s.hostedJSONError(c, http.StatusForbidden, message)
+	}
+	return c.JSON(http.StatusOK, hostedNextResponse{Next: next})
+}
+
+func (s *Service) acceptHostedInvitationJSON(c echo.Context) error {
+	if owned, err := s.hostedEntryOwned(c); owned {
+		return err
+	}
+	var request struct {
+		hostedIdempotent
+		Token string `json:"token"`
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, _, err := s.hostedSession(c); err != nil {
+		return s.hostedAPIError(c, err)
+	}
+	if message := s.acceptHostedInvitationToken(c, request.Token); message != "" {
+		return s.hostedJSONError(c, http.StatusForbidden, message)
+	}
+	return c.JSON(http.StatusOK, hostedNextResponse{Next: s.config.Hosted.PublicURL + "/auth/oidc/start"})
+}
+
+func (s *Service) startHostedSupportJSON(c echo.Context) error {
+	if owned, err := s.hostedEntryOwned(c); owned {
+		return err
+	}
+	var request hostedIdempotent
+	if c.Request().ContentLength != 0 {
+		if err := decodeAPIJSON(c, &request); err != nil {
+			return invalidAPIRequest(c, err)
+		}
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, _, err := s.hostedSession(c); err != nil {
+		return s.hostedAPIError(c, err)
+	}
+	session, transaction, status, message := s.beginHostedSupport(c)
+	if status != http.StatusOK {
+		return s.hostedJSONError(c, status, message)
+	}
+	return c.JSON(http.StatusOK, hostedSupportResponse{Support: hostedSupportView{Actor: session.Email, ExpiresAt: transaction.ExpiresAt.UTC()}})
+}

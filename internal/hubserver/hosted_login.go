@@ -21,6 +21,7 @@ const hostedTransactionCookie = "detent_hosted_login"
 type hostedTransaction struct {
 	State, Verifier, Organization, SupportActor, SupportSession string
 	InvitationToken, TokenHash                                  string
+	ExpiresAt                                                   time.Time
 }
 
 func (s *Service) hostedSetCookie(c echo.Context, name, value, path string, expires time.Time) {
@@ -57,7 +58,7 @@ func (s *Service) newHostedTransaction(c echo.Context, organization, actor, sess
 		return hostedTransaction{}, err
 	}
 	s.hostedSetCookie(c, hostedTransactionCookie, token, "/auth/oidc", expires)
-	return hostedTransaction{State: state, Verifier: verifier, Organization: organization, SupportActor: actor, SupportSession: session, TokenHash: apikey.HashToken(token)}, nil
+	return hostedTransaction{State: state, Verifier: verifier, Organization: organization, SupportActor: actor, SupportSession: session, TokenHash: apikey.HashToken(token), ExpiresAt: expires}, nil
 }
 
 func (s *Service) startHostedLogin(c echo.Context) error {
@@ -175,17 +176,26 @@ func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Ident
 	return s.storeHostedMember(ctx, identity, membership, providerOrganization.Name)
 }
 
-func (s *Service) startHostedSupport(c echo.Context) error {
+func (s *Service) beginHostedSupport(c echo.Context) (auth.Session, hostedTransaction, int, string) {
 	session, _, err := s.hostedSession(c)
 	if err != nil || session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.SupportActors, session.Email) {
-		return s.hostedError(c, http.StatusForbidden, "This account cannot start support access")
+		return session, hostedTransaction{}, http.StatusForbidden, "This account cannot start support access"
 	}
 	organization, err := s.hostedProviderOrganization(c.Request().Context())
 	if err != nil || organization == "" {
-		return s.hostedError(c, http.StatusForbidden, "Select an allocated organization before starting support access")
+		return session, hostedTransaction{}, http.StatusForbidden, "Select an allocated organization before starting support access"
 	}
-	if _, err := s.newHostedTransaction(c, organization, session.Email, session.Identity.SessionID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable")
+	transaction, err := s.newHostedTransaction(c, organization, session.Email, session.Identity.SessionID)
+	if err != nil {
+		return session, hostedTransaction{}, http.StatusServiceUnavailable, "Support access is temporarily unavailable"
+	}
+	return session, transaction, http.StatusOK, ""
+}
+
+func (s *Service) startHostedSupport(c echo.Context) error {
+	session, _, status, message := s.beginHostedSupport(c)
+	if status != http.StatusOK {
+		return s.hostedError(c, status, message)
 	}
 	return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "support", CanSupport: true, Title: "Start temporary support access", Email: session.Email, Notice: "Open the selected organization in the WorkOS dashboard and impersonate the customer using reason customer-request, account-recovery, or troubleshooting. Return in this browser within ten minutes."})
 }
@@ -254,13 +264,13 @@ func (s *Service) createHostedOrganization(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 }
 
-func (s *Service) switchHostedOrganization(c echo.Context) error {
+func (s *Service) hostedSwitchDestination(c echo.Context, organization string) (string, string) {
 	session, _, err := s.hostedSession(c)
 	if err != nil || session.Identity.SupportActor != "" {
-		return s.hostedError(c, http.StatusForbidden, "Exit support access before switching organizations")
+		return "", "Exit support access before switching organizations"
 	}
 	for _, destination := range s.config.Hosted.Directory {
-		if destination.OrganizationID != c.FormValue("organization") {
+		if destination.OrganizationID != organization {
 			continue
 		}
 		memberships, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), session.Identity.Subject, destination.WorkOSOrganizationID)
@@ -269,20 +279,35 @@ func (s *Service) switchHostedOrganization(c echo.Context) error {
 		}
 		for _, membership := range memberships {
 			if membership.Status == "active" && membership.UserID == session.Identity.Subject && membership.OrganizationID == destination.WorkOSOrganizationID {
-				return c.Redirect(http.StatusSeeOther, destination.PublicURL+"/auth/oidc/start")
+				return destination.PublicURL + "/auth/oidc/start", ""
 			}
 		}
 	}
-	return s.hostedError(c, http.StatusForbidden, "The selected organization is unavailable to this account")
+	return "", "The selected organization is unavailable to this account"
+}
+
+func (s *Service) switchHostedOrganization(c echo.Context) error {
+	next, message := s.hostedSwitchDestination(c, c.FormValue("organization"))
+	if next == "" {
+		return s.hostedError(c, http.StatusForbidden, message)
+	}
+	return c.Redirect(http.StatusSeeOther, next)
+}
+
+func (s *Service) acceptHostedInvitationToken(c echo.Context, token string) string {
+	session, _, err := s.hostedSession(c)
+	if err != nil || session.Identity.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		return "Sign in with the invited account to join this organization"
+	}
+	if err := s.acceptHostedInvitationFor(c.Request().Context(), auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, token); err != nil {
+		return "This invitation is expired, already used, or intended for another account or organization"
+	}
+	return ""
 }
 
 func (s *Service) acceptHostedInvitation(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return s.hostedError(c, http.StatusForbidden, "Sign in with the invited account to join this organization")
-	}
-	if err := s.acceptHostedInvitationFor(c.Request().Context(), auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, c.FormValue("token")); err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This invitation is expired, already used, or intended for another account or organization")
+	if message := s.acceptHostedInvitationToken(c, c.FormValue("token")); message != "" {
+		return s.hostedError(c, http.StatusForbidden, message)
 	}
 	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 }
