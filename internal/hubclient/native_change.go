@@ -21,9 +21,9 @@ import (
 
 const maxNativeChangeTitle = 512
 
-// settle decides, after run.finished is recorded, what the run left for
-// review. It records nothing when the run is not work the runner owns the
-// review of, when no diff was ever readable, when the worktree was left dirty
+// settle decides, before run.finished is published at the finish sequence,
+// what the run left for review. It records nothing when the run is not work
+// the runner owns the review of, when no diff was ever readable, when the worktree was left dirty
 // or unread (the ordinary completion path resolves uncommitted work), or when
 // the lease is gone: the next owner of the item decides then.
 //
@@ -33,11 +33,11 @@ const maxNativeChangeTitle = 512
 // called again retries it too; a change that still cannot be opened is
 // reported with its error so the orchestrator hands the item off instead of
 // moving it to review. e.mu is held by the caller.
-func (e *nativeExecution) settle(ctx context.Context) {
+func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) {
 	if e.settled {
 		return
 	}
-	if e.data.Outcome != "succeeded" || e.conversation || e.lastDiff == nil || e.claim.source == nil || e.claim.source.client == nil ||
+	if outcome != "succeeded" || e.conversation || e.lastDiff == nil || e.claim.source == nil || e.claim.source.client == nil ||
 		e.role != runner.RoleCode && e.role != runner.RoleRework ||
 		e.worktreeState != "clean" && e.worktreeState != "unpushed" {
 		e.settled = true
@@ -57,7 +57,7 @@ func (e *nativeExecution) settle(ctx context.Context) {
 		e.settled = true
 		return
 	}
-	if e.storedSeq != e.data.Sequence {
+	if e.storedSeq != finish {
 		change.Error = "the hub has not stored the run's final attempt diff"
 		e.settled = true
 		return

@@ -42,9 +42,10 @@ type nativeChangeHub struct {
 // changeFailingTransport refuses Change Request creation when armed, which is
 // how a hub that cannot open the change looks to the runner.
 type changeFailingTransport struct {
-	next      http.RoundTripper
-	fail      atomic.Bool
-	failDiffs atomic.Bool
+	next       http.RoundTripper
+	fail       atomic.Bool
+	failDiffs  atomic.Bool
+	failEvents atomic.Bool
 }
 
 func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -54,6 +55,9 @@ func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Respons
 		}
 		if t.failDiffs.Load() && strings.HasSuffix(request.URL.Path, "/diff") {
 			return nil, errors.New("diff storage unavailable")
+		}
+		if t.failEvents.Load() && strings.HasSuffix(request.URL.Path, "/events") {
+			return nil, errors.New("run event unavailable")
 		}
 	}
 	return t.next.RoundTrip(request)
@@ -356,6 +360,62 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatalf("the execution moved the item to %s; only the orchestrator moves lanes", state)
 			}
 		})
+	}
+}
+
+// TestNativeExecutionSettlesBeforeFinishing checks the order a crash cannot
+// strand: the Change Request exists before run.finished is published, so a
+// finish that dies in between leaves the attempt running, where the lease's
+// expiry re-offers the item, and a retried finish publishes the outcome
+// without opening a second change.
+func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t)
+	issue := h.createInProgress(t, "Native change")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID)
+	guarded, stop, err := execution.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	execution.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(strings.Repeat("c", 40), "README.md"))
+	if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}
+	if err := execution.Checkpoint(guarded, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	attemptStatus := func() string {
+		t.Helper()
+		recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(recovery.Attempts) != 1 {
+			t.Fatalf("recovery = %#v, error = %v", recovery, err)
+		}
+		return recovery.Attempts[0].Status
+	}
+	h.failChanges.failEvents.Store(true)
+	if err := execution.Finish(guarded, "succeeded"); err == nil {
+		t.Fatal("the run.finished failure was not injected")
+	}
+	if changes := h.changes(t, issue.ID); len(changes) != 1 {
+		t.Fatalf("changes before run.finished = %#v, want the opened change", changes)
+	}
+	if status := attemptStatus(); status != "running" {
+		t.Fatalf("attempt status after an unpublished finish = %q, want running", status)
+	}
+	h.failChanges.failEvents.Store(false)
+	if err := execution.Finish(guarded, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	if status := attemptStatus(); status != "succeeded" {
+		t.Fatalf("attempt status = %q, want succeeded", status)
+	}
+	changes := h.changes(t, issue.ID)
+	change := execution.(runner.ChangeExecution).NativeChange()
+	if len(changes) != 1 || change == nil || change.ChangeID != changes[0].ID || change.Error != "" {
+		t.Fatalf("change = %#v, changes = %#v", change, changes)
 	}
 }
 

@@ -229,13 +229,21 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	if e.data.Identity == nil {
 		return nil
 	}
-	if e.data.Outcome == "" {
-		if err := e.append(ctx, "run.finished", outcome, nil); err != nil {
-			return err
-		}
+	if e.data.Outcome != "" {
+		e.settle(ctx, e.data.Outcome, e.data.Sequence)
+		return nil
 	}
-	e.settle(ctx)
-	return nil
+	// A succeeded run is settled before run.finished is published, while the
+	// lease still fences it: the finish diff is stored and the Change Request
+	// opened first, so a runner that dies in between leaves the attempt
+	// running and the lease's expiry re-offers the item. Opening the change
+	// again is safe, because it reuses the item's change.
+	finish := e.data.Sequence + 1
+	if outcome == "succeeded" {
+		e.postDiff(ctx, finish)
+		e.settle(ctx, outcome, finish)
+	}
+	return e.append(ctx, "run.finished", outcome, nil)
 }
 
 // NativeChange reports what the finished run left for review.
@@ -300,7 +308,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	data := e.data
 	data.Sequence++
 	data.Outcome = outcome
-	if kind == "run.checkpointed" || kind == "run.finished" {
+	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence {
 		e.postDiff(ctx, data.Sequence)
 	}
 	data.Handoff = checkpoint
