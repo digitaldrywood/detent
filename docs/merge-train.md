@@ -54,7 +54,7 @@ reservation release reasons, head/base identities, and validation invalidation.
 
 Inside the serialized `Merging` lane, avoid duplicating the full local release
 gate when it does not buy new signal. If the PR already passed the pre-review
-gate, the branch rebases cleanly onto current `origin/main`, and no source files
+gate, the branch rebases cleanly onto current `origin/develop`, and no source files
 change during rebase, the merge agent should run a focused rebase/smoke gate
 locally and rely on merge-group CI for full enforcement when using this
 repository's native queue. If the merge agent edits code, resolves conflicts,
@@ -70,7 +70,7 @@ integration failures are tracked separately.
 Merge handoff telemetry should record the
 quiet-window wait, GitHub queue/start wait, local merge-gate duration,
 current-head PR check duration, merge-group CI duration, active slow-check
-runtimes, and whether post-merge `main` CI is still running. The quiet window,
+runtimes, and whether post-merge `develop` CI is still running. The quiet window,
 successful merge-group CI, and conflict/full-gate fallback are quality gates;
 repeated full local validation
 after a source-clean rebase, noisy status polling, uncached tool install, and
@@ -88,10 +88,10 @@ on pull requests, including docs-only PRs; the same jobs run on merge groups.
 `Portability Verify (macos-latest)`, `Portability Verify (windows-latest)`,
 `Windows Core`, `Installer Smoke (ubuntu-latest)`,
 `Installer Smoke (windows-latest)`, and `GoReleaser Snapshot` run only on pushes
-to `main` and manual dispatch. They do not run for PRs, merge groups, tag pushes, or
-the nightly schedule. A push to main runs the full set.
+to `main` or `develop` and manual dispatch. They do not run for PRs, merge groups, tag pushes, or
+the nightly schedule. A push to main or develop runs the full set.
 
-Failed integration jobs on main (including manual runs on main) use the existing
+Failed integration jobs on main (including manual runs on main; never develop) use the existing
 machine intake to open a tracking issue or comment on the open match, with
 origin kind `doctor` and a stable fingerprint per job name. The issue links to
 the failed job and records the commit. These track CI instance health; logs
@@ -260,8 +260,11 @@ are changed.
 
 In GitHub repository **Settings → Rules → Rulesets**, create or edit an active
 branch ruleset targeting the merge branch and enable **Require merge queue**.
-Choose squash merging for this project and ensure every required check runs on
-the merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
+For day-to-day integration (`develop` in this repository), choose squash
+merging. A production branch that receives promotion PRs (`main` here) needs its
+own ruleset whose queue uses merge commits, because a squashed promotion loses
+the ancestry later promotions depend on; see [branching](branching.md). Ensure
+every required check runs on the merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
 The PR-required and security-audit exclusions above still apply.
 
 `detent doctor` recommends considering a queue when strict protection is enabled,

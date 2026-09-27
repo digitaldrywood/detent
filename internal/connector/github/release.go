@@ -18,9 +18,7 @@ import (
 
 var closingIssuePattern = regexp.MustCompile(`(?i)(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+(?:([[:alnum:]_.-]+/[[:alnum:]_.-]+))?#([0-9]+)`)
 
-type releaseRESTRepository struct {
-	DefaultBranch string `json:"default_branch"`
-}
+const releaseBranch = "main"
 
 type releaseRESTRef struct {
 	Object struct {
@@ -92,16 +90,8 @@ func (c *Connector) Inspect(ctx context.Context) (releasepkg.Repository, error) 
 		return releasepkg.Repository{}, ErrMissingRepository
 	}
 	base := restRepositoryPath(pullRequestRepoName(c.repository))
-	var repository releaseRESTRepository
-	if err := c.client.REST(ctx, http.MethodGet, base, nil, &repository); err != nil {
-		return releasepkg.Repository{}, fmt.Errorf("inspect release repository: %w", err)
-	}
-	branch := strings.TrimSpace(repository.DefaultBranch)
-	if branch == "" {
-		branch = "main"
-	}
 	var ref releaseRESTRef
-	if err := c.client.REST(ctx, http.MethodGet, base+"/git/ref/heads/"+url.PathEscape(branch), nil, &ref); err != nil {
+	if err := c.client.REST(ctx, http.MethodGet, base+"/git/ref/heads/"+releaseBranch, nil, &ref); err != nil {
 		return releasepkg.Repository{}, fmt.Errorf("inspect release head: %w", err)
 	}
 	result := releasepkg.Repository{RequiredCheckNames: append([]string(nil), c.requiredChecks...), Name: pullRequestRepoName(c.repository), HeadSHA: strings.TrimSpace(ref.Object.SHA)}

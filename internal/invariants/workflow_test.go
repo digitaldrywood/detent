@@ -13,7 +13,7 @@ import (
 )
 
 const nonPRCondition = "github.event_name != 'pull_request'"
-const integrationCondition = "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
+const integrationCondition = "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))"
 
 func checkWorkflow(data []byte) error {
 	var workflow struct {
@@ -39,8 +39,8 @@ func checkWorkflow(data []byte) error {
 	if !slices.Contains(workflow.On.MergeGroup.Types, "checks_requested") {
 		return errors.New("INV-4 merge_group checks_requested missing")
 	}
-	if !slices.Equal(workflow.On.Push.Branches, []string{"main"}) || len(workflow.On.Push.Tags) != 0 {
-		return errors.New("INV-5 CI push must run only on main; tag checks invalidate release provenance")
+	if !slices.Equal(workflow.On.Push.Branches, []string{"main", "develop"}) || len(workflow.On.Push.Tags) != 0 {
+		return errors.New("INV-5 CI push must run only on main and develop; tag checks invalidate release provenance")
 	}
 	events := workflow.On.PullRequest.Types
 	for _, event := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
@@ -63,7 +63,7 @@ func checkWorkflow(data []byte) error {
 		switch name {
 		case "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot":
 			if condition != integrationCondition {
-				return fmt.Errorf("INV-5 %s must run only on main push or explicit manual dispatch", name)
+				return fmt.Errorf("INV-5 %s must run only on main or develop push or explicit manual dispatch", name)
 			}
 		case "report-integration-failures":
 			if condition != "failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')" {
@@ -75,7 +75,7 @@ func checkWorkflow(data []byte) error {
 			}
 		default:
 			if condition != nonPRCondition {
-				return fmt.Errorf("INV-5 %s must not run on pull_request events; real CI runs in the merge queue and on main", name)
+				return fmt.Errorf("INV-5 %s must not run on pull_request events; real CI runs in the merge queue and on main and develop", name)
 			}
 		}
 	}
@@ -98,8 +98,13 @@ func TestWorkflowViolations(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ name, old, replacement string }{
-		{"duplicate tag checks", "branches: [main]", "branches: [main]\n    tags: ['v*']"},
-		{"unfiltered push", "branches: [main]", "branches: []"},
+		{"duplicate tag checks", "branches: [main, develop]", "branches: [main, develop]\n    tags: ['v*']"},
+		{"unfiltered push", "branches: [main, develop]", "branches: []"},
+		{"develop push dropped", "branches: [main, develop]", "branches: [main]"},
+		{"main push dropped", "branches: [main, develop]", "branches: [develop]"},
+		{"feature branch push", "branches: [main, develop]", "branches: [main, develop, 'feature/*']"},
+		{"integration main only", "if: " + integrationCondition, "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"},
+		{"failure reports on develop", "if: failure() && github.ref == 'refs/heads/main'", "if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')"},
 		{"real job on PR", "if: " + nonPRCondition, "if: true"},
 		{"pr bypass", "if: " + nonPRCondition, "if: " + nonPRCondition + " || true"},
 		{"successful placeholder", "jobs:", "jobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo skipped"},
