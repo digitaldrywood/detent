@@ -133,7 +133,7 @@ Required PR merge checks, branch protection/rulesets, and
 - `Browser Visual` - budget: `15m`
 
 Security also runs on every PR. The following integration checks run only on
-main pushes and manual dispatch, and must be removed from the PR-required list
+main and develop pushes and manual dispatch, and must be removed from the PR-required list
 by the operator (see [Merge Train](merge-train.md)):
 
 - `Portability Verify (macos-latest)` - budget: `8m`

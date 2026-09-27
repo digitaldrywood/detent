@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
@@ -309,7 +309,7 @@ jobs:
           retention-days: 14
 
   portability-verify:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
@@ -378,7 +378,7 @@ jobs:
           retention-days: 14
 
   windows-core:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
     name: Windows Core
     runs-on: windows-latest
     steps:
@@ -396,7 +396,7 @@ jobs:
         run: .\tmp\detent.exe --help
 
   installer-smoke:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
     name: Installer Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -486,7 +486,7 @@ jobs:
           & $binary version
 
   goreleaser-snapshot:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 35

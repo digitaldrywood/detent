@@ -200,7 +200,7 @@ join keys, rollout inspection, and runnable audit queries.
 
 - [Native Hub and Cloud architecture RFC](docs/cloud-hub-rfc.md) — proposed native authority, portable execution, and launch contracts; [current Hub API](docs/hub-api.md).
 - [CLI reference](docs/cli.md) — exit codes, JSON errors, logging, and structured output.
-- [Release process](docs/release.md).
+- [Release process](docs/release.md) and [branching](docs/branching.md).
 - [Development](docs/development.md) and [contribution guide](CONTRIBUTING.md).
 - [Comparison](docs/comparison.md), [execution seams](docs/execution-seams.md), and [local models](docs/local-models-ollama.md).
 
@@ -458,7 +458,7 @@ updates to release-binary management. Source builds still print the recommended
 command instead of overwriting the binary.
 
 CI runs the `Installer Smoke` confidence job on Ubuntu and Windows against the
-current GitHub Release assets on pushes to `main` and manual workflow dispatch.
+current GitHub Release assets on pushes to `main` and `develop` and manual workflow dispatch.
 It does not run on pull requests, tag pushes, or the nightly CI schedule. The job runs `install.sh`
 and `install.ps1` in release mode, checks checksum output, confirms the
 requested install directory and installer lock metadata, then runs

@@ -376,16 +376,35 @@ func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 	}
 }
 
-func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
+func TestCIPushCoversMainAndDevelop(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
+	for _, want := range []string{
+		"  push:\n    branches: [main, develop]\n",
+		"  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n",
+		"  merge_group:\n    types: [checks_requested]\n",
+	} {
+		if !strings.Contains(triggers, want) {
+			t.Fatalf("CI triggers missing %q", want)
+		}
+	}
+	if strings.Contains(triggers, "tags:") {
+		t.Fatal("CI push must not run on tags; tag checks invalidate release provenance")
+	}
+}
+
+func TestIntegrationChecksRunOnlyOnMainOrDevelopPushOrDispatch(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	for _, check := range integrationStatusChecks {
 		t.Run(check.name, func(t *testing.T) {
 			t.Parallel()
 			job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-			want := "    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
+			want := "    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))"
 			if !strings.Contains(job, want) {
-				t.Fatalf("integration job %q must run only on main pushes or dispatch", check.name)
+				t.Fatalf("integration job %q must run only on main or develop pushes or dispatch", check.name)
 			}
 			for _, marker := range check.markers {
 				if !strings.Contains(job, marker) {
@@ -408,6 +427,9 @@ func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
 		if !strings.Contains(reporter, marker) {
 			t.Fatalf("failure reporting missing %q", marker)
 		}
+	}
+	if strings.Contains(reporter, "refs/heads/develop") {
+		t.Fatal("integration failure issues must be filed only for main, never develop")
 	}
 }
 

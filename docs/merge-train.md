@@ -54,7 +54,7 @@ reservation release reasons, head/base identities, and validation invalidation.
 
 Inside the serialized `Merging` lane, avoid duplicating the full local release
 gate when it does not buy new signal. If the PR already passed the pre-review
-gate, the branch rebases cleanly onto current `origin/main`, and no source files
+gate, the branch rebases cleanly onto current `origin/develop`, and no source files
 change during rebase, the merge agent should run a focused rebase/smoke gate
 locally and rely on merge-group CI for full enforcement when using this
 repository's native queue. If the merge agent edits code, resolves conflicts,
@@ -70,7 +70,7 @@ integration failures are tracked separately.
 Merge handoff telemetry should record the
 quiet-window wait, GitHub queue/start wait, local merge-gate duration,
 current-head PR check duration, merge-group CI duration, active slow-check
-runtimes, and whether post-merge `main` CI is still running. The quiet window,
+runtimes, and whether post-merge `develop` CI is still running. The quiet window,
 successful merge-group CI, and conflict/full-gate fallback are quality gates;
 repeated full local validation
 after a source-clean rebase, noisy status polling, uncached tool install, and
@@ -88,10 +88,10 @@ on pull requests, including docs-only PRs; the same jobs run on merge groups.
 `Portability Verify (macos-latest)`, `Portability Verify (windows-latest)`,
 `Windows Core`, `Installer Smoke (ubuntu-latest)`,
 `Installer Smoke (windows-latest)`, and `GoReleaser Snapshot` run only on pushes
-to `main` and manual dispatch. They do not run for PRs, merge groups, tag pushes, or
-the nightly schedule. A push to main runs the full set.
+to `main` or `develop` and manual dispatch. They do not run for PRs, merge groups, tag pushes, or
+the nightly schedule. A push to main or develop runs the full set.
 
-Failed integration jobs on main (including manual runs on main) use the existing
+Failed integration jobs on main (including manual runs on main; never develop) use the existing
 machine intake to open a tracking issue or comment on the open match, with
 origin kind `doctor` and a stable fingerprint per job name. The issue links to
 the failed job and records the commit. These track CI instance health; logs
