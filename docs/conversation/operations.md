@@ -1610,6 +1610,8 @@ repository. What is still missing, as a checklist:
       `dispatch_deferred`, so every tick that saw the item produced a real hub
       claim and a real Codex turn.
 
+      Non-governing history: this records the branch as it ran in #2635. Only brake 2, the hub refusing to re-offer an answered item, is on main. Brakes 0 and 1 are not planned work. The mechanism moratorium applies to the orchestrator, so any follow-up has to remove or consolidate a mechanism rather than add these two.
+
       Three brakes now hold, and the fix needed all three: the completed item
       has to be judged ready to leave its lane, the promotion has to land
       somewhere, and the hub has to stop offering an item that was already

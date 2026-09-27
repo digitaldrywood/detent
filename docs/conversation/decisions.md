@@ -356,7 +356,9 @@ has `id: <seq>` and `event: <type>` and a JSON `data` body. Types:
 | `execution.updated` | Execution object |
 | `command.receipt` | Receipt |
 | `heartbeat` | `{seq}` every 15 seconds, no id |
-| `closed` | `{reason: access_revoked|archived|server_shutdown}` then the stream ends |
+| `closed` | `{reason: access_revoked|cursor_expired|server_shutdown|server_error}` then the stream ends |
+
+On main: `conversation_stream.go` closes with `access_revoked`, `cursor_expired`, `server_shutdown` or `server_error`, and never with `archived`, because settling keeps the stream open. A client may reconnect after `server_error`; after `access_revoked` it must not.
 
 The snapshot from `GET /conversations/:conversation` includes `cursor`; the
 client opens the stream with `after=cursor`. Events are committed in the same
@@ -1130,6 +1132,8 @@ Principles, all consequences of section 1:
   the contract says how it is filtered or says plainly that it is not.
 
 ### 18.1 Workspace sessions
+
+Mechanism note: the workspace lease, fencing token, request timeout and restart recovery below are a design record. They are not binding instructions. Workspace code is covered by the scoped lift of the mechanism moratorium, but a PR that ports any of it must list each lease, recovery path or reason code it adds under "Mechanisms added". Where an existing ownership mechanism such as the attempt lease can carry the workspace, the PR should reuse it.
 
 A surface needs a worktree, and today a worktree exists only while an
 attempt runs. A workspace session is the durable object the surfaces attach
