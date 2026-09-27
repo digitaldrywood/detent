@@ -59,6 +59,10 @@ type workspaceRelay struct {
 	// workspaces.relay.memory caps.
 	memory  int64
 	stopped bool
+	// attachments counts every connection that has joined a room, runner and
+	// person alike. It only ever rises, so a reader comparing two values knows
+	// a connection joined in between even if it has already left again.
+	attachments uint64
 }
 
 // relayRoom is one workspace's live connections and streams.
@@ -336,6 +340,7 @@ func (r *workspaceRelay) attachPerson(connection *relayConnection) error {
 	}
 	room := r.ensureRoom(connection.workspaceID)
 	room.people[connection.id] = connection
+	r.attachments++
 	return nil
 }
 
@@ -385,6 +390,7 @@ func (r *workspaceRelay) attachRunner(connection *relayConnection) (*relayConnec
 	room := r.ensureRoom(connection.workspaceID)
 	previous := room.runner
 	room.runner = connection
+	r.attachments++
 	return previous, nil
 }
 

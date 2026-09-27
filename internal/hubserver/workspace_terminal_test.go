@@ -263,7 +263,7 @@ func TestWorkspaceRelayResumesATerminalWithinTheWindow(t *testing.T) {
 
 	// Inside the window the stream is parked rather than gone, and the runner
 	// was never told to close it: its PTY is still there.
-	f.advance(workspacesession.ResumeWindow - time.Second)
+	f.advanceServing(t, workspacesession.ResumeWindow-time.Second)
 	resumed := f.dialPerson(t)
 	resumed.send(resumeFrame(t, workspacesession.ChannelTerminal, stream, 0))
 	answer := resumed.receive()
@@ -300,7 +300,7 @@ func TestWorkspaceRelayLosesATerminalAfterTheWindow(t *testing.T) {
 	_ = person.socket.Close(websocket.StatusNormalClosure, "tab closed")
 	waitFor(t, func() bool { return f.service.workspaces.relay.detachedCount(f.workspace) == 1 })
 
-	f.advance(workspacesession.ResumeWindow + time.Second)
+	f.advanceServing(t, workspacesession.ResumeWindow+time.Second)
 	f.service.workspaces.relay.sweep(t.Context(), f.at())
 
 	closed := runner.receive()

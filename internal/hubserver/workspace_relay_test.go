@@ -289,18 +289,65 @@ func (f *relayFixture) dialPerson(t *testing.T) *relayClient {
 	t.Helper()
 	ticket := f.ticket(t)
 	url := f.socketURL(f.base + "/workspaces/" + f.workspace + "/relay?ticket=" + ticket)
-	return f.dial(t, url, http.Header{"Authorization": {"Bearer " + f.token}})
+	before := f.attachedConnections()
+	client := f.dial(t, url, http.Header{"Authorization": {"Bearer " + f.token}})
+	f.awaitAttached(t, before)
+	return client
 }
 
 // dialRunner opens the workspace's runner connection.
 func (f *relayFixture) dialRunner(t *testing.T) *relayClient {
 	t.Helper()
 	url := f.socketURL(f.base + "/workspaces/" + f.workspace + "/worker/relay")
-	return f.dial(t, url, http.Header{
+	before := f.attachedConnections()
+	client := f.dial(t, url, http.Header{
 		"Authorization":          {"Bearer " + f.runner.redemption.Credential},
 		"X-Detent-Lease":         {string(f.lease.ID)},
 		"X-Detent-Fencing-Token": {strconv.FormatInt(int64(f.lease.FencingToken), 10)},
 	})
+	f.awaitAttached(t, before)
+	return client
+}
+
+// attachedConnections reports how many connections have ever joined the relay.
+func (f *relayFixture) attachedConnections() uint64 {
+	relay := f.service.workspaces.relay
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	return relay.attachments
+}
+
+// awaitAttached waits until the relay has registered a connection since
+// before was read. A dial returns once the upgrade completes, which is before
+// the hub registers the connection, so a test that acts straight after a dial
+// would otherwise race the registration: a frame sent to a runner not yet
+// attached is answered "no runner", and a workspace closed before a person
+// attached never reaches that person. The counter only rises, so a connection
+// that joined and was closed again is still seen.
+func (f *relayFixture) awaitAttached(t *testing.T, before uint64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	for f.attachedConnections() <= before {
+		select {
+		case <-ctx.Done():
+			t.Fatal("the dialled connection never joined the relay")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+}
+
+// advanceServing moves the clock forward with the runner still heartbeating,
+// which is what a live runner does while a person's tab is closed. Moving the
+// clock alone would let the next maintenance sweep find two missed heartbeats
+// and mark the workspace unreachable, closing every connection on it.
+func (f *relayFixture) advanceServing(t *testing.T, d time.Duration) {
+	t.Helper()
+	f.advance(d)
+	if _, err := f.service.database.db.ExecContext(t.Context(),
+		"UPDATE workspace_sessions SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(f.at()), f.workspace); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *relayFixture) dial(t *testing.T, url string, header http.Header) *relayClient {
@@ -756,7 +803,7 @@ func TestWorkspaceRelayRefusesAResumePastTheWindow(t *testing.T) {
 	_ = person.socket.Close(websocket.StatusNormalClosure, "tab closed")
 	waitFor(t, func() bool { return f.service.workspaces.relay.detachedCount(f.workspace) == 1 })
 
-	f.advance(workspacesession.ResumeWindow + time.Second)
+	f.advanceServing(t, workspacesession.ResumeWindow+time.Second)
 	resumed := f.dialPerson(t)
 	request, err := workspacesession.Encode(workspacesession.ResumePayload{Stream: forwarded.Stream, LastSeq: 0})
 	if err != nil {
@@ -1501,6 +1548,64 @@ func TestWorkspaceRelayResumeReleasesAcknowledgedFrames(t *testing.T) {
 			relay.acknowledge(stream, 3)
 			if len(stream.buffer) != 0 || stream.bufferBytes != 0 || relay.memory != 0 {
 				t.Fatalf("after the final ack: buffer %d, stream bytes %d, relay memory %d", len(stream.buffer), stream.bufferBytes, relay.memory)
+			}
+		})
+	}
+}
+
+// A connection checks its workspace before the upgrade and joins the relay
+// after it, and the workspace can end in between. committed() only closes the
+// connections already attached, so the re-check after attaching is what tells
+// a late joiner its workspace is over instead of leaving it waiting.
+func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		state    string
+		runner   bool
+		wantCode string
+	}{
+		{name: "person on a closed workspace", state: workspacesession.StateClosed, wantCode: workspacesession.CodeWorkspaceClosed},
+		{name: "person on a failed workspace", state: workspacesession.StateFailed, wantCode: workspacesession.CodeWorkspaceClosed},
+		{name: "runner on a closed workspace", state: workspacesession.StateClosed, runner: true, wantCode: workspacesession.CodeWorkspaceClosed},
+		{name: "runner on an unreachable workspace", state: workspacesession.StateUnreachable, runner: true, wantCode: workspacesession.CodeStaleExecution},
+		{name: "runner on a re-requested workspace", state: workspacesession.StateRequested, runner: true, wantCode: workspacesession.CodeStaleExecution},
+		{name: "person on an unreachable workspace stays", state: workspacesession.StateUnreachable},
+		{name: "person on a ready workspace stays", state: workspacesession.StateReady},
+		{name: "runner on a ready workspace stays", state: workspacesession.StateReady, runner: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRelayFixture(t)
+			if _, err := f.service.database.db.ExecContext(t.Context(),
+				"UPDATE workspace_sessions SET state = ? WHERE id = ?", test.state, f.workspace); err != nil {
+				t.Fatal(err)
+			}
+			connection := &relayConnection{
+				id: newNativeID("relayconn"), workspaceID: f.workspace, runner: test.runner,
+				out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{}),
+			}
+			relay := f.service.workspaces.relay
+			if test.runner {
+				if _, err := relay.attachRunner(connection); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := relay.attachPerson(connection); err != nil {
+				t.Fatal(err)
+			}
+			f.service.workspaces.closeIfEndedSinceUpgrade(t.Context(), connection)
+			select {
+			case item := <-connection.out:
+				if test.wantCode == "" {
+					t.Fatalf("a connection to a %s workspace was sent %+v", test.state, item)
+				}
+				if item.final != test.wantCode {
+					t.Fatalf("closed with %q, want %q", item.final, test.wantCode)
+				}
+			default:
+				if test.wantCode != "" {
+					t.Fatalf("a connection that joined a %s workspace was left open", test.state)
+				}
 			}
 		})
 	}

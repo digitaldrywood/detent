@@ -203,14 +203,49 @@ func (w *workspaceService) committed(ctx context.Context, record workspaceRecord
 	if w.relay == nil {
 		return
 	}
+	if reason, ends := relayEndReason(record.State, true); ends {
+		w.relay.closeWorkspace(ctx, record.ID, reason)
+	}
+}
+
+// relayEndReason reports whether a workspace in this state can no longer serve
+// a relay connection, and the code the connection is closed with.
+//
+// A terminal workspace serves nobody. An unreachable or re-requested one has
+// lost the runner that was serving its streams, which ends the runner's
+// connection and every stream a person held on it; a person may still connect
+// to one afterwards and is answered per frame that no runner is serving.
+func relayEndReason(state string, servingRunner bool) (string, bool) {
 	switch {
-	case workspacesession.Terminal(record.State):
-		w.relay.closeWorkspace(ctx, record.ID, workspacesession.CodeWorkspaceClosed)
-	case record.State == workspacesession.StateUnreachable, record.State == workspacesession.StateRequested:
-		// The runner is gone or has been asked to re-bind, so the streams it
-		// was serving cannot be served. A person holding one is told rather
-		// than left waiting on frames that will never arrive.
-		w.relay.closeWorkspace(ctx, record.ID, workspacesession.CodeStaleExecution)
+	case workspacesession.Terminal(state):
+		return workspacesession.CodeWorkspaceClosed, true
+	case servingRunner && (state == workspacesession.StateUnreachable || state == workspacesession.StateRequested):
+		return workspacesession.CodeStaleExecution, true
+	}
+	return "", false
+}
+
+// closeIfEndedSinceUpgrade closes a connection whose workspace ended between
+// the upgrade's state check and the connection joining the relay.
+//
+// committed() closes a workspace's connections after the ending transaction
+// commits, and it can only close the connections already attached. A
+// connection that passed its check before the commit and attached after the
+// close would otherwise sit on a workspace that is over, with nothing ever
+// telling it so. Re-reading the row after attaching closes that window: either
+// the close ran after the attach and found the connection, or the attach ran
+// after the commit and this read sees the ended state.
+func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connection *relayConnection) {
+	record, err := readWorkspaceByID(ctx, w.server.database.db, connection.workspaceID)
+	if err != nil {
+		// The periodic authority re-check reads the same row and closes the
+		// connection when it can, so a failed read here is logged, not fatal.
+		w.logger.Warn("workspace.relay_attach_recheck_failed", "workspace_id", connection.workspaceID,
+			"connection_id", connection.id, "error", err)
+		return
+	}
+	if reason, ends := relayEndReason(record.State, connection.runner); ends {
+		w.relay.closeWorkspace(ctx, record.ID, reason)
 	}
 }
 

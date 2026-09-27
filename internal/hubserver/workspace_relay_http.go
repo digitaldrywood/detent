@@ -224,6 +224,7 @@ func (w *workspaceService) servePerson(c echo.Context, scope nativeScope, record
 		w.closeRelaySocket(connection.socket, "server_shutdown")
 		return nil
 	}
+	w.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go connection.writeLoop(socketCtx)
@@ -953,6 +954,7 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 		// workspace, so their recordings are complete.
 		service.relay.finishWorkspaceTerminalRecordings(ctx, record.ID)
 	}
+	service.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go connection.writeLoop(socketCtx)
