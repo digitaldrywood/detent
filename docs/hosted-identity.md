@@ -110,6 +110,23 @@ home links only `auth.json` from the operator's Codex home (`CODEX_HOME`, or
 coordinator turn runs with the `read-only` sandbox and the `never` approval
 policy regardless of `codex.options`.
 
+The coordinator must not be able to read files, including its own provider
+credential, so the Hub turns Codex's built-in tools off by appending
+`-c features.<name>=false` for `shell_tool`, `unified_exec`, `shell_snapshot`,
+`view_image`, `code_mode`, `code_mode_host`, `apps`, `plugins`, `browser_use`,
+`computer_use`, `image_generation`, `multi_agent`, `multi_agent_v2`, `goals`,
+`tool_suggest`, `skill_search`, `hooks`, `memories` and `sleep_tool`, plus
+`-c web_search=disabled`, to the configured command. With Codex 0.157.0 a turn
+then has no shell, command, file, image, browser or web tool; it keeps
+`request_user_input`, a JavaScript isolate without file system or network,
+sub-agents with the same configuration, and `apply_patch`, which the read-only
+sandbox rejects. At startup the Hub runs `codex features list` and refuses to
+start the coordinator when the installed Codex does not know `shell_tool`,
+`unified_exec`, `view_image`, `apps`, `plugins`, `browser_use` or
+`computer_use`: a Codex that cannot turn those off could read files, so there is
+no coordinator rather than an unsafe one. Keep `codex.command` in the form
+`codex app-server [options]` so the appended flags reach the app server.
+
 ### Shared-entry tenant configuration
 
 A dedicated tenant Hub behind the shared entry adds `shared_entry` to its hosted

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,7 +85,7 @@ func TestPrepareCoordinatorCodexIsolatesEnvironment(t *testing.T) {
 			}
 			state := filepath.Join(workspace, coordinatorCodexStateDir)
 			codexHome := filepath.Join(state, "codex")
-			if want := strings.ReplaceAll(test.wantCommand, "DEDICATED", codexHome); launch.Command != want {
+			if want := strings.ReplaceAll(test.wantCommand, "DEDICATED", codexHome) + coordinatorCodexToolFlags(); launch.Command != want {
 				t.Fatalf("command = %q, want %q", launch.Command, want)
 			}
 			cmd := coordinatorCodexCommand(t.Context(), launch, "")
@@ -174,22 +175,116 @@ func TestCoordinatorCodexOptionsForceReadOnly(t *testing.T) {
 
 func TestWorkspaceHoldsPath(t *testing.T) {
 	t.Parallel()
-	workspace := t.TempDir()
+	base := t.TempDir()
+	workspace := filepath.Join(base, "workspace")
+	state := filepath.Join(base, "state")
+	for _, dir := range []string{workspace, state} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(state, "hub.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedWorkspace := filepath.Join(base, "linked-workspace")
+	if err := os.Symlink(state, linkedWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	linkedState := filepath.Join(base, "linked-state")
+	if err := os.Symlink(filepath.Join(workspace, "hidden"), linkedState); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "hidden"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
-		name, path string
-		want       bool
+		name, workspace, path string
+		want                  bool
 	}{
-		{name: "database inside the workspace", path: filepath.Join(workspace, "hub.db"), want: true},
-		{name: "nested state", path: filepath.Join(workspace, "a", "hosted.yaml"), want: true},
-		{name: "the workspace itself", path: workspace, want: true},
-		{name: "a sibling", path: filepath.Join(filepath.Dir(workspace), "other", "hub.db")},
-		{name: "a prefix sibling", path: workspace + "-state/hub.db"},
-		{name: "no path", path: ""},
+		{name: "database inside the workspace", workspace: workspace, path: filepath.Join(workspace, "hub.db"), want: true},
+		{name: "nested state not created yet", workspace: workspace, path: filepath.Join(workspace, "a", "hosted.yaml"), want: true},
+		{name: "the workspace itself", workspace: workspace, path: workspace, want: true},
+		{name: "a symlinked workspace pointing at the hub state directory", workspace: linkedWorkspace, path: filepath.Join(state, "hub.db"), want: true},
+		{name: "a state path reached through a symlink into the workspace", workspace: workspace, path: filepath.Join(linkedState, "hub.db"), want: true},
+		{name: "a sibling", workspace: workspace, path: filepath.Join(state, "hub.db")},
+		{name: "a prefix sibling", workspace: workspace, path: workspace + "-state/hub.db"},
+		{name: "no path", workspace: workspace, path: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := workspaceHoldsPath(workspace, test.path); got != test.want {
-				t.Fatalf("workspaceHoldsPath(%q) = %t, want %t", test.path, got, test.want)
+			if got := workspaceHoldsPath(test.workspace, test.path); got != test.want {
+				t.Fatalf("workspaceHoldsPath(%q, %q) = %t, want %t", test.workspace, test.path, got, test.want)
+			}
+		})
+	}
+}
+
+func TestCoordinatorCodexCommandDisablesBuiltInTools(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	lookup := func(name string) (string, bool) {
+		if name == "CODEX_HOME" {
+			return t.TempDir(), true
+		}
+		return "", false
+	}
+	launch, err := prepareCoordinatorCodex("codex app-server", workspace, lookup, os.UserHomeDir, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.Join(coordinatorCodexCommand(t.Context(), launch, "").Args, " ")
+	for _, flag := range []string{
+		"-c features.shell_tool=false", "-c features.unified_exec=false", "-c features.view_image=false",
+		"-c features.code_mode_host=false", "-c features.apps=false", "-c features.plugins=false",
+		"-c features.browser_use=false", "-c features.computer_use=false", "-c features.multi_agent=false",
+		"-c features.image_generation=false", "-c web_search=disabled",
+	} {
+		if !strings.Contains(script, flag) {
+			t.Fatalf("command %q does not carry %q", script, flag)
+		}
+	}
+	if !strings.HasPrefix(launch.Command, "codex app-server -c ") {
+		t.Fatalf("command = %q, want the flags after the app-server subcommand", launch.Command)
+	}
+}
+
+func TestVerifyCoordinatorCodexFeatures(t *testing.T) {
+	t.Parallel()
+	all := strings.Join(coordinatorRequiredCodexFeatures, " stable true\n") + " stable true\n"
+	for _, test := range []struct {
+		name       string
+		command    string
+		output     string
+		listErr    error
+		wantBinary string
+		wantErr    string
+	}{
+		{name: "every required feature is known", command: "codex app-server", output: all, wantBinary: "codex"},
+		{name: "an environment assignment is skipped", command: "CODEX_HOME=/x /opt/bin/codex app-server", output: all, wantBinary: "/opt/bin/codex"},
+		{name: "a Codex without shell_tool fails closed", command: "codex app-server", output: strings.ReplaceAll(all, "shell_tool", "renamed_shell"), wantBinary: "codex", wantErr: "cannot disable shell_tool"},
+		{name: "a failing feature list fails closed", command: "codex app-server", listErr: errors.New("boom"), wantBinary: "codex", wantErr: "boom"},
+		{name: "no executable", command: "  ", wantErr: "names no executable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var gotBinary string
+			var gotEnv []string
+			list := func(_ context.Context, binary string, env []string) ([]byte, error) {
+				gotBinary, gotEnv = binary, env
+				return []byte(test.output), test.listErr
+			}
+			err := verifyCoordinatorCodexFeatures(t.Context(), coordinatorCodexLaunch{Command: test.command, Env: []string{"PATH=/usr/bin"}}, list)
+			if test.wantErr == "" && err != nil {
+				t.Fatalf("verify() error = %v", err)
+			}
+			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+				t.Fatalf("verify() error = %v, want %q", err, test.wantErr)
+			}
+			if gotBinary != test.wantBinary {
+				t.Fatalf("binary = %q, want %q", gotBinary, test.wantBinary)
+			}
+			if test.wantBinary != "" && !slices.Equal(gotEnv, []string{"PATH=/usr/bin"}) {
+				t.Fatalf("env = %v, want the coordinator environment", gotEnv)
 			}
 		})
 	}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -20,6 +21,8 @@ const (
 	// and temporary directory inside the configured workspace.
 	coordinatorCodexStateDir = ".detent-coordinator"
 	defaultCoordinatorCodex  = "codex app-server"
+	// coordinatorFeatureCheckTimeout bounds the startup feature check.
+	coordinatorFeatureCheckTimeout = 30 * time.Second
 )
 
 // coordinatorPassthroughEnvironment names the only parent variables the
@@ -69,10 +72,91 @@ func prepareCoordinatorCodex(command, workspace string, lookupEnv func(string) (
 		return coordinatorCodexLaunch{}, err
 	}
 	return coordinatorCodexLaunch{
-		Command:   replaceCodexHomeAssignment(command, codexHome),
+		Command:   replaceCodexHomeAssignment(command, codexHome) + coordinatorCodexToolFlags(),
 		Workspace: workspace,
 		Env:       coordinatorCodexEnvironment(lookupEnv, home, codexHome, temp, goos),
 	}, nil
+}
+
+// coordinatorDisabledCodexFeatures are the Codex features whose tools can
+// run commands, read files or images, reach the network or other agents'
+// tools, or load operator extensions. Probing Codex 0.157.0 with a capturing
+// model provider showed that with these disabled a turn offers no shell,
+// exec_command, write_stdin, view_image, web_search, browser or connector
+// tool: what is left is request_user_input, the JavaScript exec isolate (no
+// file system or network), sub-agents that inherit this configuration, and
+// apply_patch, which the read-only sandbox and the never approval policy
+// reject. The coordinator then works through the hub's own tools alone.
+var coordinatorDisabledCodexFeatures = []string{
+	"shell_tool", "unified_exec", "shell_snapshot", "view_image", "code_mode", "code_mode_host",
+	"apps", "plugins", "browser_use", "computer_use", "image_generation", "multi_agent", "multi_agent_v2",
+	"goals", "tool_suggest", "skill_search", "hooks", "memories", "sleep_tool",
+}
+
+// coordinatorRequiredCodexFeatures must be known to the installed Codex:
+// disabling a feature Codex no longer has would silently leave its tool on,
+// so the coordinator refuses to start instead.
+var coordinatorRequiredCodexFeatures = []string{"shell_tool", "unified_exec", "view_image", "apps", "plugins", "browser_use", "computer_use"}
+
+// coordinatorCodexToolFlags are the app-server arguments that turn the
+// built-in tools off. Values are bare TOML so no shell quoting is needed.
+func coordinatorCodexToolFlags() string {
+	var flags strings.Builder
+	for _, feature := range coordinatorDisabledCodexFeatures {
+		flags.WriteString(" -c features." + feature + "=false")
+	}
+	flags.WriteString(" -c web_search=disabled")
+	return flags.String()
+}
+
+// coordinatorCodexBinary is the executable the command runs: the first word
+// that is not an environment assignment.
+func coordinatorCodexBinary(command string) string {
+	for _, field := range strings.Fields(command) {
+		if name, _, ok := strings.Cut(field, "="); ok && validEnvName(name) {
+			continue
+		}
+		return strings.Trim(field, `"'`)
+	}
+	return ""
+}
+
+// codexFeatureLister runs `codex features list` for the coordinator.
+type codexFeatureLister func(ctx context.Context, binary string, env []string) ([]byte, error)
+
+func listCodexFeatures(ctx context.Context, binary string, env []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, binary, "features", "list") // #nosec G204 -- the binary is the operator-configured coordinator command.
+	cmd.Env = env
+	return cmd.Output()
+}
+
+// verifyCoordinatorCodexFeatures fails closed when the installed Codex does
+// not know a feature the coordinator must disable.
+func verifyCoordinatorCodexFeatures(ctx context.Context, launch coordinatorCodexLaunch, list codexFeatureLister) error {
+	binary := coordinatorCodexBinary(launch.Command)
+	if binary == "" {
+		return errors.New("coordinator codex command names no executable")
+	}
+	output, err := list(ctx, binary, launch.Env)
+	if err != nil {
+		return fmt.Errorf("list coordinator Codex features: %w", err)
+	}
+	known := map[string]bool{}
+	for _, line := range strings.Split(string(output), "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			known[fields[0]] = true
+		}
+	}
+	var missing []string
+	for _, feature := range coordinatorRequiredCodexFeatures {
+		if !known[feature] {
+			missing = append(missing, feature)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the installed Codex cannot disable %s, so a coordinator turn could read files or run commands; the coordinator will not start", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // linkCoordinatorCredential points the dedicated Codex home at the
@@ -146,6 +230,11 @@ func buildCoordinatorCodexBackend(command string, cfg workflowconfig.CodexOption
 	if err != nil {
 		return nil, fmt.Errorf("prepare coordinator Codex: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), coordinatorFeatureCheckTimeout)
+	defer cancel()
+	if err := verifyCoordinatorCodexFeatures(ctx, launch, listCodexFeatures); err != nil {
+		return nil, err
+	}
 	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
 		return coordinatorCodexCommand(ctx, launch, cfg.Shell)
 	})
@@ -170,18 +259,19 @@ func buildCoordinatorCodexBackend(command string, cfg workflowconfig.CodexOption
 	return backend, nil
 }
 
-// workspaceHoldsPath reports whether path lies inside workspace. The hub
-// refuses a coordinator workspace that contains its own state, because the
-// Codex read-only sandbox still lets a turn read the files under it.
+// workspaceHoldsPath reports whether path lies inside workspace once
+// symbolic links are resolved on both sides. The hub refuses a coordinator
+// workspace that contains its own state, because the Codex read-only sandbox
+// still lets a turn read the files under it.
 func workspaceHoldsPath(workspace, path string) bool {
 	if strings.TrimSpace(workspace) == "" || strings.TrimSpace(path) == "" {
 		return false
 	}
-	root, err := filepath.Abs(workspace)
+	root, err := resolveExistingPath(workspace)
 	if err != nil {
 		return false
 	}
-	target, err := filepath.Abs(path)
+	target, err := resolveExistingPath(path)
 	if err != nil {
 		return false
 	}
@@ -190,4 +280,31 @@ func workspaceHoldsPath(workspace, path string) bool {
 		return false
 	}
 	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+// resolveExistingPath makes path absolute and resolves symbolic links in
+// its nearest existing ancestor, keeping the components that do not exist
+// yet, such as a database the hub has not created.
+func resolveExistingPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var rest []string
+	current := absolute
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			return filepath.Join(append([]string{resolved}, rest...)...), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return absolute, nil
+		}
+		rest = append([]string{filepath.Base(current)}, rest...)
+		current = parent
+	}
 }
