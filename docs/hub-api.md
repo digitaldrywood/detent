@@ -382,6 +382,12 @@ and create a project with
 ```
 
 Project state names and transitions are explicit; there is no prescribed workflow.
+A project created through the hosted client starts from a fixed template instead:
+`Todo` and `In Progress` (dispatchable), `Human Review` (neither dispatchable nor
+terminal, and not `operator_only`, so the orchestrator can move a completed run's
+Change Request there) and `Done` (terminal). `In Progress` may move to `Todo`,
+`Human Review` or `Done`; `Human Review` may move to `Done` or back to `In Progress`.
+Existing projects keep the workflow they were created with.
 `operator_only` prevents workers from creating an issue in, or transitioning to,
 that state. `require_dependencies` defaults to true. Setting it false disables
 dependency readiness gating for that project while retaining scope and cycle

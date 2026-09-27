@@ -276,7 +276,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 		return "", err
 	}
 	project = newNativeID("prj")
-	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
+	states := HostedProjectStates()
 	now := formatHubTime(s.config.now())
 	encoded, err := marshalNative(states)
 	if err != nil {
@@ -300,4 +300,20 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 		return "", err
 	}
 	return project, tx.Commit()
+}
+
+// HostedProjectStates is the workflow a new hosted project starts with. Human
+// Review is where a completed run's Change Request waits: it neither ends nor
+// dispatches the work, and it is not operator-only, so the orchestrator can
+// move a finished run there. A person accepts the change to Done or sends it
+// back to In Progress. It is the default auto_promote.source_state, which is
+// how the orchestrator names its review lane. Existing projects keep the
+// workflow they were created with.
+func HostedProjectStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
 }

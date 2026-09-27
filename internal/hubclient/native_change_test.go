@@ -28,6 +28,7 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	review       string
 	organization tracker.OrganizationID
 	project      tracker.ProjectID
 	descriptor   policy.Descriptor
@@ -60,6 +61,18 @@ func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Respons
 
 func newNativeChangeHub(t *testing.T) *nativeChangeHub {
 	t.Helper()
+	return newNativeChangeHubWithStates(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}},
+		{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	})
+}
+
+// newNativeChangeHubWithStates builds the hub with a given workflow and the
+// review lane the orchestrator is configured with.
+func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.NativeState) *nativeChangeHub {
+	t.Helper()
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(nativeChangeAdminToken)})
 	if err != nil {
 		t.Fatal(err)
@@ -81,13 +94,7 @@ func newNativeChangeHub(t *testing.T) *nativeChangeHub {
 	if err := admin.request(t.Context(), http.MethodGet, "/api/v2/organizations", nil, &organizations); err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
-	states := []tracker.NativeState{
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}},
-		{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
-		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}
+	h := &nativeChangeHub{review: review, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
 	var project tracker.NativeProject
 	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "require_dependencies": false}
 	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", body, &project); err != nil {
@@ -184,7 +191,7 @@ func (h *nativeChangeHub) complete(t *testing.T, issueID string, change *runner.
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, ok := connector.CompletionLane(states, current.State, "In Review", change.Changed)
+	target, ok := connector.CompletionLane(states, current.State, h.review, change.Changed)
 	if !ok {
 		t.Fatalf("no completion lane out of %s", current.State)
 	}
@@ -361,6 +368,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
 		name        string
+		hosted      bool
 		commit      bool
 		dirty       bool
 		wantNone    bool
@@ -369,11 +377,17 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		wantChanges int
 	}{
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "hosted template commits reach Human Review", hosted: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "hosted template without commits ends", hosted: true, wantState: "Done"},
 		{name: "no commits", wantState: "Done"},
 		{name: "uncommitted edits", dirty: true, wantNone: true, wantState: "In Progress"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHub(t)
+			if test.hosted {
+				// The default auto_promote.source_state names the review lane.
+				h = newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
+			}
 			issue := h.createInProgress(t, "Update the README")
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
