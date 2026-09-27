@@ -165,7 +165,7 @@ func (p *browserHostedProvider) identity(user, email, organization, support stri
 	defer p.mu.Unlock()
 	p.sequence++
 	now := time.Now().UTC()
-	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: fmt.Sprintf("session_browser_%d", p.sequence), CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(15 * time.Minute), SupportActor: support}
+	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: fmt.Sprintf("session_browser_%d", p.sequence), CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(browserHostedPreviewLifetime), SupportActor: support}
 	if support != "" {
 		hosted.SupportReason = "customer-request"
 	}
@@ -180,16 +180,23 @@ type browserHostedFixture struct {
 	cookies        map[string]*http.Cookie
 	project        string
 	privateProject string
+	conversation   string
+	workItem       string
 	stop           chan struct{}
 	stopOnce       sync.Once
 }
+
+// browserHostedPreviewLifetime bounds a preview the browser suite never
+// stopped. It outlasts the browser job so a long serial spec ends through
+// POST /__preview/stop, not this timer.
+const browserHostedPreviewLifetime = 20 * time.Minute
 
 func newBrowserHostedFixture(t *testing.T, allocated bool) *browserHostedFixture {
 	t.Helper()
 	return newBrowserHostedOrganizationFixture(t, allocated, "org_browser_preview")
 }
 
-func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organization string) *browserHostedFixture {
+func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organization string, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
 	base := "http://" + server.Listener.Addr().String()
@@ -204,6 +211,9 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 	}}
 	if allocated {
 		cfg.Hosted.WorkOSOrganizationID = provider.organization.ID
+	}
+	for _, apply := range configure {
+		apply(&cfg)
 	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
@@ -586,11 +596,93 @@ func TestHostedBrowserProviderAccountSelection(t *testing.T) {
 	}
 }
 
+const browserHostedOwnerEmail = "owner@example.test"
+
+func browserPreviewConfig(cfg *Config) {
+	cfg.Conversation = &ConversationConfig{Enabled: true}
+	cfg.Usage = &UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{
+		"gpt-6-astra":   {Input: 1.25, CachedInput: 0.125, Output: 10},
+		"claude-opus-5": {Input: 5, CachedInput: 0.5, Output: 25},
+	}}
+}
+
+func (f *browserHostedFixture) seedPreview(t *testing.T) {
+	t.Helper()
+	for _, project := range []string{f.project, f.privateProject} {
+		f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_owner/grants", map[string]any{
+			"idempotency_key": "preview-owner-runner-" + project, "project_id": project, "write": true, "runner": true,
+		}, http.StatusOK)
+	}
+	f.seedConversation(t)
+}
+
+func (f *browserHostedFixture) seedConversation(t *testing.T) {
+	t.Helper()
+	base := browserHostedOrganizationBase + "/projects/" + f.project
+	var created struct {
+		Conversation struct {
+			ID string `json:"id"`
+		} `json:"conversation"`
+	}
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/conversations", map[string]any{
+		"key":           "browser-preview-conversation",
+		"title":         "Lease renewal under load",
+		"first_message": map[string]any{"key": "browser-preview-message", "text": "Why does the lease lapse under load?"},
+	}, http.StatusCreated), &created)
+	f.conversation = created.Conversation.ID
+	if f.conversation == "" {
+		t.Fatal("created conversation has no id")
+	}
+	var linked struct {
+		Issue struct {
+			ID string `json:"id"`
+		} `json:"issue"`
+	}
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/conversations/"+f.conversation+"/link", map[string]any{
+		"key":           "browser-preview-link",
+		"share_history": true,
+		"issue": map[string]any{
+			"title":       "Renew the lease before the handoff completes",
+			"description": "Move the lease renewal behind the handoff acknowledgement.",
+		},
+	}, http.StatusOK), &linked)
+	f.workItem = linked.Issue.ID
+	if f.workItem == "" {
+		t.Fatal("linked issue has no work item id")
+	}
+}
+
+func TestHostedBrowserPreviewSeed(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f.seedPreview(t)
+	base := browserHostedOrganizationBase + "/projects/" + f.project
+	tests := []struct {
+		name, account, path string
+		status              int
+		contains            string
+	}{
+		{name: "owner reads the conversation", account: "owner", path: base + "/conversations/" + f.conversation, status: http.StatusOK, contains: f.workItem},
+		{name: "owner lists project conversations", account: "owner", path: base + "/conversations", status: http.StatusOK, contains: f.conversation},
+		{name: "viewer reads the linked work item", account: "viewer", path: base + "/work-items/" + f.workItem, status: http.StatusOK, contains: "Renew the lease"},
+		{name: "owner reads runner updates", account: "owner", path: "/app/updates", status: http.StatusOK, contains: `"runners":[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := f.api(t, tt.account, http.MethodGet, tt.path, nil, tt.status)
+			if !strings.Contains(response.Body.String(), tt.contains) {
+				t.Errorf("response missing %q: %s", tt.contains, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestHostedBrowserPreview(t *testing.T) {
 	if os.Getenv("DETENT_HOSTED_BROWSER_PREVIEW") == "" {
 		t.Skip("set DETENT_HOSTED_BROWSER_PREVIEW=1 to run the isolated browser preview")
 	}
-	f := newBrowserHostedFixture(t, true)
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f.seedPreview(t)
 	accounts := make(map[string]string, len(f.cookies))
 	for account := range f.cookies {
 		accounts[account] = f.server.URL + "/__preview/account/" + account
@@ -601,10 +693,20 @@ func TestHostedBrowserPreview(t *testing.T) {
 		Organization   string            `json:"organization"`
 		Project        string            `json:"project"`
 		PrivateProject string            `json:"private_project"`
+		Chat           string            `json:"chat"`
+		ProjectID      string            `json:"project_id"`
+		Conversation   string            `json:"conversation"`
+		WorkItem       string            `json:"work_item"`
+		OwnerEmail     string            `json:"owner_email"`
 		Accounts       map[string]string `json:"accounts"`
 		Stop           string            `json:"stop"`
 		Expires        time.Time         `json:"expires"`
-	}{f.server.URL, f.server.URL + "/login", f.server.URL + "/organization", f.server.URL + "/projects/" + f.project, f.server.URL + "/projects/" + f.privateProject, accounts, f.server.URL + "/__preview/stop", time.Now().Add(5 * time.Minute)}
+	}{
+		URL: f.server.URL, Login: f.server.URL + "/login", Organization: f.server.URL + "/organization",
+		Project: f.server.URL + "/projects/" + f.project, PrivateProject: f.server.URL + "/projects/" + f.privateProject,
+		Chat: f.server.URL + "/chat", ProjectID: f.project, Conversation: f.conversation, WorkItem: f.workItem,
+		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
+	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -615,7 +717,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	t.Logf("Hosted browser fixture: %s", path)
 	t.Logf("Hosted browser URL: %s", f.server.URL)
-	timer := time.NewTimer(5 * time.Minute)
+	timer := time.NewTimer(browserHostedPreviewLifetime)
 	defer timer.Stop()
 	select {
 	case <-f.stop:
