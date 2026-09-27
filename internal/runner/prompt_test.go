@@ -343,14 +343,16 @@ func TestPromptWrapperBytes(t *testing.T) {
 	if len(loaded.Skills) != skills.DefaultMaxSkillsInPrompt {
 		t.Fatalf("fixture needs capped skills: %d", len(loaded.Skills))
 	}
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: t.TempDir(), Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
+	workspacePath := t.TempDir()
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, section := range strings.Split(prompt, "\n## ") {
 		t.Logf("section %s: %d", strings.SplitN(section, "\n", 2)[0], len(section))
 	}
-	size := len(prompt) - len("WORKFLOW")
+	// The wrapper budget measures authored text, not the worker's temp-root length.
+	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
 	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(loaded.Skills)))
 	if size >= 6000 {
 		t.Errorf("wrapper is %d bytes, want under 6000", size)

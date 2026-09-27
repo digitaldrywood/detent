@@ -753,7 +753,7 @@ func (r *Runner) verifyMergeFallback(
 		if ctx.Err() != nil {
 			return result, fmt.Errorf("verify merge fallback: %w", errors.Join(ctx.Err(), err))
 		}
-		if !errors.Is(err, workspace.ErrMergeResolutionInvalid) && !errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
+		if !errors.Is(err, workspace.ErrMergeResolutionInvalid) || errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
 			return result, fmt.Errorf("verify merge fallback: %w", err)
 		}
 		result.Output = RunOutputMergeFallbackRework

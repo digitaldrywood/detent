@@ -2870,6 +2870,7 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
 		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "gate failed"},
+		{name: "push failure", before: "reject push", wantError: "push validated merge resolution"},
 		{name: "dirty resolution", before: "dirty", wantError: "not source-clean"},
 		{name: "stale target", before: "base", wantError: "does not contain"},
 		{name: "replaced remote", before: "remote", wantError: "remote branch changed before"},
@@ -2914,6 +2915,10 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 				mutateRemote("main")
 			case "remote":
 				mutateRemote(info.Branch)
+			case "reject push":
+				if err := os.WriteFile(filepath.Join(remote, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
 			}
 			remoteBefore := strings.TrimSpace(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))
 			command := "git config detent.validation passed"

@@ -267,7 +267,7 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 	if currentHead != head || currentBase != base || currentRemote != remoteHead {
 		return MergePrepareResult{}, fmt.Errorf("%w: local head, target base, or remote branch changed during merge-fallback validation", ErrMergeResolutionInvalid)
 	}
-	if _, err := runGitAt(ctx, info.Path, "push", "--force-with-lease=refs/heads/"+info.Branch+":"+remoteHead, remote, head+":refs/heads/"+info.Branch); err != nil {
+	if _, err := runGitAt(ctx, info.Path, "push", remote, head+":refs/heads/"+info.Branch); err != nil {
 		return MergePrepareResult{}, fmt.Errorf("push validated merge resolution: %w", err)
 	}
 	return MergePrepareResult{Status: MergePrepareStatusClean, HeadSHA: head, HeadChanged: remoteHead != head}, nil
@@ -349,14 +349,14 @@ func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue
 	l.logger.Info("validating merge resolution", "workspace_path", info.Path, "command", command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("merge resolution gate failed: %w: %s", errors.Join(ErrMergeResolutionInvalid, ctx.Err(), err), output)
+		return fmt.Errorf("merge resolution gate failed: %w: %s", errors.Join(ctx.Err(), err), output)
 	}
 	return nil
 }
 
 // mergeRemoteAncestor applies the checkpoint path's no-dropped-commits rule.
 // Fetch the observed SHA so a remote advance absent from local objects is checked.
-// The existing push lease still rejects any later remote change.
+// The normal push rejects a later divergent remote change.
 func mergeRemoteAncestor(ctx context.Context, path, remote, remoteHead, head string) error {
 	if _, err := runGitAt(ctx, path, "fetch", remote, remoteHead); err != nil {
 		return fmt.Errorf("fetch remote branch head: %w", err)
