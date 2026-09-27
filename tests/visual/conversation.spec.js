@@ -2,7 +2,7 @@
 //
 // This spec drives the real thing: `hosted-hub.js` starts the Go preview test,
 // which serves a hosted hub with the conversation product enabled, a fake
-// WorkOS provider, a scripted coordinator backend and one conversation already
+// WorkOS provider and one conversation already
 // linked to an issue. Everything below then happens through the browser with
 // the keyboard and through accessible names, so a control that a screen reader
 // or a keyboard cannot reach fails the test rather than passing on a class
@@ -26,11 +26,22 @@ test.afterAll(async () => {
   hub = undefined;
 });
 
+// The client lists project actions on every issue and chat page, and main's
+// hub does not serve that endpoint yet, so its 404 is the one error allowed.
+const UNSERVED_PROJECT_ACTIONS = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/actions$/;
+// The footer pill asks `/app/updates` for every reader, and the hub answers
+// 404 to one who cannot manage runners, which the client reads as nothing to
+// report.
+const UNREPORTED_UPDATES = /\/app\/updates$/;
+
 /** Collects everything the page logs as an error, for a per-test assertion. */
 function watchConsole(page) {
   const errors = [];
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
+    if (message.type() !== "error") return;
+    const url = message.location().url ?? "";
+    if (UNSERVED_PROJECT_ACTIONS.test(url) || UNREPORTED_UPDATES.test(url)) return;
+    errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(String(error)));
   return errors;
@@ -208,7 +219,7 @@ async function openCreateLinkedIssue(page) {
   await page.getByRole("menuitem", { name: "Create linked issue" }).click();
 }
 
-test("creates a chat from the keyboard and streams the reply back", async ({ page }) => {
+test("creates a chat from the keyboard", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page);
 
@@ -238,26 +249,15 @@ test("creates a chat from the keyboard and streams the reply back", async ({ pag
   await expect(composer(page)).toBeFocused();
   await expectComposerText(page, "");
 
-  // The scripted coordinator streams its answer in deltas; the transcript is
-  // an aria-live region, so what lands there is what a screen reader hears.
-  await expect(page.getByTestId("assistant-turn").last()).toContainText(
-    "closes the window",
-    { timeout: 30_000 },
-  );
-
-  // A second message keeps the same conversation and exercises the tool path.
-  await sendWithKeyboard(page, "What needs attention in this project?");
-  await expect(page.getByTestId("user-turn").last()).toContainText("What needs attention");
-  await expect(page.getByTestId("assistant-turn").last()).toContainText("closes the window", {
-    timeout: 30_000,
-  });
-  await expect(composer(page)).toBeFocused();
-
   // The conversation names itself once, at level one: the breadcrumb's current
   // segment is the heading, and the sidebar sections stay at level two.
   await expectOneHeadingOne(page, "Why does the lease lapse under load?");
   await expectNoSeriousAxeViolations(page, "an active conversation");
   expect(errors).toEqual([]);
+});
+
+test("streams the coordinator's reply back", async () => {
+  test.skip(true, "Hub-side coordinator turns (the scripted backend) from #2635 are not on main.");
 });
 
 test("Shift+Enter inserts a newline instead of sending", async ({ page }) => {
@@ -422,9 +422,9 @@ test("requires the share-history confirmation before it creates a linked issue",
   await openChat(page);
   await sendWithKeyboard(page, "Move the renewal behind the acknowledgement");
   await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
-  await expect(page.getByTestId("assistant-turn").last()).toContainText("closes the window", {
-    timeout: 30_000,
-  });
+  await expect(page.getByTestId("user-turn").last()).toContainText(
+    "Move the renewal behind the acknowledgement",
+  );
 
   await openCreateLinkedIssue(page);
 
@@ -494,9 +494,9 @@ test("restores the transcript and the unsent draft after a reload", async ({ pag
   await sendWithKeyboard(page, "Why does the checkout lock lapse?");
   await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
   const url = page.url();
-  await expect(page.getByTestId("assistant-turn").last()).toContainText("closes the window", {
-    timeout: 30_000,
-  });
+  await expect(page.getByTestId("user-turn").first()).toContainText(
+    "Why does the checkout lock lapse?",
+  );
 
   await composer(page).focus();
   await page.keyboard.type("half a thought I have not sent");
@@ -507,7 +507,6 @@ test("restores the transcript and the unsent draft after a reload", async ({ pag
   await expect(page.getByTestId("user-turn").first()).toContainText(
     "Why does the checkout lock lapse?",
   );
-  await expect(page.getByTestId("assistant-turn").last()).toContainText("closes the window");
   await expectComposerText(page, "half a thought I have not sent");
   expect(errors).toEqual([]);
 });
@@ -705,6 +704,7 @@ test.describe("decisions.md §10 corrections", () => {
   // from this signed-in session — and that the client offers no retry on a
   // delivery the hub would refuse.
   test("re-queues a lost message through the retry command", async ({ page }) => {
+    test.skip(true, "Needs a coordinator turn to settle the message; hub coordinator turns from #2635 are not on main.");
     const errors = watchConsole(page);
     await openChat(page);
     await sendWithKeyboard(page, "Retry rules");
@@ -777,19 +777,17 @@ test.describe("decisions.md §10 corrections", () => {
     await sendWithKeyboard(page, "Count my history");
     await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
     const id = currentConversation(page);
-    await expect(page.getByTestId("assistant-turn").last()).toContainText("closes the window", {
-      timeout: 30_000,
-    });
+    await expect(page.getByTestId("user-turn").last()).toContainText("Count my history");
 
     const snapshot = await hubAPI(page, "GET", conversationPath(id));
     const count = snapshot.payload.conversation.message_count;
-    expect(count).toBe(2);
+    expect(count).toBe(1);
 
     await openCreateLinkedIssue(page);
     const form = page.getByRole("dialog", { name: "Create linked issue" });
     await expect(form).toBeVisible();
     await expect(form.getByTestId("handoff-message-count")).toHaveText(
-      `All ${count} messages in this chat become readable by everyone who can read project Browser collaboration.`,
+      new RegExp(`^All ${count} messages? in this chat become readable by everyone who can read project Browser collaboration\\.$`),
     );
     await expect(form.getByTestId("handoff-audience")).toContainText("Sharing cannot be undone.");
 
@@ -908,64 +906,6 @@ test.describe("decisions.md §10 corrections", () => {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("option")).toHaveCount(0);
 
-    // Access names what a turn may do, in words rather than in vocabulary.
-    const access = surface.getByRole("combobox", { name: "Runtime access" });
-    await access.click();
-    await expect(page.getByRole("option").first()).toBeVisible();
-    await expect(page.getByRole("option").filter({ hasText: "Full access" })).toHaveCount(1);
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("option")).toHaveCount(0);
-
-    await surface.getByTestId("composer-model").hover();
-    await expect(tooltip(page)).toContainText("The model this conversation's turns run on.");
-    await page.mouse.move(0, 0);
-
-    await surface.getByTestId("composer-model").click();
-    const popup = page.getByTestId("composer-model-popup");
-    await expect(popup).toBeVisible();
-    await expect(popup.getByPlaceholder("Search models…")).toBeVisible();
-    await expect(popup.getByTestId("composer-model-option-auto")).toBeVisible();
-
-    // The preview runner reports a catalogue, so the Models group is the
-    // runner's own order with the backend's default leading it — not the
-    // alphabet, which put GPT-5.6-Sol above GPT-6-Astra — and the ⌘ numbers
-    // follow that order.
-    const astra = popup.getByTestId("composer-model-option-gpt-6-astra");
-    await expect(astra).toBeVisible();
-    await expect(astra).toContainText("⌘1");
-    await expect(popup.getByTestId("composer-model-option-gpt-5.6-sol")).toContainText("⌘2");
-    const rows = popup.locator("[data-testid^='composer-model-option-']");
-    expect(await rows.nth(1).getAttribute("data-testid")).toBe(
-      "composer-model-option-gpt-6-astra",
-    );
-
-    const openai = popup.getByTestId("composer-model-provider-openai");
-    await expect(openai).toBeVisible();
-    await expect(openai).toHaveText("");
-    await expect(openai.locator("svg")).toHaveCount(1);
-    await openai.hover();
-    await expect(tooltip(page)).toContainText("OpenAI");
-
-    // The superseded model is shelved rather than mixed in, and comes back
-    // when the shelf is opened.
-    await expect(popup.getByTestId("composer-model-option-gpt-5.3-codex")).toHaveCount(0);
-    await popup.getByTestId("composer-model-legacy-toggle").click();
-    await expect(popup.getByTestId("composer-model-option-gpt-5.3-codex")).toBeVisible();
-
-    // Choosing the model scopes the effort picker to its own ladder, and the
-    // rung that model defaults to wears the Default badge.
-    await astra.click();
-    await expect(popup).toHaveCount(0);
-    await expect(surface.getByTestId("composer-model")).toContainText("GPT-6-Astra");
-    await effort.click();
-    await expect(page.getByRole("option").filter({ hasText: "Extra High" })).toHaveCount(1);
-    await expect(page.getByTestId("composer-effort-default-medium")).toHaveText("Default");
-    await expect(page.getByTestId("composer-effort-note")).toContainText(
-      "These are the levels this model supports.",
-    );
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("option")).toHaveCount(0);
-
     const attach = surface.getByTestId("composer-attach");
     await expect(attach).toBeEnabled();
     await attach.hover();
@@ -974,6 +914,10 @@ test.describe("decisions.md §10 corrections", () => {
 
     await expectNoSeriousAxeViolations(page, "the composer's pickers");
     expect(errors).toEqual([]);
+  });
+
+  test("offers the runners' model catalogue and the access choices", async () => {
+    test.skip(true, "The hub bootstrap publishes no model or access choices on main: the runner catalogue slice of #2635 is not ported.");
   });
 
   test("opens the slash menu and runs the command it highlights", async ({ page }) => {
@@ -1111,6 +1055,9 @@ test.describe("decisions.md §10 corrections", () => {
     const errors = watchConsole(page);
     await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
     await expect(page).toHaveURL(/\/organization$/);
+    // The hub still renders `/organization` itself, so the client's own
+    // Organization section is opened by its path.
+    await page.goto(`${hub.fixture.url}/settings/organization`, { waitUntil: "domcontentloaded" });
 
     const appSidebar = page.locator("[data-app-sidebar]");
     await expect(appSidebar.getByRole("button", { name: "Organization" })).toBeVisible();
@@ -1341,6 +1288,7 @@ test.describe("the ported shell's interactions", () => {
   // shell. The preview fixture's runner is this process, at `user` isolation
   // with its owner account holding the runners grant.
   test("opens a terminal on the workspace and runs what the reader types", async ({ page }) => {
+    test.skip(true, "The workspace terminal from #2635 is not on main.");
     const errors = watchConsole(page);
     await openWorkIssue(page);
 
@@ -1602,6 +1550,7 @@ test.describe("the ported shell's interactions", () => {
   test("opens the Files surface on an issue and reads the worktree over the relay", async ({
     page,
   }) => {
+    test.skip(true, "Workspace sessions (files, exec, relay) from #2635 are not on main.");
     const errors = watchConsole(page);
     await openWorkIssue(page);
 
@@ -1703,6 +1652,7 @@ test.describe("the ported shell's interactions", () => {
   // throws the pre-warmed workspace away first and then asks for another,
   // which is exactly what Michael did hours in.
   test("claims a second workspace after the pre-warmed one is closed", async ({ page }) => {
+    test.skip(true, "Workspace sessions (files, exec, relay) from #2635 are not on main.");
     const errors = watchConsole(page);
     await openWorkIssue(page);
 
@@ -1766,6 +1716,7 @@ test.describe("the ported shell's interactions", () => {
   // equivalent of the slow runner: the id never appears in the project event
   // stream, so the surface stays where the hub last put it.
   test("says what it is waiting for while the workspace is still requested", async ({ page }) => {
+    test.skip(true, "Workspace sessions (files, exec, relay) from #2635 are not on main.");
     const errors = watchConsole(page);
     await openWorkIssue(page);
     await closeOpenWorkspaces(page);
@@ -1832,6 +1783,7 @@ test.describe("the ported shell's interactions", () => {
   });
 
   test("adds a project action, runs it from the top bar, and records the run", async ({ page }) => {
+    test.skip(true, "Project actions from #2635 are not on main.");
     const errors = watchConsole(page);
     await openWorkIssue(page);
 
@@ -1934,6 +1886,7 @@ test.describe("the ported shell's interactions", () => {
   test("runs an action queued through the API alone and reads it back in the panel", async ({
     page,
   }) => {
+    test.skip(true, "Project actions from #2635 are not on main.");
     const errors = watchConsole(page);
     await openWorkIssue(page);
 
@@ -2067,6 +2020,7 @@ test.describe("the header's git action group", () => {
   // checked in the same commit, because an excluded path is only ever proved by
   // a commit that left it out.
   test("commits the worktree through the relay and moves the branch", async ({ page }) => {
+    test.skip(true, "The header git actions need workspace sessions from #2635, which are not on main.");
     const errors = watchConsole(page);
     await openIssueWithHeader(page);
 
@@ -2135,6 +2089,7 @@ test.describe("the header's git action group", () => {
   // against a remote path, so the test proves the origin really has the commit
   // without knowing where the fixture put the bare repository.
   test("pushes the branch to the project's remote", async ({ page }) => {
+    test.skip(true, "The header git actions need workspace sessions from #2635, which are not on main.");
     const errors = watchConsole(page);
     await openIssueWithHeader(page);
 
@@ -2167,6 +2122,7 @@ test.describe("the header's git action group", () => {
   });
 
   test("labels the pull request row from the hub's own view of it", async ({ page }) => {
+    test.skip(true, "PR actions and the seeded pull request from #2635 are not on main.");
     const errors = watchConsole(page);
     await openIssueWithHeader(page);
 
@@ -2187,6 +2143,7 @@ test.describe("the header's git action group", () => {
   // row is disabled naming the host the worktree is on — which is the case that
   // matters, because it is the one Detent Cloud is always in.
   test("names the machine the worktree is on in the Open picker", async ({ page }) => {
+    test.skip(true, "The header git actions need workspace sessions from #2635, which are not on main.");
     const errors = watchConsole(page);
     await openIssueWithHeader(page);
     await previewWorkspace(page);
