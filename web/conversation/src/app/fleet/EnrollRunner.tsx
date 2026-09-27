@@ -42,6 +42,12 @@ export interface PendingEnrollment {
  * public URL, because that is the address the runner has to reach, not
  * whatever the reader happens to have in the address bar.
  */
+export function runnerHubUrl(publicUrl: string, basePath: string): string {
+  const origin = publicUrl.replace(/\/+$/, "");
+  const path = basePath.replace(/\/+$/, "");
+  return path.length > 0 && !origin.endsWith(path) ? `${origin}${path}` : origin;
+}
+
 export function initCommand(hubUrl: string): string {
   return `detent hub runner init --hub-url ${hubUrl}`;
 }
@@ -103,11 +109,15 @@ export function EnrollRunnerDialog({
   // The URL the runner has to reach is the organization's published one, not
   // the address bar: a reader behind a tunnel or a preview host would
   // otherwise copy an address the host cannot resolve. `location.origin` is
-  // the fallback for a payload that carries no public URL.
-  const hubUrl =
+  // the fallback for a payload that carries no public URL. Behind the shared
+  // entry the organization's Hub lives under its base path, and a runner
+  // pointed at the bare origin reaches no Hub at all.
+  const hubUrl = runnerHubUrl(
     bootstrap?.organizations.find((entry) => entry.current)?.public_url ??
-    globalThis.location?.origin ??
-    "";
+      globalThis.location?.origin ??
+      "",
+    bootstrap?.base_path ?? "",
+  );
   const projects = React.useMemo(() => bootstrap?.projects ?? [], [bootstrap]);
 
   const [runnerId, setRunnerId] = React.useState("");
