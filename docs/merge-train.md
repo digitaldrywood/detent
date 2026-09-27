@@ -260,8 +260,11 @@ are changed.
 
 In GitHub repository **Settings → Rules → Rulesets**, create or edit an active
 branch ruleset targeting the merge branch and enable **Require merge queue**.
-Choose squash merging for this project and ensure every required check runs on
-the merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
+For day-to-day integration (`develop` in this repository), choose squash
+merging. A production branch that receives promotion PRs (`main` here) needs its
+own ruleset whose queue uses merge commits, because a squashed promotion loses
+the ancestry later promotions depend on; see [branching](branching.md). Ensure
+every required check runs on the merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
 The PR-required and security-audit exclusions above still apply.
 
 `detent doctor` recommends considering a queue when strict protection is enabled,
