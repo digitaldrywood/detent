@@ -3,14 +3,14 @@
 Run `make test-race` for the complete repository race gate, or
 `make test-race-hub` for the complete Hub package. Both CI and `make check`
 use this target. Hub runs separately with two parallel test slots, an
-uncached race detector run, and a 25-minute package timeout. Other packages
+uncached race detector run, and a 15-minute package timeout. Other packages
 retain Go's default package concurrency and 10-minute timeout. No test name,
 assertion, fixture workload, or individual lifecycle deadline is changed.
 
 The required `Verify (ubuntu-latest)` job has an explicit 30-minute workflow
-timeout, matching its documented merge-check budget. The Hub race shard runs
-in its own job, whose 60-minute workflow timeout covers the Hub's 25-minute
-ceiling plus setup and build. It is a whole-job failure bound,
+timeout, matching its documented merge-check budget. This reserves the Hub's
+15-minute ceiling plus another 15 minutes for setup, build, vet, ordinary
+tests, and the remaining race packages. It is a whole-job failure bound,
 not a claim that every package can consume its own maximum serially. The
 former four-minute job budget was already exceeded by the recorded Hub
 package alone. Required check names and branch-protection selection remain
@@ -24,12 +24,6 @@ Separating Hub from other package processes prevents their concurrent race
 work from consuming its package budget; two test slots bound fixture
 contention on constrained runners. `HUB_RACE_TIMEOUT` and
 `HUB_RACE_PARALLEL` are explicit Make overrides for diagnostic experiments.
-
-Hosted workspace sessions (#3096) added about 200 seconds of race-mode test
-time to a package whose merge-group run already took most of the old
-15-minute ceiling (381 top-level tests, 1,427 test-seconds at two slots), and
-the first merge-group run exhausted it with every test still progressing and
-no stuck goroutine. The ceiling moved to 25 minutes for that growth.
 
 ## Evidence and interpretation
 

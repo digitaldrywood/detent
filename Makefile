@@ -37,7 +37,7 @@ GOSEC_DETERMINISM_RUNS ?= 8
 # Filesystem diagnostics can record millions of cache inputs (#2735).
 # Run gate tests afresh; -count=1 preserves native build and module caches.
 GO_TEST := env -u DETENT_API_TOKEN go test -count=1
-HUB_RACE_TIMEOUT ?= 25m
+HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
 # Persisted orchestrator fixtures serialize migrations; retain the full race suite.
 ORCHESTRATOR_RACE_TIMEOUT ?= 20m
