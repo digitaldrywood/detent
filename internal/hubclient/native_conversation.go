@@ -271,12 +271,20 @@ type conversationSession struct {
 	loops    sync.WaitGroup
 	waiters  sync.WaitGroup
 
-	mu         sync.Mutex
-	thread     string
-	turn       string
-	turnEnded  chan struct{}
-	cursor     int64
-	events     []runner.ConversationTurnEvent
+	mu        sync.Mutex
+	thread    string
+	turn      string
+	turnEnded chan struct{}
+	// turnWaiters counts the control waiters of the current turn, so the
+	// turn's end is reported only after every control it consumed.
+	turnWaiters *sync.WaitGroup
+	cursor      int64
+	events      []runner.ConversationTurnEvent
+	// held keeps a reported turn_completed, and anything after it, until
+	// FinishTurn has settled the turn's controls. The hub refuses turn events
+	// once a turn has ended, so a control result posted after the turn's end
+	// would be lost and the control settled with the turn instead.
+	held       []runner.ConversationTurnEvent
 	lastStatus string
 	closing    bool
 	closeOnce  sync.Once
@@ -300,6 +308,7 @@ func newConversationSession(ctx context.Context, client *NativeClient, item trac
 		kick:        make(chan struct{}, 1),
 		thread:      response.Resume.ThreadID,
 		turnEnded:   make(chan struct{}),
+		turnWaiters: &sync.WaitGroup{},
 		cursor:      response.Cursor,
 	}
 	var pendingText strings.Builder
@@ -380,14 +389,35 @@ func (s *conversationSession) Control(turn runner.ConversationTurnHooks) *runner
 
 // FinishTurn ends the current turn: waiters of unconsumed controls report
 // unknown and the queue is drained so a later turn never sees stale controls.
+// Once every control of the turn has its result queued, the held turn end
+// follows them.
 func (s *conversationSession) FinishTurn() {
 	s.mu.Lock()
-	ended := s.turnEnded
-	s.turnEnded = make(chan struct{})
+	ended, waiters := s.turnEnded, s.turnWaiters
+	s.turnEnded, s.turnWaiters = make(chan struct{}), &sync.WaitGroup{}
 	s.turn = ""
 	s.mu.Unlock()
 	close(ended)
 	s.drainCommands()
+	waiters.Wait()
+	s.mu.Lock()
+	s.releaseHeldLocked()
+	s.mu.Unlock()
+	select {
+	case s.kick <- struct{}{}:
+	default:
+	}
+}
+
+// releaseHeldLocked queues the events held behind a turn's end. s.mu is held
+// by the caller.
+func (s *conversationSession) releaseHeldLocked() {
+	if len(s.held) == 0 {
+		return
+	}
+	s.events = append(s.events, s.held...)
+	s.held = nil
+	s.boundQueuedLocked()
 }
 
 // drainCommands empties the queue without blocking. Every drained control
@@ -424,7 +454,13 @@ func (s *conversationSession) Report(_ context.Context, events []runner.Conversa
 			s.lastStatus = event.Status
 		}
 	}
-	s.events = append(s.events, events...)
+	for _, event := range events {
+		if len(s.held) > 0 || event.Type == runner.ConversationEventTurnCompleted {
+			s.held = append(s.held, event)
+			continue
+		}
+		s.events = append(s.events, event)
+	}
 	s.boundQueuedLocked()
 	select {
 	case s.kick <- struct{}{}:
@@ -510,6 +546,7 @@ func (s *conversationSession) Close(ctx context.Context, outcome string, runErr 
 		s.waiters.Wait()
 		s.mu.Lock()
 		s.closing = true
+		s.releaseHeldLocked()
 		s.mu.Unlock()
 		s.drainCommands()
 		close(s.commands)
@@ -606,14 +643,15 @@ func (s *conversationSession) deliver(ctx context.Context, control ConversationC
 	if command.TurnID == "" {
 		command.TurnID = s.turn
 	}
-	ended := s.turnEnded
+	ended, turnWaiters := s.turnEnded, s.turnWaiters
+	turnWaiters.Add(1)
 	if control.Cursor > s.cursor {
 		s.cursor = control.Cursor
 	}
 	s.mu.Unlock()
 	command.Check = s.ownerCheck(control.Expected.AttemptID)
 	s.waiters.Add(1)
-	go s.await(control.Key, command, ended)
+	go s.await(control.Key, command, ended, turnWaiters)
 	select {
 	case s.commands <- command:
 	case <-ctx.Done():
@@ -650,8 +688,9 @@ func (s *conversationSession) ownerCheck(expected string) func(context.Context) 
 
 // await turns a control's Reply into a control_result. A turn end or session
 // close settles a control whose Reply never resolved as unknown.
-func (s *conversationSession) await(key string, command runner.AgentControl, ended <-chan struct{}) {
+func (s *conversationSession) await(key string, command runner.AgentControl, ended <-chan struct{}, turnWaiters *sync.WaitGroup) {
 	defer s.waiters.Done()
+	defer turnWaiters.Done()
 	var err error
 	reason := ""
 	select {
