@@ -1,6 +1,7 @@
 // Searches Detent conversations and destinations and dispatches available commands.
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useAccountBootstrap } from "../account/context.ts";
 import {
   FileSearchIcon,
   FolderIcon,
@@ -209,6 +210,7 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const { clearOpenIntent, openIntent, setOpen } = props;
   const navigate = useNavigate();
+  const canManageProjects = useAccountBootstrap()?.actor.can_manage ?? false;
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -508,10 +510,13 @@ function OpenCommandPaletteDialog(props: {
       "git",
     ],
     title: "Add project",
-    description: "Create it in Settings → Projects",
+    description: canManageProjects
+      ? "Create it in Settings → Projects"
+      : "An organization owner or admin creates projects",
+    ...(canManageProjects ? {} : { disabled: true, keepOpen: true }),
     icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigateTo("/settings/projects");
+      if (canManageProjects) await navigateTo("/settings/projects");
     },
   });
 
