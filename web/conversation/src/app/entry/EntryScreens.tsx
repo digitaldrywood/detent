@@ -19,6 +19,7 @@ import {
   type EntryOrganizations,
   type EntrySession,
   makeEntryApi,
+  PLATFORM,
   PROVISIONING_STEPS,
   type Provisioning,
   provisioningActive,
@@ -41,6 +42,14 @@ function signInAgain(error: AccountError | null): boolean {
   if (error?.status !== 401) return false;
   assign(SIGN_IN_ORGANIZATIONS);
   return true;
+}
+
+/** Staff never create or join customer organizations; their home is the platform console. */
+function useStaffRedirect(staff: boolean | undefined, onNavigate: Navigate): boolean {
+  React.useEffect(() => {
+    if (staff === true) onNavigate(PLATFORM);
+  }, [staff, onNavigate]);
+  return staff === true;
 }
 
 function EntryCard({
@@ -70,7 +79,7 @@ function EntryCard({
   );
 }
 
-function Problem({ message }: { readonly message: string | null }): React.ReactElement | null {
+export function Problem({ message }: { readonly message: string | null }): React.ReactElement | null {
   if (message === null) return null;
   return (
     <div
@@ -82,7 +91,7 @@ function Problem({ message }: { readonly message: string | null }): React.ReactE
   );
 }
 
-function SignOut({ csrf }: { readonly csrf: string }): React.ReactElement {
+export function SignOut({ csrf }: { readonly csrf: string }): React.ReactElement {
   return (
     <form method="post" action="/logout">
       <input type="hidden" name="csrf" value={csrf} />
@@ -113,7 +122,9 @@ const STATE_LABELS: Record<string, string> = {
 export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
   const api = useEntryApi();
   const listing = useResource<EntryOrganizations>(() => api.organizations(), [api]);
+  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
   if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
+  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
   const value = listing.value;
   return (
     <EntryCard
@@ -191,6 +202,7 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
   // One key for this form: a retried submit after an uncertain response
   // returns the same organization instead of creating a second one.
   const key = React.useMemo(() => newKey(), []);
+  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
   const create = useMutation(async (organizationName: string) => {
     const csrf = listing.value?.csrf ?? "";
     const result = await api.createOrganization({ name: organizationName, key, csrf });
@@ -198,6 +210,7 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
     return result;
   });
   if (signInAgain(listing.error ?? create.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
+  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
   const trimmed = name.trim();
   return (
     <EntryCard
@@ -339,12 +352,14 @@ export function JoinInvitation({ onNavigate }: { readonly onNavigate: Navigate }
   const api = useEntryApi();
   const listing = useResource<EntrySession>(() => api.session(), [api]);
   const [token, setToken] = React.useState("");
+  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
   const join = useMutation(async (value: string) => {
     const result = await api.joinInvitation({ token: value, csrf: listing.value?.csrf ?? "" });
     assign(result.next);
     return result;
   });
   if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
+  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
   return (
     <EntryCard
       title="Join with invitation"

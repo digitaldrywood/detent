@@ -187,7 +187,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	}
 	result := cloudentry.Config{
 		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
-		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(),
+		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
 	}
 	if allocation := config.Allocation; allocation != nil {
 		binary := allocation.Binary

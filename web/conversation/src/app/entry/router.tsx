@@ -21,6 +21,7 @@ import {
   OrganizationChooser,
   ProvisioningProgress,
 } from "./EntryScreens.tsx";
+import { PlatformConsole } from "./PlatformConsole.tsx";
 
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
@@ -46,6 +47,7 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations/new",
   "/organizations/$organization/provisioning",
   "/invitations/join",
+  "/platform",
 ] as const;
 
 const routeTree = rootRoute.addChildren([
@@ -79,6 +81,7 @@ const routeTree = rootRoute.addChildren([
       return <ProvisioningProgress organization={organization ?? ""} onNavigate={useGo()} />;
     },
   }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/platform", component: PlatformConsole }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: "/invitations/join",

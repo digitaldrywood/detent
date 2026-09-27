@@ -56,6 +56,11 @@ func (s *Service) startSupport(c echo.Context) error {
 		denial.Reason = "organization_unavailable"
 		return s.loginDenied(c, http.StatusForbidden, "Select an allocated organization before starting support access", denial)
 	}
+	reason := c.FormValue("reason")
+	if !auth.ValidSupportReason(reason) {
+		denial.Reason = auth.HostedReasonSupportActorInvalid
+		return s.loginDenied(c, http.StatusUnprocessableEntity, "Choose customer-request, account-recovery, or troubleshooting as the support reason", denial)
+	}
 	denial.Reason = "transaction_failed"
 	token, err := s.config.generateToken()
 	if err != nil {
@@ -65,13 +70,20 @@ func (s *Service) startSupport(c echo.Context) error {
 	if err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
-	transaction := loginTransaction{ID: "support-" + id, Organization: organization.ID, SupportActor: strings.ToLower(session.Email), SupportSession: session.Hash}
+	transaction := loginTransaction{ID: "support-" + id, Organization: organization.ID, SupportActor: strings.ToLower(session.Email), SupportSession: session.Hash, SupportReason: reason}
 	if err := s.auth.createTransaction(c.Request().Context(), apikey.HashToken(token), transaction); err != nil {
+		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
+	}
+	if err := s.auth.audit(c.Request().Context(), session.Subject, organization.ID, supportAuditEvent("support_requested", reason)); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
 	s.setCookie(c, supportCookie, token, s.config.now().Add(10*time.Minute))
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "support", Title: "Start temporary support access", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""),
-		Notice: "Open " + organization.Name + " in the WorkOS dashboard and impersonate the customer using reason customer-request, account-recovery, or troubleshooting. Return in this browser within ten minutes."})
+		Notice: "Open " + organization.Name + " in the WorkOS dashboard and impersonate the customer using reason " + reason + ". Return in this browser within ten minutes."})
+}
+
+func supportAuditEvent(event, reason string) string {
+	return event + ":" + reason
 }
 
 func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (loginTransaction, error) {
@@ -83,8 +95,8 @@ func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) 
 	var result loginTransaction
 	var expires string
 	var consumed sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT transaction_id,organization_id,support_actor,support_session,expires_at,consumed_at FROM transactions WHERE token_hash = ? AND support_actor != ''", hash).
-		Scan(&result.ID, &result.Organization, &result.SupportActor, &result.SupportSession, &expires, &consumed)
+	err = tx.QueryRowContext(ctx, "SELECT transaction_id,organization_id,support_actor,support_session,support_reason,expires_at,consumed_at FROM transactions WHERE token_hash = ? AND support_actor != ''", hash).
+		Scan(&result.ID, &result.Organization, &result.SupportActor, &result.SupportSession, &result.SupportReason, &expires, &consumed)
 	if err != nil || consumed.Valid {
 		return loginTransaction{}, errNoSession
 	}
@@ -134,7 +146,7 @@ func (s *Service) completeSupport(c echo.Context) error {
 	case err != nil:
 	case identity.Hosted == nil || !identity.EmailVerified || identity.Hosted.Subject != identity.Subject:
 		denial.Reason = "identity_incomplete"
-	case !strings.EqualFold(identity.Hosted.SupportActor, transaction.SupportActor) || !auth.ValidSupportReason(identity.Hosted.SupportReason):
+	case !strings.EqualFold(identity.Hosted.SupportActor, transaction.SupportActor) || !auth.ValidSupportReason(identity.Hosted.SupportReason) || identity.Hosted.SupportReason != transaction.SupportReason:
 		denial.Reason = auth.HostedReasonSupportActorInvalid
 	case identity.Hosted.OrganizationID != organization.ProviderID:
 		denial.Reason = auth.HostedReasonOrganizationMismatch
@@ -144,7 +156,7 @@ func (s *Service) completeSupport(c echo.Context) error {
 	if err != nil || denial.Reason != "" {
 		return s.loginDenied(c, http.StatusForbidden, "Support access is not authorized", denial)
 	}
-	if err := s.auth.audit(ctx, staff.Subject, organization.ID, "support_started"); err != nil {
+	if err := s.auth.audit(ctx, staff.Subject, organization.ID, supportAuditEvent("support_started", transaction.SupportReason)); err != nil {
 		denial.Reason = "audit_failed"
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}

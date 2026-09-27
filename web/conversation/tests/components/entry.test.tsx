@@ -56,6 +56,9 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     createOrganization: vi.fn(async () => ({ next: "/organizations/org_new/provisioning" })),
     resume: vi.fn(async () => ({ next: "/organizations/org_b/provisioning" })),
     joinInvitation: vi.fn(async () => ({ next: "/auth/oidc/start?organization=org_a" })),
+    platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
+    platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
+    platformHealth: vi.fn(async () => ({ registry: { ok: true } })),
     ...overrides,
   };
 }
@@ -249,7 +252,7 @@ describe("entry API", () => {
 });
 
 describe("entry router", () => {
-  it.each(["/organizations", "/organizations/new", "/organizations/org_b/provisioning", "/invitations/join", "/"])(
+  it.each(["/organizations", "/organizations/new", "/organizations/org_b/provisioning", "/invitations/join", "/platform", "/"])(
     "resolves %s",
     async (path) => {
       const router = makeEntryRouter(createMemoryHistory({ initialEntries: [path] }));

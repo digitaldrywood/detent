@@ -708,7 +708,7 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !strings.Contains(page, `<option value="org_alpha">`) {
 		t.Fatalf("support page = %d %s", response.StatusCode, page)
 	}
-	start := support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "csrf": {csrfFrom(t, page)}}, nil)
+	start := support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "reason": {"customer-request"}, "csrf": {csrfFrom(t, page)}}, nil)
 	if start.StatusCode != http.StatusOK || !strings.Contains(start.Body, "impersonate") {
 		t.Fatalf("support start = %d", start.StatusCode)
 	}
@@ -745,10 +745,11 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 		{"invalid reason", "support|support@example.test|user_alice|porg_alpha|curiosity"},
 		{"other organization", "support|support@example.test|user_alice|porg_beta|customer-request"},
 		{"other actor", "support|staff@example.test|user_alice|porg_alpha|customer-request"},
+		{"reason differs from the started request", "support|support@example.test|user_alice|porg_alpha|troubleshooting"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, page := support.get("/support")
-			support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "csrf": {csrfFrom(t, page)}}, nil)
+			support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "reason": {"customer-request"}, "csrf": {csrfFrom(t, page)}}, nil)
 			if response, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape(test.code)); response.StatusCode != http.StatusForbidden {
 				t.Fatalf("status = %d", response.StatusCode)
 			}

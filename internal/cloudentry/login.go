@@ -30,7 +30,7 @@ func validReturnPath(path, organization string) bool {
 		return false
 	}
 	if organization == "" {
-		return path == "/organizations" || path == "/invitations/join"
+		return path == "/organizations" || path == "/invitations/join" || path == platformPath
 	}
 	prefix := "/organizations/" + organization
 	return (path == prefix || strings.HasPrefix(path, prefix+"/")) && !strings.HasSuffix(path, "/logout")
@@ -185,6 +185,10 @@ func (s *Service) completeLogin(c echo.Context) error {
 		}
 	}
 	if transaction.InvitationToken != "" {
+		if s.staff(identity.Email) {
+			callback.Reason = "staff_session"
+			return s.loginDenied(c, http.StatusForbidden, "Staff accounts cannot join customer organizations", callback)
+		}
 		invited, err := s.readyOrganization(ctx, transaction.InvitationOrganization)
 		if err == nil {
 			err = s.acceptInvitation(ctx, invited, identity.Subject, identity.Email, identity.Hosted.SessionID, transaction.InvitationToken)
@@ -205,7 +209,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 	case transaction.Organization != "":
 		return c.Redirect(http.StatusSeeOther, s.organizationHome(transaction.Organization))
 	default:
-		return c.Redirect(http.StatusSeeOther, "/organizations")
+		return c.Redirect(http.StatusSeeOther, s.landing(identity.Email, *identity.Hosted))
 	}
 }
 
@@ -342,6 +346,9 @@ func (s *Service) chooser(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
+	if s.platformStaff(session) {
+		return c.Redirect(http.StatusSeeOther, platformPath)
+	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
 	}
@@ -369,7 +376,7 @@ func (s *Service) sessionJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": s.config.Allocation != nil && !s.staff(session.Email)})
+	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": s.config.Allocation != nil && !s.staff(session.Email), "staff": s.platformStaff(session)})
 }
 
 func (s *Service) organizationsJSON(c echo.Context) error {
@@ -385,7 +392,7 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 	if choices == nil {
 		choices = []organizationChoice{}
 	}
-	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices, "pending": []organizationChoice{}, "can_create": false}
+	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices, "pending": []organizationChoice{}, "can_create": false, "staff": s.platformStaff(session)}
 	if s.config.Allocation != nil {
 		pending, err := s.pendingOrganizations(c.Request().Context(), session.Subject)
 		if err != nil {
@@ -435,6 +442,9 @@ func (s *Service) joinPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Finvitations%2Fjoin")
 	}
+	if s.platformStaff(session) {
+		return c.Redirect(http.StatusSeeOther, platformPath)
+	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
 	}
@@ -448,6 +458,9 @@ func (s *Service) joinInvitation(c echo.Context) error {
 	}
 	if !s.csrfValid(c, session, "") {
 		return s.loginRefused(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again", auth.HostedDenial{Flow: "invitation_join", Reason: "csrf_invalid", Email: session.Email})
+	}
+	if s.staff(session.Email) || session.Identity.SupportActor != "" {
+		return s.loginRefused(c, http.StatusForbidden, "staff_session", "Staff and support sessions cannot join customer organizations", auth.HostedDenial{Flow: "invitation_join", Reason: "staff_session", Email: session.Email})
 	}
 	ctx := c.Request().Context()
 	token := c.FormValue("token")

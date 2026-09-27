@@ -43,6 +43,7 @@ type Config struct {
 	Logger        *slog.Logger
 	Allocation    *AllocationConfig
 	Billing       *BillingConfig
+	ConfigPath    string
 
 	now           func() time.Time
 	generateToken func() (string, error)
@@ -50,6 +51,7 @@ type Config struct {
 	clientFS      fs.FS
 
 	tenantStartTimeout time.Duration
+	platformDeadline   time.Duration
 }
 
 func (c Config) validate() error {
@@ -198,6 +200,10 @@ func (s *Service) routes() {
 	e.GET("/api/cloud/session", s.sessionJSON)
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)
+	e.GET(platformPath, s.platformPage)
+	e.GET("/api/cloud/platform/organizations", s.platformOrganizationsJSON)
+	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
+	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
@@ -270,6 +276,13 @@ func (s *Service) supportActor(email string) bool {
 	return s.staff(email) && listed(s.config.SupportActors, email)
 }
 
+func (s *Service) landing(email string, identity auth.HostedIdentity) string {
+	if s.platformIdentity(email, identity) {
+		return platformPath
+	}
+	return "/organizations"
+}
+
 func (s *Service) staff(email string) bool {
 	return listed(s.config.StaffEmails, email)
 }
@@ -312,8 +325,8 @@ func (s *Service) loginRefused(c echo.Context, status int, code, message string,
 }
 
 func (s *Service) home(c echo.Context) error {
-	if _, err := s.session(c); err == nil {
-		return c.Redirect(http.StatusSeeOther, "/organizations")
+	if session, err := s.session(c); err == nil {
+		return c.Redirect(http.StatusSeeOther, s.landing(session.Email, session.Identity))
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
