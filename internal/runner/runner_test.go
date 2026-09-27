@@ -3957,7 +3957,7 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 			Identifier: "digitaldrywood/detent#860",
 			BranchName: "detent/digitaldrywood_detent_860",
 			PullRequest: &connector.PullRequest{
-				BaseRef: " dev ",
+				BaseRef: " dev ", HeadSHA: "pr-head",
 			},
 		},
 		Mode: RunModeMerge,
@@ -3976,6 +3976,9 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	}
 	if workspaceBackend.prepareOptions.TargetBranch != "dev" {
 		t.Fatalf("PrepareMerge() TargetBranch = %q, want dev", workspaceBackend.prepareOptions.TargetBranch)
+	}
+	if workspaceBackend.prepareOptions.ExpectedRemoteHead != "pr-head" || workspaceBackend.prepareOptions.ValidationCommand != "make check" {
+		t.Fatalf("PrepareMerge() verification options = %#v, want PR head and configured gate", workspaceBackend.prepareOptions)
 	}
 	if !workspaceBackend.afterRun {
 		t.Fatal("AfterRun() was not called")

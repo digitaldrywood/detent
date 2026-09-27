@@ -2966,6 +2966,115 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 	}
 }
 
+func TestLocalGitMergeFallbackRetryRevalidatesAheadHead(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		failedGate  bool
+		advanceBase bool
+	}{
+		{name: "gate failure", failedGate: true},
+		{name: "push rejection"},
+		{name: "target advances after gate failure", failedGate: true, advanceBase: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "DD-FALLBACK-RETRY"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "feature")
+			runGit(t, info.Path, "push", "origin", "HEAD:"+info.Branch)
+			remoteHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, source, "add", "README.md")
+			runGit(t, source, "commit", "-m", "main conflict")
+			runGit(t, source, "push", "origin", "main")
+			preparer := backend.(MergePreparer)
+			opts := MergePrepareOptions{TargetBranch: "main", ExpectedRemoteHead: remoteHead, ValidationCommand: "git config detent.validation passed"}
+			precheck, err := preparer.PrepareMerge(t.Context(), info, issue, opts)
+			if err != nil || precheck.Status != MergePrepareStatusConflict {
+				t.Fatalf("conflict precheck = %#v, %v", precheck, err)
+			}
+			if _, err := runGitAt(t.Context(), info.Path, "merge", "--no-edit", "origin/main"); err == nil {
+				t.Fatal("expected worker merge conflict")
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("resolved\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "resolve main conflict")
+			resolvedHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			hook := filepath.Join(remote, "hooks", "pre-receive")
+			if tt.failedGate {
+				opts.ValidationCommand = "git detent-invalid-gate"
+			} else if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			verify := opts
+			verify.VerifyResolution = true
+			if _, err := preparer.PrepareMerge(t.Context(), info, issue, verify); err == nil {
+				t.Fatal("expected initial verification failure")
+			}
+			if tt.advanceBase {
+				runGit(t, source, "commit", "--allow-empty", "-m", "advance target during retry")
+				runGit(t, source, "push", "origin", "main")
+			}
+			retry, err := preparer.PrepareMerge(t.Context(), info, issue, opts)
+			if tt.advanceBase {
+				if err != nil || retry.Status != MergePrepareStatusConflict {
+					t.Fatalf("advanced target retry = %#v, %v; want worker fallback", retry, err)
+				}
+			} else if err == nil {
+				t.Fatal("retry published an unverified head")
+			}
+			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != remoteHead {
+				t.Fatalf("remote head after failed retry = %s, want %s", got, remoteHead)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != resolvedHead {
+				t.Fatalf("local head after failed retry = %s, want %s", got, resolvedHead)
+			}
+			if tt.advanceBase {
+				return
+			}
+			if !tt.failedGate {
+				if err := os.Remove(hook); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts.ValidationCommand = "git config detent.validation retried"
+			result, err := preparer.PrepareMerge(t.Context(), info, issue, opts)
+			if err != nil || result.Status != MergePrepareStatusClean || result.HeadSHA != resolvedHead || !result.HeadChanged {
+				t.Fatalf("validated retry = %#v, %v; want published resolved head", result, err)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "config", "--get", "detent.validation")); got != "retried" {
+				t.Fatalf("retry gate evidence = %q", got)
+			}
+			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != resolvedHead {
+				t.Fatalf("remote head after validated retry = %s, want %s", got, resolvedHead)
+			}
+		})
+	}
+}
+
 func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 	skipWindows(t)
 

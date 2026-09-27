@@ -33,7 +33,11 @@ func (l *LocalGit) PrepareMerge(
 	if err != nil {
 		return MergePrepareResult{}, fmt.Errorf("wait for source repository operation: %w", err)
 	}
-	defer release()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	remote := strings.TrimSpace(opts.Remote)
 	if remote == "" {
 		remote = defaultGitRemote
@@ -79,6 +83,19 @@ func (l *LocalGit) PrepareMerge(
 			}
 			return MergePrepareResult{}, err
 		}
+	}
+	if remoteBranchExists && strings.TrimSpace(localHead) != remoteHead && strings.TrimSpace(opts.ExpectedRemoteHead) != "" {
+		if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", targetRef, strings.TrimSpace(localHead)); err != nil {
+			var commandErr *CommandError
+			if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+				return MergePrepareResult{Status: MergePrepareStatusConflict, Message: "unpublished local head requires merge-fallback resolution of the current target"}, nil
+			}
+			return MergePrepareResult{}, fmt.Errorf("inspect unpublished head target ancestry: %w", err)
+		}
+		release()
+		release = nil
+		opts.VerifyResolution = true
+		return l.prepareResolvedMerge(ctx, normalized, issue, opts)
 	}
 	if _, err := runGitAt(ctx, normalized.Path, "rebase", targetRef); err != nil {
 		conflicts, conflictErr := runGitAt(ctx, normalized.Path, "diff", "--name-only", "--diff-filter=U", "-z")
