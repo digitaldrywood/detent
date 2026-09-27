@@ -36,6 +36,57 @@ func TestWriterReplaysWorkflowLabelAsDesiredState(t *testing.T) {
 	client.assertDone()
 }
 
+// A cleared managed field takes its prefix off the issue and puts nothing
+// back: an issue with no priority must not keep a `priority:` label behind.
+func TestWriterClearsAManagedLabelPrefix(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name       string
+		desired    hubserver.WorkflowLabelDesired
+		labels     []restLabel
+		wantLabels []string
+		wantErr    bool
+	}{
+		{
+			name:       "clears every label under the prefix",
+			desired:    hubserver.WorkflowLabelDesired{ManagedPrefix: "priority:", Clear: true},
+			labels:     []restLabel{{Name: "feature"}, {Name: "priority:high"}, {Name: "priority:low"}},
+			wantLabels: []string{"feature"},
+		},
+		{
+			name:       "leaves an issue that has none alone",
+			desired:    hubserver.WorkflowLabelDesired{ManagedPrefix: "priority:", Clear: true},
+			labels:     []restLabel{{Name: "feature"}},
+			wantLabels: []string{"feature"},
+		},
+		{
+			name:    "still refuses a record with neither a label nor a clear",
+			desired: hubserver.WorkflowLabelDesired{ManagedPrefix: "priority:"},
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			item := testOutboxItem(t, hubserver.MutationWorkflowLabel, test.desired)
+			steps := []restStep{}
+			if !test.wantErr {
+				steps = []restStep{
+					{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/17", response: restIssue{Labels: test.labels}},
+					{method: http.MethodPut, path: "/repos/digitaldrywood/detent/issues/17/labels", body: map[string]any{"labels": test.wantLabels}},
+				}
+			}
+			client := &scriptedRESTClient{t: t, steps: steps}
+			writer := &Writer{client: client}
+			err := writer.Execute(t.Context(), item)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Execute() error = %v, want error %v", err, test.wantErr)
+			}
+			client.assertDone()
+		})
+	}
+}
+
 func TestWriterReplaysWorkpadIntoOneComment(t *testing.T) {
 	t.Parallel()
 

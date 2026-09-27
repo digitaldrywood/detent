@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
@@ -28,6 +29,10 @@ type hostedFileConfig struct {
 	StorageQuotaBytes        int64                         `yaml:"storage_quota_bytes"`
 	EventQuota               int64                         `yaml:"event_quota"`
 	Directory                []hubserver.HostedDestination `yaml:"directory"`
+	SharedEntry              *hostedSharedEntryFileConfig  `yaml:"shared_entry"`
+	Conversation             *hostedConversationFileConfig `yaml:"conversation"`
+	Usage                    *hostedUsageFileConfig        `yaml:"usage"`
+	Workspaces               *hostedWorkspaceFileConfig    `yaml:"workspaces"`
 	WorkOS                   struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
@@ -36,7 +41,27 @@ type hostedFileConfig struct {
 	} `yaml:"workos"`
 }
 
+type hostedSharedEntryFileConfig struct {
+	Issuer               string   `yaml:"issuer"`
+	PublicKeys           []string `yaml:"public_keys"`
+	AllocationGeneration int64    `yaml:"allocation_generation"`
+}
+
+func readHostedSharedEntry(config *hostedSharedEntryFileConfig) (*hubserver.HostedSharedEntry, error) {
+	entry := &hubserver.HostedSharedEntry{Issuer: config.Issuer, Generation: config.AllocationGeneration}
+	for _, value := range config.PublicKeys {
+		key, err := cloudassert.ParsePublicKey(value)
+		if err != nil {
+			return nil, err
+		}
+		entry.PublicKeys = append(entry.PublicKeys, key)
+	}
+	return entry, nil
+}
+
 type hostedBillingFileConfig struct {
+	Mode                  string                         `yaml:"mode,omitempty"`
+	CheckoutDisabled      bool                           `yaml:"checkout_disabled,omitempty"`
 	AccountID             string                         `yaml:"account_id"`
 	CustomerID            string                         `yaml:"customer_id"`
 	PortalConfigurationID string                         `yaml:"portal_configuration_id"`
@@ -54,7 +79,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 	if !validEnvName(config.APIKeyEnv) || !validEnvName(config.WebhookSecretEnv) {
 		return nil, errors.New("billing secret environment variable names are required and must be valid")
 	}
-	provider, err := billing.NewStripe(billing.StripeConfig{APIKey: lookupEnv(config.APIKeyEnv)})
+	provider, err := billing.NewStripe(billing.StripeConfig{APIKey: lookupEnv(config.APIKeyEnv), Mode: config.Mode})
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +88,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 		return nil, errors.New("billing webhook secret is unavailable or invalid")
 	}
 	return &hubserver.HostedBillingConfig{
-		AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
+		Mode: config.Mode, CheckoutDisabled: config.CheckoutDisabled, AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
 		WebhookSecret: []byte(secret), GraceSeconds: config.GraceSeconds, ReconcileSeconds: config.ReconcileSeconds,
 		Prices: config.Prices, Provider: provider,
 	}, nil
@@ -115,6 +140,12 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 			return nil, false, errors.New("entitlement administration token is unavailable or too short")
 		}
 	}
+	var sharedEntry *hubserver.HostedSharedEntry
+	if config.SharedEntry != nil {
+		if sharedEntry, err = readHostedSharedEntry(config.SharedEntry); err != nil {
+			return nil, false, err
+		}
+	}
 	var billingConfig *hubserver.HostedBillingConfig
 	if config.Billing != nil {
 		billingConfig, err = readHostedBillingConfig(config.Billing, lookupEnv)
@@ -128,7 +159,7 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 		Plans:          config.Plans,
 		OrganizationID: config.OrganizationID, WorkOSOrganizationID: config.WorkOSOrganizationID,
 		BootstrapSubject: config.BootstrapSubject, PublicURL: config.PublicURL,
-		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, Provider: provider,
+		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, SharedEntry: sharedEntry, Provider: provider,
 		PlanID: config.PlanID, StorageQuotaBytes: config.StorageQuotaBytes, EventQuota: config.EventQuota,
 	}, true, nil
 }

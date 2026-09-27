@@ -97,6 +97,15 @@ jobs:
       - name: Verify committed generated sources
         run: make check-generated
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/conversation/package-lock.json
+
+      - name: Verify the Cloud client and its committed bundle
+        run: make check-app
+
       - name: Check integrated migration versions
         run: make check-migrations
 
@@ -134,7 +143,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -159,7 +168,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: race-evidence-${{ matrix.shard }}
-          path: tmp/*-race-evidence
+          path: |
+            tmp/*-race-evidence
+            tmp/hub-race-evidence-*
           if-no-files-found: error
           retention-days: 14
 
@@ -194,10 +205,26 @@ jobs:
         run: make security
 
   browser-visual:
-    if: github.event_name != 'pull_request'
     name: Browser Visual
+    needs: [browser-visual-shard]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require every Browser Visual shard to succeed
+        env:
+          SHARD_RESULT: ${{ needs.browser-visual-shard.result }}
+        run: test "$SHARD_RESULT" = success
+
+  browser-visual-shard:
+    if: github.event_name != 'pull_request'
+    name: Browser Visual (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -219,7 +246,7 @@ jobs:
             run_visual=false
             while IFS= read -r changed_file; do
               case "$changed_file" in
-                .github/workflows/ci.yml|.github/workflows/release.yml|.templui.json|go.mod|go.sum|package.json|package-lock.json|playwright.config.js|README.md|docs/ONBOARDING.md|static/*|tests/visual/*|cmd/detent/*|internal/config/*|internal/web/*|internal/cli/*.go|internal/devruntime/*)
+                .github/workflows/ci.yml|.github/workflows/release.yml|.templui.json|go.mod|go.sum|package.json|package-lock.json|playwright.config.js|README.md|docs/ONBOARDING.md|static/*|tests/visual/*|cmd/detent/*|internal/config/*|internal/web/*|internal/cli/*.go|internal/devruntime/*|internal/hubserver/*)
                   run_visual=true
                   break
                   ;;
@@ -250,7 +277,7 @@ jobs:
         if: steps.visual-changes.outputs.run_visual == 'true'
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
-        run: npm run test:visual
+        run: npm run test:visual -- --shard=${{ matrix.shard }}/3
 
       - name: Run browser smoke gate
         if: steps.visual-changes.outputs.run_visual != 'true'
@@ -264,7 +291,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-visual-evidence
+          name: browser-visual-evidence-${{ matrix.shard }}
           path: tmp/playwright-evidence
           if-no-files-found: ignore
           retention-days: 14
@@ -274,7 +301,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-visual-failure-artifacts
+          name: browser-visual-failure-artifacts-${{ matrix.shard }}
           path: |
             tmp/playwright-report
             tmp/playwright-results

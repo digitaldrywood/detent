@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -63,12 +62,6 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	}
 
 	out := snapshot
-	out.OpenQuestions = []operations.Decision{}
-	for _, question := range snapshot.OpenQuestions {
-		if question.ProjectID == selectedProjectID {
-			out.OpenQuestions = append(out.OpenQuestions, question)
-		}
-	}
 	out.Project = selectedProject
 	out.Projects = nil
 	out.BoardIssues = scopedIssues(snapshot.BoardIssues, selectedProjectID, fallbackProjectID)

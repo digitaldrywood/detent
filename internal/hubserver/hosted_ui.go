@@ -18,7 +18,7 @@ import (
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
-	e.GET("/", s.hostedHome)
+	e.GET("/", s.hostedLanding)
 	e.GET("/login", func(c echo.Context) error {
 		return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "login", Title: "Sign in"})
 	})
@@ -33,6 +33,9 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/organization/billing", s.hostedBillingPage)
 	e.POST("/organization/billing/checkout", s.hostedBillingCheckout)
 	e.POST("/organization/billing/portal", s.hostedBillingPortal)
+	e.GET("/api/v2/organizations/:organization/billing", s.hostedBillingJSON)
+	e.POST("/api/v2/organizations/:organization/billing/checkout", s.hostedBillingCheckout)
+	e.POST("/api/v2/organizations/:organization/billing/portal", s.hostedBillingPortal)
 	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
 	e.GET("/api/cloud/billing/subscription", s.hostedBillingExport)
 	e.POST("/organization/create", s.createHostedOrganization)
@@ -43,19 +46,22 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.POST("/organization/members/:member/role", s.changeHostedRole)
 	e.POST("/organization/grants", s.changeHostedGrant)
 	e.POST("/projects", s.createHostedProject)
-	e.GET("/projects/:project", s.hostedProject)
-	e.GET("/projects/:project/issues/:item", s.hostedWork)
-	e.GET("/projects/:project/issues/:item/changes/:change", s.hostedWork)
-	e.GET("/projects/:project/changes", s.hostedWork)
 	e.GET("/projects/:project/events", s.hostedEvents)
 	e.GET("/api/cloud/metadata", s.hostedMetadata)
 	e.GET("/api/cloud/billing", s.hostedBilling)
 	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
 	e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
+	s.registerHostedUsageRoutes(e)
+	s.registerHostedOrganizationRoutes(e)
+	s.registerAppRoutes(e)
 }
 
 func (s *Service) renderHosted(c echo.Context, status int, data templates.HostedPageData) error {
 	data.OrganizationID = s.config.Hosted.OrganizationID
+	data.Base, data.SharedOrigin = s.hostedBase(), s.hostedShared()
+	if data.SharedOrigin {
+		data.CanSupport = false
+	}
 	data.Assets.Favicon = "/static/img/detent-mark.svg"
 	if data.OrganizationName == "" {
 		data.OrganizationName = data.OrganizationID
@@ -67,22 +73,41 @@ func (s *Service) renderHosted(c echo.Context, status int, data templates.Hosted
 			data.SupportExpiry = session.ExpiresAt.UTC().Format(time.RFC3339)
 		}
 	}
-	if cookie, err := c.Cookie(hostedCookie); err == nil {
-		data.CSRF = hostedCSRF(cookie.Value)
-	}
+	data.CSRF = s.hostedPageCSRF(c)
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 	c.Response().WriteHeader(status)
 	return templates.HostedPage(data).Render(c.Request().Context(), c.Response())
+}
+
+func (s *Service) hostedPageCSRF(c echo.Context) string {
+	if s.hostedShared() {
+		return s.hostedSharedCSRF(c)
+	}
+	if cookie, err := c.Cookie(hostedCookie); err == nil {
+		return hostedCSRF(cookie.Value)
+	}
+	return ""
 }
 
 func (s *Service) hostedError(c echo.Context, status int, message string) error {
 	return s.renderHosted(c, status, templates.HostedPageData{Mode: "denied", Title: "Access unavailable", Error: message})
 }
 
+// hostedLanding serves the root. A member, or a support session acting as
+// one, gets the client application; a session with no organization access
+// still gets the organization page, which carries the chooser, create and
+// join forms and the staff notice.
+func (s *Service) hostedLanding(c echo.Context) error {
+	if _, _, err := s.hostedCredential(c); err == nil {
+		return s.appShell(c)
+	}
+	return s.hostedHome(c)
+}
+
 func (s *Service) hostedHome(c echo.Context) error {
 	session, _, err := s.hostedSession(c)
 	if err != nil {
-		return c.Redirect(http.StatusSeeOther, "/login")
+		return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 	}
 	data := templates.HostedPageData{Mode: "onboarding", Title: "Your organization", Email: session.Email}
 	var members int
@@ -108,7 +133,7 @@ func (s *Service) hostedHome(c echo.Context) error {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable")
 		}
 	}
-	if session.Identity.SupportActor == "" {
+	if session.Identity.SupportActor == "" && !s.hostedShared() {
 		memberships, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), session.Identity.Subject, "")
 		if err != nil {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")
@@ -166,72 +191,6 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 		}
 	}
 	return nil
-}
-
-func (s *Service) hostedProject(c echo.Context) error {
-	credential, status, err := s.hostedCredential(c)
-	if err != nil {
-		return s.hostedError(c, status, "This project is unavailable to this account")
-	}
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: credential}
-	if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, false); err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This project is unavailable to this account")
-	}
-	data := templates.HostedPageData{Mode: "project", Title: "Project", SelectedProject: string(scope.project)}
-	if session, ok := c.Get("hosted_session").(auth.Session); ok {
-		data.Email = session.Email
-	}
-	if err := s.hostedPageData(c, credential, &data); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Project information is temporarily unavailable")
-	}
-	setup, err := s.projectOnboarding(c.Request().Context(), scope)
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Project readiness is temporarily unavailable. Retry without recreating the project.")
-	}
-	data.Setup = &setup
-	data.SetupAPI = "/api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project)
-	data.CanWriteProject = s.requireHostedProject(c.Request().Context(), s.database.db, scope, true) == nil
-	data.CanManage = credential.HostedRole == "owner" || credential.HostedRole == "admin"
-	data.CanManageRunners = credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(c.Request().Context(), credential)
-	project, err := readNativeProject(c.Request().Context(), s.database.db, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	data.Title = project.Name
-	data.ProjectStates = project.States
-	integration, err := readProjectIntegration(c.Request().Context(), s.database.db, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	data.IntegrationRevision = fmt.Sprint(integration.Revision)
-	data.GitHubRepository, data.GitHubIntake, data.GitHubProjection = integration.Repository, integration.Intake, integration.Projection
-	data.GitHubPR = integration.RepositoryEnabled
-	data.GitHubAvailable = s.config.ReconcileBackend != nil
-	data.IntegrationSummary = fmt.Sprintf("Profile: %s · GitHub intake: %s · projection: %s · repository/PR integration: %t", integration.Profile, integration.Intake, integration.Projection, integration.RepositoryEnabled)
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT i.native_id,i.number,i.title,COALESCE(w.source_name,'') FROM issues i LEFT JOIN workflow_states w ON w.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? ORDER BY i.number DESC LIMIT 100`, scope.organization, scope.project)
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Project information is temporarily unavailable")
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var issue tracker.NativeIssue
-		if err := rows.Scan(&issue.WorkItemID, &issue.Number, &issue.Title, &issue.State); err != nil {
-			closeErr := rows.Close()
-			return s.nativeAPIError(c, errors.Join(err, closeErr))
-		}
-		issue.OrganizationID, issue.ProjectID = scope.organization, scope.project
-		data.Issues = append(data.Issues, issue)
-	}
-	if err := rows.Close(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET /projects/:project", string(scope.project), http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return s.renderHosted(c, http.StatusOK, data)
 }
 
 func (s *Service) hostedEvents(c echo.Context) error {

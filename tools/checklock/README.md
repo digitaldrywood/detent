@@ -75,3 +75,31 @@ go test -race ./tools/checklock ./internal/instancelock -count=10
 GOOS=windows GOARCH=amd64 go test -c -o tmp/checklock-windows.test.exe ./tools/checklock
 make check
 ```
+
+## Durable timing history
+
+Make appends events to `detent-validation-events.jsonl` in the Git common
+directory, beside the existing shared lock. This is telemetry, not scratch or
+build output: it survives worker scratch and worktree removal. Direct checklock
+invocations still select their event destination with `-events`. Records are
+appended in one write and synced after each event; write/sync failures are
+reported to stderr and do not change admission or command results. Retain this
+file with the host's operational history; it has no automatic retention policy.
+
+Each run has a random `run_id`, hostname, issue identifier and workspace (from
+existing worker environment), timestamps, cumulative wait/command/hold seconds,
+and queue position/size observations. Hold time starts at lock acquisition and
+ends after release, including executable lookup and process-group cleanup.
+Command runtime remains separately available as `run_seconds`. Queue observations
+reuse the existing position lookup, on changes and every 30 seconds while
+waiting; no polling loop or serialization is added.
+`waiting`, `queued`, `running`, and terminal events allow partial runs to be
+identified. A forcibly killed process may leave no terminal event; its observed
+wait is a lower bound and its final hold duration is unknown. Older events with
+no run ID cannot be attributed and are counted separately.
+
+The lock scope is one Git common directory on a host, shared by its worktrees;
+it does not serialize unrelated repositories. See
+[validation throughput reporting](../../docs/diagnosis.md#validation-lock-cost)
+for per-run records, time-weighted queue depth, and the host/day share of
+observed dispatched time. No live history is backfilled from PR descriptions.

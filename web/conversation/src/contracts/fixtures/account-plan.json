@@ -1,0 +1,42 @@
+{
+  "organization_id": "org_threefold",
+  "base": { "id": "pilot_free", "version": 1 },
+  "effective_base": { "id": "pilot_free", "version": 1 },
+  "source": "base",
+  "revision": 4,
+  "features": ["collaboration", "native_execution", "github_integration"],
+  "allowances": {
+    "members": 10,
+    "projects": 10,
+    "repositories": 10,
+    "registered_runners": 10,
+    "connected_runners": 10,
+    "concurrent_work": 5,
+    "api_mutations": 10000,
+    "ingested_events": 10000,
+    "collaboration_bytes": 67108864,
+    "history_records": 10000
+  },
+  "grants": [
+    {
+      "id": "grant_pilot",
+      "plan": { "id": "pilot_plus", "version": 2 },
+      "scope": ["hosted_artifacts"],
+      "starts_at": "2026-08-01T00:00:00Z",
+      "expires_at": "2026-10-01T00:00:00Z"
+    }
+  ],
+  "usage": {
+    "members": 3,
+    "projects": 2,
+    "repositories": 1,
+    "registered_runners": 2,
+    "connected_runners": 1,
+    "concurrent_work": 1,
+    "api_mutations": 11840,
+    "ingested_events": 2044,
+    "collaboration_bytes": 1048576,
+    "history_records": 512
+  },
+  "window_ends_at": "2026-09-10T13:00:00Z"
+}

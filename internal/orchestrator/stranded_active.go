@@ -81,6 +81,12 @@ func (o *Orchestrator) recoverStrandedActiveIssues(
 		if !ok || strings.TrimSpace(issue.ID) == "" {
 			continue
 		}
+		// A successful completion with a ready PR belongs to the existing gate
+		// wait. CI may still be pending while the card remains In Progress.
+		if completed, ok := state.Completed[issue.ID]; ok && completed.successfulAttemptPersisted &&
+			autoPromoteActiveGatePendingIssue(issue, state, o.cfg, o.cfg.AutoPromote) {
+			continue
+		}
 		decision := o.strandedActiveRecoveryDecision(ctx, issue)
 		if strings.TrimSpace(decision.TargetState) == "" {
 			if o.logger != nil {

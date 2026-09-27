@@ -834,20 +834,27 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 	tests := []struct {
 		name       string
 		mode       string
+		required   *bool
 		review     string
+		pending    bool
 		expired    bool
 		p1Findings []Finding
 		want       Decision
 	}{
 		{name: "required absent", mode: AutomatedReviewRequired, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
 		{name: "required absent after deadline", mode: AutomatedReviewRequired, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required pending", mode: AutomatedReviewRequired, pending: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "required pending after deadline", mode: AutomatedReviewRequired, pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required present", mode: AutomatedReviewRequired, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required late review", mode: AutomatedReviewRequired, review: "COMMENTED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional absent", mode: AutomatedReviewOptional, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
 		{name: "optional absent after deadline", mode: AutomatedReviewOptional, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional pending after deadline", mode: AutomatedReviewOptional, pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional present", mode: AutomatedReviewOptional, review: "APPROVED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional late review", mode: AutomatedReviewOptional, review: "APPROVED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off absent", mode: AutomatedReviewOff, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "legacy disabled pending", required: new(false), pending: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "legacy disabled pending after deadline", required: new(false), pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off present", mode: AutomatedReviewOff, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required p1", mode: AutomatedReviewRequired, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
 		{name: "optional late p1", mode: AutomatedReviewOptional, review: "COMMENTED", expired: true, p1Findings: []Finding{{Severity: "p1"}}, want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{{Severity: "p1"}}}},
@@ -858,16 +865,39 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := Evaluate(Config{Kind: KindCommand, AutomatedReview: tt.mode}, nil, Summary{
+			got := Evaluate(Config{Kind: KindCommand, AutomatedReview: tt.mode, RequireAutomatedReview: tt.required}, nil, Summary{
 				PullRequestURL: "https://github.test/pull/1297",
 				CIStatus:       "green",
 				ReviewState:    tt.review,
+				ReviewPending:  tt.pending,
 				P1Findings:     tt.p1Findings,
 			}, now, EvaluationOptions{AutomatedReviewWaitExpired: tt.expired})
 			if got.Action != tt.want.Action || got.Reason != tt.want.Reason || !slices.Equal(got.Findings, tt.want.Findings) {
 				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions(t *testing.T) {
+	t.Parallel()
+
+	started := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	cfg := Config{Kind: KindCommand, RequireAutomatedReview: new(false)}
+	summary := Summary{
+		PullRequestURL: "https://github.test/pull/3062",
+		CIStatus:       "green",
+		ReviewPending:  true,
+	}
+	for i := range 22 {
+		got := Evaluate(cfg, nil, summary, started.Add(time.Duration(i)*time.Minute*2), EvaluationOptions{})
+		if got.Action != ActionWait || got.Reason != ReasonAutomatedReviewMissing {
+			t.Fatalf("decision %d before expiry = %#v, want automated review wait", i+1, got)
+		}
+	}
+	got := Evaluate(cfg, nil, summary, started.Add(time.Hour), EvaluationOptions{AutomatedReviewWaitExpired: true})
+	if got.Action != ActionPass || got.Reason != ReasonReady {
+		t.Fatalf("decision after expiry = %#v, want ready pass", got)
 	}
 }
 

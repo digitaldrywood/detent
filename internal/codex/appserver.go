@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 const (
@@ -179,8 +180,17 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
-	Workspace               string
-	Prompt                  string
+	// ConversationControl, when set, wraps the transport so live conversation
+	// commands and provider questions are multiplexed into the turn.
+	ConversationControl *runner.AgentConversationControl
+	Workspace           string
+	Prompt              string
+	// Attachments are the files the user attached to the message that starts
+	// this turn. Images become image input items; text attachments already
+	// reached Prompt as a data block (decisions section 17.1).
+	Attachments []runner.AgentAttachment
+	// TempDir is where a turn's image copies are written.
+	TempDir                 string
 	ResumeThreadID          string
 	DeveloperInstructions   string
 	ApprovalPolicy          any
@@ -420,11 +430,17 @@ func WithTurnTimeout(timeout time.Duration) AppServerOption {
 
 func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate UpdateHandler) (result RunTurnResult, err error) {
 	ctx = contextOrBackground(ctx)
+	if req.ConversationControl != nil {
+		ctx = WithConversationTurn(ctx)
+	}
 
 	transport, err := s.transportFactory.NewTransport(ctx)
 	if err != nil {
 		now := s.now()
 		return RunTurnResult{}, startupStageError(fmt.Errorf("start codex app-server transport: %w", err), "process/start", now, now, 0)
+	}
+	if req.ConversationControl != nil {
+		transport = newConversationTransport(ctx, transport, req.ConversationControl, req.TempDir, s.logger)
 	}
 	defer func() {
 		attachStartupProcessEvidenceBeforeCleanup(err, transport)
@@ -828,7 +844,7 @@ func (s *AppServer) startThread(
 	params := map[string]any{
 		"cwd": req.Workspace,
 	}
-	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
 	if req.TerminalWaitTimeout > 0 {
 		params["config"] = map[string]any{
 			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
@@ -901,7 +917,7 @@ func (s *AppServer) resumeThread(
 		"threadId": threadID,
 		"cwd":      req.Workspace,
 	}
-	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
 	if req.TerminalWaitTimeout > 0 {
 		params["config"] = map[string]any{
 			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
@@ -973,18 +989,14 @@ func (s *AppServer) startTurn(
 	defer func() {
 		err = startupStageError(err, "turn/start", startedAt, s.now(), s.readTimeout)
 	}()
+	input, cleanupInput := turnInputItems(req.Prompt, req.Attachments, req.TempDir)
+	defer cleanupInput()
 	params := map[string]any{
 		"threadId": threadID,
-		"input": []map[string]any{
-			{
-				"type":          "text",
-				"text":          req.Prompt,
-				"text_elements": []any{},
-			},
-		},
-		"cwd": req.Workspace,
+		"input":    input,
+		"cwd":      req.Workspace,
 	}
-	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
 	setOptional(params, "sandboxPolicy", req.TurnSandboxPolicy)
 	if req.Model != "" {
 		params["model"] = req.Model

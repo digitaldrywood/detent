@@ -43,6 +43,37 @@ func TestNativeIssuePromptOwnership(t *testing.T) {
 	}
 }
 
+func TestMergePromptHandsOffPushedHeadBeforeCI(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "Merging", want: true},
+		{state: "Todo"},
+		{state: "Rework"},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			workflow := config.Workflow{
+				Prompt: "Watch CI after pushing the head.",
+				Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}},
+			}
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#3045", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Contains(prompt, "return immediately after pushing a new pull request head")
+			if got != tt.want {
+				t.Fatalf("merge CI handoff present = %t, want %t", got, tt.want)
+			}
+			if tt.want && strings.Index(prompt, "Watch CI after pushing the head.") >= strings.Index(prompt, "## Merge CI handoff") {
+				t.Fatal("CI handoff must follow the project workflow instruction")
+			}
+		})
+	}
+}
+
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	t.Parallel()
 
@@ -122,7 +153,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"Prose is not a blocker.",
 		"Already-merged work needs no authorization.",
 		"completion_merged_pr", "completion_merge_commit", "completion_branch_head",
-		"completion_ancestry: verified", "Ask if evidence is missing.",
+		"completion_ancestry: verified", "Missing evidence needs a blocked Workpad `human_action`.",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
 		"## Available skills",

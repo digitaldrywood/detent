@@ -2,10 +2,11 @@
 set -euo pipefail
 
 case "${1:-}" in
-    0) exec make test-race-hub ;;
+    0) exec make test-race-hub-a ;;
     1) exec make test-race-orchestrator ;;
     2|3) ;;
-    *) echo 'usage: ci-race-shard.sh {0|1|2|3}' >&2; exit 2 ;;
+    4) exec make test-race-hub-b ;;
+    *) echo 'usage: ci-race-shard.sh {0|1|2|3|4}' >&2; exit 2 ;;
 esac
 
 mkdir -p tmp

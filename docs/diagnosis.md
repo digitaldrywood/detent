@@ -694,3 +694,110 @@ passing audit merely because the process restarted is unnecessary.
 `TestSecurityAuditLifecycleAcrossRestart` covers those boundaries with a held
 reviewer, without wall-clock sleeps. No additional startup reconciliation is
 needed to discard a registry that is never persisted.
+
+## Validation lock cost
+
+Use `scripts/validation-report.sql` alongside the work-attempt throughput queries
+above. `make check` and `make check-fast` retain a synced event stream at
+`$(git rev-parse --path-format=absolute --git-common-dir)/detent-validation-events.jsonl`.
+This survives worktree removal. The stream includes host, unique run ID,
+issue/workspace attribution, wait and hold seconds, command runtime, and queue
+observations. It contains local filesystem paths; handle it like other local
+operational history. Validation before checklock starts (including Make's
+preflight and compiling the wrapper) is outside these measurements.
+
+The following read-only report uses Python's standard library and SQLite 3.42+
+(for subsecond timestamps). Set `database` to that host's Detent database,
+`events` to the retained JSONL file, `host` to its recorded OS hostname,
+`worker_host` to the corresponding `work_attempts.worker_host`, and `day` to a
+UTC date (`YYYY-MM-DD`). Hostnames and configured worker-host names need not be
+equal. For local attempts whose `worker_host` is null, set `worker_host` to
+the empty string and use that originating host's database (not an aggregate
+copy). Run from the repository root. The connection cannot write the history
+database; all imported records and report tables are temporary.
+
+```sh
+python3 - "$database" "$events" "$host" "$worker_host" "$day" <<'PY'
+import json
+import pathlib
+import sqlite3
+import sys
+
+history, events, host, worker, day = sys.argv[1:]
+if sqlite3.sqlite_version_info < (3, 42, 0):
+    raise SystemExit("SQLite 3.42+ is required for subsecond timing")
+uri = pathlib.Path(history).resolve().as_uri() + "?mode=ro"
+with sqlite3.connect(uri, uri=True) as db:
+    db.row_factory = sqlite3.Row
+    db.execute("CREATE TEMP TABLE validation_events(payload TEXT)")
+    with open(events, encoding="utf-8") as stream:
+        db.executemany("INSERT INTO validation_events VALUES (?)",
+                       ((line.rstrip("\n"),) for line in stream if line.strip()))
+    db.execute("CREATE TEMP TABLE validation_report_params(host, worker_host, day)")
+    db.execute("INSERT INTO validation_report_params VALUES (?, ?, ?)",
+               (host, worker, day))
+    sections = pathlib.Path("scripts/validation-report.sql").read_text().split("-- Output ")
+    db.executescript(sections[0])
+    for section in sections[1:]:
+        title, query = section.split("\n", 1)
+        print(title)
+        for row in db.execute(query):
+            print(json.dumps(dict(row), sort_keys=True))
+PY
+```
+
+The outputs are:
+
+- Coverage and observed wait fraction: uniquely attributed waiting seconds /
+  observed dispatched code-session seconds for that host/day. Attempts are
+  clipped to the UTC day and current time; incomplete attempts end at their
+  last heartbeat, not a future lease. Multiple simultaneous gates in one
+  attempt are unioned before summing. Matching requires the same issue and
+  host with the gate start inside exactly one attempt interval. Ambiguous,
+  standalone, and unmatched runs are counted, not guessed into an attempt.
+  No matched measurements produces a null fraction. Even a non-null fraction
+  is a lower bound when instrumentation coverage is incomplete.
+- Mean, median, p90, and maximum queue depth weighted by seconds with waiters,
+  reconstructed from observed wait intervals (including registration). Idle
+  periods are excluded from these busy-depth statistics. This describes the
+  lock represented by the input file, not unrelated repositories on the host.
+  The separately reported `max_observed_queue_depth` comes from queue-position
+  lookups and includes older clients that have no retained timing stream;
+  `max_instrumented_queue_depth` and the time-weighted statistics cover only
+  recorded runs. During rollout these can differ substantially: neither the
+  instrumented maximum nor its typical depth describes the whole queue until
+  coverage is complete. Simultaneous interval edges are combined. Incomplete runs contribute only
+  their observed wait lower bounds, never an assumed wait through midnight.
+- Whole-run wait/hold durations and completeness flags for runs observed in
+  the day. Hold values on nonterminal records are not final measurements.
+  These whole-run values must not be summed as clipped daily totals.
+
+Malformed records and legacy records without run IDs are counted explicitly.
+Duplicate imports with the same run ID do not multiply measurements. A killed
+writer, a telemetry write error, an uninstrumented gate, or an incomplete event
+file prevents claims of complete coverage. The old worktree-local streams lack
+host/run attribution and cannot establish typical or worst-case historical
+queue depth. The #2962 observation (46m31.845s waiting, 11m14.254s running) is one
+run, not a host baseline. Collect a complete busy UTC day after rollout before
+using these statistics to choose a remedy; report the window, host mapping,
+coverage counts, and whether the day is partial.
+
+### Deadline and allowance accounting
+
+Waiting can consume a configured worker session deadline. In
+`internal/runner/agent.go`, `runAgentTurn` starts `sessionLimit` before the provider
+turn; `withAgentDurationLimit` uses a context deadline. Running a shell command
+that waits in checklock does not suspend that deadline. Checklock also has its
+own no-progress and absolute queue-wait deadlines, which are distinct from the
+parent session deadline. After acquisition those queue deadlines no longer
+limit command runtime. A parent deadline can still cancel the command.
+
+Waiting does not consume an additional attempt by itself, but the already
+started code/rework session counts toward the issue's attempt allowance.
+`countSessionsWithoutMerge` in `internal/orchestrator/attempt_allowance.go`
+counts started sessions and excludes specifically classified infrastructure
+failures, merge routing, and external waits. Validation-lock waiting has no
+special exclusion. A session that exhausts its duration while queued can
+therefore finish without running validation and still consume an allowance
+slot. This documents current accounting; #2977 changes neither those policies
+nor validation serialization.

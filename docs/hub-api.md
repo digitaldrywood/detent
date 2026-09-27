@@ -382,6 +382,17 @@ and create a project with
 ```
 
 Project state names and transitions are explicit; there is no prescribed workflow.
+A project created through the hosted client starts from a fixed template instead:
+`Todo` and `In Progress` (dispatchable), `Human Review` (neither dispatchable nor
+terminal, and not `operator_only`, so the orchestrator can move a completed run's
+Change Request there) and `Done` (terminal). `In Progress` may move to `Todo`,
+`Human Review` or `Done`; `Human Review` may move to `Done` or back to `In Progress`.
+Hub migration 36 moves projects whose workflow is exactly the earlier
+`Todo`/`In Progress`/`Done` template onto it and leaves customized workflows
+unchanged. A native project's Change Requests wait in the lane named by the
+runner's `auto_promote.source_state` (default `Human Review`), so a customized
+workflow needs that lane, non-`operator_only` and reachable from its active
+lanes, for completed runs to reach review.
 `operator_only` prevents workers from creating an issue in, or transitioning to,
 that state. `require_dependencies` defaults to true. Setting it false disables
 dependency readiness gating for that project while retaining scope and cycle
@@ -804,6 +815,17 @@ accounts through the existing agent routing configuration.
     "account_alias": "local-work",
     "shared_account_alias": "team-subscription-a",
     "models": ["gpt-5.6-sol", "gpt-6-astra"],
+    "model_details": [
+      {
+        "id": "gpt-6-astra",
+        "label": "GPT-6-Astra",
+        "provider": "openai",
+        "default": true,
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "low"
+      },
+      { "id": "gpt-5.6-sol", "legacy": true, "reasoning_efforts": ["low", "high"] }
+    ],
     "max_concurrent": 2,
     "availability": "unknown",
     "observed_at": "2026-09-05T12:00:00Z"
@@ -811,7 +833,9 @@ accounts through the existing agent routing configuration.
 ]
 ```
 
-Only these fields and optional `reset_at` are accepted. Files are bounded to
+`model_details` is optional and advisory: it describes models `models` already advertises and never widens what capacity matches. The collector writes it; the runner does not yet fill it from its backends' model catalogues. Each entry describes one reported model at most once, with at most 16 distinct reasoning efforts in the backend's own order (the Hub does not check the order), a `default_reasoning_effort` that must be in that list when the list is non-empty, a label of at most 128 characters, and `legacy` set when the provider has named a successor. A report carrying detail for a model outside `models` is rejected. When a conversation's preferences change, the Hub checks them against fresh runner reports: an explicit model must be one a fresh report advertises or the Hub's configured `conversation.model`, which is accepted without any runner report, and an effort outside the fixed vocabulary is accepted only when that model's detail publishes it (docs/conversation/decisions.md section 14); `GET /app/bootstrap` does not republish it yet, so `preferences.models[]` stays empty.
+
+Only these fields, `model_details` and optional `reset_at` are accepted. Files are bounded to
 256 KiB, 32 backends and 128 model identifiers per backend. Aliases are opaque
 lowercase ASCII tokens, at most 64 characters; use no email addresses, API keys,
 login sessions, billing records or customer prompts. Provider/backend/model

@@ -76,9 +76,111 @@ legacy deployment/migration input; the shared product uses registry allocations
 and scoped navigation, not cross-origin redirects. See [the RFC routing trust
 boundary](cloud-hub-rfc.md#shared-site-control-and-tenant-storage).
 
+### Conversation coordinator
+
+The optional `conversation` section enables chat. With a `codex` subsection the
+Hub answers conversations that have no linked issue on its own Codex backend:
+
+```yaml
+conversation:
+  enabled: true
+  model: gpt-6-astra
+  reasoning_effort: low
+  workspace: /srv/detent-coordinator
+  codex:
+    command: codex app-server
+```
+
+`reasoning_effort` must be `low`, `medium` or `high`. `workspace` must be an
+existing directory dedicated to the coordinator. It must not contain Hub state:
+no Hub database, hosted configuration, secrets or backups, and the Hub refuses
+to start when the database or hosted configuration lies inside it. Codex's
+read-only sandbox blocks writes and network access but still permits reads of
+files the Hub user can read, so also run the Hub under an account that cannot
+read other tenants' data.
+
+The Hub starts the coordinator's Codex process in the workspace with an
+allowlisted environment: `PATH`, locale, TLS and proxy variables, and the
+provider's own `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`,
+`OPENAI_PROJECT` and `CODEX_API_KEY`. WorkOS, Stripe, admin token and database
+variables are never passed. `HOME`, `CODEX_HOME` and the temporary directory
+point at `.detent-coordinator/` inside the workspace, and the dedicated Codex
+home links only `auth.json` from the operator's Codex home (`CODEX_HOME`, or
+`~/.codex`), so no configuration, MCP servers or skills are loaded. Every
+coordinator turn runs with the `read-only` sandbox and the `never` approval
+policy regardless of `codex.options`.
+
+The coordinator must not be able to read files, including its own provider
+credential, so the Hub turns Codex's built-in tools off by appending
+`-c features.<name>=false` for `shell_tool`, `unified_exec`, `shell_snapshot`,
+`view_image`, `code_mode`, `code_mode_host`, `apps`, `plugins`, `browser_use`,
+`computer_use`, `image_generation`, `multi_agent`, `multi_agent_v2`, `goals`,
+`tool_suggest`, `skill_search`, `hooks`, `memories` and `sleep_tool`, plus
+`-c web_search=disabled`, to the configured command. With Codex 0.157.0 a turn
+then has no shell, command, file, image, browser or web tool; it keeps
+`request_user_input`, a JavaScript isolate without file system or network,
+sub-agents with the same configuration, and `apply_patch`, which the read-only
+sandbox rejects. At startup the Hub runs `codex features list` and refuses to
+start the coordinator when the installed Codex does not know `shell_tool`,
+`unified_exec`, `view_image`, `apps`, `plugins`, `browser_use` or
+`computer_use`: a Codex that cannot turn those off could read files, so there is
+no coordinator rather than an unsafe one. Keep `codex.command` in the form
+`codex app-server [options]` so the appended flags reach the app server.
+
+### Shared-entry tenant configuration
+
+A dedicated tenant Hub behind the shared entry adds `shared_entry` to its hosted
+YAML. The tenant then accepts only requests carrying a signed entry assertion;
+it no longer serves its own login, callback, invitation, logout, support or
+directory routes, and it rejects every request without a valid assertion,
+including on loopback or its private Unix socket.
+
+```yaml
+organization_id: org_example_opaque_id
+workos_organization_id: org_workos_example
+public_url: https://hub.detent.build
+workos:
+  client_id: client_example
+  api_key_env: WORKOS_API_KEY
+shared_entry:
+  issuer: detent-cloud
+  public_keys:
+    - BASE64_ED25519_PUBLIC_KEY
+  allocation_generation: 1
+```
+
+Run the tenant on a private socket, for example
+`detent hub serve --hosted-config tenant.yaml --listen unix:/run/detent/tenants/org_example.sock`.
+The socket directory must be mode `0700` and owned by the service user; the Hub
+creates the socket with mode `0600` and refuses to replace a live socket.
+
+The assertion is an Ed25519 signature over the issuer, tenant audience
+(organization ID), allocation generation, principal kind, method, exact request
+path and query, request body digest, issue/expiry time (at most 30 seconds) and a
+one-use replay ID. Browser assertions also carry the provider subject, verified
+email, provider organization and session, and the per-organization authorization
+binding and CSRF value. The tenant materializes that binding as its local session,
+still validates the provider session and membership on every request, and applies
+its existing project grants, viewer limits and in-transaction mutation rechecks.
+Machine assertions carry no browser identity and require the request's own bearer
+credential; runner, reporter and artifact-service tokens keep their independent
+bindings. List up to four public keys to rotate the entry signing key with overlap.
+
+Tenant pages and redirects are scoped under `/organizations/ORG`, and the tenant
+strips that prefix only after verifying the assertion over the original path.
+Native APIs keep their explicit `/api/v2/organizations/ORG/...` routes. Runners
+enroll against `https://hub.detent.build/organizations/ORG` as their Hub URL.
+Non-canonical paths (encoded characters, empty or dot segments) and duplicate
+query parameters are rejected before routing.
+
+A database bound to an origin (`deployment = origin`) never opens in shared mode,
+and a shared database never reopens with another public URL, generation, origin
+configuration or local mode. The binding changes only through the offline
+[existing-origin migration](#existing-origin-migration).
+
 ## Shared-origin route and session contract
 
-These are target routes for #2341, not aliases already accepted by the binary.
+`detent cloud serve` implements sign-in, callback, chooser, invitations, sign-out and scoped routing for the organization shell, Work, projects, SSE and native APIs (see [shared entry](examples/hub/README.md#shared-entry)). Organization creation and provisioning (#2342), shared billing routes and webhooks (#2343), and deletion are not implemented yet. Temporary support access runs through the shared entry: see [support access](#support-access).
 `ORG` and `PROJECT` stand for immutable opaque IDs, never organization names.
 
 | Surface | Public route/behavior |
@@ -298,6 +400,20 @@ contain opaque IDs, actual/effective identities, reason code, start/end or expir
 and route-template action metadata. They exclude query strings, request bodies,
 raw errors, credentials and bearer capabilities. See [WorkOS impersonation](https://workos.com/docs/authkit/impersonation).
 
+On the shared origin the entry owns this flow. A staff session whose verified email
+is in the entry's `staff_emails` and `support_actors` opens `/support`, selects an
+organization and submits **Start support sign-in** (CSRF and exact Origin). The
+entry records a one-use, ten-minute transaction bound to that browser, staff
+session, actor and organization. The WorkOS impersonation callback must return in
+the same browser with the same actor, an allowed reason and the selected
+organization's provider ID; the resulting support authorization belongs only to
+that staff session and organization and never becomes an ordinary session. Every
+routed request rechecks the provider session, the support actor lists and the
+customer's active membership. The tenant, which must list the same actor in its
+own `staff_emails` and `support_actors`, shows the actual/effective identity banner,
+audits `session_started` when it first sees the support session, audits each
+content action as before, and audits `session_ended` when sign-out revokes it.
+
 This document describes required configuration; implementation and fixture
 validation do not enable impersonation or modify a live WorkOS account.
 
@@ -327,9 +443,30 @@ No zero-knowledge guarantee is made.
 
 ## Existing-origin migration
 
-#2341 must deliver an explicit versioned offline migration, not manual SQL edits
-or a startup bypass. The current immutable origin check remains until that tool
-and its fixture tests ship; no migration command is available in this RFC.
+The migration is an explicit, versioned offline command, never manual SQL edits
+or a startup bypass. The tenant binding stays immutable except through this path:
+
+```sh
+detent hub migrate-shared-origin \
+  --database /var/lib/detent/tenants/org_example.db \
+  --hosted-config /etc/detent/tenants/org_example.yaml
+```
+
+The target YAML is the tenant's shared-entry configuration (see
+[shared-entry tenant configuration](#shared-entry-tenant-configuration)): the same
+organization, provider organization and bootstrap identity, the shared
+`public_url`, and an `allocation_generation` greater than the current one. The
+command requires exclusive database ownership, so a running tenant blocks it. In
+one transaction it records an immutable `hosted_binding_migrations` row, moves the
+binding to `deployment = shared` with the new generation, revokes all old browser
+sessions, closes unconsumed login/invitation transactions and expires outstanding
+artifact grants. It prints the preserved member, project, runner, issue and
+billing-customer counts. Mismatched organizations, unallocated provider bindings
+and non-increasing generations fail without changes; repeating the same migration
+reports `already_migrated`. Database triggers reject any other binding update and
+any change to migration history.
+
+The operator procedure:
 
 1. Inventory each old organization/provider mapping, bootstrap state, database,
    origin, runner/service bindings, plan and Stripe account/environment/customer

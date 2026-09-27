@@ -19,6 +19,7 @@ TAILWIND_INPUT ?= static/css/input.css
 TAILWIND_OUTPUT ?= static/css/output.css
 SQLC_VERSION := v1.31.1
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+APP_DIR ?= web/conversation
 SQLC_CONFIG ?= sqlc/sqlc.yaml
 MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
@@ -38,6 +39,8 @@ GOSEC_DETERMINISM_RUNS ?= 8
 GO_TEST := env -u DETENT_API_TOKEN go test -count=1
 HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
+HUB_RACE_PARTITION := ^Test[A-GI-O]
+HUB_RACE_COVER_TIMEOUT ?= 30m
 # Persisted orchestrator fixtures serialize migrations; retain the full race suite.
 ORCHESTRATOR_RACE_TIMEOUT ?= 20m
 ORCHESTRATOR_RACE_PARALLEL ?= 4
@@ -56,7 +59,7 @@ GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 CHECK_LOCK_WAIT ?= 15m
 CHECK_LOCK_MAX_WAIT ?= 4h
 
-.PHONY: dev generate check-migrations check-generated css css-watch build test test-race test-race-hub test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-race test-race-hub test-race-hub-a test-race-hub-b test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -75,6 +78,7 @@ generate:
 	fi
 	@$(MAKE) sqlc
 	@$(MAKE) css
+	@$(MAKE) app
 
 check-migrations:
 	go run ./tools/migrationcheck
@@ -90,6 +94,59 @@ css:
 		node_modules/.bin/tailwindcss -i "$(TAILWIND_INPUT)" -o "$(TAILWIND_OUTPUT)" --minify; \
 	else \
 		echo "No Tailwind input at $(TAILWIND_INPUT); skipping CSS build."; \
+	fi
+
+app:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run build); \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping app build."; \
+	fi
+
+app-dev:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run dev); \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping app dev server."; \
+	fi
+
+# The client gate: types, unit tests, and a bundle that matches the committed
+# one. `static/app/conversation` is committed so `go build` never needs Node,
+# so a client change that was not rebuilt is drift the branch must not carry.
+# The build is deterministic (fixed output names, no hashes, no timestamps),
+# which is what makes the diff check meaningful.
+check-app:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run && npm run build); \
+		git diff --exit-code -- static/app/conversation || { \
+			echo "static/app/conversation is out of date; run make app and commit the result."; \
+			exit 1; \
+		}; \
+		if [ -n "$$(git ls-files --others --exclude-standard -- static/app/conversation)" ]; then \
+			echo "static/app/conversation has untracked build output; commit or remove it."; \
+			exit 1; \
+		fi; \
+		grep -q "MIT" static/app/conversation/app.js || { \
+			echo "static/app/conversation/app.js is missing the MIT attribution banner."; \
+			exit 1; \
+		}; \
+		grep -q "^react@" static/app/conversation/THIRD_PARTY_LICENSES.txt || { \
+			echo "static/app/conversation/THIRD_PARTY_LICENSES.txt is missing bundled dependency licenses."; \
+			exit 1; \
+		}; \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping client checks."; \
+	fi
+
+app-test:
+	@if [ -f "$(APP_DIR)/package.json" ]; then \
+		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
+		(cd "$(APP_DIR)" && npm run typecheck && npm test); \
+	else \
+		echo "No conversation client at $(APP_DIR); skipping app tests."; \
 	fi
 
 css-watch:
@@ -119,14 +176,19 @@ test-race: test-race-hub test-race-orchestrator
 	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver" && $$0 != "github.com/digitaldrywood/detent/internal/orchestrator" && $$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
 	$(GO_TEST) -race $$packages
 
-test-race-hub:
-	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -output tmp/hub-race-evidence ./internal/hubserver
+test-race-hub: test-race-hub-a test-race-hub-b
+
+test-race-hub-a:
+	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -run '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-a ./internal/hubserver
+
+test-race-hub-b:
+	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -skip '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-b ./internal/hubserver
 
 test-race-orchestrator:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(ORCHESTRATOR_RACE_PARALLEL) -timeout $(ORCHESTRATOR_RACE_TIMEOUT) -output tmp/orchestrator-race-evidence ./internal/orchestrator
 
 test-race-cover:
-	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)"
+	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)"
 	@$(MAKE) coverage-check
 	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
 
@@ -192,9 +254,9 @@ nilaway-audit:
 check check-fast: check-migrations check-generated
 	@mkdir -p tmp
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
-	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events tmp/validation-events.jsonl -- $(MAKE) $@-unlocked
+	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events "$$common_dir/detent-validation-events.jsonl" -- $(MAKE) $@-unlocked
 
-check-unlocked: check-invariants check-migrations check-generated build lint vet nilaway-audit test-race-cover
+check-unlocked: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
 
 .PHONY: check-fast check-fast-unlocked
@@ -233,6 +295,7 @@ setup: $(GOLANGCI_LINT)
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	go install github.com/pressly/goose/v3/cmd/goose@latest
 	@if [ -f package.json ]; then npm install; fi
+	@if [ -f "$(APP_DIR)/package.json" ]; then (cd "$(APP_DIR)" && npm ci); fi
 
 clean:
 	rm -rf tmp
@@ -240,13 +303,19 @@ clean:
 help:
 	@echo "Available targets:"
 	@echo "  dev          Run Air with dev logging and combined log rotation"
-	@echo "  generate     Run go generate, templ, sqlc, and Tailwind"
+	@echo "  generate     Run go generate, templ, sqlc, Tailwind, and the conversation client"
 	@echo "  css          Build Tailwind CSS"
 	@echo "  css-watch    Watch and rebuild Tailwind CSS"
+	@echo "  app          Build the conversation client into static/app/conversation"
+	@echo "  app-dev      Run the conversation client dev server"
+	@echo "  app-test     Typecheck and test the conversation client"
+	@echo "  check-app    Client typecheck, tests, bundle drift and attribution gate"
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"
-	@echo "  test-race-hub  Run the complete Hub race suite with timing evidence"
+	@echo "  test-race-hub  Run both Hub race partitions with timing evidence"
+	@echo "  test-race-hub-a  Run Hub race partition A (tests matching $(HUB_RACE_PARTITION))"
+	@echo "  test-race-hub-b  Run Hub race partition B (all other Hub tests)"
 	@echo "  test-race-cover  Run race and coverage gates with shared Hub execution"
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  test-cover-packages  Run per-package coverage floor checks"

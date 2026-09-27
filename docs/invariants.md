@@ -73,6 +73,18 @@ and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
 appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
 
+A persisted successful completion with a complete Workpad and ready PR remains
+owned by the existing active-lane gate while current-head CI is pending. Stranded
+active recovery excludes that completion instead of sending its open PR to
+Rework only while the PR identity and head still match the completion-time
+snapshot. A replacement head or an ended attempt without completion still
+recovers its open PR to Rework. The gate promotes a green matching head to
+Merging. This preserves the single
+orchestrator lane writer and removes an overlapping recovery decision (#3073).
+`TestCompletedReadyPullRequestEntersMergeGate` and
+`TestRecoverStrandedActiveIssues` cover the recorded completion and recovery
+sequence.
+
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
 head. Both completion and auto-promotion consume this durable rejection evidence:
@@ -188,6 +200,38 @@ innocent issues and left the operator to return them to work.
 **Enforcement:** `TestPreTurnFailuresDrainInstance` and
 `TestObservedLanePreTurnFailureRemainsInstanceOwned` exercise instance attribution
 and preserve issue ownership even after an observed lane change.
+`TestRunnerWorkspaceTimeoutIsNotForgeUnavailable` keeps `Create` failures under
+workspace preparation even when an `after_create` hook includes a loopback URL
+and timeout text; the runner no longer presents every workspace failure as a
+`git fetch` failure. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
+checks that these failures drain the instance without a forge condition or
+issue retry accounting. Actual remote write timeouts still use forge availability.
+Remote Git reads during workspace preparation use forge availability only when
+a matching forge host and `ls-remote` or `fetch` operation identify the failure.
+Structured Git command errors and direct `after_create` hook commands establish
+the operation; compound hooks need the Git-specific SSH refusal in their output.
+An unrelated later command in a compound hook cannot inherit an earlier Git read.
+SSH refusal, transport loss, and 5xx responses retain the original workspace
+error, enter the existing forge retry with backoff, and do not count toward the
+project breaker. `TestRecoverDurableWorkspaceGitReadWait` verifies that an
+`ls-remote` wait restores its forge condition and retry deadline after restart.
+Workspace command and `after_create` hook ENOSPC failures use
+the existing retry backoff as instance-owned capacity failures, with a host disk
+alert on the board and health view; they do not count toward the project breaker.
+`TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker` reproduces the recorded
+Git-index and hook failures, and `TestBoardAndHealthShowHostDiskExhaustionRetry`
+checks the operator signal. Other preparation failures remain instance-owned; their breaker
+uses `agent.failure_breaker.cooldown_seconds` rather than the separate
+blocked-recovery cooldown. A checked clean merge that needs no new workspace
+uses the no-workspace merge-control path under that breaker, even when worker
+capacity is free. The same checked merge may continue
+when the matching forge condition came from a Git read; forge write and
+credential conditions retain their existing merge hold.
+`TestClassifyWorkspaceForgeReadFailure`,
+`TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
+`TestRecoverDurableWorkspaceGitReadWait`,
+`TestWorkspaceBreakerHonorsFailureCooldown`, `TestReadyMergeAtWorkerCapacity`,
+and `TestCheckedMergeUnderForgeCondition` cover these boundaries (#3067).
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
 completion handlers to triage workspace, startup, transport, protocol, and capacity
 failures. These failures publish no triage comment and do not consume the triage
@@ -204,13 +248,15 @@ approval-denial classification through the existing instance-owned forge wait, w
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
 reports as write-path failures.
-`TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite` checks that
-credential and API-budget design questions reach durable recording (including write-access
-and manual-PR design choices). Explicit support requests remain rejected across polite
-auxiliaries and manual-open word order, while actual
-access failures and explicit write-enablement/manual-PR requests remain
-instance-owned. Question rejection shares the worker access-failure classifier;
-credential or authentication terminology alone is not failure evidence (#2616).
+Worker access failures remain classified as instance-owned. In an autonomous
+issue-worker run, product or design questions are expressed through a blocked
+Workpad `human_action`, not a worker question tool: its Codex app-server is
+never started with `default_mode_request_user_input`, and a question it asks
+anyway is answered empty. A conversation turn, where a person is live in the
+chat and the hub relays the question to them, may use `request_user_input`.
+`TestAppServerMarksOnlyConversationTurns` and
+`TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns` keep the
+question feature off every ordinary issue run.
 Compound push commands whose follow-up GitHub CLI read cannot log in reuse the
 instance token-resolution wait (`worker_github_cli_auth` in the diagnostic), not
 the project forge outage. `TestCompoundPushCLIAuth` preserves this distinction
@@ -311,9 +357,14 @@ no retry; at `NextProbeAt` the carrier can reserve the existing single canary.
 An idle hold expires at `NextProbeAt` even when its carrier cannot dispatch;
 an in-flight canary retains ownership. Eligibility checks are read-only and retain
 the condition's attempt history, so a repeated failure after expiry increases
-backoff. Missing candidate batches preserve monitor carrier retries; only a
-dispatchable carrier reserves a probe and consumes an attempt. Durable attempt recovery restores both the
+backoff. Missing candidate batches preserve monitor carrier retries; a
+dispatchable carrier or the next eligible worker after an idle hold expires
+reserves the existing probe and consumes an attempt. Durable attempt recovery restores both the
 condition and its carrier retry, and a successful budget observation clears it.
+Completion without a budget observation settles an in-flight canary and schedules
+the next probe from its existing bounded backoff. A budget observation in the
+completion result can clear the condition before that settlement only when its
+observation is at least as recent as the active failure.
 `TestWorkerGitHubClassificationWaitsForSharedCooldown`,
 `TestWorkerGitHubMonitorCarrierEligibility`, and
 `TestDispatchableWorkerGitHubMonitorCarrier` cover cooldown, expiry, and dispatch
@@ -342,9 +393,9 @@ belongs to the existing instance controls, and the next eligible worker can
 re-verify the report. `TestRecordedBlockerDispatchOwnership` covers fresh and retry
 dispatch, mixed human-action holds, and preserved scheduler wait detail. Only
 explicit human actions in structured blocked Workpads share evaluated evidence
-with the existing Needs-you question projection, including PR-less cards and recorded age;
+with the existing Needs-you human-action projection, including PR-less cards and recorded age;
 `TestWorkpadHumanActionSnapshot` and `TestOperationsWorkpadHumanAction` cover that path.
-Legacy blocker prose does not become a human question or hide dependency decisions.
+Legacy blocker prose does not become a human action or hide dependency decisions.
 No timer, recovery path, or reason code is added.
 `TestSymbolicBlockerCompletion` and `TestSymbolicBlockerPromotion` cover attribution,
 retained diagnostic detail, final usage/diff accounting, CI scheduling after a pushed head,
@@ -494,7 +545,7 @@ The dispatch, CI parity, and duration regressions cover these boundaries (#2845)
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
 `awaiting_gate` decision no longer requires retained completion evidence for this
-case, so question waits cannot cause repeated sessions while a review is pending.
+case, preventing repeated sessions while a review is pending.
 `TestReworkLiveReviewGateDispatch` replays post-answer scheduler passes and checks
 that a current-head review or actionable PR state preserves dispatch eligibility.
 Failed current-head CI ends a completed gate wait when `ci_failure_action: rework`
@@ -503,27 +554,12 @@ routes repair (#2909), including when the card is already in Rework. The existin
 handoff without a redundant lane write. `TestCompletedReworkCIGateDispatch`
 covers immediate repair dispatch and preserves pending CI and review waits.
 
-Question closure resolution (#2793) uses the existing transition refresh and
-answer columns. Durable unanswered issue IDs join that refresh so questions
-left behind across restart resolve when the tracker reports closure or a terminal
-lane. No separate reconciliation loop is introduced. Closure markers never become
-authorized human replies; reopening requires a new question key.
-`TestRefreshResolvesTerminalHumanQuestions` covers terminal states, reopening,
-tracker failure, and the distinction between closure and human authorization.
-
-Question reporting (#2945) omits unanswered questions whose latest per-project,
-per-issue scheduler decision declines authorization. Operations and health share
-this read-only projection; stored questions and dispatch reply handling remain
-unchanged. `TestOpenHumanQuestionsAuthorization` covers declined and authorized
-waits, reauthorization, and project/issue isolation without a recovery mechanism.
-
 Human-owned Workpad blockers route through the existing completion Blocked
 transition on the first report (#2779). The repeated-report threshold is removed:
 live blocker evaluation already suppresses the next dispatch, so a second
 completion cannot be required. `TestFirstHumanBlockerCompletionReachesBlocked`
 replays that conflict with and without a PR and preserves human-owned recovery.
-Question waits retain their current lane; automated Blocked transitions do not
-renew the attempt allowance.
+Automated Blocked transitions do not renew the attempt allowance.
 
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
@@ -777,17 +813,19 @@ lossless expiry, and repeated removal failures. See
 [workspace retention](workspace-retention.md) for limits and recovery instructions.
 
 The existing automated-review check retains stale and in-progress bot summary
-evidence (#2764): an established review cycle must complete at the current head
-before promotion. Native queue admission and programmatic merge wait for that
-cycle only when the effective gate requires automated review (#2905). Review
-requests are likewise posted only for a required automated review. Trusted quota
+evidence (#2764). Native queue admission and programmatic merge wait for an
+established cycle at the current head only when the effective gate requires
+automated review (#2905). Review requests are likewise posted only for a required
+automated review. Trusted quota
 or unavailable replies after the latest per-head request complete that head as
 COMMENTED with no findings; an unanswered request alone is not review evidence.
-An expired review deadline does not waive an established bot review cycle for
-promotion.
+The existing gate deadline also ends a pending-review wait, including when
+automated review is disabled.
 The existing `automated_review_missing` wait and PR comment publication are reused;
 a per-head comment marker deduplicates `@codex review` requests across ticks and
 restarts. No new gate, reason, or reconciliation loop is introduced.
+`TestEvaluateAutomatedReviewModes`,
+`TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions`,
 `TestAutoPromoteReviewAtHead`, `TestReviewHeadRequestAndWait`, and
 `TestReviewSummaryRetainsPendingHead` cover decision, request failures/deduplication,
 and trusted summary evidence respectively.
@@ -860,7 +898,7 @@ blocker evidence (#2813); other owners or evidence key presence alone do not suf
 Merge-worker attempts are excluded, including generic agent records with merge
 run-mode metadata and historical receipts routing the current head to Rework
 (#2907); those routing decisions are not implementation sessions.
-Question-ending successful waits and sessions with a live structured
+Previously recorded question-ending waits and sessions with a live structured
 human blocker are also excluded (#2789). Conflicted PR sessions count toward the
 allowance because conflict resolution is worker-owned Rework (#2807); a conflict
 does not override a genuine human-wait exclusion. The existing
@@ -1040,6 +1078,12 @@ without publishing issue findings. Findings publish to the PR
 before the existing lane writer routes to Rework; the trusted run marker prevents
 repeat publication after a failed lane write. Comments remain explanatory, never
 verdict evidence. Required-gate telemetry uses the same audit classifier.
+For an exact base and head, a durable trusted pass takes precedence over the
+in-memory running-stage marker; failed or inconclusive reads retain the running
+wait. Both the required-gate projection and
+auto-promotion read that result on their next evaluation; an old-head result
+cannot satisfy either gate. `TestDurableAuditPassSupersedesRunningStageForGate`
+covers a pass recorded after an initially missing green-CI gate.
 `security_audit_wait`, explicitly requested by #2642, distinguishes an active run
 from missing evidence in wait telemetry; it is not a new lane-transition reason
 or recovery path. `TestMergingSecurityAuditVerdict` and
@@ -1168,7 +1212,7 @@ Verify job; draft iteration avoids paying this cost before local review ends.
 
 **Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
 requires the PR activity allowlist and excludes every real job from PR execution (including
-the Invariant Gate), rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
+the Invariant Gate and every Browser Visual shard). It allows `always()` only on the Verify and Browser Visual aggregates, and only as `always() && github.event_name != 'pull_request'`. It rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
 snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;
@@ -1337,13 +1381,21 @@ still apply. Queued acquisitions consolidate overlapping-call ordering and
 retained demand into executable requests; they introduce no selected-slot
 reservation, configuration, or recovery mechanism.
 
-Merge scheduling serializes only running merges against the same repository/base
-(#2572). CI waits, retries, claims without running work, and unready heads do not
-exclude ready competitors. Aged heads retain ordering preference when ready.
-`TestMergeIdleHeadDoesNotReserveSlot` checks planner dispatch, fresh candidates,
-and native queue admission, including independent base branches. The existing
-`merge_ci_reservation` reason now denotes only a running merge; its detail names
-the running issue. `merge_fairness_head_reserved` is retired from producers and
+Merge scheduling admits ready workers in the same repository up to the configured
+Merging state capacity (#3023). CI waits, retries, claims without running work,
+and unready heads do not exclude ready competitors. Aged heads retain ordering
+preference when ready. `TestMergeDispatchUsesMergingCapacity` checks fresh and
+retry dispatch with limits of one and three; `TestMergeIdleHeadDoesNotReserveSlot`
+checks planner dispatch, fresh candidates, and native queue admission.
+The regular Merging agent prompt now hands a pushed head back immediately, even
+when the project workflow asks the agent to watch CI. The existing current-head
+CI retry releases the worker and claim; a green head re-enters the same fairness
+order. `TestPushedMergeHeadRequeuesWithoutHoldingSlot` covers post-push admission
+of a same-repository peer and the older issue's return after CI, while
+`TestMergePromptHandsOffPushedHeadBeforeCI` covers the instruction boundary (#3045).
+The `merge_ci_reservation` dispatch reason is retired. Native merge queue admission
+still defers enqueueing behind a running merge in its repository, without holding
+a worker slot. `merge_fairness_head_reserved` remains retired from producers and
 covered by the source scanner; historical configuration remains readable.
 CI wait metadata remains compatible on disk but is keyed by issue in memory so
 concurrent waits preserve separate deadlines and refresh state across restart
@@ -1484,7 +1536,7 @@ the build cache or traverse the module cache; unmeasured module fields are omitt
 A board card renders exactly: the identity row (project, issue and PR references,
 origin, model and configured effort; Compact may hide effort before model), the title, at most one status line, and the existing priority controls.
 The status line is at most 48 Unicode characters and names the wait in words a
-human acts on, for example "Waiting on #2129", "CI running", "Needs your reply · 4h",
+human acts on, for example "Waiting on #2129", "CI running", "Needs you",
 "Blocked · 1", "Running". Scheduler evidence, tracker snapshot ages, timestamps,
 token counts, attempt counts, fact grids, and diagnostic text are not card
 content; they live in the detail sheet and hover titles. A change that adds a body
@@ -1495,6 +1547,34 @@ the same PR.
 invariant manifest, enforce the content, character budget, and detail preservation. Playwright
 checks one-line status layout in compact, cozy, and comfy densities, and verifies
 that effort is visible at Cozy/Comfy and may be hidden before model at Compact.
+
+## INV-14 — Workers never wait on a human question
+
+Workers receive no `ask_human_question` tool in any project. Dispatch and
+completion do not consult `human_questions` rows, including unanswered rows
+left by older versions. Detent no longer writes those rows, migrates generated
+questions into them, or projects them as active waits. Historical rows remain
+readable as receipts.
+
+A real product decision or physical action is recorded in the existing
+structured Workpad `detent-status` block with `status: blocked` and a concrete
+`human_action`. The card moves to Blocked and displays "Needs you". Instance and
+infrastructure failures remain instance-owned. An authorized newer Workpad can
+clear the action after it is performed; existing recorded-blocker recovery
+moves the card back to executable work. Ordinary replies cannot clear it.
+Legacy generated question prerequisites are converted by recording the action
+on each dependent before removing the old dependency; the generated source
+remains historical evidence.
+
+`TestINV14DispatchQuestionTool` checks worker requests across automated,
+human-review, and disabled auto-promotion configurations.
+`TestINV14LegacyQuestionRowDispatch` checks dispatch with published and
+unconfirmed unanswered legacy rows. `TestLegacyHumanQuestionReceiptsReadable`
+checks historical access. `TestFirstHumanBlockerCompletionReachesBlocked`,
+`TestWorkpadHumanActionSnapshot`, `TestOperationsWorkpadHumanAction`, and
+`TestBoardCardSignalBudget` enforce the visible Blocked path.
+`TestWorkpadHumanActionClearanceRecoversBlockedIssue` checks authorized
+clearance, retained legacy dependencies, and refusal of stale updates.
 
 ## Check boundaries
 

@@ -1,0 +1,6 @@
+{
+  "idempotency_key": "cmd_01j8z0v6c5b2",
+  "expected_revision": "5",
+  "state": "In Review",
+  "reason": "user_requested"
+}

@@ -1,0 +1,153 @@
+{
+  "runners": [
+    {
+      "id": "rnr_macbook",
+      "display_name": "Michael's MacBook Pro",
+      "hostname": "michaels-macbook-pro.local",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "v0.9.0",
+      "host_capacity": 2,
+      "host_used": 1,
+      "capacity_limit": 2,
+      "reported_capacity": 2,
+      "provider_capacity": [
+        {
+          "provider": "codex",
+          "backend": "codex",
+          "account_alias": "michael@threefold.solutions",
+          "models": [
+            "gpt-6-astra",
+            "gpt-5.6-sol"
+          ],
+          "max_concurrent": 2,
+          "availability": "available",
+          "observed_at": "2026-09-10T12:04:31Z",
+          "used": 1,
+          "state": "ready",
+          "reason": ""
+        },
+        {
+          "provider": "claude",
+          "backend": "claude_code",
+          "account_alias": "threefold-max",
+          "models": [
+            "claude-fable-5-1",
+            "claude-opus-5"
+          ],
+          "max_concurrent": 1,
+          "availability": "limited",
+          "observed_at": "2026-09-10T12:04:31Z",
+          "reset_at": "2026-09-10T17:00:00Z",
+          "used": 1,
+          "state": "exhausted",
+          "reason": "Five hour window is spent"
+        }
+      ],
+      "last_heartbeat_at": "2026-09-10T12:04:31Z",
+      "leases": [
+        {
+          "lease_id": "lease_7c1",
+          "work_item_id": "wi_2093",
+          "title": "connections: custom alerts from segment membership",
+          "project_id": "proj_parable",
+          "expires_at": "2026-09-10T12:09:31Z"
+        }
+      ]
+    },
+    {
+      "id": "rnr_macmini",
+      "display_name": "mac-mini-1",
+      "hostname": "mac-mini-1.local",
+      "health": "stale",
+      "state": "paused",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "v0.9.0",
+      "host_capacity": 2,
+      "host_used": 0,
+      "capacity_limit": 2,
+      "reported_capacity": 0,
+      "provider_capacity": [],
+      "last_heartbeat_at": "2026-09-10T10:02:00Z",
+      "leases": []
+    }
+  ],
+  "usage": {
+    "window_ends_at": "2026-09-10T13:00:00Z",
+    "allowances": {
+      "members": {
+        "used": 3,
+        "limit": 10
+      },
+      "projects": {
+        "used": 2,
+        "limit": 10
+      },
+      "connected_runners": {
+        "used": 1,
+        "limit": 10
+      },
+      "concurrent_work": {
+        "used": 1,
+        "limit": 5
+      },
+      "api_mutations": {
+        "used": 11840,
+        "limit": 10000
+      },
+      "ingested_events": {
+        "used": 2044,
+        "limit": 10000
+      }
+    }
+  },
+  "spend": {
+    "today": 12.4,
+    "window": 118.12,
+    "currency": "USD",
+    "by_project": [
+      {
+        "project_id": "proj_parable",
+        "amount": 58.31
+      },
+      {
+        "project_id": "proj_marketing",
+        "amount": 34.06
+      }
+    ],
+    "series": [
+      {
+        "at": "2026-09-04T00:00:00Z",
+        "amount": 4.2
+      },
+      {
+        "at": "2026-09-05T00:00:00Z",
+        "amount": 9.6
+      },
+      {
+        "at": "2026-09-06T00:00:00Z",
+        "amount": 18.4
+      },
+      {
+        "at": "2026-09-07T00:00:00Z",
+        "amount": 23.9
+      },
+      {
+        "at": "2026-09-08T00:00:00Z",
+        "amount": 15.1
+      },
+      {
+        "at": "2026-09-09T00:00:00Z",
+        "amount": 8.8
+      },
+      {
+        "at": "2026-09-10T00:00:00Z",
+        "amount": 12.4
+      }
+    ]
+  },
+  "current": "v0.9.1"
+}

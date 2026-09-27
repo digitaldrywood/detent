@@ -536,7 +536,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
-	if summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState) && !opts.AutomatedReviewWaitExpired) {
+	if !opts.AutomatedReviewWaitExpired && (summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState))) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {

@@ -127,7 +127,11 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		rendered = appendFollowupsBlock(rendered, workflow.Config.Agent.Followups)
 		rendered = appendSkillCreationBlock(rendered, workflow.Config.Agent.Skills)
 	}
-	return appendClosingReferenceInstruction(rendered, issue), nil
+	rendered = appendClosingReferenceInstruction(rendered, issue)
+	if strings.EqualFold(strings.TrimSpace(issue.State), "merging") {
+		rendered = strings.TrimRight(rendered, " \t\r\n") + "\n\n## Merge CI handoff\n\nAfter completing the required local validation, return immediately after pushing a new pull request head. Do not watch or wait for CI in this agent session, even if the project workflow above asks you to. Detent uses its current-head CI wait and requeues the issue in normal Merging order when checks finish. Report the pushed head in your final response.\n"
+	}
+	return rendered, nil
 }
 
 func BuildRoutinePrompt(workflow config.Workflow, issue connector.Issue, routine RoutineRequest, opts PromptOptions) (string, error) {

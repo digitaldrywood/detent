@@ -367,9 +367,16 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
-	Workspace               string
-	TempDir                 string
-	Prompt                  string
+	// ConversationControl, when set, connects a live conversation to the turn on
+	// backends that implement AgentLiveBackend.
+	ConversationControl *AgentConversationControl
+	Workspace           string
+	TempDir             string
+	Prompt              string
+	// Attachments are the files the user attached to the message that starts
+	// this turn (decisions section 17.1). Images become provider image input;
+	// text files are appended to Prompt as a delimited data block.
+	Attachments             []AgentAttachment
 	ToolInstructions        string
 	SupplementalTools       bool
 	ReadOnly                bool
@@ -759,7 +766,28 @@ type RunResult struct {
 	WorkspaceBranch         string
 	MergePrecheck           *MergePrecheck
 	MergeFallbackFindings   string
-	budgetProjection        *dispatchBudgetProjection
+	// NativeChange is what a successful hub-native work run left for review.
+	// It is nil for every other run, and for a native run whose lease was
+	// lost or whose worktree could not be read.
+	NativeChange     *NativeChange
+	budgetProjection *dispatchBudgetProjection
+}
+
+// NativeChange describes a successful hub-native work run's change. A hub
+// native item has no pull request; the runner opens the Change Request under
+// the run's lease and reports it here, and the orchestrator moves the item.
+type NativeChange struct {
+	// Changed reports that the run's final attempt diff has commits ahead of
+	// its base. A run that committed nothing has nothing to review.
+	Changed bool
+	// ChangeID is the Change Request that carries the commits, empty when
+	// the run changed nothing or the Change Request could not be opened.
+	ChangeID string
+	// Error says why a changed run has no Change Request.
+	Error   string
+	BaseSHA string
+	HeadSHA string
+	Files   int
 }
 
 type ArtifactProgressEvidence struct {

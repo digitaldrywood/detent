@@ -47,6 +47,23 @@ func (c *NativeConnector) FetchCandidateIssues(ctx context.Context) ([]connector
 	return c.FetchIssuesByStates(ctx, states)
 }
 
+// WorkflowStates reports the native project's workflow, which is the state
+// model the hub enforces on every transition.
+func (c *NativeConnector) WorkflowStates(ctx context.Context) ([]connector.WorkflowState, error) {
+	project, err := c.client.Project(ctx)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]connector.WorkflowState, 0, len(project.States))
+	for _, state := range project.States {
+		states = append(states, connector.WorkflowState{
+			Name: state.Name, Terminal: state.Terminal, Dispatchable: state.Dispatchable,
+			OperatorOnly: state.OperatorOnly, Transitions: append([]string(nil), state.Transitions...),
+		})
+	}
+	return states, nil
+}
+
 func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
 	var issues []connector.Issue
 	for _, state := range states {
@@ -154,7 +171,7 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 		if err != nil {
 			return err
 		}
-		request.Priority = &priority
+		request.Priority = tracker.SetPriority(&priority)
 	default:
 		return connector.ErrNotImplemented
 	}
@@ -263,10 +280,16 @@ func (c *NativeConnector) dependency(ctx context.Context, id, blockerID, operati
 	return err
 }
 
+// nativeIssueIdentifier is the identifier a run of a native issue keys its
+// worktree on.
+func nativeIssueIdentifier(native tracker.NativeIssue) string {
+	return string(native.ProjectID) + "#" + strconv.Itoa(native.Number)
+}
+
 func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = string(native.WorkItemID)
-	issue.Identifier = string(native.ProjectID) + "#" + strconv.Itoa(native.Number)
+	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
 	issue.AuthorID = native.Actor.PrincipalID

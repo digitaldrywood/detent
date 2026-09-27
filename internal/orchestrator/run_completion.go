@@ -89,6 +89,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		o.recoverWorkerGitHubMonitorFromUpdate(state, running, event.Result.RateLimits, event.CompletedAt)
+	}
+	// A completed canary must release its probe even when lane refresh defers
+	// the rest of completion processing.
+	defer releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed without a GitHub REST monitor observation", event.CompletedAt)
 	// The final result includes checkpoint and recovery segments; live progress
 	// can still describe only the last segment. Use the session totals for every
 	// completion path, retaining progress when a runner has no final usage.
@@ -159,11 +166,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	running.ArtifactEvidence = event.Result.ArtifactEvidence
 	running.ForgeWriteCompleted = event.Result.ForgeWriteCompleted
-	if event.Result.RateLimits != nil {
-		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-	}
 	delete(state.Running, event.IssueID)
+	event.Err = classifyWorkspaceForgeReadFailure(event.Err, o.cfg.ForgeHost)
 	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
+	if o.handleWorkspaceDiskExhaustion(ctx, state, event, running) {
+		return
+	}
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
@@ -512,10 +520,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
-	if o.completeHumanQuestionWait(ctx, state, event, running) {
-		return
-	}
-
 	if mergeWorkerIssue(running.Issue) {
 		resetWorkerFailureBreakers(state, event.IssueID)
 	}
@@ -581,6 +585,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
+	}
+	if terminalState == store.WorkAttemptTerminalSuccess && !repairRun && o.completeNativeChangeRun(ctx, state, event, running, finalState) {
+		return
 	}
 	dispatchedIssue := cloneIssue(running.Issue)
 	if terminalState == store.WorkAttemptTerminalSuccess {
@@ -2022,7 +2029,14 @@ func (o *Orchestrator) refreshMergeWorkerBase(
 	reason string,
 ) {
 	reservation := reserveMergeCandidate(state, issue, event.CompletedAt)
-	reservation.RefreshHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	// A fresh clean observation can use the already checked head after a
+	// transient behind result. Only an explicit merge API rejection forces a
+	// base refresh even if GitHub still reports the PR as clean.
+	if reason == "merge_api_rejected_out_of_date_base" {
+		reservation.RefreshHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	} else {
+		reservation.RefreshHeadSHA = ""
+	}
 	state.mergeReservations[reservation.IssueID] = reservation
 	running.Issue = issue
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess,

@@ -4010,6 +4010,7 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 		}},
 		{name: "degraded hydration", mutate: func(pr *connector.PullRequest) { pr.HydrationDegradedReason = "unavailable" }},
 		{name: "conflict", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "dirty" }},
+		{name: "strict base policy", mutate: func(pr *connector.PullRequest) { pr.BaseBranchStrict = true }},
 		{name: "pending checks", mutate: func(pr *connector.PullRequest) { pr.CIStatus = "pending" }},
 		{name: "draft", mutate: func(pr *connector.PullRequest) { pr.Draft = true }},
 		{name: "closed", mutate: func(pr *connector.PullRequest) { pr.State = "closed" }},
@@ -4025,6 +4026,51 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 			}
 			if got := mergeFastPathCheckedHead(connector.Issue{PullRequest: &pullRequest}); got != tt.want {
 				t.Fatalf("mergeFastPathCheckedHead() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerMergeBaseSyncSelection(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		mergeable     string
+		ciStatus      string
+		strict        bool
+		requiredError bool
+		refreshHead   string
+		wantSync      bool
+	}{
+		{name: "clean green non-strict head", mergeable: "clean", ciStatus: "success"},
+		{name: "strict base", mergeable: "clean", ciStatus: "success", strict: true, wantSync: true},
+		{name: "behind base", mergeable: "behind", ciStatus: "success", wantSync: true},
+		{name: "conflicting base", mergeable: "dirty", ciStatus: "success", wantSync: true},
+		{name: "checks pending", mergeable: "clean", ciStatus: "pending", wantSync: true},
+		{name: "required check failed", mergeable: "clean", ciStatus: "success", requiredError: true, wantSync: true},
+		{name: "merge API rejected base", mergeable: "clean", ciStatus: "success", refreshHead: "checked-head", wantSync: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeMergeWorkspaceBackend{prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean}}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pr := &connector.PullRequest{State: "open", MergeableState: tt.mergeable, CIStatus: tt.ciStatus, HeadSHA: "checked-head", BaseRef: "main", BaseBranchStrict: tt.strict}
+			if tt.requiredError {
+				pr.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Verify", Conclusion: "failure"}}
+			}
+			result, err := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "example/repo#1", PullRequest: pr}, Mode: RunModeMerge, MergeRefreshHeadSHA: tt.refreshHead})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if backend.prepareCalled != tt.wantSync {
+				t.Fatalf("PrepareMerge called = %t, want %t", backend.prepareCalled, tt.wantSync)
+			}
+			if tt.wantSync && result.Output != RunOutputMergeFastPathClean || !tt.wantSync && result.Output != RunOutputMergeFastPathCheckedHead {
+				t.Fatalf("result output = %q, want sync=%t", result.Output, tt.wantSync)
 			}
 		})
 	}
@@ -4109,6 +4155,47 @@ func TestRunnerPublishesWorkspaceCreateStartedBeforeCreate(t *testing.T) {
 		update.RecentEvents[0].Event != "workspace_create_started" ||
 		update.RecentEvents[0].Message != "workspace creation started" {
 		t.Fatalf("workspace progress events = %#v, want one creation event", update.RecentEvents)
+	}
+}
+
+func TestRunnerWorkspaceTimeoutIsNotForgeUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		failure string
+	}{
+		{"after_create database", "after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded"},
+		{"workspace fetch", "git fetch https://github.com/acme/repo: context deadline exceeded"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			failure := errors.New(tt.failure)
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{}, Workspace: &fakeWorkspaceBackend{createErr: failure}, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-workspace", Identifier: "acme/repo#1"}})
+			if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, failure) {
+				t.Fatalf("workspace error = %v", err)
+			}
+			if _, ok := forgeavailability.As(err); ok {
+				t.Fatalf("workspace error entered forge availability: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoteWriteTimeoutStillClassifiesForgeUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"git push", "gh pr create"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			err := classifyForgeOperationError(errors.New("https://github.com/acme/repo: context deadline exceeded"), operation, "github.com")
+			availability, ok := forgeavailability.As(err)
+			if !ok || availability.Class != forgeavailability.ClassTimeout || availability.Scope.Host != "github.com" {
+				t.Fatalf("%s error = %v, want github.com forge timeout", operation, err)
+			}
+		})
 	}
 }
 

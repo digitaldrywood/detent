@@ -177,17 +177,14 @@ state must remain untouched. Pull request comments and merges created by Detent
 are allowed for Detent-owned PR lifecycle work. `status` must be one of
 `in_progress`, `blocked`, or `complete`.
 
-For a missing human decision, finish independent work and authorized fallbacks
-first. Use `ask_human_question` to ask one concise, researched question on the
-assigned issue. Explain the recommendation, alternatives, and exact decision.
-Never create another issue, label, or dependency for clarification or approval,
-including through gh or tracker tools. Detent persists the wait internally.
-Keep the lane, PR, and an `in_progress` Workpad intact while waiting. Interpret
-ordinary authorized replies in the same thread; ask a focused follow-up if
-ambiguous. No YAML edit, special command, or issue closure is required. A reply
-authorizes only what it actually says; retain all external-action approvals.
-Never acknowledge an independent breaker park. Intentional standalone human
-work and tracking epics remain non-executable.
+For a real human need, finish independent work and authorized fallbacks
+first. Record a concrete `human_action` in a structured Workpad with
+`status: blocked`. Detent moves the card to Blocked and shows "Needs you".
+Keep the PR intact. Do not create another issue, label, or dependency for
+clarification or approval. A reply authorizes only what it actually says;
+retain separate external-action approvals. Infrastructure failures remain
+instance-owned. Never acknowledge an independent breaker park. Intentional
+standalone human work and tracking epics remain non-executable.
 
 For dependency blockers in this local-status workflow, declare the blocker in
 the Workpad status block with `status: blocked`:

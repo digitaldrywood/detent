@@ -793,6 +793,9 @@ func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	if mergeable != "clean" {
 		return false
 	}
+	if pullRequest.BaseBranchStrict {
+		return false
+	}
 	if pullRequest.HydrationUnavailableReason != "" || pullRequest.HydrationDegradedReason != "" || len(pullRequest.RequiredCheckFailures) > 0 || pullRequest.MergeQueueEntry != nil {
 		return false
 	}
@@ -1128,7 +1131,9 @@ func (r *Runner) runAgentTurn(
 	}
 	turnStarted := false
 	workerProcessObserved := false
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
+	conversation := conversationRunFromContext(ctx)
+	turnRequest = conversation.prepareTurn(turnRequest)
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -1187,7 +1192,8 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		return nil
-	}, r.turnLimit)
+	}), r.turnLimit)
+	conversation.finishTurn(ctx, turnResult, turnErr)
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		ctx,
 		detentSessionID,
@@ -1241,6 +1247,7 @@ func (r *Runner) runAgentTurn(
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
 	result.TurnStarted = turnStarted
+	reportTurnUsage(ctx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
 	return agentTurnExecution{
 		turnResult:  turnResult,
 		result:      result,
@@ -1458,8 +1465,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
 			return RunResult{}, heldErr
 		}
-		classifiedErr := classifyForgeOperationError(fmt.Errorf("create workspace: %w", err), "git fetch", forgeHost)
-		return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, classifiedErr)
+		return RunResult{}, fmt.Errorf("%w: create workspace: %w", ErrWorkspacePreparation, err)
 	}
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -1570,7 +1576,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	if req.ForgeRetry != nil && !strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+	if req.ForgeRetry != nil && !forgeRetryReadOperation(req.ForgeRetry.Operation) {
 		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
 		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
 			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
@@ -1681,8 +1687,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		return RunResult{}, err
 	}
 	if req.Execution != nil {
+		// The stored attempt diff rides every checkpoint and the finish
+		// (decisions section 18.5).
+		if diffs, ok := req.Execution.(DiffExecution); ok {
+			diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
+		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
+		}
+		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
+			ctx = conversation.attach(ctx)
+			defer func() { conversation.close(ctx, returnValue, returnErr) }()
 		}
 		if artifacts, ok := req.Execution.(ArtifactExecution); ok {
 			if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
@@ -1879,7 +1894,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
-	if req.ForgeRetry != nil && strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+	if req.ForgeRetry != nil && forgeRetryReadOperation(req.ForgeRetry.Operation) {
 		execution.result.ForgeWriteCompleted = true
 	}
 	if req.ForgeRetry != nil && req.ForgeRetry.WorkProductPushed {
@@ -2297,8 +2312,9 @@ func workerCredentialBlockerError(message string) error {
 	firstLine, _, _ := strings.Cut(message, "\n")
 	firstLine = strings.TrimSpace(strings.TrimLeft(firstLine, "#>*_- "))
 	blocked := strings.HasPrefix(strings.ToLower(firstLine), "blocked") || strings.HasPrefix(strings.ToLower(firstLine), "work is blocked")
-	credentialQuestion := IsWorkerGitHubCredentialQuestion(message)
-	if (!blocked || !workerGitHubCredentialFailureDetail(message)) && !credentialQuestion {
+	credentialBlocker := blocked && workerGitHubCredentialFailureDetail(message)
+	supportRequest := workerGitHubSupportRequest(message)
+	if !credentialBlocker && !supportRequest {
 		return nil
 	}
 	return &DeliverableCommandError{
@@ -2307,11 +2323,14 @@ func workerCredentialBlockerError(message string) error {
 		Status:         "blocked",
 		Message:        truncateDeliverableDetail(firstLine),
 		Body:           truncateDeliverableDetail(message),
-		ApprovalDenied: credentialQuestion,
+		ApprovalDenied: supportRequest,
 	}
 }
 
-func IsWorkerGitHubCredentialQuestion(detail string) bool {
+// workerGitHubSupportRequest catches final messages that ask a person to repair
+// worker access or perform a GitHub write. Those are instance failures even
+// when the worker phrases them as a question instead of a blocked report.
+func workerGitHubSupportRequest(detail string) bool {
 	detail = strings.ToLower(strings.TrimSpace(detail))
 	if !strings.Contains(detail, "?") {
 		return false
@@ -2326,13 +2345,9 @@ func IsWorkerGitHubCredentialQuestion(detail string) bool {
 	if !githubScoped {
 		return false
 	}
-	// Use the same access-failure evidence as worker outcomes. Credential and
-	// authentication terminology alone also occurs in ordinary design questions.
 	if githubCredentialFailureDetail(detail) {
 		return true
 	}
-	// Match the requested action independently of the polite auxiliary and of
-	// the connector name between the action and its object.
 	if strings.Contains(detail, "write access") {
 		for _, action := range []string{"you enable", "you grant", "you allow"} {
 			if strings.Contains(detail, action) {
@@ -2373,7 +2388,7 @@ func workerGitHubCredentialFailureDetail(detail string) bool {
 }
 
 func deliverableCredentialFailureDetail(detail string) bool {
-	if githubCredentialFailureDetail(detail) || IsWorkerGitHubCredentialQuestion(detail) {
+	if githubCredentialFailureDetail(detail) || workerGitHubSupportRequest(detail) {
 		return true
 	}
 	detail = strings.ToLower(strings.TrimSpace(detail))
@@ -2403,6 +2418,11 @@ func classifyForgeOperationError(err error, operation string, host string) error
 		host = observedHost
 	}
 	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+}
+
+func forgeRetryReadOperation(operation string) bool {
+	operation = strings.ToLower(operation)
+	return strings.Contains(operation, "git fetch") || strings.Contains(operation, "git ls-remote")
 }
 
 func pullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {

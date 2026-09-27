@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,27 @@ type nativeExecution struct {
 	data      tracker.NativeRunData
 	pending   *tracker.NativeRunEvent
 	cancel    context.CancelCauseFunc
+	// diffSource computes the stored attempt diff the execution posts before
+	// every checkpoint and before the finish (decisions section 18.5). It is
+	// nil for a run with no worktree to describe.
+	diffSource runner.AttemptDiffSource
+	// lastDiff is the most recent diff the source produced. It stands in for
+	// the finish generation when the worktree is gone by then: the agent has
+	// stopped, so nothing changed after the last diff that could be read.
+	lastDiff *tracker.AttemptDiffRequest
+	// storedSeq is the run event sequence whose diff the hub last stored, so
+	// the finish can tell its final diff was received.
+	storedSeq int64
+	// worktreeState is the last checkpoint's worktree state. Only a clean or
+	// unpushed worktree is settled; dirty work takes the ordinary path.
+	worktreeState string
+	// role and conversation decide whether a finished run is work the runner
+	// opens a Change Request for: a code or rework run that no conversation
+	// owns the continuation of.
+	role         string
+	conversation bool
+	settled      bool
+	change       *runner.NativeChange
 }
 
 type nativeMutationAuthorityKey struct{}
@@ -170,6 +192,7 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 		return e.flush(ctx)
 	}
 	e.data.Identity = &identity
+	e.role = identity.Role
 	return e.append(ctx, "run.started", "", nil)
 }
 
@@ -193,6 +216,7 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	if string(previous) == string(current) {
 		return nil
 	}
+	e.worktreeState = checkpoint.WorktreeState
 	return e.append(ctx, "run.checkpointed", "", &checkpoint)
 }
 
@@ -202,10 +226,79 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
-	if e.data.Identity == nil || e.data.Outcome != "" {
+	if e.data.Identity == nil {
 		return nil
 	}
+	if e.data.Outcome != "" {
+		e.settle(ctx, e.data.Outcome, e.data.Sequence)
+		return nil
+	}
+	// A succeeded run is settled before run.finished is published, while the
+	// lease still fences it: the finish diff is stored and the Change Request
+	// opened first, so a runner that dies in between leaves the attempt
+	// running and the lease's expiry re-offers the item. Opening the change
+	// again is safe, because it reuses the item's change.
+	finish := e.data.Sequence + 1
+	if outcome == "succeeded" {
+		e.postDiff(ctx, finish)
+		e.settle(ctx, outcome, finish)
+	}
 	return e.append(ctx, "run.finished", outcome, nil)
+}
+
+// NativeChange reports what the finished run left for review.
+func (e *nativeExecution) NativeChange() *runner.NativeChange {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.change == nil {
+		return nil
+	}
+	change := *e.change
+	return &change
+}
+
+// SetDiffSource installs the source the execution calls before every run event
+// that references a stored diff (decisions section 18.5).
+func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.diffSource = source
+}
+
+// postDiff stores the worktree's diff for the event about to be appended. The
+// producer tuple is this execution's own lease, because the attempt is still
+// running and its lease is therefore the producer; the generation is the run
+// event sequence the diff belongs to, which is why the post happens before the
+// event and not after it.
+//
+// It is best-effort in both directions: a source that has nothing posts
+// nothing, and a hub that refuses the diff is logged and ignored, so a run is
+// never lost over a diff. e.mu is held by the caller.
+func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) {
+	if e.diffSource == nil || e.claim.source == nil {
+		return
+	}
+	request, ok := e.diffSource(ctx)
+	switch {
+	case ok:
+		last := request
+		e.lastDiff = &last
+	case e.lastDiff != nil:
+		request = *e.lastDiff
+	default:
+		return
+	}
+	request.Producer = tracker.DiffProducer{
+		Kind: tracker.DiffSourceAttempt, ID: e.data.AttemptID,
+		LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
+	}
+	request.Generation = tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: sequence}
+	if _, err := e.claim.source.client.PostAttemptDiff(ctx, e.data.AttemptID, request); err != nil {
+		slog.Default().Warn("attempt diff not stored",
+			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", sequence, "error", err)
+		return
+	}
+	e.storedSeq = sequence
 }
 
 func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint) error {
@@ -215,6 +308,9 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	data := e.data
 	data.Sequence++
 	data.Outcome = outcome
+	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence {
+		e.postDiff(ctx, data.Sequence)
+	}
 	data.Handoff = checkpoint
 	e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
 	return e.flush(ctx)

@@ -1,0 +1,66 @@
+{
+  "conversation": {
+    "id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+    "organization_id": "org_4d1f",
+    "project_id": "proj_parable",
+    "title": "Flaky checkout lock renewal",
+    "visibility": "shared",
+    "status": "active",
+    "work_item_id": "wi_3363",
+    "linked_at": "2026-09-09T09:41:12Z",
+    "work_item": {
+      "id": "wi_3363",
+      "identifier": "parable#3363",
+      "title": "Checkout lock renewal waits on a healthy handoff",
+      "lane": "Todo",
+      "runner_bound": false
+    },
+    "preferences": {
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "access": "read_only"
+    },
+    "owner": {
+      "principal_id": "tok_7b21",
+      "subject": "usr_michael"
+    },
+    "execution": {
+      "status": "waiting_for_runner",
+      "attempt_id": null,
+      "run_id": null,
+      "runner_id": null,
+      "thread_id": null,
+      "turn_id": null,
+      "capabilities": {
+        "steer": false,
+        "interrupt": false,
+        "answer": false,
+        "continue": true
+      },
+      "resume": "",
+      "error": null,
+      "updated_at": "2026-09-09T09:41:12Z"
+    },
+    "revision": 4,
+    "event_seq": 9,
+    "message_count": 14,
+    "created_at": "2026-09-09T09:38:00Z",
+    "updated_at": "2026-09-09T09:41:12Z",
+    "last_message_at": "2026-09-09T09:40:55Z"
+  },
+  "issue": {
+    "id": "wi_3363",
+    "identifier": "parable#3363",
+    "title": "Checkout lock renewal waits on a healthy handoff",
+    "state": "Todo"
+  },
+  "scheduling": {
+    "lane": "Todo",
+    "runner_bound": false
+  },
+  "next": {
+    "state": "Todo",
+    "priority": null,
+    "dispatch": "later"
+  }
+}

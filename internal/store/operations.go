@@ -46,9 +46,7 @@ func (s *sqliteStore) OperationsReport(ctx context.Context, now, since time.Time
 		return operations.Report{}, err
 	}
 	rows.Close()
-	report.Decisions, err = s.OpenHumanQuestions(ctx)
-	report.Decisions = operations.WithQuestionAges(report.Decisions, now)
-	return report, err
+	return report, nil
 }
 
 func (s *sqliteStore) operationsWindow(ctx context.Context, from, to time.Time) (operations.Window, error) {

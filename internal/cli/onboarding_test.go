@@ -1680,7 +1680,7 @@ func TestOnboardingDiagnoseGateDetectsEnvPollutedFailure(t *testing.T) {
 
 func TestOnboardingDiagnoseGateKeepsPassingCommandRecommended(t *testing.T) {
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
-	writeOnboardingEnvOverrideModule(t, targetRoot)
+	const gateCommand = "echo gate-passed"
 
 	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
 	var stdout bytes.Buffer
@@ -1690,8 +1690,7 @@ func TestOnboardingDiagnoseGateKeepsPassingCommandRecommended(t *testing.T) {
 		"--format", "json",
 		"onboarding", "diagnose-gate",
 		"--source-root", targetRoot,
-		"--command", "go test ./...",
-		"--timeout", "30s",
+		"--command", gateCommand,
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -1706,7 +1705,7 @@ func TestOnboardingDiagnoseGateKeepsPassingCommandRecommended(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
 	}
-	if got.Status != "pass" || got.PassingCommand != "go test ./..." || got.RecommendedGateCommand != "go test ./..." {
+	if got.Status != "pass" || got.PassingCommand != gateCommand || got.RecommendedGateCommand != gateCommand {
 		t.Fatalf("diagnostic result = %#v, want passing command recommendation", got)
 	}
 }

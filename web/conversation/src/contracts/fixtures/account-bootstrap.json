@@ -1,0 +1,112 @@
+{
+  "organization": {
+    "id": "org_threefold",
+    "name": "Threefold Solutions"
+  },
+  "organizations": [
+    {
+      "id": "org_threefold",
+      "name": "Threefold Solutions",
+      "public_url": "https://threefold.detent.cloud",
+      "current": true
+    },
+    {
+      "id": "org_parable",
+      "name": "Parable",
+      "public_url": "https://parable.detent.cloud",
+      "current": false
+    }
+  ],
+  "actor": {
+    "principal_id": "tok_01J9",
+    "subject": "user_michael",
+    "email": "michael@threefold.solutions",
+    "role": "owner",
+    "can_manage": true,
+    "can_manage_runners": true
+  },
+  "projects": [
+    {
+      "id": "proj_parable",
+      "name": "parable",
+      "profile": "native",
+      "can_write": true,
+      "can_manage_runners": true,
+      "states": [
+        {
+          "name": "Todo",
+          "terminal": false,
+          "dispatchable": true,
+          "transitions": [
+            "In Progress"
+          ]
+        },
+        {
+          "name": "In Progress",
+          "terminal": false,
+          "dispatchable": false,
+          "transitions": [
+            "Done"
+          ]
+        },
+        {
+          "name": "Done",
+          "terminal": true,
+          "dispatchable": false,
+          "transitions": []
+        }
+      ],
+      "labels": [
+        "bug",
+        "chore",
+        "goal:reliability"
+      ],
+      "priorities": [
+        "High",
+        "Normal",
+        "Low"
+      ],
+      "coordinator": true
+    },
+    {
+      "id": "proj_marketing",
+      "name": "threefold-marketing",
+      "profile": "github_compatible",
+      "can_write": false,
+      "can_manage_runners": false,
+      "states": [
+        {
+          "name": "Todo",
+          "terminal": false,
+          "dispatchable": true,
+          "transitions": [
+            "Done"
+          ]
+        },
+        {
+          "name": "Done",
+          "terminal": true,
+          "dispatchable": false,
+          "transitions": []
+        }
+      ]
+    }
+  ],
+  "support": null,
+  "csrf_token": "csrf_01J9QX",
+  "capabilities": {
+    "coordinator": true,
+    "attachments": false
+  },
+  "feature": {
+    "conversation": true
+  },
+  "plan": {
+    "id": "pilot_free",
+    "name": "pilot_free \u00b7 version 1",
+    "source": "base",
+    "window_ends_at": "2026-09-10T21:00:00Z"
+  },
+  "api_base": "/api/v2/organizations/org_threefold",
+  "version": "v0.108.0"
+}
