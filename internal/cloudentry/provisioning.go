@@ -30,6 +30,7 @@ type AllocationConfig struct {
 	AllowedEmails           []string
 	AllowedDomains          []string
 	Launcher                Launcher
+	EntitlementAdminToken   []byte
 }
 
 func (a *AllocationConfig) validate() error {

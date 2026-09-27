@@ -43,6 +43,7 @@ listen: 127.0.0.1:8017
 state_directory: /var/lib/detent/cloud
 staff_emails: []
 support_actors: []
+entitlement_administrators: []
 assertion:
   issuer: detent-cloud
   signing_key_env: DETENT_CLOUD_ASSERTION_KEY
@@ -50,6 +51,11 @@ workos:
   client_id: client_example
   api_key_env: WORKOS_API_KEY
 ```
+
+`entitlement_administrators` lists the staff who may grant and revoke
+complimentary plans from `/platform`; each must also appear in `staff_emails`,
+and the list requires `allocation.entitlement_admin_token_env`. The entry refuses
+to start otherwise. See [allowances](../../hosted-allowances.md#granting-from-the-platform-console).
 
 `detent cloud assertion-key` prints a new signing seed and public key; put the seed
 in the entry's private environment and the public key in each tenant's
@@ -101,6 +107,9 @@ tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pi
 empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
 plan every new organization starts on, and no Stripe customer or card is created.
+Left empty, tenants use the default catalog: `pilot_free` as the base and
+`comp_team` for complimentary grants. An explicit catalog replaces both, so include
+a plan to grant alongside the base.
 `entitlement_administrator` and `entitlement_admin_token_env` are optional; when set,
 each tenant accepts complimentary grants on `POST /api/v2/organizations/ORG/entitlements`
 with that token (at least 32 bytes, read from the entry's environment and passed to

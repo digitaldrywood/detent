@@ -32,18 +32,19 @@ const (
 )
 
 type Config struct {
-	PublicURL     string
-	Issuer        string
-	SigningKey    ed25519.PrivateKey
-	Provider      auth.HostedProvider
-	StaffEmails   []string
-	SupportActors []string
-	StateDir      string
-	ListenAddress string
-	Logger        *slog.Logger
-	Allocation    *AllocationConfig
-	Billing       *BillingConfig
-	ConfigPath    string
+	PublicURL                 string
+	Issuer                    string
+	SigningKey                ed25519.PrivateKey
+	Provider                  auth.HostedProvider
+	StaffEmails               []string
+	SupportActors             []string
+	EntitlementAdministrators []string
+	StateDir                  string
+	ListenAddress             string
+	Logger                    *slog.Logger
+	Allocation                *AllocationConfig
+	Billing                   *BillingConfig
+	ConfigPath                string
 
 	now           func() time.Time
 	generateToken func() (string, error)
@@ -73,6 +74,9 @@ func (c Config) validate() error {
 		return err
 	}
 	if err := c.Allocation.validate(); err != nil {
+		return err
+	}
+	if err := c.validateEntitlementAdministrators(); err != nil {
 		return err
 	}
 	if !safeID(c.Issuer) || len(c.SigningKey) != ed25519.PrivateKeySize || c.Provider == nil || strings.TrimSpace(c.StateDir) == "" {
@@ -204,6 +208,8 @@ func (s *Service) routes() {
 	e.GET("/api/cloud/platform/organizations", s.platformOrganizationsJSON)
 	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
 	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
+	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON)
+	e.POST("/api/cloud/platform/organizations/:organization/entitlements", s.changePlatformEntitlement)
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)

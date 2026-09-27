@@ -30,11 +30,96 @@ type hostedPlanCommand struct {
 	Reason           string        `json:"reason"`
 }
 
-func (s *Service) updateHostedPlan(c echo.Context) error {
+func (s *Service) entitlementAdministrator(c echo.Context) bool {
 	token, err := apiBearerToken(c)
 	supplied := sha256.Sum256([]byte(token))
 	configured := sha256.Sum256(s.config.Hosted.EntitlementAdminToken)
-	if err != nil || len(s.config.Hosted.EntitlementAdminToken) < 32 || subtle.ConstantTimeCompare(supplied[:], configured[:]) != 1 {
+	return err == nil && len(s.config.Hosted.EntitlementAdminToken) >= 32 && subtle.ConstantTimeCompare(supplied[:], configured[:]) == 1
+}
+
+type hostedGrantRecord struct {
+	HostedGrant
+	Reason    string     `json:"reason"`
+	GrantedBy string     `json:"granted_by"`
+	GrantedAt *time.Time `json:"granted_at,omitempty"`
+}
+
+type hostedEntitlementReport struct {
+	OrganizationID string              `json:"organization_id"`
+	Base           PlanReference       `json:"base"`
+	EffectiveBase  PlanReference       `json:"effective_base"`
+	Source         string              `json:"source"`
+	Revision       int64               `json:"revision"`
+	Grants         []hostedGrantRecord `json:"grants"`
+	Plans          []HostedPlan        `json:"plans"`
+}
+
+func (s *Service) hostedPlanReport(c echo.Context) error {
+	if !s.entitlementAdministrator(c) {
+		return c.NoContent(http.StatusForbidden)
+	}
+	report, err := s.database.hostedEntitlementReport(c.Request().Context())
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, report)
+}
+
+func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitlementReport, error) {
+	var report hostedEntitlementReport
+	if d.hostedPlans == nil {
+		return report, nativeNotFound()
+	}
+	now, err := d.currentTime()
+	if err != nil {
+		return report, err
+	}
+	entitlement, err := d.hostedEntitlement(ctx, d.db, now)
+	if err != nil {
+		return report, err
+	}
+	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Grants: []hostedGrantRecord{}, Plans: []HostedPlan{}}
+	for _, configured := range d.hostedPlans.Plans {
+		plan, err := readHostedPlan(ctx, d.db, configured.PlanReference)
+		if err != nil {
+			return report, err
+		}
+		report.Plans = append(report.Plans, plan)
+	}
+	granted := make(map[string]hostedGrantRecord)
+	audits, err := d.db.QueryContext(ctx, "SELECT actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant'")
+	if err != nil {
+		return report, err
+	}
+	defer audits.Close()
+	for audits.Next() {
+		var actor, reason, recorded, raw string
+		var command hostedPlanCommand
+		if err := audits.Scan(&actor, &reason, &recorded, &raw); err != nil {
+			return report, err
+		}
+		if err := json.Unmarshal([]byte(raw), &command); err != nil {
+			return report, err
+		}
+		record := hostedGrantRecord{Reason: reason, GrantedBy: actor}
+		if at, err := parseTimeValue(recorded); err == nil {
+			record.GrantedAt = &at
+		}
+		granted[command.GrantID] = record
+	}
+	if err := audits.Err(); err != nil {
+		return report, err
+	}
+	for _, grant := range entitlement.Grants {
+		record := granted[grant.ID]
+		record.HostedGrant = grant
+		report.Grants = append(report.Grants, record)
+	}
+	return report, nil
+}
+
+func (s *Service) updateHostedPlan(c echo.Context) error {
+	if !s.entitlementAdministrator(c) {
 		return c.NoContent(http.StatusForbidden)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"slices"
@@ -23,12 +24,13 @@ import (
 )
 
 type cloudFileConfig struct {
-	PublicURL      string   `yaml:"public_url"`
-	Listen         string   `yaml:"listen"`
-	StateDirectory string   `yaml:"state_directory"`
-	StaffEmails    []string `yaml:"staff_emails"`
-	SupportActors  []string `yaml:"support_actors"`
-	Assertion      struct {
+	PublicURL                 string   `yaml:"public_url"`
+	Listen                    string   `yaml:"listen"`
+	StateDirectory            string   `yaml:"state_directory"`
+	StaffEmails               []string `yaml:"staff_emails"`
+	SupportActors             []string `yaml:"support_actors"`
+	EntitlementAdministrators []string `yaml:"entitlement_administrators"`
+	Assertion                 struct {
 		Issuer        string `yaml:"issuer"`
 		SigningKeyEnv string `yaml:"signing_key_env"`
 	} `yaml:"assertion"`
@@ -140,6 +142,18 @@ func validateEntitlementAdministration(config cloudFileConfig, lookupEnv func(st
 	return nil
 }
 
+func validateEntitlementAdministrators(config cloudFileConfig) error {
+	for _, email := range config.EntitlementAdministrators {
+		if !slices.ContainsFunc(config.StaffEmails, func(staff string) bool { return strings.EqualFold(strings.TrimSpace(staff), strings.TrimSpace(email)) }) {
+			return fmt.Errorf("entitlement_administrators entry %q is not listed in staff_emails; every entitlement administrator must be staff", email)
+		}
+	}
+	if len(config.EntitlementAdministrators) > 0 && (config.Allocation == nil || config.Allocation.EntitlementAdminTokenEnv == "") {
+		return errors.New("entitlement_administrators requires allocation.entitlement_admin_token_env so the entry can reach tenant entitlements")
+	}
+	return nil
+}
+
 func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -162,6 +176,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	}
 	if config.Listen == "" {
 		config.Listen = "127.0.0.1:8017"
+	}
+	if err := validateEntitlementAdministrators(config); err != nil {
+		return cloudentry.Config{}, err
 	}
 	if !validEnvName(config.WorkOS.APIKeyEnv) || !validEnvName(config.Assertion.SigningKeyEnv) {
 		return cloudentry.Config{}, errors.New("shared entry secret environment variable names are invalid")
@@ -187,7 +204,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	}
 	result := cloudentry.Config{
 		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
-		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
+		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, EntitlementAdministrators: config.EntitlementAdministrators, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
 	}
 	if allocation := config.Allocation; allocation != nil {
 		binary := allocation.Binary
@@ -213,6 +230,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			MaxPerIdentity: allocation.MaxPerIdentity, RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
 			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: tenantEnvironment(config, lookupEnv), Configure: tenantConfiguration(config), Logger: slog.Default()},
+		}
+		if name := allocation.EntitlementAdminTokenEnv; name != "" {
+			result.Allocation.EntitlementAdminToken = []byte(lookupEnv(name))
 		}
 		if tenantBilling := allocation.Billing; tenantBilling != nil {
 			if tenantBilling.CustomerID != "" || config.Billing == nil || tenantBilling.Mode != config.Billing.Mode || tenantBilling.AccountID != config.Billing.AccountID {
