@@ -1,0 +1,136 @@
+package hubserver
+
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+)
+
+type hostedLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *hostedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *hostedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+func TestHostedLoginDenialLogging(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		wantStatus int
+		wantReason string
+		wantFields map[string]any
+	}{
+		{name: "wrong state", wantStatus: http.StatusUnauthorized, wantReason: "state_mismatch"},
+		{name: "missing cookie", wantStatus: http.StatusUnauthorized, wantReason: "transaction_missing"},
+		{name: "missing verifier", wantStatus: http.StatusUnauthorized, wantReason: "pkce_missing"},
+		{name: "provider error callback", wantStatus: http.StatusUnauthorized, wantReason: "provider_error", wantFields: map[string]any{"provider_error": "access_denied"}},
+		{name: "issuer mismatch", wantStatus: http.StatusUnauthorized, wantReason: "issuer_mismatch", wantFields: map[string]any{"token_issuer": "https://api.workos.com", "flow": "login_callback"}},
+		{name: "exchange failed", wantStatus: http.StatusUnauthorized, wantReason: "exchange_failed", wantFields: map[string]any{"provider_status": float64(http.StatusBadRequest)}},
+		{name: "wrong organization", wantStatus: http.StatusForbidden, wantReason: "organization_mismatch", wantFields: map[string]any{"email_domain": "example.test"}},
+		{name: "unverified email", wantStatus: http.StatusUnauthorized, wantReason: "email_unverified"},
+		{name: "support without start", wantStatus: http.StatusForbidden, wantReason: "support_actor_invalid"},
+		{name: "invitation missing token", wantStatus: http.StatusForbidden, wantReason: "invitation_invalid", wantFields: map[string]any{"flow": "invitation_start"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var output hostedLogBuffer
+			p := newHostedLoginProvider()
+			cfg := hostedLoginConfig(t, p, true)
+			cfg.Logger = slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			s := openTestService(t, cfg)
+			transaction, state := hostedLoginStart(t, s, false)
+			query := url.Values{"code": {"callback-code-sentinel"}, "state": {state}}
+			cookies := []*http.Cookie{transaction}
+			target := "/auth/oidc/callback?"
+			switch tt.name {
+			case "wrong state":
+				query.Set("state", "another_browser")
+			case "missing cookie":
+				cookies = nil
+			case "missing verifier":
+				hostedLoginExec(t, s, "UPDATE hosted_transactions SET verifier = ''")
+			case "provider error callback":
+				query.Set("error", "access_denied")
+			case "issuer mismatch":
+				p.exchangeErr = &auth.HostedIdentityError{Reason: auth.HostedReasonIssuerMismatch, TokenIssuer: "https://api.workos.com"}
+			case "exchange failed":
+				p.exchangeErr = &auth.HostedIdentityError{Reason: auth.HostedReasonExchangeFailed, Status: http.StatusBadRequest}
+			case "wrong organization":
+				p.identity.Hosted.OrganizationID = "org_other_provider"
+			case "unverified email":
+				p.identity.EmailVerified = false
+			case "support without start":
+				p.identity.Hosted.SupportActor, p.identity.Hosted.SupportReason = "support@example.test", "troubleshooting"
+			case "invitation missing token":
+				target, query = "/invite?", url.Values{}
+			}
+			recorder := hostedLoginRequest(s, http.MethodGet, target+query.Encode(), "", nil, false, cookies...)
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", recorder.Code, tt.wantStatus)
+			}
+			logged := output.String()
+			var denial map[string]any
+			for line := range strings.SplitSeq(strings.TrimSpace(logged), "\n") {
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("log line is not JSON: %q", line)
+				}
+				if record["msg"] == "hosted sign-in denied" {
+					if denial != nil {
+						t.Fatalf("multiple denial records:\n%s", logged)
+					}
+					denial = record
+				}
+			}
+			if denial == nil || denial["level"] != "WARN" || denial["reason"] != tt.wantReason {
+				t.Fatalf("denial record = %v, want reason %s:\n%s", denial, tt.wantReason, logged)
+			}
+			if id, _ := denial["request_id"].(string); id == "" || recorder.Header().Get("X-Request-Id") != id {
+				t.Fatalf("request_id = %v, header = %q", denial["request_id"], recorder.Header().Get("X-Request-Id"))
+			}
+			for key, want := range tt.wantFields {
+				if denial[key] != want {
+					t.Errorf("%s = %v, want %v", key, denial[key], want)
+				}
+			}
+			for _, secret := range []string{"callback-code-sentinel", state, transaction.Value, "customer@example.test", "support@example.test"} {
+				if strings.Contains(logged, secret) {
+					t.Errorf("log exposed %q:\n%s", secret, logged)
+				}
+			}
+		})
+	}
+}
+
+func TestHostedLoginLogsStayRedactedOutsideDenials(t *testing.T) {
+	t.Parallel()
+	var output hostedLogBuffer
+	cfg := hostedLoginConfig(t, newHostedLoginProvider(), true)
+	cfg.Logger = slog.New(slog.NewJSONHandler(&output, nil))
+	s := openTestService(t, cfg)
+	s.config.Logger.Warn("tenant content sentinel", "secret", "attribute-sentinel", "at", time.Now())
+	logged := output.String()
+	if strings.Contains(logged, "tenant content sentinel") || strings.Contains(logged, "attribute-sentinel") || !strings.Contains(logged, "hosted service event") {
+		t.Fatalf("hosted service log was not redacted:\n%s", logged)
+	}
+}

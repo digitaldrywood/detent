@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/auth"
 )
 
 type hostedNextResponse struct {
@@ -87,7 +89,9 @@ func (s *Service) acceptHostedInvitationJSON(c echo.Context) error {
 	if _, _, err := s.hostedSession(c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	if message := s.acceptHostedInvitationToken(c, request.Token); message != "" && !s.hostedInvitationAcceptedBySession(c, request.Token) {
+	if message, denial := s.acceptHostedInvitationToken(c, request.Token); message != "" && !s.hostedInvitationAcceptedBySession(c, request.Token) {
+		denial.Status = http.StatusForbidden
+		auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), denial)
 		return s.hostedJSONError(c, http.StatusForbidden, message)
 	}
 	return c.JSON(http.StatusOK, hostedNextResponse{Next: s.config.Hosted.PublicURL + "/auth/oidc/start"})
@@ -109,8 +113,9 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 	if _, _, err := s.hostedSession(c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	session, transaction, status, message := s.beginHostedSupport(c)
+	session, transaction, status, message, reason := s.beginHostedSupport(c)
 	if status != http.StatusOK {
+		auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), auth.HostedDenial{Flow: "support_start", Reason: reason, Status: status, Email: session.Email})
 		return s.hostedJSONError(c, status, message)
 	}
 	return c.JSON(http.StatusOK, hostedSupportResponse{Support: hostedSupportView{Actor: session.Email, ExpiresAt: transaction.ExpiresAt.UTC()}})
