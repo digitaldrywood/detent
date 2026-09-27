@@ -68,6 +68,11 @@ jobs:
       - name: Deploy develop@${{ github.sha }}
         run: |
           set -euo pipefail
+          head=$(git ls-remote origin refs/heads/develop | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::develop moved to ${head}; skipping stale deploy of ${GITHUB_SHA}"
+            exit 0
+          fi
           ssh -i "$RUNNER_TEMP/ssh/id" \
               -o IdentitiesOnly=yes \
               -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \

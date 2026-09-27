@@ -414,6 +414,7 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 		{name: "single deploy at a time", want: "concurrency:\n  group: deploy-staging\n  cancel-in-progress: true\n", present: true},
 		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
 		{name: "strict host key", want: "-o StrictHostKeyChecking=yes", present: true},
+		{name: "stale run skips deploy", want: `if [ "$head" != "$GITHUB_SHA" ]; then`, present: true},
 		{name: "self-hosted runner", want: "self-hosted"},
 		{name: "pull request trigger", want: "pull_request"},
 		{name: "secrets inherited from repository", want: "secrets: inherit"},
