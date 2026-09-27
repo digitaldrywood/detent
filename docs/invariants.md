@@ -1196,7 +1196,7 @@ Verify job; draft iteration avoids paying this cost before local review ends.
 
 **Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
 requires the PR activity allowlist and excludes every real job from PR execution (including
-the Invariant Gate), rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
+the Invariant Gate and every Browser Visual shard). It allows `always()` only on the Verify and Browser Visual aggregates, and only as `always() && github.event_name != 'pull_request'`. It rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
 snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;
