@@ -494,6 +494,9 @@ func (o *Orchestrator) hydrateValidatorStagePullRequest(
 	if strings.TrimSpace(hydrated.ID) == "" || strings.TrimSpace(hydrated.ID) != strings.TrimSpace(issue.ID) {
 		return issue, false
 	}
+	if hydrated.PullRequest == nil || pullRequestHydrationBlocksProgress(hydrated.PullRequest) {
+		return issue, false
+	}
 	return hydrated, true
 }
 
@@ -2491,6 +2494,23 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
+	// An active run owns this head until it finishes. Avoid hydrating the PR
+	// again on every tick while that run is in progress.
+	if key := validatorStageIdentityForIssue(issue).Key; key != "" {
+		o.validatorMu.Lock()
+		_, running := o.validatorRuns[key]
+		o.validatorMu.Unlock()
+		if running {
+			return
+		}
+	}
+	if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
+		var ok bool
+		issue, ok = o.hydrateValidatorStagePullRequest(ctx, issue)
+		if !ok {
+			return
+		}
+	}
 	identity := validatorStageIdentityForIssue(issue)
 	if identity.Key == "" {
 		if o.logger != nil {
@@ -2600,6 +2620,21 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		if err != nil {
 			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
 			delete(o.validatorRuns, identity.Key)
+			if errors.Is(err, runpkg.ErrValidatorInfrastructure) {
+				o.validatorMu.Unlock()
+				if capacityProbeKey != "" {
+					o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+						Scope:         capacityScope,
+						ProbeErr:      err,
+						CapacityProbe: true,
+						CompletedAt:   completedAt,
+					})
+				}
+				if o.logger != nil {
+					o.logger.Error("validator infrastructure failure", "issue_id", identity.IssueID, "head_sha", identity.HeadSHA, "error", err)
+				}
+				return
+			}
 			if capacityErr, ok := backendcapacity.As(err); ok {
 				if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 					failure := o.validatorFailures[identity.Key]
@@ -2684,6 +2719,23 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 				CapacityProbe: true,
 				CompletedAt:   completedAt,
 			})
+		}
+		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
+			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
+				currentHead := validatorStageIdentityForIssue(current).HeadSHA
+				if currentHead != identity.HeadSHA {
+					result = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
+						Summary: fmt.Sprintf("validation head mismatch: reviewed %s, current PR %s", identity.HeadSHA, currentHead)}
+				}
+			} else {
+				// The authoritative head is unavailable. Leave the verdict absent so
+				// the existing validation path can try again on the next tick.
+				o.validatorMu.Lock()
+				o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+				delete(o.validatorRuns, identity.Key)
+				o.validatorMu.Unlock()
+				return
+			}
 		}
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
 
