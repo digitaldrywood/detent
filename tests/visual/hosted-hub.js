@@ -65,7 +65,7 @@ async function startHostedHub(name = "conversation") {
       "-count=1",
       "-v",
       "-timeout",
-      "10m",
+      "25m",
     ],
     {
       cwd: process.cwd(),

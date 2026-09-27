@@ -165,7 +165,7 @@ func (p *browserHostedProvider) identity(user, email, organization, support stri
 	defer p.mu.Unlock()
 	p.sequence++
 	now := time.Now().UTC()
-	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: fmt.Sprintf("session_browser_%d", p.sequence), CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(15 * time.Minute), SupportActor: support}
+	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: fmt.Sprintf("session_browser_%d", p.sequence), CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(browserHostedPreviewLifetime), SupportActor: support}
 	if support != "" {
 		hosted.SupportReason = "customer-request"
 	}
@@ -185,6 +185,11 @@ type browserHostedFixture struct {
 	stop           chan struct{}
 	stopOnce       sync.Once
 }
+
+// browserHostedPreviewLifetime bounds a preview the browser suite never
+// stopped. It outlasts the browser job so a long serial spec ends through
+// POST /__preview/stop, not this timer.
+const browserHostedPreviewLifetime = 20 * time.Minute
 
 func newBrowserHostedFixture(t *testing.T, allocated bool) *browserHostedFixture {
 	t.Helper()
@@ -700,7 +705,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		URL: f.server.URL, Login: f.server.URL + "/login", Organization: f.server.URL + "/organization",
 		Project: f.server.URL + "/projects/" + f.project, PrivateProject: f.server.URL + "/projects/" + f.privateProject,
 		Chat: f.server.URL + "/chat", ProjectID: f.project, Conversation: f.conversation, WorkItem: f.workItem,
-		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(5 * time.Minute),
+		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
 	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")
 	if err != nil {
@@ -712,7 +717,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	t.Logf("Hosted browser fixture: %s", path)
 	t.Logf("Hosted browser URL: %s", f.server.URL)
-	timer := time.NewTimer(5 * time.Minute)
+	timer := time.NewTimer(browserHostedPreviewLifetime)
 	defer timer.Stop()
 	select {
 	case <-f.stop:
