@@ -215,13 +215,13 @@ func conversationError(err error) error {
 
 // BindConversation implements runner.ConversationExecution for the native
 // execution: the attempt binds with its own lease and fencing token.
-func (e *nativeExecution) BindConversation(ctx context.Context, capabilities runner.ConversationCapabilities) (runner.ConversationSession, error) {
+func (e *nativeExecution) BindConversation(ctx context.Context, capabilities runner.ConversationCapabilities, resumeThreadID string) (runner.ConversationSession, error) {
 	if e.claim.source == nil || e.claim.source.client == nil || e.data.AttemptID == "" {
 		return nil, runner.ErrNoConversation
 	}
 	identity := ConversationIdentity{LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken, AttemptID: e.data.AttemptID}
 	bindCtx, cancel := context.WithTimeout(ctx, conversationBindTimeout)
-	response, err := e.claim.source.client.BindConversation(bindCtx, e.claim.lease.WorkItemID, ConversationBindRequest{ConversationIdentity: identity, RunID: e.data.RunID, Capabilities: capabilities})
+	response, err := e.claim.source.client.BindConversation(bindCtx, e.claim.lease.WorkItemID, ConversationBindRequest{ConversationIdentity: identity, RunID: e.data.RunID, Capabilities: capabilities, ThreadID: strings.TrimSpace(resumeThreadID)})
 	cancel()
 	if err != nil {
 		return nil, err

@@ -1694,7 +1694,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
 		}
-		if conversation := r.bindConversation(ctx, req, backend); conversation != nil {
+		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
 			ctx = conversation.attach(ctx)
 			defer func() { conversation.close(ctx, returnValue, returnErr) }()
 		}

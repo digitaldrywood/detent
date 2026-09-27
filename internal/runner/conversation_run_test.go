@@ -74,11 +74,13 @@ type conversationTestExecution struct {
 	session      *fakeConversationSession
 	capabilities ConversationCapabilities
 	bound        bool
+	resumeThread string
 }
 
-func (e *conversationTestExecution) BindConversation(_ context.Context, capabilities ConversationCapabilities) (ConversationSession, error) {
+func (e *conversationTestExecution) BindConversation(_ context.Context, capabilities ConversationCapabilities, resumeThreadID string) (ConversationSession, error) {
 	e.bound = true
 	e.capabilities = capabilities
+	e.resumeThread = resumeThreadID
 	if e.bindErr != nil {
 		return nil, e.bindErr
 	}
@@ -727,6 +729,30 @@ func TestConversationRunPrepareTurnCarriesPendingAttachments(t *testing.T) {
 			}
 			if test.wantCount > 0 && strings.Index(request.Prompt, "Do the work") > strings.Index(request.Prompt, "<attachments>") && test.wantInBlock {
 				t.Fatalf("the data block must follow the instructions: %q", request.Prompt)
+			}
+		})
+	}
+}
+
+func TestBindConversationNamesTheRunsResumeThread(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		thread string
+	}{
+		{name: "fresh run", thread: ""},
+		{name: "run resuming its own provider thread", thread: "thread-local"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			agent := &conversationAgentBackend{}
+			execution := &conversationTestExecution{session: newFakeConversationSession()}
+			r := newConversationRunner(t, agent)
+			if run := r.bindConversation(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native"}}, agent, test.thread); run == nil {
+				t.Fatal("bind returned no conversation")
+			}
+			if execution.resumeThread != test.thread {
+				t.Fatalf("bind resume thread = %q, want %q", execution.resumeThread, test.thread)
 			}
 		})
 	}

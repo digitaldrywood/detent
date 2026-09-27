@@ -46,7 +46,7 @@ type conversationRunContextKey struct{}
 // bindConversation binds the run to the issue's conversation when both the
 // execution and the backend support live control. A conversation never
 // blocks a run: every failure is logged and the run continues without one.
-func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend AgentBackend) *conversationRun {
+func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend AgentBackend, resumeThreadID string) *conversationRun {
 	execution, ok := req.Execution.(ConversationExecution)
 	if !ok {
 		return nil
@@ -55,7 +55,7 @@ func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend A
 	if !ok || !live.SupportsLiveControl() {
 		return nil
 	}
-	session, err := execution.BindConversation(ctx, ConversationCapabilities{Steer: true, Interrupt: true, Answer: true, Continue: true})
+	session, err := execution.BindConversation(ctx, ConversationCapabilities{Steer: true, Interrupt: true, Answer: true, Continue: true}, resumeThreadID)
 	if err != nil {
 		level := slog.LevelWarn
 		if errors.Is(err, ErrNoConversation) {

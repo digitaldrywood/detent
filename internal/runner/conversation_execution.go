@@ -111,7 +111,9 @@ type ConversationExecution interface {
 	// BindConversation binds the current attempt to the issue's conversation
 	// and returns the session that feeds live controls into turns. It returns
 	// ErrNoConversation when the issue has none.
-	BindConversation(ctx context.Context, capabilities ConversationCapabilities) (ConversationSession, error)
+	// resumeThreadID is the provider thread the run itself resumes, empty
+	// when it starts fresh, so the hub's resume decision matches the run's.
+	BindConversation(ctx context.Context, capabilities ConversationCapabilities, resumeThreadID string) (ConversationSession, error)
 }
 
 // ConversationSession is one attempt's binding to a conversation. It owns the

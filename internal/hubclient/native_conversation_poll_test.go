@@ -108,7 +108,7 @@ func TestConversationControlPollWarnsOncePerMinute(t *testing.T) {
 
 	hub, execution := newConversationHub(t)
 	hub.denyControls(http.StatusInternalServerError)
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

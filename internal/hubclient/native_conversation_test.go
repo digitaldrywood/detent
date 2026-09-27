@@ -390,7 +390,7 @@ func TestNativeBindConversationMapsErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			hub, execution := newConversationHub(t)
 			hub.bindStatus, hub.bindCode = test.status, test.code
-			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 			if !errors.Is(err, test.want) {
 				t.Fatalf("bind error = %v, want %v", err, test.want)
 			}
@@ -412,7 +412,7 @@ func TestNativeConversationSessionDeliversControlsInOrder(t *testing.T) {
 		{Cursor: 1, Key: "k1", Kind: "message", MessageID: "msg_1", Text: "first"},
 		{Cursor: 2, Key: "k2", Kind: "message", MessageID: "msg_2", Text: "second"},
 	}
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true, Interrupt: true, Answer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true, Interrupt: true, Answer: true}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestNativeConversationSessionDeliversControlsInOrder(t *testing.T) {
 func TestNativeConversationControlCheckRejectsLostLease(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +555,7 @@ func TestNativeConversationReportBatchesAndRetries(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.reportFailure = 1
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestNativeConversationReportBatchesAndRetries(t *testing.T) {
 func TestNativeConversationCloseReportsUnconsumedControls(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +637,7 @@ func TestNativeConversationCloseReportsUnconsumedControls(t *testing.T) {
 func TestNativeConversationPollStopsOnStaleExecution(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
-	bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +684,7 @@ func TestNativeConversationBindDecodesTranscript(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.bindBody = transcriptBindBody
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -726,7 +726,7 @@ func TestNativeConversationBindKeepsResumeThreadOverTranscript(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.bindBody = `{"conversation_id":"conv_1","resume":{"thread_id":"thread-9","transcript":[{"role":"user","kind":"text","text":"earlier"}]},"pending":[],"cursor":0}`
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -771,7 +771,7 @@ func TestNativeConversationResumeMode(t *testing.T) {
 			useFastConversationTimings(t)
 			hub, execution := newConversationHub(t)
 			hub.bindBody = test.body
-			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 			if err != nil {
 				t.Fatalf("bind error = %v", err)
 			}
@@ -792,7 +792,7 @@ func TestNativeConversationResumeMode(t *testing.T) {
 func TestNativeConversationTracksLastTurnStatus(t *testing.T) {
 	useFastConversationTimings(t)
 	_, execution := newConversationHub(t)
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -843,7 +843,7 @@ func TestNativeConversationCloseHonoursDeadline(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.hangReports = true
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -874,7 +874,7 @@ func TestNativeConversationRejectedEventDropsOnlyItself(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.rejectKey = "bad"
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -908,7 +908,7 @@ func TestNativeConversationReportsCarryBatchKeys(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.reportFailure = 1
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,7 +948,7 @@ func TestNativeConversationPollStopsOnAuthorizationFailure(t *testing.T) {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			useFastConversationTimings(t)
 			hub, execution := newConversationHub(t)
-			bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+			bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -984,7 +984,7 @@ func TestNativeConversationPollStopsOnAuthorizationFailure(t *testing.T) {
 func TestNativeConversationTurnEndLeavesNoControlQueued(t *testing.T) {
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
-	bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1041,7 +1041,7 @@ func TestNativeConversationDeclinesQuestionsTheHubDropped(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			hub, execution := newConversationHub(t)
-			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Answer: true})
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Answer: true}, "")
 			if err != nil {
 				t.Fatalf("bind error = %v", err)
 			}
@@ -1104,7 +1104,7 @@ func TestNativeBindConversationDoesNotHoldTheRun(t *testing.T) {
 			test.script(hub)
 			hub.mu.Unlock()
 			started := time.Now()
-			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 			if elapsed := time.Since(started); elapsed > 2*time.Second {
 				t.Fatalf("bind held the run for %s", elapsed)
 			}
@@ -1157,7 +1157,7 @@ func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
 	hub.mu.Lock()
 	hub.hangReports = true
 	hub.mu.Unlock()
-	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
 	if err != nil {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -1188,4 +1188,30 @@ func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
 	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	_ = session.Close(closeCtx, runner.ConversationOutcomeSucceeded, nil)
+}
+
+func TestNativeBindConversationSendsTheResumeThread(t *testing.T) {
+	useFastConversationTimings(t)
+	for _, test := range []struct {
+		name   string
+		thread string
+		want   string
+	}{
+		{name: "fresh run", thread: "", want: ""},
+		{name: "local resume thread", thread: " thread-local ", want: "thread-local"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub, execution := newConversationHub(t)
+			session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, test.thread)
+			if err != nil {
+				t.Fatalf("bind error = %v", err)
+			}
+			_ = session.Close(context.Background(), runner.ConversationOutcomeSucceeded, nil)
+			hub.mu.Lock()
+			defer hub.mu.Unlock()
+			if len(hub.binds) != 1 || hub.binds[0].ThreadID != test.want {
+				t.Fatalf("bind requests = %#v, want thread %q", hub.binds, test.want)
+			}
+		})
+	}
 }
