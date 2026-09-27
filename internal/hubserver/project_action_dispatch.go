@@ -126,13 +126,19 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 		// with what it had, which is nothing, instead of leaving a row that
 		// says running for ever.
 		w.logger.Warn("action_run.frame_not_encoded", "run_id", claimed.ID, "error", err)
-		w.relay.beginExecRun(run.WorkspaceID, stream.id, claimed.ID, claimed.ActionID)
-		w.relay.closeStream(ctx, run.WorkspaceID, stream.id)
+		w.failUndeliveredRun(ctx, claimed, stream)
 		return
 	}
 	// The run is registered before the frame is sent, so the first output span
-	// the runner answers with already has a row to accumulate into.
-	w.relay.beginExecRun(run.WorkspaceID, stream.id, claimed.ID, claimed.ActionID)
+	// the runner answers with already has a row to accumulate into. The runner
+	// that was looked up must still be the one serving the workspace: one that
+	// detached or was replaced since has already had its runs taken, and this
+	// one would otherwise stay running with nothing to end it.
+	if !w.relay.beginExecRun(run.WorkspaceID, stream.id, claimed.ID, claimed.ActionID, runner) {
+		w.logger.Info("action_run.runner_changed", "run_id", claimed.ID, "workspace_id", claimed.WorkspaceID)
+		w.failUndeliveredRun(ctx, claimed, stream)
+		return
+	}
 	// No actor is stamped. Section 18.2's stamp says which person asked, and
 	// nobody did: this run is the hub acting on a row somebody wrote through
 	// the API, and inventing a person for it would put a name on an audit line
@@ -143,4 +149,9 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 	})
 	w.logger.Info("action_run.dispatched", "run_id", claimed.ID, "action_id", claimed.ActionID,
 		"workspace_id", claimed.WorkspaceID, "stream", stream.id)
+}
+
+func (w *workspaceService) failUndeliveredRun(ctx context.Context, run actionRunRecord, stream *relayStream) {
+	w.failExecRuns(ctx, []*execRunState{{runID: run.ID, actionID: run.ActionID}}, workspacesession.RunReasonStreamClosed)
+	w.relay.closeStream(ctx, run.WorkspaceID, stream.id)
 }

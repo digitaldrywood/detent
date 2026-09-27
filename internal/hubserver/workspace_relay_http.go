@@ -707,7 +707,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 	if frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun {
 		// The run row is claimed before the frame is forwarded, so a frame the
 		// hub refuses is never executed and a run can only be started once.
-		if code := w.startExecRun(ctx, connection, record, stream, frame); code != "" {
+		if code := w.startExecRun(ctx, connection, runner, record, stream, frame); code != "" {
 			connection.send(workspacesession.ErrorFrame(frame.Channel, stream.id, code, relayCodeMessage(code)))
 			return
 		}
@@ -1091,7 +1091,7 @@ var errExecRunRefused = errors.New("the exec run frame was refused")
 // spelling out -- the runner validates the command against the action it was
 // handed, and this is the check that makes "the action it was handed" mean the
 // project's command rather than one a client composed.
-func (w *workspaceService) startExecRun(ctx context.Context, connection *relayConnection, record workspaceRecord, stream *relayStream, frame workspacesession.Frame) string {
+func (w *workspaceService) startExecRun(ctx context.Context, connection, runner *relayConnection, record workspaceRecord, stream *relayStream, frame workspacesession.Frame) string {
 	var payload workspacesession.ExecRun
 	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
 		return workspacesession.CodeInvalidFrame
@@ -1138,7 +1138,11 @@ func (w *workspaceService) startExecRun(ctx context.Context, connection *relayCo
 		w.logger.Warn("action_run.not_started", "workspace_id", record.ID, "run_id", payload.RunID, "error", err)
 		return workspacesession.CodeStaleExecution
 	}
-	w.relay.beginExecRun(connection.workspaceID, stream.id, started.ID, started.ActionID)
+	if !w.relay.beginExecRun(connection.workspaceID, stream.id, started.ID, started.ActionID, runner) {
+		w.failExecRuns(ctx, []*execRunState{{runID: started.ID, actionID: started.ActionID}}, workspacesession.RunReasonStreamClosed)
+		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
+		return workspacesession.CodeStaleExecution
+	}
 	return ""
 }
 
@@ -1178,7 +1182,9 @@ func (w *workspaceService) recordExecFrame(ctx context.Context, connection *rela
 			return
 		}
 		code := payload.Code
-		w.finishExecRun(ctx, state, workspacesession.RunStatusForExit(code), &code, "")
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
+		defer cancel()
+		w.finishExecRun(writeCtx, state, workspacesession.RunStatusForExit(code), &code, "")
 	}
 }
 

@@ -440,11 +440,21 @@ func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConn
 	if room.people[connection.id] == connection {
 		delete(room.people, connection.id)
 	}
+	runner := room.runner
+	closed := []*relayStream{}
 	for id, stream := range room.streams {
 		if stream.connectionID != connection.id {
 			continue
 		}
 		delete(room.streams, id)
+		if stream.channel == workspacesession.ChannelExec {
+			r.memory -= stream.bufferBytes
+			if r.memory < 0 {
+				r.memory = 0
+			}
+			closed = append(closed, stream)
+			continue
+		}
 		stream.detachedAt = now
 		room.detached[id] = stream
 	}
@@ -469,6 +479,11 @@ func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConn
 	}
 	r.mu.Unlock()
 	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
+	if runner != nil {
+		for _, stream := range closed {
+			runner.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeClose})
+		}
+	}
 }
 
 // attachRunner registers the workspace's one runner connection and reports the
@@ -958,15 +973,20 @@ func (room *relayRoom) takeTerminalRecordings(match func(string) bool) []*termin
 }
 
 // beginExecRun remembers which run a stream is carrying, so the output and
-// exited frames that name only the stream find their row.
-func (r *workspaceRelay) beginExecRun(workspaceID, streamID, runID, actionID string) {
+// exited frames that name only the stream find their row. It reports false
+// when the runner the run was meant for is no longer serving the workspace, or
+// the stream is gone: the teardown that removed either has already taken the
+// runs it knew about, so the caller must fail this one itself. A nil runner
+// accepts whichever runner is attached.
+func (r *workspaceRelay) beginExecRun(workspaceID, streamID, runID, actionID string, runner *relayConnection) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	room := r.rooms[workspaceID]
-	if room == nil {
-		return
+	if room == nil || room.runner == nil || (runner != nil && room.runner != runner) || room.streams[streamID] == nil {
+		return false
 	}
 	room.execRuns[streamID] = &execRunState{runID: runID, actionID: actionID}
+	return true
 }
 
 // appendExecOutput accumulates one span of a run's output.

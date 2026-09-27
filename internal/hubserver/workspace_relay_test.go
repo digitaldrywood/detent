@@ -2013,3 +2013,90 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 		})
 	}
 }
+
+func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
+	t.Parallel()
+	current := &relayConnection{id: "relayconn_current", workspaceID: "ws_1", runner: true}
+	replaced := &relayConnection{id: "relayconn_old", workspaceID: "ws_1", runner: true}
+	stream := &relayStream{id: "relayhub:1", channel: workspacesession.ChannelExec, connectionID: hubStreamOwner, hubOwned: true}
+	tests := []struct {
+		name      string
+		roomless  bool
+		attached  *relayConnection
+		streamID  string
+		expecting *relayConnection
+		want      bool
+	}{
+		{name: "the runner that was looked up", attached: current, streamID: stream.id, expecting: current, want: true},
+		{name: "any attached runner", attached: current, streamID: stream.id, want: true},
+		{name: "a runner replaced since the lookup", attached: current, streamID: stream.id, expecting: replaced},
+		{name: "a runner that detached", streamID: stream.id, expecting: current},
+		{name: "no runner at all", streamID: stream.id},
+		{name: "a stream closed since it was opened", attached: current, streamID: "relayhub:2", expecting: current},
+		{name: "a workspace no longer served", roomless: true, streamID: stream.id},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			relay := newWorkspaceRelay(nil)
+			if !test.roomless {
+				relay.rooms["ws_1"] = &relayRoom{
+					workspaceID: "ws_1", runner: test.attached,
+					people:   map[string]*relayConnection{},
+					streams:  map[string]*relayStream{stream.id: stream},
+					detached: map[string]*relayStream{},
+					execRuns: map[string]*execRunState{},
+				}
+			}
+			if got := relay.beginExecRun("ws_1", test.streamID, "actionrun_1", "action_1", test.expecting); got != test.want {
+				t.Fatalf("beginExecRun = %v, want %v", got, test.want)
+			}
+			if test.roomless {
+				return
+			}
+			if _, recorded := relay.rooms["ws_1"].execRuns[test.streamID]; recorded != test.want {
+				t.Fatalf("run recorded = %v, want %v", recorded, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkspaceRelayDetachPersonClosesItsExecStreamsOnTheRunner(t *testing.T) {
+	t.Parallel()
+	runner := &relayConnection{id: "relayconn_runner", workspaceID: "ws_1", runner: true,
+		out: make(chan relayOutbound, 4), done: make(chan struct{})}
+	person := &relayConnection{id: "relayconn_person", workspaceID: "ws_1"}
+	exec := &relayStream{id: "relayconn_person:1", channel: workspacesession.ChannelExec, connectionID: person.id}
+	files := &relayStream{id: "relayconn_person:2", channel: workspacesession.ChannelFiles, connectionID: person.id}
+	relay := newWorkspaceRelay(nil)
+	relay.rooms["ws_1"] = &relayRoom{
+		workspaceID: "ws_1", runner: runner,
+		people:   map[string]*relayConnection{person.id: person},
+		streams:  map[string]*relayStream{exec.id: exec, files.id: files},
+		detached: map[string]*relayStream{},
+		execRuns: map[string]*execRunState{},
+	}
+
+	relay.detachPerson(t.Context(), person, time.Now())
+
+	room := relay.rooms["ws_1"]
+	if _, parked := room.detached[exec.id]; parked {
+		t.Fatal("the exec stream was parked for a resume, want it closed")
+	}
+	if _, parked := room.detached[files.id]; !parked {
+		t.Fatal("the files stream was not parked for a resume")
+	}
+	select {
+	case sent := <-runner.out:
+		if sent.frame.Type != workspacesession.TypeClose || sent.frame.Stream != exec.id {
+			t.Fatalf("runner received %+v, want a close of the exec stream", sent.frame)
+		}
+	default:
+		t.Fatal("the runner was not told to close the exec stream")
+	}
+	select {
+	case sent := <-runner.out:
+		t.Fatalf("runner received an extra frame %+v", sent.frame)
+	default:
+	}
+}
