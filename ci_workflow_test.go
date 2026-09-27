@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -207,7 +208,8 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 		{name: "test", want: "$(GO_TEST) $$packages"},
 		{name: "test-web", want: "$(GO_TEST) ./internal/web"},
 		{name: "test-race", want: "$(GO_TEST) -race $$packages"},
-		{name: "test-race-hub", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race"},
+		{name: "test-race-hub-a", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -run"},
+		{name: "test-race-hub-b", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -skip"},
 		{name: "test-cover", want: "$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages"},
 		{name: "test-cover-web", want: "$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web"},
 	}
@@ -580,7 +582,7 @@ func TestCIDraftAndVerifyDependencies(t *testing.T) {
 		t.Error("verify-fast must gate the Cloud client and its committed bundle")
 	}
 	race := workflowBetween(t, workflow, "  verify-race:\n", "  test-cover:\n")
-	for _, want := range []string{"shard: [0, 1, 2, 3]", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
+	for _, want := range []string{"shard: [0, 1, 2, 3, 4]", "tmp/hub-race-evidence-*", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
 		if !strings.Contains(race, want) {
 			t.Errorf("race shards missing %q", want)
 		}
@@ -663,13 +665,18 @@ func TestCIRaceShardFailures(t *testing.T) {
 		testExit    string
 		wantSuccess bool
 		wantTests   bool
+		wantMake    string
 	}{
-		{"success", "2", "0", "0", true, true},
-		{"workspace shard", "3", "0", "0", true, true},
-		{"workspace failure", "3", "0", "1", false, false},
-		{"discovery failure", "2", "1", "0", false, false},
-		{"race failure survives tee", "2", "0", "1", false, true},
-		{"invalid shard", "4", "0", "0", false, false},
+		{"success", "2", "0", "0", true, true, ""},
+		{"workspace shard", "3", "0", "0", true, true, ""},
+		{"workspace failure", "3", "0", "1", false, false, ""},
+		{"discovery failure", "2", "1", "0", false, false, ""},
+		{"race failure survives tee", "2", "0", "1", false, true, ""},
+		{"hub partition a", "0", "0", "0", true, false, "test-race-hub-a"},
+		{"hub partition a failure", "0", "0", "1", false, false, "test-race-hub-a"},
+		{"orchestrator", "1", "0", "0", true, false, "test-race-orchestrator"},
+		{"hub partition b", "4", "0", "0", true, false, "test-race-hub-b"},
+		{"invalid shard", "5", "0", "0", false, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -708,6 +715,9 @@ exit 98
 			if err := os.WriteFile(filepath.Join(root, "bin", "go"), []byte(fakeGo), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(root, "bin", "make"), []byte("#!/bin/sh\necho \"$*\" > make-invoked\nexit \"$TEST_EXIT\"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			cmd := exec.CommandContext(t.Context(), "bash", "scripts/ci-race-shard.sh", tc.shard)
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "LIST_EXIT="+tc.listExit, "TEST_EXIT="+tc.testExit, "DETENT_API_TOKEN=fixture-token")
@@ -719,6 +729,10 @@ exit 98
 			if (err == nil) != tc.wantTests {
 				t.Fatalf("tests invoked=%v, want %v: %s", err == nil, tc.wantTests, out)
 			}
+			made, err := os.ReadFile(filepath.Join(root, "make-invoked"))
+			if strings.TrimSpace(string(made)) != tc.wantMake || (err == nil) != (tc.wantMake != "") {
+				t.Fatalf("make target = %q (%v), want %q: %s", made, err, tc.wantMake, out)
+			}
 			if tc.wantTests {
 				data, err := os.ReadFile(filepath.Join(root, "tmp", "shard-"+tc.shard+"-race-evidence", "tests.jsonl"))
 				if err != nil || !strings.Contains(string(data), `"Action":"pass"`) {
@@ -726,5 +740,60 @@ exit 98
 				}
 			}
 		})
+	}
+}
+
+func TestHubRacePartitionsCoverEveryTestOnce(t *testing.T) {
+	t.Parallel()
+	makefile := readNormalizedFile(t, "Makefile")
+	const partitionPrefix = "HUB_RACE_PARTITION := "
+	var partition string
+	for line := range strings.SplitSeq(makefile, "\n") {
+		if value, ok := strings.CutPrefix(line, partitionPrefix); ok {
+			partition = strings.TrimSpace(value)
+		}
+	}
+	if partition == "" || strings.Contains(partition, "/") {
+		t.Fatalf("HUB_RACE_PARTITION = %q, want a nonempty top-level test pattern", partition)
+	}
+	for _, want := range []string{
+		"test-race-hub: test-race-hub-a test-race-hub-b\n",
+		"-run '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-a ./internal/hubserver\n",
+		"-skip '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-b ./internal/hubserver\n",
+	} {
+		if !strings.Contains(makefile, want) {
+			t.Errorf("Hub race partitions must run and skip one shared pattern: missing %q", want)
+		}
+	}
+	shard := readNormalizedFile(t, "scripts/ci-race-shard.sh")
+	for _, want := range []string{"0) exec make test-race-hub-a ;;", "4) exec make test-race-hub-b ;;"} {
+		if !strings.Contains(shard, want) {
+			t.Errorf("CI race shards missing %q", want)
+		}
+	}
+	if testing.Short() {
+		t.Skip("listing Hub tests builds the package")
+	}
+	pattern, err := regexp.Compile(partition)
+	if err != nil {
+		t.Fatalf("compile HUB_RACE_PARTITION: %v", err)
+	}
+	out, err := exec.CommandContext(t.Context(), "go", "test", "-list", ".", "./internal/hubserver").Output()
+	if err != nil {
+		t.Fatalf("list Hub tests: %v", err)
+	}
+	counts := [2]int{}
+	for _, name := range strings.Fields(string(out)) {
+		if !strings.HasPrefix(name, "Test") && !strings.HasPrefix(name, "Example") && !strings.HasPrefix(name, "Fuzz") {
+			continue
+		}
+		if pattern.MatchString(name) {
+			counts[0]++
+		} else {
+			counts[1]++
+		}
+	}
+	if counts[0] == 0 || counts[1] == 0 {
+		t.Fatalf("partition sizes = %v, want both Hub race partitions nonempty", counts)
 	}
 }

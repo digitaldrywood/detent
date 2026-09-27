@@ -143,7 +143,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -168,7 +168,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: race-evidence-${{ matrix.shard }}
-          path: tmp/*-race-evidence
+          path: |
+            tmp/*-race-evidence
+            tmp/hub-race-evidence-*
           if-no-files-found: error
           retention-days: 14
 

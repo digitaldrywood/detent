@@ -48,6 +48,8 @@ type gateSummary struct {
 	PackageTimeout     string          `json:"package_timeout"`
 	Race               bool            `json:"race"`
 	CoverageProfile    string          `json:"coverage_profile,omitempty"`
+	Run                string          `json:"run,omitempty"`
+	Skip               string          `json:"skip,omitempty"`
 	Packages           []packageResult `json:"packages"`
 }
 
@@ -74,6 +76,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	packageTimeout := flags.Duration("timeout", 10*time.Minute, "timeout for each test package")
 	race := flags.Bool("race", false, "enable the race detector")
 	coverProfile := flags.String("coverprofile", "", "collect atomic coverage during the test run")
+	runPattern := flags.String("run", "", "run only tests matching this go test -run pattern")
+	skipPattern := flags.String("skip", "", "skip tests matching this go test -skip pattern")
 
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -107,11 +111,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	collector := newEvidenceCollector(*outputDir, combined, stdout)
-	commandErr := runGoTest(ctx, packages, *testParallelism, *packageTimeout, *race, *coverProfile, collector)
+	commandErr := runGoTest(ctx, collector, goTestOptions{
+		packages:     packages,
+		parallel:     *testParallelism,
+		timeout:      *packageTimeout,
+		race:         *race,
+		coverProfile: *coverProfile,
+		run:          *runPattern,
+		skip:         *skipPattern,
+	})
 	closeErr := errors.Join(collector.close(), combined.Close())
 	summary := collector.summary(*testParallelism, *packageTimeout)
 	summary.Race = *race
 	summary.CoverageProfile = *coverProfile
+	summary.Run = *runPattern
+	summary.Skip = *skipPattern
 	summaryErr := writeSummary(*outputDir, summary)
 	if commandErr != nil {
 		fmt.Fprintf(stderr, "Test gate failed: %v\n", commandErr)
@@ -128,9 +142,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runGoTest(ctx context.Context, packages []string, parallel int, timeout time.Duration, race bool, coverProfile string, collector *evidenceCollector) error {
+type goTestOptions struct {
+	packages     []string
+	parallel     int
+	timeout      time.Duration
+	race         bool
+	coverProfile string
+	run          string
+	skip         string
+}
+
+func runGoTest(ctx context.Context, collector *evidenceCollector, options goTestOptions) error {
 	cmd := exec.CommandContext(ctx, "go", "test")
-	cmd.Args = append(cmd.Args, goTestArgs(packages, parallel, timeout, race, coverProfile)...)
+	cmd.Args = append(cmd.Args, goTestArgs(options)...)
 	output, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("capture go test output: %w", err)
@@ -148,22 +172,28 @@ func runGoTest(ctx context.Context, packages []string, parallel int, timeout tim
 	return waitErr
 }
 
-func goTestArgs(packages []string, parallel int, timeout time.Duration, race bool, coverProfile string) []string {
+func goTestArgs(options goTestOptions) []string {
 	args := []string{
 		"-json",
 		// Avoid replaying filesystem-heavy test input logs; keep build caching.
 		"-count=1",
 		"-p=1",
-		"-parallel=" + strconv.Itoa(parallel),
-		"-timeout=" + timeout.String(),
+		"-parallel=" + strconv.Itoa(options.parallel),
+		"-timeout=" + options.timeout.String(),
 	}
-	if race {
+	if options.race {
 		args = append(args, "-race")
 	}
-	if coverProfile != "" {
-		args = append(args, "-covermode=atomic", "-coverprofile="+coverProfile)
+	if options.coverProfile != "" {
+		args = append(args, "-covermode=atomic", "-coverprofile="+options.coverProfile)
 	}
-	return append(args, packages...)
+	if options.run != "" {
+		args = append(args, "-run="+options.run)
+	}
+	if options.skip != "" {
+		args = append(args, "-skip="+options.skip)
+	}
+	return append(args, options.packages...)
 }
 
 func newEvidenceCollector(dir string, combined, console io.Writer) *evidenceCollector {
