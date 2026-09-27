@@ -7,6 +7,15 @@ plan tasks D02 (ownership and handoff rules), F02 (client boundary), F03
 `detent-cloud-concept/IMPLEMENTATION-PLAN.md`. Later milestones may extend it;
 they must not silently contradict it.
 
+## Status on main
+
+This is a decision record written on the unmerged conversation branch (PR #2635); parts of it have since been ported to main. The sections below keep their original reasoning, and "On main:" notes mark where main differs. As of this revision:
+
+- Context not covered by a numbered section: Detent Cloud's shared entry (`internal/cloudentry`, with signed assertions in `internal/cloudassert`) serves hosted sign-in, the organization chooser at `/organizations`, signup and provisioning, and proxies `/organizations/:organization/*` and `/api/v2/organizations/:organization/*` to that organization's tenant Hub. A tenant Hub behind the shared entry serves everything under the base path `/organizations/<organization>` (`hostedBase` in `internal/hubserver/hosted_shared.go`). Stripe billing lives in `internal/billing`.
+- Implemented: section 2 (`internal/conversation`, `internal/hubserver/migrations/00025_create_conversations.sql`); section 3 (`internal/hubserver/conversation_service.go`, `conversation_store.go`); section 5 operator, stream and worker endpoints (`internal/hubserver/conversation_api.go`, `conversation_stream.go`, `conversation_worker.go`, pinned by `conversation_contract_test.go`); section 9.2.1 (`migrations/00029_dispatch_requests.sql`, `native_dispatch_requests.go`); section 9.3 thread origin (`migrations/00028_conversation_thread_origin.sql`, `conversation_binding.go`); sections 13 and 14 preferences, references, handoff next step and Settled (`migrations/00026_conversation_preferences.sql`, `conversation_preferences.go`); section 17.1 attachments (`migrations/00027_conversation_attachments.sql`, `conversation_attachments.go`); section 17.5 usage (`migrations/00030_attempt_usage.sql`, `hosted_usage_api.go`); sections 15, 16, 19, 20 and 21 in the client under `web/conversation`.
+- Partly implemented: section 1 (the domain package and hub storage exist, but no coordinator of either kind answers an unlinked chat); section 4 (the client in `web/conversation` builds to `static/app/conversation` and is served by `internal/hubserver/app_ui.go`, with the route shape section 12 later chose); section 9.2.2 (the hub's `?include=change` surface in `internal/hubserver/native_issues.go`; the orchestrator side was not found on main); section 11 and section 12 (the application shell, `/app/bootstrap`, billing JSON in `hosted_billing_api.go` and usage JSON are on main; the hosted Templ pages in `internal/hubserver/hosted_ui.go` and `internal/web/templates/hosted*.templ` are still registered while their screens move into the client, and the members, projects, fleet, plan and switch JSON endpoints are not yet mounted); section 18 (stored attempt diffs and the pull request read of 18.5 and 18.6 are on main in `native_api.go`, `attempt_diffs.go` and `pull_requests_api.go`; the domain and runner-side packages `internal/workspacesession`, `internal/workspaceterminal`, `internal/workspacefiles`, `internal/workspacegit` and `internal/workspaceexec` exist but nothing outside them imports them yet, and the client adapters for workspaces, the relay, actions and the git group are present without hub endpoints behind them).
+- Not yet ported: section 6 (no `internal/runner/conversation_control.go` or `internal/codex/conversation_control.go`); section 9.1, 9.2 and 9.4 (no coordinator work items, `coordinator_items` table or `detent:coordinator` run mode); section 10.1's transitional hub-side coordinator; from section 18, workspace sessions, the relay, terminal, files, exec and project actions (18.12), the git channel (18.13), pull request actions, captures, the secret store and review sandboxes.
+
 ## 1. Where the product lives
 
 The conversation product is part of the hosted hub (`internal/hubserver`),
@@ -61,6 +70,8 @@ Consequences:
   self-hosted hub, where the hub host is the customer's own machine and the
   login is theirs. It must not be enabled on Detent Cloud, and it is removed
   once the runner-dispatched coordinator lands.
+
+  On main: neither coordinator is ported. The hosted config's `conversation:` section accepts only `enabled`, `model`, `question_timeout`, `settle_window` and `control_queue_size` (`internal/cli/hub_conversation.go`), so there are no `conversation.codex` or `conversation.workspace` keys, and a message in an unlinked conversation is saved with delivery `saved` and waits (`internal/hubserver/conversation_api.go`).
 - Two things remain out of scope: any Detent-operated inference or proxy, and
   storing customer provider keys in the hub.
 
@@ -184,6 +195,8 @@ hub and coexists with the Templ pages.
 - Feature flag: `hosted.conversation.enabled` in the hub's hosted config.
   When disabled the routes are not registered and no conversation API is
   mounted; existing pages are unaffected and stored conversations are kept.
+
+  On main: the key is `conversation.enabled` in the hosted configuration file (`internal/cli/hub_conversation.go`). The application shell is served by a catch-all in `internal/hubserver/app_ui.go` whether or not the conversation product is enabled, and behind the shared entry the shell and its `/static/app/conversation/` assets are prefixed with the tenant base path `/organizations/<organization>`.
 - Development: `make app-dev` runs Vite with a proxy to a local hub for the
   API and SSE routes.
 - Authentication from the client: same-origin cookie session; mutations send
@@ -292,6 +305,8 @@ Receipt:
 | `POST /conversations/:conversation/archive` / `unarchive` | | 200 conversation |
 | `PATCH /conversations/:conversation` | `{title}` | 200 conversation |
 
+On main: there are no `archive` or `unarchive` routes (section 14 replaced archive with Settled), `PATCH` accepts a title, preferences or both, and the list takes `settled=true|false` rather than `include_archived`. Main also mounts `GET /work-items/:item/references` and the attachment routes of section 17.1 beside these (`internal/hubserver/conversation_api.go`).
+
 Command envelope:
 
 ```json
@@ -373,6 +388,8 @@ be established becomes `unknown` and is never retried automatically.
 
 `GET /chat/bootstrap` (hosted session): `{organization: {id, name}, actor: {principal_id, subject, email, role}, projects: [{id, name, can_write, labels?, priorities?}], csrf_token, capabilities: {coordinator: bool, attachments: bool}, api_base: "/api/v2/organizations/<org>", feature: {conversation: true}}`. A project's `labels` and `priorities` are the vocabularies the handoff form offers; they are absent until the hub publishes them, and the client never invents a taxonomy of its own.
 
+On main: the payload is served at `GET /app/bootstrap` with `/chat/bootstrap` as an alias, in the extended shape of section 12. Projects carry `profile`, `can_manage_runners` and `states` rather than `labels` and `priorities`, and the payload adds `organizations`, `support`, `preferences`, `plan`, `base_path`, `sign_in_path` and `version` (`appBootstrap` in `internal/hubserver/app_ui.go`).
+
 ## 6. Spike port plan (F04)
 
 The uncommitted spike in `detent-conversation-spike` is ported deliberately:
@@ -406,6 +423,7 @@ Replace:
 
 - The four runtime-created `spike_*` tables become hub migration
   `00022_create_conversations.sql` with normalized rows and delta events.
+  On main: the migration is `00025_create_conversations.sql`, and the runner and Codex files listed above are not ported.
 - The global spike mutex becomes per-conversation revision checks with
   transactional writes.
 - The in-process command channel becomes the worker long-poll and turn-event
@@ -463,6 +481,8 @@ This section specifies how the decision in section 1 ("Where model turns
 execute") is implemented. It coexists with the transitional hub-side
 coordinator: when the hub has a `conversation.codex` backend configured the
 hub path is used; otherwise the runner path below is used.
+
+On main: neither path is ported. There is no `coordinator_items` table, no `detent:coordinator` label or run mode, and `capabilities.coordinator` in the bootstrap is always false. Sections 9.2.1 and 9.3 are on main because linked conversations need them.
 
 ### 9.1 Coordinator work items
 
@@ -555,6 +575,8 @@ hub path is used; otherwise the runner path below is used.
   that rule. A lane the promotion never reaches is the same as no lane at all,
   which is what the seventh dogfood run found (`operations.md` section 8).
 
+On main: `native_attempts.work_item_revision` is added by `00023_attempt_diffs.sql` and `dispatch_generation` by `00029_dispatch_requests.sql`. `closeCoordinatorItem` and `connector.WorkflowStateLister` were not found on main.
+
 ### 9.2.2 A completed item is judged on facts its tracker can report (added September 12, 2026)
 
 - The readiness rule for promoting a completed item out of its active lane was
@@ -637,6 +659,8 @@ hub path is used; otherwise the runner path below is used.
     this value belongs to the `github_compatible` path and to non-hub
     trackers; a native item is never held for it, because nothing in the
     hosted flow opens a pull request on its own.
+
+On main: the hub serves `GET {nativeBase}/work-items/:item?include=change` (`internal/hubserver/native_issues.go`). `connector.ChangeReviewHydrator`, the orchestrator's readiness rule and the `completed issue not ready for promotion` log line were not found on main, and the pull request action endpoint cited above is not mounted.
 
 ### 9.3 Worker binding and provider thread origin
 
@@ -858,6 +882,8 @@ re-check. Existing native endpoints keep their shapes.
   stay as they are. A successful login redirects to `/work`. `POST /logout`
   answers 204 for JSON callers (form callers keep the redirect).
 
+On main: `/app/bootstrap` and the catch-all shell are in `internal/hubserver/app_ui.go`, which also serves `GET /app/updates`; the shell never answers the `/api`, `/app`, `/auth`, `/webhooks` and `/static` namespaces or `/health`, `/invite`, `/logout` and `/metrics`. The hosted Templ pages have not all been removed: `internal/hubserver/hosted_ui.go` still registers `/login`, `/organization*`, `/support` and the `/projects/:project/...` pages, `static/js/hosted-setup.js` and `hosted-work.js` still ship, and the shell serves only the routes those pages leave free. Behind the shared entry an unauthenticated visitor is sent to the entry's `/organizations` chooser instead of `/login`, and the shared entry takes Stripe webhooks at `/webhooks/stripe/:mode` (`internal/cloudentry/service.go`).
+
 ### Organization
 
 - `GET /members` → `{members: [{id, user_id, email, role, status, grants:
@@ -908,6 +934,8 @@ re-check. Existing native endpoints keep their shapes.
 - `GET /projects/:project/events` moves to `GET {nativeBase}/events` with
   the same SSE payload; the old path stays as an alias for one release.
 
+On main: the billing report, checkout and portal are mounted at `/api/v2/organizations/:organization/billing`, `.../billing/checkout` and `.../billing/portal` (`internal/hubserver/hosted_ui.go`, `hosted_billing_api.go`), and `GET /api/v2/organizations/:organization/usage` serves section 17.5. The members, invitations, switch, projects list, support start, fleet and plan JSON endpoints above are not mounted on the hub yet, although the client already calls them (`web/conversation/src/app/account/api.ts`). The project event stream is still `GET /projects/:project/events`; `{nativeBase}/events` does not exist.
+
 ### Work
 
 - Board and list read `GET {nativeBase}` (states) and `GET
@@ -917,6 +945,8 @@ re-check. Existing native endpoints keep their shapes.
   `latest_attempt: {status, identity, started_at, updated_at} | null` and
   `changes: [{id, title, state, url}]`. Lane moves use `POST
   {nativeBase}/work-items/:item/workflow`.
+
+On main: the list accepts the `state`, `label`, `assignee` and `priority` filters; `include=attempts,changes` is not implemented (`internal/hubserver/native_pages.go`).
 
 ## 13. Decisions from Michael's assumption review (September 10, 2026)
 
@@ -1033,6 +1063,8 @@ Michael's review items and the contract for each:
    `attachments: [id]`; the message resource lists `attachments: [{id, name,
    mime, size, url}]`; reads enforce the conversation's audience; the runner
    receives image and text attachments as provider input.
+
+   On main: the bytes are not stored through the artifact service; `00027_conversation_attachments.sql` keeps them in the hub's `conversation_attachment_blobs` table, keyed by `artifact_ref`. The runner reads them from `GET .../attachments/:attachment` with its worker token.
 2. **Brand row.** The sidebar wordmark reads "Detent Cloud" as T3's reads
    "T3 Code"; the organization lives in the switcher row.
 3. **Settings.** T3's settings page components (`components/settings/**`:
@@ -1061,6 +1093,8 @@ Michael's review items and the contract for each:
    per-model price table the hub keeps (`usage.prices` config) and is
    labelled "API estimate" as T3 does.
 
+   On main: `00030_attempt_usage.sql` keys the table by `period` rather than `day` and adds `organization_id`, `project_id`, `currency` and `updated_at`; the price table is the hosted config's `usage:` section (`internal/cli/hub_usage.go`, `internal/hubserver/hosted_usage_config.go`).
+
 ## 18. Right panel surfaces, workspace sessions and review sandboxes (September 11, 2026)
 
 Michael's direction after the T3 right panel landed: the surfaces are real,
@@ -1072,6 +1106,8 @@ state" without a live stream. This section is the contract for all of it.
 It was reviewed three times by Codex (gpt-6-astra) on September 11, 2026;
 the draft below folds in all three, and the third pass reported no
 remaining blocker.
+
+On main: only the stored attempt diff and issue diff reads (18.5) and the pull request read (18.6) are served by the hub. Workspace sessions, the relay, the terminal, files, exec, git, pull request actions, captures, secrets and sandboxes have no hub routes or migrations on main; their vocabulary and runner-side packages (`internal/workspacesession`, `internal/workspaceterminal`, `internal/workspacefiles`, `internal/workspacegit`, `internal/workspaceexec`) and the client adapters that call them are present but not wired.
 
 Principles, all consequences of section 1:
 
@@ -1414,6 +1450,7 @@ Two sources, one surface, one filter.
   created_at)` is the index it was already given. Ordering across attempts is
   by `created_at`, because `seq` is monotonic within one attempt's generations
   and means nothing between them.
+  On main: the index is created by `00023_attempt_diffs.sql`, not 00026.
 - Workspace diff, live. Relay channel `diff`: `request {base?}` → `diff
   {...same shape...}` chunked per 18.2, computed by the runner against
   `base` (default the attempt's `base_sha`, else the project default
@@ -1437,6 +1474,7 @@ Two sources, one surface, one filter.
   response carries its URL; otherwise it becomes a conversation message
   with a reference of the new kind `file` (`{kind: "file", path, line, sha}`
   added to section 14's reference kinds).
+  On main: the hunk comment endpoint is not mounted.
 
 ### 18.6 Pull requests
 
@@ -1467,6 +1505,8 @@ change requests joined with the GitHub connector.
   group enables per action when the policy allows it and stays disabled
   with the reason otherwise (section 16). Section 18.13 is that group: what
   Commit and Push act on, and how `open` is reached from it.
+
+On main: `GET {nativeBase}/work-items/:item/pull-requests` is served (`internal/hubserver/pull_requests_api.go`, with `?refresh=1` queueing a hydration request); neither `actions` endpoint is mounted.
 
 ### 18.7 Browser preview: snapshot first
 
@@ -1754,6 +1794,8 @@ Resource and API.
    (the hub holds no GitHub credential of its own, so `?refresh=1` queues a
    hydration request rather than fetching inline), and the three action
    endpoints queue one merge-lane work item each.
+
+   On main: the diff tables and the `attempt_diffs_item_idx` index come from `00023_attempt_diffs.sql`, and the pull request read is served, but the three action endpoints are not ported.
 2. ~~Workspace sessions, their lease and worker endpoints, and the relay with
    tickets, streams and acknowledgements; files first, then terminal at
    `container` isolation.~~ **Shipped, except the terminal.** Migration 00027
@@ -1773,6 +1815,8 @@ Resource and API.
    enforced at open time (`os.Root`, `O_NOFOLLOW`, an lstat that refuses a
    symlink, and a device check for mount points) and the denylist delegated to
    the one `tracker.DiffPathDenied` the stored diff already uses.
+
+   On main: none of step 2 is on the hub. There is no workspace migration (main's 00027 is `00027_conversation_attachments.sql`), no `workspace_sessions`, `workspace_items`, `workspace_occupancy` or `workspace_relay_sessions` table, no relay, and no `github.com/coder/websocket` dependency. `internal/workspacesession` and `tracker.DiffPathDenied` are on main; the runner lane that claims workspace items is not. The same holds for the terminal, 00032 and 00033 below.
 
    **Corrected September 12, 2026.** Two halves of "the runner claims workspace
    items in a lane of its own" were only true in tests. The `detent` runner
@@ -1899,6 +1943,8 @@ project has no checkout on the reader's machine and there was nothing for a
 command to run on. Workspace sessions (18.1) removed that reason: there is now
 a worktree, on a runner, that a person can reach. This section is the contract
 for making the dialog real.
+
+On main: the client's action dialog and adapters are ported (`web/conversation/src/components/ProjectScriptsControl.tsx`, `web/conversation/src/app/adapters/actionRuns.ts`), and `internal/workspaceexec` exists, but the hub mounts no `{nativeBase}/actions` routes and has no action-run migration. The "migration 00026" and "migration 00032" citations below refer to the unmerged branch's numbering.
 
 Michael's framing, which is section 16 applied: use the components in their
 entirety for the visual identity, and move only what pulls back from the API to

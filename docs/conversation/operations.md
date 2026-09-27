@@ -1,5 +1,26 @@
 # Conversation product operations
 
+## Status on main
+
+This runbook was written against PR #2635, which was never merged; parts of it have been ported to `main` since. What `main` ships today:
+
+- The React client in `web/conversation` (Vite; `npm run dev`, `dev:mock`, `build`, `typecheck` and `test`) builds into the committed `static/app/conversation/`. `make app`, `make app-dev`, `make app-test` and `make check-app` drive it, and `make check` runs `check-app`.
+- A hosted hub (`detent hub serve --hosted-config`) serves the client shell from `internal/hubserver` for every client route the Templ hosted pages do not already own. Behind the shared entry (`detent cloud serve --entry-config`, `internal/cloudentry`) the tenant hub serves under the base path `/organizations/<organization>`, and the entry handles sign-in, the organization chooser and routing to the tenant.
+- The conversation API and worker endpoints (bind, unbind, controls, turn events), turn preferences, references, Settled and its sweep, attachments, provider thread origin, restart normalization and explicit dispatch requests. The `conversation:` section accepts `enabled`, `model`, `question_timeout`, `settle_window` and `control_queue_size`.
+- Stored attempt diffs, the read-only pull request panel (`GET …/work-items/:item/pull-requests`) and the optional `?include=change` surface on a single work item.
+- Hub migrations 00023 and 00025 to 00031; `supportedSchemaVersion` is 31.
+
+Described below but not yet on main:
+
+- Any coordinator: neither the hub-side `conversation.codex` backend nor the runner-dispatched coordinator (`detent:coordinator`, `coordinator_items`). A message in an unlinked chat is stored with delivery `saved` and waits; linking the chat hands the saved messages to the issue's first attempt.
+- Runner-side live conversation control (in flight): no runner, Codex or hubclient code binds a conversation yet.
+- `GET /app/bootstrap` always reports `feature.conversation: false`, every `capabilities` flag false and empty preference choice lists.
+- The tenant React screens that replace the Templ pages, and the JSON organization administration API of sections 1.1 and 1.2 (tenant screens are in flight in #3098). Also hosted `PUT …/projects/:project/policy`, `GET …/fleet` and the typed project event stream.
+- Workspace sessions, the relay, the files, exec, git and terminal channels, project actions, pull request actions, the `workspaces:` configuration section and their migrations.
+- `include=attempts,changes` and `include=coordinator` on the work item list.
+- The browser cover `tests/visual/conversation.spec.js` and `tests/visual/hosted-hub.js`, and the opt-in live test behind `DETENT_CONVERSATION_LIVE`.
+- The orchestrator half of the re-dispatch fix (brakes 0 and 1 in section 7). The hub-side brake 2 is on main.
+
 How to configure, migrate, run, restart and roll back the hosted hub
 conversation product. The behavior contracts it operates are in
 [`decisions.md`](decisions.md); this document covers only what an operator has
@@ -11,6 +32,7 @@ The conversation product is part of the hosted hub (`internal/hubserver`), not
 the single-tenant dashboard. The first milestone covers one path:
 
 - A new chat is created inside a project and is private to its creator.
+- Not yet on main: coordinator turns. On main an unlinked chat's messages are saved until the chat is linked to an issue.
 - An ordinary chat is answered by a coordinator turn. The decided design
   (`decisions.md` sections 1 and 9) runs that turn on a customer runner with
   the customer's own provider login: the message opens a coordinator work item
@@ -23,7 +45,8 @@ the single-tenant dashboard. The first milestone covers one path:
   and the operator can steer, interrupt, answer questions and record continue
   intent against that attempt.
 - Durable history, receipts and a resumable event stream back all of it, and a
-  React client is served at `/chat`.
+  React client is served at `/chat` (under `/organizations/<organization>/chat`
+  behind the shared entry).
 
 Since `decisions.md` sections 11 and 12 that React client is the whole hosted
 frontend, not only the chat panel. See section 1.1.
@@ -36,10 +59,36 @@ Explicitly not in this milestone:
 - Cross-host provider thread transfer.
 - A production importer for POC data.
 
-The client is dark only. It declares `color-scheme: dark` on its mount root, so
+The client is dark only. The shell sets `class="dark"` on `<html>`, which selects
+`color-scheme: dark`, so
 an operator using Detent in light mode gets a deliberately dark panel.
 
 ### 1.1 One frontend, and what it replaced
+
+On main (`internal/hubserver/app_ui.go`) the hosted hub serves the application
+shell for every read request outside the reserved namespaces `/api`, `/app`,
+`/auth`, `/webhooks` and `/static` and the paths `/health`, `/invite`,
+`/logout` and `/metrics`, but only for paths the Templ hosted pages have not
+registered: `/`, `/login`, `/organization`, `/organization/plan`,
+`/organization/billing`, `/projects/:project` and its issue and change pages,
+and `/support` are still Templ pages, and so are the form endpoints listed
+below. An unauthenticated request answers `303` to the sign-in path: `/login`
+on a standalone hosted hub, `/organizations` behind the shared entry. A missing
+bundle answers `503 client_unavailable`. A standalone sign-in lands on
+`/organization`; the shared entry sends a chosen organization to
+`/organizations/<organization>/work` when the client is built.
+
+Behind the shared entry the tenant hub accepts only requests carrying the
+entry's signed assertion, strips the `/organizations/<organization>` prefix
+before routing, and answers `404` for the sign-in, invitation, sign-out,
+support and organization-switch paths, which the entry owns. The shell it
+serves carries `detent-base-path` and `detent-sign-in-path` meta tags, its
+asset URLs are rewritten under the base, and `GET /app/bootstrap` reports the
+same values as `base_path` and `sign_in_path`. The entry itself serves the same
+bundle for its chooser at `/organizations`.
+
+Not yet on main: the rest of this subsection, which describes the Templ pages
+removed in favor of the React screens (in flight in #3098).
 
 The hub serves the React application shell for every GET that is not an API,
 auth, webhook or static path: `/`, `/login`, `/work*`, `/chat*`,
@@ -76,7 +125,12 @@ unchanged. Every former HTML error is now the native `{code, message}` shape.
 organizations, the actor with `can_manage` and `can_manage_runners`, the
 readable projects with their workflow states, an open support session, the CSRF
 token, capabilities, the turn preference choices, the plan summary and the API
-base. `/chat/bootstrap` is kept as an alias answering the same payload.
+base, plus `base_path` and `sign_in_path` for the shared entry (section 1.1).
+`/chat/bootstrap` is kept as an alias answering the same payload.
+
+Not yet on main: the payload never fills `capabilities`, `feature` or the
+`preferences` lists, so they are always false and empty. The `PATCH`
+validation described in section 1.3 does read the runners' reported models.
 
 `preferences` publishes what the composer's model, effort and access pickers
 offer:
@@ -104,6 +158,10 @@ configured coordinator model or reasoning effort — and falls back to `auto`
 itself when the hub does not know one. The composer still preselects `auto`,
 because that is what a new conversation's preference says.
 
+Not yet on main: every row of the next table except `GET /billing`,
+`POST /billing/checkout` and `POST /billing/portal`; organization
+administration is still the Templ form endpoints of section 1.1.
+
 Under `/api/v2/organizations/:organization`, authenticated by the hosted
 session cookie, with `X-CSRF-Token` on every non-GET:
 
@@ -124,6 +182,10 @@ session cookie, with `X-CSRF-Token` on every non-GET:
 | GET | `/billing` | owner, no impersonation |
 | POST | `/billing/checkout` | owner, answers `{url}` |
 | POST | `/billing/portal` | owner, answers `{url}` |
+
+Not yet on main: the hosted `PUT …/policy` below. On main that route is gated
+on the instance administrator, and `PUT …/projects/:project/onboarding/policy`
+is the hosted owner's and admin's approval route.
 
 A hosted owner or admin also reads and approves a project's policy descriptor
 on the generic route, under
@@ -157,6 +219,10 @@ owner had. Both routes work; they share one handler.
 reserved bootstrap subject. `:member` is the membership id `GET /members`
 returns, not the user id.
 
+Not yet on main: `GET /fleet`, the moved event stream and `include=` on the
+work item list, described in the next three paragraphs. On main the project
+event stream is `GET /projects/:project/events`.
+
 `GET /fleet` answers `spend: null`. The hub records allowance consumption per
 window, not currency per project, so there is no per-project spend source to
 report; the field and its shape exist for the first metering source that has
@@ -181,9 +247,10 @@ They are mounted whether or not `conversation.enabled` is set.
 | --- | --- | --- |
 | POST | `{nativeBase}/attempts/:attempt/diff` | worker token, fenced by the producer's lease |
 | GET | `{nativeBase}/attempts/:attempt/diff` | hosted session or operator token, the issue's read rule |
+| GET | `{nativeBase}/work-items/:item/diff` | hosted session or operator token, the issue's read rule; the latest stored diff on the issue, or `{"diff": null}` |
 | GET | `{nativeBase}/work-items/:item/pull-requests` | hosted session or operator token, the issue's read rule |
-| POST | `{nativeBase}/work-items/:item/pull-requests/actions` | write on the project |
-| POST | `{nativeBase}/work-items/:item/pull-requests/:number/actions` | write on the project |
+| POST | `{nativeBase}/work-items/:item/pull-requests/actions` | write on the project (not yet on main) |
+| POST | `{nativeBase}/work-items/:item/pull-requests/:number/actions` | write on the project (not yet on main) |
 
 The diff post carries its producer and generation rather than an idempotency
 key: the generation *is* the record.
@@ -207,8 +274,7 @@ truncated}`. The rules the hub enforces:
   current, its pinned policy is approved, and it belongs to the authenticated
   runner — and requires a `running` attempt row bound to that lease and fencing
   token. Workspace sessions (18.1) are the only other legal producer; they
-  exist now, but none of them produces a diff, because the live workspace diff
-  channel of 18.5 is not built. A workspace producer, a stale fencing token,
+  are not built on main, so no workspace produces a diff. A workspace producer, a stale fencing token,
   another attempt's id and a released lease are therefore all
   `409 stale_execution`.
 - **Generations.** A `seq` at or below the stored one for that source is
@@ -267,6 +333,9 @@ cannot do better today:
   the hub can see is always on the bound repository. Both fields are present in
   the shape and will carry real values when the connector projects them.
 
+Not yet on main: pull request actions and the `pull_request_actions` table,
+described in the next paragraph.
+
 An action is not executed by the hub. `POST …/pull-requests/actions
 {idempotency_key, action: "open", expected_head_sha}` and `POST
 …/pull-requests/:number/actions {idempotency_key, action: "update_branch" |
@@ -281,6 +350,9 @@ additionally requires the change request to have reached its review policy's
 `reviewed` status, and is `409 merge_not_permitted` otherwise. The action is
 idempotent by key like every other mutation, so a replay answers with the first
 call's work item instead of queueing a second one.
+
+Not yet on main: workspace sessions, the relay, project actions, the git
+channel and the worktree location, everything from here to section 1.3.
 
 **Workspace sessions and the relay** (`decisions.md` sections 18.1, 18.2, 18.4
 and 18.13). They live on `nativeBase` beside the other native resources and are
@@ -480,6 +552,8 @@ refused rather than silently accepted.
 
 Explicit preferences travel to every turn the conversation produces:
 
+- Not yet on main: the first two bullets. Main has no coordinator, and no
+  runner reads `preferences` from the bind response yet.
 - The transitional hub-side coordinator applies the model and the effort to its
   own turn request. `ReadOnly` stays true whatever `access` says — a
   coordinator turn never changes anything.
@@ -555,16 +629,20 @@ rejected, so a misspelled conversation key fails the whole file at startup.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | bool | `false` | Mounts the conversation API, the worker endpoints, the event streams and the `/chat` client. |
-| `codex` | mapping | absent | Transitional hub-side coordinator backend for conversations without a linked issue. Self-hosted hubs only; never set on Detent Cloud. See below for what an absent section means. |
-| `codex.command` | string | `codex` | Executable used for coordinator turns. |
-| `codex.model` | string | empty | Model passed to coordinator turns. Empty leaves the backend default. |
-| `codex.reasoning_effort` | string | empty | Reasoning effort passed to coordinator turns. |
-| `codex.options` | mapping | empty | The same Codex option shape the runner uses (`internal/config.CodexOptions`): `shell`, `model_provider`, `service_tier`, `approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, `turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms`, `deliverable_elicitation_allowlist`. |
-| `workspace` | string | none | Directory coordinator turns run in. Required when `codex` is configured, and it must already exist and be a directory. |
+| `enabled` | bool | `false` | Mounts the conversation API, the worker endpoints and the event streams. The client shell is mounted on every hosted hub whether or not this is set. |
+| `model` | string | empty | The model `auto` resolves to for this hub, offered beside the models the runners report. |
+| `codex` | mapping | absent | Not yet on main; the key is rejected as unknown. Transitional hub-side coordinator backend for conversations without a linked issue. Self-hosted hubs only; never set on Detent Cloud. See below for what an absent section means. |
+| `codex.command` | string | `codex` | Not yet on main. Executable used for coordinator turns. |
+| `codex.model` | string | empty | Not yet on main. Model passed to coordinator turns. Empty leaves the backend default. |
+| `codex.reasoning_effort` | string | empty | Not yet on main. Reasoning effort passed to coordinator turns. |
+| `codex.options` | mapping | empty | Not yet on main. The same Codex option shape the runner uses (`internal/config.CodexOptions`): `shell`, `model_provider`, `service_tier`, `approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, `turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms`, `deliverable_elicitation_allowlist`. |
+| `workspace` | string | none | Not yet on main; the key is rejected as unknown. Directory coordinator turns run in. Required when `codex` is configured, and it must already exist and be a directory. |
 | `question_timeout` | duration | `24h` | How long a pending runner question waits for an answer before it expires. Must parse as a positive Go duration. |
 | `settle_window` | duration | `24h` | How long a conversation whose execution has ended or never started may sit without activity before the sweep settles it. Must parse as a positive Go duration. |
 | `control_queue_size` | int | `64` | Queued controls allowed per conversation before acceptance fails with `queue_full`. |
+
+Not yet on main: the `workspaces:` section and everything up to the example
+below. On main the key is rejected as unknown.
 
 The `workspaces:` section of the same file configures workspace sessions and
 the relay (`decisions.md` 18.1 and 18.2). It is independent of `conversation:`:
@@ -623,19 +701,22 @@ workos:
   api_key_env: WORKOS_API_KEY
 conversation:
   enabled: true
-  workspace: /var/lib/detent/conversation
+  model: gpt-6-astra
   question_timeout: 24h
   settle_window: 24h
   control_queue_size: 64
-  codex:
-    command: codex
-    model: gpt-6-astra
-    reasoning_effort: low
-    options:
-      turn_timeout_ms: 600000
 ```
 
+The example carries only the keys main accepts. The PR #2635 version also set
+`workspace:` and a `codex:` block; on main either one fails the whole file.
+
+A tenant hub behind the shared entry adds a `shared_entry:` block (`issuer`,
+`public_keys`, `allocation_generation`) to this same file; see
+[hosted identity](../hosted-identity.md).
+
 ### Hub-side coordinator is transitional
+
+Not yet on main: the hub-side coordinator, and the `codex` and `workspace` keys, do not exist on main.
 
 Detent does not run model turns on the hub or hold provider credentials; the
 customer's runner and the customer's ChatGPT, Claude or API-key login pay for
@@ -648,6 +729,8 @@ rather than being answered on Detent's account. Both keys are removed when the
 coordinator moves to runners.
 
 ### When `codex` is omitted: the runner-dispatched coordinator
+
+Not yet on main: no coordinator work item, `detent:coordinator` label or `coordinator_items` table exists; an unlinked chat's messages stay `saved` until the chat is linked.
 
 Omitting `codex` is now the default and the supported path, not a degraded
 one. The section stays valid, the product still mounts and `workspace` is not
@@ -695,6 +778,8 @@ required. What happens instead (`decisions.md` section 9):
 
 ### Where coordinator items appear
 
+Not yet on main: coordinator items, `include=coordinator` and the `coordinator_items` table.
+
 Coordinator items are conversation turns, not project work, so they are hidden
 from the places that list work:
 
@@ -713,6 +798,8 @@ sqlite3 hub.db "SELECT work_item_id, conversation_id, created_at, closed_at FROM
 ```
 
 ### Provider threads follow the runner that made them, and the kind of turn
+
+On main this is the hub half only: the columns, the bind response's `resume` and the transcript notice exist, but no runner binds a conversation yet and no coordinator produces a thread.
 
 `conversations.provider_thread_runner_id` records which runner's provider
 login produced the conversation's thread; it is empty for the transitional
@@ -758,6 +845,8 @@ compares two real runner identities.
 
 ### Supported providers and backends
 
+Not yet on main: runner-side live conversation control (`SupportsLiveControl`, `worker_conversation_bind_skipped`) is in flight, and there is no hub-side backend.
+
 The transitional hub-side coordinator backend is Codex only. `codex` is the
 sole backend key in the section and it is built through the same Codex
 backend constructor the runner uses. The runner-dispatched coordinator will
@@ -778,8 +867,9 @@ or answering, and the client hides those controls.
 
 ## 3. Storage and migrations
 
-Migration `internal/hubserver/migrations/00022_create_conversations.sql` adds
-seven tables and their indexes:
+Migration `internal/hubserver/migrations/00025_create_conversations.sql` adds
+eight tables and their indexes, and the column
+`conversations.provider_thread_runner_id` (text, default empty):
 
 | Table | Holds |
 |---|---|
@@ -794,8 +884,11 @@ seven tables and their indexes:
 
 The migration is additive. It creates new tables only; no existing table,
 index or row is altered. It is reversible in the goose sense: the
-`-- +goose Down` section drops all seven tables in reverse dependency order.
+`-- +goose Down` section drops all eight tables in reverse dependency order.
 See section 5 for what that actually costs.
+
+Not yet on main: the coordinator migration described in the next paragraph.
+On main `provider_thread_runner_id` is created by 00025.
 
 Migration `internal/hubserver/migrations/00023_coordinator_items.sql` adds the
 runner-dispatched coordinator: the table `coordinator_items` (`work_item_id`
@@ -804,14 +897,14 @@ nullable `closed_at`) with an index on `(conversation_id, closed_at)`, and the
 column `conversations.provider_thread_runner_id` (text, default empty). Its
 down section drops the table and the column.
 
-Migration `internal/hubserver/migrations/00024_conversation_preferences.sql`
+Migration `internal/hubserver/migrations/00026_conversation_preferences.sql`
 adds turn preferences, message references and Settled (decisions section 14).
 It is the one conversation migration that is not additive: the `conversations`
 table is rebuilt, because the `status` check constraint has to change from
 `('active', 'archived')` to `('active', 'settled')` and SQLite cannot alter a
 constraint in place. The rebuild copies every row, maps an `archived` status to
 `settled`, renames `archived_at` to `settled_at` and adds `preferences_json`
-(default `{}`), then recreates the three indexes 00022 created and adds
+(default `{}`), then recreates the three indexes 00025 created and adds
 `conversations_settle_idx` on `(status, COALESCE(last_message_at, updated_at))`
 for the sweep. It also creates `message_references` (`message_id`,
 `conversation_id`, `target_kind`, `target_id`, `label`, `created_at`, primary
@@ -820,19 +913,21 @@ key `(message_id, target_kind, target_id)`) with an index on
 listing.
 
 Its down section reverses both: it drops `message_references` and rebuilds
-`conversations` with the 00022 shape, mapping `settled` back to `archived`.
+`conversations` with the 00025 shape, mapping `settled` back to `archived`.
 Preferences are lost on the way down, because the old table has nowhere to put
 them.
 
-Migration `internal/hubserver/migrations/00025_attachments_usage.sql` adds
-conversation attachments and per-attempt usage (decisions section 17, items 1
-and 5): `conversation_attachments`, `conversation_attachment_blobs` and
-`attempt_usage`.
+Migration `internal/hubserver/migrations/00027_conversation_attachments.sql`
+adds conversation attachments (decisions section 17, item 1):
+`conversation_attachments` and `conversation_attachment_blobs`. Migration
+`internal/hubserver/migrations/00030_attempt_usage.sql` adds per-attempt usage
+(item 5): `attempt_usage`.
 
-Migration
-`internal/hubserver/migrations/00026_attempt_diffs_pull_request_actions.sql`
-adds stored attempt diffs and pull request actions (decisions sections 18.5 and
-18.6). It is additive; it creates three tables and alters nothing.
+Migration `internal/hubserver/migrations/00023_attempt_diffs.sql` adds stored
+attempt diffs (decisions section 18.5). It creates two tables and adds the
+column `work_item_revision` (default 0) to `leases` and `native_attempts`; it
+alters no existing row. The `pull_request_actions` row below is not yet on
+main.
 
 | Table | Holds |
 |---|---|
@@ -843,8 +938,11 @@ adds stored attempt diffs and pull request actions (decisions sections 18.5 and
 `attempt_diffs.attempt_id` carries no foreign key, for the same reason
 `attempt_usage.attempt_id` does not: a diff is posted *before* the run event
 that references it, so it can arrive on a checkpoint the attempt recorder has
-not ordered yet. Its down section drops the three tables in reverse dependency
-order.
+not ordered yet. Its down section drops the two columns and the two tables in
+reverse dependency order.
+
+Not yet on main: the workspace sessions migration described in the next two
+paragraphs.
 
 Migration `internal/hubserver/migrations/00027_workspace_sessions.sql` adds
 workspace sessions, the relay and the typed project event stream (decisions
@@ -877,8 +975,9 @@ conversation whose thread predates the column continues from a transcript
 once and records the origin on its next turn.
 
 Migration `internal/hubserver/migrations/00029_dispatch_requests.sql` stops the
-re-dispatch loop in section 7. It is additive and reversible: four columns, no
-table rebuilt and no existing row altered.
+re-dispatch loop in section 7. It is additive and reversible: three columns, no
+table rebuilt and no existing row altered. The first row below,
+`native_attempts.work_item_revision`, comes from 00023.
 
 | Column | Holds |
 |---|---|
@@ -892,8 +991,11 @@ A claim candidate is now required to be unanswered as well as dispatchable:
 `fencing_token` — has `status = 'succeeded'` at
 `work_item_revision >= issues.revision` and
 `dispatch_generation >= issues.dispatch_generation`. Its down section drops the
-four columns in reverse order; a rollback restores the loop and nothing else,
+three columns in reverse order; a rollback restores the loop and nothing else,
 because no other reader depends on them.
+
+Not yet on main: the project actions and action run claims migrations
+described in the next four paragraphs. On main 00030 is `00030_attempt_usage.sql`.
 
 Migration `internal/hubserver/migrations/00030_project_actions.sql` adds
 project actions and their runs (decisions section 18.12). It is additive; it
@@ -929,7 +1031,10 @@ The partial index is what keeps the dispatch's own read an index scan over the
 queued rows rather than a scan of every run the project has ever made.
 
 The hub pins the schema it supports. `internal/hubserver/migrate.go` sets
-`supportedSchemaVersion = 30`, verifies the embedded migration set reaches
+`supportedSchemaVersion = 31` (00031 is `00031_hosted_billing_modes.sql`, and
+00022 `00022_hosted_shared_origin.sql` adds the shared entry's `hosted_tenant`
+columns and `hosted_binding_migrations`;
+there is no 00024), verifies the embedded migration set reaches
 exactly that version, applies any missing migrations when the database is
 opened, checks foreign keys afterwards, and fails to start when the database is
 already at a higher version. Operators do not run a migration command: starting
@@ -959,6 +1064,8 @@ Message references add one row per resolved reference, bounded to 20 per
 message, and re-extraction replaces a message's rows rather than adding to
 them.
 
+Not yet on main: the terminal recordings migration below.
+
 Migration `internal/hubserver/migrations/00033_workspace_terminal_recordings.sql`
 adds one table for §18.3's recordings:
 
@@ -983,13 +1090,15 @@ make setup      # Go tooling, root npm deps, and npm ci in web/conversation
 make generate   # go generate, templ, sqlc, Tailwind, and the client build
 ```
 
-`make generate` runs `make app`, which runs `npm ci` when needed and then the
-Vite build, emitting `static/app/conversation/{index.html,app.js,app.css}`.
+`make generate` runs `make app`, which runs `npm ci` when `node_modules` is
+missing and then the Vite build, emitting `static/app/conversation/`: the shell
+`index.html`, the entry `app.js`, `app.css`, code-split `chunks/` and `assets/`,
+and `THIRD_PARTY_LICENSES.txt`.
 That output is committed, following the precedent of `static/css/output.css`,
 so `go build` never needs Node. Run `make app` on its own when only the client
 changed.
 
-Then start a hosted hub whose configuration file carries the section from
+Then start a standalone hosted hub whose configuration file carries the section from
 section 2:
 
 ```sh
@@ -1010,6 +1119,17 @@ organization, the actor, the readable projects and their write grants, the CSRF
 token and the capability flags. Bundles are served from the embedded filesystem
 under `/static/app/conversation/`.
 
+Behind the shared entry the same hub runs with a `shared_entry:` block and
+usually a `unix:` listen address, and `detent cloud serve --entry-config
+<cloud.yaml>` is the public origin: it signs people in, lists their
+organizations at `/organizations`, and proxies `/organizations/<organization>/*`
+and `/api/v2/organizations/<organization>/*` to the tenant with a signed
+assertion. The client is then at `/organizations/<organization>/chat`, a
+signed-out visitor is sent to `/organizations`, and the bundle is served under
+`/organizations/<organization>/static/app/conversation/`. The entry's
+configuration and the tenant's `shared_entry` block are documented in
+[hosted identity](../hosted-identity.md).
+
 ### Client development loop
 
 From the repository root:
@@ -1025,13 +1145,13 @@ DETENT_HUB_URL=http://127.0.0.1:7777 npm run dev   # vite against a real hub
 npm run dev:mock                                   # mock hub and vite together
 ```
 
-The dev server proxies `/api`, `/app/bootstrap` and `/chat/bootstrap` to
+The dev server proxies `/api`, `/app/bootstrap`, `/chat/bootstrap` and `/__mock` to
 `$DETENT_HUB_URL`, which
 defaults to `http://127.0.0.1:4100`. `dev/mock-hub.ts` listens on
 `$MOCK_HUB_PORT`, default `4100`, so `npm run dev:mock` needs no extra
 configuration. The mock is an in-memory double with `POST /__mock/*` hooks for
 failure injection (`queue-full`, `unknown-outcome`, `drop-open-streams`,
-`expire-cursors`, `revoke-access`, `reset`) and a scripted runner. It is a
+`expire-cursors`, `revoke-access`, `reset` and others) and a scripted runner. It is a
 development and test double, not a reference implementation.
 
 ### Tests
@@ -1039,15 +1159,19 @@ development and test double, not a reference implementation.
 ```sh
 go test ./internal/hubserver -run TestConversation
 go test ./internal/conversation/...
-go test ./internal/runner ./internal/codex ./internal/hubclient -run Conversation
 make app-test    # tsc --noEmit && vitest run in web/conversation
 make check       # the local pre-review gate
 ```
 
-`make check` does not run `make app-test`; run the client tests separately when
-the client changed.
+`make check` runs `check-app`, which typechecks the client, runs its vitest
+suite, rebuilds it and fails when `static/app/conversation` differs from the
+committed build or lacks the attribution and license files. The runner-side
+`go test ./internal/runner ./internal/codex ./internal/hubclient -run
+Conversation` of PR #2635 has no tests to run on main yet.
 
 ### Browser cover for the client
+
+Not yet on main: `tests/visual/conversation.spec.js`, `tests/visual/hosted-hub.js` and the `@axe-core/playwright` dependency. `TestHostedBrowserPreview` and `DETENT_HOSTED_BROWSER_PREVIEW` exist, but no Playwright spec drives the conversation client; `make visual-e2e` runs the other specs in `tests/visual`.
 
 ```sh
 make app                                             # the spec needs the built client
@@ -1142,7 +1266,8 @@ affordance therefore leaves those messages stranded.
 
 After normalization the service re-wakes accepted work. Every active
 conversation still holding a user message with delivery `saved` or `queued` is
-handed to the coordinator (unlinked) or to the control router (linked). Those
+handed to the coordinator (unlinked) or to the control router (linked). On
+main there is no coordinator, so only linked conversations are re-woken. Those
 components then re-read durable state; the wake carries no payload.
 
 ### Disabling the feature
@@ -1150,7 +1275,8 @@ components then re-read durable state; the wake carries no payload.
 Set `enabled: false` or remove the `conversation:` section, then restart the
 hub. The service is not constructed, so the conversation API and the worker
 endpoints return 404 and `/app/bootstrap` reports `feature.conversation:
-false`, which is how the client hides the chat screens. The application shell
+false`, which is how the client hides the chat screens. On main the bootstrap
+reports `false` whether or not the feature is enabled (see Status on main). The application shell
 itself still answers `/chat` and every other client route: since
 `decisions.md` section 11 it serves the whole frontend, not only chat.
 
@@ -1165,7 +1291,7 @@ and completes its issue without live conversation control.
 
 Two constraints make a rollback past this release a restore, not a downgrade.
 
-- **The down migration destroys conversation data.** It drops all seven tables,
+- **The down migration destroys conversation data.** It drops all eight tables,
   so every conversation, message, question, receipt, event and audience row
   goes with it. There is also no shipped command that runs goose down against
   the hub database: the embedded hub migrations are applied by the server
@@ -1175,8 +1301,9 @@ Two constraints make a rollback past this release a restore, not a downgrade.
   database's applied version with the binary's `supportedSchemaVersion` and
   returns `ErrUnsupportedSchema` ("hub database schema is newer than this
   Detent version") when the database is ahead. A binary that predates schema
-  version 22 will therefore not start against a database this release has
-  migrated.
+  version 25, where the conversation tables arrive, will therefore not start
+  against a database this release has migrated; on main the supported version
+  is 31.
 
 The supported procedure is to take `detent hub backup --database ... --output
 ...` on the stopped hub before the upgrade and, if a rollback is needed,
@@ -1187,9 +1314,10 @@ restore that snapshot with the older binary. Verify a snapshot with
 
 | Symptom | Cause | Action |
 |---|---|---|
-| `GET /chat` returns 503 `client_unavailable` | `app/conversation/index.html` is missing from the embedded static tree, so the binary was built without the client. | Run `make app` (or `make generate`) and rebuild. The built output is committed, so this normally only follows deleting `static/app/conversation/` or building from a tree where it was never generated. |
-| Chat message receipt is `queued` and the execution stays `waiting_for_runner` | No hub-side coordinator is configured, so the message opened a coordinator work item and no enrolled runner with a fresh live-control (`codex`) provider report has claimed it yet. | Check `capabilities.coordinator` in the bootstrap payload and the runners' provider reports (`GET .../runners`). A runner whose codex observation is older than `providercapacity.MaxAge`, whose heartbeat is stale, or that holds no grant on the project will never receive the item. |
-| A coordinator item is never claimed | The claim loop skips coordinator items for every credential that is not an enrolled runner with a fresh live-control report; legacy machine registrations never receive them. | Enrol the runner, confirm its heartbeat and provider report are fresh, and confirm its grant covers the project. List the items with `include=coordinator`. |
+| `GET /chat` (or `/organizations/<organization>/chat`) returns 503 `client_unavailable` | `app/conversation/index.html` is missing from the embedded static tree, so the binary was built without the client. | Run `make app` (or `make generate`) and rebuild. The built output is committed, so this normally only follows deleting `static/app/conversation/` or building from a tree where it was never generated. |
+| An unlinked chat's message stays `saved` and nothing answers it | Main has no coordinator of either kind. | Expected on main. Link the chat to an issue; the saved messages become the first attempt's controls. |
+| Chat message receipt is `queued` and the execution stays `waiting_for_runner` | Not yet on main (coordinator row). No hub-side coordinator is configured, so the message opened a coordinator work item and no enrolled runner with a fresh live-control (`codex`) provider report has claimed it yet. | Check `capabilities.coordinator` in the bootstrap payload and the runners' provider reports (`GET .../runners`). A runner whose codex observation is older than `providercapacity.MaxAge`, whose heartbeat is stale, or that holds no grant on the project will never receive the item. |
+| A coordinator item is never claimed | Not yet on main. The claim loop skips coordinator items for every credential that is not an enrolled runner with a fresh live-control report; legacy machine registrations never receive them. | Enrol the runner, confirm its heartbeat and provider report are fresh, and confirm its grant covers the project. List the items with `include=coordinator`. |
 | Command rejected with 503 `queue_full` | More than `control_queue_size` messages (default 64) are queued for one conversation, meaning nothing is draining them. | Check whether an attempt is actually bound: the conversation's execution status and `runner_id` say so. Each refusal logs `conversation.queue_full` with the queue depth and the bound. The client should back off and retry. |
 | Command rejected with 409 `stale_execution` | The `expected.attempt_id` or `expected.turn_id` on the control is no longer the current owner generation, or the targeted question is no longer open. The hub never silently redirects a control to a replacement attempt. | Re-read the snapshot and reissue against the current generation. Each rejection logs `conversation.stale_execution` with both attempt identifiers and the path that refused it. |
 | Stream ends with `event: closed` and `cursor_expired` | The `after=` cursor is ahead of the conversation's event head. Because every event is retained, this only happens with a cursor from a different or restored database. | Re-snapshot with `GET /conversations/:conversation` and reopen the stream at the returned cursor. |
@@ -1202,9 +1330,11 @@ restore that snapshot with the older binary. Verify a snapshot with
 | A `#123` in a message did not become a link | The number names no issue in the conversation's project, or the qualified project or organization does not match. Only resolvable targets are stored; the twenty-first reference in one message is dropped. | Expected. Reference the issue by its project (`project#123`) when it lives elsewhere in the same organization. |
 | Question shows `expired` | Either the hub restarted while it was pending, or `question_timeout` elapsed. | Answers to an expired question are refused. Ask again in a new turn; raise `question_timeout` if humans routinely need longer. |
 | Answer rejected with 409 `question_already_answered` | A question is single use and has exactly one winner. | Reload; the winning answer is in the transcript. |
-| Control rejected with 422 `unsupported_control` | `continue` was sent to an unlinked conversation, `cancel` to a linked one, or an unknown kind was sent. | Use `interrupt` on a linked attempt and `cancel` on a coordinator turn. |
+| Control rejected with 422 `unsupported_control` | `continue` was sent to an unlinked conversation, `cancel` to a linked one, or an unknown kind was sent. | Use `interrupt` on a linked attempt and `cancel` on a coordinator turn. On main `cancel` on an unlinked chat is `rejected` with `no_active_turn`, because no coordinator turn runs. |
 
 ### Workspace sessions
+
+Not yet on main: workspace sessions, the relay, project actions and terminals, so none of the states, tables or rows in this subsection exist on main.
 
 A workspace is the object the Files panel attaches to, so every question about
 "why is Files still spinning" is a question about which state it is stuck in
@@ -1271,6 +1401,8 @@ endpoint; if the hub itself is down, the workspace expires on its own at
 
 ### Diagnostics
 
+Not yet on main: the `conversation.coordinator` logger and every `workspace`, `workspace_session` and `workspace_lane` line in the first table below.
+
 The hub tags conversation work with `component=conversation` and coordinator
 turns with `component=conversation.coordinator`. Workspace work is tagged
 `component=workspace`, the relay's own failures ride the same logger, and the
@@ -1301,7 +1433,14 @@ conversation log lines the hub emits today, with the fields each one carries.
 | `conversation` | `conversation.queue_full` | warn | `conversation_id`, `kind`, `queued`, `limit` |
 | `conversation` | `conversation.stale_execution` | warn | `conversation_id`, `expected_attempt_id`, `current_attempt_id`, `path` |
 | `conversation` | `conversation.restart_normalized` | info | `conversations`, `messages`, `questions`, `receipts` |
-| `conversation` | `conversation.wake_pending` | info | `coordinator`, `controls` |
+| `conversation` | `conversation.wake_pending` | info | `controls` (PR #2635 also logged `coordinator`, not yet on main) |
+| `conversation` | `conversation.settled` | info | `conversation_id`, `last_activity` |
+| `conversation` | `conversation.settle_sweep` | info | `settled` |
+| `conversation` | `conversation.settle_sweep_failed` | warn | `error` |
+| `conversation` | `conversation.attachment_sweep` | info | `swept` |
+| `conversation` | `conversation.attachment_sweep_failed` | warn | `error` |
+| `conversation` | `conversation.preferences_written` | info | `conversation_id`, `work_item_id`, `model`, `reasoning_effort` |
+| `conversation` | `conversation.stream_reauthorize_failed` | warn | `conversation_id`, `error` |
 | `conversation` | `conversation execution reconcile failed` | warn | `error` |
 | `conversation` | `conversation lease release lookup failed` | warn | `lease`, `error` |
 | `conversation` | `conversation lease release settlement failed` | warn | `conversation`, `error` |
@@ -1312,7 +1451,9 @@ conversation log lines the hub emits today, with the fields each one carries.
 | `conversation.coordinator` | `coordinator could not persist delta` | warn | `conversation_id`, `error` |
 | `conversation.coordinator` | `coordinator could not persist tool message` | warn | `conversation_id`, `error` |
 | `conversation.coordinator` | `coordinator tool failed` | warn | `conversation_id`, `tool`, `error` |
-| hub base logger | `conversation client shell could not be read` | error | `error` |
+| hub base logger | `application client shell could not be read` | error | `error` |
+
+Not yet on main: every `conversation.coordinator` row above, and the runner events in the next sentence.
 
 On the runner side the relevant worker events are `worker_conversation_bound`
 (work attempt id, `conversation_id`, `thread_id`) and
@@ -1344,7 +1485,8 @@ What the five conversation-product events mean:
   in flight.
 - **`conversation.wake_pending`** reports how many conversations were re-woken
   after that normalization, split by the component that owns the next step:
-  `coordinator` for unlinked conversations and `controls` for linked ones.
+  `coordinator` for unlinked conversations and `controls` for linked ones. On
+  main only `controls` is logged.
 
 **No conversation log line carries message text, an assistant answer or an
 answer to a runner question.** Every value on the lines above is an identifier,
@@ -1361,7 +1503,9 @@ The remaining plan tasks in the operations track are O01 to O03; the plan file
 itself (`detent-cloud-concept/IMPLEMENTATION-PLAN.md`) lives outside this
 repository. What is still missing, as a checklist:
 
-- [x] **O01, end-to-end proof.** Recorded September 11, 2026:
+- [x] **O01, end-to-end proof.** Not yet on main: the live test, the runner's
+      conversation binding and `withCodexQuestionFeature`; this records the
+      PR #2635 branch. Recorded September 11, 2026:
       `DETENT_CONVERSATION_LIVE=1 go test ./internal/hubclient -run Live -v`
       against Codex CLI 0.154.0 with the operator's own ChatGPT login passed in
       37 seconds. The run creates a chat, links it to an issue with shared
@@ -1386,6 +1530,8 @@ repository. What is still missing, as a checklist:
       a live deployment with a real provider and a real lease.
 - [x] **O03, accessibility and performance.** Both are now measured, and both
       are regression-tested.
+      - Not yet on main: the browser spec in the next bullet; the perf test
+        after it is on main.
       - Covered: `tests/visual/conversation.spec.js` drives a real hosted hub in
         Chromium from the keyboard only, locating every control by its
         accessible name, across the new-chat route, an active conversation with
@@ -1423,7 +1569,8 @@ repository. What is still missing, as a checklist:
         Tab never walks an invisible list. `/` focuses search and
         `Mod+Shift+N` starts a new chat; both are advertised through
         `aria-keyshortcuts` and covered by the spec.
-- [x] **Live provider test.** `internal/hubclient/conversation_integration_live_test.go`
+- [x] **Live provider test.** Not yet on main.
+      `internal/hubclient/conversation_integration_live_test.go`
       is the opt-in test `decisions.md` section 6 promised. It skips unless
       `DETENT_CONVERSATION_LIVE=1` and a logged-in `codex` CLI are present, so
       it never runs in CI; no recorded run against a real provider exists yet,
@@ -1431,7 +1578,7 @@ repository. What is still missing, as a checklist:
 - [ ] **Retention.** All events are retained with no pruning path, so long-lived
       conversations grow without bound. Sizing guidance is in section 3; a
       retention policy is future work.
-- [x] **Runner-dispatched coordinator.** A hub with no `conversation.codex`
+- [x] **Runner-dispatched coordinator.** Not yet on main. A hub with no `conversation.codex`
       backend — the default — dispatches every coordinator turn to a customer
       runner through a coordinator work item (`decisions.md` section 9), and
       `capabilities.coordinator` is true when either a backend is configured or
@@ -1439,7 +1586,9 @@ repository. What is still missing, as a checklist:
       and is transitional; deleting the `codex` and `workspace` config keys is
       what is left.
 - [x] **An item in an active state is re-dispatched forever.** Fixed
-      September 12, 2026. The September 11 dogfood run claimed one issue four
+      September 12, 2026. On main only brake 2 (the hub claim exclusion) and the
+      `?include=change` surface have landed; brakes 0 and 1 and the
+      orchestrator and hubclient tests named below are not yet on main. The September 11 dogfood run claimed one issue four
       times, and the sixth run claimed one four times again, before each was
       moved to Done by hand.
 
@@ -1494,7 +1643,7 @@ repository. What is still missing, as a checklist:
          promotion decides them differently. The work item resource carries an
          optional change review surface,
          `GET {nativeBase}/work-items/:item?include=change`
-         (`internal/hubserver/native_issue_change.go`), which reports
+         (`internal/hubserver/native_issues.go` on main), which reports
          `connector: "github" | "none"` from the project's own GitHub
          repository binding — the same binding `GET
          .../work-items/:id/pull-requests` reports as `connector: null` for
@@ -1606,7 +1755,8 @@ repository. What is still missing, as a checklist:
          `native_attempts.dispatch_generation`, written at `run.started` from
          the item's own row inside the same transaction, and
          `issues.dispatch_generation` / `issues.dispatch_requested_at`;
-         `supportedSchemaVersion` is 29. Both attempt columns default to 0,
+         `supportedSchemaVersion` was 29 then and is 31 on main, where
+         `native_attempts.work_item_revision` comes from 00023. Both attempt columns default to 0,
          which is below every real revision, so an attempt recorded before the
          migration suppresses nothing.
 
@@ -1707,7 +1857,8 @@ repository. What is still missing, as a checklist:
       The agent's subprocess inherits the runner's own environment plus a fixed
       override set, and that set is the whole of it: `GH_CONFIG_DIR` and the
       four GitHub token names (`internal/runner/worker_github.go`), `GOCACHE`,
-      `GOMODCACHE`, `GOBIN`, `GOLANGCI_LINT_CACHE` (`worker_cache.go`), and
+      `GOMODCACHE`, `GOBIN`, `GOLANGCI_LINT_CACHE` (`worker_cache.go`, which is
+      not on main), and
       `TMPDIR`, `TMP`, `TEMP`, `DETENT_WORKER_SCRATCH`
       (`procgroup.SetTempDir`). Nothing carries the Hub URL, the global
       configuration path, or a Hub credential, and there is no `os.Setenv` on
@@ -1753,6 +1904,8 @@ Product scope left for later milestones is listed in section 1 and in
 
 ## 8. Dogfooding on a real project
 
+Not yet on main: this procedure needs runner-side live conversation control and the coordinator, neither of which is on main, and it was run on the PR #2635 branch.
+
 What it takes to run the conversation product against a real repository with
 your own provider login, from this branch, before anything is pushed.
 
@@ -1767,7 +1920,10 @@ your own provider login, from this branch, before anything is pushed.
    `runners` on it.
 4. Enroll a runner from Settings → Providers & runners on a machine with the
    Codex CLI logged in (`codex login`), and start it with the enrollment
-   token: `tmp/detent runner --hub http://127.0.0.1:7777 ...`. The runner
+   token (`tmp/detent hub runner init` and `tmp/detent hub runner enroll`), then
+   run the ordinary daemon with a global configuration whose `client:` block
+   points at the hub: `tmp/detent --config <global.yaml> --headless`. There is
+   no `detent runner` command; see "The runner" below. The runner
    takes both issue runs and coordinator turns; the hub runs no model. The
    runner appends `--enable default_mode_request_user_input` to the Codex
    app-server command it launches, which the model needs to ask questions
@@ -1784,6 +1940,8 @@ contract, not yet built); a session that expires mid-page shows an inline
 
 
 ### As run on September 11, 2026
+
+Not yet on main: these runs record the PR #2635 branch, including the coordinator preview mode, workspace sessions and project actions that main does not have.
 
 The first end-to-end run of this branch on a developer laptop: a real hosted
 hub, a real enrolled runner, a real Codex login and a real git repository. It
@@ -3627,7 +3785,7 @@ section 18.13 requires of it:
 ```
 "capabilities": {"terminal": false, "files": true, "diff": false,
                  "preview": false, "exec": true, "git": true},
-"machine_hostname": "Michaels-MacBook-Pro.local",
+"machine_hostname": "runner-1.example",
 "worktree_path": "/private/var/folders/…/detent_workspaces/dogfood-wi_88d1f1ee…-ws-be7c59e8b305"
 ```
 
@@ -3659,7 +3817,7 @@ The commit is in the remote and says who decided and who ran it:
 
 ```
 $ git --git-dir=<remote>.git show -s --format='%H %an <%ae> / %cn <%ce>' 4f44f57e
-4f44f57e…  Owner <owner@example.test> / Detent runner (Michaels-MacBook-Pro.local) <runner@detent.invalid>
+4f44f57e…  Owner <owner@example.test> / Detent runner (runner-1.example) <runner@detent.invalid>
   NOTES.md | 1 +
 ```
 

@@ -1,5 +1,18 @@
 # Conversation product design inventory (D01 and D03)
 
+## Status on main
+
+- The Cloud client described here lives in `web/conversation` (React 19, Vite, TanStack Router, Tailwind v4). It builds into `static/app/conversation` (`make app`) and is served only by `internal/hubserver` (`appShell` in `internal/hubserver/app_ui.go`), under the tenant base path passed to the client through the `detent-base-path` meta tag. It is not mounted inside the local Templ shell.
+- A.1 Work board exists: `/work` and `/work/p/$projectId` (`web/conversation/src/app/work/WorkBoard.tsx`).
+- A.2 Issue thread exists as `/work/i/$workItemId` (`web/conversation/src/app/work/IssuePage.tsx`); the old `/chat/issues/$workItemId` redirects there. Diff review renders through `web/conversation/src/app/components/surfaces/DiffSurface.tsx`; parity with the artifact's five-tab dock is not verified here.
+- A.3 Fleet and spend is split: `/usage` (`web/conversation/src/app/usage/UsagePage.tsx`) and `/fleet`, which redirects to `/settings/runners` (`web/conversation/src/app/fleet/RunnersSection.tsx`).
+- A.4 Project settings exists as `/settings/$section` (`web/conversation/src/app/settings/Settings.tsx`); `/projects/$project/settings` redirects to the `integrations` section. A `billing` section (owner or admin only) was added.
+- A.5 First-run wizard maps to `/projects/$project/setup` (`web/conversation/src/app/account/Setup.tsx`) plus the shared-entry screens in `web/conversation/src/app/entry/router.tsx`: sign-in `/`, organization chooser `/organizations`, create `/organizations/new`, provisioning `/organizations/$organization/provisioning`, and join `/invitations/join`.
+- A.8 New chat exists: `/chat` and `/chat/p/$projectId` (`NewChat`, `ProjectNewChat` in `web/conversation/src/app/App.tsx`). A.10 Active conversation exists: `/chat/c/$conversationId` (`ConversationRoute`). A.9 Chat list has no route of its own; conversations appear in the sidebar (`web/conversation/src/app/adapters/sidebarThreads.ts`).
+- Pending: the tenant screens tracked in #3098 are still in flight, so fidelity of the screens above to artifact A is not asserted. The local Templ routes cited in section A (`GET /`, `/fleet`, `/settings`, `/onboarding`, the issue detail route) still exist in `internal/web/server.go`.
+- Section B tokens do not live where section C says. The client's tokens are in `web/conversation/src/app/global.css` (T3/shadcn names such as `--background`, `--card`, `--muted-foreground`, `--primary`, declared on `:root` with a light default and a `dark` variant) and `web/conversation/src/app/index.css` (the artifact's `--primary: oklch(0.571 0.21 264)` override and the font stacks). The artifact's names (`--bg`, `--fg`, `--muted-fg`, ...) are not used, and they are not scoped to `[data-detent-conversation-root]`, although `main.tsx` still sets that attribute on `#root`.
+- None of the C.2 mirrors have landed in `static/css/input.css`: it still has the teal `--color-accent`, `--radius-card: 6px`, `--radius-chip: 4px`, and Geist-first font stacks. Because the client is a separate document served by the Hub, the seam and scoping guidance in C.2, C.3, and C.6 describes a design that main did not adopt.
+
 Prepared September 9, 2026. This document is the acceptance reference for the frontend
 work in the Detent conversation product backlog
 (`../detent-cloud-concept/IMPLEMENTATION-PLAN.md`). It closes task **D01** (screen
@@ -16,7 +29,7 @@ read.
 
 | Ref | Source | What it is |
 |---|---|---|
-| **A** | `~/.claude/projects/-Users-michaelhvisser-Development-digitaldrywood-detent/95cea87b-c676-49de-9226-21fa18c54f68/tool-results/artifact-55db0b4b-1788969374-f3ff.html` | The new Claude mockup artifact. One tabbed page, six tabs: five product screens plus a Notes tab carrying the token list and design rationale. Static markup; the only script switches tabs and opens the project switcher popover. |
+| **A** | A local Claude mockup artifact HTML file (personal path redacted) | The new Claude mockup artifact. One tabbed page, six tabs: five product screens plus a Notes tab carrying the token list and design rationale. Static markup; the only script switches tabs and opens the project switcher popover. |
 | **B** | `../detent-cloud-concept/index.html` | Older local interaction mockup. Interactive prototype: work board, review inbox, projects, and a session layout with a review dock. |
 | **C** | `../detent-cloud-concept/conversation-poc/src/app/main.tsx` and `style.css` | Runnable conversation POC. The only source that demonstrates the chat-first flow: centered composer for a new chat, docking after first send, whole-surface dropzone, handoff to an issue, delivery states. |
 | **D** | `internal/web/templates/shell.templ`, `chat.templ`, `shell_data.go`, `static/css/input.css` | The existing Detent Templ/HTMX shell and its Tailwind v4 theme. |
@@ -86,6 +99,8 @@ Each control table row is `Control | What it is | Task`. `Task` is a plan task I
 **Route.** Existing: `GET /` (`s.board`). Project-scoped variant `GET /projects/*`.
 No new route. The mounted conversation client does not own this screen.
 
+On main: the Cloud client does render this screen, at `/work` and `/work/p/$projectId` (`web/conversation/src/app/work/WorkBoard.tsx`).
+
 **Layout regions.**
 
 ```
@@ -132,7 +147,7 @@ No new route. The mounted conversation client does not own this screen.
 | Stats strip: `1 running`, `0 ready`, `3 waiting`, `11 blocked`, `5 completed · 24h`, then mono `1 / 2 slots · 312 tps · $28.77 notional today` | Counters | W01 |
 | Lane header: title, count (`err` variant when blocked), optional `1 live`, trailing menu icon | Lane controls | W01 |
 | Issue card | Project icon + name + mono `#id`; title; optional worker strip (live dot, model, `medium · full access`, `1.2M tok`); footer with PR chip, `attempt 2`, age, priority pill | W01; the worker strip is U07-adjacent state, read-only here |
-| Empty lane message | `Nothing is merging.` + `Last merge parable #2075 · 1h ago` | W01 |
+| Empty lane message | `Nothing is merging.` + `Last merge project-a #2075 · 1h ago` | W01 |
 
 **States present in the markup.** Live (green pulsing dot, `.issue.live` green-tinted
 border), waiting with retry (`Waiting · retry 14m`), blocked (`Blocked · 1`), needs review
@@ -151,6 +166,8 @@ one in the artifact.
 **Route.** Existing: `GET /projects/:project_id/issues/:issue_ref` (`s.issueDetail`).
 Proposed conversation-scoped route in the mounted client:
 `/chat/i/:project_id/:issue_ref` `[inferred]` — F02 confirms the mount prefix.
+
+On main: the client route is `/work/i/$workItemId` (`web/conversation/src/app/work/IssuePage.tsx`); `/chat/issues/$workItemId` redirects to it.
 
 **Layout regions.**
 
@@ -186,7 +203,7 @@ rule: "The dot disappears when a single project is selected."
 
 | Control | What it is | Task |
 |---|---|---|
-| Breadcrumb: project icon + `parable` / `#3363 <title>` | Scope trail, truncating current segment | U06 |
+| Breadcrumb: project icon + `project-a` / `#3363 <title>` | Scope trail, truncating current segment | U06 |
 | `Add action` | Adds a scheduled/manual action to the issue | deferred (not modelled) |
 | Split `Open` + chevron | Open the issue in the tracker, with a menu | U06 |
 | Split `PR #3372 · Blocked` + chevron | PR link carrying live CI/merge state, with a menu | U06 (link), V01 (state semantics) |
@@ -197,7 +214,7 @@ rule: "The dot disappears when a single project is selected."
 | Control | What it is | Task |
 |---|---|---|
 | `.issuecard` h1 | Issue title, 20px/600 | U06 |
-| `.issuecard .props` pills | `Blocked`, `High`, `epic #3350`, `effort · medium`, PR pill with icon, `opened Sep 7 by michaelhvisser` | U06 |
+| `.issuecard .props` pills | `Blocked`, `High`, `epic #3350`, `effort · medium`, PR pill with icon, `opened Sep 7 by example-user` | U06 |
 | `.issuecard` body and muted acceptance paragraph | Objective and acceptance criteria | U06 |
 | `Show full issue` | Expands the truncated body | U06 |
 | `.agent .who` | Model identity plus run scope: `gpt-6-astra · attempt 1 · medium · full access`, or `· correction round 2` | U03, U07 |
@@ -206,7 +223,7 @@ rule: "The dot disappears when a single project is selected."
 | Assistant prose with inline `code` | Markdown body | U03 |
 | `.blocked` card | Header `Blocked by a non-terminal dependency`; 150px/1fr key-value grid: `blocked_by`, `predicate` (mono), `owner`, `human_action` | U07 |
 | `.blocked .act` buttons: `Ship the index here` (primary), `Wait for #3355`, `Edit predicate` (ghost) | Decision actions on the blocking predicate | U07 |
-| `.bubble` | User turn: `.who` line `michaelhvisser · Sep 8, 9:41 PM`, right-aligned, max-width 86% | U03 |
+| `.bubble` | User turn: `.who` line `example-user · Sep 8, 9:41 PM`, right-aligned, max-width 86% | U03 |
 
 **Controls — composer stack.**
 
@@ -219,7 +236,7 @@ rule: "The dot disappears when a single project is selected."
 | Access chip `Full access` + chevron | Composer footer chip | U02 — **see the decision in A.7.4** |
 | Attach icon | File picker entry | U04 |
 | Send button | 30px circle, `--primary`, rendered at `opacity:.55` because the draft is empty — this is the disabled treatment | U02 |
-| `.checkout` strip | Attached below the box: `Worktree · detent-worktrees/parable/3363`, branch `fix/mailchimp-address-health`, trailing icon | deferred (later milestone, W02) — local-execution concept, must not render in deployment modes that have no worktree |
+| `.checkout` strip | Attached below the box: `Worktree · detent-worktrees/project-a/3363`, branch `fix/example-branch`, trailing icon | deferred (later milestone, W02) — local-execution concept, must not render in deployment modes that have no worktree |
 | `.handle` | 4x28px drag handle at the thread's left edge, CSS-only in this screen | deferred (later milestone) — pane resize |
 
 **Controls — review dock.**
@@ -234,7 +251,7 @@ rule: "The dot disappears when a single project is selected."
 | `.files` rows | Changed-file navigation, mono path, per-file `+N`/`−N`, `on` state for the selected file | V02 |
 | `.diff` sticky file header | Path plus `+68` | V02 |
 | `.ln` rows | Gutter/gutter/content grid, variants `add`, `del`, `ctx`, `hunk` | V02 |
-| `.cmt` inline comment | Numbered annotation badge, `<b>michaelhvisser</b> · line 18 · round 2 · head a41f0c2`, body, actions `Reply` and `Resolve` (ghost) | V02 |
+| `.cmt` inline comment | Numbered annotation badge, `<b>example-user</b> · line 18 · round 2 · head a41f0c2`, body, actions `Reply` and `Resolve` (ghost) | V02 |
 
 **States present.** Blocked issue with a non-terminal dependency; queued correction
 request with a visible idempotency key and a capacity reason; review round 2 anchored to
@@ -248,6 +265,8 @@ treatments are specified in section B and drawn from POC C.
 ### A.3 Fleet and spend — artifact screen 3
 
 **Route.** Existing: `GET /fleet`, plus `GET /fleet/runners`. No new route.
+
+On main: the client has `/usage` (`web/conversation/src/app/usage/UsagePage.tsx`), and its `/fleet` redirects to `/settings/runners`.
 
 **Layout regions.** Standard shell; main is a single scrolling column,
 `.usage` max-width 1180px, 40px side padding. Blocks in order: hero (340px/1fr grid:
@@ -279,6 +298,8 @@ value coloured `--warning`; a zero-spend project row rendering `—`.
 **Route.** Existing: `GET /settings`. Per-project settings are reached from the switcher
 gear. No new route.
 
+On main: the client has `/settings/$section` (`web/conversation/src/app/settings/Settings.tsx`); `/projects/$project/settings` redirects to the `integrations` section.
+
 **Layout regions.** The sidebar takes a **settings variant**: no project switcher, no
 issue sections. Rows are General, Projects (selected) with eight indented `.srow.sub`
 project rows (one `on`), Budget & brakes, Capacity & pools, Providers, Trackers, Hosts,
@@ -291,9 +312,9 @@ one icon. Main is a 980px column with a warning box then four labelled groups of
 |---|---|---|
 | Settings sidebar rows and project sub-rows | Settings navigation | deferred (existing surface) |
 | `Back` row in `.side-bot` | Leaves settings | deferred (existing surface) |
-| Breadcrumb `Settings / Projects / parable` + meta `getparable/parable · github` | Scope trail | deferred (existing surface) |
+| Breadcrumb `Settings / Projects / project-a` + meta `example-org/project-a · github` | Scope trail | deferred (existing surface) |
 | `Restore defaults` (ghost), `View workflow` | Page actions | deferred (existing surface) |
-| Warning box: `Dispatch is paused for this project on mac-mini-1.` with reason, auto-reset time, and a `Clear breaker` button | Breaker state and its one action | deferred (existing surface) |
+| Warning box: `Dispatch is paused for this project on host-1.` with reason, auto-reset time, and a `Clear breaker` button | Breaker state and its one action | deferred (existing surface) |
 | Dispatch group: `Paused` toggle (off), `Priority` select `2 · High`, `Weight` select `1`, `Pool` select `default · 2 guaranteed, burst to 2`, `Active hours` select `6:00 AM – 11:00 PM · America/Chicago` | Dispatch policy | deferred (existing surface) |
 | Lanes & recovery group: `Backlog admission` (off), `Dependency auto-unblock` (on), `Human review required` (on), `Auto-settle merged issues` (on), `Weekly stale sweep` (off) | Lane policy toggles | deferred (existing surface) |
 | Budget & brakes group: per-issue ceiling `$3.00`, per-day ceiling `$40.00`, no-progress breaker `3 sessions`, spend-since-progress breaker `4.0M tokens` | Brakes | deferred (existing surface) |
@@ -307,6 +328,8 @@ $2.96`).
 ### A.5 First-run wizard — artifact screen 5
 
 **Route.** Existing: `GET /onboarding`. No new route.
+
+On main: the client has `/projects/$project/setup` (`web/conversation/src/app/account/Setup.tsx`) and the shared-entry screens in `web/conversation/src/app/entry/router.tsx`.
 
 **Layout regions.** The shell is present but de-emphasised: `.scr-5 .side` renders at
 `opacity:.35` with a 1px blur and shows only a search row and the empty state
@@ -657,9 +680,9 @@ Derived values used inline and worth naming as tokens:
 **Project identity colours**, used for the row dot, the sidebar icon, and the breakdown
 table dot. The Notes tab requires each project to keep one colour everywhere it appears.
 
-`church-kit #8bc34a` · `client-portals #3aa0e6` · `michaelhvisser-web #e08bd6` ·
-`parable #7b8cff` · `parable-marketing #d98a3a` · `port-app #5cc8c0` ·
-`port-marketing #ef7d3a` · `threefold-marketing #f25c5c`
+`project-c #8bc34a` · `project-d #3aa0e6` · `project-e #e08bd6` ·
+`project-a #7b8cff` · `project-b #d98a3a` · `project-f #5cc8c0` ·
+`project-g #ef7d3a` · `project-h #f25c5c`
 
 These are per-project data, not theme tokens. They must be assigned by the server from
 project identity and passed to the client, not hard-coded in CSS.
@@ -679,6 +702,8 @@ reason, `tests/visual/conversation.spec.js` is the guard — it fails the client
 serious or critical axe violation — and the same numbers are recorded in a comment above
 the declarations in `style.css`. Anything that reads these tokens at 12px inherits the
 same obligation.
+
+On main: `web/conversation/src/app/style.css` and `tests/visual/conversation.spec.js` do not exist (both were in the unmerged PR #2635). The client has no `--muted-fg` / `--muted-fg-2` tokens; muted text uses `--muted-foreground` in `web/conversation/src/app/global.css`.
 
 **Semantic discipline.** The Notes tab states the rule: one blue accent, semantic colour
 reserved for state. `--primary` never signals status; `--success`/`--warning`/`--error`
@@ -1110,7 +1135,7 @@ lane's count of 11 uses it). The `pri` variant is solid `--primary` on white.
 | Container | Treatment | Example |
 |---|---|---|
 | Sidebar section | `.srow.empty` — `30px`, `12px`, `--muted-fg-2`, non-interactive | `Nothing running · 0 / 2 slots` |
-| Lane / panel | `.scr-1 .empty` — `22px 12px`, centred, `12px`, `--muted-fg-2`, and a second dim line carrying the most recent relevant fact | `Nothing is merging.` / `Last merge parable #2075 · 1h ago` |
+| Lane / panel | `.scr-1 .empty` — `22px 12px`, centred, `12px`, `--muted-fg-2`, and a second dim line carrying the most recent relevant fact | `Nothing is merging.` / `Last merge project-a #2075 · 1h ago` |
 | Full surface | Centred block: `13px` `--muted-fg-2` statement plus one `--muted-fg` action | `No hosts yet` / `+ Add a host` |
 
 The artifact's rule is worth stating: an empty state carries **a fact, not an
@@ -1248,11 +1273,15 @@ the POC, mounted under a same-origin authenticated route inside Detent**, coexis
 the existing Templ/HTMX shell. It is not a Templ port. F02 confirms the route and build
 ownership; this section records what the design side of that decision requires.
 
+On main: the client is not mounted inside the Detent Templ application. `internal/hubserver/app_ui.go` serves its built shell from `static/app/conversation` as a standalone document for every client route, under the tenant base path.
+
 ### C.1 Where the tokens live
 
 The React application's own stylesheet defines the artifact's tokens as CSS custom
 properties on the mount root, using **the artifact's exact names** so that copied markup
 and future artifact revisions map one-to-one:
+
+On main: tokens live in `web/conversation/src/app/global.css` under T3/shadcn names on `:root` (light default, `dark` variant), with overrides in `web/conversation/src/app/index.css`; the block below was not adopted.
 
 ```css
 /* conversation client stylesheet — scope to the mount root, not :root,
@@ -1366,6 +1395,8 @@ colours — into the Templ theme's `@theme` block, keeping Detent's existing
 | `--font-sans` | Geist | see C.4 | |
 | `--font-mono` | Geist Mono | see C.4 | |
 
+On main: none of these mirrors have been applied; `static/css/input.css` still carries the "Current value" column.
+
 Two mirrors need a decision rather than an edit:
 
 - **Accent.** Recommendation: adopt the artifact's blue as `--color-accent` across both
@@ -1388,6 +1419,8 @@ designed the mounted client is dark-only and should declare `color-scheme: dark`
 root, so a Detent user in light mode gets a deliberately dark panel rather than a broken
 one. Record this as a known limitation for O03.
 
+On main: the client ships a light default (`color-scheme: light`) and a dark variant in `web/conversation/src/app/global.css`.
+
 ### C.3 Scoping and isolation
 
 - Define the tokens on the mount root (`[data-detent-conversation-root]`), not on
@@ -1400,6 +1433,8 @@ one. Record this as a known limitation for O03.
   `internal/web/ui/**` only. The React application's files are outside them, so no
   Tailwind class scanning happens against the client — correct, and it should stay that
   way. The client ships its own CSS.
+
+On main: the client owns its whole document, so `web/conversation/src/app/index.css` styles `html`, `body`, and `#root` directly; mount-root scoping does not apply.
 
 ### C.4 Typography across the seam
 
@@ -1420,6 +1455,8 @@ deltas; and Geist is metrically close enough to the system stack that the artifa
 and line-heights transfer without retuning. If a review prefers the artifact's exact
 system-font look, the change is one line and affects only the client — but then the shell
 should be changed too, not left split.
+
+On main: `web/conversation/src/app/index.css` puts the system stack first with Geist and Geist Mono as fallbacks, the reverse of this recommendation.
 
 ### C.5 What to keep from the existing Detent shell
 
@@ -1444,6 +1481,8 @@ Replace or retire:
 | `ChatPanelHost` / `ChatConversation` / `ChatAction` in `chat.templ` — the 28rem right-hand operator chat drawer, its in-memory history, and its `POST /api/v1/chat/messages` form | **Superseded** by the mounted client. B03 states the goal explicitly: replace the in-memory/buffered limitation rather than create a second disconnected operator service. Keep it running behind the feature flag until the client reaches parity, then retire it. Its confirmation-gated action cards (`ChatAction`) carry real product logic worth porting to U07's approval treatment. |
 | The topbar `Chat` toggle button (`data-chat-toggle`) | Becomes a **link to `/chat`** rather than a drawer toggle, once the client is enabled. |
 
+On main: `ChatPanelHost` and the `data-chat-toggle` button are still in `internal/web/templates/chat.templ` and `shell.templ`; the Cloud client is served by the Hub, not beside them.
+
 ### C.6 How a user gets from Board to Chat and back
 
 The two surfaces are separate documents; navigation between them is ordinary page
@@ -1465,6 +1504,8 @@ navigation, and it must feel like one application.
 `appShellActiveNav` gains `"chat"` to its passthrough case. Behind the feature flag the
 item is simply absent, satisfying F02's requirement that the feature can be disabled
 without losing existing UI access.
+
+On main: `internal/web/templates/shell_data.go` has no `chat` nav item.
 
 **Client to Templ shell.** The client renders the artifact's full sidebar, including the
 `Browse` group. Those rows are plain `<a href>` links to the existing Templ routes —
@@ -1490,6 +1531,8 @@ duplicate the Templ shell's structure. Two options, and the choice belongs to F0
 
 Recommendation: **(b)**, with C.2's mirroring making the seam invisible. It keeps the
 client's layout self-contained, which every one of U01–U08's acceptance criteria assumes.
+
+On main: the client renders the whole window as a separate Hub-served document, which is option (b) without a Templ shell on the same origin.
 
 **Back navigation.** Browser back and forward must work across the seam without a special
 case: the client uses real routes and real history entries (the POC already uses TanStack
@@ -1520,3 +1563,4 @@ resolved from the mockups alone.
    whole window. Recommendation: the client renders the whole window (C.6). F02 decides.
 9. **Mount prefix and route shapes** — `/chat`, `/chat/c/:id`, `/chat/i/:project/:issue`,
    `/chat/list` are proposals. F02 decides.
+   On main: `/chat`, `/chat/p/$projectId`, `/chat/c/$conversationId`, and `/work/i/$workItemId`; there is no `/chat/list` route.
