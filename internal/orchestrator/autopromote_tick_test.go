@@ -2982,6 +2982,69 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 	}
 }
 
+func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		finalHead   string
+		wantVerdict string
+		probeError  bool
+		degraded    bool
+		workerError bool
+	}{
+		{name: "stable head", finalHead: "B", wantVerdict: gate.ValidatorVerdictPass},
+		{name: "head changes during evaluation", finalHead: "C", wantVerdict: gate.ValidatorVerdictWait},
+		{name: "final head unavailable", finalHead: "B", probeError: true},
+		{name: "final head degraded", finalHead: "B", degraded: true},
+		{name: "workspace infrastructure failure", finalHead: "B", workerError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := autoPromoteTickIssue("issue-head-race", nil, &connector.PullRequest{Number: 3031, HeadSHA: "A", State: "OPEN"})
+			current := cloneIssue(issue)
+			current.PullRequest.HeadSHA = "B"
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, hydratedIssues: []connector.Issue{current}}
+			validator := newBlockingAutoPromoteValidatorRunner()
+			if tt.workerError {
+				validator.err = fmt.Errorf("%w: fetch failed", runpkg.ErrValidatorInfrastructure)
+			}
+			cfg := autoPromoteValidatorTestConfig()
+			orch := &Orchestrator{cfg: cfg, connector: tracker, validator: validator}
+			state := newState(cfg)
+			orch.startValidatorStage(t.Context(), &state, issue, time.Now())
+			select {
+			case req := <-validator.started:
+				if got := req.Issue.PullRequest.HeadSHA; got != "B" {
+					t.Fatalf("seeded head = %s, want B", got)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("validator did not start")
+			}
+			current.PullRequest.HeadSHA = tt.finalHead
+			if tt.degraded {
+				current.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+			}
+			tracker.hydratedIssues = []connector.Issue{current}
+			if tt.probeError {
+				tracker.hydrateErr = errors.New("temporary PR read failure")
+			}
+			validator.Release()
+			orch.validatorWG.Wait()
+			result, _, ok := orch.validatorStageResult(t.Context(), connector.Issue{ID: issue.ID, PullRequest: &connector.PullRequest{HeadSHA: "B"}})
+			if tt.probeError || tt.degraded || tt.workerError {
+				if ok {
+					t.Fatalf("unverified head cached verdict: %#v", result)
+				}
+				return
+			}
+			if !ok || result.Verdict != tt.wantVerdict {
+				t.Fatalf("verdict = %#v, want %s", result, tt.wantVerdict)
+			}
+			if tt.wantVerdict == gate.ValidatorVerdictWait && !strings.Contains(result.Summary, "reviewed B, current PR C") {
+				t.Fatalf("mismatch detail = %q", result.Summary)
+			}
+		})
+	}
+}
+
 func TestTickAutoPromoteStartsValidatorBeforeAutomatedReview(t *testing.T) {
 	t.Parallel()
 
@@ -6516,6 +6579,7 @@ func (v *autoPromoteTickValidator) Validate(_ context.Context, req ValidatorRequ
 }
 
 type blockingAutoPromoteValidatorRunner struct {
+	err         error
 	releaseOnce sync.Once
 	started     chan ValidatorRequest
 	runStarted  chan RunRequest
@@ -6546,6 +6610,9 @@ func (r *blockingAutoPromoteValidatorRunner) Validate(ctx context.Context, req V
 
 	select {
 	case <-r.release:
+		if r.err != nil {
+			return gate.ValidatorResult{}, r.err
+		}
 		return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1}, nil
 	case <-ctx.Done():
 		close(r.canceled)

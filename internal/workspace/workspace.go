@@ -225,13 +225,16 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	ProjectID          string
-	ID                 string
-	Identifier         string
-	BranchName         string
-	BaseRef            string
-	ProgressBaseRef    string
-	PullRequestHeadSHA string
+	ProjectID             string
+	ID                    string
+	Identifier            string
+	BranchName            string
+	BaseRef               string
+	ProgressBaseRef       string
+	PullRequestHeadSHA    string
+	PullRequestRepository string
+	PullRequestNumber     int
+	PullRequestBranch     string
 	// WorkspaceSession marks a workspace session checkout (decisions 18.1
 	// `worktree: "fresh"`): a worktree opened so a person can look at a
 	// commit, not one an attempt commits into. It takes its own branch
