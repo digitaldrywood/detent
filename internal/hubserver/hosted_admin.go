@@ -307,8 +307,8 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 // dispatches the work, and it is not operator-only, so the orchestrator can
 // move a finished run there. A person accepts the change to Done or sends it
 // back to In Progress. It is the default auto_promote.source_state, which is
-// how the orchestrator names its review lane. Existing projects keep the
-// workflow they were created with.
+// how the orchestrator names its review lane. Migration 36 moves projects
+// created from the earlier template onto this one.
 func HostedProjectStates() []tracker.NativeState {
 	return []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},

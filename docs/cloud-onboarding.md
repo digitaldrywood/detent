@@ -22,8 +22,11 @@ neither dispatches nor ends it and is where a completed run's Change Request
 waits. The runner's orchestrator moves a run that committed a change there
 (`Human Review` is the default `auto_promote.source_state`), and moves a run
 that committed nothing to `Done`. A person accepts the change to `Done` or
-sends it back to `In Progress`. Projects created before this template keep
-their original `Todo`/`In Progress`/`Done` workflow; they are not migrated.
+sends it back to `In Progress`. Hub migration 36 moves projects whose workflow
+is exactly the earlier `Todo`/`In Progress`/`Done` template onto this one. A
+customized workflow is left unchanged; it needs a lane matching the runner's
+`auto_promote.source_state` that `In Progress` can move to, or a completed
+run's Change Request has no review lane and its completion waits.
 
 ## Organization provisioning and recovery
 
