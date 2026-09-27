@@ -53,7 +53,7 @@ func checkWorkflow(data []byte) error {
 			return fmt.Errorf("INV-5 extra PR activity %s", event)
 		}
 	}
-	for _, required := range []string{"invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
+	for _, required := range []string{"invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
 		if _, ok := workflow.Jobs[required]; !ok {
 			return fmt.Errorf("required CI job %s missing", required)
 		}
@@ -69,9 +69,9 @@ func checkWorkflow(data []byte) error {
 			if condition != "failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')" {
 				return errors.New("INV-5 integration failure reporting must exclude PRs")
 			}
-		case "verify":
+		case "verify", "browser-visual":
 			if condition != "always() && "+nonPRCondition {
-				return errors.New("INV-5 Verify must aggregate results and never run on pull_request events")
+				return fmt.Errorf("INV-5 %s must aggregate results and never run on pull_request events", name)
 			}
 		default:
 			if condition != nonPRCondition {
@@ -107,6 +107,7 @@ func TestWorkflowViolations(t *testing.T) {
 		{"label reruns", "types: [opened,", "types: [labeled, opened,"},
 		{"integration on PR", "if: " + integrationCondition, "if: " + nonPRCondition},
 		{"missing invariant job", "  invariants:", "  renamed:"},
+		{"aggregate on PR", "if: always() && " + nonPRCondition + "\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n      - name: Require every Browser Visual", "if: always()\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n      - name: Require every Browser Visual"},
 		{"malformed", "name: CI", "name: ["},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
