@@ -33,6 +33,10 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		operation = runnerauth.Read
 	case path == nativeBase+"/claims", path == nativeBase+"/claims/preview", path == nativeBase+"/leases/:lease/renew", path == nativeBase+"/leases/:lease/release", path == nativeBase+"/leases/:lease/validate":
 		operation = runnerauth.Claim
+	case path == nativeBase+"/attempts/:attempt/diff":
+		// The diff is written by the runner holding the attempt's lease;
+		// postAttemptDiff re-checks that lease and its fencing token.
+		operation = runnerauth.Claim
 	case path == nativeBase+"/machines/register", path == nativeBase+"/machines/:machine/heartbeat":
 		operation = runnerauth.Heartbeat
 	case strings.HasPrefix(path, nativeBase+"/workspaces/:workspace/worker/"):
