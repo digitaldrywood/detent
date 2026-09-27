@@ -416,11 +416,14 @@ func TestSessionTerminalOutputSurvivesARelayRedial(t *testing.T) {
 	f := startSession(t, withTerminal)
 	openTerminal(t, f, "conn:1")
 	f.send(t, terminalFrame(t, workspacesession.TypeTerminalInput, "conn:1", workspacesession.TerminalInput{
-		Data: "sleep 1; i=0; while [ $i -lt 400 ]; do i=$((i+1)); echo detent-tick-$i; sleep 0.02; done\n",
+		Data: "sleep 1; for i in 1 2 3; do echo detent-held-$i; done; sleep 4; echo detent-after-$((40+2))\n",
 	}))
 	if err := f.socket.Close(websocket.StatusGoingAway, "hub restarted"); err != nil {
 		t.Fatalf("close relay socket: %v", err)
 	}
 	f.socket = f.hub.waitForSocket()
-	awaitTerminalOutput(t, f, "detent-tick-400")
+	seen := awaitTerminalOutput(t, f, "detent-after-42")
+	if !strings.Contains(seen, "detent-held-3") {
+		t.Fatalf("output produced while the socket was down was lost; saw %q", seen)
+	}
 }
