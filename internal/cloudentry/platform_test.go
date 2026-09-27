@@ -3,11 +3,16 @@
 package cloudentry
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -74,6 +79,9 @@ func TestPlatformAuthorization(t *testing.T) {
 	support.login("/auth/oidc/start", "user_support:")
 	staff := newBrowser(t, f.service.Handler())
 	staff.login("/auth/oidc/start", "user_staff:")
+	f.provider.member("user_staff", "porg_alpha", "member")
+	scoped := newBrowser(t, f.service.Handler())
+	scoped.login("/auth/oidc/start", "user_staff:porg_alpha")
 	impersonation := supportIdentityBrowser(t, f)
 
 	for _, route := range platformRoutes {
@@ -88,6 +96,7 @@ func TestPlatformAuthorization(t *testing.T) {
 			{"anonymous", anonymous, "", map[bool]int{true: http.StatusSeeOther, false: http.StatusUnauthorized}[page], map[bool]string{true: "/auth/oidc/start?return=%2Fplatform"}[page]},
 			{"customer", customer, "user_alice", http.StatusForbidden, ""},
 			{"support session identity", impersonation, "user_alice", http.StatusForbidden, ""},
+			{"staff organization session", scoped, "user_staff", http.StatusForbidden, ""},
 			{"staff", staff, "user_staff", http.StatusOK, ""},
 			{"support staff", support, "user_support", http.StatusOK, ""},
 		} {
@@ -200,6 +209,7 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 func TestPlatformStaffLanding(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
+	f.provider.member("user_support", "porg_alpha", "member")
 	for _, test := range []struct {
 		name, target, code, landing, home string
 		chooserStatus                     int
@@ -209,6 +219,7 @@ func TestPlatformStaffLanding(t *testing.T) {
 		{"staff default", "/auth/oidc/start", "user_support:", "/platform", "/platform", http.StatusSeeOther, "/platform", true},
 		{"staff chooser return", "/organizations", "user_support:", "/organizations", "/platform", http.StatusSeeOther, "/platform", true},
 		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", false},
+		{"staff organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			b := newBrowser(t, f.service.Handler())
@@ -319,6 +330,7 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 		{"missing csrf", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}}, nil, http.StatusForbidden, ""},
 		{"wrong csrf", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {"forged"}}, nil, http.StatusForbidden, ""},
 		{"cross origin", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {listing.CSRF}}, map[string]string{"Origin": "https://attacker.example.test"}, http.StatusForbidden, ""},
+		{"missing reason", url.Values{"organization": {"org_alpha"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
 		{"invalid reason", url.Values{"organization": {"org_alpha"}, "reason": {"curiosity"}, "csrf": {listing.CSRF}}, nil, http.StatusUnprocessableEntity, ""},
 		{"valid", url.Values{"organization": {"org_alpha"}, "reason": {"troubleshooting"}, "csrf": {listing.CSRF}}, nil, http.StatusOK, "using reason troubleshooting"},
 	} {
@@ -326,6 +338,132 @@ func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
 			response := staff.do(http.MethodPost, "/support/start", test.form, test.headers)
 			if response.StatusCode != test.status || !strings.Contains(response.Body, test.want) {
 				t.Fatalf("support start = %d: %s", response.StatusCode, response.Body)
+			}
+		})
+	}
+	if got := platformAuditCount(t, f.service, "user_support", "support_requested:troubleshooting"); got != 1 {
+		t.Fatalf("support request audit = %d, want 1", got)
+	}
+	callback, _ := staff.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|troubleshooting"))
+	if callback.StatusCode != http.StatusSeeOther {
+		t.Fatalf("support callback = %d %s", callback.StatusCode, callback.Body)
+	}
+	for _, event := range []string{"support_requested:troubleshooting", "support_started:troubleshooting"} {
+		if got := platformAuditCount(t, f.service, "user_support", event); got != 1 {
+			t.Errorf("audit %s = %d, want 1", event, got)
+		}
+	}
+}
+
+type fanOutTransport struct {
+	delay    time.Duration
+	mu       sync.Mutex
+	active   int
+	peak     int
+	requests int
+}
+
+func (f *fanOutTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	f.active++
+	f.requests++
+	f.peak = max(f.peak, f.active)
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.active--
+		f.mu.Unlock()
+	}()
+	select {
+	case <-time.After(f.delay):
+	case <-request.Context().Done():
+		return nil, request.Context().Err()
+	}
+	recorder := httptest.NewRecorder()
+	if request.URL.Path == "/internal/v1/health" {
+		recorder.WriteHeader(http.StatusNoContent)
+	} else {
+		recorder.Header().Set("Content-Type", "application/json")
+		recorder.WriteHeader(http.StatusOK)
+		_, _ = recorder.WriteString(`{"enabled":false,"status":"free"}`)
+	}
+	return recorder.Result(), nil
+}
+
+func TestPlatformTenantFanOutIsBounded(t *testing.T) {
+	t.Parallel()
+	const tenants = 40
+	for _, test := range []struct {
+		name        string
+		delay       time.Duration
+		deadline    time.Duration
+		allReached  bool
+		maxDuration time.Duration
+	}{
+		{"all tenants answer within the deadline", 20 * time.Millisecond, 10 * time.Second, true, 10 * time.Second},
+		{"slow tenants past the deadline are unavailable", 400 * time.Millisecond, 500 * time.Millisecond, false, 3 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			transport := &fanOutTransport{delay: test.delay}
+			seed := make([]byte, ed25519.SeedSize)
+			provider := newFakeProvider()
+			provider.users["user_support"] = "support@example.test"
+			service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
+				StaffEmails: []string{"support@example.test"}, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
+				transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = service.Close() })
+			for index := range tenants {
+				id := fmt.Sprintf("org_t%02d", index)
+				if _, err := service.Registry().Register(t.Context(), Organization{ID: id, ProviderID: "p" + id, Name: id, Endpoint: "unix:/tenants/" + id + ".sock", Generation: 1}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			staff := newBrowser(t, service.Handler())
+			staff.login("/auth/oidc/start", "user_support:")
+			for _, route := range []string{"/api/cloud/platform/organizations", "/api/cloud/platform/health"} {
+				transport.mu.Lock()
+				transport.peak, transport.requests = 0, 0
+				transport.mu.Unlock()
+				started := time.Now()
+				response, body := staff.get(route)
+				elapsed := time.Since(started)
+				if response.StatusCode != http.StatusOK || elapsed > test.maxDuration {
+					t.Fatalf("%s = %d after %s", route, response.StatusCode, elapsed)
+				}
+				transport.mu.Lock()
+				peak, requests := transport.peak, transport.requests
+				transport.mu.Unlock()
+				if peak > platformTenantWorkers || test.allReached && (peak != platformTenantWorkers || requests != tenants) || !test.allReached && requests >= tenants {
+					t.Fatalf("%s peak concurrency = %d, requests = %d", route, peak, requests)
+				}
+				reached := 0
+				if route == "/api/cloud/platform/health" {
+					var health struct {
+						Tenants struct{ Expected, Running int } `json:"tenants"`
+					}
+					decodeJSON(t, body, &health)
+					if health.Tenants.Expected != tenants {
+						t.Fatalf("health = %s", body)
+					}
+					reached = health.Tenants.Running
+				} else {
+					var listing struct {
+						Organizations []platformOrganization `json:"organizations"`
+					}
+					decodeJSON(t, body, &listing)
+					for _, organization := range listing.Organizations {
+						if organization.Billing.Available {
+							reached++
+						}
+					}
+				}
+				if (reached == tenants) != test.allReached {
+					t.Fatalf("%s reached %d of %d tenants", route, reached, tenants)
+				}
 			}
 		})
 	}

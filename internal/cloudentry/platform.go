@@ -8,16 +8,23 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 const (
-	platformPath        = "/platform"
-	platformCallTimeout = 3 * time.Second
+	platformPath            = "/platform"
+	platformCallTimeout     = 3 * time.Second
+	platformRequestDeadline = 8 * time.Second
+	platformTenantWorkers   = 8
 )
 
+func (s *Service) platformIdentity(email string, identity auth.HostedIdentity) bool {
+	return s.staff(email) && identity.SupportActor == "" && identity.OrganizationID == ""
+}
+
 func (s *Service) platformStaff(session accountSession) bool {
-	return s.staff(session.Email) && session.Identity.SupportActor == ""
+	return s.platformIdentity(session.Email, session.Identity)
 }
 
 func (s *Service) platformSession(c echo.Context, event string) (accountSession, bool, error) {
@@ -94,19 +101,43 @@ func (s *Service) platformOrganizations(ctx context.Context) ([]platformOrganiza
 	return result, rows.Err()
 }
 
-func (s *Service) eachReadyTenant(ctx context.Context, ids []string, visit func(context.Context, int, Organization)) {
-	var wait sync.WaitGroup
+func (s *Service) eachReadyTenant(parent context.Context, ids []string, visit func(context.Context, int, Organization)) {
+	type target struct {
+		index        int
+		organization Organization
+	}
+	var targets []target
 	for index, id := range ids {
-		organization, err := s.readyOrganization(ctx, id)
-		if err != nil {
-			continue
+		if organization, err := s.readyOrganization(parent, id); err == nil {
+			targets = append(targets, target{index, organization})
 		}
+	}
+	deadline := s.config.platformDeadline
+	if deadline == 0 {
+		deadline = platformRequestDeadline
+	}
+	ctx, cancel := context.WithTimeout(parent, deadline)
+	defer cancel()
+	work := make(chan target)
+	var wait sync.WaitGroup
+	for range min(platformTenantWorkers, len(targets)) {
 		wait.Go(func() {
-			call, cancel := context.WithTimeout(ctx, platformCallTimeout)
-			defer cancel()
-			visit(call, index, organization)
+			for item := range work {
+				call, stop := context.WithTimeout(ctx, platformCallTimeout)
+				visit(call, item.index, item.organization)
+				stop()
+			}
 		})
 	}
+feed:
+	for _, item := range targets {
+		select {
+		case work <- item:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(work)
 	wait.Wait()
 }
 

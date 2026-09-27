@@ -209,7 +209,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 	case transaction.Organization != "":
 		return c.Redirect(http.StatusSeeOther, s.organizationHome(transaction.Organization))
 	default:
-		return c.Redirect(http.StatusSeeOther, s.landing(identity.Email))
+		return c.Redirect(http.StatusSeeOther, s.landing(identity.Email, *identity.Hosted))
 	}
 }
 
@@ -346,7 +346,7 @@ func (s *Service) chooser(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
-	if s.staff(session.Email) {
+	if s.platformStaff(session) {
 		return c.Redirect(http.StatusSeeOther, platformPath)
 	}
 	if served, err := s.clientShell(c); served || err != nil {
@@ -376,7 +376,7 @@ func (s *Service) sessionJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": s.config.Allocation != nil && !s.staff(session.Email), "staff": s.staff(session.Email)})
+	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": s.config.Allocation != nil && !s.staff(session.Email), "staff": s.platformStaff(session)})
 }
 
 func (s *Service) organizationsJSON(c echo.Context) error {
@@ -392,7 +392,7 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 	if choices == nil {
 		choices = []organizationChoice{}
 	}
-	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices, "pending": []organizationChoice{}, "can_create": false, "staff": s.staff(session.Email)}
+	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices, "pending": []organizationChoice{}, "can_create": false, "staff": s.platformStaff(session)}
 	if s.config.Allocation != nil {
 		pending, err := s.pendingOrganizations(c.Request().Context(), session.Subject)
 		if err != nil {
@@ -442,7 +442,7 @@ func (s *Service) joinPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Finvitations%2Fjoin")
 	}
-	if s.staff(session.Email) {
+	if s.platformStaff(session) {
 		return c.Redirect(http.StatusSeeOther, platformPath)
 	}
 	if served, err := s.clientShell(c); served || err != nil {

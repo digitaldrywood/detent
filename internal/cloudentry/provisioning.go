@@ -335,7 +335,7 @@ func (s *Service) newOrganizationPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
-	if s.staff(session.Email) {
+	if s.platformStaff(session) {
 		return c.Redirect(http.StatusSeeOther, platformPath)
 	}
 	key, err := cloudassert.NewID()

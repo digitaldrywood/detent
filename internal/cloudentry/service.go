@@ -51,6 +51,7 @@ type Config struct {
 	clientFS      fs.FS
 
 	tenantStartTimeout time.Duration
+	platformDeadline   time.Duration
 }
 
 func (c Config) validate() error {
@@ -275,8 +276,8 @@ func (s *Service) supportActor(email string) bool {
 	return s.staff(email) && listed(s.config.SupportActors, email)
 }
 
-func (s *Service) landing(email string) string {
-	if s.staff(email) {
+func (s *Service) landing(email string, identity auth.HostedIdentity) string {
+	if s.platformIdentity(email, identity) {
 		return platformPath
 	}
 	return "/organizations"
@@ -325,7 +326,7 @@ func (s *Service) loginRefused(c echo.Context, status int, code, message string,
 
 func (s *Service) home(c echo.Context) error {
 	if session, err := s.session(c); err == nil {
-		return c.Redirect(http.StatusSeeOther, s.landing(session.Email))
+		return c.Redirect(http.StatusSeeOther, s.landing(session.Email, session.Identity))
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
