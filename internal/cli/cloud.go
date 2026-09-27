@@ -268,6 +268,11 @@ func newCloudServeCommand(lookupEnv func(string) string) *cobra.Command {
 			if _, err := OutputForCommand(cmd); err != nil {
 				return err
 			}
+			logger, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			slog.SetDefault(logger)
 			config, err := readCloudConfig(configPath, lookupEnv)
 			if err != nil {
 				return err

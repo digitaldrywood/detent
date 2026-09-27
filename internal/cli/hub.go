@@ -19,6 +19,7 @@ type hubRunFunc func(context.Context, hubserver.Config) error
 
 func newHubCommand(opts options) *cobra.Command {
 	run := func(ctx context.Context, cfg hubserver.Config) error {
+		slog.SetDefault(cfg.Logger)
 		if cfg.GitHubDisabled {
 			return hubserver.Run(ctx, cfg)
 		}
@@ -88,6 +89,10 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := OutputForCommand(cmd); err != nil {
+				return err
+			}
+			logger, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
+			if err != nil {
 				return err
 			}
 			if strings.TrimSpace(databasePath) == "" {
@@ -169,7 +174,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				WebhookMaintenanceInterval: webhookMaintenanceInterval,
 				ReconcileInterval:          reconcileInterval,
 				FullRepairInterval:         fullRepairInterval,
-				Logger:                     slog.Default(),
+				Logger:                     logger,
 				Version:                    version,
 			})
 		},
