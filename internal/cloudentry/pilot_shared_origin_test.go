@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -56,6 +58,7 @@ func pilotPlans() *hubserver.HostedPlansConfig {
 
 type pilotTenantLauncher struct {
 	provider *fakeProvider
+	billing  billing.Provider
 	mu       sync.Mutex
 	running  map[string]func()
 	specs    map[string]TenantSpec
@@ -87,6 +90,12 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 			EntitlementAdministrator: "pilot-operator", EntitlementAdminToken: []byte(pilotOperatorToken),
 			SharedEntry: &hubserver.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
 		},
+	}
+	if l.billing != nil {
+		config.Conversation = &hubserver.ConversationConfig{Enabled: true}
+		plans := pilotPlans()
+		config.Hosted.Billing = &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", CustomerID: "cus_fixture_" + spec.Organization.ID, PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_e2e_secret_value"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: l.billing,
+			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_fixture_plus", Label: "Pilot plus", Plan: plans.Plans[len(plans.Plans)-1].PlanReference}}}
 	}
 	go func() {
 		defer close(done)
@@ -138,18 +147,24 @@ type sharedOriginPilot struct {
 	state    string
 	roots    [2]string
 	key      ed25519.PrivateKey
+	client   fs.FS
 }
 
 func newSharedOriginPilot(t *testing.T, maxTenants, retryLimit int) *sharedOriginPilot {
 	t.Helper()
+	return newSharedOriginPilotWith(t, maxTenants, retryLimit, fstest.MapFS{}, nil)
+}
+
+func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client fs.FS, billingProvider billing.Provider) *sharedOriginPilot {
+	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	seed[2] = 9
 	root := shortTempDir(t)
-	p := &sharedOriginPilot{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), handler: &swappableHandler{}}
+	p := &sharedOriginPilot{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), handler: &swappableHandler{}, client: client}
 	for _, user := range []string{"dana", "eve", "fay", "gus"} {
 		p.provider.users["user_"+user] = user + "@example.test"
 	}
-	p.launcher = &pilotTenantLauncher{provider: p.provider, running: map[string]func(){}, specs: map[string]TenantSpec{}}
+	p.launcher = &pilotTenantLauncher{provider: p.provider, billing: billingProvider, running: map[string]func(){}, specs: map[string]TenantSpec{}}
 	p.server = httptest.NewUnstartedServer(p.handler)
 	p.base = "http://" + p.server.Listener.Addr().String()
 	p.open(t, maxTenants, retryLimit)
@@ -162,7 +177,7 @@ func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	t.Helper()
 	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, MaxPerIdentity: 1, RetryLimit: retryLimit, Launcher: p.launcher}
 	service, err := Open(t.Context(), Config{PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation})
+		StaffEmails: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: p.client, Allocation: allocation})
 	if err != nil {
 		t.Fatal(err)
 	}
