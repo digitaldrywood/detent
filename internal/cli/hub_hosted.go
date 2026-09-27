@@ -32,6 +32,7 @@ type hostedFileConfig struct {
 	SharedEntry              *hostedSharedEntryFileConfig  `yaml:"shared_entry"`
 	Conversation             *hostedConversationFileConfig `yaml:"conversation"`
 	Usage                    *hostedUsageFileConfig        `yaml:"usage"`
+	Workspaces               *hostedWorkspaceFileConfig    `yaml:"workspaces"`
 	WorkOS                   struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
