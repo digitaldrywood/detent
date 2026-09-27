@@ -86,9 +86,6 @@ async function startHostedHub(name = "conversation") {
     "work_item",
     "project_id",
     "owner_email",
-    // The pre-warmed workspace, so a spec can queue a project action run
-    // through the API alone (decisions.md §18.12).
-    "workspace",
   ]) {
     if (typeof fixture[key] !== "string" || fixture[key].length === 0) {
       throw new Error(`The hosted hub fixture is missing ${key}: ${JSON.stringify(fixture)}`);
