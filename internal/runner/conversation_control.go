@@ -49,7 +49,9 @@ type AgentLiveBackend interface{ SupportsLiveControl() bool }
 // ownership or revocation decided while the command waited is honoured. Reply
 // must have capacity of at least one; exactly one error (possibly nil) is
 // delivered on it once the provider acknowledges the write or the command is
-// rejected.
+// rejected. An empty TurnID means the control was accepted before any turn of
+// the attempt started; the transport addresses it to the turn that is live
+// when it consumes it.
 type AgentControl struct {
 	Kind      AgentControlKind
 	ThreadID  string

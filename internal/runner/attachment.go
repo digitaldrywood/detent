@@ -53,6 +53,12 @@ func AttachmentImages(attachments []AgentAttachment) []AgentAttachment {
 	return images
 }
 
+// AttachmentDataBlock renders the text attachments as one delimited data
+// block, for a transport that builds a steer's input itself.
+func AttachmentDataBlock(attachments []AgentAttachment) string {
+	return attachmentDataBlock(attachments)
+}
+
 // attachmentDataBlock renders the text attachments as one delimited data
 // block. Attachments with no text content produce no block at all.
 func attachmentDataBlock(attachments []AgentAttachment) string {

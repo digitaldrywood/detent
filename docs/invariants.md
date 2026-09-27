@@ -232,9 +232,15 @@ approval-denial classification through the existing instance-owned forge wait, w
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
 reports as write-path failures.
-Worker access failures remain classified as instance-owned. Product or design
-questions are expressed through a blocked Workpad `human_action`, not a worker
-question tool.
+Worker access failures remain classified as instance-owned. In an autonomous
+issue-worker run, product or design questions are expressed through a blocked
+Workpad `human_action`, not a worker question tool: its Codex app-server is
+never started with `default_mode_request_user_input`, and a question it asks
+anyway is answered empty. A conversation turn, where a person is live in the
+chat and the hub relays the question to them, may use `request_user_input`.
+`TestAppServerMarksOnlyConversationTurns` and
+`TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns` keep the
+question feature off every ordinary issue run.
 Compound push commands whose follow-up GitHub CLI read cannot log in reuse the
 instance token-resolution wait (`worker_github_cli_auth` in the diagnostic), not
 the project forge outage. `TestCompoundPushCLIAuth` preserves this distinction

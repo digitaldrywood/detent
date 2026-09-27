@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,6 +100,9 @@ type conversationTransport struct {
 	ended    bool
 	next     int
 	pending  map[int]chan error
+	// cleanups remove a steer's image copies once the provider answered the
+	// request that names them, or the transport closed.
+	cleanups map[int]func()
 	requests map[string]pendingQuestion
 
 	closeOnce sync.Once
@@ -127,6 +131,7 @@ func newConversationTransport(
 		commands:        control.Commands,
 		next:            conversationControlRequestIDBase,
 		pending:         make(map[int]chan error),
+		cleanups:        make(map[int]func()),
 		requests:        make(map[string]pendingQuestion),
 	}
 	go w.pump(transport)
@@ -159,6 +164,10 @@ func (w *conversationTransport) Close(ctx context.Context) error {
 		for id, reply := range w.pending {
 			reply <- fmt.Errorf("%w before acknowledgement", errConversationTransportClosed)
 			delete(w.pending, id)
+		}
+		for id, cleanup := range w.cleanups {
+			cleanup()
+			delete(w.cleanups, id)
 		}
 	})
 	return w.closeErr
@@ -345,7 +354,12 @@ func (w *conversationTransport) observeResponse(m Message) (Message, bool, error
 	if ok {
 		delete(w.pending, responseID)
 	}
+	cleanup, cleanupOK := w.cleanups[responseID]
+	delete(w.cleanups, responseID)
 	w.mu.Unlock()
+	if cleanupOK {
+		cleanup()
+	}
 	if ok {
 		var err error
 		if m.Error != nil {
@@ -443,11 +457,16 @@ func (w *conversationTransport) bind(thread string, turn string) {
 // provider. The lock is held across the check and the write so the binding
 // cannot change between them.
 func (w *conversationTransport) sendControl(ctx context.Context, c runner.AgentControl) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if c.TurnID == "" && w.turn != "" {
+		// The control was accepted before any turn of the attempt started,
+		// so it is addressed to the turn that is live when it is consumed.
+		c.ThreadID, c.TurnID = w.thread, w.turn
+	}
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.turn == "" || c.ThreadID != w.thread || c.TurnID != w.turn {
 		return runner.ErrStaleConversationControl
 	}
@@ -459,31 +478,52 @@ func (w *conversationTransport) sendControl(ctx context.Context, c runner.AgentC
 		return w.sendAnswerLocked(ctx, c)
 	case runner.AgentControlMessage:
 		// A steer carries the same input shape as a turn start, so a file
-		// dropped mid-turn reaches the provider the same way (section 17.1).
-		input, cleanupInput := turnInputItems(c.Text, c.Attachments, w.tempDir)
-		defer cleanupInput()
+		// dropped mid-turn reaches the provider the same way (section 17.1):
+		// images as input items, text files as a data block after the text.
+		// The image copies stay until the provider answers the steer.
+		input, cleanupInput := turnInputItems(steerText(c.Text, c.Attachments), c.Attachments, w.tempDir)
 		params := map[string]any{
 			"threadId":            w.thread,
 			"expectedTurnId":      w.turn,
 			"clientUserMessageId": c.MessageID,
 			"input":               input,
 		}
-		return w.sendRequestLocked(ctx, "turn/steer", params, c.Reply)
+		return w.sendRequestLocked(ctx, "turn/steer", params, c.Reply, cleanupInput)
 	case runner.AgentControlInterrupt:
 		params := map[string]any{"threadId": w.thread, "turnId": w.turn}
-		return w.sendRequestLocked(ctx, "turn/interrupt", params, c.Reply)
+		return w.sendRequestLocked(ctx, "turn/interrupt", params, c.Reply, nil)
 	default:
 		return fmt.Errorf("%w: kind %q", runner.ErrUnsupportedConversationControl, c.Kind)
 	}
 }
 
-func (w *conversationTransport) sendRequestLocked(ctx context.Context, method string, params map[string]any, reply chan error) error {
+func (w *conversationTransport) sendRequestLocked(ctx context.Context, method string, params map[string]any, reply chan error, cleanup func()) error {
 	w.next++
 	if err := sendRequest(ctx, w.Transport, w.next, method, params); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return fmt.Errorf("send %s: %w", method, err)
 	}
 	w.pending[w.next] = reply
+	if cleanup != nil {
+		w.cleanups[w.next] = cleanup
+	}
 	return nil
+}
+
+// steerText is a steer's text with the text attachments appended as a
+// delimited data block, the way a turn's prompt carries them.
+func steerText(text string, attachments []runner.AgentAttachment) string {
+	block := runner.AttachmentDataBlock(attachments)
+	switch {
+	case block == "":
+		return text
+	case strings.TrimSpace(text) == "":
+		return block
+	default:
+		return text + "\n\n" + block
+	}
 }
 
 func (w *conversationTransport) sendAnswerLocked(ctx context.Context, c runner.AgentControl) error {

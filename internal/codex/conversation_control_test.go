@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -814,4 +815,194 @@ func TestConversationControlTranslatesAnswerIDs(t *testing.T) {
 		}
 	}
 	t.Fatalf("answer not written to the provider: %+v", transport.sentMessages())
+}
+
+func TestConversationControlSteerCarriesAttachmentsUntilAcknowledged(t *testing.T) {
+	t.Parallel()
+	png := []byte("\x89PNG\r\n\x1a\nx")
+	tests := []struct {
+		name     string
+		text     string
+		files    []runner.AgentAttachment
+		wantText []string
+		images   int
+		settle   func(t *testing.T, wire *conversationWire, w *conversationTransport, ctx context.Context)
+	}{
+		{
+			name:     "text file rides as a data block",
+			text:     "see notes",
+			files:    []runner.AgentAttachment{{Name: "notes.md", MIME: "text/markdown", Content: []byte("lease log")}},
+			wantText: []string{"see notes", "<attachments>", "notes.md", "lease log"},
+		},
+		{
+			name:     "image copy outlives the write until the provider answers",
+			text:     "look",
+			files:    []runner.AgentAttachment{{Name: "shot.png", MIME: "image/png", Content: png}},
+			wantText: []string{"look"},
+			images:   1,
+			settle: func(t *testing.T, wire *conversationWire, w *conversationTransport, ctx context.Context) {
+				wire.incoming <- Message{ID: requestID(1001), Result: json.RawMessage(`{}`)}
+				wire.incoming <- Message{Method: "test/tick"}
+				if _, err := w.Receive(ctx); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:     "image copy is removed when the transport closes first",
+			text:     "look",
+			files:    []runner.AgentAttachment{{Name: "shot.png", MIME: "image/png", Content: png}},
+			wantText: []string{"look"},
+			images:   1,
+			settle: func(t *testing.T, _ *conversationWire, w *conversationTransport, ctx context.Context) {
+				if err := w.Close(ctx); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			wire := newConversationWire(4)
+			commands := make(chan runner.AgentControl, 1)
+			w := newConversationTransport(ctx, wire, &runner.AgentConversationControl{Commands: commands}, t.TempDir(), nil)
+			defer closeConversationTransport(t, w)
+			w.bind("thread", "turn")
+			steer := runner.AgentControl{Kind: runner.AgentControlMessage, ThreadID: "thread", TurnID: "turn", Text: test.text, Attachments: test.files, Check: passingCheck, Reply: make(chan error, 1)}
+			commands <- steer
+			if _, err := w.Receive(ctx); err != nil {
+				t.Fatal(err)
+			}
+			sent := wire.sentMessages()
+			if len(sent) != 1 {
+				t.Fatalf("provider writes = %d, want 1", len(sent))
+			}
+			assertRequest(t, sent[0], 1001, "turn/steer")
+			var params struct {
+				Input []map[string]any `json:"input"`
+			}
+			if err := json.Unmarshal(sent[0].Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			text, _ := params.Input[0]["text"].(string)
+			for _, want := range test.wantText {
+				if !strings.Contains(text, want) {
+					t.Fatalf("steer text = %q, want it to contain %q", text, want)
+				}
+			}
+			if len(params.Input) != 1+test.images {
+				t.Fatalf("steer input = %#v, want %d images", params.Input, test.images)
+			}
+			if test.images == 0 {
+				return
+			}
+			path, _ := params.Input[1]["path"].(string)
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("image copy removed before the provider answered: %v", err)
+			}
+			test.settle(t, wire, w, ctx)
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("image copy still present after the steer settled: %v", err)
+			}
+		})
+	}
+}
+
+func TestConversationControlAddressesUnboundControlsToTheLiveTurn(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		thread     string
+		turn       string
+		wantStale  bool
+		wantThread string
+		wantTurn   string
+	}{
+		{name: "accepted before any turn", wantThread: "thread-2", wantTurn: "turn-2"},
+		{name: "resume thread without a turn", thread: "thread-old", wantThread: "thread-2", wantTurn: "turn-2"},
+		{name: "a named earlier turn stays stale", thread: "thread-2", turn: "turn-1", wantStale: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			wire := newConversationWire(2)
+			commands := make(chan runner.AgentControl, 1)
+			w := newConversationTransport(ctx, wire, &runner.AgentConversationControl{Commands: commands}, "", nil)
+			defer closeConversationTransport(t, w)
+			w.bind("thread-2", "turn-2")
+			interrupt := runner.AgentControl{Kind: runner.AgentControlInterrupt, ThreadID: test.thread, TurnID: test.turn, Check: passingCheck, Reply: make(chan error, 1)}
+			commands <- interrupt
+			if _, err := w.Receive(ctx); err != nil {
+				t.Fatal(err)
+			}
+			sent := wire.sentMessages()
+			if test.wantStale {
+				if err := <-interrupt.Reply; !errors.Is(err, runner.ErrStaleConversationControl) || len(sent) != 0 {
+					t.Fatalf("reply = %v, writes = %d; want stale and nothing written", err, len(sent))
+				}
+				return
+			}
+			if len(sent) != 1 {
+				t.Fatalf("provider writes = %d, want 1", len(sent))
+			}
+			assertRequest(t, sent[0], 1001, "turn/interrupt")
+			assertJSONContains(t, sent[0].Params, "threadId", test.wantThread)
+			assertJSONContains(t, sent[0].Params, "turnId", test.wantTurn)
+		})
+	}
+}
+
+type conversationTurnRecordingFactory struct {
+	transport Transport
+	marked    *atomic.Bool
+}
+
+func (f conversationTurnRecordingFactory) NewTransport(ctx context.Context) (Transport, error) {
+	f.marked.Store(ConversationTurn(ctx))
+	return f.transport, nil
+}
+
+// INV-2: only a turn bound to a live conversation starts its app-server with
+// questions enabled; an ordinary issue-worker turn never does.
+func TestAppServerMarksOnlyConversationTurns(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		control *runner.AgentConversationControl
+		want    bool
+	}{
+		{name: "ordinary issue run", want: false},
+		{name: "conversation turn", control: &runner.AgentConversationControl{Commands: make(chan runner.AgentControl)}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			transport := newFakeAppServerTransport([]Message{
+				responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+				responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+				responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+			})
+			var marked atomic.Bool
+			server, err := NewAppServer(conversationTurnRecordingFactory{transport: transport, marked: &marked}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := server.RunTurn(t.Context(), RunTurnRequest{Workspace: t.TempDir(), Prompt: "work", ConversationControl: test.control}, nil); err != nil {
+				t.Fatalf("RunTurn() error = %v", err)
+			}
+			if marked.Load() != test.want {
+				t.Fatalf("app-server started with questions enabled = %t, want %t", marked.Load(), test.want)
+			}
+		})
+	}
+	if ConversationTurn(context.Background()) || !ConversationTurn(WithConversationTurn(context.Background())) {
+		t.Fatal("ConversationTurn does not reflect WithConversationTurn")
+	}
 }
