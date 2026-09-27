@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -462,7 +463,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		// project grant row, so none of the checks below can be asked of it.
 		// Its authority is the token, which the middleware already proved on
 		// the upgrade against the same scope this frame needs --- the same
-		// reasoning refuseGitWrite applies to a commit, which is the other
+		// reasoning refuseRelayWrite applies to a commit, which is the other
 		// frame on this relay that changes a worktree.
 		//
 		// Section 18.3's "a terminal requires a hosted session" is enforced
@@ -528,9 +529,10 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 	return workspacesession.ValidateTerminalOpen(open)
 }
 
-// refuseGitWrite is the per-frame half of section 18.2's `write` rule, and it
-// exists because the git channel is the first channel that writes. It reports
-// the code the frame is refused with, or "" when it may be forwarded.
+// refuseRelayWrite is the per-frame half of section 18.2's `write` rule for the
+// channels that write: a git commit or push, and an exec run, which executes
+// the project's command inside the worktree. It reports the code the frame is
+// refused with, or "" when it may be forwarded.
 //
 // channelPermitted already gates the channel on the capability the runner
 // reported, and that check cannot answer this one: the capability says the
@@ -539,11 +541,13 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 // the upgrade; a `commit` or a `push` needs `write`, which is a different
 // question asked per frame because a grant can be withdrawn under a live
 // socket.
-func (w *workspaceService) refuseGitWrite(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
-	if frame.Channel != workspacesession.ChannelGit || !workspacesession.GitWriteRequest(frame.Type) {
+func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
+	gitWrite := frame.Channel == workspacesession.ChannelGit && workspacesession.GitWriteRequest(frame.Type)
+	execRun := frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun
+	if !gitWrite && !execRun {
 		return ""
 	}
-	if record.ReadOnly {
+	if gitWrite && record.ReadOnly {
 		// A read-only workspace is one whose subject attempt is still running,
 		// and read_only is set at creation and never cleared, so the record
 		// captured at the upgrade is as current as a re-read would be.
@@ -654,7 +658,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		w.handlePersonResume(connection, frame)
 		return
 	}
-	if code := w.refuseGitWrite(ctx, record, connection, frame); code != "" {
+	if code := w.refuseRelayWrite(ctx, record, connection, frame); code != "" {
 		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
 		return
 	}
@@ -699,6 +703,14 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		connection.send(workspacesession.ErrorFrame(frame.Channel, stream.id, workspacesession.CodeStaleExecution,
 			"No runner is serving this workspace"))
 		return
+	}
+	if frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun {
+		// The run row is claimed before the frame is forwarded, so a frame the
+		// hub refuses is never executed and a run can only be started once.
+		if code := w.startExecRun(ctx, connection, runner, record, stream, frame); code != "" {
+			connection.send(workspacesession.ErrorFrame(frame.Channel, stream.id, code, relayCodeMessage(code)))
+			return
+		}
 	}
 	if frame.Channel == workspacesession.ChannelTerminal {
 		switch frame.Type {
@@ -747,6 +759,16 @@ func (w *workspaceService) resolvePersonStream(connection *relayConnection, reco
 	if !w.channelPermitted(record, frame.Channel) {
 		return nil, workspacesession.CodeForbidden
 	}
+	// The exec channel defines exactly one person-originated frame (section
+	// 18.12), so this is where its vocabulary is checked: before a stream is
+	// allocated, because a channel that allocated for anything it was sent
+	// would spend a connection's whole budget on typos. close is a shared
+	// control rather than a channel frame, and ack and resume never reach
+	// here, so only the channel's own types need naming.
+	if frame.Channel == workspacesession.ChannelExec && frame.Type != workspacesession.TypeClose &&
+		!workspacesession.ValidExecRequest(frame.Type) {
+		return nil, workspacesession.CodeUnknownFrame
+	}
 	if frame.Stream != "" {
 		if stream := w.relay.lookupStream(connection, frame.Stream); stream != nil {
 			return stream, ""
@@ -757,9 +779,12 @@ func (w *workspaceService) resolvePersonStream(connection *relayConnection, reco
 	if frame.Type == workspacesession.TypeClose {
 		return nil, workspacesession.CodeInvalidFrame
 	}
-	// A terminal allocates per request instead of reusing: every terminal
-	// open is its own PTY.
-	if frame.Channel != workspacesession.ChannelTerminal {
+	// Terminal and exec allocate per request instead of reusing. Every
+	// terminal open is its own PTY, and every exec run is its own process with
+	// its own seq space (section 18.12): two runs sharing a stream would share
+	// one sequence, and a reader could not tell whose output it was reading or
+	// which run the exited frame ended.
+	if frame.Channel != workspacesession.ChannelTerminal && frame.Channel != workspacesession.ChannelExec {
 		if stream := w.relay.channelStream(connection, frame.Channel); stream != nil {
 			return stream, ""
 		}
@@ -791,9 +816,12 @@ func (w *workspaceService) channelPermitted(record workspaceRecord, channel stri
 			return false
 		}
 	}
-	if channel == workspacesession.ChannelExec {
-		// The exec channel runs project actions (section 18.12), which this
-		// hub does not serve.
+	if channel == workspacesession.ChannelExec && record.ReadOnly {
+		// A read-only workspace is one whose attempt is still running, and an
+		// action's command writes into the worktree the model is editing
+		// (section 18.12). The run endpoint refuses one too; this is the check
+		// that holds when the frame is the last moment before something
+		// executes, and it is where the relay's own answer has to come from.
 		return false
 	}
 	return record.Capabilities.Has(workspacesession.ChannelCapability(channel))
@@ -952,7 +980,7 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 			workspacesession.CodeSuperseded)
 		// The PTYs being recorded were on the connection that just lost the
 		// workspace, so their recordings are complete.
-		service.relay.finishWorkspaceTerminalRecordings(ctx, record.ID)
+		service.relay.failWorkspaceExecRuns(ctx, record.ID, workspacesession.RunReasonStreamClosed)
 	}
 	service.closeIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
@@ -964,6 +992,9 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 	}()
 	service.readRunner(socketCtx, connection)
 	connection.close("runner_closed")
+	// detachRunner fails whatever runs this connection was still serving, so a
+	// runner that went away mid-build leaves a failed run rather than one that
+	// says running for ever.
 	service.relay.detachRunner(ctx, connection)
 	service.closeRelaySocket(socket, connection.reason())
 	return nil
@@ -997,7 +1028,14 @@ func (w *workspaceService) readRunner(ctx context.Context, connection *relayConn
 		outbound := frame
 		outbound.Actor = nil
 		outbound.Seq = w.relay.nextToPerson(stream)
-		overflow := w.relay.bufferForPerson(connection.workspaceID, stream, outbound, outbound.Seq)
+		// A hub stream has no person to deliver to and none to acknowledge, so
+		// nothing is buffered on it for a replay nobody can ask for (section
+		// 18.12). Buffering would make a long build overflow a stream with no
+		// reader behind it and kill the very run the hub started.
+		overflow := false
+		if !stream.hubOwned {
+			overflow = w.relay.bufferForPerson(connection.workspaceID, stream, outbound, outbound.Seq)
+		}
 		if person != nil {
 			person.send(outbound)
 		}
@@ -1019,10 +1057,196 @@ func (w *workspaceService) readRunner(ctx context.Context, connection *relayConn
 			// nothing else to read.
 			w.recordRunnerTerminalFrame(connection, stream, frame)
 		}
+		if stream.channel == workspacesession.ChannelExec {
+			// The hub is not only forwarding an exec stream, it is recording
+			// it: the run row is what a person comes back to after the tab is
+			// closed, and it is the only record a run nobody watched leaves.
+			w.recordExecFrame(ctx, connection, stream, frame)
+		}
 		if frame.Type == workspacesession.TypeClosed || frame.Type == workspacesession.TypeClose {
 			w.relay.closeStream(ctx, connection.workspaceID, stream.id)
 		}
 	}
+}
+
+// Recording action runs from relayed frames (decisions section 18.12).
+//
+// The hub forwards the exec channel like any other, and it also reads it. That
+// is the whole reason a run is a row before it is a process: the person who
+// asked may close the tab, and a run-on-worktree-creation run has no person at
+// all, so the record cannot be the client's.
+
+// errExecRunRefused is the marker a refusal inside the run transaction uses.
+// The code the person is told is carried beside it, because a relay answer is
+// a code and a sentence rather than an error.
+var errExecRunRefused = errors.New("the exec run frame was refused")
+
+// startExecRun claims the run a person's run frame names and marks it running.
+// It answers "" when the frame may be forwarded, and a relay error code
+// otherwise.
+//
+// Every field of the frame is checked against the row rather than trusted: the
+// run must belong to this workspace, name the action the frame names, still be
+// queued, and carry the command the hub stored. The last one is the one worth
+// spelling out -- the runner validates the command against the action it was
+// handed, and this is the check that makes "the action it was handed" mean the
+// project's command rather than one a client composed.
+func (w *workspaceService) startExecRun(ctx context.Context, connection, runner *relayConnection, record workspaceRecord, stream *relayStream, frame workspacesession.Frame) string {
+	var payload workspacesession.ExecRun
+	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+		return workspacesession.CodeInvalidFrame
+	}
+	code := ""
+	var started actionRunRecord
+	err := w.server.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		run, err := readProjectActionRunByID(ctx, tx, strings.TrimSpace(payload.RunID))
+		if errors.Is(err, sql.ErrNoRows) {
+			code = workspacesession.CodeNotFound
+			return errExecRunRefused
+		}
+		if err != nil {
+			return err
+		}
+		if run.WorkspaceID != record.ID {
+			// A run of another workspace does not exist for this connection,
+			// the same answer a stream it does not own gets.
+			code = workspacesession.CodeNotFound
+			return errExecRunRefused
+		}
+		if run.ActionID != strings.TrimSpace(payload.ActionID) || run.Command != payload.Command {
+			code = workspacesession.CodeForbidden
+			return errExecRunRefused
+		}
+		// The claim is what decides, and it decides once. A run the hub's own
+		// dispatch already handed to this workspace's runner is refused here
+		// with already_running rather than started a second time, so one row is
+		// never two processes in one worktree (section 18.12). The claimant is
+		// the stream, here and in that dispatch, so claimed_by always names the
+		// thing actually carrying the run's frames rather than a connection for
+		// one of them and a stream for the other.
+		started, err = claimActionRun(ctx, tx, run, stream.id, now)
+		if errors.Is(err, errActionRunClaimed) {
+			code = workspacesession.CodeAlreadyRunning
+			return errExecRunRefused
+		}
+		return err
+	})
+	if errors.Is(err, errExecRunRefused) {
+		return code
+	}
+	if err != nil {
+		w.logger.Warn("action_run.not_started", "workspace_id", record.ID, "run_id", payload.RunID, "error", err)
+		return workspacesession.CodeStaleExecution
+	}
+	if !w.relay.beginExecRun(connection.workspaceID, stream.id, started.ID, started.ActionID, runner) {
+		w.failExecRuns(ctx, []*execRunState{{runID: started.ID, actionID: started.ActionID}}, workspacesession.RunReasonStreamClosed)
+		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
+		return workspacesession.CodeStaleExecution
+	}
+	return ""
+}
+
+// recordExecFrame reads one runner-originated exec frame into the run's
+// record: output accumulates in memory, and exited is what writes the terminal
+// row.
+func (w *workspaceService) recordExecFrame(ctx context.Context, connection *relayConnection, stream *relayStream, frame workspacesession.Frame) {
+	switch frame.Type {
+	case workspacesession.TypeExecOutput:
+		var payload workspacesession.ExecOutput
+		if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+			return
+		}
+		data := []byte(payload.Data)
+		if payload.Encoding == "base64" {
+			// A command that writes binary to its stdout sends its spans
+			// encoded, and the stored output is the bytes rather than the
+			// envelope: a reader downloading the output wants what the command
+			// wrote.
+			decoded, err := base64.StdEncoding.DecodeString(payload.Data)
+			if err != nil {
+				return
+			}
+			data = decoded
+		}
+		w.relay.appendExecOutput(connection.workspaceID, stream.id, data)
+	case workspacesession.TypeExecExited:
+		var payload workspacesession.ExecExited
+		if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+			return
+		}
+		state, ok := w.relay.takeExecRun(connection.workspaceID, stream.id)
+		if !ok {
+			// The run was already ended by a teardown path, or this stream
+			// never carried one. Either way there is nothing to write, and
+			// writing over a terminal status is exactly what is forbidden.
+			return
+		}
+		code := payload.Code
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
+		defer cancel()
+		w.finishExecRun(writeCtx, state, workspacesession.RunStatusForExit(code), &code, "")
+	}
+}
+
+// failExecRuns ends every run it is given with one reason and the output
+// collected so far. It is what every stream and connection teardown calls: a
+// run left running for ever is the bug this function exists to prevent.
+//
+// The write deliberately drops the caller's cancellation and keeps only its
+// values. The events that reveal a run can never exit -- a socket closing, a
+// request finishing, a workspace ending -- are the same events that cancel the
+// contexts they arrive on, so a write that honoured the cancellation would be
+// abandoned exactly when it mattered and the run would stay running for ever.
+// It keeps a timeout of its own so a wedged database cannot hold the teardown.
+func (w *workspaceService) failExecRuns(ctx context.Context, states []*execRunState, reason string) {
+	for _, state := range states {
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
+		w.finishExecRun(writeCtx, state, workspacesession.RunFailed, nil, reason)
+		cancel()
+	}
+}
+
+// finishExecRun writes a run's terminal status and its accumulated output.
+//
+// A run already in a terminal status is left alone: two teardown paths may
+// race for the same run -- the person's socket closing while the workspace
+// ends -- and the first answer is the true one.
+func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunState, status string, exitCode *int, reason string) {
+	if state == nil {
+		return
+	}
+	var finished actionRunRecord
+	err := w.server.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		run, err := readProjectActionRunByID(ctx, tx, state.runID)
+		if err != nil {
+			return err
+		}
+		if workspacesession.TerminalRunStatus(run.Status) {
+			return nil
+		}
+		run.Status = status
+		run.ExitCode = exitCode
+		run.Reason = reason
+		run.FinishedAt = &now
+		if run.StartedAt == nil {
+			run.StartedAt = &now
+		}
+		run.Output = string(state.output)
+		run.OutputBytes = int64(len(state.output))
+		run.Truncated = state.truncated
+		finished, err = applyActionRunStatus(ctx, tx, run, now)
+		return err
+	})
+	if err != nil {
+		w.logger.Warn("action_run.not_recorded", "run_id", state.runID, "status", status, "error", err)
+		return
+	}
+	if finished.ID == "" {
+		return
+	}
+	w.logger.Info("action_run.finished", "run_id", finished.ID, "action_id", finished.ActionID,
+		"workspace_id", finished.WorkspaceID, "status", finished.Status, "reason", finished.Reason,
+		"output_bytes", finished.OutputBytes, "truncated", finished.Truncated)
 }
 
 // Audit rows.

@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 const maxAPIRequestBodyBytes = 1 << 20
@@ -26,6 +27,11 @@ const maxAPIRequestBodyBytes = 1 << 20
 // every control byte as a six-byte \uXXXX sequence, and a patch of HTML or
 // generated code can be dense with them.
 const maxAttemptDiffRequestBytes = 6*tracker.MaxDiffBytes + (1 << 20)
+
+// maxActionRunReportBytes bounds a runner's action run report, which carries
+// the run's whole output up to workspacesession.MaxExecOutputBytes, with the
+// same six-fold escaping allowance: coloured build output is dense with ESC.
+const maxActionRunReportBytes = 6*workspacesession.MaxExecOutputBytes + (1 << 20)
 
 func (s *Service) registerRoutes(e *echo.Echo) {
 	if s.config.CredentialMaintenance {
@@ -97,6 +103,9 @@ func decodeAPIJSON(c echo.Context, target any) error {
 func apiRequestBodyLimit(c echo.Context) int64 {
 	if c.Path() == nativeBase+"/attempts/:attempt/diff" {
 		return maxAttemptDiffRequestBytes
+	}
+	if c.Path() == nativeBase+"/workspaces/:workspace/worker/action-runs" {
+		return maxActionRunReportBytes
 	}
 	return maxAPIRequestBodyBytes
 }
