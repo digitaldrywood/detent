@@ -3,7 +3,7 @@
 // The shared entry's platform console: staff land there instead of the
 // organization chooser, and the console renders organizations with their
 // support-access form, the signup allowlist, and service health.
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +16,7 @@ import {
   OrganizationChooser,
 } from "../../src/app/entry/EntryScreens.tsx";
 import { formatBytes, PlatformConsole } from "../../src/app/entry/PlatformConsole.tsx";
+import { STALE_PLAN_MESSAGE } from "../../src/app/entry/ComplimentaryPlans.tsx";
 
 const assign = vi.fn();
 
@@ -66,6 +67,27 @@ const health = {
   },
 };
 
+const entitlements = {
+  organization_id: "org_alpha",
+  base: { id: "pilot_free", version: 1 },
+  effective_base: { id: "pilot_free", version: 1 },
+  source: "base",
+  revision: 3,
+  grants: [
+    {
+      id: "comp_existing", plan: { id: "comp_team", version: 1 }, scope: ["hosted_artifacts", "projects"],
+      starts_at: "2026-09-20T10:00:00Z", expires_at: "2026-12-31T23:59:59Z", reason: "design partner",
+      granted_by: "plans@detent.build", granted_at: "2026-09-20T10:00:00Z",
+    },
+  ],
+  plans: [
+    { id: "pilot_free", version: 1, features: ["collaboration"], allowances: { projects: 10 } },
+    { id: "comp_team", version: 1, features: ["collaboration", "hosted_artifacts"], allowances: { projects: 20 } },
+  ],
+};
+
+const administrator = { ...organizations, can_grant: true };
+
 function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
   return {
     organizations: vi.fn(async () => ({ email: "admin@detent.build", csrf: "staff-csrf", organizations: [], pending: [], can_create: false, staff: true })),
@@ -77,6 +99,8 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     platformOrganizations: vi.fn(async () => organizations),
     platformAllowlist: vi.fn(async () => allowlist),
     platformHealth: vi.fn(async () => health),
+    platformEntitlements: vi.fn(async () => entitlements),
+    changePlatformEntitlement: vi.fn(async () => ({ action: "grant", grant_id: "comp_new" })),
     ...overrides,
   };
 }
@@ -181,5 +205,97 @@ describe("platform console", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(1536)).toBe("1.5 KiB");
     expect(formatBytes(3 * 1024 ** 3)).toBe("3.0 GiB");
+  });
+});
+
+describe("complimentary plans", () => {
+  it("is hidden from staff who are not entitlement administrators", async () => {
+    const api = fakeApi();
+    renderWith(api, <PlatformConsole />);
+    await screen.findByRole("table", { name: "Organizations" });
+    expect(screen.queryByRole("region", { name: "Complimentary plans" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Grant complimentary plan" })).toBeNull();
+    expect(api.platformEntitlements).not.toHaveBeenCalled();
+  });
+
+  it("shows base, effective plan and active grants of ready organizations to administrators", async () => {
+    const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator) });
+    renderWith(api, <PlatformConsole />);
+    const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
+    await within(plan).findByText("comp_team v1 (complimentary)");
+    expect(within(plan).getByText("pilot_free v1")).toBeTruthy();
+    const grants = within(plan).getByRole("table", { name: "Active grants for Alpha" });
+    expect(within(grants).getByText("design partner")).toBeTruthy();
+    expect(within(grants).getByText("plans@detent.build")).toBeTruthy();
+    expect(within(grants).getByText("2026-12-31")).toBeTruthy();
+    expect(within(grants).getByText("hosted_artifacts, projects")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Plan for Beta" })).toBeNull();
+    expect(api.platformEntitlements).toHaveBeenCalledWith("org_alpha");
+  });
+
+  it("requires a reason and posts the grant with the revision and an idempotency key", async () => {
+    const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator) });
+    renderWith(api, <PlatformConsole />);
+    const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    const dialog = await screen.findByRole("dialog");
+    const picker = within(dialog).getByLabelText("Plan") as HTMLSelectElement;
+    expect(Array.from(picker.options).map((option) => option.textContent)).toEqual(["comp_team v1"]);
+    fireEvent.change(within(dialog).getByLabelText("Expires (optional)"), { target: { value: "2026-12-31" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Give a reason");
+    expect(api.changePlatformEntitlement).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "  design partner  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+    await waitFor(() => expect(api.changePlatformEntitlement).toHaveBeenCalledTimes(1));
+    const call = vi.mocked(api.changePlatformEntitlement).mock.calls[0]![0];
+    expect(call.organization).toBe("org_alpha");
+    expect(call.csrf).toBe("staff-csrf");
+    expect(call.change).toEqual({
+      action: "grant",
+      idempotency_key: expect.any(String),
+      expected_revision: 3,
+      plan: { id: "comp_team", version: 1 },
+      expires_at: "2026-12-31T23:59:59Z",
+      reason: "design partner",
+    });
+    expect(call.change.idempotency_key.length).toBeGreaterThan(0);
+    await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows the stale revision message and reloads the plan", async () => {
+    const stale = vi.fn(async () => {
+      throw new AccountError({ status: 409, code: "revision_conflict", message: "Resource has changed" });
+    });
+    const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator), changePlatformEntitlement: stale });
+    renderWith(api, <PlatformConsole />);
+    const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "design partner" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe(STALE_PLAN_MESSAGE);
+    await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(2));
+  });
+
+  it("revokes a grant only with a reason", async () => {
+    const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator) });
+    renderWith(api, <PlatformConsole />);
+    const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(plan).findByRole("button", { name: "Revoke" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Revoke grant" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Give a reason");
+    expect(api.changePlatformEntitlement).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "pilot ended" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Revoke grant" }));
+    await waitFor(() => expect(api.changePlatformEntitlement).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.changePlatformEntitlement).mock.calls[0]![0].change).toEqual({
+      action: "revoke",
+      idempotency_key: expect.any(String),
+      expected_revision: 3,
+      grant_id: "comp_existing",
+      reason: "pilot ended",
+    });
   });
 });

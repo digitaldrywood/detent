@@ -70,10 +70,65 @@ export const PlatformOrganizations = Schema.Struct({
   email: Schema.String,
   csrf: Schema.String,
   can_support: Schema.Boolean,
+  can_grant: Schema.optional(Schema.Boolean),
   organizations: Schema.Array(PlatformOrganization),
   unavailable: Schema.Array(Schema.String),
 });
 export type PlatformOrganizations = typeof PlatformOrganizations.Type;
+
+export const PlanReference = Schema.Struct({ id: Schema.String, version: Schema.Number });
+export type PlanReference = typeof PlanReference.Type;
+
+export const EntitlementPlan = Schema.Struct({
+  id: Schema.String,
+  version: Schema.Number,
+  features: Schema.NullOr(Schema.Array(Schema.String)),
+  allowances: Schema.NullOr(Schema.Record(Schema.String, Schema.Number)),
+});
+export type EntitlementPlan = typeof EntitlementPlan.Type;
+
+export const EntitlementGrant = Schema.Struct({
+  id: Schema.String,
+  plan: PlanReference,
+  scope: Schema.NullOr(Schema.Array(Schema.String)),
+  starts_at: Schema.String,
+  expires_at: Schema.NullOr(Schema.String),
+  reason: Schema.String,
+  granted_by: Schema.String,
+  granted_at: Schema.NullOr(Schema.String),
+});
+export type EntitlementGrant = typeof EntitlementGrant.Type;
+
+export const OrganizationEntitlements = Schema.Struct({
+  organization_id: Schema.String,
+  base: PlanReference,
+  effective_base: PlanReference,
+  source: Schema.String,
+  revision: Schema.Number,
+  grants: Schema.Array(EntitlementGrant),
+  plans: Schema.Array(EntitlementPlan),
+});
+export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
+
+export type EntitlementChange =
+  | {
+      readonly action: "grant";
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly plan: PlanReference;
+      readonly expires_at: string | null;
+      readonly reason: string;
+    }
+  | {
+      readonly action: "revoke";
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly grant_id: string;
+      readonly reason: string;
+    };
+
+export const EntitlementChangeResult = Schema.Struct({ action: Schema.String, grant_id: Schema.String });
+export type EntitlementChangeResult = typeof EntitlementChangeResult.Type;
 
 export const PlatformAllowlist = Schema.Struct({
   self_service: Schema.Boolean,
@@ -168,6 +223,20 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     return Schema.decodeUnknownSync(schema)(await response.json());
   }
 
+  async function post<A>(schema: Schema.Codec<A, any, never, never>, path: string, csrf: string, body: unknown): Promise<A> {
+    const response = await fetchImpl(`${origin}${path}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw await decodeFailure(response);
+    return Schema.decodeUnknownSync(schema)(await response.json());
+  }
+
+  const entitlementsPath = (organization: string) =>
+    `/api/cloud/platform/organizations/${encodeURIComponent(organization)}/entitlements`;
+
   return {
     organizations: () => read(EntryOrganizations, "/api/cloud/organizations"),
     session: () => read(EntrySession, "/api/cloud/session"),
@@ -182,6 +251,9 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),
     platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
+    platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
+    changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
+      post(EntitlementChangeResult, entitlementsPath(input.organization), input.csrf, input.change),
   };
 }
 

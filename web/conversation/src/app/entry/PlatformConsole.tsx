@@ -25,6 +25,7 @@ import {
   SIGN_IN_PLATFORM,
   SUPPORT_REASONS,
 } from "./api.ts";
+import { ComplimentaryPlansPanel } from "./ComplimentaryPlans.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
 
 const UNAVAILABLE_LABELS: Record<string, string> = {
@@ -306,7 +307,12 @@ export function PlatformConsole(): React.ReactElement {
             {value === undefined ? (
               <p className="text-sm text-muted-foreground">Loading organizations…</p>
             ) : (
-              <PlatformOrganizationsPanel value={value} />
+              <>
+                <PlatformOrganizationsPanel value={value} />
+                {value.can_grant === true ? (
+                  <ComplimentaryPlansPanel organizations={value.organizations} csrf={value.csrf} />
+                ) : null}
+              </>
             )}
             <div className="grid gap-5 lg:grid-cols-2">
               {allowlist.value === undefined ? (
