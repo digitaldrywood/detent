@@ -39,6 +39,10 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, session)
 	e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, session)
 	e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, session)
+	e.GET(hostedOrganizationBase+"/plan", s.hostedPlanJSON, session)
+	e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, session)
+	e.POST(hostedOrganizationBase+"/invitations/accept", s.acceptHostedInvitationJSON, session)
+	e.POST(hostedOrganizationBase+"/support/start", s.startHostedSupportJSON, session)
 }
 
 // hostedSessionOnly refuses a bearer credential on the session API. These
