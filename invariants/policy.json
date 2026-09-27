@@ -117,7 +117,8 @@
       "TestDoctorInvariantAdmissionRepeatedEntries",
       "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
-      "TestINV12DoctorWorkspaceKinds"
+      "TestINV12DoctorWorkspaceKinds",
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns"
     ],
     "./internal/connector/github": [
       "TestRefreshBoardFilterCost",
@@ -162,6 +163,9 @@
       "TestINV13BoardCardContent",
       "TestINV13SheetObservations",
       "TestBoardCardSignalBudget"
+    ],
+    "./internal/codex": [
+      "TestAppServerMarksOnlyConversationTurns"
     ]
   }
 }
