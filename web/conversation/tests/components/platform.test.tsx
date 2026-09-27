@@ -263,6 +263,30 @@ describe("complimentary plans", () => {
     await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(2));
   });
 
+  it.each([
+    { name: "an unconfirmed failure retries the same command", failure: new AccountError({ status: 503, code: "audit_unavailable", message: "retry" }), same: true },
+    { name: "a stale revision starts a new command", failure: new AccountError({ status: 409, code: "revision_conflict", message: "changed" }), same: false },
+  ])("$name", async ({ failure, same }) => {
+    let calls = 0;
+    const change = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw failure;
+    });
+    const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator), changePlatformEntitlement: change });
+    renderWith(api, <PlatformConsole />);
+    const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "design partner" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+    await within(dialog).findByRole("alert");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+    await waitFor(() => expect(change).toHaveBeenCalledTimes(2));
+    const [first, second] = vi.mocked(change).mock.calls.map((call) => (call as unknown as [{ change: { idempotency_key: string; expected_revision: number } }])[0].change);
+    expect(second!.idempotency_key === first!.idempotency_key).toBe(same);
+    if (same) expect(second!.expected_revision).toBe(first!.expected_revision);
+  });
+
   it("shows the stale revision message and reloads the plan", async () => {
     const stale = vi.fn(async () => {
       throw new AccountError({ status: 409, code: "revision_conflict", message: "Resource has changed" });

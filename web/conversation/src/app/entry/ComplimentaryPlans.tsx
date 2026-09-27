@@ -71,23 +71,26 @@ function useChange(
   readonly pending: boolean;
   readonly error: string | null;
   readonly setError: (message: string | null) => void;
-  readonly submit: (change: EntitlementChange) => Promise<boolean>;
+  readonly submit: (change: EntitlementChange) => Promise<ChangeOutcome>;
 } {
   const api = useEntryApi();
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const submit = React.useCallback(
-    async (change: EntitlementChange): Promise<boolean> => {
+    async (change: EntitlementChange): Promise<ChangeOutcome> => {
       setPending(true);
       setError(null);
       try {
         await api.changePlatformEntitlement({ organization, csrf, change });
         await onChanged();
-        return true;
+        return "done";
       } catch (cause) {
         setError(failureMessage(cause));
-        if (cause instanceof AccountError && cause.status === 409) await onChanged();
-        return false;
+        if (cause instanceof AccountError && cause.status === 409) {
+          await onChanged();
+          return "conflict";
+        }
+        return "failed";
       } finally {
         setPending(false);
       }
@@ -96,6 +99,13 @@ function useChange(
   );
   return { pending, error, setError, submit };
 }
+
+/**
+ * What a submission ended in. A conflict means the Hub applied nothing, so the
+ * next attempt is a new command; any other failure may have been applied, so
+ * the retry resends the same key and revision and the Hub replays it.
+ */
+type ChangeOutcome = "done" | "conflict" | "failed";
 
 export function GrantComplimentaryDialog({
   organization,
@@ -114,6 +124,7 @@ export function GrantComplimentaryDialog({
   const [expires, setExpires] = React.useState("");
   const [reason, setReason] = React.useState("");
   const [key, setKey] = React.useState(newKey);
+  const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
   const change = useChange(organization.id, csrf, onChanged);
   const selected = choices.find((choice) => planKey(choice) === plan) ?? choices[0];
   const prefix = `grant-${organization.id}`;
@@ -125,6 +136,7 @@ export function GrantComplimentaryDialog({
       setExpires("");
       setReason("");
       setKey(newKey());
+      setRetryRevision(null);
       change.setError(null);
     }
   };
@@ -139,16 +151,26 @@ export function GrantComplimentaryDialog({
       change.setError("Give a reason for this grant.");
       return;
     }
-    const done = await change.submit({
+    const revision = retryRevision ?? entitlements.revision;
+    const outcome = await change.submit({
       action: "grant",
       idempotency_key: key,
-      expected_revision: entitlements.revision,
+      expected_revision: revision,
       plan: { id: selected.id, version: selected.version },
       expires_at: expires === "" ? null : `${expires}T23:59:59Z`,
       reason: reason.trim(),
     });
-    if (done) setOpen(false);
-    else setKey(newKey());
+    settle(outcome, revision);
+  };
+
+  const settle = (outcome: ChangeOutcome, revision: number) => {
+    if (outcome === "done") setOpen(false);
+    if (outcome === "failed") {
+      setRetryRevision(revision);
+      return;
+    }
+    setKey(newKey());
+    setRetryRevision(null);
   };
 
   return (
@@ -231,6 +253,7 @@ export function RevokeGrantDialog({
   const [open, setOpen] = React.useState(false);
   const [reason, setReason] = React.useState("");
   const [key, setKey] = React.useState(newKey);
+  const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
   const change = useChange(organization.id, csrf, onChanged);
   const reasonId = `revoke-${organization.id}-${grant.id}-reason`;
 
@@ -239,6 +262,7 @@ export function RevokeGrantDialog({
     if (next) {
       setReason("");
       setKey(newKey());
+      setRetryRevision(null);
       change.setError(null);
     }
   };
@@ -249,15 +273,21 @@ export function RevokeGrantDialog({
       change.setError("Give a reason for revoking this grant.");
       return;
     }
-    const done = await change.submit({
+    const sent = retryRevision ?? revision;
+    const outcome = await change.submit({
       action: "revoke",
       idempotency_key: key,
-      expected_revision: revision,
+      expected_revision: sent,
       grant_id: grant.id,
       reason: reason.trim(),
     });
-    if (done) setOpen(false);
-    else setKey(newKey());
+    if (outcome === "done") setOpen(false);
+    if (outcome === "failed") {
+      setRetryRevision(sent);
+      return;
+    }
+    setKey(newKey());
+    setRetryRevision(null);
   };
 
   return (

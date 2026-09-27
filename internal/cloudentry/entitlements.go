@@ -276,7 +276,11 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	if err != nil {
 		return s.tenantEntitlementFailure(c, err)
 	}
-	if err := s.registry.recordEntitlementChange(ctx, organization.ID, session, command, s.config.now()); err != nil {
+	// The tenant has applied the change, so the staff record is written even
+	// if the browser has gone; a retry with the same key replays it.
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := s.registry.recordEntitlementChange(recordCtx, organization.ID, session, command, s.config.now()); err != nil {
 		s.config.Logger.Error("entitlement change applied but not recorded in the entry audit log", "organization", organization.ID, "idempotency_key", command.ID)
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "audit_unavailable", "message": "The change was applied but could not be recorded; retry to record it"})
 	}
