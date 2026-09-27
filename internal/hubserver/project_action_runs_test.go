@@ -273,19 +273,61 @@ func TestWorkspaceWorkerBindCarriesRunOnCreationActions(t *testing.T) {
 	build := f.authored(t, map[string]any{"name": "Build", "command": "npm run build",
 		"run_on_worktree_creation": true})
 
-	session, lease := f.requested(t)
-	response := f.workerPost(t, session.ID, "bind", workspaceBindRequest{
-		workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: execCapabilities,
-		Isolation: workspacesession.IsolationContainer})
-	requireNativeStatus(t, response, http.StatusOK)
-	var bind workspaceBindResponse
-	decodeHubResponse(t, response, &bind)
-	got := []string{}
-	for _, action := range bind.Actions {
-		got = append(got, action.ID)
+	tests := []struct {
+		name         string
+		capabilities workspacesession.Capabilities
+		want         []string
+	}{
+		{name: "a runner serving exec gets the set in authoring order", capabilities: execCapabilities,
+			want: []string{install.ID, build.ID}},
+		{name: "a runner without exec gets none", capabilities: workspaceTestCapabilities, want: []string{}},
 	}
-	if want := []string{install.ID, build.ID}; !slices.Equal(got, want) {
-		t.Fatalf("bind actions = %v, want the run-on-creation set in authoring order %v", got, want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session, lease := f.requested(t)
+			response := f.workerPost(t, session.ID, "bind", workspaceBindRequest{
+				workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: test.capabilities,
+				Isolation: workspacesession.IsolationContainer})
+			requireNativeStatus(t, response, http.StatusOK)
+			var bind workspaceBindResponse
+			decodeHubResponse(t, response, &bind)
+			got := []string{}
+			for _, action := range bind.Actions {
+				got = append(got, action.ID)
+			}
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("bind actions = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCreatesWorktree(t *testing.T) {
+	t.Parallel()
+	exec := execCapabilities
+	plain := workspaceTestCapabilities
+	fresh := workspaceCheckout{Worktree: workspacesession.WorktreeFresh}
+	retained := workspaceCheckout{Worktree: workspacesession.WorktreeRetained}
+	tests := []struct {
+		name     string
+		record   workspaceRecord
+		checkout workspaceCheckout
+		want     bool
+	}{
+		{name: "fresh writable worktree on an exec runner", record: workspaceRecord{State: workspacesession.StateStarting, Capabilities: &exec}, checkout: fresh, want: true},
+		{name: "retained worktree", record: workspaceRecord{State: workspacesession.StateStarting, Capabilities: &exec}, checkout: retained},
+		{name: "re-bind after a hub restart", record: workspaceRecord{State: workspacesession.StateReady, Capabilities: &exec}, checkout: fresh},
+		{name: "read-only workspace", record: workspaceRecord{State: workspacesession.StateStarting, ReadOnly: true, Capabilities: &exec}, checkout: fresh},
+		{name: "runner without exec", record: workspaceRecord{State: workspacesession.StateStarting, Capabilities: &plain}, checkout: fresh},
+		{name: "no reported capabilities", record: workspaceRecord{State: workspacesession.StateStarting}, checkout: fresh},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := createsWorktree(test.record, test.checkout); got != test.want {
+				t.Fatalf("createsWorktree = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -296,6 +338,18 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 	f := newActionFixture(t)
 	action := f.authored(t, map[string]any{"name": "Install", "command": "npm install",
 		"run_on_worktree_creation": true})
+
+	t.Run("a report with no run id is refused for an ordinary action", func(t *testing.T) {
+		manual := f.authored(t, map[string]any{"name": "Deploy", "command": "make deploy"})
+		session, lease := f.requested(t)
+		requireNativeStatus(t, f.workerPost(t, session.ID, "bind", workspaceBindRequest{
+			workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: execCapabilities,
+			Isolation: workspacesession.IsolationContainer}), http.StatusOK)
+		response := f.workerPost(t, session.ID, "action-runs", workspaceActionRunReport{
+			WorkspaceIdentity: workspaceIdentity(lease), ActionID: manual.ID,
+			Status: workspacesession.RunRunning})
+		requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	})
 
 	t.Run("a report with no run id creates the run and leaves created_by empty", func(t *testing.T) {
 		session, lease := f.requested(t)

@@ -206,11 +206,14 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		response = workspaceBindResponse{Owner: bound.owner(), Checkout: checkout, Session: bound.resource()}
+		if !createsWorktree(bound, checkout) {
+			return nil
+		}
 		actions, err := readRunOnCreationActions(ctx, tx, bound.OrganizationID, bound.ProjectID)
 		if err != nil {
 			return err
 		}
-		response = workspaceBindResponse{Owner: bound.owner(), Checkout: checkout, Session: bound.resource()}
 		for _, action := range actions {
 			response.Actions = append(response.Actions, action.resource())
 		}
@@ -221,6 +224,17 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 	}
 	service.committed(ctx, bound)
 	return c.JSON(http.StatusOK, response)
+}
+
+// createsWorktree reports whether a bind hands the runner a new, writable
+// worktree it may run the project's run-on-worktree-creation actions in. A
+// re-bind after a hub restart or a retained worktree already ran them, and a
+// read-only workspace or a runner without exec must not run them at all.
+func createsWorktree(record workspaceRecord, checkout workspaceCheckout) bool {
+	return record.State == workspacesession.StateStarting &&
+		checkout.Worktree == workspacesession.WorktreeFresh &&
+		!record.ReadOnly &&
+		record.Capabilities != nil && record.Capabilities.Has(workspacesession.CapabilityExec)
 }
 
 // bind moves a requested workspace to starting, or back to ready when the
@@ -629,6 +643,9 @@ func (w *workspaceService) recordActionRunReport(ctx context.Context, tx *sql.Tx
 	}
 	runID := strings.TrimSpace(request.RunID)
 	if runID == "" {
+		if !action.RunOnWorktreeCreation {
+			return actionRunRecord{}, nativeInvalid("Only a run-on-worktree-creation action may be reported without a run id")
+		}
 		run := actionRunRecord{
 			ID: newNativeID("actionrun"), ActionID: action.ID, OrganizationID: record.OrganizationID,
 			ProjectID: record.ProjectID, WorkspaceID: record.ID, Command: action.Command,
