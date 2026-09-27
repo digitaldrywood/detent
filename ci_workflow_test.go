@@ -409,6 +409,7 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 		present bool
 	}{
 		{name: "hosted runner", want: "    runs-on: ubuntu-latest\n", present: true},
+		{name: "dispatch limited to develop", want: "    if: github.ref == 'refs/heads/develop'\n", present: true},
 		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.hub.detent.build\n", present: true},
 		{name: "single deploy at a time", want: "concurrency:\n  group: deploy-staging\n  cancel-in-progress: true\n", present: true},
 		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},

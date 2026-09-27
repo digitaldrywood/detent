@@ -5,7 +5,9 @@
 # the binary from the pushed commit and streams it over SSH to a key that can run
 # nothing but the staging deploy script. That script verifies the binary's commit,
 # snapshots the staging database, swaps the binary, restarts staging and rolls back
-# if https health does not report this commit.
+# if https health does not report this commit. The deploy key can install any
+# binary that reports the requested commit, so only the develop-limited staging
+# environment holds it, and it reaches staging paths only.
 #
 # Environment "staging" secrets (deployment branch policy: develop only):
 #   STAGING_SSH_KEY          private half of the restricted deploy key
@@ -27,6 +29,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy staging
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
