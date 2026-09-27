@@ -248,14 +248,14 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 		if err := allocation.Launcher.Start(ctx, s.tenantSpec(*organization)); err != nil {
 			return err
 		}
-		deadline := time.Now().Add(30 * time.Second)
+		deadline := time.Now().Add(s.config.tenantStartTimeout)
 		for {
 			status, err := s.serviceRequest(ctx, *organization, "/internal/v1/health", map[string]string{}, nil)
 			if err == nil && status == http.StatusNoContent {
 				return nil
 			}
 			if time.Now().After(deadline) {
-				return errors.Join(errors.New("tenant did not become healthy"), err)
+				return errors.Join(errors.New("tenant did not become healthy"), err, allocation.Launcher.Stop(organization.ID))
 			}
 			select {
 			case <-ctx.Done():

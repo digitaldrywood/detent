@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -97,6 +98,7 @@ type provisioningFixture struct {
 	state    string
 	roots    [2]string
 	key      ed25519.PrivateKey
+	timeout  time.Duration
 }
 
 func shortTempDir(t *testing.T) string {
@@ -137,7 +139,7 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 		mutate(allocation)
 	}
 	service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing})
+		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,6 +299,93 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	_, status = eveAgain.get("/organizations/" + blocked + "/provisioning")
 	eveAgain.do(http.MethodPost, "/organizations/"+blocked+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil)
 	f.waitState(t, blocked, "ready")
+}
+
+type silentLauncher struct {
+	mu       sync.Mutex
+	err      error
+	running  map[string]bool
+	launches int
+	stops    int
+}
+
+func (l *silentLauncher) Start(_ context.Context, spec TenantSpec) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.err != nil || l.running[spec.Organization.ID] {
+		return l.err
+	}
+	l.running[spec.Organization.ID] = true
+	l.launches++
+	return nil
+}
+
+func (l *silentLauncher) Stop(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.running[id] {
+		l.stops++
+	}
+	delete(l.running, id)
+	return nil
+}
+
+func (l *silentLauncher) Close() error { return nil }
+
+func (l *silentLauncher) counts() (launches, stops, running int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.launches, l.stops, len(l.running)
+}
+
+func TestProvisioningTenantStartFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		err          error
+		wantLaunches int
+	}{
+		{name: "hub never becomes healthy", wantLaunches: 1},
+		{name: "launcher refuses", err: errors.New("launch refused at /private/tenant"), wantLaunches: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			launcher := &silentLauncher{err: tc.err, running: map[string]bool{}}
+			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) {
+				f.timeout = 100 * time.Millisecond
+			})
+			dana := newBrowser(t, f.service.Handler())
+			dana.login("/auth/oidc/start", "user_dana:")
+			id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+			failed := f.waitState(t, id, "failed")
+			if failed.ErrorCode != "tenant_start_failed" || failed.Step != "tenant_files" {
+				t.Fatalf("failure = %+v", failed)
+			}
+			status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+			var body struct {
+				State     string `json:"state"`
+				Error     string `json:"error"`
+				CanResume bool   `json:"can_resume"`
+			}
+			if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, "tenant_start_failed") || strings.Contains(body.Error, "/private") {
+				t.Fatalf("failed provisioning JSON = %s %v", status.Body, err)
+			}
+			if launches, stops, running := launcher.counts(); launches != tc.wantLaunches || stops != tc.wantLaunches || running != 0 {
+				t.Fatalf("launches = %d, stops = %d, running = %d; a failed tenant start must not stay supervised", launches, stops, running)
+			}
+			launcher.mu.Lock()
+			launcher.err = nil
+			launcher.mu.Unlock()
+			_, page := dana.get("/organizations/" + id + "/provisioning")
+			if resumed := dana.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, page)}}, nil); resumed.StatusCode != http.StatusSeeOther {
+				t.Fatalf("resume = %d", resumed.StatusCode)
+			}
+			f.waitState(t, id, "failed")
+			if launches, _, _ := launcher.counts(); launches != tc.wantLaunches+1 {
+				t.Fatalf("resume launches = %d, want a fresh launch", launches)
+			}
+		})
+	}
 }
 
 func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
