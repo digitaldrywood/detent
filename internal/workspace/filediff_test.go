@@ -296,3 +296,38 @@ func isolateFileDiffGitConfig(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
+
+func TestAttemptBase(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		remote    bool
+		localHead bool
+	}{
+		{name: "no remote uses the current commit"},
+		{name: "a tracked remote default branch uses the merge base", remote: true},
+		{name: "a local origin HEAD answers without the remote", remote: true, localHead: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			dir := initSourceRepo(t)
+			want := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			if test.remote {
+				origin := filepath.Join(t.TempDir(), "origin.git")
+				runGit(t, dir, "init", "--bare", "-b", "main", origin)
+				runGit(t, dir, "remote", "add", "origin", origin)
+				runGit(t, dir, "push", "-u", "origin", "HEAD:main")
+				writeFileDiffFile(t, dir, "ahead.txt", "ahead\n")
+				runGit(t, dir, "add", "ahead.txt")
+				runGit(t, dir, "commit", "-m", "ahead of the remote")
+				if test.localHead {
+					runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+					runGit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unreachable.git"))
+				}
+			}
+			if got := AttemptBase(t.Context(), dir); got != want {
+				t.Fatalf("AttemptBase() = %q, want %q", got, want)
+			}
+		})
+	}
+}

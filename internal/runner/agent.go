@@ -1689,7 +1689,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		// The stored attempt diff rides every checkpoint and the finish
 		// (decisions section 18.5).
 		if diffs, ok := req.Execution.(DiffExecution); ok {
-			diffs.SetDiffSource(r.attemptDiffSource(info, workspaceIssue))
+			diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
 		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err

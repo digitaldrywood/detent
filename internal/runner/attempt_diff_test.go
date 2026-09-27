@@ -62,7 +62,7 @@ func TestAttemptDiffSourceComputesWorktreeDiff(t *testing.T) {
 	runRunnerGit(t, info.Path, "add", "implementation.go")
 	runRunnerGit(t, info.Path, "commit", "-m", "implement")
 
-	request, ok := attemptDiffRunner().attemptDiffSource(info, issue)(t.Context())
+	request, ok := attemptDiffRunner().attemptDiffSource(t.Context(), info, issue)(t.Context())
 	if !ok {
 		t.Fatal("a readable worktree must produce a diff")
 	}
@@ -111,7 +111,7 @@ func TestAttemptDiffSourceReportsNothingWhenUnreadable(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			_, ok := attemptDiffRunner().attemptDiffSource(workspace.Info{Path: test.path}, workspace.Issue{ID: "issue"})(t.Context())
+			_, ok := attemptDiffRunner().attemptDiffSource(t.Context(), workspace.Info{Path: test.path}, workspace.Issue{ID: "issue"})(t.Context())
 			if ok {
 				t.Fatal("an unreadable worktree must report nothing to post")
 			}
@@ -140,7 +140,7 @@ func TestAttemptDiffSourceStripsPatchesWhenTruncated(t *testing.T) {
 	// The bound the runner uses is the contract's whole-diff bound; a diff
 	// that fits keeps its patches, which is what makes the stripped case a
 	// property of the bound rather than of the file.
-	request, ok := attemptDiffRunner().attemptDiffSource(info, issue)(t.Context())
+	request, ok := attemptDiffRunner().attemptDiffSource(t.Context(), info, issue)(t.Context())
 	if !ok {
 		t.Fatal("a readable worktree must produce a diff")
 	}
@@ -162,4 +162,38 @@ func isolateAttemptDiffGitConfig(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+}
+
+// A native run has no pull request base. Its committed work is the change, so
+// the diff is taken against the commit the run started from, not HEAD.
+func TestAttemptDiffSourceWithoutBaseRefKeepsCommittedWork(t *testing.T) {
+	isolateAttemptDiffGitConfig(t)
+	source := initRunnerSourceRepo(t)
+	start := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+		Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("new backend: %v", err)
+	}
+	issue := workspace.Issue{Identifier: "native-run"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	diffSource := attemptDiffRunner().attemptDiffSource(t.Context(), info, issue)
+	attemptDiffFile(t, info.Path, "committed.txt", "work\n")
+	runRunnerGit(t, info.Path, "add", "committed.txt")
+	runRunnerGit(t, info.Path, "commit", "-m", "work")
+
+	request, ok := diffSource(t.Context())
+	if !ok {
+		t.Fatal("a readable worktree must produce a diff")
+	}
+	if request.BaseSHA != start || request.HeadSHA == start {
+		t.Fatalf("base = %q head = %q, want base %q and a later head", request.BaseSHA, request.HeadSHA, start)
+	}
+	if _, found := attemptDiffFind(request.Files, "committed.txt"); !found {
+		t.Fatalf("committed.txt is missing from %+v", request.Files)
+	}
 }
