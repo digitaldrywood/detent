@@ -13,13 +13,14 @@
 // two are asserted against the hub's own pages.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
-const { startHostedHub } = require("./hosted-hub");
+const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 test.describe.configure({ mode: "serial" });
 
 let hub;
 
 test.beforeAll(async () => {
+  test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("account");
 });
 
@@ -170,7 +171,7 @@ test("removing the last owner is refused by the hub and said in the page", async
   const ownerRow = page.getByRole("row").filter({ hasText: hub.fixture.owner_email });
   await expect(ownerRow).toHaveCount(1);
   const remove = ownerRow.getByRole("button", { name: "Remove" }).first();
-  test.skip((await remove.count()) === 0, "The fixture's owner row has no removal control.");
+  await expect(remove).toBeVisible();
   await remove.click();
   await page.getByRole("button", { name: "Remove", exact: true }).last().click();
   // The alert is the hub's refusal said in the page, which arrives after a
@@ -247,7 +248,8 @@ test("project settings show the integration and refuse to edit it for a viewer",
 
   await openAs(page, "viewer", `/projects/${hub.fixture.project_id}/settings`);
   const intake = page.getByLabel("Intake");
-  if ((await intake.count()) > 0) await expect(intake).toBeDisabled();
+  await expect(intake).toBeVisible();
+  await expect(intake).toBeDisabled();
   await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
 });
 

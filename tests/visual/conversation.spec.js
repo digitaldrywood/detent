@@ -9,7 +9,7 @@
 // name.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
-const { startHostedHub } = require("./hosted-hub");
+const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 test.describe.configure({ mode: "serial" });
 
@@ -18,6 +18,7 @@ test.describe.configure({ mode: "serial" });
 let hub;
 
 test.beforeAll(async () => {
+  test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("conversation");
 });
 
@@ -33,6 +34,7 @@ const UNSERVED_PROJECT_ACTIONS = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/
 // 404 to one who cannot manage runners, which the client reads as nothing to
 // report.
 const UNREPORTED_UPDATES = /\/app\/updates$/;
+const NOT_FOUND = /status of 404\b/;
 
 /** Collects everything the page logs as an error, for a per-test assertion. */
 function watchConsole(page) {
@@ -40,7 +42,10 @@ function watchConsole(page) {
   page.on("console", (message) => {
     if (message.type() !== "error") return;
     const url = message.location().url ?? "";
-    if (UNSERVED_PROJECT_ACTIONS.test(url) || UNREPORTED_UPDATES.test(url)) return;
+    const expected404 =
+      NOT_FOUND.test(message.text()) &&
+      (UNSERVED_PROJECT_ACTIONS.test(url) || UNREPORTED_UPDATES.test(url));
+    if (expected404) return;
     errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(String(error)));

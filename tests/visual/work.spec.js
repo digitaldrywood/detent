@@ -19,13 +19,14 @@
 // that would otherwise be silently absent.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
-const { startHostedHub } = require("./hosted-hub");
+const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 test.describe.configure({ mode: "serial" });
 
 let hub;
 
 test.beforeAll(async () => {
+  test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("work");
 });
 
@@ -37,12 +38,15 @@ test.afterAll(async () => {
 // The client lists project actions on every issue and chat page, and main's
 // hub does not serve that endpoint yet, so its 404 is the one error allowed.
 const UNSERVED_PROJECT_ACTIONS = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/actions$/;
+const NOT_FOUND = /status of 404\b/;
 
 function watchConsole(page) {
   const errors = [];
   page.on("console", (message) => {
     if (message.type() !== "error") return;
-    if (UNSERVED_PROJECT_ACTIONS.test(message.location().url ?? "")) return;
+    const expected404 =
+      NOT_FOUND.test(message.text()) && UNSERVED_PROJECT_ACTIONS.test(message.location().url ?? "");
+    if (expected404) return;
     errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(String(error)));
@@ -155,11 +159,11 @@ test.describe("the work board", () => {
     // A reload lands on the same view, because the view is in the URL.
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("work-list")).toBeVisible();
+    await scan(page, "list");
 
     await page.getByTestId("view-board").click();
     await expect(page.getByTestId("work-board")).toBeVisible();
     await expect(page).not.toHaveURL(/view=list/);
-    await scan(page, "list");
   });
 
   test("keeps the search in the URL and filters the board", async ({ page }) => {
@@ -180,6 +184,19 @@ test.describe("the work board", () => {
   });
 
   test("moves an issue between lanes from the keyboard", async ({ page }) => {
+    // The project stream is replaced by one that answers every connection with
+    // a single, higher activity sequence and a one-second retry (longer than the
+    // board's 400 ms tick coalescing), so the board keeps reconnecting and
+    // reloading on its own while the move is held below.
+    let sequence = 1_000_000;
+    await page.route("**/projects/*/events", (route) => {
+      sequence += 1;
+      return route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
+        body: `retry: 1000\nevent: activity\ndata: ${sequence}\n\n`,
+      });
+    });
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
     const card = page.locator('[data-testid="issue-card"]', {
       has: page.getByRole("button", { name: "Review the invitation flow", exact: true }),
@@ -210,12 +227,18 @@ test.describe("the work board", () => {
       await held;
       await route.continue();
     });
+    const isBoardReload = (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.endsWith("/work-items");
     await page.keyboard.press("Enter");
     const lane = page.locator(`[data-testid="board-lane"][data-lane="${target}"]`);
     await expect(
       lane.getByRole("button", { name: "Review the invitation flow", exact: true }),
     ).toBeVisible({ timeout: 1_000 });
-    await page.waitForTimeout(600);
+    // A reload the activity stream asked for, answered while the hub still
+    // holds the old lane: the card has to survive it.
+    await page.waitForResponse(isBoardReload, { timeout: 10_000 });
+    await page.waitForResponse(isBoardReload, { timeout: 10_000 });
     await expect(
       lane.getByRole("button", { name: "Review the invitation flow", exact: true }),
     ).toBeVisible();

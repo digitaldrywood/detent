@@ -13,6 +13,36 @@ const { spawn } = require("node:child_process");
 
 const FIXTURE_LINE = /Hosted browser fixture:\s+(\S+)/;
 const STARTUP_TIMEOUT_MS = 180_000;
+const STOP_REQUEST_TIMEOUT_MS = 5_000;
+const EXIT_TIMEOUT_MS = 15_000;
+
+function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForExit(child, timeoutMs) {
+  return new Promise((resolve) => {
+    if (hasExited(child)) {
+      resolve();
+      return;
+    }
+    const timeout = setTimeout(() => {
+      if (!hasExited(child)) child.kill("SIGKILL");
+      resolve();
+    }, timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+}
+
+async function terminate(child) {
+  if (hasExited(child)) return;
+  const exited = waitForExit(child, EXIT_TIMEOUT_MS);
+  child.kill("SIGTERM");
+  await exited;
+}
 
 /**
  * Runs the Go preview test and resolves once its fixture file is readable.
@@ -45,7 +75,7 @@ async function startHostedHub(name = "conversation") {
   );
 
   let output = "";
-  const fixturePath = await new Promise((resolve, reject) => {
+  const ready = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error(`Timed out waiting for the hosted hub fixture.\n${output}`));
     }, STARTUP_TIMEOUT_MS);
@@ -76,6 +106,13 @@ async function startHostedHub(name = "conversation") {
       );
     });
   });
+  let fixturePath;
+  try {
+    fixturePath = await ready;
+  } catch (error) {
+    await terminate(child);
+    throw error;
+  }
 
   const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
   for (const key of [
@@ -113,19 +150,14 @@ async function startHostedHub(name = "conversation") {
       stopped = true;
       // The preview test returns from its own handler, so the Go process ends
       // on its own and the temporary database is cleaned up by `t.Cleanup`.
-      await fetch(fixture.stop, { method: "POST" }).catch(() => {});
-      await new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          if (child.exitCode === null) child.kill("SIGKILL");
-          resolve();
-        }, 15_000);
-        child.once("exit", () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
+      const exited = waitForExit(child, EXIT_TIMEOUT_MS);
+      await fetch(fixture.stop, {
+        method: "POST",
+        signal: AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS),
+      }).catch(() => {});
+      await exited;
     },
   };
 }
 
-module.exports = { startHostedHub };
+module.exports = { startHostedHub, STARTUP_TIMEOUT_MS };
