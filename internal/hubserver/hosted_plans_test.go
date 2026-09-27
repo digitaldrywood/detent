@@ -645,3 +645,44 @@ func TestHostedPlanPages(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		after func(t *testing.T, f *hostedSecurityFixture, path string, clock *leaseTestClock)
+	}{
+		{name: "revoked", after: func(t *testing.T, f *hostedSecurityFixture, path string, _ *leaseTestClock) {
+			revoke := hostedPlanCommand{ID: "report-revoke", Action: "revoke", ExpectedRevision: 2, GrantID: "comp_report", Reason: "partnership ended"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, revoke), http.StatusNoContent)
+		}},
+		{name: "expired", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
+			clock.value = clock.value.Add(2 * time.Hour)
+		}},
+		{name: "not started", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
+			clock.value = clock.value.Add(-time.Hour)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			config := hostedTestPlans(t, f.service, nil)
+			clock := &leaseTestClock{value: time.Now().UTC()}
+			f.service.database.now = clock.Now
+			path := "/api/v2/organizations/org_security/entitlements"
+			until := clock.value.Add(time.Hour).Truncate(time.Second)
+			grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "design partner"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
+			test.after(t, &f, path, clock)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var report hostedEntitlementReport
+			if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Grants) != 0 {
+				t.Fatalf("report grants = %+v, want none", report.Grants)
+			}
+		})
+	}
+}

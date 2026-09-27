@@ -111,6 +111,9 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 		return report, err
 	}
 	for _, grant := range entitlement.Grants {
+		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
+			continue
+		}
 		record := granted[grant.ID]
 		record.HostedGrant = grant
 		report.Grants = append(report.Grants, record)

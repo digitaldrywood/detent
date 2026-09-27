@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -218,6 +219,10 @@ func (s *Service) serviceCall(ctx context.Context, organization Organization, pa
 	return s.signedCall(ctx, organization, claims, body, "")
 }
 
+// tenantCallResponseLimit bounds a tenant answer the entry reads itself. An
+// answer past it is an error, never a truncated body that fails to decode.
+const tenantCallResponseLimit = 64 << 10
+
 func (s *Service) machineCall(ctx context.Context, organization Organization, method, path string, body []byte, bearer string) (int, []byte, error) {
 	claims, err := s.claims(organization, cloudassert.KindMachine, method, path, body)
 	if err != nil {
@@ -251,9 +256,12 @@ func (s *Service) signedCall(ctx context.Context, organization Organization, cla
 		return 0, nil, err
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	raw, err := io.ReadAll(io.LimitReader(response.Body, tenantCallResponseLimit+1))
 	if err != nil {
 		return 0, nil, err
+	}
+	if len(raw) > tenantCallResponseLimit {
+		return 0, nil, fmt.Errorf("tenant %s %s response exceeds %d bytes", request.Method, request.URL.Path, tenantCallResponseLimit)
 	}
 	return response.StatusCode, raw, nil
 }
