@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,22 +21,30 @@ import (
 
 const maxNativeChangeTitle = 512
 
-// settle decides once, after run.finished is recorded, what the run left for
+// settle decides, after run.finished is recorded, what the run left for
 // review. It records nothing when the run is not work the runner owns the
-// review of, when no diff was ever readable, or when the lease is gone: the
-// next owner of the item decides then. e.mu is held by the caller.
+// review of, when no diff was ever readable, when the worktree was left dirty
+// or unread (the ordinary completion path resolves uncommitted work), or when
+// the lease is gone: the next owner of the item decides then.
+//
+// A committed change is reported as reviewable only once the hub has stored
+// the finish diff and the Change Request exists. A create the hub refuses is
+// retried within the finish, under the same idempotency key, and a finish
+// called again retries it too; a change that still cannot be opened is
+// reported with its error so the orchestrator hands the item off instead of
+// moving it to review. e.mu is held by the caller.
 func (e *nativeExecution) settle(ctx context.Context) {
 	if e.settled {
 		return
 	}
-	e.settled = true
-	if e.data.Outcome != "succeeded" || e.conversation || e.lastDiff == nil || e.claim.source == nil || e.claim.source.client == nil {
-		return
-	}
-	if e.role != runner.RoleCode && e.role != runner.RoleRework {
+	if e.data.Outcome != "succeeded" || e.conversation || e.lastDiff == nil || e.claim.source == nil || e.claim.source.client == nil ||
+		e.role != runner.RoleCode && e.role != runner.RoleRework ||
+		e.worktreeState != "clean" && e.worktreeState != "unpushed" {
+		e.settled = true
 		return
 	}
 	if e.remaining() <= 0 {
+		e.settled = true
 		return
 	}
 	diff := *e.lastDiff
@@ -43,21 +52,59 @@ func (e *nativeExecution) settle(ctx context.Context) {
 		Changed: diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && len(diff.Files) > 0,
 		BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
 	}
-	if change.Changed {
-		id, err := e.openChange(ctx, diff)
-		if err != nil {
-			if e.remaining() <= 0 || nativeLeaseLost(err) {
-				slog.Default().Warn("native change not opened: lease lost",
-					"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "error", err)
-				return
-			}
-			slog.Default().Warn("native change not opened",
-				"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "error", err)
-			change.Error = err.Error()
-		}
-		change.ChangeID = id
-	}
 	e.change = change
+	if !change.Changed {
+		e.settled = true
+		return
+	}
+	if e.storedSeq != e.data.Sequence {
+		change.Error = "the hub has not stored the run's final attempt diff"
+		e.settled = true
+		return
+	}
+	var err error
+	for try := range nativeChangeCreateTries {
+		if try > 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(nativeChangeCreateBackoff):
+			}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		var id string
+		if id, err = e.openChange(ctx, diff); err == nil {
+			change.ChangeID, change.Error = id, ""
+			e.settled = true
+			return
+		}
+		if e.remaining() <= 0 || nativeLeaseLost(err) {
+			slog.Default().Warn("native change not opened: lease lost",
+				"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "error", err)
+			e.change = nil
+			e.settled = true
+			return
+		}
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	slog.Default().Warn("native change not opened",
+		"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "error", err)
+	change.Error = errorText(err)
+}
+
+const (
+	nativeChangeCreateTries   = 3
+	nativeChangeCreateBackoff = 250 * time.Millisecond
+)
+
+func errorText(err error) string {
+	if err == nil {
+		return "the Change Request could not be opened"
+	}
+	return err.Error()
 }
 
 // openChange returns the item's Change Request, opening one when the item has

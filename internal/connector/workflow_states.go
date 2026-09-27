@@ -21,17 +21,17 @@ type WorkflowStateReader interface {
 	WorkflowStates(context.Context) ([]WorkflowState, error)
 }
 
-// CompletionLane is the lane a successful run moves an item to, chosen from
-// the moves the workflow allows out of its current lane, in the order the
-// workflow lists them. Operator-only lanes are never chosen.
+// CompletionLane is the lane a successful run moves an item to, chosen only
+// from the moves the workflow allows out of its current lane and never an
+// operator-only lane. The workflow states no review kind, so the review lane
+// is the one the project configures as its review state, as it is for every
+// other tracker.
 //
-// A run that changed something goes to the first lane that neither ends nor
-// dispatches the work, which is where a change waits for review; a workflow
-// without one ends the work instead. A run that changed nothing goes to the
-// first lane that ends the work, and a workflow without one parks it in the
-// first lane that does not dispatch it. It reports false when the workflow
-// offers neither, and the item stays where it is.
-func CompletionLane(states []WorkflowState, current string, changed bool) (string, bool) {
+// A run that changed something goes to that review lane, never to a lane
+// that ends the work; a run that changed nothing goes to the first lane the
+// workflow marks terminal. It reports false when the workflow allows no such
+// move, and the item is not moved.
+func CompletionLane(states []WorkflowState, current, review string, changed bool) (string, bool) {
 	byName := make(map[string]WorkflowState, len(states))
 	for _, state := range states {
 		byName[normalizeWorkflowState(state.Name)] = state
@@ -40,27 +40,19 @@ func CompletionLane(states []WorkflowState, current string, changed bool) (strin
 	if !ok {
 		return "", false
 	}
-	review, done := "", ""
 	for _, name := range from.Transitions {
 		target, ok := byName[normalizeWorkflowState(name)]
 		if !ok || target.OperatorOnly || normalizeWorkflowState(target.Name) == normalizeWorkflowState(from.Name) {
 			continue
 		}
-		switch {
-		case target.Terminal && done == "":
-			done = target.Name
-		case !target.Terminal && !target.Dispatchable && review == "":
-			review = target.Name
+		if changed && !target.Terminal && normalizeWorkflowState(target.Name) == normalizeWorkflowState(review) {
+			return target.Name, true
+		}
+		if !changed && target.Terminal {
+			return target.Name, true
 		}
 	}
-	first, second := review, done
-	if !changed {
-		first, second = done, review
-	}
-	if first != "" {
-		return first, true
-	}
-	return second, second != ""
+	return "", false
 }
 
 func normalizeWorkflowState(name string) string {

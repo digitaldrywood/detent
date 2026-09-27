@@ -32,6 +32,12 @@ type nativeExecution struct {
 	// the finish generation when the worktree is gone by then: the agent has
 	// stopped, so nothing changed after the last diff that could be read.
 	lastDiff *tracker.AttemptDiffRequest
+	// storedSeq is the run event sequence whose diff the hub last stored, so
+	// the finish can tell its final diff was received.
+	storedSeq int64
+	// worktreeState is the last checkpoint's worktree state. Only a clean or
+	// unpushed worktree is settled; dirty work takes the ordinary path.
+	worktreeState string
 	// role and conversation decide whether a finished run is work the runner
 	// opens a Change Request for: a code or rework run that no conversation
 	// owns the continuation of.
@@ -210,6 +216,7 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	if string(previous) == string(current) {
 		return nil
 	}
+	e.worktreeState = checkpoint.WorktreeState
 	return e.append(ctx, "run.checkpointed", "", &checkpoint)
 }
 
@@ -281,7 +288,9 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) {
 	if _, err := e.claim.source.client.PostAttemptDiff(ctx, e.data.AttemptID, request); err != nil {
 		slog.Default().Warn("attempt diff not stored",
 			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", sequence, "error", err)
+		return
 	}
+	e.storedSeq = sequence
 }
 
 func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint) error {

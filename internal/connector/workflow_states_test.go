@@ -33,25 +33,27 @@ func TestCompletionLane(t *testing.T) {
 		name    string
 		states  []WorkflowState
 		current string
+		review  string
 		changed bool
 		want    string
 		wantOK  bool
 	}{
-		{name: "change waits for review", states: review, current: "In Progress", changed: true, want: "In Review", wantOK: true},
-		{name: "no change ends the work", states: review, current: "In Progress", want: "Done", wantOK: true},
-		{name: "change without a review lane ends the work", states: hosted, current: "In Progress", changed: true, want: "Done", wantOK: true},
+		{name: "change goes to the configured review lane", states: review, current: "In Progress", review: "In Review", changed: true, want: "In Review", wantOK: true},
+		{name: "review lane is matched loosely", states: review, current: " in progress ", review: "in review", changed: true, want: "In Review", wantOK: true},
+		{name: "an earlier parking lane is not review", states: review, current: "Todo", review: "In Review", changed: true},
+		{name: "change never ends the work", states: hosted, current: "In Progress", review: "Human Review", changed: true},
+		{name: "a terminal lane named as review is not review", states: hosted, current: "In Progress", review: "Done", changed: true},
+		{name: "operator-only review is never chosen", states: operatorReview, current: "In Progress", review: "In Review", changed: true},
+		{name: "no change ends the work", states: review, current: "In Progress", review: "In Review", want: "Done", wantOK: true},
 		{name: "no change in the hosted workflow ends the work", states: hosted, current: "In Progress", want: "Done", wantOK: true},
-		{name: "lane names are matched loosely", states: hosted, current: " in progress ", want: "Done", wantOK: true},
-		{name: "operator-only end parks an unchanged run", states: operatorDone, current: "In Progress", want: "In Review", wantOK: true},
-		{name: "operator-only review is never chosen", states: operatorReview, current: "In Progress", changed: true},
-		{name: "first non-dispatchable successor in workflow order", states: review, current: "Todo", changed: true, want: "Blocked", wantOK: true},
-		{name: "a terminal lane has nowhere to go", states: review, current: "Done"},
-		{name: "unknown lane", states: review, current: "Rework", changed: true},
-		{name: "no workflow", current: "In Progress"},
+		{name: "no change never parks in a non-terminal lane", states: operatorDone, current: "In Progress", review: "In Review"},
+		{name: "a terminal lane has nowhere to go", states: review, current: "Done", review: "In Review"},
+		{name: "unknown lane", states: review, current: "Rework", review: "In Review", changed: true},
+		{name: "no workflow", current: "In Progress", review: "In Review"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := CompletionLane(test.states, test.current, test.changed)
+			got, ok := CompletionLane(test.states, test.current, test.review, test.changed)
 			if got != test.want || ok != test.wantOK {
 				t.Fatalf("CompletionLane = %q, %t; want %q, %t", got, ok, test.want, test.wantOK)
 			}

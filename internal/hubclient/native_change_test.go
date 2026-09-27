@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,13 +41,19 @@ type nativeChangeHub struct {
 // changeFailingTransport refuses Change Request creation when armed, which is
 // how a hub that cannot open the change looks to the runner.
 type changeFailingTransport struct {
-	next http.RoundTripper
-	fail bool
+	next      http.RoundTripper
+	fail      atomic.Bool
+	failDiffs atomic.Bool
 }
 
 func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if t.fail && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/changes") {
-		return nil, errors.New("change creation unavailable")
+	if request.Method == http.MethodPost {
+		if t.fail.Load() && strings.HasSuffix(request.URL.Path, "/changes") {
+			return nil, errors.New("change creation unavailable")
+		}
+		if t.failDiffs.Load() && strings.HasSuffix(request.URL.Path, "/diff") {
+			return nil, errors.New("diff storage unavailable")
+		}
 	}
 	return t.next.RoundTrip(request)
 }
@@ -177,7 +184,7 @@ func (h *nativeChangeHub) complete(t *testing.T, issueID string, change *runner.
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, ok := connector.CompletionLane(states, current.State, change.Changed)
+	target, ok := connector.CompletionLane(states, current.State, "In Review", change.Changed)
 	if !ok {
 		t.Fatalf("no completion lane out of %s", current.State)
 	}
@@ -229,27 +236,33 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		name        string
 		role        string
 		outcome     string
+		worktree    string
 		source      runner.AttemptDiffSource
 		loseLease   bool
 		failCreate  bool
+		failDiff    bool
 		existing    bool
 		wantChange  *runner.NativeChange
+		wantError   bool
 		wantChanges int
 	}{
-		{name: "commits open a change", role: runner.RoleCode, outcome: "succeeded", source: nativeChangeDiff(head, "README.md"),
+		{name: "commits open a change", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"),
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1},
-		{name: "rework reuses the item's change", role: runner.RoleRework, outcome: "succeeded", source: nativeChangeDiff(head, "README.md"), existing: true,
+		{name: "rework reuses the item's change", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1},
-		{name: "no commits open nothing", role: runner.RoleCode, outcome: "succeeded", source: nativeChangeDiff(base),
+		{name: "a clean worktree with no commits opens nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base),
 			wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
-		{name: "uncommitted edits are not a change", role: runner.RoleCode, outcome: "succeeded", source: nativeChangeDiff(base, "scratch.txt"),
-			wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base, Files: 1}},
-		{name: "a refused create still reports the commits", role: runner.RoleCode, outcome: "succeeded", source: nativeChangeDiff(head, "README.md"), failCreate: true,
-			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}},
-		{name: "a lost lease decides nothing", role: runner.RoleCode, outcome: "succeeded", source: nativeChangeDiff(head, "README.md"), loseLease: true},
-		{name: "a failed run decides nothing", role: runner.RoleCode, outcome: "failed", source: nativeChangeDiff(head, "README.md")},
-		{name: "a plan run decides nothing", role: runner.RolePlan, outcome: "succeeded", source: nativeChangeDiff(head, "README.md")},
-		{name: "no readable worktree decides nothing", role: runner.RoleCode, outcome: "succeeded"},
+		{name: "a dirty worktree takes the ordinary path", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", source: nativeChangeDiff(base, "scratch.txt")},
+		{name: "committed work left dirty takes the ordinary path", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", source: nativeChangeDiff(head, "README.md")},
+		{name: "an unread worktree takes the ordinary path", role: runner.RoleCode, outcome: "succeeded", worktree: "unknown", source: nativeChangeDiff(head, "README.md")},
+		{name: "an unstored final diff is not reviewable", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), failDiff: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantError: true},
+		{name: "a refused create reports the commits without a change", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), failCreate: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantError: true},
+		{name: "a lost lease decides nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), loseLease: true},
+		{name: "a failed run decides nothing", role: runner.RoleCode, outcome: "failed", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "a plan run decides nothing", role: runner.RolePlan, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
+		{name: "no readable worktree decides nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "clean"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -274,7 +287,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: test.role, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
-			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unknown", ExternalEffect: "none", EffectState: "none"}
+			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: test.worktree, ExternalEffect: "none", EffectState: "none"}
 			if err := execution.Checkpoint(guarded, checkpoint); err != nil {
 				t.Fatal(err)
 			}
@@ -283,44 +296,54 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			h.failChanges.fail = test.failCreate
+			h.failChanges.fail.Store(test.failCreate)
+			h.failChanges.failDiffs.Store(test.failDiff)
 			finishErr := execution.Finish(guarded, test.outcome)
 			if test.loseLease != (finishErr != nil) {
 				t.Fatalf("finish error = %v, lease lost = %t", finishErr, test.loseLease)
 			}
-			got := execution.(runner.ChangeExecution).NativeChange()
-			if test.wantChange == nil {
-				if got != nil {
-					t.Fatalf("native change = %#v, want none", got)
+			changes := execution.(runner.ChangeExecution)
+			checkChange := func(wantError bool, wantChanges int) {
+				t.Helper()
+				got := changes.NativeChange()
+				if test.wantChange == nil {
+					if got != nil {
+						t.Fatalf("native change = %#v, want none", got)
+					}
+				} else {
+					if got == nil {
+						t.Fatal("native change = nil")
+					}
+					if wantError != (got.Error != "") || wantError == (got.ChangeID != "") && got.Changed {
+						t.Fatalf("native change = %#v, want error = %t", got, wantError)
+					}
+					want := *test.wantChange
+					want.ChangeID, want.Error = got.ChangeID, got.Error
+					if *got != want {
+						t.Fatalf("native change = %#v, want %#v", *got, want)
+					}
+					if got.ChangeID != "" {
+						stored := h.changes(t, issue.ID)
+						if stored[len(stored)-1].ID != got.ChangeID {
+							t.Fatalf("reported change %s is not the item's change %#v", got.ChangeID, stored)
+						}
+					}
 				}
-			} else {
-				if got == nil {
-					t.Fatal("native change = nil")
-				}
-				if test.failCreate != (got.Error != "") {
-					t.Fatalf("change error = %q, create refused = %t", got.Error, test.failCreate)
-				}
-				if test.wantChanges > 0 != (got.ChangeID != "") {
-					t.Fatalf("change id = %q, want one = %t", got.ChangeID, test.wantChanges > 0)
-				}
-				want := *test.wantChange
-				want.ChangeID, want.Error = got.ChangeID, got.Error
-				if *got != want {
-					t.Fatalf("native change = %#v, want %#v", *got, want)
+				if stored := h.changes(t, issue.ID); len(stored) != wantChanges {
+					t.Fatalf("changes = %#v, want %d", stored, wantChanges)
 				}
 			}
-			changes := h.changes(t, issue.ID)
-			if len(changes) != test.wantChanges {
-				t.Fatalf("changes = %#v, want %d", changes, test.wantChanges)
-			}
-			if got != nil && got.ChangeID != "" && changes[len(changes)-1].ID != got.ChangeID {
-				t.Fatalf("reported change %s is not the item's change %#v", got.ChangeID, changes)
-			}
+			checkChange(test.wantError, test.wantChanges)
 			if again := execution.Finish(guarded, test.outcome); test.loseLease == (again == nil) {
 				t.Fatalf("repeated finish error = %v", again)
 			}
-			if after := h.changes(t, issue.ID); len(after) != test.wantChanges {
-				t.Fatalf("repeated finish opened another change: %#v", after)
+			checkChange(test.wantError, test.wantChanges)
+			if test.failCreate {
+				h.failChanges.fail.Store(false)
+				if err := execution.Finish(guarded, test.outcome); err != nil {
+					t.Fatal(err)
+				}
+				checkChange(false, 1)
 			}
 			if state := h.state(t, issue.ID); state != "In Progress" {
 				t.Fatalf("the execution moved the item to %s; only the orchestrator moves lanes", state)
@@ -339,12 +362,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		commit      bool
+		dirty       bool
+		wantNone    bool
 		wantChanged bool
 		wantState   string
 		wantChanges int
 	}{
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "no commits", wantState: "Done"},
+		{name: "uncommitted edits", dirty: true, wantNone: true, wantState: "In Progress"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHub(t)
@@ -362,7 +388,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			agent, err := runner.NewRunner(runner.Dependencies{
 				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Complete the issue"},
 				Workspace:    backend,
-				AgentBackend: &committingAgent{commit: test.commit},
+				AgentBackend: &committingAgent{commit: test.commit, dirty: test.dirty},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -375,6 +401,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				t.Fatalf("final state = %q", result.FinalState)
 			}
 			change := result.NativeChange
+			if test.wantNone {
+				if change != nil {
+					t.Fatalf("dirty work reported %#v; it takes the ordinary completion path", change)
+				}
+				if state := h.state(t, issue.ID); state != test.wantState || len(h.changes(t, issue.ID)) != 0 {
+					t.Fatalf("dirty work moved to %s or opened a change", state)
+				}
+				return
+			}
 			if change == nil || change.Changed != test.wantChanged || (change.ChangeID != "") != test.wantChanged {
 				t.Fatalf("native change = %#v, want changed = %t", change, test.wantChanged)
 			}
@@ -419,11 +454,17 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // file in the worktree first when commit is set.
 type committingAgent struct {
 	commit bool
+	dirty  bool
 }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: "turn-1"}); err != nil {
 		return runner.AgentTurnResult{}, err
+	}
+	if a.dirty {
+		if err := os.WriteFile(filepath.Join(request.Workspace, "SCRATCH.md"), []byte("draft\n"), 0o600); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
 	}
 	if a.commit {
 		if err := os.WriteFile(filepath.Join(request.Workspace, "CHANGE.md"), []byte("changed\n"), 0o600); err != nil {
