@@ -15,7 +15,7 @@ Described below but not yet on main:
 - Any coordinator: neither the hub-side `conversation.codex` backend nor the runner-dispatched coordinator (`detent:coordinator`, `coordinator_items`). A message in an unlinked chat is stored with delivery `saved` and waits; linking the chat hands the saved messages to the issue's first attempt.
 - Runner-side live conversation control (in flight): no runner, Codex or hubclient code binds a conversation yet.
 - `GET /app/bootstrap` always reports `feature.conversation: false`, every `capabilities` flag false and empty preference choice lists.
-- The tenant React screens that replace the Templ pages, and the JSON organization administration API of sections 1.1 and 1.2 (tenant screens are in flight in #3098). Also hosted `PUT …/projects/:project/policy`, `GET …/fleet` and the typed project event stream.
+- The rest of the Templ page removal and of the JSON organization API of sections 1.1 and 1.2. PR #3098 moved `/` and `/projects/:project/...` to the client and mounted the members, invitations, roles, grants, projects list, project creation and fleet endpoints, but the hub still renders the Templ `/login`, `/organization`, `/organization/plan`, `/organization/billing` and `/support` pages and keeps their form handlers, and `POST …/switch`, `POST …/support/start` and `GET …/plan` are not mounted. Also hosted `PUT …/projects/:project/policy` and the typed project event stream.
 - Workspace sessions, the relay, the files, exec, git and terminal channels, project actions, pull request actions, the `workspaces:` configuration section and their migrations.
 - `include=attempts,changes` and `include=coordinator` on the work item list.
 - The browser cover `tests/visual/conversation.spec.js` and `tests/visual/hosted-hub.js`, and the opt-in live test behind `DETENT_CONVERSATION_LIVE`.
@@ -87,8 +87,7 @@ asset URLs are rewritten under the base, and `GET /app/bootstrap` reports the
 same values as `base_path` and `sign_in_path`. The entry itself serves the same
 bundle for its chooser at `/organizations`.
 
-Not yet on main: the rest of this subsection, which describes the Templ pages
-removed in favor of the React screens (in flight in #3098).
+Not yet on main: most of the rest of this subsection. On main the shell answers `/` for a session with organization access, `/projects/:project` with its issue, change and changes paths, `/work*`, `/chat*`, `/settings*`, `/fleet` and `/usage`; `/login`, `/organization`, `/organization/plan`, `/organization/billing` and `/support` are still Templ pages in `internal/hubserver/hosted_ui.go`. An unauthenticated shell request answers `303` to `/login` (the Templ page), or to `/organizations` behind the shared entry, and a successful sign-in lands on `/organization`. Only the Templ project, work and setup pages, `static/js/hosted-setup.js`, `static/js/hosted-work.js` and `internal/web/templates/hosted_setup.templ` and `hosted_work.templ` were removed; every form endpoint listed below, including `POST /projects`, is still registered.
 
 The hub serves the React application shell for every GET that is not an API,
 auth, webhook or static path: `/`, `/login`, `/work*`, `/chat*`,
@@ -158,9 +157,7 @@ configured coordinator model or reasoning effort — and falls back to `auto`
 itself when the hub does not know one. The composer still preselects `auto`,
 because that is what a new conversation's preference says.
 
-Not yet on main: every row of the next table except `GET /billing`,
-`POST /billing/checkout` and `POST /billing/portal`; organization
-administration is still the Templ form endpoints of section 1.1.
+Not yet on main: the `POST /invitations/accept`, `POST /switch`, `POST /support/start` and `GET /plan` rows. The others are mounted (`internal/hubserver/hosted_org_api.go`, `hosted_fleet_api.go`, `hosted_ui.go` for billing, and `native_api.go`, which routes `POST /projects` to `createHostedProjectJSON` on a hosted hub), along with `DELETE /members/invitations/:invitation`, which the table omits. The Templ form endpoints of section 1.1 are also still registered.
 
 Under `/api/v2/organizations/:organization`, authenticated by the hosted
 session cookie, with `X-CSRF-Token` on every non-GET:
@@ -219,9 +216,9 @@ owner had. Both routes work; they share one handler.
 reserved bootstrap subject. `:member` is the membership id `GET /members`
 returns, not the user id.
 
-Not yet on main: `GET /fleet`, the moved event stream and `include=` on the
-work item list, described in the next three paragraphs. On main the project
-event stream is `GET /projects/:project/events`.
+Not yet on main: the moved event stream and `include=` on the work item
+list, described in the second and third paragraphs below. On main the project
+event stream is `GET /projects/:project/events`. `GET /fleet` is on main.
 
 `GET /fleet` answers `spend: null`. The hub records allowance consumption per
 window, not currency per project, so there is no per-project spend source to
