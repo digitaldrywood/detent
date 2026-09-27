@@ -182,7 +182,7 @@ func TestHostedAccountContractFixtures(t *testing.T) {
 	}
 }
 
-var accountClientCall = regexp.MustCompile("send\\(\\s*[\\w.]+,\\s*\"([A-Z]+)\",\\s*`([^`]+)`")
+var accountClientCall = regexp.MustCompile("send\\(\\s*[\\w.]+,\\s*\"([A-Z]+)\",\\s*(?:`([^`]+)`|hubPath\\(\"([^\"]+)\"\\))")
 
 var accountClientParameter = regexp.MustCompile(`\$\{encodeURIComponent\([^}]*\)\}`)
 
@@ -206,7 +206,11 @@ func TestHostedAccountClientRoutesMounted(t *testing.T) {
 		t.Fatalf("found %d account client calls; the call pattern no longer matches api.ts", len(calls))
 	}
 	for _, call := range calls {
-		path := strings.ReplaceAll(call[2], "${project(projectId)}", "${base}/projects/:project")
+		path := call[2]
+		if call[3] != "" {
+			path = call[3]
+		}
+		path = strings.ReplaceAll(path, "${project(projectId)}", "${base}/projects/:project")
 		path = strings.ReplaceAll(path, "${project(input.projectId)}", "${base}/projects/:project")
 		path = strings.ReplaceAll(path, "${base}", hostedOrganizationBase)
 		path = accountClientParameter.ReplaceAllString(path, ":param")
