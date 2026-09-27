@@ -30,11 +30,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	t.Parallel()
 	workflow := []connector.WorkflowState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked", "In Review", "Done", "Todo"}},
+		{Name: "Blocked", Transitions: []string{"In Progress"}},
 		{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
 		{Name: "Done", Terminal: true},
 	}
+	hosted := []connector.WorkflowState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
 	head := strings.Repeat("c", 40)
+	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
 	for _, test := range []struct {
 		name         string
 		change       *runpkg.NativeChange
@@ -44,19 +51,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		plain        bool
 		wantState    string
 		wantComment  string
+		wantDeferred bool
 		wantContinue bool
 	}{
-		{name: "commits move to review", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}, states: workflow,
-			wantState: "In Review", wantComment: "opened Change Request change_1"},
-		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow,
-			wantState: "Done", wantComment: "nothing to review"},
-		{name: "a change that could not be opened still leaves dispatch", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow,
-			wantState: "In Review", wantComment: "could not be opened: hub unavailable"},
+		{name: "commits move to the configured review lane", change: opened, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
+		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
+		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
+		{name: "a workflow without the review lane is handed off, never ended", change: opened, states: hosted, wantDeferred: true},
+		{name: "a workflow without a terminal move is handed off", change: &runpkg.NativeChange{}, states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked"}}, {Name: "Blocked"}}, wantDeferred: true},
+		{name: "an unreadable workflow is handed off", change: opened, statesErr: errors.New("hub unavailable"), wantDeferred: true},
+		{name: "a refused lane write is handed off", change: opened, states: workflow, updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "no native change keeps the ordinary path", states: workflow, wantContinue: true},
 		{name: "a connector without a workflow keeps the ordinary path", change: &runpkg.NativeChange{}, plain: true, wantContinue: true},
-		{name: "an unreadable workflow keeps the ordinary path", change: &runpkg.NativeChange{}, statesErr: errors.New("hub unavailable"), wantContinue: true},
-		{name: "a workflow with no way out keeps the ordinary path", change: &runpkg.NativeChange{}, states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true}}, wantContinue: true},
-		{name: "a refused lane write keeps the ordinary path", change: &runpkg.NativeChange{}, states: workflow, updateErr: errors.New("stale fencing token"), wantContinue: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -67,6 +73,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				tracker = tick
 			}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			cfg.AutoPromote.SourceState = "In Review"
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
@@ -79,15 +86,25 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement},
 				Result:  runpkg.RunResult{FinalState: FinalStateCompleted, NativeChange: test.change},
 			})
-			_, continued := state.Retry[issue.ID]
-			if continued != test.wantContinue {
+			retry, retried := state.Retry[issue.ID]
+			_, deferred := state.deferredCompletions[issue.ID]
+			if deferred != test.wantDeferred || test.wantDeferred && !retry.CompletionDeferred {
+				t.Fatalf("deferred = %t (retry %#v), want %t", deferred, retry, test.wantDeferred)
+			}
+			if continued := retried && !retry.CompletionDeferred; continued != test.wantContinue {
 				t.Fatalf("continuation scheduled = %t, want %t", continued, test.wantContinue)
 			}
-			if test.wantContinue {
+			if test.wantContinue || test.wantDeferred {
 				for _, update := range tick.updates {
-					if update.state != "In Progress" && test.updateErr == nil {
-						t.Fatalf("the ordinary path moved the item: %#v", tick.updates)
+					if test.updateErr == nil {
+						t.Fatalf("the item was moved: %#v", tick.updates)
 					}
+					if update.state != "In Review" {
+						t.Fatalf("refused write targeted %s", update.state)
+					}
+				}
+				if test.wantDeferred && len(tick.comments) != 0 {
+					t.Fatalf("a handed-off item was commented on: %#v", tick.comments)
 				}
 				return
 			}
@@ -119,7 +136,6 @@ func TestNativeCompletionComment(t *testing.T) {
 		want   []string
 	}{
 		{name: "opened", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "3 files", "head 0123456789ab)", "In Progress to In Review"}},
-		{name: "refused", change: runpkg.NativeChange{Changed: true, Error: "boom", Files: 1}, want: []string{"could not be opened: boom", "head its base"}},
 		{name: "unchanged", change: runpkg.NativeChange{BaseSHA: "abc"}, want: []string{"against abc", "nothing to review"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

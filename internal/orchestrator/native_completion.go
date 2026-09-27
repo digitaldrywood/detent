@@ -17,13 +17,18 @@ import (
 // used to continue the item in its active lane, dispatching it again after
 // every success. The runner has already opened the Change Request under the
 // run's lease and reported what the run left; this moves the item out of the
-// dispatchable set along the workflow the hub enforces: to review when the run
-// committed a change, and to the lane that ends the work when it committed
-// nothing.
+// dispatchable set along the workflow the hub enforces: to the project's
+// configured review lane when the run committed a change, and to the lane the
+// workflow marks terminal when it committed nothing.
 //
-// It reports false, leaving the ordinary success path in charge, when the
-// connector does not state its workflow, the workflow offers no such move, or
-// the lane write fails.
+// When the item cannot be moved -- the workflow cannot be read or allows no
+// such move, the Change Request was not opened, or the lane write fails --
+// the completed result is held in the existing tracker completion deferral
+// (INV-2: attributed to the instance), which keeps the item from being
+// dispatched again and replays the completion later. It never falls back to
+// the ordinary success path, whose continuation would run the item again.
+//
+// It reports false only for a run with no native change to settle.
 func (o *Orchestrator) completeNativeChangeRun(
 	ctx context.Context,
 	state *State,
@@ -41,22 +46,31 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
+	handoff := func(err error) bool {
+		o.warnNativeCompletion(issue, err)
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return true
+	}
+	if change.Changed && change.ChangeID == "" {
+		return handoff(fmt.Errorf("native change request was not opened: %s", change.Error))
+	}
 	states, err := reader.WorkflowStates(ctx)
 	if err != nil {
-		o.warnNativeCompletion(issue, "read workflow states", err)
-		return false
+		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
-	target, ok := connector.CompletionLane(states, issue.State, change.Changed)
+	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
+	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed)
 	if !ok {
-		o.warnNativeCompletion(issue, "the workflow offers no lane out of "+strings.TrimSpace(issue.State), nil)
-		return false
+		if change.Changed {
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
+		}
+		return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", strings.TrimSpace(issue.State)))
 	}
 	if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, "completed_active_review_transition"); err != nil {
-		o.warnNativeCompletion(issue, "move to "+target, err)
-		return false
+		return handoff(fmt.Errorf("move native item to %s: %w", target, err))
 	}
 	if err := o.connector.CreateComment(ctx, issueID, nativeCompletionComment(change, issue.State, target)); err != nil {
-		o.warnNativeCompletion(issue, "comment on the completed run", err)
+		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))
 	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeChangeMetadata(change))
 	completed := Completed{
@@ -86,12 +100,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 	return true
 }
 
-func (o *Orchestrator) warnNativeCompletion(issue connector.Issue, action string, err error) {
+func (o *Orchestrator) warnNativeCompletion(issue connector.Issue, err error) {
 	if o.logger == nil {
 		return
 	}
-	o.logger.Warn("native completion kept the ordinary success path",
-		"issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "action", action, "error", err)
+	o.logger.Warn("native completion not applied",
+		"issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "error", err)
 }
 
 func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
@@ -107,17 +121,12 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 
 func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
-	switch {
-	case change.Changed && change.ChangeID != "":
+	if change.Changed {
 		return fmt.Sprintf("The run succeeded and opened Change Request %s (%d files, head %s). Moved from %s to %s.",
 			change.ChangeID, change.Files, shortCommit(change.HeadSHA), from, to)
-	case change.Changed:
-		return fmt.Sprintf("The run succeeded with commits (%d files, head %s), but the Change Request could not be opened: %s. The attempt's stored diff holds the change. Moved from %s to %s so it is not run again.",
-			change.Files, shortCommit(change.HeadSHA), change.Error, from, to)
-	default:
-		return fmt.Sprintf("The run succeeded without committing a change against %s, so there is nothing to review. Moved from %s to %s so it is not run again.",
-			shortCommit(change.BaseSHA), from, to)
 	}
+	return fmt.Sprintf("The run succeeded without committing a change against %s, so there is nothing to review. Moved from %s to %s so it is not run again.",
+		shortCommit(change.BaseSHA), from, to)
 }
 
 func shortCommit(sha string) string {
