@@ -659,6 +659,9 @@ func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
 		{name: "expired", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
 			clock.value = clock.value.Add(2 * time.Hour)
 		}},
+		{name: "not started", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
+			clock.value = clock.value.Add(-time.Hour)
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
