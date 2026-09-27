@@ -3551,8 +3551,9 @@ What is broken, missing, or valuable, and who cares?
 
 Depends on: #<issue-number>
 
-State whether the dependency must be merged into `origin/main` before this
-issue starts. If there is no dependency, omit the line.
+State whether the dependency must be merged into the target branch (for
+example `origin/main`, or `origin/develop` in a repository that integrates on
+`develop`) before this issue starts. If there is no dependency, omit the line.
 ```
 
 Keep dependency order explicit. If issue B relies on issue A, prefer GitHub's
