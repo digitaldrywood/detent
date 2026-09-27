@@ -1183,7 +1183,7 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — CI once per ready head
 
-**Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
+**Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main and develop run the integration jobs after merge.
 
 The implementation handoff records passing local validation and expected skipped
 current-head PR checks separately. Skipped PR jobs are not evidence that the
@@ -1197,7 +1197,8 @@ Verify job; draft iteration avoids paying this cost before local review ends.
 **Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
 requires the PR activity allowlist and excludes every real job from PR execution (including
 the Invariant Gate and every Browser Visual shard). It allows `always()` only on the Verify and Browser Visual aggregates, and only as `always() && github.event_name != 'pull_request'`. It rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
-snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
+snapshot jobs to main or develop push or explicit manual dispatch; integration
+failure reporting stays main-only. The manual dispatch is
 a deliberate operator exception, not an automatic PR/merge-group trigger.
 The worker convention is to finish local validation/review before marking ready;
 Rework can produce a new ready head. The promotion tick leaves drafts unchanged,
@@ -1206,7 +1207,8 @@ covers draft exclusion and rechecking live evidence. Workflow assertions cannot 
 manual reruns or repeated ready/reopened events. Other projects may opt into
 label gating or their own CI convention.
 
-CI push triggers are restricted to main: release tags run the release workflow
+CI push triggers are restricted to main and develop (see
+[Branching](branching.md)): release tags run the release workflow
 without creating newer mandatory check IDs that invalidate their own provenance
 (#2419). `TestCoordinatorTagToSigningProvenance` exercises coordinator annotation,
 the repository's workflow triggers, and the signing input gate, including retries

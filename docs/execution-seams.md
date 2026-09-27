@@ -133,7 +133,7 @@ Required PR merge checks, branch protection/rulesets, and
 - `Browser Visual` - budget: `15m`
 
 Security also runs on every PR. The following integration checks run only on
-main pushes and manual dispatch, and must be removed from the PR-required list
+main and develop pushes and manual dispatch, and must be removed from the PR-required list
 by the operator (see [Merge Train](merge-train.md)):
 
 - `Portability Verify (macos-latest)` - budget: `8m`
@@ -173,12 +173,14 @@ failures are surfaced as failed `Portability Stress` workflow runs with the
 failing command output in the job log.
 
 Portability, Windows Core, installer smoke, and snapshot jobs run only on
-main pushes and manual dispatch. They are excluded from PR-required checks;
-main failures create or update CI instance-health tracking issues through
-machine intake. PR promotion still requires the fast checks listed above.
+pushes to `develop` or `main` and on manual dispatch. They are excluded from
+PR-required checks; `main` failures create or update CI instance-health
+tracking issues through machine intake. PR promotion still requires the fast checks listed above.
 
 GitHub merge queue adoption is deferred. Detent currently owns merge ordering,
-rebases each head onto current `main`, validates that exact head, and merges it
+rebases each head onto its current target branch (`develop` for day-to-day work,
+`main` for promotions and hotfixes; see [branching](branching.md)), validates
+that exact head, and merges it
 through the REST API. GitHub merge queue would require Detent to enqueue rather
 than merge, validate `merge_group` commits, and reconcile queue ejections back
 to tracker state. That larger delivery-state change is not justified merely to

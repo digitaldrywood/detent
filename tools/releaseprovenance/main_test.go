@@ -217,19 +217,25 @@ func TestParseRequiredCheckNames(t *testing.T) {
 	}
 }
 
-func TestRulesetAppliesToDefaultBranch(t *testing.T) {
+func TestRulesetAppliesToReleaseBranch(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		include     []string
-		exclude     []string
-		wantApplies bool
+		name          string
+		defaultBranch string
+		include       []string
+		exclude       []string
+		wantApplies   bool
 	}{
-		{name: "default branch alias", include: []string{"~DEFAULT_BRANCH"}, wantApplies: true},
-		{name: "exact default branch", include: []string{"refs/heads/main"}, wantApplies: true},
-		{name: "other branch", include: []string{"refs/heads/release"}},
-		{name: "excluded default branch", include: []string{"~ALL"}, exclude: []string{"refs/heads/main"}},
+		{name: "default branch alias", defaultBranch: "refs/heads/main", include: []string{"~DEFAULT_BRANCH"}, wantApplies: true},
+		{name: "exact default branch", defaultBranch: "refs/heads/main", include: []string{"refs/heads/main"}, wantApplies: true},
+		{name: "other branch", defaultBranch: "refs/heads/main", include: []string{"refs/heads/release"}},
+		{name: "excluded default branch", defaultBranch: "refs/heads/main", include: []string{"~ALL"}, exclude: []string{"refs/heads/main"}},
+		{name: "develop default alias does not govern main", defaultBranch: "refs/heads/develop", include: []string{"~DEFAULT_BRANCH"}},
+		{name: "develop default keeps exact main ruleset", defaultBranch: "refs/heads/develop", include: []string{"refs/heads/main"}, wantApplies: true},
+		{name: "develop default keeps all-branch ruleset", defaultBranch: "refs/heads/develop", include: []string{"~ALL"}, wantApplies: true},
+		{name: "develop default ignores develop ruleset", defaultBranch: "refs/heads/develop", include: []string{"refs/heads/develop"}},
+		{name: "develop default excluding default still governs main", defaultBranch: "refs/heads/develop", include: []string{"~ALL"}, exclude: []string{"~DEFAULT_BRANCH"}, wantApplies: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -237,8 +243,8 @@ func TestRulesetAppliesToDefaultBranch(t *testing.T) {
 			var ruleset rulesetResponse
 			ruleset.Conditions.RefName.Include = tt.include
 			ruleset.Conditions.RefName.Exclude = tt.exclude
-			if got := rulesetAppliesToDefaultBranch(ruleset, "refs/heads/main"); got != tt.wantApplies {
-				t.Fatalf("rulesetAppliesToDefaultBranch() = %t, want %t", got, tt.wantApplies)
+			if got := rulesetAppliesToReleaseBranch(ruleset, tt.defaultBranch); got != tt.wantApplies {
+				t.Fatalf("rulesetAppliesToReleaseBranch() = %t, want %t", got, tt.wantApplies)
 			}
 		})
 	}
