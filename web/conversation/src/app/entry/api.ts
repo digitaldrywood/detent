@@ -54,7 +54,7 @@ export const PlatformOrganization = Schema.Struct({
   attempts: Schema.Number,
   error_code: Schema.String,
   managed: Schema.Boolean,
-  owner_email: Schema.String,
+  creator_email: Schema.String,
   created_at: Schema.String,
   updated_at: Schema.String,
   billing: Schema.Struct({ available: Schema.Boolean, status: Schema.optional(Schema.String) }),

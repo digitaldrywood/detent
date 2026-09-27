@@ -145,7 +145,7 @@ export function PlatformOrganizationsPanel({
             <TableRow>
               <TableHead>Organization</TableHead>
               <TableHead>State</TableHead>
-              <TableHead>Owner</TableHead>
+              <TableHead>Created by</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Billing</TableHead>
               <TableHead>Support access</TableHead>
@@ -168,10 +168,10 @@ export function PlatformOrganizationsPanel({
                   )}
                 </TableCell>
                 <TableCell>
-                  {organization.owner_email === "" ? (
+                  {organization.creator_email === "" ? (
                     <span className="text-muted-foreground">Registered externally</span>
                   ) : (
-                    organization.owner_email
+                    organization.creator_email
                   )}
                 </TableCell>
                 <TableCell>{formatDate(organization.created_at)}</TableCell>

@@ -64,22 +64,22 @@ type platformBilling struct {
 }
 
 type platformOrganization struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	State       string          `json:"state"`
-	Step        string          `json:"step"`
-	Attempts    int             `json:"attempts"`
-	ErrorCode   string          `json:"error_code"`
-	Managed     bool            `json:"managed"`
-	OwnerEmail  string          `json:"owner_email"`
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
-	Billing     platformBilling `json:"billing"`
-	CanSupport  bool            `json:"can_support"`
-	Plan        *string         `json:"plan"`
-	Grants      *int            `json:"grants"`
-	MemberCount *int            `json:"member_count"`
-	RunnerCount *int            `json:"runner_count"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	State        string          `json:"state"`
+	Step         string          `json:"step"`
+	Attempts     int             `json:"attempts"`
+	ErrorCode    string          `json:"error_code"`
+	Managed      bool            `json:"managed"`
+	CreatorEmail string          `json:"creator_email"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+	Billing      platformBilling `json:"billing"`
+	CanSupport   bool            `json:"can_support"`
+	Plan         *string         `json:"plan"`
+	Grants       *int            `json:"grants"`
+	MemberCount  *int            `json:"member_count"`
+	RunnerCount  *int            `json:"runner_count"`
 }
 
 var platformUnavailable = []string{"plan", "grants", "member_count", "runner_count"}
@@ -93,7 +93,7 @@ func (s *Service) platformOrganizations(ctx context.Context) ([]platformOrganiza
 	result := []platformOrganization{}
 	for rows.Next() {
 		var item platformOrganization
-		if err := rows.Scan(&item.ID, &item.Name, &item.State, &item.Step, &item.Attempts, &item.ErrorCode, &item.Managed, &item.OwnerEmail, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.State, &item.Step, &item.Attempts, &item.ErrorCode, &item.Managed, &item.CreatorEmail, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, item)

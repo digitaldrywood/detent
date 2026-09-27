@@ -37,12 +37,12 @@ const organizations = {
   organizations: [
     {
       id: "org_alpha", name: "Alpha", state: "ready", step: "publish", attempts: 0, error_code: "", managed: true,
-      owner_email: "dana@example.test", created_at: "2026-09-20T10:00:00Z", updated_at: "2026-09-20T10:05:00Z",
+      creator_email: "dana@example.test", created_at: "2026-09-20T10:00:00Z", updated_at: "2026-09-20T10:05:00Z",
       billing: { available: true, status: "active" }, can_support: true, plan: null, grants: null, member_count: null, runner_count: null,
     },
     {
       id: "org_beta", name: "Beta", state: "failed", step: "tenant_files", attempts: 3, error_code: "tenant_start_failed", managed: true,
-      owner_email: "eve@example.test", created_at: "2026-09-21T10:00:00Z", updated_at: "2026-09-21T10:05:00Z",
+      creator_email: "eve@example.test", created_at: "2026-09-21T10:00:00Z", updated_at: "2026-09-21T10:05:00Z",
       billing: { available: false }, can_support: false, plan: null, grants: null, member_count: null, runner_count: null,
     },
   ],
