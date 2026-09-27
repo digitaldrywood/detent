@@ -57,9 +57,13 @@ Set `workos_organization_id` at the root when binding an existing organization.
 The WorkOS API key is resolved from the named server environment variable; do
 not put its value in YAML. Optional `workos.api_url` and `workos.issuer_url`
 support configured provider endpoints; HTTP is accepted only on loopback for
-fixtures. The issuer defaults to `https://api.workos.com`; set `workos.issuer_url`
-to the exact issuer configured for the environment when using a custom domain
-or application-specific issuer. Hosted resource enforcement uses the versioned
+fixtures. `workos.api_url` defaults to `https://api.workos.com`. AuthKit access
+tokens carry the issuer `<api_url>/user_management/<client_id>` (for example
+`https://api.workos.com/user_management/client_example`, the `issuer` in
+`https://api.workos.com/user_management/client_example/.well-known/openid-configuration`),
+and that is the default. Set `workos.issuer_url` only for a custom auth domain,
+to the exact issuer that domain's discovery document reports; a trailing slash is
+tolerated. Hosted resource enforcement uses the versioned
 [pilot allowance configuration](hosted-allowances.md). Legacy `plan_id`,
 `storage_quota_bytes` and `event_quota` initialize the pilot plan when the new
 `entitlements` section is absent. These values do not establish public prices.
@@ -319,6 +323,41 @@ Only opaque stable identity and ordinary account/organization fields go to
 WorkOS. Model, repository and storage credentials do not enter login fields,
 provider metadata or the audit trail.
 
+### Troubleshooting sign-in denials
+
+Every denied sign-in, callback, invitation, support or sign-out request logs one
+WARN line with the message `hosted sign-in denied`. `detent cloud serve` and
+`detent hub serve` write JSON logs to stderr; honor `--log-level` or `LOG_LEVEL`
+(`debug`, `info`, `warn`, `error`; default `info`); and journald captures them
+under the service unit. The line carries `reason`, `flow`, `request_id` (also
+returned in the `X-Request-Id` response header, or taken from the proxy's
+`X-Request-Id` when present), `path`, `http_status`, and where known
+`provider_reason`, `provider_status`, `provider_error`, `token_issuer`,
+`email_domain` and a 12-character `email_hash`. It never carries authorization
+codes, tokens, cookies, state values, keys or the full email address.
+
+**"Your identity could not be verified"** after a successful WorkOS sign-in means
+the callback exchange or token verification failed. Find the line and its reason:
+
+```sh
+journalctl -u <unit> --since "15 min ago" -o cat | grep '"hosted sign-in denied"'
+```
+
+| `reason` | Meaning and fix |
+| --- | --- |
+| `issuer_mismatch` | The access token `iss` differs from the configured issuer; `token_issuer` shows the value received. Remove a stale `workos.issuer_url`, or set it to the custom auth domain's issuer. |
+| `exchange_failed` | WorkOS rejected the code exchange; `provider_status` shows the HTTP status. Check the client ID, API key and redirect URL belong to the same WorkOS environment, and that the code was not replayed. |
+| `client_mismatch`, `audience_mismatch` | The token was issued for another client ID. |
+| `token_invalid` | Signature, expiry or required claims failed; check the JWKS for the client ID and host clock skew. |
+| `email_unverified`, `email_invalid` | The WorkOS user has no verified, well-formed email. |
+| `organization_mismatch` | The account signed in to a different WorkOS organization than the one selected. |
+| `session_not_found`, `session_invalid`, `session_expired` | The WorkOS session is missing, revoked, ended or expired. |
+| `state_mismatch`, `transaction_missing`, `transaction_cookie_missing` | The callback did not return to the browser and transaction that started sign-in, was replayed, or took longer than ten minutes. |
+
+Set `LOG_LEVEL=debug` to add one line per WorkOS API call with method, path
+(query values and invitation tokens removed) and response status; bodies are never
+logged.
+
 ## Permissions and revocation
 
 | Authority | Allowed without project grants |
@@ -429,7 +468,9 @@ reporting stays private to authenticated staff/reporters and is never a public
 route for inspecting an arbitrary organization.
 
 Reports have no content cache. Hosted process logging drops arbitrary messages
-and attributes, retaining a fixed message, timestamp and severity. Customer
+and attributes, retaining a fixed message, timestamp and severity. The one
+exception is the content-free `hosted sign-in denied` line described in
+[troubleshooting sign-in denials](#troubleshooting-sign-in-denials). Customer
 responses, errors and reports use `Cache-Control: no-store`; operator endpoints
 cannot fetch bodies, titles, repository paths, prompts, source, diffs, logs,
 artifact references or artifact contents. Customer-authorized native API replay
