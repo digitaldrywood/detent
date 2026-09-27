@@ -300,7 +300,7 @@ func (s *Service) logout(c echo.Context) error {
 		if providerErr == nil {
 			reason = "audit_failed"
 		}
-		s.config.Logger.Warn("shared entry sign-out could not confirm provider revocation", "reason", reason, "provider_reason", auth.HostedIdentityReason(providerErr), "request_id", auth.HostedRequestID(c.Response(), c.Request()))
+		auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), auth.HostedDenial{Flow: "logout", Reason: reason, Status: http.StatusServiceUnavailable, Err: errors.Join(providerErr, auditErr), Email: session.Email})
 		return s.render(c, http.StatusServiceUnavailable, templates.HostedPageData{Mode: "denied", Title: "Signed out", Error: "You are signed out of Detent. Provider sign-out could not be confirmed; retry sign-out from your identity provider."})
 	}
 	return c.Redirect(http.StatusSeeOther, "/")
