@@ -22,7 +22,7 @@ shared-site service and authorizes no deployment, DNS/account change or purchase
 | --- | --- | --- |
 | Customer Hub | `detent hub serve --database PATH --listen ADDRESS --github-disabled`; private `DETENT_HUB_ADMIN_TOKEN`, optional TLS/trusted-proxy flags | Remains free; deployment mode independent of customer-selected auth |
 | Reserved WorkOS tenant | `--hosted-config PATH`; root `organization_id`, `workos_organization_id`, `bootstrap_subject`, `public_url`, `workos`, `directory`, `staff_emails`, `support_actors`, entitlement/billing fields | Compatibility importer preserves IDs; no manual tenant YAML/bootstrap user/public origin at signup |
-| WorkOS fields | `client_id`, `api_key_env` (default `WORKOS_API_KEY`), optional `api_url`, `issuer_url` | Same explicit provider wiring under independent `auth`; one shared callback and invitation entry |
+| WorkOS fields | `client_id`, `api_key_env` (default `WORKOS_API_KEY`), optional `api_url` (default `https://api.workos.com`), `issuer_url` (default `<api_url>/user_management/<client_id>`; set only for a custom auth domain) | Same explicit provider wiring under independent `auth`; one shared callback and invitation entry |
 | Pilot entitlements | Existing `entitlements` plans/assignments and separate administrator environment reference; see [allowances](../../hosted-allowances.md) | Allocator assigns a configured versioned free plan; no auth-provider inference |
 | Stripe | Optional `billing.account_id`, `customer_id`, `portal_configuration_id`, `api_key_env`, `webhook_secret_env`, `grace_seconds`, `reconcile_seconds`, `prices`; test keys only | Optional `billing.mode: test/live`; registry owns customer mappings; no root per-customer configuration |
 | Shared entry and registry | `detent cloud serve --entry-config PATH` (see [shared entry](#shared-entry)); tenant `shared_entry` block; `detent cloud registry register/list`; `detent hub migrate-shared-origin` | Self-service allocator and admission (#2342); billing mode (#2343) |
@@ -111,7 +111,7 @@ For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding t
 generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
 token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
 as a supervised child (restarted with backoff; stopped when the entry stops). The
-child receives only `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`, the WorkOS key variable, the
+child receives only `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`/`LOG_LEVEL`/`DETENT_LOG_LEVEL`, the WorkOS key variable, the
 optional entitlement token variable and its own admin token. Each tenant owns its SQLite file exclusively; never place
 `tenant_root` on a network filesystem.
 
@@ -164,7 +164,6 @@ auth:
   workos:
     client_id: client_example
     api_key_env: WORKOS_API_KEY
-    issuer_url: https://api.workos.com
 registry:
   database: /var/lib/detent-site/registry.db
 allocation:

@@ -715,7 +715,9 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	started := time.Now()
 	defer func() { t.Logf("hub_fixture_open_seconds=%.6f", time.Since(started).Seconds()) }()
-	cfg.Logger = discardLogger()
+	if cfg.Logger == nil {
+		cfg.Logger = discardLogger()
+	}
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}

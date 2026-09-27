@@ -77,6 +77,9 @@ func (p *fakeProvider) Exchange(_ context.Context, code, _, _ string) (auth.Iden
 		p.sessions[hosted.SessionID] = hosted
 		return auth.Identity{Subject: parts[2], Email: p.users[parts[2]], EmailVerified: true, Hosted: &hosted}, nil
 	}
+	if reason, ok := strings.CutPrefix(code, "deny:"); ok {
+		return auth.Identity{}, &auth.HostedIdentityError{Reason: reason, TokenIssuer: "https://api.workos.com"}
+	}
 	user, organization, _ := strings.Cut(code, ":")
 	email, ok := p.users[user]
 	if !ok {
@@ -344,6 +347,11 @@ type entryFixture struct {
 
 func newEntryFixture(t *testing.T) entryFixture {
 	t.Helper()
+	return newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler))
+}
+
+func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
+	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 42
 	key := ed25519.NewKeyFromSeed(seed)
@@ -360,7 +368,7 @@ func newEntryFixture(t *testing.T) entryFixture {
 	tenants := map[string]http.Handler{"unix:/tenants/alpha.sock": alphaHandler, "unix:/tenants/beta.sock": betaHandler}
 	service, err := Open(t.Context(), Config{
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
-		Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
+		Logger: logger, clientFS: fstest.MapFS{},
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
 		},

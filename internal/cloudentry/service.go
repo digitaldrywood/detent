@@ -256,6 +256,11 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	}
 	current, err := s.config.Provider.CurrentSession(c.Request().Context(), session.Identity)
 	if err != nil || current.Subject != session.Subject || !current.ExpiresAt.After(s.config.now()) {
+		reason := auth.HostedIdentityReason(err)
+		if err == nil {
+			reason = auth.HostedReasonSessionInvalid
+		}
+		s.config.Logger.InfoContext(c.Request().Context(), "hosted session revalidation failed", "reason", reason, "request_id", auth.HostedRequestID(c.Response(), c.Request()))
 		return accountSession{}, errNoSession
 	}
 	return session, nil
@@ -292,6 +297,18 @@ func (s *Service) denied(c echo.Context, status int, message string) error {
 		data.Email, data.CSRF = session.Email, cloudassert.CSRFToken(session.CSRFSecret, "")
 	}
 	return s.render(c, status, data)
+}
+
+func (s *Service) loginDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {
+	denial.Status = status
+	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
+	return s.denied(c, status, message)
+}
+
+func (s *Service) loginRefused(c echo.Context, status int, code, message string, denial auth.HostedDenial) error {
+	denial.Status = status
+	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
+	return s.refuse(c, status, code, message)
 }
 
 func (s *Service) home(c echo.Context) error {
