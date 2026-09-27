@@ -87,6 +87,7 @@ describe("SupportCard", () => {
 
   it("starts the window against the named organization, then names the provider step", async () => {
     const onStarted = vi.fn();
+    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
     const fetchImpl = vi.fn(
       async () =>
         new Response(
@@ -94,7 +95,7 @@ describe("SupportCard", () => {
             support: {
               actor: "support@example.test",
               reason: "",
-              expires_at: "2026-09-10T22:30:00Z",
+              expires_at: expiresAt,
             },
           }),
           { status: 200 },
@@ -120,9 +121,32 @@ describe("SupportCard", () => {
     const started = await screen.findByTestId("support-started");
     expect(started.textContent).toContain("impersonate the customer");
     expect(started.querySelector("time")?.getAttribute("dateTime")).toBe(
-      "2026-09-10T22:30:00Z",
+      expiresAt,
     );
     expect(screen.queryByTestId("support-start")).toBeNull();
+  });
+
+  it("returns to the start button once the window has closed", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            support: { actor: "support@example.test", reason: "", expires_at: "2020-01-01T00:00:00Z" },
+          }),
+          { status: 200 },
+        ),
+    );
+    render(
+      <SupportCard
+        organization="org_7"
+        csrfToken="csrf_1"
+        fetchImpl={fetchImpl as unknown as typeof globalThis.fetch}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("support-start"));
+    expect((await screen.findByTestId("support-expired")).textContent).toContain("closed");
+    expect(screen.queryByTestId("support-started")).toBeNull();
+    expect(screen.getByTestId("support-start")).toBeTruthy();
   });
 
   it("says what the hub said when it refuses", async () => {

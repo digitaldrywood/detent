@@ -92,12 +92,28 @@ export function SupportCard(props: SupportCardProps): React.ReactElement {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [expiresAt, setExpiresAt] = React.useState<string | null>(null);
+  const [expired, setExpired] = React.useState(false);
+  React.useEffect(() => {
+    if (expiresAt === null || expiresAt.length === 0) return;
+    const remaining = new Date(expiresAt).getTime() - Date.now();
+    if (!(remaining > 0)) {
+      setExpiresAt(null);
+      setExpired(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setExpiresAt(null);
+      setExpired(true);
+    }, remaining);
+    return () => clearTimeout(timer);
+  }, [expiresAt]);
   const organization = props.organization;
 
   const start = async () => {
     if (organization === null) return;
     setPending(true);
     setError(null);
+    setExpired(false);
     const doFetch = props.fetchImpl ?? globalThis.fetch;
     try {
       const headers: Record<string, string> = {
@@ -206,6 +222,11 @@ export function SupportCard(props: SupportCardProps): React.ReactElement {
                 organization can see that the session is open, who opened it and
                 when it expires.
               </p>
+              {expired ? (
+                <p className="mb-4 text-muted-foreground text-sm" data-testid="support-expired">
+                  The support window closed before the session started. Start it again.
+                </p>
+              ) : null}
               {error === null ? null : (
                 <div
                   role="alert"
