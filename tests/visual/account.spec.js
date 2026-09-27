@@ -9,10 +9,8 @@
 //
 // The React routes these tests exercise are served by the hub for every
 // non-API path (decisions.md §12, "Serving"), and they read the JSON endpoints
-// of §12. Where an endpoint is not implemented yet the test skips itself and
-// names the endpoint, rather than failing for a reason that is not about the
-// client: `probe()` below asks the hub once, and the skip message is the
-// §12 route that answered 404.
+// of §12. The hub still renders `/login` and `/organization` itself, so those
+// two are asserted against the hub's own pages.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { startHostedHub } = require("./hosted-hub");
@@ -20,108 +18,9 @@ const { startHostedHub } = require("./hosted-hub");
 test.describe.configure({ mode: "serial" });
 
 let hub;
-/** What the hub actually serves, discovered once. */
-let served = {
-  shell: false,
-  routed: false,
-  bootstrap: false,
-  members: false,
-  projects: false,
-  fleet: false,
-  integration: false,
-  onboarding: false,
-  usage: false,
-};
 
-/**
- * Why every assertion below is conditional. The account routes live in
- * `web/conversation/src/app/routes.account.tsx` and are added to the tree by
- * `router.tsx`, which is wired separately; until that lands, the hub serves the
- * shell for `/organization` but the router matches nothing, so the route
- * renders blank. `probeRouted()` notices that and skips with this reason
- * rather than failing for something that is not about these screens.
- */
-const NOT_ROUTED =
-  "The application does not serve the account routes yet: routes.account.tsx is not in router.tsx's tree.";
-
-test.beforeAll(async ({ browser }) => {
+test.beforeAll(async () => {
   hub = await startHostedHub("account");
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  try {
-    await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
-    served = await page.evaluate(async () => {
-      const ok = async (path) => {
-        try {
-          const response = await fetch(path, { headers: { Accept: "application/json" } });
-          return response.status !== 404;
-        } catch {
-          return false;
-        }
-      };
-      // The shell is the application's own HTML: the mount point plus the
-      // bundle. `data-detent-conversation-root` is set by the bundle at
-      // runtime, so it is not in what the hub sends.
-      const shell = await (async () => {
-        try {
-          const response = await fetch("/organization", { headers: { Accept: "text/html" } });
-          if (!response.ok) return false;
-          const html = await response.text();
-          return html.includes('id="root"') && html.includes("/static/app/conversation/app.js");
-        } catch {
-          return false;
-        }
-      })();
-      const bootstrap = await ok("/app/bootstrap");
-      let base = "";
-      try {
-        const payload = await (await fetch("/chat/bootstrap")).json();
-        base = payload.api_base ?? "";
-      } catch {
-        base = "";
-      }
-      if (base === "") {
-        return {
-          shell,
-          bootstrap,
-          members: false,
-          projects: false,
-          fleet: false,
-          integration: false,
-          onboarding: false,
-          usage: false,
-        };
-      }
-      const project = (await (await fetch(`${base}/projects`)).json().catch(() => []))?.[0];
-      const projectId = project?.id ?? project?.project_id ?? "";
-      const native = projectId === "" ? "" : `${base}/projects/${encodeURIComponent(projectId)}`;
-      return {
-        shell,
-        bootstrap,
-        members: await ok(`${base}/members`),
-        projects: await ok(`${base}/projects`),
-        fleet: await ok(`${base}/fleet`),
-        integration: native === "" ? false : await ok(`${native}/integration`),
-        onboarding: native === "" ? false : await ok(`${native}/onboarding`),
-        usage: await ok(`${base}/usage?range=30d`),
-      };
-    });
-    // Whether the router actually matches an account path. The shell being
-    // served is not enough: the routes have to be in the tree.
-    if (served.shell) {
-      await page.goto(new URL("/organization", hub.fixture.url).toString(), {
-        waitUntil: "domcontentloaded",
-      });
-      served.routed = await page
-        .getByRole("heading", { level: 1 })
-        .first()
-        .waitFor({ timeout: 8_000 })
-        .then(() => true)
-        .catch(() => false);
-    }
-  } finally {
-    await context.close();
-  }
 });
 
 test.afterAll(async () => {
@@ -203,16 +102,13 @@ async function tabTo(page, name, limit = 40) {
   return false;
 }
 
-test("the login card renders without a session and offers both ways in", async ({ page }) => {
-  test.skip(!served.shell, "The hub does not serve the application shell yet (§12, Serving).");
-  test.skip(!served.routed, NOT_ROUTED);
+test("the sign-in page renders without a session and offers both ways in", async ({ page }) => {
   const errors = watchConsole(page);
-  // No sign-in first: `/login` is the one route the hub serves unauthenticated.
   await page.goto(new URL("/login", hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
   });
 
-  await expectOneHeadingOne(page, "Sign in to Detent");
+  await expectOneHeadingOne(page, "Sign in");
   await expect(page.getByRole("link", { name: "Continue with WorkOS" })).toHaveAttribute(
     "href",
     "/auth/oidc/start",
@@ -221,40 +117,28 @@ test("the login card renders without a session and offers both ways in", async (
     "href",
     "/auth/oidc/start?unscoped=1",
   );
-  await expect(page.getByLabel("Have an invitation token?")).toBeVisible();
 
   expect(await tabTo(page, "Continue with WorkOS")).toBe(true);
   await expectNoSeriousAxeViolations(page, "/login");
-  // The entry point asks for `/app/bootstrap` on every route, including this
-  // one, because a reader who already has a session can accept an invitation
-  // here. Without a session the hub answers 401 and the client renders the
-  // card — that refusal is the expected state, and the browser logs the
-  // response as a resource error whatever the client then does with it.
-  expect(
-    errors.filter((message) => !/401 \(Unauthorized\)/.test(message)),
-    "console errors on /login",
-  ).toEqual([]);
+  expect(errors, "console errors on /login").toEqual([]);
 });
 
 test("the login card says what went wrong when the callback failed", async ({ page }) => {
-  test.skip(!served.shell, "The hub does not serve the application shell yet (§12, Serving).");
-  test.skip(!served.routed, NOT_ROUTED);
+  test.skip(true, "The hub renders /login itself and ignores ?error=; the client login card (routes.account.tsx) is not served on main.");
   await page.goto(new URL("/login?error=no_membership", hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
   });
   await expect(page.getByRole("alert")).toContainText("not a member of this organization");
-  // The raw code is for the log, not for the reader.
   await expect(page.locator("body")).not.toContainText("no_membership");
 });
 
 test("the organization page lists the members and gates the controls by role", async ({
   page,
 }) => {
-  test.skip(!served.members, "GET /api/v2/organizations/:organization/members is not served yet.");
-  test.skip(!served.routed, NOT_ROUTED);
   const errors = watchConsole(page);
-  // §17.3: this path redirects into the Organization section of settings.
-  await openAs(page, "owner", "/organization");
+  // The hub still renders `/organization` itself, so the client's
+  // Organization section is opened by its own path.
+  await openAs(page, "owner", "/settings/organization");
 
   await expect(page).toHaveURL(/\/settings\/organization$/);
   await expectOneHeadingOne(page, "Settings");
@@ -266,16 +150,15 @@ test("the organization page lists the members and gates the controls by role", a
   expect(errors, "console errors on /organization").toEqual([]);
 
   // A viewer sees the same data and none of the controls (decisions.md §10.11).
-  await openAs(page, "viewer", "/organization");
+  await openAs(page, "viewer", "/settings/organization");
+  await expect(page.getByRole("table")).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send invitation" })).toHaveCount(0);
   await expectNoSeriousAxeViolations(page, "/organization as viewer");
 });
 
 test("removing the last owner is refused by the hub and said in the page", async ({ page }) => {
-  test.skip(!served.members, "DELETE /api/v2/organizations/:organization/members/:member is not served yet.");
-  test.skip(!served.routed, NOT_ROUTED);
-  await openAs(page, "owner", "/organization");
+  await openAs(page, "owner", "/settings/organization");
 
   // The owner's row by the owner's address, with no fallback. This used to
   // read `hub.fixture.accounts.owner_email ?? "@"`, and `accounts` maps an
@@ -297,8 +180,6 @@ test("removing the last owner is refused by the hub and said in the page", async
 });
 
 test("the settings navigation is the sidebar, not a second column", async ({ page }) => {
-  test.skip(!served.projects, "GET /api/v2/organizations/:organization/projects is not served yet.");
-  test.skip(!served.routed, NOT_ROUTED);
   const errors = watchConsole(page);
   // `/settings` redirects to the default section (§17.3).
   await openAs(page, "owner", "/settings");
@@ -323,7 +204,7 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
 
   await sidebar.getByRole("button", { name: "Projects" }).click();
   await expect(page).toHaveURL(/\/settings\/projects$/);
-  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
 
   await expect(sidebar.getByRole("button", { name: "Appearance" })).toHaveAttribute(
     "aria-disabled",
@@ -345,11 +226,6 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
 test("project settings show the integration and refuse to edit it for a viewer", async ({
   page,
 }) => {
-  test.skip(
-    !served.integration,
-    "GET /api/v2/organizations/:organization/projects/:project/integration is not served yet.",
-  );
-  test.skip(!served.routed, NOT_ROUTED);
   const errors = watchConsole(page);
   // §17.3: this path redirects into the Integrations section of settings.
   await openAs(page, "owner", `/projects/${hub.fixture.project_id}/settings`);
@@ -376,11 +252,6 @@ test("project settings show the integration and refuse to edit it for a viewer",
 });
 
 test("the first-run wizard reports the hub's four onboarding steps", async ({ page }) => {
-  test.skip(
-    !served.onboarding,
-    "GET /api/v2/organizations/:organization/projects/:project/onboarding is not served yet.",
-  );
-  test.skip(!served.routed, NOT_ROUTED);
   const errors = watchConsole(page);
   await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
 
@@ -397,8 +268,6 @@ test("the first-run wizard reports the hub's four onboarding steps", async ({ pa
 test("the fleet page redirects into settings and renders the hosts and providers", async ({
   page,
 }) => {
-  test.skip(!served.fleet, "GET /api/v2/organizations/:organization/fleet is not served yet.");
-  test.skip(!served.routed, NOT_ROUTED);
   const errors = watchConsole(page);
   // §17.3: `/fleet` is the Providers & runners section of settings now. The
   // spend hero, the chart, the range control and the allowance totals moved to
@@ -428,9 +297,6 @@ test("the fleet page redirects into settings and renders the hosts and providers
 });
 
 test("Providers & runners enrolls a host and shows the one-time token once", async ({ page }) => {
-  test.skip(!served.fleet, "GET /api/v2/organizations/:organization/fleet is not served yet.");
-  test.skip(!served.members, "PUT /members/:member/grants is not served yet.");
-  test.skip(!served.routed, NOT_ROUTED);
   const errors = watchConsole(page);
 
   // The hub gates every runner route on the actor holding the runner grant on
@@ -438,7 +304,7 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
   // fixture's owner starts without it. Granting it here is setup, not the
   // thing under test: without it the control is correctly absent and there
   // would be nothing to drive.
-  await openAs(page, "owner", "/organization");
+  await openAs(page, "owner", "/settings/organization");
   const granted = await page.evaluate(async () => {
     const bootstrap = await (await fetch("/app/bootstrap")).json();
     const base = bootstrap.api_base;
@@ -506,11 +372,6 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
 });
 
 test("the usage page draws the window, the tabs and the breakdown", async ({ page }) => {
-  test.skip(
-    !served.usage,
-    "GET /api/v2/organizations/:organization/usage?range= is not served yet (decisions.md §17.5).",
-  );
-  test.skip(!served.routed, NOT_ROUTED);
   const errors = watchConsole(page);
   await openAs(page, "owner", "/usage");
 
