@@ -197,15 +197,16 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	ProjectID          string
-	ID                 string
-	Identifier         string
-	BranchName         string
-	BaseRef            string
-	ProgressBaseRef    string
-	PullRequestHeadSHA string
-	PullRequestNumber  int
-	PullRequestBranch  string
+	ProjectID             string
+	ID                    string
+	Identifier            string
+	BranchName            string
+	BaseRef               string
+	ProgressBaseRef       string
+	PullRequestHeadSHA    string
+	PullRequestRepository string
+	PullRequestNumber     int
+	PullRequestBranch     string
 }
 
 type Info struct {

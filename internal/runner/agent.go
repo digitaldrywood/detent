@@ -3230,6 +3230,14 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	finishedAt := r.now().UTC()
 	runResult.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 	if strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
+			if err != nil {
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: read validation workspace head after cleanup: %w", ErrValidatorInfrastructure, err))
+			} else if checkedOut = strings.TrimSpace(checkedOut); checkedOut != strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) {
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation head mismatch after cleanup: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, strings.TrimSpace(workspaceIssue.PullRequestHeadSHA)))
+			}
+		}
 		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
 			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
 				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation workspace changed after review: %w", ErrValidatorInfrastructure, err))
@@ -4264,15 +4272,16 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		progressBaseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
 	}
 	return workspace.Issue{
-		ProjectID:          projectID,
-		ID:                 issue.ID,
-		Identifier:         issue.Identifier,
-		BranchName:         issue.BranchName,
-		BaseRef:            baseRef,
-		ProgressBaseRef:    progressBaseRef,
-		PullRequestHeadSHA: pullRequestHeadSHA(issue.PullRequest),
-		PullRequestNumber:  workspacePullRequestNumber(issue.PullRequest),
-		PullRequestBranch:  pullRequestBranch(issue.PullRequest),
+		ProjectID:             projectID,
+		ID:                    issue.ID,
+		Identifier:            issue.Identifier,
+		BranchName:            issue.BranchName,
+		BaseRef:               baseRef,
+		ProgressBaseRef:       progressBaseRef,
+		PullRequestHeadSHA:    pullRequestHeadSHA(issue.PullRequest),
+		PullRequestRepository: strings.TrimSpace(issue.PRRepository),
+		PullRequestNumber:     workspacePullRequestNumber(issue.PullRequest),
+		PullRequestBranch:     pullRequestBranch(issue.PullRequest),
 	}
 }
 

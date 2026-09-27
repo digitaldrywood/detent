@@ -5845,6 +5845,7 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 	}{
 		{name: "changed head before cleanup", heads: []string{"head", "other", "head"}},
 		{name: "dirty tree with turn error", heads: []string{"head", "head", "head"}, verifyErrAt: 2, turnErr: errors.New("turn failed")},
+		{name: "changed head after cleanup with turn error", heads: []string{"head", "head", "other"}, turnErr: errors.New("turn failed")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ws := &reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: tt.heads, verifyErrAt: tt.verifyErrAt}

@@ -84,7 +84,16 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 		remoteRef = fmt.Sprintf("refs/remotes/origin/pull/%d/head", issue.PullRequestNumber)
 		sourceRef = fmt.Sprintf("refs/pull/%d/head", issue.PullRequestNumber)
 	}
-	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-write-fetch-head", "origin", "+"+sourceRef+":"+remoteRef); err != nil {
+	remote := "origin"
+	if issue.PullRequestNumber > 0 && strings.TrimSpace(issue.PullRequestRepository) != "" {
+		repository := strings.TrimSpace(issue.PullRequestRepository)
+		parts := strings.Split(repository, "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, " \\:@") {
+			return fmt.Errorf("invalid pull request repository %q", repository)
+		}
+		remote = "https://github.com/" + repository + ".git"
+	}
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-write-fetch-head", remote, "+"+sourceRef+":"+remoteRef); err != nil {
 		return fmt.Errorf("fetch review head: %w", err)
 	}
 	remoteHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", remoteRef)

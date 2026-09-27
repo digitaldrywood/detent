@@ -25,11 +25,14 @@ the verdict. A changed head produces the existing wait verdict under the head
 that was actually reviewed; the next tick evaluates the new head. This keeps
 validation evidence attributable to its commit without giving workers lane
 ownership. The runner also verifies the review tree after `before_run`, after
-the validator turn, and after `after_run`. It also checks HEAD before cleanup,
-so a cleanup hook cannot hide a commit change. Workspace failures remain instance
+the validator turn, and after `after_run`. It also checks HEAD before and after
+cleanup, so a cleanup hook cannot hide a commit change. The PR ref is fetched
+from the hydrated PR repository, even when the source checkout is a fork.
+Workspace failures remain instance
 failures even when the validator turn also fails, and cannot yield a verdict.
 `TestRunnerValidateRejectsReviewWorkspaceMutation`, `TestValidatorStageTracksHeadBeforeAndDuringReview`,
-`TestLocalGitSeedReviewHead`, and `TestLocalGitVerifyReviewTreeAfterSeeding`
+`TestLocalGitSeedReviewHead`, `TestLocalGitSeedReviewHeadUsesPullRequestRepository`,
+and `TestLocalGitVerifyReviewTreeAfterSeeding`
 cover these boundaries (#3031).
 
 Completion classification preserves genuine diff progress even when a structured
