@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -229,6 +230,48 @@ func TestHostedPlanCommandsAndPermissions(t *testing.T) {
 		if strings.Contains(report.Body.String(), forbidden) {
 			t.Fatalf("metadata leaked %q", forbidden)
 		}
+	}
+}
+
+func TestHostedPlanReportRequiresEntitlementAdministrator(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	config := hostedTestPlans(t, f.service, nil)
+	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
+	path := "/api/v2/organizations/org_security/entitlements"
+	until := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects", "hosted_artifacts"}, ExpiresAt: &until, Reason: "design partner"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
+	for _, test := range []struct {
+		name     string
+		response func() int
+		want     int
+	}{
+		{"owner session", func() int { return f.request(t, owner, http.MethodGet, path, nil).Code }, http.StatusForbidden},
+		{"hub admin token", func() int {
+			return performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil).Code
+		}, http.StatusForbidden},
+		{"entitlement administrator", func() int {
+			return performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil).Code
+		}, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.response(); got != test.want {
+				t.Fatalf("status = %d, want %d", got, test.want)
+			}
+		})
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
+	var report hostedEntitlementReport
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Revision != 2 || report.Base != config.Base || report.EffectiveBase != config.Base || len(report.Plans) != 2 || len(report.Grants) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	recorded := report.Grants[0]
+	if recorded.ID != "comp_report" || recorded.Reason != "design partner" || recorded.GrantedBy != "test-operator" || recorded.GrantedAt == nil || recorded.ExpiresAt == nil || !recorded.ExpiresAt.Equal(until) || recorded.Plan != config.Plans[1].PlanReference {
+		t.Fatalf("grant = %+v", recorded)
 	}
 }
 

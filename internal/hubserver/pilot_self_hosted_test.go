@@ -23,6 +23,7 @@ func TestPilotSelfHostedStaysFree(t *testing.T) {
 			{http.MethodPost, "/organization/billing/portal"},
 			{http.MethodGet, "/api/cloud/billing"},
 			{http.MethodPost, "/webhooks/stripe"},
+			{http.MethodGet, "/api/v2/organizations/local/entitlements"},
 			{http.MethodPost, "/api/v2/organizations/local/entitlements"},
 		} {
 			t.Run(test.method+" "+test.path, func(t *testing.T) {

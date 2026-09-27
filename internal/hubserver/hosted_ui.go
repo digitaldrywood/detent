@@ -49,6 +49,7 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/projects/:project/events", s.hostedEvents)
 	e.GET("/api/cloud/metadata", s.hostedMetadata)
 	e.GET("/api/cloud/billing", s.hostedBilling)
+	e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport)
 	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
 	e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
 	s.registerHostedUsageRoutes(e)
