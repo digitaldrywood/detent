@@ -208,6 +208,9 @@ type Session struct {
 	// channel's hot path for a value that never changes, and reading this one
 	// without the lock would be a race the detector is right to flag.
 	worktreePath string
+	// running counts the goroutines serving a registered run, so the session
+	// can wait for every action process to exit before releasing the worktree.
+	running sync.WaitGroup
 	// checkout is what the hub told this runner to produce. The git channel
 	// consults it on every write, so it is held here rather than passed down:
 	// read_only is the whole difference between a person looking at a worktree
@@ -349,10 +352,33 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	}
 	s.path, s.exec = path, runner
 
+	// The heartbeat starts before anything runs in the worktree, so a long
+	// setup action renews the lease like any other run and stops when it is
+	// lost. Every action is cancelled and waited for before the worktree is
+	// released on the way out.
+	sessionCtx, cancel := context.WithCancel(ctx)
+	var group sync.WaitGroup
+	group.Add(1)
+	go func() {
+		defer group.Done()
+		defer cancel()
+		s.heartbeatLoop(sessionCtx, bound.Checkout)
+	}()
+	defer func() {
+		cancel()
+		s.cancelRuns(workspacesession.RunReasonWorkspaceEnd)
+		s.running.Wait()
+		group.Wait()
+	}()
+
 	// The run-on-worktree-creation set runs before the workspace is reported
 	// ready, so a person who opens a fresh worktree finds the project's setup
 	// already done rather than racing it.
-	s.runCreationActions(ctx, bound.Checkout, bound.Actions)
+	s.runCreationActions(sessionCtx, bound.Checkout, bound.Actions)
+	if s.shouldStop() || sessionCtx.Err() != nil {
+		reason = s.endReason(sessionCtx.Err())
+		return nil
+	}
 
 	// A worktree that is not a git repository is not a failed workspace. The
 	// files channel serves it perfectly well, and the header disables the git
@@ -388,23 +414,16 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	defer s.closeTerminals(workspacesession.ReasonClosedByActor)
 
 	s.setHeadSHA(bound.Checkout.HeadSHA)
-	if err := s.heartbeat(ctx, workspacesession.StateReady, ""); err != nil {
+	if err := s.heartbeat(sessionCtx, workspacesession.StateReady, ""); err != nil {
 		reason = s.reasonFor(err, workspacesession.ReasonCheckoutFailed)
 		return err
 	}
 	s.setState(workspacesession.StateReady)
 
-	sessionCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var group sync.WaitGroup
-	group.Add(1)
-	go func() {
-		defer group.Done()
-		defer cancel()
-		s.heartbeatLoop(sessionCtx, bound.Checkout)
-	}()
 	serveErr := s.serve(sessionCtx)
 	cancel()
+	s.cancelRuns(workspacesession.RunReasonWorkspaceEnd)
+	s.running.Wait()
 	group.Wait()
 	reason = s.endReason(serveErr)
 	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
@@ -1133,8 +1152,14 @@ func (s *Session) startRun(ctx context.Context, stream string) (context.Context,
 	if len(s.runs) >= maxConcurrentRuns {
 		return nil, workspacesession.CodeStreamLimit, execRefusalMessage(workspacesession.CodeStreamLimit)
 	}
+	// The lease is checked under the same lock that registers the run, so a
+	// lease lost in between cannot miss a run it should have cancelled.
+	if s.stale || s.closing || !s.config.Now().Before(s.leaseValidUntil) {
+		return nil, workspacesession.CodeStaleExecution, execRefusalMessage(workspacesession.CodeStaleExecution)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.runs[stream] = &execRun{cancel: cancel}
+	s.running.Add(1)
 	return runCtx, "", ""
 }
 
@@ -1146,6 +1171,7 @@ func (s *Session) finishRun(stream string) {
 	s.mu.Unlock()
 	if running {
 		run.cancel()
+		s.running.Done()
 	}
 }
 

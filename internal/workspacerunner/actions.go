@@ -96,6 +96,14 @@ func (s *Session) runCreationActions(ctx context.Context, checkout hubclient.Wor
 // checkout succeeded, the files are there, and the person is better placed than
 // this runner to decide what a failed install means for what they came to read.
 func (s *Session) runCreationAction(ctx context.Context, action workspacesession.Action) {
+	stream := setupStream(action.ID)
+	runCtx, code, _ := s.startRun(ctx, stream)
+	if code != "" {
+		s.logger.Info("workspace.action_not_started", "action_id", action.ID, "code", code)
+		return
+	}
+	defer s.finishRun(stream)
+	go s.watchRunLease(runCtx, stream)
 	startedAt := s.config.Now().UTC()
 	runID := s.reportActionRun(ctx, ActionRun{
 		ActionID: action.ID, Status: workspacesession.RunRunning, StartedAt: &startedAt,
@@ -104,7 +112,7 @@ func (s *Session) runCreationAction(ctx context.Context, action workspacesession
 
 	var output []byte
 	truncated := false
-	result, err := s.exec.Run(ctx, action.Command, func(span workspacesession.ExecOutput) error {
+	result, err := s.exec.Run(runCtx, action.Command, func(span workspacesession.ExecOutput) error {
 		if span.Truncated {
 			truncated = true
 			return nil
@@ -132,6 +140,9 @@ func (s *Session) runCreationAction(ctx context.Context, action workspacesession
 		Output: tail, Truncated: truncated || trimmed,
 	}
 	switch {
+	case runCtx.Err() != nil && !s.leaseValid():
+		// The lease went while the setup ran, and that is why it stopped.
+		report.Status, report.Reason = workspacesession.RunFailed, workspacesession.RunReasonLeaseLost
 	case err != nil && ctx.Err() != nil:
 		// The workspace is going away mid-run. There is no exit code to report
 		// and the reason is what says why, which is section 18.12's rule for a
@@ -194,4 +205,10 @@ func actionOutputTail(output string) (string, bool) {
 		tail = tail[1:]
 	}
 	return tail, true
+}
+
+// setupStream is the run key a run-on-worktree-creation action is registered
+// under. It is never a relay stream id, so it cannot collide with a person's.
+func setupStream(actionID string) string {
+	return "setup:" + actionID
 }
