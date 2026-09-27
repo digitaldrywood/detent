@@ -48,6 +48,8 @@ type Config struct {
 	generateToken func() (string, error)
 	transport     func(Organization) (http.RoundTripper, error)
 	clientFS      fs.FS
+
+	tenantStartTimeout time.Duration
 }
 
 func (c Config) validate() error {
@@ -102,6 +104,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	if cfg.now == nil {
 		cfg.now = time.Now
+	}
+	if cfg.tenantStartTimeout == 0 {
+		cfg.tenantStartTimeout = 30 * time.Second
 	}
 	if cfg.generateToken == nil {
 		cfg.generateToken = apikey.GenerateToken
