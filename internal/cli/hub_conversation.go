@@ -2,28 +2,54 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 // hostedConversationFileConfig is the optional `conversation:` section of
 // the hosted configuration file.
 type hostedConversationFileConfig struct {
 	Enabled bool `yaml:"enabled"`
-	// Model is the model "auto" resolves to for this hub.
-	Model           string `yaml:"model"`
+	// Model is the model "auto" resolves to for this hub and the model
+	// coordinator turns use.
+	Model string `yaml:"model"`
+	// ReasoningEffort is the effort coordinator turns use.
+	ReasoningEffort string `yaml:"reasoning_effort"`
+	// Codex configures the coordinator backend for conversations without a
+	// linked issue. When omitted, ordinary chat reports the coordinator as
+	// unavailable and linked conversations still work.
+	Codex *hostedConversationCodexFileConfig `yaml:"codex"`
+	// Workspace is the directory coordinator turns run in. Required when
+	// codex is configured; it must exist.
+	Workspace       string `yaml:"workspace"`
 	QuestionTimeout string `yaml:"question_timeout"`
 	// SettleWindow is how long a finished or idle conversation may sit
 	// without activity before it settles (decisions section 14).
 	SettleWindow     string `yaml:"settle_window"`
 	ControlQueueSize int    `yaml:"control_queue_size"`
 }
+
+// hostedConversationCodexFileConfig is the `conversation.codex:` section.
+type hostedConversationCodexFileConfig struct {
+	Command string                      `yaml:"command"`
+	Options workflowconfig.CodexOptions `yaml:"options"`
+}
+
+// codexBackendBuilder builds the coordinator backend from the codex section
+// for the absolute workspace.
+type codexBackendBuilder func(command string, cfg workflowconfig.CodexOptions, workspace string) (runnerpkg.AgentBackend, error)
 
 // readHostedConversationConfig reads the `conversation:` section of the
 // hosted configuration file. enabled is false when the section is absent
@@ -47,19 +73,26 @@ func readHostedConversationConfig(path string) (config hubserver.ConversationCon
 	if err := decoder.Decode(&section); err != nil {
 		return hubserver.ConversationConfig{}, false, errors.New("hosted configuration is invalid")
 	}
-	return readConversationConfig(section.Conversation)
+	return readConversationConfig(section.Conversation, buildCoordinatorCodexBackend, os.Stat)
 }
 
 // readConversationConfig converts the file section into the hub's
 // ConversationConfig. enabled is false for a nil or disabled section.
-func readConversationConfig(section *hostedConversationFileConfig) (hubserver.ConversationConfig, bool, error) {
+func readConversationConfig(section *hostedConversationFileConfig, buildCodex codexBackendBuilder, stat func(string) (os.FileInfo, error)) (hubserver.ConversationConfig, bool, error) {
 	if section == nil || !section.Enabled {
 		return hubserver.ConversationConfig{}, false, nil
 	}
 	if section.ControlQueueSize < 0 {
 		return hubserver.ConversationConfig{}, false, errors.New("conversation control_queue_size must not be negative")
 	}
-	config := hubserver.ConversationConfig{Enabled: true, Model: strings.TrimSpace(section.Model), ControlQueueSize: section.ControlQueueSize}
+	effort := strings.TrimSpace(section.ReasoningEffort)
+	if effort != "" && !slices.Contains(conversation.ReasoningEfforts()[1:], effort) {
+		return hubserver.ConversationConfig{}, false, fmt.Errorf("conversation reasoning_effort must be one of %s", strings.Join(conversation.ReasoningEfforts()[1:], ", "))
+	}
+	config := hubserver.ConversationConfig{
+		Enabled: true, Model: strings.TrimSpace(section.Model), ReasoningEffort: effort,
+		ControlQueueSize: section.ControlQueueSize,
+	}
 	if value := strings.TrimSpace(section.QuestionTimeout); value != "" {
 		timeout, err := time.ParseDuration(value)
 		if err != nil || timeout <= 0 {
@@ -74,5 +107,30 @@ func readConversationConfig(section *hostedConversationFileConfig) (hubserver.Co
 		}
 		config.SettleWindow = window
 	}
+	if section.Codex == nil {
+		return config, true, nil
+	}
+	workspace := strings.TrimSpace(section.Workspace)
+	if workspace == "" {
+		return hubserver.ConversationConfig{}, false, errors.New("conversation workspace is required when codex is configured")
+	}
+	workspace, err := filepath.Abs(workspace)
+	if err != nil {
+		return hubserver.ConversationConfig{}, false, errors.New("conversation workspace must be an existing directory")
+	}
+	info, err := stat(workspace)
+	if err != nil || !info.IsDir() {
+		return hubserver.ConversationConfig{}, false, errors.New("conversation workspace must be an existing directory")
+	}
+	command := strings.TrimSpace(section.Codex.Command)
+	if command == "" {
+		command = defaultCoordinatorCodex
+	}
+	backend, err := buildCodex(command, section.Codex.Options, workspace)
+	if err != nil {
+		return hubserver.ConversationConfig{}, false, err
+	}
+	config.Backend = backend
+	config.Workspace = workspace
 	return config, true, nil
 }

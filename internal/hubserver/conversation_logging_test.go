@@ -285,7 +285,9 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 	sink := &conversationLogSink{}
-	openConversationLogService(t, Config{DatabasePath: databasePath, Conversation: &ConversationConfig{Enabled: true, ControlQueueSize: 8}}, sink)
+	// The restarted hub has a coordinator backend, so the saved message of
+	// the unlinked conversation is handed to the coordinator.
+	openConversationLogService(t, Config{DatabasePath: databasePath, Conversation: &ConversationConfig{Enabled: true, ControlQueueSize: 8, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}}, sink)
 
 	requireConversationLogFields(t, sink.only(t, "conversation.restart_normalized"), map[string]any{
 		"conversations": float64(1),
@@ -294,7 +296,8 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 		"receipts":      float64(1),
 	})
 	requireConversationLogFields(t, sink.only(t, "conversation.wake_pending"), map[string]any{
-		"controls": float64(1),
+		"coordinator": float64(1),
+		"controls":    float64(1),
 	})
 	sink.requireNoSentinel(t)
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
@@ -389,13 +390,8 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 			CanManage:        manage,
 			CanManageRunners: credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential),
 		},
-		Projects:  []appBootstrapProject{},
-		CSRFToken: csrf,
-		Preferences: appBootstrapPreferences{
-			Models:  []appBootstrapChoice{},
-			Efforts: []appBootstrapChoice{},
-			Access:  []appBootstrapChoice{},
-		},
+		Projects:   []appBootstrapProject{},
+		CSRFToken:  csrf,
 		APIBase:    "/api/v2/organizations/" + organization,
 		BasePath:   s.hostedBase(),
 		SignInPath: s.hostedSignInPath(),
@@ -420,11 +416,101 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 			payload.Organizations[index].Name = payload.Organization.Name
 		}
 	}
+	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator.Available()
+	payload.Preferences, err = s.appBootstrapPreferences(ctx, organization, payload.Projects)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	payload.Plan = s.appBootstrapPlan(ctx)
 	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, payload)
+}
+
+// appBootstrapPreferences publishes the turn preference choices: every model
+// the organization's enrolled runners report for the projects the actor can
+// read, and the fixed effort and access vocabularies. A hub whose runners
+// report no models still answers with "auto" and, when it knows one, the
+// configured default (decisions section 14).
+func (s *Service) appBootstrapPreferences(ctx context.Context, organization string, readable []appBootstrapProject) (appBootstrapPreferences, error) {
+	preferences := appBootstrapPreferences{
+		Models:  []appBootstrapChoice{},
+		Efforts: []appBootstrapChoice{},
+		Access:  []appBootstrapChoice{},
+	}
+	if s.conversations == nil {
+		return preferences, nil
+	}
+	projects := make([]string, 0, len(readable))
+	for _, project := range readable {
+		projects = append(projects, project.ID)
+	}
+	now, err := s.database.currentTime()
+	if err != nil {
+		return preferences, err
+	}
+	models, err := s.conversationModelChoices(ctx, s.database.db, tracker.OrganizationID(organization), projects, now)
+	if err != nil {
+		return preferences, err
+	}
+	preferences.Models = appBootstrapModelChoices(models, s.conversationDefaultModel())
+	preferences.Efforts = appBootstrapChoices(conversation.ReasoningEfforts()[1:], conversationChoiceLabel, strings.TrimSpace(s.conversations.config.ReasoningEffort))
+	preferences.Access = appBootstrapChoices(conversation.AccessLevels()[1:], conversationChoiceLabel, "")
+	return preferences, nil
+}
+
+// appBootstrapModelChoices renders the model picker: "auto" first, then every
+// reported model with whatever its runner's catalog said about it.
+func appBootstrapModelChoices(models []conversationModel, configured string) []appBootstrapChoice {
+	known := configured != "" && slices.ContainsFunc(models, func(model conversationModel) bool { return model.ID == configured })
+	choices := make([]appBootstrapChoice, 0, len(models)+1)
+	choices = append(choices, appBootstrapChoice{ID: conversation.PreferenceAuto, Label: "Auto", Default: !known})
+	for _, model := range models {
+		choices = append(choices, appBootstrapChoice{
+			ID:             model.ID,
+			Label:          conversationModelLabel(model),
+			Default:        known && model.ID == configured,
+			Efforts:        model.Efforts,
+			DefaultEffort:  model.DefaultEffort,
+			Provider:       model.Provider,
+			Legacy:         model.Legacy,
+			BackendDefault: model.BackendDefault,
+		})
+	}
+	return choices
+}
+
+// appBootstrapChoices renders one picker: "auto" first, then the values, with
+// the default flag on the configured value or on "auto" when there is none.
+func appBootstrapChoices(values []string, label func(string) string, configured string) []appBootstrapChoice {
+	known := configured != "" && slices.Contains(values, configured)
+	choices := make([]appBootstrapChoice, 0, len(values)+1)
+	choices = append(choices, appBootstrapChoice{ID: conversation.PreferenceAuto, Label: "Auto", Default: !known})
+	for _, value := range values {
+		choices = append(choices, appBootstrapChoice{ID: value, Label: label(value), Default: known && value == configured})
+	}
+	return choices
+}
+
+// conversationModelLabel is what a model picker shows: the label the backend
+// catalog gave, and otherwise the identifier, which is the vocabulary
+// operators already use.
+func conversationModelLabel(model conversationModel) string {
+	if label := strings.TrimSpace(model.Label); label != "" {
+		return label
+	}
+	return model.ID
+}
+
+// conversationChoiceLabel capitalizes a fixed vocabulary value: "read_only"
+// becomes "Read only".
+func conversationChoiceLabel(value string) string {
+	words := strings.Split(strings.ReplaceAll(value, "_", " "), " ")
+	if len(words) > 0 && words[0] != "" {
+		words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+	}
+	return strings.Join(words, " ")
 }
 
 // appBootstrapPlan summarizes the effective entitlement. A hub without hosted

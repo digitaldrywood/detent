@@ -847,8 +847,10 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Actor: actor, CommandKey: command.Key}
 		switch {
 		case !linked:
-			// No coordinator answers an unlinked conversation yet, so the
-			// message is saved and bounded by the same queue as a worker's.
+			// The hub-side coordinator reads saved messages from the store,
+			// so its backlog is bounded by the same queue as a worker's. A
+			// hub without a coordinator backend keeps the message saved
+			// until the conversation is linked.
 			if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
 				return receipt, err
 			}
@@ -986,6 +988,10 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 		if linked {
 			return receipt, conversationUnsupported("Cancel applies to coordinator turns; interrupt the linked attempt instead")
 		}
+		if c.coordinator.Cancel(record.ID) {
+			receipt.Status = conversation.DeliveryDelivered
+			break
+		}
 		receipt.Status = conversation.DeliveryRejected
 		receipt.Error = &conversation.ReceiptError{Code: "no_active_turn", Message: "No coordinator turn is running"}
 	case conversation.CommandRetry:
@@ -1120,6 +1126,17 @@ func (s *Service) linkConversation(c echo.Context) error {
 	if err := service.authorizeWrite(ctx, s.database.db, scope, preview); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	// A coordinator turn must not write into the conversation once it is
+	// linked and shared, nor overwrite the linked runner's execution, so the
+	// running turn is stopped and settled first and none starts until the
+	// link has committed.
+	if preview.WorkItemID == "" {
+		release, err := service.coordinator.Hold(id)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		defer release()
+	}
 	var linked conversationRecord
 	notify := false
 	err = s.nativeMutation(c, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
@@ -1180,7 +1197,7 @@ func (s *Service) linkConversation(c echo.Context) error {
 		if err := service.updateExecution(ctx, tx, &record, execution, now); err != nil {
 			return nil, err
 		}
-		// Messages saved while no coordinator answered the conversation are
+		// Messages saved and not yet taken by a coordinator turn are
 		// the linked issue's first controls: the first attempt receives them
 		// through the hand-off rather than leaving them saved forever.
 		saved, err := service.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'saved' AND kind = 'text' ORDER BY seq", record.ID)

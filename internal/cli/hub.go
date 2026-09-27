@@ -121,6 +121,13 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				if enabled {
 					conversation = &conversationConfig
 				}
+				if conversation != nil && conversation.Backend != nil {
+					for _, path := range []string{databasePath, hostedConfigPath} {
+						if workspaceHoldsPath(conversation.Workspace, path) {
+							return NewValidationError("Conversation workspace contains Hub state", "Point conversation.workspace at a dedicated directory that holds no Hub database or configuration.", nil)
+						}
+					}
+				}
 			}
 			var usage *hubserver.UsageConfig
 			if hosted != nil {

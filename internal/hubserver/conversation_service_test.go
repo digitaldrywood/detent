@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -169,10 +170,14 @@ func TestProjectConversationShape(t *testing.T) {
 }
 
 type recordingWaker struct {
-	mu    sync.Mutex
-	woken []string
+	mu          sync.Mutex
+	woken       []string
+	unavailable bool
 }
 
+func (w *recordingWaker) Available() bool             { return !w.unavailable }
+func (w *recordingWaker) Cancel(string) bool          { return false }
+func (w *recordingWaker) Hold(string) (func(), error) { return func() {}, nil }
 func (w *recordingWaker) Wake(id string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -181,38 +186,58 @@ func (w *recordingWaker) Wake(id string) {
 func (w *recordingWaker) Stop() {}
 
 func TestConversationServiceWakesPendingWorkAfterRestart(t *testing.T) {
-	f := newConversationFixture(t)
-	now := time.Now().UTC().Truncate(time.Second)
-	service := &conversationService{server: f.service, store: f.store, broker: newConversationBroker(), logger: f.service.config.Logger}
-	controls := &recordingWaker{}
-	service.controls = controls
+	for _, test := range []struct {
+		name            string
+		coordinator     bool
+		wantCoordinator bool
+	}{
+		{name: "a hub coordinator takes the saved unlinked message", coordinator: true, wantCoordinator: true},
+		{name: "without a hub coordinator the saved message waits for a link"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newConversationFixture(t)
+			now := time.Now().UTC().Truncate(time.Second)
+			service := &conversationService{server: f.service, store: f.store, broker: newConversationBroker(), logger: f.service.config.Logger}
+			coordinator := &recordingWaker{unavailable: !test.coordinator}
+			controls := &recordingWaker{}
+			service.coordinator = coordinator
+			service.controls = controls
 
-	issue := f.nativeFixture.create(t, "linked")
-	unlinked := f.create(t, f.record(f.owner, "Unlinked", now))
-	linked := f.record(f.owner, "Linked", now)
-	linked.Visibility = conversation.VisibilityShared
-	linked.WorkItemID = string(issue.WorkItemID)
-	linkedAt := now
-	linked.LinkedAt = &linkedAt
-	linked = f.create(t, linked)
-	idle := f.create(t, f.record(f.owner, "Idle", now))
+			issue := f.nativeFixture.create(t, "linked")
+			unlinked := f.create(t, f.record(f.owner, "Unlinked", now))
+			linked := f.record(f.owner, "Linked", now)
+			linked.Visibility = conversation.VisibilityShared
+			linked.WorkItemID = string(issue.WorkItemID)
+			linkedAt := now
+			linked.LinkedAt = &linkedAt
+			linked = f.create(t, linked)
+			idle := f.create(t, f.record(f.owner, "Idle", now))
 
-	tx := f.tx(t)
-	for _, seed := range []struct {
-		record   conversationRecord
-		delivery conversation.Delivery
-	}{{unlinked, conversation.DeliverySaved}, {linked, conversation.DeliveryQueued}, {idle, conversation.DeliveryCompleted}} {
-		message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: seed.record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "hello", Data: json.RawMessage("{}"), Delivery: seed.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
-			t.Fatalf("appendMessage() error = %v", err)
-		}
-	}
-	f.commit(t, tx)
+			tx := f.tx(t)
+			for _, seed := range []struct {
+				record   conversationRecord
+				delivery conversation.Delivery
+			}{{unlinked, conversation.DeliverySaved}, {linked, conversation.DeliveryQueued}, {idle, conversation.DeliveryCompleted}} {
+				message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: seed.record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "hello", Data: json.RawMessage("{}"), Delivery: seed.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
+				if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+					t.Fatalf("appendMessage() error = %v", err)
+				}
+			}
+			f.commit(t, tx)
 
-	if err := service.wakePending(t.Context()); err != nil {
-		t.Fatalf("wakePending() error = %v", err)
-	}
-	if got := controls.woken; len(got) != 1 || got[0] != linked.ID {
-		t.Fatalf("controls woken = %v, want [%s]", got, linked.ID)
+			if err := service.wakePending(t.Context()); err != nil {
+				t.Fatalf("wakePending() error = %v", err)
+			}
+			wantCoordinator := []string{}
+			if test.wantCoordinator {
+				wantCoordinator = []string{unlinked.ID}
+			}
+			if got := append([]string{}, coordinator.woken...); !slices.Equal(got, wantCoordinator) {
+				t.Fatalf("coordinator woken = %v, want %v", got, wantCoordinator)
+			}
+			if got := controls.woken; len(got) != 1 || got[0] != linked.ID {
+				t.Fatalf("controls woken = %v, want [%s]", got, linked.ID)
+			}
+		})
 	}
 }

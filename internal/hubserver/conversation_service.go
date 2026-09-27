@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -21,9 +22,19 @@ import (
 type ConversationConfig struct {
 	// Enabled mounts the conversation API and streams.
 	Enabled bool
+	// Backend runs coordinator turns for conversations without a linked
+	// issue. When nil ordinary chat reports the coordinator as unavailable
+	// and messages in unlinked conversations are saved until a link.
+	Backend runner.AgentBackend
+	// Workspace is the directory coordinator turns run in. It must exist
+	// when Backend is set.
+	Workspace string
 	// Model is the model "auto" resolves to for this hub, offered beside the
-	// models the runners report.
+	// models the runners report, and the model coordinator turns use.
 	Model string
+	// ReasoningEffort is the effort coordinator turns use and the effort
+	// "auto" resolves to in the composer.
+	ReasoningEffort string
 	// QuestionTimeout bounds how long a pending runner question waits for
 	// an answer before it expires. Zero selects the runner default.
 	QuestionTimeout time.Duration
@@ -71,15 +82,16 @@ func (c ConversationConfig) normalized() ConversationConfig {
 
 // conversationService owns the conversation product inside the hub: durable
 // storage, event fan-out to subscribers and the shared authorization rules.
-// HTTP handlers and worker bindings live in sibling files. The hub has no
-// coordinator yet, so a message in a conversation without a linked issue is
-// saved and waits for one.
+// HTTP handlers, coordinator turns and worker bindings live in sibling files.
 type conversationService struct {
 	server *Service
 	store  *conversationStore
 	broker *conversationBroker
 	config ConversationConfig
 	logger *slog.Logger
+	// coordinator answers messages in conversations without a linked
+	// issue. It is woken after a message command committed.
+	coordinator conversationCoordinator
 	// controls delivers committed controls to the bound worker of a linked
 	// conversation. It is woken after a control committed.
 	controls conversationControlRouter
@@ -87,6 +99,21 @@ type conversationService struct {
 	settle  chan struct{}
 	settled chan struct{}
 	once    sync.Once
+}
+
+// conversationCoordinator runs model turns for unlinked conversations. The
+// durable store is the queue: Wake only signals that saved user messages
+// may exist for the conversation.
+type conversationCoordinator interface {
+	Available() bool
+	Wake(conversationID string)
+	// Cancel stops a running coordinator turn and reports whether one was
+	// running.
+	Cancel(conversationID string) bool
+	// Hold stops and settles a running turn and keeps new turns from
+	// starting until release is called.
+	Hold(conversationID string) (release func(), err error)
+	Stop()
 }
 
 // conversationControlRouter hands committed controls to bound workers.
@@ -104,6 +131,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 		config: cfg,
 		logger: server.config.Logger.With("component", "conversation"),
 	}
+	service.coordinator = newConversationCoordinator(service)
 	service.controls = newConversationControlRouter(service)
 	service.settle = make(chan struct{})
 	service.settled = make(chan struct{})
@@ -115,9 +143,11 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 // it wakes stream subscribers and the component that owns the next step.
 func (c *conversationService) committed(record conversationRecord) {
 	c.broker.notify(record.ID)
-	if record.WorkItemID != "" {
-		c.controls.Wake(record.ID)
+	if record.WorkItemID == "" {
+		c.coordinator.Wake(record.ID)
+		return
 	}
+	c.controls.Wake(record.ID)
 }
 
 // start normalizes state left behind by a previous process so that no
@@ -177,30 +207,45 @@ func (c *conversationService) settleLoop() {
 	}
 }
 
-// wakePending resumes work that was accepted before a restart: linked
-// conversations with queued controls are handed to the control router.
-// Nothing is replayed; the router re-reads durable state.
+// wakePending resumes work that was accepted before a restart: unlinked
+// conversations with saved user messages are handed to the coordinator and
+// linked conversations with queued controls to the control router. Nothing
+// is replayed; the components re-read durable state.
 func (c *conversationService) wakePending(ctx context.Context) error {
-	rows, err := c.store.db.QueryContext(ctx, `SELECT DISTINCT m.conversation_id FROM conversation_messages m
+	rows, err := c.store.db.QueryContext(ctx, `SELECT DISTINCT m.conversation_id, c.work_item_id IS NOT NULL FROM conversation_messages m
 JOIN conversations c ON c.id = m.conversation_id
-WHERE m.role = 'user' AND m.delivery IN ('saved', 'queued') AND c.work_item_id IS NOT NULL`)
+WHERE m.role = 'user' AND m.delivery IN ('saved', 'queued')`)
 	if err != nil {
 		return fmt.Errorf("list pending conversations: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	controls := 0
+	var linkedIDs, unlinkedIDs []string
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var linked bool
+		if err := rows.Scan(&id, &linked); err != nil {
 			return fmt.Errorf("scan pending conversation: %w", err)
 		}
-		controls++
-		c.controls.Wake(id)
+		if linked {
+			linkedIDs = append(linkedIDs, id)
+			continue
+		}
+		unlinkedIDs = append(unlinkedIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	c.logger.Info("conversation.wake_pending", "controls", controls)
+	coordinator := 0
+	if c.coordinator.Available() {
+		coordinator = len(unlinkedIDs)
+		for _, id := range unlinkedIDs {
+			c.coordinator.Wake(id)
+		}
+	}
+	for _, id := range linkedIDs {
+		c.controls.Wake(id)
+	}
+	c.logger.Info("conversation.wake_pending", "coordinator", coordinator, "controls", len(linkedIDs))
 	return nil
 }
 
@@ -209,6 +254,7 @@ func (c *conversationService) stop() {
 		close(c.settle)
 		<-c.settled
 	})
+	c.coordinator.Stop()
 	c.controls.Stop()
 	c.broker.closeAll()
 }
