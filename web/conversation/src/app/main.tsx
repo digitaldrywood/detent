@@ -16,6 +16,7 @@ import {
   supportOrganization,
 } from "./account/Support.tsx";
 import { ClientContext } from "./client.ts";
+import { ContentSecurity } from "./ContentSecurity.tsx";
 import { makeRouter } from "./router.tsx";
 import { isLoginPath, LoginCard } from "./routes.account.tsx";
 import "./index.css";
@@ -28,6 +29,10 @@ if (container === null)
 container.setAttribute("data-detent-conversation-root", "");
 
 const root = createRoot(container);
+
+function mount(node: React.ReactNode): void {
+  root.render(<ContentSecurity>{node}</ContentSecurity>);
+}
 
 function Failure({ message }: { message: string }): React.ReactElement {
   return (
@@ -47,7 +52,7 @@ function Failure({ message }: { message: string }): React.ReactElement {
 }
 
 if (isEntrySurface()) {
-  root.render(
+  mount(
     <React.StrictMode>
       <RouterProvider router={makeEntryRouter() as never} />
     </React.StrictMode>,
@@ -61,7 +66,7 @@ function startOrganizationClient(): void {
     .then((bootstrap) => {
       const client = makeClient({ bootstrap });
       const router = makeRouter();
-      root.render(
+      mount(
         <React.StrictMode>
           <RegistryProvider>
             <ClientContext.Provider value={client}>
@@ -79,7 +84,7 @@ function startOrganizationClient(): void {
       // bootstrap on either is the expected state rather than a failure. Every
       // other path needs one and says so.
       if (isLoginPath(pathname)) {
-        root.render(
+        mount(
           <React.StrictMode>
             <div className="flex h-full flex-col">
               <LoginCard error={new URLSearchParams(search).get("error")} />
@@ -89,7 +94,7 @@ function startOrganizationClient(): void {
         return;
       }
       if (isSupportPath(pathname)) {
-        root.render(
+        mount(
           <React.StrictMode>
             <div className="flex h-full flex-col">
               <SupportCard
@@ -110,7 +115,7 @@ function startOrganizationClient(): void {
         );
         return;
       }
-      root.render(
+      mount(
         <Failure
           message={
             cause instanceof Error ? cause.message : "The chat could not start."
