@@ -15,6 +15,8 @@ import React from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { Button } from "../../components/ui/button.tsx";
+import { useClient } from "../client.ts";
+import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
 import { boardStats, searchItems, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
 import { moveItem, useBoard, useNow, useWorkHttp } from "./lib/useWork.ts";
@@ -52,6 +54,7 @@ function applyFilters(
 export function WorkBoard({ projectId }: { projectId: string | null }): React.ReactElement {
   const navigate = useNavigate();
   const shell = useShell();
+  const client = useClient();
   const http = useWorkHttp();
   const now = useNow();
   const [view, setView] = useViewState(projectId);
@@ -266,11 +269,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       <WorkTopBar
         context="Work"
         title={scopeName}
-        meta={
-          projectId === null
-            ? `${projects.size} project${projects.size === 1 ? "" : "s"}`
-            : `${items.length} issue${items.length === 1 ? "" : "s"}`
-        }
+        meta={boardScopeMeta(projectId, client.bootstrap.projects.length, items.length)}
         connection={chip}
       />
 
