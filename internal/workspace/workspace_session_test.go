@@ -328,3 +328,54 @@ func TestLocalGitExplicitWorkspaceBranchKeepsTheAttemptRule(t *testing.T) {
 		})
 	}
 }
+
+// TestLocalGitSessionHeadComparisonFailsClosed covers a session closed with a
+// head_sha git cannot compare against: the comparison failing is not evidence
+// that nothing was produced, so the worktree is kept.
+func TestLocalGitSessionHeadComparisonFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		head          func(t *testing.T, path string) string
+		wantPreserved bool
+	}{
+		{
+			name:          "the head the session opened on",
+			head:          func(t *testing.T, path string) string { return strings.TrimSpace(runGit(t, path, "rev-parse", "HEAD")) },
+			wantPreserved: false,
+		},
+		{
+			name:          "a head git has no object for",
+			head:          func(*testing.T, string) string { return strings.Repeat("d", 40) },
+			wantPreserved: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			issue := Issue{ProjectID: "detent", ID: "wi_0c1e9fe3", Identifier: "wi_0c1e9fe3-ws_2", WorkspaceSession: true}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			runGit(t, info.Path, "checkout", "--detach", "HEAD")
+			issue.PullRequestHeadSHA = tt.head(t, info.Path)
+			_, err = backend.CleanupIssue(t.Context(), issue)
+			if got := errors.Is(err, ErrWorkspacePreserved); got != tt.wantPreserved {
+				t.Fatalf("CleanupIssue() error = %v, want preserved %t", err, tt.wantPreserved)
+			}
+			if !tt.wantPreserved && err != nil {
+				t.Fatalf("CleanupIssue() error = %v", err)
+			}
+			if _, statErr := os.Stat(info.Path); tt.wantPreserved != (statErr == nil) {
+				t.Fatalf("worktree present = %t, want %t", statErr == nil, tt.wantPreserved)
+			}
+		})
+	}
+}

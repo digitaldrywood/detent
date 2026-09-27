@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -144,13 +143,7 @@ func (l *LocalGit) checkWorkspaceSessionCommits(ctx context.Context, path string
 	}
 	output, err := runGitAt(ctx, path, "rev-list", "--count", "HEAD", "--not", headSHA)
 	if err != nil {
-		l.logger.Warn(
-			"workspace session head comparison failed",
-			slog.String("path", path),
-			slog.String("head_sha", headSHA),
-			slog.Any("error", err),
-		)
-		return nil
+		return fmt.Errorf("%w at %s: compare workspace session with %s: %w", ErrWorkspacePreserved, path, headSHA, err)
 	}
 	if strings.TrimSpace(output) != "0" {
 		return fmt.Errorf("%w at %s: the workspace session committed past %s", ErrWorkspacePreserved, path, headSHA)

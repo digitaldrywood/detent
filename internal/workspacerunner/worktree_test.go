@@ -269,3 +269,76 @@ func worktreeBranches(t *testing.T, source string) string {
 	}
 	return strings.Join(kept, " ")
 }
+
+// TestGitWorktreeFreshSessionChecksOutWhatWasAskedFor opens fresh sessions on a
+// ref and on a head_sha, including ones that exist only on the remote, and
+// refuses refs git would misread.
+func TestGitWorktreeFreshSessionChecksOutWhatWasAskedFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ref     string
+		head    string
+		want    string
+		wantErr bool
+	}{
+		{name: "a local branch", ref: "feature", want: "feature"},
+		{name: "a branch only on the remote", ref: "remote-only", want: "remote-only"},
+		{name: "a head only on the remote", head: "remote-only", want: "remote-only"},
+		{name: "an option-shaped ref", ref: "--upload-pack=touch", wantErr: true},
+		{name: "an invalid ref name", ref: "bad..ref", wantErr: true},
+		{name: "a ref nobody has", ref: "missing", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			worktrees, _, source, root := newGitWorktree(t)
+			upstream := filepath.Join(t.TempDir(), "upstream.git")
+			runWorktreeCommand(t, source, "git", "clone", "--quiet", "--bare", source, upstream)
+			runWorktreeGit(t, source, "remote", "add", "origin", upstream)
+			runWorktreeGit(t, source, "fetch", "--quiet", "origin")
+			runWorktreeGit(t, source, "switch", "--quiet", "-c", "feature")
+			runWorktreeGit(t, source, "commit", "--quiet", "--allow-empty", "-m", "feature work")
+			runWorktreeGit(t, source, "switch", "--quiet", "main")
+			clone := filepath.Join(t.TempDir(), "clone")
+			runWorktreeCommand(t, source, "git", "clone", "--quiet", upstream, clone)
+			runWorktreeGit(t, clone, "config", "user.name", "Test User")
+			runWorktreeGit(t, clone, "config", "user.email", "test@example.com")
+			runWorktreeGit(t, clone, "switch", "--quiet", "-c", "remote-only")
+			runWorktreeGit(t, clone, "commit", "--quiet", "--allow-empty", "-m", "remote work")
+			runWorktreeGit(t, clone, "push", "--quiet", "origin", "remote-only")
+			commits := map[string]string{
+				"feature":     strings.TrimSpace(runWorktreeGit(t, source, "rev-parse", "feature")),
+				"remote-only": strings.TrimSpace(runWorktreeGit(t, clone, "rev-parse", "HEAD")),
+			}
+
+			checkout := hubclient.WorkspaceCheckout{WorkItemID: "wi_0c1e9fe3", Worktree: workspacesession.WorktreeFresh, Ref: tt.ref}
+			if tt.head != "" {
+				checkout.HeadSHA = commits[tt.head]
+			}
+			path, err := worktrees.Prepare(t.Context(), "ws_1", checkout)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Prepare() error = nil, want a refusal")
+				}
+				if dirs := worktreeDirs(t, root); len(dirs) != 0 {
+					t.Fatalf("a refused session left worktrees behind: %v", dirs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Prepare() error = %v", err)
+			}
+			if got := strings.TrimSpace(runWorktreeGit(t, path, "rev-parse", "HEAD")); got != commits[tt.want] {
+				t.Fatalf("worktree HEAD = %s, want %s (%s)", got, commits[tt.want], tt.want)
+			}
+			if err := worktrees.Release(t.Context(), path, checkout); err != nil {
+				t.Fatalf("Release() error = %v", err)
+			}
+			if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("session worktree remains after release: %v", statErr)
+			}
+		})
+	}
+}
