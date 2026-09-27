@@ -97,3 +97,14 @@ body,
 .group\/sidebar-wrapper[data-sidebar-state="expanded"] [data-sidebar-control] {
   display: none;
 }
+
+/* Base UI's scrollbar rule, served here because ContentSecurity turns off its inline style elements. */
+@layer base {
+  .base-ui-disable-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .base-ui-disable-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
