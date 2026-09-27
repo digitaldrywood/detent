@@ -209,6 +209,8 @@ across two runners. Each shard retains JSON test evidence and caches Go modules
 and compiled race packages by OS, architecture, Go version, shard, and `go.sum`.
 The eight-minute budget is a wall-clock target, not a shortened test timeout.
 
+`Browser Visual` aggregates three Playwright shards the same way (`--shard=N/3`), failing if any shard fails, is cancelled, or is skipped. Each shard keeps the fifteen-minute job timeout and uploads its own evidence and failure artifacts. The Cloud client specs run a hub preview per spec file, so one runner can no longer fit the full suite inside the budget.
+
 
 ## Still Git/PR Coupled
 

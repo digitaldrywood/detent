@@ -205,10 +205,26 @@ jobs:
         run: make security
 
   browser-visual:
-    if: github.event_name != 'pull_request'
     name: Browser Visual
+    needs: [browser-visual-shard]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require every Browser Visual shard to succeed
+        env:
+          SHARD_RESULT: ${{ needs.browser-visual-shard.result }}
+        run: test "$SHARD_RESULT" = success
+
+  browser-visual-shard:
+    if: github.event_name != 'pull_request'
+    name: Browser Visual (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -261,7 +277,7 @@ jobs:
         if: steps.visual-changes.outputs.run_visual == 'true'
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
-        run: npm run test:visual
+        run: npm run test:visual -- --shard=${{ matrix.shard }}/3
 
       - name: Run browser smoke gate
         if: steps.visual-changes.outputs.run_visual != 'true'
@@ -275,7 +291,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-visual-evidence
+          name: browser-visual-evidence-${{ matrix.shard }}
           path: tmp/playwright-evidence
           if-no-files-found: ignore
           retention-days: 14
@@ -285,7 +301,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-visual-failure-artifacts
+          name: browser-visual-failure-artifacts-${{ matrix.shard }}
           path: |
             tmp/playwright-report
             tmp/playwright-results

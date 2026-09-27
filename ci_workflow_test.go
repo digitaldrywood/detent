@@ -46,7 +46,7 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 		budget:   "15m",
 		jobStart: "  browser-visual:",
 		jobEnd:   "  portability-verify:",
-		markers:  []string{"name: Browser Visual", "timeout-minutes: 15", "Run full browser visual gate", "Run browser smoke gate"},
+		markers:  []string{"name: Browser Visual", "needs: [browser-visual-shard]", "SHARD_RESULT", "timeout-minutes: 15", "Run full browser visual gate", "Run browser smoke gate"},
 	},
 }
 
@@ -563,7 +563,7 @@ func TestCIDraftAndVerifyDependencies(t *testing.T) {
 	if strings.Contains(workflow, "  pr-required-placeholders:\n") {
 		t.Fatal("successful placeholder checks must not stand in for unrun jobs")
 	}
-	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual"} {
+	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "browser-visual-shard"} {
 		t.Run(job, func(t *testing.T) {
 			section := workflowBetween(t, workflow, "  "+job+":\n", "    steps:")
 			if !strings.Contains(section, "if: github.event_name != 'pull_request'") && !strings.Contains(section, "if: always() && github.event_name != 'pull_request'") {
@@ -580,6 +580,18 @@ func TestCIDraftAndVerifyDependencies(t *testing.T) {
 	fast := workflowBetween(t, workflow, "  verify-fast:\n", "  verify-race:\n")
 	if !strings.Contains(fast, "run: make check-app") {
 		t.Error("verify-fast must gate the Cloud client and its committed bundle")
+	}
+	visual := workflowBetween(t, workflow, "  browser-visual:\n", "  browser-visual-shard:\n")
+	for _, want := range []string{"needs: [browser-visual-shard]", "if: always()", `test "$SHARD_RESULT" = success`} {
+		if !strings.Contains(visual, want) {
+			t.Errorf("browser visual aggregate must reject failed, cancelled and skipped shards: missing %q", want)
+		}
+	}
+	shards := workflowBetween(t, workflow, "  browser-visual-shard:\n", "  portability-verify:\n")
+	for _, want := range []string{"shard: [1, 2, 3]", "fail-fast: false", "--shard=${{ matrix.shard }}/3", "browser-visual-evidence-${{ matrix.shard }}", "browser-visual-failure-artifacts-${{ matrix.shard }}"} {
+		if !strings.Contains(shards, want) {
+			t.Errorf("browser visual shards missing %q", want)
+		}
 	}
 	race := workflowBetween(t, workflow, "  verify-race:\n", "  test-cover:\n")
 	for _, want := range []string{"shard: [0, 1, 2, 3, 4]", "tmp/hub-race-evidence-*", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
