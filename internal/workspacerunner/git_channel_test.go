@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -469,4 +470,69 @@ func (h *scriptedHub) heartbeatRequests() []hubclient.WorkspaceHeartbeatRequest 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.heartbeats)
+}
+
+// gitlessWorktree is a worktree backend that says whether it produces git
+// worktrees, the way GitWorktree does for its backend.
+type gitlessWorktree struct {
+	*fixedWorktree
+	git bool
+}
+
+func (w gitlessWorktree) ProvidesGit() bool { return w.git }
+
+func TestSessionAdvertisesGitOnlyWhenTheBackendProvidesIt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		git     bool
+		wantGit bool
+	}{
+		{name: "a git backend advertises git", git: true, wantGit: true},
+		{name: "a filesystem backend advertises no git", git: false, wantGit: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := repositoryWorktree(t)
+			f := startSessionWith(t, root, nil, func(config *workspacerunner.Config) {
+				config.Worktree = gitlessWorktree{fixedWorktree: &fixedWorktree{path: root}, git: test.git}
+			})
+			bound := f.hub.bindRequests()
+			if len(bound) != 1 || bound[0].Capabilities.Git != test.wantGit {
+				t.Fatalf("bind capabilities = %+v, want git %t", bound, test.wantGit)
+			}
+			f.send(t, gitFrame(t, workspacesession.TypeGitStatus, "conn:1", workspacesession.GitRequest{}, person()))
+			answer := f.receive(t)
+			if served := answer.Type == workspacesession.TypeGitStatus; served != test.wantGit {
+				t.Fatalf("git status answered %+v, want served %t", answer, test.wantGit)
+			}
+		})
+	}
+}
+
+func TestGitWorktreeProvidesGitOnlyOverLocalGit(t *testing.T) {
+	t.Parallel()
+	gitBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: t.TempDir(), SourceRoot: initWorktreeSourceRepo(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filesystem, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		backend workspace.Backend
+		want    bool
+	}{
+		{name: "local git", backend: gitBackend, want: true},
+		{name: "filesystem", backend: filesystem, want: false},
+	}
+	for _, test := range tests {
+		worktree := &workspacerunner.GitWorktree{Backend: test.backend}
+		if got := worktree.ProvidesGit(); got != test.want {
+			t.Errorf("%s: ProvidesGit() = %t, want %t", test.name, got, test.want)
+		}
+	}
 }

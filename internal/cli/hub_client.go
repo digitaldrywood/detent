@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -86,7 +87,7 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 			// never offered a workspace item, and the lane is started under
 			// exactly the same condition. Isolation is `user` because every
 			// channel this runner serves runs as the runner's own account.
-			WorkspaceCapabilities: workspaceLaneCapabilities(clientConfig),
+			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg),
 			WorkspaceIsolation:    workspacesession.IsolationUser,
 		},
 		HeartbeatInterval: clientConfig.HeartbeatInterval(),

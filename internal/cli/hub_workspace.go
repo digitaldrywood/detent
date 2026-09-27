@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -44,13 +45,37 @@ func workspaceLaneEnabled(capabilities workspacesession.Capabilities) bool {
 // The hub's claim gate reads the report from the enrolled runner's identity, so
 // a runner without an enrolled identity or without native projects could never
 // pass it: it reports nothing and starts no lane. The heartbeat report and the
-// lane start both read this, so the two can never disagree.
-func workspaceLaneCapabilities(client globalconfig.HubClient) workspacesession.Capabilities {
+// lane start both read this, so the two can never disagree. Git is reported
+// only when every native project's worktree backend produces git worktrees,
+// because the report is one answer for the whole runner.
+func workspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config) workspacesession.Capabilities {
+	client := cfg.Client
 	capabilities := workspacerunner.Capabilities(workspacerunner.DefaultSupport())
 	if strings.TrimSpace(client.IdentityFile) == "" || len(client.NativeProjects) == 0 || !workspaceLaneEnabled(capabilities) {
 		return workspacesession.Capabilities{}
 	}
+	capabilities.Git = capabilities.Git && nativeProjectsUseGit(ctx, cfg)
 	return capabilities
+}
+
+// nativeProjectsUseGit reports whether every native project resolves to a
+// git worktree backend. A project that cannot be resolved counts as not git.
+func nativeProjectsUseGit(ctx context.Context, cfg globalconfig.Config) bool {
+	projects := project.ManagerConfigFromGlobal(cfg).Projects
+	for name := range cfg.Client.NativeProjects {
+		selected, found := workspaceLaneProject(projects, name)
+		if !found {
+			return false
+		}
+		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		if err != nil {
+			return false
+		}
+		if kind := strings.TrimSpace(workflow.Config.Workspace.Kind); kind != "" && kind != workspace.KindLocalGit {
+			return false
+		}
+	}
+	return true
 }
 
 // workspaceLaneScheduler is the part of the hub scheduler a workspace lane
@@ -84,7 +109,7 @@ func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if !workspaceLaneEnabled(workspaceLaneCapabilities(cfg.Client)) {
+	if !workspaceLaneEnabled(workspaceLaneCapabilities(ctx, cfg)) {
 		return nil
 	}
 	scheduler, ok := scheduling.(workspaceLaneScheduler)

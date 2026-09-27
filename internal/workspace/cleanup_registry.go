@@ -272,6 +272,10 @@ func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnersh
 		result.UnownedSkipped++
 		return false, nil
 	}
+	if sessionHeld(record.Path) {
+		result.ActiveSkipped++
+		return false, nil
+	}
 	exists, _, err := pathExists(record.Path)
 	if err != nil {
 		return false, err

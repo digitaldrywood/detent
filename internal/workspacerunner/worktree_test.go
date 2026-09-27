@@ -342,3 +342,43 @@ func TestGitWorktreeFreshSessionChecksOutWhatWasAskedFor(t *testing.T) {
 		})
 	}
 }
+
+// TestGitWorktreeHoldsItsWorktreeAgainstResidualSweeps runs the orchestrator's
+// residual sweep, from a backend instance of its own, while a session serves a
+// fresh worktree and again after the session released it.
+func TestGitWorktreeHoldsItsWorktreeAgainstResidualSweeps(t *testing.T) {
+	t.Parallel()
+	worktrees, _, source, root := newGitWorktree(t)
+	sweeper, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(runWorktreeGit(t, source, "rev-parse", "HEAD"))
+	checkout := hubclient.WorkspaceCheckout{WorkItemID: "wi_0c1e9fe3", Worktree: workspacesession.WorktreeFresh, HeadSHA: head}
+	path, err := worktrees.Prepare(t.Context(), "ws_sweep", checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		release     bool
+		wantPresent bool
+	}{
+		{name: "a sweep while the session is open leaves it", wantPresent: true},
+		{name: "a sweep after the session released it finds nothing left", release: true},
+	}
+	for _, tt := range tests {
+		if tt.release {
+			if err := worktrees.Release(t.Context(), path, checkout); err != nil {
+				t.Fatalf("%s: Release() error = %v", tt.name, err)
+			}
+		}
+		if _, err := sweeper.ReconcileResiduals(t.Context(), nil); err != nil {
+			t.Fatalf("%s: ReconcileResiduals() error = %v", tt.name, err)
+		}
+		if _, statErr := os.Stat(path); (statErr == nil) != tt.wantPresent {
+			t.Fatalf("%s: worktree present = %t, want %t", tt.name, statErr == nil, tt.wantPresent)
+		}
+	}
+}

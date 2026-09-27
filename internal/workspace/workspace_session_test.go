@@ -379,3 +379,94 @@ func TestLocalGitSessionHeadComparisonFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestLocalGitLeavesAHeldSessionAlone covers a residual sweep and a direct
+// cleanup running while a workspace session is still serving its worktree: a
+// clean detached session worktree is otherwise exactly what they remove.
+func TestLocalGitLeavesAHeldSessionAlone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		held        bool
+		wantRemoved bool
+	}{
+		{name: "a session still serving the worktree", held: true},
+		{name: "a session that has released it", wantRemoved: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			issue := Issue{ProjectID: "detent", ID: "wi_0c1e9fe3", Identifier: "wi_0c1e9fe3-ws_held", WorkspaceSession: true}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			runGit(t, info.Path, "checkout", "--detach", "HEAD")
+			release := HoldSession(info.Path)
+			if !tt.held {
+				release()
+			}
+			defer release()
+			backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return nil, nil }
+
+			result, err := backend.ReconcileResiduals(t.Context(), nil)
+			if err != nil {
+				t.Fatalf("ReconcileResiduals() error = %v", err)
+			}
+			_, statErr := os.Stat(info.Path)
+			if removed := errors.Is(statErr, fs.ErrNotExist); removed != tt.wantRemoved {
+				t.Fatalf("ReconcileResiduals() = %+v, removed %t, want %t", result, removed, tt.wantRemoved)
+			}
+			if tt.held {
+				if result.ActiveSkipped != 1 {
+					t.Fatalf("ReconcileResiduals() = %+v, want the held session skipped as active", result)
+				}
+				if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+					t.Fatalf("CleanupIssue() error = %v, want preservation while held", err)
+				}
+			}
+		})
+	}
+}
+
+func TestHoldSessionCountsEveryHolder(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "session")
+	tests := []struct {
+		name    string
+		holders int
+		release int
+		want    bool
+	}{
+		{name: "one holder released", holders: 1, release: 1, want: false},
+		{name: "two holders, one released", holders: 2, release: 1, want: true},
+		{name: "a release called twice counts once", holders: 2, release: -1, want: true},
+	}
+	for _, tt := range tests {
+		key := filepath.Join(path, tt.name)
+		var releases []func()
+		for range tt.holders {
+			releases = append(releases, HoldSession(key))
+		}
+		if tt.release < 0 {
+			releases[0]()
+			releases[0]()
+		} else {
+			for _, release := range releases[:tt.release] {
+				release()
+			}
+		}
+		if got := sessionHeld(key); got != tt.want {
+			t.Errorf("%s: sessionHeld() = %t, want %t", tt.name, got, tt.want)
+		}
+		for _, release := range releases {
+			release()
+		}
+	}
+}

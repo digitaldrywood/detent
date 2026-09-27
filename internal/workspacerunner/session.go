@@ -148,6 +148,27 @@ func Capabilities(support Support) workspacesession.Capabilities {
 	}
 }
 
+// gitProvider is implemented by a Worktree that can say whether it produces git
+// worktrees. A Worktree that does not implement it is taken to produce them.
+type gitProvider interface {
+	ProvidesGit() bool
+}
+
+// worktreeProvidesGit reports whether worktree produces git worktrees.
+func worktreeProvidesGit(worktree Worktree) bool {
+	provider, ok := worktree.(gitProvider)
+	return !ok || provider.ProvidesGit()
+}
+
+// served is Capabilities narrowed to what this session's worktree backend can
+// produce: a backend that makes no git worktrees serves no git channel, so the
+// bind never claims one.
+func (s *Session) served() workspacesession.Capabilities {
+	set := Capabilities(s.config.Support)
+	set.Git = set.Git && worktreeProvidesGit(s.config.Worktree)
+	return set
+}
+
 // Session is one workspace held open on this runner.
 type Session struct {
 	config Config
@@ -279,7 +300,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 		// not to be a repository is reported without the capability rather
 		// than failed, and the header disables its git group with that reason
 		// (section 18.12).
-		WorkspaceIdentity: s.config.Identity, Capabilities: Capabilities(s.config.Support),
+		WorkspaceIdentity: s.config.Identity, Capabilities: s.served(),
 		// A runner with no container runtime reports user isolation and the
 		// terminal card stays disabled for organizations that require a
 		// container. This slice serves no terminal at all, so the honest
@@ -385,7 +406,9 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	// group with a reason, which is a better answer for the person than losing
 	// the whole workspace because this checkout is not a repository. The git
 	// service holds no handle, so there is nothing to close on the way out.
-	if git, err := workspacegit.Open(ctx, path, deny); err != nil {
+	if !worktreeProvidesGit(s.config.Worktree) {
+		s.logger.Info("workspace.git_unavailable", "path", path, "reason", "the worktree backend produces no git worktrees")
+	} else if git, err := workspacegit.Open(ctx, path, deny); err != nil {
 		s.logger.Info("workspace.git_unavailable", "path", path,
 			"reason", workspacegit.Message(err), "error", err)
 	} else {
@@ -534,8 +557,8 @@ func (s *Session) heartbeat(ctx context.Context, state, reason string) error {
 // workspacegit.Open and before the workspace leaves starting, so the resource
 // is narrowed before any surface has read it.
 func (s *Session) capabilities() workspacesession.Capabilities {
-	set := Capabilities(s.config.Support)
-	set.Git = s.git != nil
+	set := s.served()
+	set.Git = set.Git && s.git != nil
 	// A terminal this worktree cannot actually open is not a terminal. The
 	// service is nil when the platform has none, when the operator asked for
 	// none, or when the organization requires an isolation level this runner

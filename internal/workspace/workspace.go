@@ -597,6 +597,9 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		return result, fmt.Errorf("%w: workspace in use", ErrWorkspacePreserved)
 	}
 	defer release()
+	if sessionHeld(info.Path) {
+		return result, fmt.Errorf("%w: an open workspace session holds %s", ErrWorkspacePreserved, info.Path)
+	}
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err
 	}

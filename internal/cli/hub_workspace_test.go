@@ -158,33 +158,40 @@ func TestNewWorkspaceLanes(t *testing.T) {
 func TestWorkspaceLaneCapabilities(t *testing.T) {
 	t.Parallel()
 	served := workspacerunner.Capabilities(workspacerunner.DefaultSupport())
+	withoutGit := served
+	withoutGit.Git = false
 	tests := []struct {
-		name   string
-		client globalconfig.HubClient
-		want   workspacesession.Capabilities
+		name     string
+		identity string
+		token    string
+		projects map[string]string
+		kind     string
+		want     workspacesession.Capabilities
 	}{
-		{
-			name:   "an enrolled runner with native projects reports what it serves",
-			client: globalconfig.HubClient{IdentityFile: "/runner/identity.json", NativeProjects: map[string]string{"orders": "prj_test"}},
-			want:   served,
-		},
-		{
-			name:   "a token runner reports nothing",
-			client: globalconfig.HubClient{TokenEnvironment: "HUB_TOKEN", NativeProjects: map[string]string{"orders": "prj_test"}},
-		},
-		{
-			name:   "an enrolled runner without native projects reports nothing",
-			client: globalconfig.HubClient{IdentityFile: "/runner/identity.json"},
-		},
-		{
-			name:   "a blank identity path reports nothing",
-			client: globalconfig.HubClient{IdentityFile: "  ", NativeProjects: map[string]string{"orders": "prj_test"}},
-		},
+		{name: "an enrolled runner on git worktrees reports what it serves", identity: "/runner/identity.json", projects: map[string]string{"orders": "prj_test"}, want: served},
+		{name: "an enrolled runner on filesystem worktrees reports no git", identity: "/runner/identity.json", projects: map[string]string{"orders": "prj_test"}, kind: "filesystem", want: withoutGit},
+		{name: "a project the runner cannot resolve reports no git", identity: "/runner/identity.json", projects: map[string]string{"unknown": "prj_test"}, want: withoutGit},
+		{name: "a token runner reports nothing", token: "HUB_TOKEN", projects: map[string]string{"orders": "prj_test"}},
+		{name: "an enrolled runner without native projects reports nothing", identity: "/runner/identity.json"},
+		{name: "a blank identity path reports nothing", identity: "  ", projects: map[string]string{"orders": "prj_test"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := workspaceLaneCapabilities(test.client); got != test.want {
+			orders := writeWorkspaceLaneProject(t, "orders")
+			if test.kind != "" {
+				raw, err := os.ReadFile(orders.Workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				updated := strings.Replace(string(raw), "workspace:\n", "workspace:\n  kind: "+test.kind+"\n", 1)
+				if err := os.WriteFile(orders.Workflow, []byte(updated), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := globalconfig.Config{Projects: []globalconfig.Project{orders}}
+			cfg.Client = globalconfig.HubClient{IdentityFile: test.identity, TokenEnvironment: test.token, NativeProjects: test.projects}
+			if got := workspaceLaneCapabilities(t.Context(), cfg); got != test.want {
 				t.Fatalf("workspaceLaneCapabilities() = %+v, want %+v", got, test.want)
 			}
 		})

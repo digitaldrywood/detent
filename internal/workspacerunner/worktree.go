@@ -35,6 +35,41 @@ type GitWorktree struct {
 	// created records which paths this type made, so Release removes only
 	// those: a retained worktree belongs to the attempt, not to us.
 	created map[string]workspace.Issue
+	// holds releases each served path's workspace.HoldSession, which keeps
+	// cleanup and residual reconciliation off a worktree a session is using.
+	holds map[string]func()
+}
+
+// hold marks path as served until Release.
+func (g *GitWorktree) hold(path string) {
+	release := workspace.HoldSession(path)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.holds == nil {
+		g.holds = map[string]func(){}
+	}
+	if previous, ok := g.holds[path]; ok {
+		previous()
+	}
+	g.holds[path] = release
+}
+
+// unhold ends the hold on path, if there is one.
+func (g *GitWorktree) unhold(path string) {
+	g.mu.Lock()
+	release, ok := g.holds[path]
+	delete(g.holds, path)
+	g.mu.Unlock()
+	if ok {
+		release()
+	}
+}
+
+// ProvidesGit reports whether the backend produces git worktrees, which is what
+// the git channel needs. A filesystem backend produces plain directories.
+func (g *GitWorktree) ProvidesGit() bool {
+	_, ok := g.Backend.(*workspace.LocalGit)
+	return ok
 }
 
 // existingBackend is the backend lookup a retained workspace needs.
@@ -71,6 +106,7 @@ func (g *GitWorktree) Prepare(ctx context.Context, workspaceID string, checkout 
 	if err != nil {
 		return "", fmt.Errorf("create workspace worktree: %w", err)
 	}
+	g.hold(info.Path)
 	if info.Created {
 		g.mu.Lock()
 		if g.created == nil {
@@ -181,6 +217,7 @@ func (g *GitWorktree) retained(ctx context.Context, checkout hubclient.Workspace
 	if err != nil {
 		return "", fmt.Errorf("find retained worktree for %s: %w", identifier, err)
 	}
+	g.hold(info.Path)
 	return info.Path, nil
 }
 
@@ -202,6 +239,7 @@ func commitID(value string) bool {
 // alone. Closing a workspace never deletes the attempt's artifacts, and the
 // attempt's worktree is the largest of them.
 func (g *GitWorktree) Release(ctx context.Context, path string, checkout hubclient.WorkspaceCheckout) error {
+	g.unhold(path)
 	g.mu.Lock()
 	issue, ours := g.created[path]
 	delete(g.created, path)
