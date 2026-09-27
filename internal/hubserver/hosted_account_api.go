@@ -87,7 +87,7 @@ func (s *Service) acceptHostedInvitationJSON(c echo.Context) error {
 	if _, _, err := s.hostedSession(c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	if message := s.acceptHostedInvitationToken(c, request.Token); message != "" {
+	if message := s.acceptHostedInvitationToken(c, request.Token); message != "" && !s.hostedInvitationAcceptedBySession(c, request.Token) {
 		return s.hostedJSONError(c, http.StatusForbidden, message)
 	}
 	return c.JSON(http.StatusOK, hostedNextResponse{Next: s.config.Hosted.PublicURL + "/auth/oidc/start"})
@@ -114,4 +114,22 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 		return s.hostedJSONError(c, status, message)
 	}
 	return c.JSON(http.StatusOK, hostedSupportResponse{Support: hostedSupportView{Actor: session.Email, ExpiresAt: transaction.ExpiresAt.UTC()}})
+}
+
+// hostedInvitationAcceptedBySession reports whether the invitation named by
+// token was already accepted by the signed-in account, so a retry after a lost
+// response receives the same destination instead of a refusal.
+func (s *Service) hostedInvitationAcceptedBySession(c echo.Context, token string) bool {
+	session, _, err := s.hostedSession(c)
+	if err != nil || session.Identity.SupportActor != "" || token == "" || len(token) > 512 {
+		return false
+	}
+	ctx := c.Request().Context()
+	invitation, err := s.config.Hosted.Provider.Invitation(ctx, token)
+	if err != nil || invitation.State != "accepted" || invitation.AcceptedUserID != session.Identity.Subject {
+		return false
+	}
+	var accepted int
+	err = s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = ?", invitation.ID, s.config.Hosted.OrganizationID, session.Identity.Subject).Scan(&accepted)
+	return err == nil && accepted == 1
 }

@@ -363,11 +363,26 @@ type appBootstrap struct {
 
 // appBootstrapPayload implements GET /app/bootstrap and its /chat/bootstrap
 // alias for the hosted session.
+// appBootstrapRefusal is the 403 a signed-in account without organization
+// access receives. It names the organization and carries the session's CSRF
+// token so the support screen, the one screen such an account can use, can
+// start a support session.
+type appBootstrapRefusal struct {
+	Code    string                     `json:"code"`
+	Message string                     `json:"message"`
+	Details appBootstrapRefusalDetails `json:"details"`
+}
+
+type appBootstrapRefusalDetails struct {
+	Organization string `json:"organization"`
+	CSRFToken    string `json:"csrf_token,omitempty"`
+}
+
 func (s *Service) appBootstrapPayload(c echo.Context) error {
 	credential, status, err := s.hostedCredential(c)
 	if err != nil {
 		if status == http.StatusForbidden {
-			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+			return c.JSON(http.StatusForbidden, appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
 		}
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}

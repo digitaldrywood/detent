@@ -74,7 +74,16 @@ func TestHostedAccountAPI(t *testing.T) {
 				t.Fatalf("next = %q", next.Next)
 			}
 		}},
-		{name: "invitation replay", account: "invitee", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("invitee"), status: http.StatusForbidden, code: "forbidden"},
+		{name: "invitation replay by the same account", account: "invitee", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("invitee"), status: http.StatusOK, check: func(t *testing.T, body []byte) {
+			var next hostedNextResponse
+			if err := json.Unmarshal(body, &next); err != nil {
+				t.Fatal(err)
+			}
+			if next.Next != f.server.URL+"/auth/oidc/start" {
+				t.Fatalf("next = %q", next.Next)
+			}
+		}},
+		{name: "invitation replay by another account", account: "viewer", method: http.MethodPost, path: "/invitations/accept", body: accept, headers: csrf("viewer"), status: http.StatusForbidden, code: "forbidden"},
 		{name: "ordinary staff cannot start support", account: "staff", method: http.MethodPost, path: "/support/start", body: `{"idempotency_key":"support"}`, headers: csrf("staff"), status: http.StatusForbidden, code: "forbidden"},
 		{name: "member cannot start support", account: "owner", method: http.MethodPost, path: "/support/start", body: `{"idempotency_key":"support"}`, headers: csrf("owner"), status: http.StatusForbidden, code: "forbidden"},
 		{name: "support without CSRF", account: "support-staff", method: http.MethodPost, path: "/support/start", body: `{"idempotency_key":"support"}`, status: http.StatusForbidden, code: "invalid_csrf"},
@@ -244,4 +253,40 @@ func accountClientVariants(key string) []string {
 		return []string{key}
 	}
 	return []string{strings.Replace(key, match[0], match[1], 1), strings.Replace(key, match[0], "", 1)}
+}
+
+func TestAppBootstrapRefusalCarriesSupportCSRF(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedFixture(t, true)
+	for _, test := range []struct {
+		name, account string
+		status        int
+		csrf          bool
+	}{
+		{name: "support actor without access", account: "support-staff", status: http.StatusForbidden, csrf: true},
+		{name: "ordinary staff", account: "staff", status: http.StatusForbidden, csrf: true},
+		{name: "anonymous", status: http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := f.rawAPI(t, test.account, http.MethodGet, "/app/bootstrap", "", nil)
+			browserHostedStatus(t, response, test.status)
+			var refusal appBootstrapRefusal
+			browserHostedDecode(t, response, &refusal)
+			if !test.csrf {
+				if refusal.Details.CSRFToken != "" {
+					t.Fatalf("anonymous refusal carries a CSRF token: %#v", refusal)
+				}
+				return
+			}
+			if refusal.Details.Organization != "org_browser_preview" || refusal.Details.CSRFToken != hostedCSRF(f.cookies[test.account].Value) {
+				t.Fatalf("refusal = %#v", refusal)
+			}
+			start := f.rawAPI(t, test.account, http.MethodPost, browserHostedOrganizationBase+"/support/start", `{"idempotency_key":"support"}`, map[string]string{"X-CSRF-Token": refusal.Details.CSRFToken})
+			want := http.StatusForbidden
+			if test.account == "support-staff" {
+				want = http.StatusOK
+			}
+			browserHostedStatus(t, start, want)
+		})
+	}
 }
