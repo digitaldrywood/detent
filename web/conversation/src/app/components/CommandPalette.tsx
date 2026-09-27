@@ -508,11 +508,11 @@ function OpenCommandPaletteDialog(props: {
       "git",
     ],
     title: "Add project",
-    description: "Projects are created in the hub, not from this client",
-    disabled: true,
+    description: "Create it in Settings → Projects",
     icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
-    keepOpen: true,
-    run: async () => undefined,
+    run: async () => {
+      await navigateTo("/settings/projects");
+    },
   });
 
   actionItems.push({

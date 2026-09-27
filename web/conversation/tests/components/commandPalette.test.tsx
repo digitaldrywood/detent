@@ -196,17 +196,23 @@ describe("the command palette", () => {
     expect(within(onUsage).getByText("Toggle sidebar")).toBeTruthy();
   }, 30_000);
 
+  it("sends Add project to the projects settings, where projects are created", async () => {
+    const { router } = await mountShell();
+    const popup = await openPalette();
+    const row = within(popup).getByText("Add project").closest("[aria-disabled]");
+    expect(row?.getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(within(popup).getByText("Add project"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/settings/projects"), {
+      timeout: 5_000,
+    });
+  }, 30_000);
+
   it("keeps the unavailable commands on the list and announces them disabled", async () => {
     const { router } = await mountShell();
     const popup = await openPalette();
     const before = router.state.location.pathname;
 
-    for (const title of [
-      "Go to file",
-      "Search project contents",
-      "Add project",
-      "Toggle theme editor",
-    ]) {
+    for (const title of ["Go to file", "Search project contents", "Toggle theme editor"]) {
       const row = within(popup).getByText(title).closest("[aria-disabled]");
       expect(row, `${title} should render as a disabled row`).not.toBeNull();
       expect(row?.getAttribute("aria-disabled")).toBe("true");

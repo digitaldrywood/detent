@@ -25,7 +25,8 @@ import {
   refusalMessage,
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
-import { firstUnreadyStep, orderedSteps, Stepper } from "../../src/app/account/Setup.tsx";
+import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
+import { initCommand, runnerHubUrl } from "../../src/app/fleet/EnrollRunner.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { noApprovedPolicy, saveMessage } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
@@ -347,5 +348,35 @@ describe("the project settings", () => {
       saveMessage(new AccountError({ status: 422, code: "invalid_request", message: "Bad intake" })),
     ).toBe("Bad intake");
     expect(saveMessage(null)).toBeNull();
+  });
+});
+
+describe("the pasted policy descriptor", () => {
+  it.each([
+    { name: "an inspect descriptor", text: '{"schema":1,"policy_id":"policy_abc","requirements":{}}', id: "policy_abc" },
+    { name: "one surrounded by whitespace", text: '  {"policy_id":"policy_x"}\n', id: "policy_x" },
+  ])("accepts $name", ({ text, id }) => {
+    expect(parsePolicyDescriptor(text).policy_id).toBe(id);
+  });
+
+  it.each([
+    { name: "text that is not JSON", text: "policy_abc", message: /not JSON/ },
+    { name: "an array", text: "[]", message: /no policy_id/ },
+    { name: "an object without an id", text: '{"schema":1}', message: /no policy_id/ },
+    { name: "a numeric id", text: '{"policy_id":7}', message: /no policy_id/ },
+  ])("refuses $name", ({ text, message }) => {
+    expect(() => parsePolicyDescriptor(text)).toThrow(message);
+  });
+});
+
+describe("the runner hub URL", () => {
+  it.each([
+    { name: "a standalone hub", url: "https://hub.example.com", base: "", want: "https://hub.example.com" },
+    { name: "a tenant behind the shared entry", url: "https://cloud.example.com", base: "/organizations/org_1", want: "https://cloud.example.com/organizations/org_1" },
+    { name: "a trailing slash", url: "https://cloud.example.com/", base: "/organizations/org_1/", want: "https://cloud.example.com/organizations/org_1" },
+    { name: "a public URL that already names the tenant", url: "https://cloud.example.com/organizations/org_1", base: "/organizations/org_1", want: "https://cloud.example.com/organizations/org_1" },
+  ])("addresses $name", ({ url, base, want }) => {
+    expect(runnerHubUrl(url, base)).toBe(want);
+    expect(initCommand(runnerHubUrl(url, base))).toBe(`detent hub runner init --hub-url ${want}`);
   });
 });

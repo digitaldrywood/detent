@@ -119,6 +119,27 @@ export function Stepper({
  * The artifact's `.opt` row: an optional checkbox, a leading icon, a name over
  * a monospace detail, and a right-hand status or action.
  */
+/** The command that prints the descriptor a human approves. */
+export const POLICY_INSPECT_COMMAND = "detent hub policy inspect --config <global.yaml> --project <project>";
+
+/**
+ * The descriptor pasted from `detent hub policy inspect`. The hub validates
+ * it and binds the approval to its identity; this only refuses what is not
+ * a descriptor at all, so the reader learns that before the request.
+ */
+export function parsePolicyDescriptor(text: string): { readonly policy_id: string } {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new AccountError({ status: 422, code: "invalid_request", message: "The pasted descriptor is not JSON. Paste the whole output of the inspect command." });
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value) || typeof (value as { policy_id?: unknown }).policy_id !== "string") {
+    throw new AccountError({ status: 422, code: "invalid_request", message: "The pasted JSON is not a policy descriptor: it has no policy_id." });
+  }
+  return value as { readonly policy_id: string };
+}
+
 export function OptionRow({
   checked,
   onCheckedChange,
@@ -250,6 +271,7 @@ export function SetupRoute({
   }, [progress]);
 
   const [repositoryName, setRepositoryName] = React.useState("");
+  const [pastedPolicy, setPastedPolicy] = React.useState("");
   const [runnerId, setRunnerId] = React.useState("");
   const [machineId, setMachineId] = React.useState("");
   const [enrollment, setEnrollment] = React.useState<RunnerEnrollment | null>(null);
@@ -302,21 +324,22 @@ export function SetupRoute({
   );
 
   const approve = useMutation(async () => {
-    const descriptor = onboarding.value?.policy?.policy;
+    const current = onboarding.value?.policy?.policy;
+    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : current;
     if (descriptor === undefined) {
       throw new AccountError({
         status: 422,
         code: "invalid_request",
-        message:
-          "The hub has not resolved a policy for this project yet. Run `detent doctor` on the execution host so it can publish detent.yaml and WORKFLOW.md, then reload this page.",
+        message: `Paste the output of \`${POLICY_INSPECT_COMMAND}\` from the execution host, then approve it.`,
       });
     }
     const approved = await api.approvePolicy({
       projectId,
-      expectedPolicyId: descriptor.policy_id,
+      expectedPolicyId: current?.policy_id ?? "",
       policy: descriptor,
       onboarding: true,
     });
+    setPastedPolicy("");
     await onboarding.refresh();
     return approved;
   });
@@ -491,6 +514,21 @@ export function SetupRoute({
           </Button>
         </div>
         <ControlError message={bindRepository.error?.message ?? null} />
+        <div className="mb-2.5 flex flex-col gap-1.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
+          <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>
+          <Textarea
+            id="setup-policy-descriptor"
+            rows={3}
+            className="font-mono text-xs"
+            placeholder='{"schema":1,"policy_id":"policy_…"}'
+            value={pastedPolicy}
+            onChange={(event) => setPastedPolicy(event.currentTarget.value)}
+          />
+          <p className="text-[13px] text-muted-foreground">
+            Run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on the execution host and
+            paste what it prints. Approving records exactly that descriptor.
+          </p>
+        </div>
         <OptionRow
           label="Approve the resolved policy"
           name="Approved policy"
