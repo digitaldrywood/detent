@@ -329,9 +329,10 @@ export function RevokeGrantDialog({
 }
 
 function effectivePlan(entitlements: OrganizationEntitlements): string {
-  const grant = entitlements.grants.at(-1);
-  if (grant !== undefined) return `${planName(grant.plan)} (complimentary)`;
-  return `${planName(entitlements.effective_base)} (${entitlements.source})`;
+  const plan = `${planName(entitlements.effective_base)} (${entitlements.source})`;
+  const grants = entitlements.grants.length;
+  if (grants === 0) return plan;
+  return `${plan} + ${grants} complimentary grant${grants === 1 ? "" : "s"}`;
 }
 
 export function OrganizationPlan({
@@ -368,6 +369,11 @@ export function OrganizationPlan({
         )
       ) : (
         <>
+          {entitlements.error === null ? null : (
+            <div className="mt-3">
+              <ControlError message={`This plan could not be reloaded and may be out of date: ${entitlements.error.message}`} />
+            </div>
+          )}
           <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
             <div>
               <dt className="text-muted-foreground">Base plan</dt>

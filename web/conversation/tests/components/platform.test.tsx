@@ -222,7 +222,7 @@ describe("complimentary plans", () => {
     const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator) });
     renderWith(api, <PlatformConsole />);
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
-    await within(plan).findByText("comp_team v1 (complimentary)");
+    await within(plan).findByText("pilot_free v1 (base) + 1 complimentary grant");
     expect(within(plan).getByText("pilot_free v1")).toBeTruthy();
     const grants = within(plan).getByRole("table", { name: "Active grants for Alpha" });
     expect(within(grants).getByText("design partner")).toBeTruthy();
@@ -271,6 +271,7 @@ describe("complimentary plans", () => {
     const change = vi.fn(async () => {
       calls += 1;
       if (calls === 1) throw failure;
+      return { action: "grant", grant_id: "grant_retry" };
     });
     const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator), changePlatformEntitlement: change });
     renderWith(api, <PlatformConsole />);
@@ -285,6 +286,26 @@ describe("complimentary plans", () => {
     const [first, second] = vi.mocked(change).mock.calls.map((call) => (call as unknown as [{ change: { idempotency_key: string; expected_revision: number } }])[0].change);
     expect(second!.idempotency_key === first!.idempotency_key).toBe(same);
     if (same) expect(second!.expected_revision).toBe(first!.expected_revision);
+  });
+
+  it("warns that a plan it could not reload may be out of date", async () => {
+    let reads = 0;
+    const entitlements = fakeApi({}).platformEntitlements;
+    const api = fakeApi({
+      platformOrganizations: vi.fn(async () => administrator),
+      platformEntitlements: vi.fn(async (organization: string) => {
+        reads += 1;
+        if (reads > 1) throw new AccountError({ status: 503, code: "tenant_unavailable", message: "The organization's Hub is unavailable" });
+        return entitlements(organization);
+      }),
+    });
+    renderWith(api, <PlatformConsole />);
+    const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(plan).findByRole("button", { name: "Grant complimentary plan" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "design partner" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+    expect((await within(plan).findByRole("alert")).textContent).toContain("may be out of date");
   });
 
   it("shows the stale revision message and reloads the plan", async () => {
