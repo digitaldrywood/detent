@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
@@ -48,9 +49,15 @@ type DiffExecution interface {
 // attemptDiffSource returns the source for one run's worktree. A diff is
 // best-effort: a failure is logged and reported as "nothing to post", so a
 // worktree the runner cannot read never fails the run it is describing.
-func (r *Runner) attemptDiffSource(info workspace.Info, issue workspace.Issue) AttemptDiffSource {
+// A run with no pull request base is diffed against the base resolved when
+// the source is made, so every generation of one run shares a base.
+func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, issue workspace.Issue) AttemptDiffSource {
+	base := strings.TrimSpace(issue.BaseRef)
+	if base == "" {
+		base = workspace.AttemptBase(ctx, info.Path)
+	}
 	return func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-		diffs, err := workspace.GitFileDiffs(ctx, info.Path, issue.BaseRef, tracker.MaxDiffBytes)
+		diffs, err := workspace.GitFileDiffs(ctx, info.Path, base, tracker.MaxDiffBytes)
 		if err != nil {
 			r.logger.Warn("attempt diff unavailable", "issue_id", issue.ID, "workspace_path", info.Path, "error", err)
 			return tracker.AttemptDiffRequest{}, false

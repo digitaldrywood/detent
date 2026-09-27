@@ -265,3 +265,17 @@ func attachGitPatches(files []FileDiff, sections []string) {
 		files[index].Patch = sections[index]
 	}
 }
+
+// AttemptBase is the commit a run with no pull request diffs against: the
+// merge base with the remote default branch when the checkout tracks it, and
+// otherwise the commit checked out when the run started. Without it the diff
+// would be taken against HEAD and show only uncommitted edits, so a run that
+// committed its work would report no change at all.
+func AttemptBase(ctx context.Context, workspacePath string) string {
+	if branch, err := remoteDefaultBranch(ctx, workspacePath, defaultGitRemote); err == nil {
+		if output, err := runGitAt(ctx, workspacePath, "merge-base", "HEAD", "refs/remotes/"+defaultGitRemote+"/"+branch); err == nil && strings.TrimSpace(output) != "" {
+			return strings.TrimSpace(output)
+		}
+	}
+	return gitResolve(ctx, workspacePath, "HEAD")
+}
