@@ -63,7 +63,10 @@ tokens carry the issuer `<api_url>/user_management/<client_id>` (for example
 `https://api.workos.com/user_management/client_example/.well-known/openid-configuration`),
 and that is the default. Set `workos.issuer_url` only for a custom auth domain,
 to the exact issuer that domain's discovery document reports; a trailing slash is
-tolerated. Hosted resource enforcement uses the versioned
+tolerated. Set it as well when `client_id` is a secondary WorkOS application:
+applications in one WorkOS environment share an issuer that names the
+environment's default application's client ID, so copy the `issuer` from the
+discovery document instead of relying on the default. Hosted resource enforcement uses the versioned
 [pilot allowance configuration](hosted-allowances.md). Legacy `plan_id`,
 `storage_quota_bytes` and `event_quota` initialize the pilot plan when the new
 `entitlements` section is absent. These values do not establish public prices.

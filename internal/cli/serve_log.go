@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func serveLogger(cmd *cobra.Command, lookupEnv func(string) string, output io.Writer) (*slog.Logger, error) {
+func serveLogger(cmd *cobra.Command, lookupEnv func(string) string, output io.Writer) (*slog.Logger, string, error) {
 	var flag runtimeStringFlag
 	if value := cmd.Flag("log-level"); value != nil {
 		flag = runtimeStringFlag{Value: value.Value.String(), Set: flagChanged(cmd, "log-level")}
@@ -19,9 +19,9 @@ func serveLogger(cmd *cobra.Command, lookupEnv func(string) string, output io.Wr
 		DefaultValue:  defaultRuntimeLogLevel,
 	}, lookupEnv)
 	if !validSlogLevel(level.Value) {
-		return nil, NewValidationError("log level "+level.Value+" from "+level.Source+" is invalid", "Use debug, info, warn, or error.", nil)
+		return nil, "", NewValidationError("log level "+level.Value+" from "+level.Source+" is invalid", "Use debug, info, warn, or error.", nil)
 	}
-	return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parseSlogLevel(level.Value)})), nil
+	return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parseSlogLevel(level.Value)})), strings.ToLower(strings.TrimSpace(level.Value)), nil
 }
 
 func validSlogLevel(level string) bool {

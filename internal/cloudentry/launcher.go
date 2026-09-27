@@ -139,7 +139,7 @@ func (l *ExecLauncher) Close() error {
 
 func baseEnvironment() []string {
 	var result []string
-	for _, name := range []string{"PATH", "HOME", "TMPDIR", "LANG", "TZ", "LOG_LEVEL", "DETENT_LOG_LEVEL"} {
+	for _, name := range []string{"PATH", "HOME", "TMPDIR", "LANG", "TZ"} {
 		if value, ok := os.LookupEnv(name); ok {
 			result = append(result, name+"="+value)
 		}

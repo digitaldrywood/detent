@@ -91,7 +91,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			if _, err := OutputForCommand(cmd); err != nil {
 				return err
 			}
-			logger, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
+			logger, _, err := serveLogger(cmd, lookupEnv, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}

@@ -40,7 +40,7 @@ func TestServeLoggerLevel(t *testing.T) {
 			root := &cobra.Command{Use: "detent", SilenceErrors: true, SilenceUsage: true}
 			root.PersistentFlags().String("log-level", "", "log level")
 			root.AddCommand(&cobra.Command{Use: "serve", RunE: func(cmd *cobra.Command, _ []string) error {
-				logger, loggerErr = serveLogger(cmd, func(key string) string { return tt.env[key] }, &output)
+				logger, _, loggerErr = serveLogger(cmd, func(key string) string { return tt.env[key] }, &output)
 				return nil
 			}})
 			root.SetArgs(append([]string{"serve"}, tt.args...))
@@ -121,6 +121,42 @@ func TestHubServeHonorsLogLevel(t *testing.T) {
 			got.Log(context.Background(), tt.want, "hub logger probe")
 			if !strings.Contains(stderr.String(), `"msg":"hub logger probe"`) {
 				t.Fatalf("hub logger did not write JSON to stderr: %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestTenantEnvironmentCarriesResolvedLogLevel(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, level, want string
+	}{
+		{name: "resolved from a flag override", level: "info", want: "LOG_LEVEL=info"},
+		{name: "resolved debug", level: "debug", want: "LOG_LEVEL=debug"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := map[string]string{"LOG_LEVEL": "trace", "WORKOS_API_KEY": "sk_test"}
+			lookup := func(name string) string {
+				if name == "LOG_LEVEL" {
+					return test.level
+				}
+				return environment[name]
+			}
+			config := cloudFileConfig{Allocation: &cloudAllocationFileConfig{}}
+			config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
+			got := tenantEnvironment(config, lookup)
+			found := false
+			for _, entry := range got {
+				if strings.HasPrefix(entry, "LOG_LEVEL=") {
+					if entry != test.want {
+						t.Fatalf("tenant environment has %q, want %q", entry, test.want)
+					}
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("tenant environment %v has no LOG_LEVEL", got)
 			}
 		})
 	}
