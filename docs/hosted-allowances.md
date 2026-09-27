@@ -32,15 +32,15 @@ entitlements:
         ingested_events: 10000
         collaboration_bytes: 67108864
         history_records: 10000
-    - id: pilot_extended
+    - id: comp_team
       version: 1
-      features: [collaboration, native_execution, github_integration]
+      features: [collaboration, native_execution, github_integration, hosted_artifacts]
       allowances:
         members: 20
         projects: 20
         repositories: 20
         registered_runners: 20
-        connected_runners: 10
+        connected_runners: 20
         concurrent_work: 10
         api_mutations: 20000
         ingested_events: 20000
@@ -48,7 +48,11 @@ entitlements:
         history_records: 20000
 ```
 
-Omitting the entire section selects the first plan and pilot settings shown above.
+Omitting the entire section selects exactly this catalog and these pilot settings:
+every organization starts on `pilot_free`, and `comp_team` exists only to be
+granted as complimentary access. `comp_team` doubles the `pilot_free` allowances
+and adds `hosted_artifacts`; its artifact allowances stay zero until an operator
+configures them (see below). Both sets of numbers are provisional.
 Within an explicit plan, omitted allowances are zero and omitted features are
 disabled. Negative values, unknown names and unsupported configuration bounds
 are rejected. Windows are whole multiples of 60 seconds, at most one day;
@@ -94,11 +98,15 @@ remain in the owning organization database and never enter routine analytics.
   "expected_revision": 1,
   "action": "grant",
   "grant_id": "pilot_access",
-  "plan": {"id": "pilot_extended", "version": 1},
+  "plan": {"id": "comp_team", "version": 1},
   "scope": ["projects", "concurrent_work"],
   "reason": "Approved pilot access"
 }
 ```
+
+`GET` on the same path with the same credential returns the organization's base
+and effective plan, current revision, configured plans, and every grant with its
+recorded reason and administrator identity. No other credential can read it.
 
 Grant `starts_at` defaults to transaction time; optional `expires_at` uses an
 RFC3339 timestamp after the start. A `revoke` command names `grant_id` and a
@@ -108,6 +116,27 @@ derived access when Stripe billing is disabled. With
 [hosted subscription billing](hosted-billing.md) configured, authoritative
 Stripe reconciliation owns subscription-derived access and these two commands
 are rejected. Complimentary grants remain independent of payment records.
+
+### Granting from the platform console
+
+On the shared entry, list the staff who may grant complimentary plans in
+`entitlement_administrators` (see the [shared entry example](examples/hub/README.md#shared-entry)).
+Each address must also be in `staff_emails`, and the key requires
+`allocation.entitlement_admin_token_env`; the entry refuses to start otherwise.
+Only those administrators see the plan column in `/platform`. For each ready
+organization it shows the base plan, the effective plan and active grants (plan,
+scope, start, expiry, reason, granted by), a **Grant complimentary plan** action
+(plan, optional expiry date, required reason) and **Revoke** per grant (required
+reason). Other staff, support sessions and customers are refused by the entry.
+
+The entry reads and changes the plan server-side through the tenant's private
+socket, presenting the allocation's entitlement credential; the credential never
+reaches the browser. It forwards the console's `idempotency_key` and
+`expected_revision`, grants the whole chosen plan (every feature and nonzero
+allowance), and records each applied change in the registry's append-only
+`entitlement_changes` table with the staff email, organization, plan, expiry and
+reason. A stale revision is shown as "someone changed this organization's plan;
+reload and try again".
 
 Resolution at the allocation transaction's clock sample is:
 
