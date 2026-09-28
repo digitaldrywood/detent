@@ -10,19 +10,7 @@ import {
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
-import {
-  Dialog,
-  DialogClose,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../../components/ui/dialog.tsx";
-import { Input } from "../../components/ui/input.tsx";
 import { Kbd } from "../../components/ui/kbd.tsx";
-import { Label } from "../../components/ui/label.tsx";
 import {
   Select,
   SelectItem,
@@ -30,7 +18,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../components/ui/select.tsx";
-import { Switch } from "../../components/ui/switch.tsx";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -45,6 +32,7 @@ import { OrganizationRoute } from "../account/Organization.tsx";
 import { ProjectSettingsRoute } from "../account/ProjectSettings.tsx";
 import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
+import { useNewProject } from "../projects/NewProject.tsx";
 import { NEW_CHAT_KEYSHORTCUTS, SEARCH_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { keybindingCatalogue } from "../adapters/keybindings.ts";
 import {
@@ -99,75 +87,6 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
         </li>
       ))}
     </ul>
-  );
-}
-
-export function NewProjectDialog({
-  open,
-  onOpenChange,
-  onCreate,
-  pending,
-  error,
-}: {
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly onCreate: (input: { name: string; grantAccess: boolean }) => void;
-  readonly pending: boolean;
-  readonly error: string | null;
-}): React.ReactElement {
-  const [name, setName] = React.useState("");
-  const [grantAccess, setGrantAccess] = React.useState(true);
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup>
-        <DialogHeader>
-          <DialogTitle>New project</DialogTitle>
-          <DialogDescription>
-            A project owns its own board, policy, runners and repository binding.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogPanel>
-          <form
-            id="new-project-form"
-            className="flex flex-col gap-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const value = name.trim();
-              if (value.length > 0) onCreate({ name: value, grantAccess });
-            }}
-          >
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="new-project-name">Name</Label>
-              <Input
-                id="new-project-name"
-                value={name}
-                placeholder="parable"
-                onChange={(event) => setName(event.currentTarget.value)}
-              />
-            </div>
-            <label className="flex items-center gap-2.5 text-sm">
-              <Switch
-                aria-label="Grant yourself write access"
-                checked={grantAccess}
-                onCheckedChange={setGrantAccess}
-              />
-              Grant yourself write access
-            </label>
-            <ControlError message={error} />
-          </form>
-        </DialogPanel>
-        <DialogFooter>
-          <DialogClose render={<Button variant="outline">Cancel</Button>} />
-          <Button
-            type="submit"
-            form="new-project-form"
-            disabled={pending || name.trim().length === 0}
-          >
-            {pending ? "Creating…" : "Create project"}
-          </Button>
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
   );
 }
 
@@ -238,13 +157,7 @@ export function ProjectsSettings({
   const bootstrap = useAccountBootstrap();
   const canManage = bootstrap?.actor.can_manage ?? false;
   const projects = useResource<ProjectsResponse>(() => api.projects(), [api]);
-  const [creating, setCreating] = React.useState(false);
-  const createProject = useMutation(async (input: { name: string; grantAccess: boolean }) => {
-    const created = await api.createProject({ ...input, key: newKey() });
-    await projects.refresh();
-    setCreating(false);
-    return created;
-  });
+  const { openNewProject } = useNewProject();
 
   return (
     <SettingsPageContainer>
@@ -254,7 +167,7 @@ export function ProjectsSettings({
         icon={<PanelsTopLeftIcon className="size-3.5" />}
         headerAction={
           canManage ? (
-            <Button size="xs" variant="outline" onClick={() => setCreating(true)}>
+            <Button size="xs" variant="outline" onClick={openNewProject}>
               New project
             </Button>
           ) : null
@@ -312,14 +225,6 @@ export function ProjectsSettings({
           ))
         )}
       </SettingsSection>
-
-      <NewProjectDialog
-        open={creating}
-        onOpenChange={setCreating}
-        onCreate={(input) => void createProject.call(input)}
-        pending={createProject.pending}
-        error={createProject.error?.message ?? null}
-      />
     </SettingsPageContainer>
   );
 }

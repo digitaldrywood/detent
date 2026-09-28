@@ -1,0 +1,378 @@
+import { CheckIcon, RocketIcon } from "lucide-react";
+import React from "react";
+
+import { Button } from "../../../components/ui/button.tsx";
+import {
+  Dialog,
+  DialogClose,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../../../components/ui/dialog.tsx";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "../../../components/ui/empty.tsx";
+import { Input } from "../../../components/ui/input.tsx";
+import { Label } from "../../../components/ui/label.tsx";
+import { Textarea } from "../../../components/ui/textarea.tsx";
+import type { AccountProject } from "../../../contracts/account.ts";
+import { cn } from "../../../lib/utils.ts";
+import { ControlError, NativeSelect } from "../../account/controls.tsx";
+import { useAccountApi, useAccountBootstrap } from "../../account/context.ts";
+import { newKey } from "../../account/idempotency.ts";
+import { useMutation, useResource } from "../../account/useResource.ts";
+import { EnrollRunnerDialog } from "../../fleet/EnrollRunner.tsx";
+import { PROJECT_CREATION_UNAVAILABLE, useNewProject } from "../../projects/NewProject.tsx";
+
+export type FirstRunStepId = "project" | "runner" | "issue";
+
+export interface FirstRunFacts {
+  readonly projects: number;
+  readonly runners: number;
+  readonly issues: number;
+  readonly canManageProjects: boolean;
+  readonly canEnrollRunners: boolean;
+  readonly canWriteIssues: boolean;
+}
+
+export interface FirstRunStep {
+  readonly id: FirstRunStepId;
+  readonly title: string;
+  readonly description: string;
+  readonly actionLabel: string;
+  readonly done: boolean;
+  readonly blockedReason: string | null;
+}
+
+export const NEEDS_PROJECT = "Create a project first";
+export const RUNNER_ENROLLMENT_UNAVAILABLE = "An organization owner or admin enrolls runners";
+export const ISSUE_CREATION_UNAVAILABLE = "You have read-only access to this project";
+
+export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
+  const hasProject = facts.projects > 0;
+  return [
+    {
+      id: "project",
+      title: "Create a project",
+      description: "A project holds the board, the workflow and the runners that work on it.",
+      actionLabel: "New project",
+      done: hasProject,
+      blockedReason: facts.canManageProjects ? null : PROJECT_CREATION_UNAVAILABLE,
+    },
+    {
+      id: "runner",
+      title: "Enroll a runner",
+      description:
+        "A runner takes issue runs on your own machine, with your own provider login.",
+      actionLabel: "Enroll a runner",
+      done: facts.runners > 0,
+      blockedReason: !hasProject
+        ? NEEDS_PROJECT
+        : facts.canEnrollRunners
+          ? null
+          : RUNNER_ENROLLMENT_UNAVAILABLE,
+    },
+    {
+      id: "issue",
+      title: "Create your first issue",
+      description: "Describe the first piece of work and it lands on this board.",
+      actionLabel: "New issue",
+      done: facts.issues > 0,
+      blockedReason: !hasProject
+        ? NEEDS_PROJECT
+        : facts.canWriteIssues
+          ? null
+          : ISSUE_CREATION_UNAVAILABLE,
+    },
+  ];
+}
+
+export function FirstRunChecklist({
+  steps,
+  onAction,
+}: {
+  readonly steps: readonly FirstRunStep[];
+  readonly onAction: (id: FirstRunStepId) => void;
+}): React.ReactElement {
+  const done = steps.filter((step) => step.done).length;
+  return (
+    <Empty className="flex-none gap-5 px-4 py-10 md:py-14" data-testid="first-run">
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <RocketIcon />
+        </EmptyMedia>
+        <EmptyTitle className="text-lg" role="heading" aria-level={2}>
+          Set up your organization
+        </EmptyTitle>
+        <EmptyDescription>
+          Three steps put the first issue on this board and a runner on it.
+        </EmptyDescription>
+      </EmptyHeader>
+      <div className="flex w-full max-w-xl flex-col gap-2">
+        <div className="flex items-center justify-between text-muted-foreground text-xs">
+          <span id="first-run-progress-label">Setup progress</span>
+          <span className="tabular-nums" data-testid="first-run-progress">
+            {done} of {steps.length} done
+          </span>
+        </div>
+        <div
+          role="progressbar"
+          aria-labelledby="first-run-progress-label"
+          aria-valuemin={0}
+          aria-valuemax={steps.length}
+          aria-valuenow={done}
+          aria-valuetext={`${done} of ${steps.length} done`}
+          className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+        >
+          <div
+            className="h-full rounded-full bg-primary transition-[width]"
+            style={{ width: `${(done / Math.max(steps.length, 1)) * 100}%` }}
+          />
+        </div>
+        <ol className="mt-2 flex flex-col text-pretty rounded-xl border border-border/60 bg-card/40 text-left shadow-xs/5 [&>*+*]:border-border/50 [&>*+*]:border-t">
+          {steps.map((step, index) => (
+            <li
+              key={step.id}
+              data-testid={`first-run-step-${step.id}`}
+              data-done={step.done ? "true" : "false"}
+              className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:gap-4"
+            >
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span
+                  aria-hidden
+                  className={cn(
+                    "mt-0.5 grid size-[22px] shrink-0 place-items-center rounded-full border text-xs",
+                    step.done
+                      ? "border-success/60 bg-success/15 text-success-foreground"
+                      : "border-border text-muted-foreground",
+                  )}
+                >
+                  {step.done ? <CheckIcon className="size-3" /> : index + 1}
+                </span>
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <h3 className="font-medium text-foreground text-sm">
+                    {step.title}
+                    <span className="sr-only">{step.done ? ", done" : ", not done"}</span>
+                  </h3>
+                  <p className="text-[13px] text-muted-foreground leading-[1.45]">
+                    {step.description}
+                  </p>
+                  {!step.done && step.blockedReason !== null ? (
+                    <p
+                      className="text-muted-foreground/80 text-xs"
+                      id={`first-run-${step.id}-blocked`}
+                    >
+                      {step.blockedReason}.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="flex shrink-0 ps-[34px] sm:ps-0">
+                {step.done ? (
+                  <span className="font-medium text-success-foreground text-xs">Done</span>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant={step.blockedReason === null ? "default" : "outline"}
+                    disabled={step.blockedReason !== null}
+                    aria-describedby={
+                      step.blockedReason === null ? undefined : `first-run-${step.id}-blocked`
+                    }
+                    onClick={() => onAction(step.id)}
+                  >
+                    {step.actionLabel}
+                  </Button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </Empty>
+  );
+}
+
+export function firstIssueState(project: AccountProject | undefined): string {
+  return (
+    project?.states.find((state) => state.dispatchable === true && state.terminal !== true)
+      ?.name ??
+    project?.states[0]?.name ??
+    ""
+  );
+}
+
+export function NewIssueDialog({
+  open,
+  onOpenChange,
+  project,
+  onCreated,
+}: {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly project: AccountProject;
+  readonly onCreated: () => void;
+}): React.ReactElement {
+  const api = useAccountApi();
+  const [title, setTitle] = React.useState("");
+  const [body, setBody] = React.useState("");
+  const [state, setState] = React.useState(() => firstIssueState(project));
+  const key = React.useRef(newKey());
+  const create = useMutation(async () => {
+    const created = await api.createFirstIssue({
+      projectId: project.id,
+      title: title.trim(),
+      body: body.trim(),
+      state,
+      key: key.current,
+    });
+    key.current = newKey();
+    setTitle("");
+    setBody("");
+    onOpenChange(false);
+    onCreated();
+    return created;
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>New issue</DialogTitle>
+          <DialogDescription>
+            The first card on {project.name}'s board. A runner picks it up from its lane.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <form
+            id="new-issue-form"
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (title.trim().length > 0) void create.call();
+            }}
+          >
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-issue-title">Title</Label>
+              <Input
+                id="new-issue-title"
+                value={title}
+                onChange={(event) => setTitle(event.currentTarget.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-issue-body">What needs doing</Label>
+              <Textarea
+                id="new-issue-body"
+                value={body}
+                onChange={(event) => setBody(event.currentTarget.value)}
+              />
+            </div>
+            {project.states.length > 1 ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="new-issue-state">Lane</Label>
+                <NativeSelect
+                  id="new-issue-state"
+                  value={state}
+                  options={project.states.map((entry) => ({
+                    value: entry.name,
+                    label: entry.name,
+                  }))}
+                  onValueChange={setState}
+                />
+              </div>
+            ) : null}
+            <ControlError message={create.error?.message ?? null} />
+          </form>
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline">Cancel</Button>} />
+          <Button
+            type="submit"
+            form="new-issue-form"
+            disabled={create.pending || title.trim().length === 0}
+          >
+            {create.pending ? "Creating…" : "Create issue"}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+export function FirstRunPanel({
+  projectId,
+  issues,
+  onIssueCreated,
+}: {
+  readonly projectId: string | null;
+  readonly issues: number;
+  readonly onIssueCreated: () => void;
+}): React.ReactElement {
+  const api = useAccountApi();
+  const bootstrap = useAccountBootstrap();
+  const newProject = useNewProject();
+  const fleet = useResource(() => api.fleet(), [api]);
+  const [enrolling, setEnrolling] = React.useState(false);
+  const [creatingIssue, setCreatingIssue] = React.useState(false);
+
+  const projects = bootstrap?.projects ?? [];
+  const target =
+    projectId === null
+      ? (projects.find((project) => project.can_write) ?? projects[0])
+      : projects.find((project) => project.id === projectId);
+  const canEnrollRunners = bootstrap?.actor.can_manage_runners ?? false;
+
+  const steps = firstRunSteps({
+    projects: projects.length,
+    runners: fleet.value?.runners.length ?? 0,
+    issues,
+    canManageProjects: newProject.canCreate,
+    canEnrollRunners,
+    canWriteIssues: target?.can_write ?? false,
+  });
+
+  const refreshFleet = fleet.refresh;
+  const onEnrollOpenChange = React.useCallback(
+    (open: boolean) => {
+      setEnrolling(open);
+      if (!open) void refreshFleet();
+    },
+    [refreshFleet],
+  );
+
+  return (
+    <>
+      <FirstRunChecklist
+        steps={steps}
+        onAction={(id) => {
+          if (id === "project") newProject.openNewProject();
+          if (id === "runner") setEnrolling(true);
+          if (id === "issue") setCreatingIssue(true);
+        }}
+      />
+      {canEnrollRunners && projects.length > 0 ? (
+        <EnrollRunnerDialog
+          open={enrolling}
+          onOpenChange={onEnrollOpenChange}
+          onEnrolled={() => void refreshFleet()}
+        />
+      ) : null}
+      {target === undefined ? null : (
+        <NewIssueDialog
+          key={target.id}
+          open={creatingIssue}
+          onOpenChange={setCreatingIssue}
+          project={target}
+          onCreated={onIssueCreated}
+        />
+      )}
+    </>
+  );
+}

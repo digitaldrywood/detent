@@ -4,8 +4,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { startMockHub, type MockHub } from "../../dev/mock-hub.ts";
+import { startMockHub, type AccountMode, type MockHub } from "../../dev/mock-hub.ts";
 import { ClientContext } from "../../src/app/client.ts";
+import { isHostedEnvironment } from "../../src/app/components/CommandPalette.tsx";
+import { PROJECT_CREATION_UNAVAILABLE } from "../../src/app/projects/NewProject.tsx";
+import { HUB_ENVIRONMENT_ID } from "../../src/contracts/index.ts";
+import { DETENT_SERVER_CONFIG } from "../../src/state/server.ts";
 import { makeRouter } from "../../src/app/router.tsx";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
@@ -44,10 +48,17 @@ async function seedConversation(hubUrl: string, key: string, text: string): Prom
   if (!response.ok) throw new Error(`seed failed: ${response.status}`);
 }
 
-async function mountShell(path = "/chat") {
+async function mountShell(path = "/chat", options: { readonly account?: AccountMode } = {}) {
   hub = await startMockHub({ deltaDelayMs: 0, heartbeatMs: 5_000, coordinator: "hub" });
   await seedConversation(hub.url, "cmd_palette_lease", "Lease renewal under load");
   await seedConversation(hub.url, "cmd_palette_gate", "Explain the admission gate to me");
+  if (options.account !== undefined) {
+    await fetch(`${hub.url}/__mock/account`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: options.account }),
+    });
+  }
   const bootstrap = await loadBootstrap(hub.url);
   client = makeClient({
     origin: hub.url,
@@ -196,31 +207,83 @@ describe("the command palette", () => {
     expect(within(onUsage).getByText("Toggle sidebar")).toBeTruthy();
   }, 30_000);
 
-  it("sends Add project to the projects settings, where projects are created", async () => {
+  it("opens the New project dialog in place from Add project", async () => {
     const { router } = await mountShell();
+    const before = router.state.location.pathname;
     const popup = await openPalette();
     const row = within(popup).getByText("Add project").closest("[aria-disabled]");
     expect(row?.getAttribute("aria-disabled")).not.toBe("true");
     fireEvent.click(within(popup).getByText("Add project"));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/settings/projects"), {
+
+    const dialog = await screen.findByRole("dialog", { name: "New project" }, { timeout: 5_000 });
+    expect(within(dialog).getByLabelText("Name")).toBeTruthy();
+    expect(router.state.location.pathname).toBe(before);
+    await waitFor(() => expect(screen.queryByTestId("command-palette")).toBeNull(), {
       timeout: 5_000,
     });
   }, 30_000);
 
-  it("keeps the unavailable commands on the list and announces them disabled", async () => {
+  it("says why a reader who cannot manage projects cannot add one", async () => {
+    await mountShell("/chat", { account: "read_only" });
+    const popup = await openPalette();
+    const row = within(popup).getByText("Add project").closest("[aria-disabled]");
+    expect(row?.getAttribute("aria-disabled")).toBe("true");
+    expect(within(popup).getByText(PROJECT_CREATION_UNAVAILABLE)).toBeTruthy();
+
+    fireEvent.click(within(popup).getByText("Add project"));
+    expect(screen.queryByRole("dialog", { name: "New project" })).toBeNull();
+    expect(screen.queryByTestId("command-palette")).not.toBeNull();
+  }, 30_000);
+
+  it("hides the checkout commands a hosted project can never run", async () => {
     const { router } = await mountShell();
     const popup = await openPalette();
     const before = router.state.location.pathname;
 
-    for (const title of ["Go to file", "Search project contents", "Toggle theme editor"]) {
-      const row = within(popup).getByText(title).closest("[aria-disabled]");
-      expect(row, `${title} should render as a disabled row`).not.toBeNull();
-      expect(row?.getAttribute("aria-disabled")).toBe("true");
-    }
+    expect(within(popup).queryByText("Go to file")).toBeNull();
+    expect(within(popup).queryByText("Search project contents")).toBeNull();
 
-    // A disabled row is inert: clicking it does nothing and the palette stays.
-    fireEvent.click(within(popup).getByText("Go to file"));
+    fireEvent.change(paletteInput(), { target: { value: "grep" } });
+    await waitFor(
+      () => expect(within(palette()).queryByText("Search project contents")).toBeNull(),
+      { timeout: 5_000 },
+    );
+
+    fireEvent.change(paletteInput(), { target: { value: "" } });
+    const row = await waitFor(() => {
+      const found = within(palette()).getByText("Toggle theme editor").closest("[aria-disabled]");
+      expect(found?.getAttribute("aria-disabled")).toBe("true");
+      return found;
+    });
+    fireEvent.click(row as Element);
     expect(router.state.location.pathname).toBe(before);
     expect(screen.queryByTestId("command-palette")).not.toBeNull();
   }, 30_000);
+});
+
+describe("isHostedEnvironment", () => {
+  it.each([
+    { machine: "cloud", hosted: true },
+    { machine: "server", hosted: false },
+    { machine: undefined, hosted: false },
+  ] as const)("reads machine $machine as hosted=$hosted", ({ machine, hosted }) => {
+    const presentation = {
+      environmentId: HUB_ENVIRONMENT_ID,
+      label: "Example",
+      displayUrl: null,
+      relayManaged: false,
+      serverConfig: {
+        ...DETENT_SERVER_CONFIG,
+        environment: {
+          capabilities: DETENT_SERVER_CONFIG.environment.capabilities,
+          ...(machine === undefined ? {} : { machine }),
+        },
+      },
+    };
+    expect(isHostedEnvironment(presentation)).toBe(hosted);
+  });
+
+  it("does not treat a missing environment as hosted", () => {
+    expect(isHostedEnvironment(null)).toBe(false);
+  });
 });

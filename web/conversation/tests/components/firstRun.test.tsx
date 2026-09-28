@@ -1,0 +1,312 @@
+// @vitest-environment jsdom
+import { RegistryProvider } from "@effect/atom-react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  startMockHub,
+  type AccountMode,
+  type MockHub,
+  type OrganizationMode,
+} from "../../dev/mock-hub.ts";
+import { ClientContext } from "../../src/app/client.ts";
+import {
+  NewProjectProvider,
+  PROJECT_CREATION_UNAVAILABLE,
+  createdProjectId,
+  projectBoardPath,
+  useNewProject,
+} from "../../src/app/projects/NewProject.tsx";
+import { makeRouter } from "../../src/app/router.tsx";
+import {
+  FirstRunChecklist,
+  ISSUE_CREATION_UNAVAILABLE,
+  NEEDS_PROJECT,
+  RUNNER_ENROLLMENT_UNAVAILABLE,
+  firstIssueState,
+  firstRunSteps,
+  type FirstRunFacts,
+} from "../../src/app/work/components/FirstRun.tsx";
+import type { AccountProject } from "../../src/contracts/account.ts";
+import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
+import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
+
+Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
+
+let hub: MockHub | undefined;
+let client: ConversationClient | undefined;
+
+afterEach(async () => {
+  cleanup();
+  client?.handles.clear();
+  client = undefined;
+  await hub?.close();
+  hub = undefined;
+});
+
+const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
+  const { signal: _abort, ...rest } = (init ?? {}) as RequestInit;
+  return globalThis.fetch(input as string, rest);
+};
+
+async function startHub(options: {
+  readonly organization?: OrganizationMode;
+  readonly account?: AccountMode;
+}): Promise<ConversationClient> {
+  hub = await startMockHub({
+    deltaDelayMs: 0,
+    heartbeatMs: 5_000,
+    coordinator: "hub",
+    organization: options.organization ?? "empty",
+    account: options.account ?? "write",
+  });
+  const bootstrap = await loadBootstrap(hub.url);
+  client = makeClient({
+    origin: hub.url,
+    bootstrap,
+    transport: fetchEventStreamTransport(sameRealmFetch),
+    heartbeatTimeoutMs: 20_000,
+  });
+  return client;
+}
+
+async function mountShell(
+  path = "/work",
+  options: { readonly organization?: OrganizationMode; readonly account?: AccountMode } = {},
+) {
+  const mounted = await startHub(options);
+  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }));
+  render(
+    <RegistryProvider>
+      <ClientContext.Provider value={mounted}>
+        <RouterProvider router={router} />
+      </ClientContext.Provider>
+    </RegistryProvider>,
+  );
+  if (!path.startsWith("/settings")) {
+    await screen.findByLabelText("Search threads", undefined, { timeout: 10_000 });
+  }
+  return { router };
+}
+
+function step(id: "project" | "runner" | "issue"): HTMLElement {
+  return screen.getByTestId(`first-run-step-${id}`);
+}
+
+const FACTS: FirstRunFacts = {
+  projects: 0,
+  runners: 0,
+  issues: 0,
+  canManageProjects: true,
+  canEnrollRunners: true,
+  canWriteIssues: false,
+};
+
+describe("firstRunSteps", () => {
+  it.each([
+    {
+      name: "a new organization",
+      facts: FACTS,
+      done: [false, false, false],
+      blocked: [null, NEEDS_PROJECT, NEEDS_PROJECT],
+    },
+    {
+      name: "a project and nothing else",
+      facts: { ...FACTS, projects: 1, canWriteIssues: true },
+      done: [true, false, false],
+      blocked: [null, null, null],
+    },
+    {
+      name: "a project and a runner",
+      facts: { ...FACTS, projects: 1, runners: 1, canWriteIssues: true },
+      done: [true, true, false],
+      blocked: [null, null, null],
+    },
+    {
+      name: "everything done",
+      facts: { ...FACTS, projects: 2, runners: 1, issues: 3, canWriteIssues: true },
+      done: [true, true, true],
+      blocked: [null, null, null],
+    },
+    {
+      name: "a reader who manages nothing, before any project",
+      facts: { ...FACTS, canManageProjects: false, canEnrollRunners: false },
+      done: [false, false, false],
+      blocked: [PROJECT_CREATION_UNAVAILABLE, NEEDS_PROJECT, NEEDS_PROJECT],
+    },
+    {
+      name: "a reader who manages nothing, on a read-only project",
+      facts: { ...FACTS, projects: 1, canManageProjects: false, canEnrollRunners: false },
+      done: [true, false, false],
+      blocked: [PROJECT_CREATION_UNAVAILABLE, RUNNER_ENROLLMENT_UNAVAILABLE, ISSUE_CREATION_UNAVAILABLE],
+    },
+  ])("reports $name", ({ facts, done, blocked }) => {
+    const steps = firstRunSteps(facts);
+    expect(steps.map((entry) => entry.id)).toEqual(["project", "runner", "issue"]);
+    expect(steps.map((entry) => entry.done)).toEqual(done);
+    expect(steps.map((entry) => entry.blockedReason)).toEqual(blocked);
+  });
+});
+
+describe("FirstRunChecklist", () => {
+  it.each([
+    { facts: FACTS, progress: "0 of 3 done", doneCount: 0 },
+    { facts: { ...FACTS, projects: 1, canWriteIssues: true }, progress: "1 of 3 done", doneCount: 1 },
+    {
+      facts: { ...FACTS, projects: 1, runners: 1, issues: 1, canWriteIssues: true },
+      progress: "3 of 3 done",
+      doneCount: 3,
+    },
+  ])("shows $progress and checks off the finished steps", ({ facts, progress, doneCount }) => {
+    const onAction = vi.fn();
+    render(<FirstRunChecklist steps={firstRunSteps(facts)} onAction={onAction} />);
+    expect(screen.getByTestId("first-run-progress").textContent).toBe(progress);
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe(String(doneCount));
+    const finished = screen
+      .getAllByRole("listitem")
+      .filter((item) => item.getAttribute("data-done") === "true");
+    expect(finished).toHaveLength(doneCount);
+    expect(screen.queryAllByText("Done")).toHaveLength(doneCount);
+  });
+
+  it("runs a step's action and refuses a blocked one", () => {
+    const onAction = vi.fn();
+    render(<FirstRunChecklist steps={firstRunSteps(FACTS)} onAction={onAction} />);
+    fireEvent.click(within(step("project")).getByRole("button", { name: "New project" }));
+    expect(onAction).toHaveBeenCalledWith("project");
+
+    const enroll = within(step("runner")).getByRole("button", { name: "Enroll a runner" });
+    expect((enroll as HTMLButtonElement).disabled).toBe(true);
+    expect(within(step("runner")).getByText(`${NEEDS_PROJECT}.`)).toBeTruthy();
+    fireEvent.click(enroll);
+    expect(onAction).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("firstIssueState", () => {
+  it("picks the first dispatchable lane, then the first lane", () => {
+    const project = {
+      id: "proj_example",
+      name: "Example Studio",
+      profile: "native",
+      can_write: true,
+      can_manage_runners: true,
+      states: [
+        { name: "Backlog", terminal: false, dispatchable: false },
+        { name: "Todo", terminal: false, dispatchable: true },
+        { name: "Done", terminal: true, dispatchable: false },
+      ],
+    } satisfies AccountProject;
+    expect(firstIssueState(project)).toBe("Todo");
+    expect(
+      firstIssueState({ ...project, states: project.states.filter((s) => !s.dispatchable) }),
+    ).toBe("Backlog");
+    expect(firstIssueState(undefined)).toBe("");
+  });
+});
+
+describe("the new project entry points", () => {
+  it("replaces the empty board with the first-run checklist", async () => {
+    await mountShell("/work");
+    const panel = await screen.findByTestId("first-run", undefined, { timeout: 5_000 });
+    expect(within(panel).getByTestId("first-run-progress").textContent).toBe("0 of 3 done");
+    expect(step("project").getAttribute("data-done")).toBe("false");
+    expect(screen.queryByTestId("work-board")).toBeNull();
+    expect(screen.queryByText(/Every lane is hidden/)).toBeNull();
+  }, 30_000);
+
+  it("opens the New project dialog from the empty state", async () => {
+    const { router } = await mountShell("/work");
+    await screen.findByTestId("first-run", undefined, { timeout: 5_000 });
+    fireEvent.click(within(step("project")).getByRole("button", { name: "New project" }));
+    const dialog = await screen.findByRole("dialog", { name: "New project" }, { timeout: 5_000 });
+    expect(within(dialog).getByLabelText("Name")).toBeTruthy();
+    expect(router.state.location.pathname).toBe("/work");
+  }, 30_000);
+
+  it("opens the New project dialog from the sidebar's empty Projects section", async () => {
+    const { router } = await mountShell("/work");
+    const sidebar = document.querySelector("aside.dc-side") as HTMLElement;
+    await within(sidebar).findByText("No projects yet", undefined, { timeout: 5_000 });
+    fireEvent.click(within(sidebar).getByRole("button", { name: "New project" }));
+    await screen.findByRole("dialog", { name: "New project" }, { timeout: 5_000 });
+    expect(router.state.location.pathname).toBe("/work");
+  }, 30_000);
+
+  it("opens the same dialog from Settings → Projects", async () => {
+    await mountShell("/settings/projects");
+    const button = await screen.findByRole("button", { name: "New project" }, { timeout: 5_000 });
+    fireEvent.click(button);
+    await screen.findByRole("dialog", { name: "New project" }, { timeout: 5_000 });
+  }, 30_000);
+
+  it("tells a reader who cannot manage projects why, everywhere", async () => {
+    await mountShell("/work", { account: "read_only" });
+    await screen.findByTestId("first-run", undefined, { timeout: 5_000 });
+    const create = within(step("project")).getByRole("button", { name: "New project" });
+    expect((create as HTMLButtonElement).disabled).toBe(true);
+    expect(within(step("project")).getByText(`${PROJECT_CREATION_UNAVAILABLE}.`)).toBeTruthy();
+
+    const sidebar = document.querySelector("aside.dc-side") as HTMLElement;
+    expect(within(sidebar).getByTestId("sidebar-new-project-unavailable").textContent).toBe(
+      PROJECT_CREATION_UNAVAILABLE,
+    );
+    expect(within(sidebar).queryByRole("button", { name: "New project" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "New project" })).toBeNull();
+  }, 30_000);
+
+  it("keeps the board and drops the checklist once there are issues", async () => {
+    await mountShell("/work", { organization: "seeded" });
+    await screen.findByTestId("work-board", undefined, { timeout: 10_000 });
+    await screen.findAllByText("checkout: renewal waits on a healthy handoff", undefined, {
+      timeout: 10_000,
+    });
+    expect(screen.queryByTestId("first-run")).toBeNull();
+  }, 30_000);
+});
+
+describe("NewProjectProvider", () => {
+  function Opener(): React.ReactElement {
+    const { openNewProject } = useNewProject();
+    return (
+      <button type="button" onClick={openNewProject}>
+        Open
+      </button>
+    );
+  }
+
+  it("creates the project and hands its id on", async () => {
+    const mounted = await startHub({});
+    const onCreated = vi.fn();
+    render(
+      <ClientContext.Provider value={mounted}>
+        <NewProjectProvider onCreated={onCreated}>
+          <Opener />
+        </NewProjectProvider>
+      </ClientContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    const dialog = await screen.findByRole("dialog", { name: "New project" }, { timeout: 5_000 });
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "Example Studio" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    const id = onCreated.mock.calls[0]?.[0] as string;
+    expect(id).toMatch(/^proj_/);
+    const bootstrap = await loadBootstrap(hub!.url);
+    expect(bootstrap.projects.map((project) => project.name)).toContain("Example Studio");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New project" })).toBeNull());
+  }, 30_000);
+
+  it("reads the created id and builds the board path", () => {
+    expect(createdProjectId({ id: "prj_1" })).toBe("prj_1");
+    expect(createdProjectId({ project_id: "prj_2", name: "Example Studio" })).toBe("prj_2");
+    expect(createdProjectId({ id: "" })).toBeNull();
+    expect(createdProjectId(null)).toBeNull();
+    expect(createdProjectId("prj_1")).toBeNull();
+    expect(projectBoardPath("prj 1")).toBe("/work/p/prj%201");
+  });
+});

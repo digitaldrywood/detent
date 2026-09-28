@@ -23,6 +23,7 @@ import { moveItem, useBoard, useNow, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
 import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
+import { FirstRunPanel } from "./components/FirstRun.tsx";
 import { StatsRow } from "./components/StatsRow.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
@@ -49,6 +50,16 @@ function applyFilters(
       return false;
     return true;
   });
+}
+
+function narrowed(view: WorkViewState): boolean {
+  return (
+    view.q.trim().length > 0 ||
+    view.state.length > 0 ||
+    view.priority.length > 0 ||
+    view.label.length > 0 ||
+    view.assignee.length > 0
+  );
 }
 
 export function WorkBoard({ projectId }: { projectId: string | null }): React.ReactElement {
@@ -263,15 +274,35 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       : (board.project?.name ?? projects.get(projectId) ?? projectId);
   const laneNames = board.lanes.map((lane) => lane.name);
   const visible = board.lanes.filter((lane) => laneVisible(view, lane.name));
+  const noProjects = client.bootstrap.projects.length === 0;
+  const firstRun =
+    noProjects ||
+    (!board.loading && board.error === null && board.items.length === 0 && !narrowed(view));
+  const firstRunPanel = firstRun ? (
+    <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
+  ) : null;
+
+  const topBar = (
+    <WorkTopBar
+      context="Work"
+      title={scopeName}
+      meta={boardScopeMeta(projectId, client.bootstrap.projects.length, items.length)}
+      connection={chip}
+    />
+  );
+
+  if (noProjects) {
+    return (
+      <>
+        {topBar}
+        <div className="min-h-0 flex-1 overflow-auto">{firstRunPanel}</div>
+      </>
+    );
+  }
 
   return (
     <>
-      <WorkTopBar
-        context="Work"
-        title={scopeName}
-        meta={boardScopeMeta(projectId, client.bootstrap.projects.length, items.length)}
-        connection={chip}
-      />
+      {topBar}
 
       <WorkToolbar
         view={view}
@@ -300,6 +331,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       )}
 
       <div className="min-h-0 flex-1 overflow-auto">
+        {firstRunPanel}
         {view.view === "list" ? (
           <WorkList
             items={items}
