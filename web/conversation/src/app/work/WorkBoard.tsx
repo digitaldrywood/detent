@@ -331,8 +331,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       )}
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {firstRunPanel}
-        {view.view === "list" ? (
+        {firstRunPanel ?? (view.view === "list" ? (
           <WorkList
             items={items}
             showProject={projectId === null}
@@ -376,7 +375,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
               ))
             )}
           </div>
-        )}
+        ))}
       </div>
 
     </>

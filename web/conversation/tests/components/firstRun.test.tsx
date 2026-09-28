@@ -25,6 +25,8 @@ import {
   NEEDS_PROJECT,
   RUNNER_ACCESS_NEEDED,
   RUNNER_ENROLLMENT_UNAVAILABLE,
+  RUNNERS_LOADING,
+  RUNNERS_UNAVAILABLE,
   firstIssueState,
   firstRunSteps,
   type FirstRunFacts,
@@ -148,6 +150,16 @@ describe("firstRunSteps", () => {
     expect(steps.map((entry) => entry.done)).toEqual(done);
     expect(steps.map((entry) => entry.blockedReason)).toEqual(blocked);
     expect(steps.map((entry) => entry.note)).toEqual([null, null, null]);
+  });
+
+  it.each([
+    { runners: "loading" as const, reason: RUNNERS_LOADING },
+    { runners: "unavailable" as const, reason: RUNNERS_UNAVAILABLE },
+  ])("holds the runner step while the fleet is $runners", ({ runners, reason }) => {
+    const runner = firstRunSteps({ ...FACTS, projects: 1, runners, canWriteIssues: true })[1];
+    expect(runner?.done).toBe(false);
+    expect(runner?.blockedReason).toBe(reason);
+    expect(runner?.note).toBeNull();
   });
 
   it("sends an owner without runner access to grant it", () => {

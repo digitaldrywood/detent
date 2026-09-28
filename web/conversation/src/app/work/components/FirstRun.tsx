@@ -36,7 +36,7 @@ export type FirstRunStepId = "project" | "runner" | "issue";
 
 export interface FirstRunFacts {
   readonly projects: number;
-  readonly runners: number;
+  readonly runners: number | "loading" | "unavailable";
   readonly issues: number;
   readonly canManageProjects: boolean;
   readonly canEnrollRunners: boolean;
@@ -57,6 +57,8 @@ export const NEEDS_PROJECT = "Create a project first";
 export const RUNNER_ENROLLMENT_UNAVAILABLE = "An organization owner or admin enrolls runners";
 export const RUNNER_ACCESS_NEEDED =
   "Enrolling a runner needs runner access on every project. Grant it to yourself in Settings → Organization";
+export const RUNNERS_LOADING = "Checking this organization's runners";
+export const RUNNERS_UNAVAILABLE = "The runner list could not be read. Reload to try again";
 export const ISSUE_CREATION_UNAVAILABLE = "You have read-only access to this project";
 
 export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
@@ -78,13 +80,17 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
       description:
         "A runner takes issue runs on your own machine, with your own provider login.",
       actionLabel: needsRunnerAccess ? "Grant runner access" : "Enroll a runner",
-      done: facts.runners > 0,
+      done: typeof facts.runners === "number" && facts.runners > 0,
       blockedReason: !hasProject
         ? NEEDS_PROJECT
-        : facts.canEnrollRunners || needsRunnerAccess
-          ? null
-          : RUNNER_ENROLLMENT_UNAVAILABLE,
-      note: needsRunnerAccess ? RUNNER_ACCESS_NEEDED : null,
+        : facts.runners === "loading"
+          ? RUNNERS_LOADING
+          : facts.runners === "unavailable"
+            ? RUNNERS_UNAVAILABLE
+            : facts.canEnrollRunners || needsRunnerAccess
+              ? null
+              : RUNNER_ENROLLMENT_UNAVAILABLE,
+      note: needsRunnerAccess && typeof facts.runners === "number" ? RUNNER_ACCESS_NEEDED : null,
     },
     {
       id: "issue",
@@ -342,7 +348,12 @@ export function FirstRunPanel({
 
   const steps = firstRunSteps({
     projects: projects.length,
-    runners: fleet.value?.runners.length ?? 0,
+    runners:
+      fleet.value !== undefined
+        ? fleet.value.runners.length
+        : fleet.error !== null
+          ? "unavailable"
+          : "loading",
     issues,
     canManageProjects: newProject.canCreate,
     canEnrollRunners,
