@@ -51,5 +51,5 @@ export function useSharedOrganizations(): readonly SharedOrganization[] | null {
   return value;
 }
 
-export const ENTRY_ORGANIZATIONS = "/organizations";
+export { CHOOSE_ORGANIZATION as ENTRY_ORGANIZATIONS } from "./api.ts";
 export const ENTRY_CREATE_ORGANIZATION = "/organizations/new";

@@ -18,6 +18,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
@@ -626,6 +627,15 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 		t.Fatalf("JSON create = %d %s", created.StatusCode, created.Body)
 	}
 	id := result.Organization["id"]
+	for _, path := range []string{"/api/cloud/organizations", "/api/cloud/session"} {
+		var limited struct {
+			CanCreate bool `json:"can_create"`
+		}
+		response := dana.do(http.MethodGet, path, nil, map[string]string{"Accept": "application/json"})
+		if err := json.Unmarshal([]byte(response.Body), &limited); err != nil || limited.CanCreate {
+			t.Fatalf("%s at the organization limit = %s %v", path, response.Body, err)
+		}
+	}
 	if response, body := dana.get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
 		t.Fatalf("provisioning shell = %s", body)
 	}
@@ -646,8 +656,55 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	if session.StatusCode != http.StatusOK || !strings.Contains(session.Body, `"csrf":"`+chooser.CSRF+`"`) {
 		t.Fatalf("session JSON = %d %s", session.StatusCode, session.Body)
 	}
+	ready := dana.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
+	if !strings.Contains(ready.Body, `"id":"`+id+`"`) || !strings.Contains(ready.Body, `"role":"owner"`) {
+		t.Fatalf("ready organizations JSON = %s", ready.Body)
+	}
 	dana.login("/organizations/"+id+"/work", "user_dana:porg_"+id)
 	if response, body := dana.get("/organizations/" + id + "/work"); response.StatusCode != http.StatusOK || !strings.Contains(body, `content="/organizations/`+id+`"`) {
 		t.Fatalf("organization client home = %d %s", response.StatusCode, body)
+	}
+}
+
+func TestCanCreateCountsOrganizationsTheIdentityCreated(t *testing.T) {
+	t.Parallel()
+	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.MaxPerIdentity = 2 })
+	seed := func(subject string, states ...string) {
+		for i, state := range states {
+			id := "org_" + subject + "_" + state + "_" + strings.Repeat("x", i+1)
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,created_at,updated_at) VALUES (?,'',?,?,'unix:/x.sock',1,1,?,?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+				id, id, state, subject, subject+"@example.test"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed("below", "ready")
+	seed("ready", "ready", "ready")
+	seed("pending", "ready", "failed")
+	seed("requested", "requested", "allocating")
+	seed("deleted", "ready", "deleted", "deleted")
+	tests := []struct {
+		name    string
+		service *Service
+		session accountSession
+		want    bool
+	}{
+		{name: "no organizations", service: f.service, session: accountSession{Subject: "none", Email: "none@example.test"}, want: true},
+		{name: "below limit", service: f.service, session: accountSession{Subject: "below", Email: "below@example.test"}, want: true},
+		{name: "at limit with ready", service: f.service, session: accountSession{Subject: "ready", Email: "ready@example.test"}, want: false},
+		{name: "at limit counting pending", service: f.service, session: accountSession{Subject: "pending", Email: "pending@example.test"}, want: false},
+		{name: "at limit with only pending", service: f.service, session: accountSession{Subject: "requested", Email: "requested@example.test"}, want: false},
+		{name: "deleted not counted", service: f.service, session: accountSession{Subject: "deleted", Email: "deleted@example.test"}, want: true},
+		{name: "staff", service: f.service, session: accountSession{Subject: "staff", Email: "staff@example.test"}, want: false},
+		{name: "support session", service: f.service, session: accountSession{Subject: "below", Email: "below@example.test", Identity: auth.HostedIdentity{SupportActor: "support@example.test"}}, want: false},
+		{name: "no allocation", service: &Service{}, session: accountSession{Subject: "none", Email: "none@example.test"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.service.canCreate(t.Context(), test.session)
+			if err != nil || got != test.want {
+				t.Fatalf("canCreate = %v, %v; want %v", got, err, test.want)
+			}
+		})
 	}
 }

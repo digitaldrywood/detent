@@ -3,12 +3,13 @@
 // The shared entry's screens: chooser, creation, provisioning progress and
 // invitation joins, each against a scripted entry API, plus the entry router.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createMemoryHistory } from "@tanstack/react-router";
+import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountError } from "../../src/app/account/api.ts";
 import {
+  CHOOSE_ORGANIZATION,
   currentStepIndex,
   type EntryApi,
   makeEntryApi,
@@ -29,10 +30,12 @@ if (typeof globalThis.PointerEvent === "undefined") {
 }
 
 const assign = vi.fn();
+const replace = vi.fn();
 
 beforeEach(() => {
   assign.mockReset();
-  vi.stubGlobal("location", { assign, search: "", pathname: "/" });
+  replace.mockReset();
+  vi.stubGlobal("location", { assign, replace, search: "", pathname: "/" });
 });
 
 afterEach(() => {
@@ -89,7 +92,7 @@ describe("organization chooser", () => {
 
   it("hides creation where the entry does not offer it", async () => {
     renderWith(
-      fakeApi({ organizations: vi.fn(async () => ({ ...listing, can_create: false, pending: [] })) }),
+      fakeApi({ organizations: vi.fn(async () => ({ ...listing, can_create: false })) }),
       <OrganizationChooser onNavigate={vi.fn()} />,
     );
     await screen.findByRole("link", { name: /Alpha/ });
@@ -106,6 +109,48 @@ describe("organization chooser", () => {
       <OrganizationChooser onNavigate={vi.fn()} />,
     );
     await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_ORGANIZATIONS));
+  });
+});
+
+describe("organization chooser auto-enter", () => {
+  const alpha = { id: "org_a", name: "Alpha", url: "/organizations/org_a/organization", role: "owner" };
+  const gamma = { id: "org_c", name: "Gamma", url: "/organizations/org_c/organization", role: "member" };
+
+  it.each([
+    { name: "a single ready organization opens it", organizations: [alpha], pending: [], search: "", enters: true },
+    { name: "a single organization with a pending one stays", organizations: [alpha], pending: listing.pending, search: "", enters: false },
+    { name: "an explicit switch stays", organizations: [alpha], pending: [], search: "?switch=1", enters: false },
+    { name: "several organizations stay", organizations: [alpha, gamma], pending: [], search: "", enters: false },
+  ])("$name", async ({ organizations, pending, search, enters }) => {
+    vi.stubGlobal("location", { assign, replace, search, pathname: "/organizations" });
+    const api = fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations, pending })) });
+    renderWith(api, <OrganizationChooser onNavigate={vi.fn()} />);
+    if (enters) {
+      await waitFor(() => expect(replace).toHaveBeenCalledWith(alpha.url));
+      expect(screen.queryByRole("link", { name: /Alpha/ })).toBeNull();
+      return;
+    }
+    const open = await screen.findByRole("link", { name: "Open Alpha" });
+    expect(open.getAttribute("href")).toBe(alpha.url);
+    expect(screen.getByText("Owner")).toBeTruthy();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("never enters a customer organization for staff", async () => {
+    const navigate = vi.fn();
+    renderWith(
+      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [alpha], pending: [], staff: true })) }),
+      <OrganizationChooser onNavigate={navigate} />,
+    );
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/platform"));
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("returns to the chooser without entering from the other entry screens", async () => {
+    const navigate = vi.fn();
+    renderWith(fakeApi(), <CreateOrganization onNavigate={navigate} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Back to organizations" }));
+    expect(navigate).toHaveBeenCalledWith(CHOOSE_ORGANIZATION);
   });
 });
 
@@ -284,6 +329,18 @@ describe("entry router", () => {
       expect(router.state.location.pathname).toBe(path);
     },
   );
+
+  it("keeps the explicit switch flag when returning to the chooser", async () => {
+    const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/organizations/new"] }));
+    render(
+      <EntryApiContext.Provider value={fakeApi()}>
+        <RouterProvider router={router} />
+      </EntryApiContext.Provider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Back to organizations" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/organizations"));
+    expect(router.state.location.searchStr).toContain("switch=");
+  });
 
   it("sends unknown paths to the chooser", async () => {
     const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/elsewhere"] }));

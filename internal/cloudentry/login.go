@@ -315,6 +315,7 @@ type organizationChoice struct {
 	Name  string `json:"name"`
 	URL   string `json:"url"`
 	State string `json:"state,omitempty"`
+	Role  string `json:"role,omitempty"`
 }
 
 func (s *Service) organizationChoices(ctx context.Context, session accountSession) ([]organizationChoice, error) {
@@ -336,7 +337,7 @@ func (s *Service) organizationChoices(ctx context.Context, session accountSessio
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationHome(organization.ID)})
+		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationHome(organization.ID), Role: membership.Role.Slug})
 	}
 	return result, nil
 }
@@ -358,7 +359,11 @@ func (s *Service) chooser(c echo.Context) error {
 	}
 	data := templates.HostedPageData{Mode: "chooser", Title: "Organizations", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, "")}
 	if s.config.Allocation != nil {
-		data.CanCreate = !s.staff(session.Email)
+		canCreate, err := s.canCreate(c.Request().Context(), session)
+		if err != nil {
+			return s.loginDenied(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable", auth.HostedDenial{Flow: "organizations", Reason: "pending_unavailable", Email: session.Email})
+		}
+		data.CanCreate = canCreate
 		pending, err := s.pendingOrganizations(c.Request().Context(), session.Subject)
 		if err != nil {
 			return s.loginDenied(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable", auth.HostedDenial{Flow: "organizations", Reason: "pending_unavailable", Email: session.Email})
@@ -376,7 +381,11 @@ func (s *Service) sessionJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": s.config.Allocation != nil && !s.staff(session.Email), "staff": s.platformStaff(session)})
+	canCreate, err := s.canCreate(c.Request().Context(), session)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "membership_unavailable", "message": "Organization information is temporarily unavailable"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": canCreate, "staff": s.platformStaff(session)})
 }
 
 func (s *Service) organizationsJSON(c echo.Context) error {
@@ -402,7 +411,11 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 		for _, organization := range pending {
 			items = append(items, organizationChoice{ID: organization.ID, Name: organization.Name, URL: "/organizations/" + organization.ID + "/provisioning", State: organization.Status})
 		}
-		result["pending"], result["can_create"] = items, !s.staff(session.Email)
+		canCreate, err := s.canCreate(c.Request().Context(), session)
+		if err != nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "membership_unavailable", "message": "Organization information is temporarily unavailable"})
+		}
+		result["pending"], result["can_create"] = items, canCreate
 	}
 	return c.JSON(http.StatusOK, result)
 }
