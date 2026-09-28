@@ -252,6 +252,114 @@ func TestSSESnapshotComponent(t *testing.T) {
 	}
 }
 
+func TestSSEStreamSkipsUnchangedSnapshotBeforeEnrichment(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	stream := newTestSSEStream(&now)
+	base := telemetry.Snapshot{
+		Seq:         1,
+		GeneratedAt: now,
+		BoardIssues: []telemetry.Issue{{ID: "issue-1", Title: "Existing card", CurrentLaneAgeSeconds: 100}},
+	}
+	queryCalls := 0
+	for _, tt := range []struct {
+		name           string
+		elapsed        time.Duration
+		mutate         func(*telemetry.Snapshot)
+		wantSkip       bool
+		wantQueryCalls int
+	}{
+		{name: "initial publication", wantQueryCalls: 1},
+		{name: "same-sequence republish may carry reloaded configuration", elapsed: 500 * time.Millisecond, wantQueryCalls: 2},
+		{name: "recorded idle tick advances sequence clock and card age", elapsed: time.Second, mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.Seq++
+			snapshot.GeneratedAt = snapshot.GeneratedAt.Add(time.Second)
+			snapshot.BoardIssues[0].CurrentLaneAgeSeconds++
+		}, wantSkip: true, wantQueryCalls: 2},
+		{name: "real card change", elapsed: 2 * time.Second, mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.BoardIssues[0].Title = "Changed card"
+		}, wantQueryCalls: 3},
+		{name: "real refresh change", elapsed: 3 * time.Second, mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.Refresh.DataSeq = 2
+		}, wantQueryCalls: 4},
+		{name: "unchanged report refresh", elapsed: workflowHistoryFreshness + 3*time.Second, wantQueryCalls: 5},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now = base.GeneratedAt.Add(tt.elapsed)
+			snapshot := base
+			snapshot.BoardIssues = append([]telemetry.Issue(nil), base.BoardIssues...)
+			if tt.mutate != nil {
+				tt.mutate(&snapshot)
+			}
+			if got := stream.skipUnchangedSnapshot(snapshot); got != tt.wantSkip {
+				t.Fatalf("skipUnchangedSnapshot() = %t, want %t", got, tt.wantSkip)
+			}
+			if !tt.wantSkip {
+				queryCalls++
+			}
+			if queryCalls != tt.wantQueryCalls {
+				t.Fatalf("enrichment calls = %d, want %d", queryCalls, tt.wantQueryCalls)
+			}
+		})
+	}
+	if got := stream.metricsFor(sseEventSnapshot).skippedFingerprint; got != 1 {
+		t.Fatalf("skipped_fingerprint = %d, want 1", got)
+	}
+}
+
+func BenchmarkSSEUnchangedSnapshotTick(b *testing.B) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	stream := newTestSSEStream(&now)
+	snapshot := telemetry.Snapshot{Seq: 1, GeneratedAt: now}
+	for i := range 150 {
+		snapshot.BoardIssues = append(snapshot.BoardIssues, telemetry.Issue{ID: "idle-card", Title: "Idle card", CurrentLaneAgeSeconds: int64(100 + i)})
+	}
+	stream.skipUnchangedSnapshot(snapshot)
+	b.ResetTimer()
+	for range b.N {
+		snapshot.Seq++
+		snapshot.GeneratedAt = snapshot.GeneratedAt.Add(time.Second)
+		if !stream.skipUnchangedSnapshot(snapshot) {
+			b.Fatal("unchanged snapshot reached enrichment")
+		}
+	}
+}
+
+func TestSameSnapshotForSSEInitializingRefresh(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	later := now.Add(time.Second)
+	base := telemetry.Snapshot{Seq: 1, GeneratedAt: now, Refresh: telemetry.Refresh{
+		Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &now,
+	}}
+	for _, tt := range []struct {
+		name   string
+		mutate func(*telemetry.Snapshot)
+		want   bool
+	}{
+		{name: "publication clock only", mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.Seq = 2
+			snapshot.GeneratedAt = later
+			snapshot.Refresh.NextRefreshAt = &later
+		}, want: true},
+		{name: "scheduled refresh changes", mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.Seq = 2
+			snapshot.GeneratedAt = later
+			next := later.Add(time.Minute)
+			snapshot.Refresh.NextRefreshAt = &next
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := base
+			tt.mutate(&snapshot)
+			if got := sameSnapshotForSSE(base, snapshot); got != tt.want {
+				t.Fatalf("sameSnapshotForSSE() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSSEStreamSkipsUnchangedFragments(t *testing.T) {
 	t.Parallel()
 
