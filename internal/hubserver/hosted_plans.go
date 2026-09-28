@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"time"
@@ -43,12 +45,39 @@ type HostedPlansConfig struct {
 func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
 	type plain HostedPlansConfig
 	var decoded plain
-	if err := node.Decode(&decoded); err != nil {
+	// node.Decode does not inherit the caller's KnownFields, so the section is
+	// decoded again strictly: a misspelled key must fail, not zero a value.
+	raw, err := yaml.Marshal(resolvedYAMLNode(node))
+	if err != nil {
+		return err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&decoded); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	*c = HostedPlansConfig(decoded)
 	c.written = node.Kind == yaml.MappingNode && len(node.Content) > 0
 	return nil
+}
+
+// resolvedYAMLNode copies node with every alias replaced by the value it
+// names, so the node can be encoded on its own even when an anchor it uses is
+// defined elsewhere in the document.
+func resolvedYAMLNode(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode && node.Alias != nil {
+		return resolvedYAMLNode(node.Alias)
+	}
+	copied := *node
+	copied.Anchor = ""
+	copied.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		copied.Content[i] = resolvedYAMLNode(child)
+	}
+	return &copied
 }
 
 type HostedGrant struct {
