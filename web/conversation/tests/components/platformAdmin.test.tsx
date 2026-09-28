@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPlatformMock, type PlatformRole, type PlatformScenario } from "../../dev/mock-platform.ts";
 import { SIGN_IN_PLATFORM, type PlatformOrganization } from "../../src/app/entry/api.ts";
 import { makeEntryRouter } from "../../src/app/entry/router.tsx";
-import { makePlatformApi } from "../../src/app/platform/api.ts";
+import { makePlatformApi, platformPreview } from "../../src/app/platform/api.ts";
 import { activePlatformPage, PLATFORM_NAV } from "../../src/app/platform/nav.ts";
 import { ALL, filterOrganizations } from "../../src/app/platform/pages/Organizations.tsx";
 import { organizationTab } from "../../src/app/platform/pages/OrganizationDetail.tsx";
@@ -161,6 +161,16 @@ describe("platform access", () => {
     expect(screen.queryByRole("button", { name: "Grant complimentary plan" })).toBeNull();
   });
 
+  it("shows grant details only to entitlement administrators", async () => {
+    renderAt("/platform/plans", { role: "admin" });
+    expect(await screen.findByText("Design partner: artifact relay trial")).toBeTruthy();
+    cleanup();
+    renderAt("/platform/plans", { role: "staff" });
+    expect(await screen.findByText(/Grant\s+details are limited to entitlement administrators/)).toBeTruthy();
+    expect(screen.queryByText("Design partner: artifact relay trial")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Manage" })).toBeNull();
+  });
+
   it("lets only support actors start support access", async () => {
     renderAt("/platform/organizations/org_harbor", { role: "admin" });
     const enabled = await screen.findByRole("button", { name: "Start support access" });
@@ -189,6 +199,29 @@ describe("platform access", () => {
 });
 
 describe("live and proposed endpoints", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("turns preview on only in a dev server with the flag", () => {
+    vi.stubEnv("VITE_PLATFORM_PREVIEW", "1");
+    vi.stubEnv("DEV", true);
+    expect(platformPreview()).toBe(true);
+    vi.stubEnv("DEV", false);
+    expect(platformPreview()).toBe(false);
+    vi.stubEnv("DEV", true);
+    vi.stubEnv("VITE_PLATFORM_PREVIEW", "");
+    expect(platformPreview()).toBe(false);
+  });
+
+  it("sends the reason with a billing redelivery", async () => {
+    const { fetch } = mockFetch();
+    const api = makePlatformApi({ fetch, preview: true });
+    await api.redeliverBillingEvent({ event: "evt_1", csrf: "c", reason: "stuck" });
+    const [, init] = fetch.mock.calls.at(-1)!;
+    expect(JSON.parse(String(init?.body))).toEqual({ reason: "stuck" });
+  });
+
   it("never requests a proposed endpoint outside preview mode", async () => {
     const { requested } = renderAt("/platform", { preview: false });
     expect(await screen.findByText("Not available yet")).toBeTruthy();

@@ -108,9 +108,9 @@ A tab whose tenant does not answer shows the failed state for that tab only.
 
 ### Plans & grants `/platform/plans`
 
-- Shows: the plan catalog from config (each plan's features, allowances, and how many organizations are on it) and every active complimentary grant across organizations with plan, expiry, reason and granter.
+- Shows: the plan catalog from config (each plan's features, allowances, and how many organizations are on it) and the complimentary grants across organizations. Entitlement administrators see each grant's plan, expiry, reason and granter; other staff see only how many organizations have one, matching the administrator check on the existing entitlements endpoint.
 - Actions: entitlement administrators get "Manage" on each grant, which opens that organization's Plan tab where the existing grant and revoke dialogs live. No plan editing in v1.
-- Data: NEW `GET /plans`, from `allocation.entitlements` config and the registry's `entitlement_changes`.
+- Data: NEW `GET /plans`. The catalog comes from `allocation.entitlements` config. Grants come from each ready tenant's entitlements (the tenant is authoritative: a grant can apply in the tenant even when the entry's `entitlement_changes` record fails, [entitlements.go#L279](../internal/cloudentry/entitlements.go#L279)), with `granted_by` overlaid from `entitlement_changes` as the existing endpoint does. The response carries `grant_count` for everyone and `grants` only for entitlement administrators.
 
 ### Billing `/platform/billing`
 
@@ -173,7 +173,7 @@ All paths are under `/api/cloud/platform` on the entry, JSON, same session and C
 | Users | `GET /users` | NEW | `auth.db` sessions + registry creators + tenant members |
 | Runners | `GET /runners` | NEW | fan-out of tenant fleets, with `unreachable` |
 | Provisioning | `GET /tenants` | NEW | launcher process facts (change 4) + tenant metadata |
-| Plans | `GET /plans` | NEW | config catalog + `entitlement_changes` |
+| Plans | `GET /plans` | NEW | config catalog + tenant entitlements fan-out, `granted_by` from `entitlement_changes`; grant details for entitlement admins only |
 | Billing | `GET /billing` | NEW | `billing_customers`, `billing_events`, tenant statuses |
 | Billing | `POST /billing/events/:id/redeliver` | NEW (staff) | requeue a quarantined `billing_events` row |
 | Audit | `GET /audit?q=&actor_kind=&organization=&cursor=` | NEW | entry `audit` + `sessions` emails |
@@ -195,8 +195,8 @@ Mechanisms: changes 2 and 3 add a state transition and a log, not a new lease, b
 
 ## Prototype
 
-- Routes: `web/conversation/src/app/platform/`, mounted under the entry router's `/platform`. The old `PlatformConsole.tsx` stays until the real build replaces it.
-- Data: `src/app/platform/api.ts` separates `live` endpoints (served today) from proposed ones. Outside preview mode the client never requests a proposed endpoint; the page shows "Not available yet" naming the endpoint. Preview mode is on only under `npm run dev:mock`, and fixtures live only in the mock hub (`dev/mock-platform.ts`), so no fixture data can reach the production bundle.
+- Routes: `web/conversation/src/app/platform/`, mounted under the entry router's `/platform`. The entry now serves the client shell for `/platform/*` as well as `/platform` (same staff check and `platform_opened` audit), so a detail URL loads directly. The old `PlatformConsole.tsx` stays until the real build replaces it.
+- Data: `src/app/platform/api.ts` separates `live` endpoints (served today) from proposed ones. Outside preview mode the client never requests a proposed endpoint; the page shows "Not available yet" naming the endpoint. Preview mode is on only in a dev server started by `npm run dev:mock` (the check requires `import.meta.env.DEV`, so no build can turn it on), and fixtures live only in the mock hub (`dev/mock-platform.ts`), so no fixture data can reach the production bundle.
 - Run it: `cd web/conversation && npm run dev:mock`, then open `/platform`. Switch states with `/__mock/platform?scenario=full|empty|error&role=admin|staff|forbidden|signed-out`.
 - Tests: `tests/components/platformAdmin.test.tsx` (routing, role gating, live/proposed separation, filters) and `src/contracts/platform.test.ts` (every fixture decodes).
 - Screenshots: `tests/visual/platform-admin/`, produced by `tests/visual/platform-admin.spec.js` against a running mock.

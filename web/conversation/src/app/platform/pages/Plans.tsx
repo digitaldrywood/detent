@@ -83,15 +83,15 @@ export function PlansPage(): React.ReactElement {
               )}
             </SettingsSection>
             <SettingsSection
-              title={`Complimentary grants (${value.grants.length})`}
-              headerAction={
-                access.canGrant ? null : (
-                  <span className="text-xs text-muted-foreground">Only entitlement administrators can grant or revoke</span>
-                )
-              }
+              title={`Complimentary grants (${value.grant_count})`}
             >
-              {value.grants.length === 0 ? (
+              {value.grant_count === 0 ? (
                 <EmptyNote>No organization has a complimentary grant.</EmptyNote>
+              ) : !access.canGrant ? (
+                <EmptyNote>
+                  {value.grant_count} organization{value.grant_count === 1 ? " has" : "s have"} a complimentary grant. Grant
+                  details are limited to entitlement administrators.
+                </EmptyNote>
               ) : (
                 <Table aria-label="Complimentary grants">
                   <TableHeader>
@@ -101,7 +101,7 @@ export function PlansPage(): React.ReactElement {
                       <TableHead>Expires</TableHead>
                       <TableHead>Reason</TableHead>
                       <TableHead>Granted by</TableHead>
-                      {access.canGrant ? <TableHead /> : null}
+                      <TableHead />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -122,13 +122,11 @@ export function PlansPage(): React.ReactElement {
                           <TableCell>{day(grant.expires_at)}</TableCell>
                           <TableCell className="max-w-72 whitespace-normal text-muted-foreground">{grant.reason}</TableCell>
                           <TableCell>{grant.granted_by}</TableCell>
-                          {access.canGrant ? (
-                            <TableCell className="text-right">
-                              <Button size="xs" variant="outline" render={<Link to={plan as never} />}>
-                                Manage
-                              </Button>
-                            </TableCell>
-                          ) : null}
+                          <TableCell className="text-right">
+                            <Button size="xs" variant="outline" render={<Link to={plan as never} />}>
+                              Manage
+                            </Button>
+                          </TableCell>
                         </TableRow>
                       );
                     })}

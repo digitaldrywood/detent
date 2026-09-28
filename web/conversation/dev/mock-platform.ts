@@ -89,7 +89,7 @@ function emptied(name: string, value: Json): Json {
     case "users.json":
       return { users: [] };
     case "plans.json":
-      return { plans: [], grants: [] };
+      return { plans: [], grant_count: 0, grants: [] };
     case "billing.json":
       return { mode: null, account_id: null, customers: [], events: [] };
     case "tenants.json":
@@ -250,6 +250,7 @@ export function createPlatformMock(
       const file = rest.length === 1 ? files[rest[0] ?? ""] : undefined;
       if (file === undefined) return json(response, 404, { code: "not_found", message: "No such endpoint." });
       const value = read(file);
+      if (file === "plans.json" && role !== "admin") value.grants = [];
       if (file === "audit.json") {
         const q = (url.searchParams.get("q") ?? "").toLowerCase();
         const kind = url.searchParams.get("actor_kind");

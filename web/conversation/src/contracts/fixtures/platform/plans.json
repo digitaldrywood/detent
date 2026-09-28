@@ -57,6 +57,7 @@
       "organizations": 1
     }
   ],
+  "grant_count": 2,
   "grants": [
     {
       "id": "comp_harbor_launch",

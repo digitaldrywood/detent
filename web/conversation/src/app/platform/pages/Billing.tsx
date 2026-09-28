@@ -160,7 +160,7 @@ export function BillingPage(): React.ReactElement {
                                 title={`Redeliver ${event.event_type}?`}
                                 description="The entry sends the stored event to the organization's Hub again. The Hub ignores it if it already applied it."
                                 confirm="Redeliver event"
-                                onConfirm={async () => (await api.redeliverBillingEvent({ event: event.event_id, csrf: access.csrf })).message}
+                                onConfirm={async (reason) => (await api.redeliverBillingEvent({ event: event.event_id, csrf: access.csrf, reason })).message}
                               />
                             ) : null}
                           </TableCell>

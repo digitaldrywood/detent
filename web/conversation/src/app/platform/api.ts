@@ -42,9 +42,9 @@ export function isPlanned(error: unknown): error is PlannedEndpoint {
   return error instanceof AccountError && error.code === PLANNED_CODE;
 }
 
-/** Preview mode is on only for `npm run dev:mock`, which sets the flag. */
+/** Preview mode is on only in a dev server started by `npm run dev:mock`; a build never has it. */
 export function platformPreview(): boolean {
-  return import.meta.env.VITE_PLATFORM_PREVIEW === "1";
+  return import.meta.env.DEV === true && import.meta.env.VITE_PLATFORM_PREVIEW === "1";
 }
 
 const BASE = "/api/cloud/platform";
@@ -147,8 +147,8 @@ export function makePlatformApi(
       act(organizationPath(input.organization, "/reactivate"), input.csrf, { reason: input.reason }),
     endSupportSession: (input: { session: string; csrf: string; reason: string }) =>
       act(`${BASE}/support-sessions/${encodeURIComponent(input.session)}/end`, input.csrf, { reason: input.reason }),
-    redeliverBillingEvent: (input: { event: string; csrf: string }) =>
-      act(`${BASE}/billing/events/${encodeURIComponent(input.event)}/redeliver`, input.csrf, {}),
+    redeliverBillingEvent: (input: { event: string; csrf: string; reason: string }) =>
+      act(`${BASE}/billing/events/${encodeURIComponent(input.event)}/redeliver`, input.csrf, { reason: input.reason }),
   };
 }
 

@@ -235,8 +235,10 @@ export const PlatformGrant = Schema.Struct({
 });
 export type PlatformGrant = typeof PlatformGrant.Type;
 
+/** `grants` is filled only for entitlement administrators; everyone else gets the count. */
 export const PlatformPlans = Schema.Struct({
   plans: Schema.Array(CatalogPlan),
+  grant_count: Schema.Number,
   grants: Schema.Array(PlatformGrant),
 });
 export type PlatformPlans = typeof PlatformPlans.Type;
