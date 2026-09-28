@@ -2607,13 +2607,30 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		defer o.validatorWG.Done()
 		defer progress.close()
 
-		result, err := o.validator.Validate(ctx, ValidatorRequest{
-			Issue:            issue,
-			StartedAt:        now.UTC(),
-			SelectorContext:  selectorContext,
-			OnActivityUpdate: o.activityUpdateHandler(ctx, issue),
-			OnUsageUpdate:    func(update runpkg.UsageUpdate) error { return progress.observe(ctx, update) },
-		})
+		var diff *connector.ValidationDiff
+		var diffErr error
+		if reader, ok := o.connector.(connector.ValidationDiffReader); ok {
+			var snapshot connector.ValidationDiff
+			snapshot, diffErr = reader.PullRequestValidationDiff(ctx, issue)
+			if diffErr == nil {
+				diff = &snapshot
+			}
+		}
+		var result gate.ValidatorResult
+		err := diffErr
+		if err == nil {
+			result, err = o.validator.Validate(ctx, ValidatorRequest{
+				Issue:            issue,
+				Diff:             diff,
+				StartedAt:        now.UTC(),
+				SelectorContext:  selectorContext,
+				OnActivityUpdate: o.activityUpdateHandler(ctx, issue),
+				OnUsageUpdate:    func(update runpkg.UsageUpdate) error { return progress.observe(ctx, update) },
+			})
+			if err == nil && diff != nil && (result.Repository != diff.Repository || result.PRNumber != diff.PRNumber || result.BaseSHA != diff.BaseSHA || result.HeadSHA != diff.HeadSHA || result.DiffDigest != diff.Digest) {
+				err = connector.NewRetryableError("validator verdict provenance differs from reviewed PR diff")
+			}
+		}
 
 		completedAt := o.clockNow().UTC()
 		o.validatorMu.Lock()
@@ -2671,8 +2688,13 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			attempt := o.validatorFailures[identity.Key].Attempt + 1
 			retryAt := completedAt.Add(validatorStageRetryDelay(retryConfig, attempt))
 			failure := validatorStageFailure{Attempt: attempt, NextRetryAt: retryAt, Error: err.Error()}
-			exhausted := attempt >= validatorConfig.MaxAttempts
-			failureResult := validatorFailureResult(err, attempt, validatorConfig.MaxAttempts)
+			retryableInput := connector.IsRetryable(err)
+			exhausted := attempt >= validatorConfig.MaxAttempts && !retryableInput
+			maxAttempts := validatorConfig.MaxAttempts
+			if retryableInput && maxAttempts <= attempt {
+				maxAttempts = attempt + 1
+			}
+			failureResult := validatorFailureResult(err, attempt, maxAttempts)
 			if exhausted {
 				delete(o.validatorFailures, identity.Key)
 				o.validatorResults[identity.Key] = validatorStageResult{Result: failureResult}
@@ -2684,7 +2706,11 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			if !exhausted {
 				nextRetryAt = &retryAt
 			}
-			o.recordValidatorStageOutcome(ctx, issue, identity, failureResult, attempt, nextRetryAt, completedAt)
+			recordedAttempts := attempt
+			if retryableInput && recordedAttempts >= validatorConfig.MaxAttempts {
+				recordedAttempts = max(validatorConfig.MaxAttempts-1, 0)
+			}
+			o.recordValidatorStageOutcome(ctx, issue, identity, failureResult, recordedAttempts, nextRetryAt, completedAt)
 			if o.logger != nil {
 				attrs := []any{
 					"issue_id", strings.TrimSpace(issue.ID),
@@ -2722,10 +2748,14 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
 			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
-				currentHead := validatorStageIdentityForIssue(current).HeadSHA
-				if currentHead != identity.HeadSHA {
-					result = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
-						Summary: fmt.Sprintf("validation head mismatch: reviewed %s, current PR %s", identity.HeadSHA, currentHead)}
+				if validatorStageIdentityForIssue(current).Key != identity.Key {
+					// The reviewed diff no longer describes the PR. Let the next
+					// tick validate its current identity instead of storing a verdict.
+					o.validatorMu.Lock()
+					o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+					delete(o.validatorRuns, identity.Key)
+					o.validatorMu.Unlock()
+					return
 				}
 			} else {
 				// The authoritative head is unavailable. Leave the verdict absent so
@@ -2814,6 +2844,12 @@ func validatorResultComment(result gate.ValidatorResult) string {
 	var b strings.Builder
 	b.WriteString("Validator verdict: ")
 	b.WriteString(strings.TrimSpace(result.Verdict))
+	if result.Repository != "" {
+		fmt.Fprintf(&b, "\n- reviewed PR: %s#%d", result.Repository, result.PRNumber)
+		fmt.Fprintf(&b, "\n- base SHA: %s\n- head SHA: %s\n- diff SHA-256: %s", result.BaseSHA, result.HeadSHA, result.DiffDigest)
+		b.WriteString("\n- reviewed files: ")
+		b.WriteString(strings.Join(result.DiffFiles, ", "))
+	}
 	if result.Score > 0 {
 		b.WriteString("\n- score: ")
 		b.WriteString(fmt.Sprintf("%.2f", result.Score))
@@ -2860,9 +2896,12 @@ func pullRequestNumber(issue connector.Issue) int {
 }
 
 type validatorStageIdentity struct {
-	Key     string
-	IssueID string
-	HeadSHA string
+	Key        string
+	IssueID    string
+	HeadSHA    string
+	BaseSHA    string
+	Repository string
+	PRNumber   int
 }
 
 func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentity {
@@ -2877,10 +2916,21 @@ func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentit
 	if headSHA == "" {
 		return validatorStageIdentity{}
 	}
+	baseSHA := strings.TrimSpace(issue.PullRequest.BaseSHA)
+	repository := strings.TrimSpace(issue.PRRepository)
+	if repository == "" {
+		identifier := strings.TrimSpace(issue.Identifier)
+		if cut := strings.IndexByte(identifier, '#'); cut > 0 {
+			repository = identifier[:cut]
+		}
+	}
 	return validatorStageIdentity{
-		Key:     issueID + ":" + headSHA,
-		IssueID: issueID,
-		HeadSHA: headSHA,
+		Key:        fmt.Sprintf("%s:%s:%d:%s:%s", issueID, repository, pullRequestNumber(issue), baseSHA, headSHA),
+		IssueID:    issueID,
+		HeadSHA:    headSHA,
+		BaseSHA:    baseSHA,
+		Repository: repository,
+		PRNumber:   pullRequestNumber(issue),
 	}
 }
 
@@ -2933,6 +2983,9 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		}
 		return validatorStageResult{}, false
 	}
+	if verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.HeadSHA != identity.HeadSHA || (verdict.Submitted && verdict.DiffDigest == "") {
+		return validatorStageResult{}, false
+	}
 	validatorConfig := gate.Effective(o.cfg.AutoPromote.Gate).Validator
 	if !verdict.Submitted && strings.EqualFold(strings.TrimSpace(verdict.Verdict), gate.ValidatorVerdictError) && verdict.FailureAttempts < validatorConfig.MaxAttempts {
 		nextRetryAt := o.clockNow().UTC()
@@ -2956,11 +3009,17 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 	}
 	return validatorStageResult{
 		Result: gate.ValidatorResult{
-			Submitted: verdict.Submitted,
-			Verdict:   verdict.Verdict,
-			Score:     verdict.Score,
-			Summary:   verdict.Summary,
-			Findings:  gateFindingsFromStore(verdict.Findings),
+			Submitted:  verdict.Submitted,
+			Verdict:    verdict.Verdict,
+			Score:      verdict.Score,
+			Summary:    verdict.Summary,
+			Findings:   gateFindingsFromStore(verdict.Findings),
+			Repository: verdict.Repository,
+			PRNumber:   identity.PRNumber,
+			BaseSHA:    verdict.BaseSHA,
+			HeadSHA:    verdict.HeadSHA,
+			DiffDigest: verdict.DiffDigest,
+			DiffFiles:  append([]string(nil), verdict.DiffFiles...),
 		},
 		Commented: verdict.Commented,
 	}, true
@@ -2991,13 +3050,18 @@ func (o *Orchestrator) recordValidatorStageOutcome(
 	if recordedAt.IsZero() {
 		recordedAt = o.clockNow().UTC()
 	}
+	prNumber := int64(identity.PRNumber)
 	if err := o.validatorMemo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
 		ProjectID:       o.workflowMetricsProjectID(),
 		IssueID:         identity.IssueID,
 		HeadSHA:         identity.HeadSHA,
 		Identifier:      issue.Identifier,
 		IssueURL:        issue.URL,
-		PRNumber:        workflowMetricsPRNumber(issue),
+		PRNumber:        &prNumber,
+		Repository:      identity.Repository,
+		BaseSHA:         identity.BaseSHA,
+		DiffDigest:      result.DiffDigest,
+		DiffFiles:       append([]string(nil), result.DiffFiles...),
 		Submitted:       result.Submitted,
 		Verdict:         result.Verdict,
 		Score:           result.Score,

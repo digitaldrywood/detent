@@ -5907,11 +5907,14 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			Title:       "Add validator gate",
 			Description: "## Acceptance Criteria\n- Validator checks the PR diff.",
 			PullRequest: &connector.PullRequest{
+				Number:     522,
 				URL:        "https://github.test/digitaldrywood/detent/pull/522",
 				BranchName: "detent/digitaldrywood_detent_522",
 				BaseSHA:    "base-sha",
+				HeadSHA:    "head-sha",
 			},
 		},
+		Diff: &connector.ValidationDiff{Repository: "digitaldrywood/detent", PRNumber: 522, BaseSHA: "base-sha", HeadSHA: "head-sha", Files: []string{"README.md"}, Patch: "diff --git a/README.md b/README.md\n+seeded\n", Digest: "digest"},
 	})
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -5941,7 +5944,7 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	if workspaceBackend.createIssue.BaseRef != "base-sha" {
 		t.Fatalf("workspace issue BaseRef = %q, want base-sha", workspaceBackend.createIssue.BaseRef)
 	}
-	for _, want := range []string{"validator-agent", "Acceptance Criteria", "git diff", "JSON"} {
+	for _, want := range []string{"validator-agent", "Acceptance Criteria", "sha256=digest", "+seeded", "JSON"} {
 		if !strings.Contains(validatorBackend.request.Prompt, want) {
 			t.Fatalf("validator prompt missing %q:\n%s", want, validatorBackend.request.Prompt)
 		}
@@ -5977,7 +5980,7 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = runner.Validate(t.Context(), ValidatorRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{HeadSHA: "head", BranchName: "branch", State: "OPEN"}}})
+			_, err = runner.Validate(t.Context(), testValidatorRequest(connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{Number: 1, BaseSHA: "base", HeadSHA: "head", BranchName: "branch", State: "OPEN"}}))
 			if !errors.Is(err, ErrValidatorInfrastructure) {
 				t.Fatalf("Validate() error = %v, want infrastructure failure", err)
 			}
