@@ -115,6 +115,7 @@ type provisioningFixture struct {
 	roots    [2]string
 	key      ed25519.PrivateKey
 	timeout  time.Duration
+	now      func() time.Time
 }
 
 func shortTempDir(t *testing.T) string {
@@ -155,7 +156,7 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 		mutate(allocation)
 	}
 	service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout})
+		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, now: f.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,6 +468,76 @@ func TestProvisioningStatusShowsFailureReason(t *testing.T) {
 			t.Parallel()
 			if got := provisioningStatus(tc.organization, 5).Error; got != tc.want {
 				t.Fatalf("Error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		polls     int
+		advance   time.Duration
+		mutate    bool
+		revoke    bool
+		wantCalls int
+		wantOK    bool
+	}{
+		{name: "polls within the interval share one verification", polls: 5, wantCalls: 1, wantOK: true},
+		{name: "poll just inside the interval", polls: 1, advance: providerSessionRecheck - time.Second, wantCalls: 1, wantOK: true},
+		{name: "poll after the interval verifies again", polls: 1, advance: providerSessionRecheck, wantCalls: 2, wantOK: true},
+		{name: "mutation always verifies", polls: 1, mutate: true, wantCalls: 2, wantOK: true},
+		{name: "revocation is trusted only within the interval", polls: 1, revoke: true, wantCalls: 1, wantOK: true},
+		{name: "revocation lands after the interval", polls: 1, advance: providerSessionRecheck, revoke: true, wantCalls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			clock := time.Now().UTC()
+			now := func() time.Time {
+				mu.Lock()
+				defer mu.Unlock()
+				return clock
+			}
+			launcher := &silentLauncher{err: errors.New("no tenant in this test"), running: map[string]bool{}}
+			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) { f.now = now })
+			dana := newBrowser(t, f.service.Handler())
+			dana.login("/auth/oidc/start", "user_dana:")
+			id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+			poll := func() page {
+				return dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+			}
+			if first := poll(); first.StatusCode != http.StatusOK {
+				t.Fatalf("first poll = %d", first.StatusCode)
+			}
+			f.provider.mu.Lock()
+			before := f.provider.verifications
+			f.provider.mu.Unlock()
+			if tc.revoke {
+				f.provider.mu.Lock()
+				clear(f.provider.sessions)
+				f.provider.mu.Unlock()
+			}
+			mu.Lock()
+			clock = clock.Add(tc.advance)
+			mu.Unlock()
+			if tc.mutate {
+				_, body := dana.get("/organizations/" + id + "/provisioning")
+				dana.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, body)}}, nil)
+			}
+			last := page{}
+			for range tc.polls {
+				last = poll()
+			}
+			f.provider.mu.Lock()
+			calls := f.provider.verifications - before
+			f.provider.mu.Unlock()
+			if calls != tc.wantCalls-1 {
+				t.Fatalf("provider verifications after the first poll = %d, want %d", calls, tc.wantCalls-1)
+			}
+			if (last.StatusCode == http.StatusOK) != tc.wantOK {
+				t.Fatalf("last poll = %d, want ok %v", last.StatusCode, tc.wantOK)
 			}
 		})
 	}
