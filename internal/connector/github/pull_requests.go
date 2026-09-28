@@ -517,7 +517,7 @@ func (c *Connector) PullRequestValidationDiff(ctx context.Context, issue connect
 	path := restPullRequestPath(repo, number)
 	var before, after restPullRequest
 	if err := c.client.REST(ctx, http.MethodGet, path, nil, &before); err != nil {
-		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR metadata: %w", err)
+		return connector.ValidationDiff{}, fmt.Errorf("%w: %w", connector.NewRetryableError("fetch validator PR metadata"), err)
 	}
 	base, head := strings.TrimSpace(before.Base.SHA), strings.TrimSpace(before.Head.SHA)
 	if base == "" || head == "" || base != strings.TrimSpace(issue.PullRequest.BaseSHA) || head != strings.TrimSpace(issue.PullRequest.HeadSHA) {
@@ -525,17 +525,17 @@ func (c *Connector) PullRequestValidationDiff(ctx context.Context, issue connect
 	}
 	files, err := fetchRESTList[restPullRequestFile](ctx, c.client, restPullRequestFilesPath(repo, number))
 	if err != nil {
-		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR files: %w", err)
+		return connector.ValidationDiff{}, fmt.Errorf("%w: %w", connector.NewRetryableError("fetch validator PR files"), err)
 	}
 	patch, truncated, _, err := c.client.RESTTextWithSize(ctx, path, "application/vnd.github.diff", 8<<20)
 	if err != nil {
-		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR patch: %w", err)
+		return connector.ValidationDiff{}, fmt.Errorf("%w: %w", connector.NewRetryableError("fetch validator PR patch"), err)
 	}
 	if truncated {
 		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR patch exceeds provenance limit")
 	}
 	if err := c.client.REST(ctx, http.MethodGet, path, nil, &after); err != nil {
-		return connector.ValidationDiff{}, fmt.Errorf("refresh validator PR metadata: %w", err)
+		return connector.ValidationDiff{}, fmt.Errorf("%w: %w", connector.NewRetryableError("refresh validator PR metadata"), err)
 	}
 	if before.Base.SHA != after.Base.SHA || before.Head.SHA != after.Head.SHA {
 		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR head changed while collecting diff")

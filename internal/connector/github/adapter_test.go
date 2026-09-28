@@ -5671,6 +5671,48 @@ func TestPullRequestValidationDiffConcurrentPRs(t *testing.T) {
 	}
 }
 
+func TestPullRequestValidationDiffFetchFailuresAreRetryable(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		failedCall int
+	}{
+		{name: "initial metadata", failedCall: 1},
+		{name: "files", failedCall: 2},
+		{name: "patch", failedCall: 3},
+		{name: "refreshed metadata", failedCall: 4},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if int(calls.Add(1)) == tt.failedCall {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/files"):
+					_, _ = io.WriteString(w, `[{"filename":"AGENTS.md","patch":"@@ -0,0 +1 @@\n+bench origin"}]`)
+				case r.Header.Get("Accept") == "application/vnd.github.diff":
+					_, _ = io.WriteString(w, "diff --git a/AGENTS.md b/AGENTS.md\n@@ -0,0 +1 @@\n+bench origin\n")
+				default:
+					_, _ = io.WriteString(w, `{"number":155,"base":{"sha":"base"},"head":{"sha":"head"}}`)
+				}
+			}))
+			t.Cleanup(server.Close)
+			c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{Identifier: "example/repo#155", PRRepository: "example/repo",
+				PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base", HeadSHA: "head"}}
+			if _, err := c.PullRequestValidationDiff(t.Context(), issue); err == nil || !connector.IsRetryable(err) {
+				t.Fatalf("fetch failure = %v, want retryable error", err)
+			}
+		})
+	}
+}
+
 func TestValidationDiffRejectsOtherPRFiles(t *testing.T) {
 	t.Parallel()
 	patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n@@ -0,0 +1 @@\n+workflow\n"
