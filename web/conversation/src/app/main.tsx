@@ -51,7 +51,7 @@ function Failure({ message }: { message: string }): React.ReactElement {
   );
 }
 
-if (isEntrySurface()) {
+if (isEntrySurface() || (import.meta.env.DEV && /^\/platform(\/|$)/.test(globalThis.location?.pathname ?? ""))) {
   mount(
     <React.StrictMode>
       <RouterProvider router={makeEntryRouter() as never} />

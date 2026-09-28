@@ -1,0 +1,110 @@
+{
+  "mode": "test",
+  "account_id": "acct_1Pexample0000",
+  "customers": [
+    {
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "customer_id": "cus_northwinQ2m",
+      "status": "active",
+      "plan": "team",
+      "paid_through": "2026-10-15T18:00:00Z"
+    },
+    {
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "customer_id": "cus_harborQ2m",
+      "status": "payment_failed",
+      "plan": "team",
+      "paid_through": "2026-09-25T18:00:00Z"
+    },
+    {
+      "organization": {
+        "id": "org_fernhill",
+        "name": "Fernhill Analytics"
+      },
+      "customer_id": "cus_fernhillQ2m",
+      "status": "grace",
+      "plan": "team",
+      "paid_through": "2026-09-25T18:00:00Z"
+    },
+    {
+      "organization": {
+        "id": "org_kestrel",
+        "name": "Kestrel Systems"
+      },
+      "customer_id": "cus_kestrelQ2m",
+      "status": "canceling",
+      "plan": "team",
+      "paid_through": "2026-09-25T18:00:00Z"
+    },
+    {
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "customer_id": "cus_meridianQ2m",
+      "status": "active",
+      "plan": "enterprise_pilot",
+      "paid_through": "2026-10-15T18:00:00Z"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "evt_1Q9aa01",
+      "event_type": "invoice.payment_failed",
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "status": "delivered",
+      "attempts": 1,
+      "received_at": "2026-09-25T14:00:00Z"
+    },
+    {
+      "event_id": "evt_1Q9aa02",
+      "event_type": "customer.subscription.updated",
+      "organization": {
+        "id": "org_fernhill",
+        "name": "Fernhill Analytics"
+      },
+      "status": "quarantined",
+      "attempts": 20,
+      "received_at": "2026-09-26T11:00:00Z"
+    },
+    {
+      "event_id": "evt_1Q9aa03",
+      "event_type": "invoice.paid",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "status": "delivered",
+      "attempts": 1,
+      "received_at": "2026-09-26T22:00:00Z"
+    },
+    {
+      "event_id": "evt_1Q9aa04",
+      "event_type": "checkout.session.completed",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "status": "pending",
+      "attempts": 3,
+      "received_at": "2026-09-27T17:42:00Z"
+    },
+    {
+      "event_id": "evt_1Q9aa05",
+      "event_type": "charge.refunded",
+      "organization": null,
+      "status": "ignored",
+      "attempts": 1,
+      "received_at": "2026-09-24T20:00:00Z"
+    }
+  ]
+}

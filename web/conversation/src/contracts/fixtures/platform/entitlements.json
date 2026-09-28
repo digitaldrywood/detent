@@ -1,0 +1,83 @@
+{
+  "organization_id": "org_harbor",
+  "base": {
+    "id": "team",
+    "version": 2
+  },
+  "effective_base": {
+    "id": "team",
+    "version": 2
+  },
+  "source": "base",
+  "revision": 7,
+  "grants": [
+    {
+      "id": "comp_harbor_launch",
+      "plan": {
+        "id": "enterprise_pilot",
+        "version": 1
+      },
+      "scope": [
+        "hosted_artifacts",
+        "concurrent_work"
+      ],
+      "starts_at": "2026-09-07T18:00:00Z",
+      "expires_at": "2026-10-07T18:00:00Z",
+      "reason": "Design partner: artifact relay trial",
+      "granted_by": "staff@detent.example",
+      "granted_at": "2026-09-07T18:00:00Z"
+    }
+  ],
+  "plans": [
+    {
+      "id": "pilot_free",
+      "version": 1,
+      "features": [
+        "collaboration"
+      ],
+      "allowances": {
+        "members": 5,
+        "projects": 2,
+        "registered_runners": 2,
+        "connected_runners": 1,
+        "concurrent_work": 2,
+        "api_mutations": 20000
+      }
+    },
+    {
+      "id": "team",
+      "version": 2,
+      "features": [
+        "collaboration",
+        "native_execution",
+        "github_integration"
+      ],
+      "allowances": {
+        "members": 25,
+        "projects": 10,
+        "registered_runners": 10,
+        "connected_runners": 6,
+        "concurrent_work": 12,
+        "api_mutations": 250000
+      }
+    },
+    {
+      "id": "enterprise_pilot",
+      "version": 1,
+      "features": [
+        "collaboration",
+        "native_execution",
+        "github_integration",
+        "hosted_artifacts"
+      ],
+      "allowances": {
+        "members": 100,
+        "projects": 50,
+        "registered_runners": 40,
+        "connected_runners": 20,
+        "concurrent_work": 40,
+        "api_mutations": 2000000
+      }
+    }
+  ]
+}

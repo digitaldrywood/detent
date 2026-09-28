@@ -1,0 +1,334 @@
+{
+  "current_version": "0.131.2",
+  "runners": [
+    {
+      "id": "rnr_nort0",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "display_name": "build-mac-1",
+      "hostname": "mac-0.northwind.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:59:24Z"
+    },
+    {
+      "id": "rnr_nort1",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "display_name": "build-mac-2",
+      "hostname": "mac-1.northwind.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.130.0",
+      "host_capacity": 2,
+      "host_used": 2,
+      "last_heartbeat_at": "2026-09-27T17:58:48Z"
+    },
+    {
+      "id": "rnr_nort2",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "display_name": "linux-ci-a",
+      "hostname": "ci-2.northwind.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:58:12Z"
+    },
+    {
+      "id": "rnr_nort3",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "display_name": "linux-ci-b",
+      "hostname": "ci-3.northwind.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:57:36Z"
+    },
+    {
+      "id": "rnr_nort4",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "display_name": "gpu-box",
+      "hostname": "gpu-4.northwind.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.131.2",
+      "host_capacity": 4,
+      "host_used": 2,
+      "last_heartbeat_at": "2026-09-27T17:57:00Z"
+    },
+    {
+      "id": "rnr_harb0",
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "display_name": "build-mac-1",
+      "hostname": "mac-0.harbor.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.130.0",
+      "host_capacity": 2,
+      "host_used": 2,
+      "last_heartbeat_at": "2026-09-27T17:59:24Z"
+    },
+    {
+      "id": "rnr_harb1",
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "display_name": "build-mac-2",
+      "hostname": "mac-1.harbor.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:58:48Z"
+    },
+    {
+      "id": "rnr_harb2",
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "display_name": "linux-ci-a",
+      "hostname": "ci-2.harbor.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:58:12Z"
+    },
+    {
+      "id": "rnr_quil0",
+      "organization": {
+        "id": "org_quillstone",
+        "name": "Quillstone"
+      },
+      "display_name": "build-mac-1",
+      "hostname": "mac-0.quillstone.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:59:24Z"
+    },
+    {
+      "id": "rnr_fern0",
+      "organization": {
+        "id": "org_fernhill",
+        "name": "Fernhill Analytics"
+      },
+      "display_name": "build-mac-1",
+      "hostname": "mac-0.fernhill.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 2,
+      "last_heartbeat_at": "2026-09-27T17:59:24Z"
+    },
+    {
+      "id": "rnr_fern1",
+      "organization": {
+        "id": "org_fernhill",
+        "name": "Fernhill Analytics"
+      },
+      "display_name": "build-mac-2",
+      "hostname": "mac-1.fernhill.internal",
+      "health": "stale",
+      "state": "paused",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.129.4",
+      "host_capacity": 2,
+      "host_used": 0,
+      "last_heartbeat_at": "2026-09-26T16:00:00Z"
+    },
+    {
+      "id": "rnr_meri0",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "build-mac-1",
+      "hostname": "mac-0.meridian.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.130.0",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:59:24Z"
+    },
+    {
+      "id": "rnr_meri1",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "build-mac-2",
+      "hostname": "mac-1.meridian.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 2,
+      "last_heartbeat_at": "2026-09-27T17:58:48Z"
+    },
+    {
+      "id": "rnr_meri2",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "linux-ci-a",
+      "hostname": "ci-2.meridian.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:58:12Z"
+    },
+    {
+      "id": "rnr_meri3",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "linux-ci-b",
+      "hostname": "ci-3.meridian.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:57:36Z"
+    },
+    {
+      "id": "rnr_meri4",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "gpu-box",
+      "hostname": "gpu-4.meridian.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.130.0",
+      "host_capacity": 4,
+      "host_used": 2,
+      "last_heartbeat_at": "2026-09-27T17:57:00Z"
+    },
+    {
+      "id": "rnr_meri5",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "studio",
+      "hostname": "studio-5.meridian.internal",
+      "health": "healthy",
+      "state": "enabled",
+      "os": "darwin",
+      "architecture": "arm64",
+      "version": "0.131.2",
+      "host_capacity": 2,
+      "host_used": 1,
+      "last_heartbeat_at": "2026-09-27T17:56:24Z"
+    },
+    {
+      "id": "rnr_meri6",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "spare-1",
+      "hostname": "spare-6.meridian.internal",
+      "health": "stale",
+      "state": "paused",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.129.4",
+      "host_capacity": 2,
+      "host_used": 0,
+      "last_heartbeat_at": "2026-09-26T16:00:00Z"
+    },
+    {
+      "id": "rnr_meri7",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "display_name": "spare-2",
+      "hostname": "spare-7.meridian.internal",
+      "health": "stale",
+      "state": "paused",
+      "os": "linux",
+      "architecture": "amd64",
+      "version": "0.129.4",
+      "host_capacity": 2,
+      "host_used": 0,
+      "last_heartbeat_at": "2026-09-26T16:00:00Z"
+    }
+  ],
+  "unreachable": [
+    {
+      "id": "org_meridian",
+      "name": "Meridian Health"
+    }
+  ]
+}

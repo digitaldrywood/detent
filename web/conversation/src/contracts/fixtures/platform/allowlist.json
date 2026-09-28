@@ -1,0 +1,19 @@
+{
+  "self_service": true,
+  "open": false,
+  "allowed_emails": [
+    "kai@brightpath.example"
+  ],
+  "allowed_domains": [
+    "northwind.example",
+    "harborlabs.example",
+    "tidewater.example"
+  ],
+  "source": {
+    "file": "/etc/detent/cloud.yaml",
+    "keys": [
+      "allocation.allowed_emails",
+      "allocation.allowed_domains"
+    ]
+  }
+}

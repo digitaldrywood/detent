@@ -1,0 +1,28 @@
+{
+  "source": {
+    "file": "/etc/detent/cloud.yaml"
+  },
+  "staff_emails": [
+    "staff@detent.example",
+    "billing@detent.example"
+  ],
+  "support_actors": [
+    "staff@detent.example"
+  ],
+  "entitlement_administrators": [
+    "staff@detent.example",
+    "billing@detent.example"
+  ],
+  "allocation": {
+    "max_tenants": 40,
+    "max_concurrent_provisions": 2,
+    "max_organizations_per_identity": 3,
+    "retry_limit": 5,
+    "min_free_disk_bytes": 21474836480,
+    "min_available_memory_bytes": 4294967296
+  },
+  "billing": {
+    "mode": "test",
+    "account_id": "acct_1Pexample0000"
+  }
+}

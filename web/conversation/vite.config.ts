@@ -346,6 +346,8 @@ export default defineConfig({
       "/app/bootstrap": { target: hubUrl, changeOrigin: true },
       "/chat/bootstrap": { target: hubUrl, changeOrigin: true },
       "/__mock": { target: hubUrl, changeOrigin: true },
+      // The platform console's support-access form posts to the entry itself.
+      "/support/start": { target: hubUrl, changeOrigin: true },
     },
   },
   test: {

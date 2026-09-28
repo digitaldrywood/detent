@@ -1,0 +1,101 @@
+{
+  "backups_configured": false,
+  "tenants": [
+    {
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "state": "ready",
+      "running": true,
+      "started_at": "2026-09-24T20:00:00Z",
+      "restarts": 0,
+      "database_bytes": 557842432,
+      "last_backup_at": "2026-09-21T18:00:00Z"
+    },
+    {
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "state": "ready",
+      "running": true,
+      "started_at": "2026-09-24T20:00:00Z",
+      "restarts": 0,
+      "database_bytes": 358612992,
+      "last_backup_at": null
+    },
+    {
+      "organization": {
+        "id": "org_quillstone",
+        "name": "Quillstone"
+      },
+      "state": "ready",
+      "running": true,
+      "started_at": "2026-09-24T20:00:00Z",
+      "restarts": 0,
+      "database_bytes": 159383552,
+      "last_backup_at": null
+    },
+    {
+      "organization": {
+        "id": "org_fernhill",
+        "name": "Fernhill Analytics"
+      },
+      "state": "ready",
+      "running": true,
+      "started_at": "2026-09-24T20:00:00Z",
+      "restarts": 0,
+      "database_bytes": 239075328,
+      "last_backup_at": null
+    },
+    {
+      "organization": {
+        "id": "org_tidewater",
+        "name": "Tidewater Bio"
+      },
+      "state": "allocating",
+      "running": false,
+      "started_at": null,
+      "restarts": 0,
+      "database_bytes": 39845888,
+      "last_backup_at": null
+    },
+    {
+      "organization": {
+        "id": "org_brightpath",
+        "name": "Brightpath"
+      },
+      "state": "ready",
+      "running": true,
+      "started_at": "2026-09-24T20:00:00Z",
+      "restarts": 0,
+      "database_bytes": 79691776,
+      "last_backup_at": null
+    },
+    {
+      "organization": {
+        "id": "org_kestrel",
+        "name": "Kestrel Systems"
+      },
+      "state": "disabled",
+      "running": false,
+      "started_at": null,
+      "restarts": 0,
+      "database_bytes": 438304768,
+      "last_backup_at": null
+    },
+    {
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "state": "ready",
+      "running": false,
+      "started_at": "2026-09-27T17:54:00Z",
+      "restarts": 4,
+      "database_bytes": 916455424,
+      "last_backup_at": null
+    }
+  ]
+}
