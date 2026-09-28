@@ -5713,6 +5713,78 @@ func TestPullRequestValidationDiffFetchFailuresAreRetryable(t *testing.T) {
 	}
 }
 
+func TestPullRequestValidationDiffPreservesFetchFailureClassification(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []struct {
+		name      string
+		status    int
+		body      string
+		headers   http.Header
+		transport error
+		want      error
+		retryable bool
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, want: ErrAuthenticationFailed},
+		{name: "forbidden", status: http.StatusForbidden, want: ErrAuthenticationFailed},
+		{name: "not found", status: http.StatusNotFound, want: ErrNotFound},
+		{name: "server error", status: http.StatusInternalServerError, want: ErrTransient, retryable: true},
+		{name: "timeout", transport: context.DeadlineExceeded, want: ErrTransient, retryable: true},
+		{name: "rate limited", status: http.StatusTooManyRequests, want: ErrRateLimited, retryable: true},
+		{name: "forbidden rate limited", status: http.StatusForbidden, headers: http.Header{"Retry-After": []string{"60"}}, want: ErrRateLimited, retryable: true},
+		{name: "invalid response", status: http.StatusOK, body: "{invalid", want: ErrInvalidResponse},
+	} {
+		for _, stage := range []struct {
+			name string
+			call int
+		}{
+			{name: "initial metadata", call: 1},
+			{name: "files", call: 2},
+			{name: "patch", call: 3},
+			{name: "refreshed metadata", call: 4},
+		} {
+			if failure.name == "invalid response" && stage.name == "patch" {
+				// The patch response is plain text, not JSON.
+				continue
+			}
+			t.Run(failure.name+"/"+stage.name, func(t *testing.T) {
+				t.Parallel()
+				server := httptest.NewServer(http.NotFoundHandler())
+				t.Cleanup(server.Close)
+				var calls atomic.Int32
+				client := staticHTTPClient{do: func(req *http.Request) (*http.Response, error) {
+					if int(calls.Add(1)) == stage.call {
+						if failure.transport != nil {
+							return nil, failure.transport
+						}
+						return jsonResponse(req, failure.status, failure.body, failure.headers), nil
+					}
+					switch {
+					case strings.HasSuffix(req.URL.Path, "/files"):
+						return jsonResponse(req, http.StatusOK, `[{"filename":"AGENTS.md","patch":"@@ -0,0 +1 @@\n+safe"}]`, nil), nil
+					case req.Header.Get("Accept") == "application/vnd.github.diff":
+						return jsonResponse(req, http.StatusOK, "diff --git a/AGENTS.md b/AGENTS.md\n@@ -0,0 +1 @@\n+safe\n", nil), nil
+					default:
+						return jsonResponse(req, http.StatusOK, `{"number":155,"base":{"sha":"base"},"head":{"sha":"head"}}`, nil), nil
+					}
+				}}
+				c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: client})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := connector.Issue{Identifier: "example/repo#155", PRRepository: "example/repo",
+					PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base", HeadSHA: "head"}}
+				_, err = c.PullRequestValidationDiff(t.Context(), issue)
+				if err == nil || connector.IsRetryable(err) != failure.retryable {
+					t.Fatalf("fetch failure = %v, retryable = %t, want %t", err, connector.IsRetryable(err), failure.retryable)
+				}
+				if !errors.Is(err, failure.want) {
+					t.Fatalf("fetch failure = %v, want wrapped %v", err, failure.want)
+				}
+			})
+		}
+	}
+}
+
 func TestValidationDiffRejectsOtherPRFiles(t *testing.T) {
 	t.Parallel()
 	patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n@@ -0,0 +1 @@\n+workflow\n"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -3232,6 +3234,116 @@ func TestValidatorProvenanceFailureStaysRetryable(t *testing.T) {
 	if !ok || failure.NextRetryAt.IsZero() {
 		t.Fatalf("retryable provenance failure = %#v, present=%t", failure, ok)
 	}
+}
+
+func TestValidatorDiffFetchFailureUsesInstancePath(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{name: "401", err: &githubconnector.StatusError{StatusCode: http.StatusUnauthorized, Err: githubconnector.ErrAuthenticationFailed}},
+		{name: "403", err: &githubconnector.StatusError{StatusCode: http.StatusForbidden, Err: githubconnector.ErrAuthenticationFailed}},
+		{name: "404", err: &githubconnector.StatusError{StatusCode: http.StatusNotFound, Err: githubconnector.ErrNotFound}},
+		{name: "500", err: &githubconnector.StatusError{StatusCode: http.StatusInternalServerError, Err: githubconnector.ErrTransient}, retryable: true},
+		{name: "timeout", err: fmt.Errorf("%w: %w", githubconnector.ErrTransient, context.DeadlineExceeded), retryable: true},
+		{name: "rate limit", err: &githubconnector.StatusError{StatusCode: http.StatusTooManyRequests, Err: githubconnector.ErrRateLimited}, retryable: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := connector.Issue{ID: "issue-diff-fetch", Identifier: "digitaldrywood/detent#3150",
+				PullRequest: &connector.PullRequest{Number: 3151, BaseSHA: "base", HeadSHA: "head"}}
+			memo := openValidatorMemoStore(t)
+			cfg := autoPromoteValidatorTestConfig()
+			cfg.AutoPromote.Gate.Validator.MaxAttempts = 1
+			validator := &autoPromoteTickValidator{}
+			var logs strings.Builder
+			orch := &Orchestrator{cfg: cfg, connector: &validatorDiffFailureConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, err: tt.err}, validator: validator,
+				validatorMemo: memo, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			state := newState(cfg)
+			orch.startValidatorStage(t.Context(), &state, issue, time.Now())
+			orch.validatorWG.Wait()
+			if got := len(validator.Requests()); got != 0 {
+				t.Fatalf("validator requests = %d, want none after diff fetch failure", got)
+			}
+			if result, _, ready := orch.validatorStageResult(t.Context(), issue); ready {
+				t.Fatalf("diff fetch failure became a validator verdict: %#v", result)
+			}
+			identity := validatorStageIdentityForIssue(issue)
+			_, hasRetry := orch.validatorFailures[identity.Key]
+			if hasRetry != tt.retryable {
+				t.Fatalf("issue-local validator retry = %t, want %t", hasRetry, tt.retryable)
+			}
+			verdict, memoErr := memo.ValidatorVerdict(t.Context(), store.ValidatorVerdictKey{ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA})
+			if tt.retryable {
+				if memoErr != nil || verdict.NextRetryAt == nil {
+					t.Fatalf("transient fetch failure memo = %#v, error = %v, want retry deadline", verdict, memoErr)
+				}
+				if strings.Contains(logs.String(), "validator infrastructure failure") {
+					t.Fatalf("transient fetch failure used instance failure path: %s", logs.String())
+				}
+			} else {
+				if !errors.Is(memoErr, store.ErrNotFound) {
+					t.Fatalf("permanent fetch failure persisted validator memo = %#v, error = %v", verdict, memoErr)
+				}
+				if !strings.Contains(logs.String(), "validator infrastructure failure") {
+					t.Fatalf("permanent fetch failure did not use instance failure path: %s", logs.String())
+				}
+			}
+		})
+	}
+}
+
+func TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-retry-reload", Identifier: "digitaldrywood/detent#3150",
+		PullRequest: &connector.PullRequest{Number: 3151, BaseSHA: "base", HeadSHA: "head"}}
+	memo := openValidatorMemoStore(t)
+	cfg := autoPromoteValidatorTestConfig()
+	cfg.AutoPromote.Gate.Validator.MaxAttempts = 1
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	validator := &autoPromoteTickValidator{err: connector.NewRetryableError("validator PR file list differs from patch")}
+	first := &Orchestrator{cfg: cfg, validator: validator, validatorMemo: memo,
+		now: func() time.Time { return now }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	first.startValidatorStage(t.Context(), &state, issue, now)
+	first.validatorWG.Wait()
+	identity := validatorStageIdentityForIssue(issue)
+	deadline := first.validatorFailures[identity.Key].NextRetryAt
+	if deadline.IsZero() {
+		t.Fatal("first retry deadline is zero")
+	}
+	verdict, err := memo.ValidatorVerdict(t.Context(), store.ValidatorVerdictKey{ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verdict.FailureAttempts != 0 || verdict.NextRetryAt == nil || !verdict.NextRetryAt.Equal(deadline) {
+		t.Fatalf("persisted retry = attempts %d, deadline %v, want 0 and %s", verdict.FailureAttempts, verdict.NextRetryAt, deadline)
+	}
+	reloaded := &Orchestrator{cfg: cfg, validator: validator, validatorMemo: memo,
+		now: func() time.Time { return now.Add(time.Second) }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if result, _, ready := reloaded.validatorStageResult(t.Context(), issue); ready {
+		t.Fatalf("retryable failure became a verdict after reload: %#v", result)
+	}
+	failure, ok := reloaded.validatorFailures[identity.Key]
+	if !ok || !failure.NextRetryAt.Equal(deadline) {
+		t.Fatalf("reloaded failure = %#v, present=%t, want deadline %s", failure, ok, deadline)
+	}
+	reloaded.startValidatorStage(t.Context(), &state, issue, now.Add(time.Second))
+	reloaded.validatorWG.Wait()
+	if got := len(validator.Requests()); got != 1 {
+		t.Fatalf("validator requests before persisted deadline = %d, want 1", got)
+	}
+}
+
+type validatorDiffFailureConnector struct {
+	*autoPromoteTickConnector
+	err error
+}
+
+func (c *validatorDiffFailureConnector) PullRequestValidationDiff(context.Context, connector.Issue) (connector.ValidationDiff, error) {
+	return connector.ValidationDiff{}, c.err
 }
 
 func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) {
