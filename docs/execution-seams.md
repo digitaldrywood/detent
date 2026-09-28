@@ -112,29 +112,20 @@ artifact workflows. GitHub PR delivery remains the default.
 
 ### Main Branch Protection
 
-The `main` branch must require pull requests and up-to-date validation before
-merge. The expected GitHub branch protection or ruleset setting is
-`required_status_checks.strict: true`; if the repository switches to merge
-queue, the queue must provide equivalent current-base validation before merge.
+`develop` requires a pull request and a successful `local-gate` commit status
+on the exact pushed head after `make check-fast` passes. Pull requests run no
+GitHub Actions workflows. An hourly operator-host build runs `make check` on
+`develop` and promotes a green head to `main` by merge commit. A failed hourly
+build files one hotfix issue. The operator changes the `main` ruleset from
+merge-group checks to `local-gate` when the workflow change lands.
 
-Required status checks must include every merge-blocking CI job directly. Do
-not depend on a downstream skipped job to protect an upstream gate. A required
-check name must not report success from a path- or event-dependent no-op when
-the same named check runs real validation on `main`; `Browser Visual` is still a
-real gate because non-UI pull requests run a Detent binary smoke instead of a
-green no-op.
+`main` push CI remains release evidence during this transition. Its release
+check names are `Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and
+`Browser Visual`. The release workflow also accepts an authenticated, newest
+successful `local-gate` commit status on the tagged commit. The signed
+provenance manifest identifies the immutable check-run or status ID.
 
-Required PR merge checks, branch protection/rulesets, and
-`gate.required_status_checks` must name the same merge-blocking checks:
-
-- `Lint` - budget: `2m`
-- `Verify (ubuntu-latest)` - budget: `8m`
-- `Test Coverage` - budget: `4m`
-- `Browser Visual` - budget: `15m`
-
-Security also runs on every PR. The following integration checks run only on
-main and develop pushes and manual dispatch, and must be removed from the PR-required list
-by the operator (see [Merge Train](merge-train.md)):
+The following integration jobs run on main push or manual dispatch:
 
 - `Portability Verify (macos-latest)` - budget: `8m`
 - `Portability Verify (windows-latest)` - budget: `45m`
@@ -143,76 +134,7 @@ by the operator (see [Merge Train](merge-train.md)):
 - `Installer Smoke (windows-latest)` - budget: `6m`
 - `GoReleaser Snapshot` - budget: `35m`
 
-Browser and snapshot budgets are whole-job ceilings, enforced with
-`timeout-minutes: 15` and `timeout-minutes: 35`, respectively, including setup
-and artifact handling. The snapshot ceiling accommodates the shared 20-minute
-workspace package budget (#2646), leaving 15 minutes for setup, remaining tests,
-packaging, and artifacts. Individual test lifecycle deadlines remain unchanged.
-Repeated hosted
-Linux measurements put full browser jobs at `10m49s`–`11m23s` and snapshot jobs
-at `10m3s`–`10m39s`, even with Go cache hits. The full Playwright step alone
-took `8m17s`–`8m41s`; a non-visual PR's binary smoke took `21s` in a `48s` job
-and is not a basis for the full-check budget. The browser ceiling leaves more than
-three minutes above its observed maximum for runner variation and retries;
-they are bounds, not predicted runtimes or measured cold-cache guarantees.
-See [browser and snapshot measurements](../.detent/validation/2310/README.md)
-for runner/cache provenance, generation and compilation costs, packaging
-costs, and the assessment of repeated build and fixture work. Full browser
-selection, release hooks, all six release targets, archives, Linux packages,
-checksums, and minisign signing remain required work.
-
-The post-merge portability checks are limited to build, vet, and the non-race
-test suite. Windows runs packages sequentially with four-way test parallelism
-inside a `45m` job budget and retains per-package JSON evidence plus a failure
-classification summary. `Windows Core` owns only the command smoke, so no Go
-package has two Windows test owners in CI. Repeated race loops, the full
-race suite on macOS and Windows, and the Windows SQLite artifact lifecycle
-stress loop run nightly and on manual dispatch in
-`.github/workflows/portability-stress.yml`. That workflow has a `45m` ceiling;
-failures are surfaced as failed `Portability Stress` workflow runs with the
-failing command output in the job log.
-
-Portability, Windows Core, installer smoke, and snapshot jobs run only on
-pushes to `develop` or `main` and on manual dispatch. They are excluded from
-PR-required checks; `main` failures create or update CI instance-health
-tracking issues through machine intake. PR promotion still requires the fast checks listed above.
-
-GitHub merge queue adoption is deferred. Detent currently owns merge ordering,
-rebases each head onto its current target branch (`develop` for day-to-day work,
-`main` for promotions and hotfixes; see [branching](branching.md)), validates
-that exact head, and merges it
-through the REST API. GitHub merge queue would require Detent to enqueue rather
-than merge, validate `merge_group` commits, and reconcile queue ejections back
-to tracker state. That larger delivery-state change is not justified merely to
-remove the long portability checks from this critical path. The trade-off is
-that strict current-base validation still invalidates other open heads after a
-merge; keeping all required jobs within their written budgets bounds that cost
-without weakening `required_status_checks.strict: true`.
-
-The CI workflow keeps pull request runs cancellable by newer pushes to the same
-PR through `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.
-Push, tag, schedule, and manual runs use a unique run group and must not be
-cancelled by later runs. The workflow test in `ci_workflow_test.go` checks this
-section against `.github/workflows/ci.yml` so job-name, required-check, wall-time
-budget, confidence-check, and green no-op drift fails in local validation.
-
-### Verify sharding
-
-CI skips draft pull-request jobs and starts work on `ready_for_review` and
-subsequent ready-head pushes. GitHub may display a skipped workflow run for a
-draft event; no runner executes its jobs. Converting back to draft cancels the
-previous PR run through the existing concurrency group. Merge groups run all PR checks plus
-the repeated subprocess lifecycle tests. Main pushes retain integration jobs.
-
-`Verify (ubuntu-latest)` aggregates build/vet/tests and four race runners, failing
-if any dependency fails, is cancelled, or is skipped. Hub and orchestrator each
-have a dedicated runner; the remaining import paths are deterministically hashed
-across two runners. Each shard retains JSON test evidence and caches Go modules
-and compiled race packages by OS, architecture, Go version, shard, and `go.sum`.
-The eight-minute budget is a wall-clock target, not a shortened test timeout.
-
-`Browser Visual` aggregates three Playwright shards the same way (`--shard=N/3`), failing if any shard fails, is cancelled, or is skipped. Each shard keeps the fifteen-minute job timeout and uploads its own evidence and failure artifacts. The Cloud client specs run a hub preview per spec file, so one runner can no longer fit the full suite inside the budget.
-
+`.github/workflows/portability-stress.yml` runs only on manual dispatch.
 
 ## Still Git/PR Coupled
 

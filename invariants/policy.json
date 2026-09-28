@@ -98,6 +98,8 @@
     "./internal/invariants": [
       "TestRepositorySources",
       "TestRepositoryWorkflow",
+      "TestRepositoryHasNoPullRequestActions",
+      "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
       "TestMutationDocuments",
@@ -110,7 +112,9 @@
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
       "TestPrepareWorkerCodexHomeExistingInstructions",
-      "TestDoctorMergeQueueRecordedHistory",
+      "TestDoctorInvariantEvidence",
+      "TestDoctorInvariantWorkflowVerdict",
+      "TestDoctorLocalGateCommitStatusProducer",
       "TestDoctorInvariantAdmission",
       "TestDoctorInvariantAdmissionBatches",
       "TestDoctorInvariantScopeClassification",

@@ -7,7 +7,44 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
+
+func TestDoctorLocalGateCommitStatusProducer(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		kind     string
+		required []string
+		fromRule bool
+		want     doctorStatus
+		detail   string
+	}{
+		{name: "command gate status needs no Actions job", required: []string{"local-gate"}, want: doctorOK, detail: "commit status"},
+		{name: "ruleset local gate needs no Actions job", fromRule: true, want: doctorOK, detail: "commit status"},
+		{name: "other required job still checked", required: []string{"local-gate", "Verify"}, want: doctorWarn, detail: "required check Verify has no matching workflow job"},
+		{name: "non-command gate cannot claim local status", kind: gate.KindHumanReview, required: []string{"local-gate"}, want: doctorWarn, detail: "required check local-gate has no matching workflow job"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := workflowconfig.Config{}
+			cfg.Tracker.Kind = "github"
+			cfg.Gate.Kind = tt.kind
+			cfg.Gate.RequiredStatusChecks = tt.required
+			deps := doctorDeps{githubWorkflows: func(context.Context, workflowconfig.Config, string) (map[string]string, error) {
+				return map[string]string{}, nil
+			}}
+			if tt.fromRule {
+				cfg.Tracker.Repository = "owner/repo"
+				deps.githubBranchPolicy = func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
+					return ghconnector.BranchMergePolicy{Branch: "develop", RequiredStatusChecks: []string{"local-gate"}}, nil
+				}
+			}
+			got := checkDoctorCITriggerShape(t.Context(), "p", cfg, deps)
+			if got.Status != tt.want || !strings.Contains(got.Detail, tt.detail) {
+				t.Fatalf("check = %+v, want %s containing %q", got, tt.want, tt.detail)
+			}
+		})
+	}
+}
 
 func TestDoctorRequiredStatusTriggerGap(t *testing.T) {
 	for _, tt := range []struct{ name, on, condition, label, want string }{

@@ -52,44 +52,27 @@ releases the reservation even after the tracker omits the completed issue from
 queue fetches. Diagnostics record
 reservation release reasons, head/base identities, and validation invalidation.
 
-Inside the serialized `Merging` lane, avoid duplicating the full local release
-gate when it does not buy new signal. If the PR already passed the pre-review
-gate, the branch rebases cleanly onto current `origin/develop`, and no source files
-change during rebase, the merge agent should run a focused rebase/smoke gate
-locally and rely on merge-group CI for full enforcement when using this
-repository's native queue. If the merge agent edits code, resolves conflicts,
-detects stale or unknown validation state,
-or cannot prove the final rebase was source-clean, it must run the full
-configured gate again.
-
-CI waiting should poll REST check runs with backoff, not loop on
-GraphQL-heavy PR status commands. This repository's required PR-head checks
-are expected to be skipped; record them as skipped. GitHub must run and pass
-the required checks on the merge-group commit before merge. Post-merge
-integration failures are tracked separately.
-Merge handoff telemetry should record the
-quiet-window wait, GitHub queue/start wait, local merge-gate duration,
-current-head PR check duration, merge-group CI duration, active slow-check
-runtimes, and whether post-merge `develop` CI is still running. The quiet window,
-successful merge-group CI, and conflict/full-gate fallback are quality gates;
-repeated full local validation
-after a source-clean rebase, noisy status polling, uncached tool install, and
-duplicated non-blocking post-merge work are optimization targets.
+Inside the serialized `Merging` lane, this repository validates the exact PR
+head with `make check-fast` and posts a successful `local-gate` commit status
+after pushing. A changed head needs a new gate and status. Pull requests to
+`develop` run no GitHub Actions workflows. The hourly operator-host build runs
+`make check` on `develop`; a green build promotes it to `main` by merge commit.
+Current-head checks that GitHub reports as skipped are not test evidence.
 
 The repository CI caches the project-pinned golangci-lint binary and only builds
 it with `go install` on cache miss. CI builds golangci-lint `v2.9.0` with the
 repository Go toolchain so analyzer behavior and toolchain provenance stay
 aligned.
 
-Required checks are `Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and
-`Browser Visual`. `Security` is also reported on every PR. Real jobs are skipped
-on pull requests, including docs-only PRs; the same jobs run on merge groups.
+`Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and `Browser Visual` are
+release evidence from `main` push CI during the transition. A newest successful
+`local-gate` status on the tagged commit is also accepted by the release
+provenance validator.
 
 `Portability Verify (macos-latest)`, `Portability Verify (windows-latest)`,
 `Windows Core`, `Installer Smoke (ubuntu-latest)`,
-`Installer Smoke (windows-latest)`, and `GoReleaser Snapshot` run only on pushes
-to `main` or `develop` and manual dispatch. They do not run for PRs, merge groups, tag pushes, or
-the nightly schedule. A push to main or develop runs the full set.
+`Installer Smoke (windows-latest)`, and `GoReleaser Snapshot` run on `main`
+pushes or manual dispatch. Portability stress is manual only.
 
 Failed integration jobs on main (including manual runs on main; never develop) use the existing
 machine intake to open a tracking issue or comment on the open match, with
@@ -98,10 +81,9 @@ the failed job and records the commit. These track CI instance health; logs
 must establish a product defect before proposing product changes. Infrastructure
 failures remain attributed to the instance. Reporting errors fail the reporting job.
 
-The operator must update GitHub's required-checks list to match the four fast
-checks above, removing the six integration checks from branch protection and
-rulesets. Preserve any separately required Security policy. Changing this
-workflow does not change GitHub protection settings.
+The `develop` ruleset requires a pull request and `local-gate` status. The
+operator switches the `main` ruleset from merge-group checks to `local-gate`
+when this workflow change merges. Workflow edits do not change GitHub rulesets.
 
 When implementation workers fill project or global capacity, a clean PR with
 passing current-head checks and a known base can complete through the existing
@@ -260,20 +242,8 @@ are changed.
 
 In GitHub repository **Settings → Rules → Rulesets**, create or edit an active
 branch ruleset targeting the merge branch and enable **Require merge queue**.
-For day-to-day integration (`develop` in this repository), choose squash
-merging. A production branch that receives promotion PRs (`main` here) needs its
-own ruleset whose queue uses merge commits, because a squashed promotion loses
-the ancestry later promotions depend on; see [branching](branching.md). Ensure
-every required check runs on the merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
-The PR-required and security-audit exclusions above still apply.
+For repositories that choose a queue, every required check must run on the
+merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
 
-`detent doctor` recommends considering a queue when strict protection is enabled,
-no queue exists, and recorded merge cadence multiplied by median CI duration is
-at least 0.25 merges per CI run. It reads the last seven days of lane history,
-deduplicates PRs for the repository and target branch, and requires at least
-three merges and three measured CI durations. Cadence uses the interval between
-the first and last recorded merge. The recommendation reports the sample count,
-observed interval, merges/day, median CI minutes, and estimated overlap. CI
-durations and target branches are recorded with PR lane transitions; older
-history without these fields does not justify a recommendation. Doctor never
-mutates branch protection or rulesets.
+Detent does not currently recommend a merge queue from PR-head CI cadence;
+that recommendation relied on the retired per-PR CI model.
