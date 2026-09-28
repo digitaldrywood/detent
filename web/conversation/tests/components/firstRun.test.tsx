@@ -23,6 +23,7 @@ import {
   FirstRunChecklist,
   ISSUE_CREATION_UNAVAILABLE,
   NEEDS_PROJECT,
+  RUNNER_ACCESS_NEEDED,
   RUNNER_ENROLLMENT_UNAVAILABLE,
   firstIssueState,
   firstRunSteps,
@@ -146,6 +147,19 @@ describe("firstRunSteps", () => {
     expect(steps.map((entry) => entry.id)).toEqual(["project", "runner", "issue"]);
     expect(steps.map((entry) => entry.done)).toEqual(done);
     expect(steps.map((entry) => entry.blockedReason)).toEqual(blocked);
+    expect(steps.map((entry) => entry.note)).toEqual([null, null, null]);
+  });
+
+  it("sends an owner without runner access to grant it", () => {
+    const runner = firstRunSteps({
+      ...FACTS,
+      projects: 1,
+      canEnrollRunners: false,
+      canWriteIssues: true,
+    })[1];
+    expect(runner?.blockedReason).toBeNull();
+    expect(runner?.actionLabel).toBe("Grant runner access");
+    expect(runner?.note).toBe(RUNNER_ACCESS_NEEDED);
   });
 });
 

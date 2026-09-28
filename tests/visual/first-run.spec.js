@@ -162,6 +162,11 @@ test("creating the first project lands on its board and the checklist advances",
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Example Studio");
   await expect(page.getByTestId("first-run-step-project")).toHaveAttribute("data-done", "true");
   await expect(page.getByTestId("first-run-progress")).toContainText("of 3 done");
+  // A new project carries no runner grant, so the owner is sent to grant it
+  // rather than shown a button the hub would refuse.
+  await expect(
+    page.getByTestId("first-run-step-runner").getByRole("button", { name: "Grant runner access" }),
+  ).toBeEnabled();
 
   await page.getByTestId("first-run-step-issue").getByRole("button", { name: "New issue" }).click();
   const issue = page.getByRole("dialog", { name: "New issue" });

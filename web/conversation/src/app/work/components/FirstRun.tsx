@@ -1,4 +1,5 @@
 import { CheckIcon, RocketIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
@@ -49,14 +50,18 @@ export interface FirstRunStep {
   readonly actionLabel: string;
   readonly done: boolean;
   readonly blockedReason: string | null;
+  readonly note: string | null;
 }
 
 export const NEEDS_PROJECT = "Create a project first";
 export const RUNNER_ENROLLMENT_UNAVAILABLE = "An organization owner or admin enrolls runners";
+export const RUNNER_ACCESS_NEEDED =
+  "Enrolling a runner needs runner access on every project. Grant it to yourself in Settings → Organization";
 export const ISSUE_CREATION_UNAVAILABLE = "You have read-only access to this project";
 
 export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
   const hasProject = facts.projects > 0;
+  const needsRunnerAccess = hasProject && !facts.canEnrollRunners && facts.canManageProjects;
   return [
     {
       id: "project",
@@ -65,19 +70,21 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
       actionLabel: "New project",
       done: hasProject,
       blockedReason: facts.canManageProjects ? null : PROJECT_CREATION_UNAVAILABLE,
+      note: null,
     },
     {
       id: "runner",
       title: "Enroll a runner",
       description:
         "A runner takes issue runs on your own machine, with your own provider login.",
-      actionLabel: "Enroll a runner",
+      actionLabel: needsRunnerAccess ? "Grant runner access" : "Enroll a runner",
       done: facts.runners > 0,
       blockedReason: !hasProject
         ? NEEDS_PROJECT
-        : facts.canEnrollRunners
+        : facts.canEnrollRunners || needsRunnerAccess
           ? null
           : RUNNER_ENROLLMENT_UNAVAILABLE,
+      note: needsRunnerAccess ? RUNNER_ACCESS_NEEDED : null,
     },
     {
       id: "issue",
@@ -90,6 +97,7 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
         : facts.canWriteIssues
           ? null
           : ISSUE_CREATION_UNAVAILABLE,
+      note: null,
     },
   ];
 }
@@ -164,12 +172,12 @@ export function FirstRunChecklist({
                   <p className="text-[13px] text-muted-foreground leading-[1.45]">
                     {step.description}
                   </p>
-                  {!step.done && step.blockedReason !== null ? (
+                  {!step.done && (step.blockedReason ?? step.note) !== null ? (
                     <p
                       className="text-muted-foreground/80 text-xs"
-                      id={`first-run-${step.id}-blocked`}
+                      id={`first-run-${step.id}-note`}
                     >
-                      {step.blockedReason}.
+                      {step.blockedReason ?? step.note}.
                     </p>
                   ) : null}
                 </div>
@@ -183,7 +191,9 @@ export function FirstRunChecklist({
                     variant={step.blockedReason === null ? "default" : "outline"}
                     disabled={step.blockedReason !== null}
                     aria-describedby={
-                      step.blockedReason === null ? undefined : `first-run-${step.id}-blocked`
+                      (step.blockedReason ?? step.note) === null
+                        ? undefined
+                        : `first-run-${step.id}-note`
                     }
                     onClick={() => onAction(step.id)}
                   >
@@ -318,6 +328,7 @@ export function FirstRunPanel({
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
   const newProject = useNewProject();
+  const navigate = useNavigate();
   const fleet = useResource(() => api.fleet(), [api]);
   const [enrolling, setEnrolling] = React.useState(false);
   const [creatingIssue, setCreatingIssue] = React.useState(false);
@@ -353,7 +364,10 @@ export function FirstRunPanel({
         steps={steps}
         onAction={(id) => {
           if (id === "project") newProject.openNewProject();
-          if (id === "runner") setEnrolling(true);
+          if (id === "runner" && canEnrollRunners) setEnrolling(true);
+          if (id === "runner" && !canEnrollRunners) {
+            void navigate({ to: "/settings/$section", params: { section: "organization" } });
+          }
           if (id === "issue") setCreatingIssue(true);
         }}
       />
