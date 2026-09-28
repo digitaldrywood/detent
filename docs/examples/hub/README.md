@@ -124,7 +124,11 @@ operator can grant complimentary access on the shared deployment.
 For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
 generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
 token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
-as a supervised child (restarted with backoff; stopped when the entry stops). The
+as a supervised child (restarted with backoff; stopped when the entry stops). A child
+that exits `retry_limit` times in a row without staying up for five minutes is no
+longer restarted: during setup the organization moves to `failed` with the reason
+shown on the provisioning screen and the platform console, and resuming setup
+starts it again. The
 child receives only `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`/`LOG_LEVEL`/`DETENT_LOG_LEVEL`, the WorkOS key variable, the
 optional entitlement token variable and its own admin token. Each tenant owns its SQLite file exclusively; never place
 `tenant_root` on a network filesystem.

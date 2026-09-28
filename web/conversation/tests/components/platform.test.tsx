@@ -42,7 +42,7 @@ const organizations = {
       billing: { available: true, status: "active" }, can_support: true, plan: null, grants: null, member_count: null, runner_count: null,
     },
     {
-      id: "org_beta", name: "Beta", state: "failed", step: "tenant_files", attempts: 3, error_code: "tenant_start_failed", managed: true,
+      id: "org_beta", name: "Beta", state: "failed", step: "tenant_files", attempts: 1, error_code: "tenant_start_failed", error_detail: "the tenant Hub exited 5 times in a row without staying up (last: exit status 1)", managed: true,
       creator_email: "eve@example.test", created_at: "2026-09-21T10:00:00Z", updated_at: "2026-09-21T10:05:00Z",
       billing: { available: false }, can_support: false, plan: null, grants: null, member_count: null, runner_count: null,
     },
@@ -143,7 +143,7 @@ describe("platform console", () => {
     expect(within(rows[1]!).getByText("dana@example.test")).toBeTruthy();
     expect(within(rows[1]!).getByText("active")).toBeTruthy();
     expect(within(rows[1]!).getByText("2026-09-20")).toBeTruthy();
-    expect(within(rows[2]!).getByText(/Last error: tenant_start_failed after tenant_files/)).toBeTruthy();
+    expect(within(rows[2]!).getByText(/Last error: tenant_start_failed after tenant_files \(the tenant Hub exited 5 times in a row without staying up \(last: exit status 1\)\)/)).toBeTruthy();
     expect(within(rows[2]!).getByText("Unavailable")).toBeTruthy();
     expect(screen.getByText(/Not shown: plan, grants, member count, runner count/)).toBeTruthy();
   });

@@ -29,6 +29,7 @@ type processLauncher struct {
 	key      ed25519.PrivateKey
 	mu       sync.Mutex
 	running  map[string]func()
+	failures map[string]error
 	starts   int
 }
 
@@ -57,13 +58,28 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if l.billing != nil {
 		config.Hosted.Billing = l.billing()
 	}
+	id := spec.Organization.ID
+	delete(l.failures, id)
 	go func() {
 		defer close(done)
-		_ = hubserver.Run(ctx, config)
+		if err := hubserver.Run(ctx, config); err != nil && ctx.Err() == nil {
+			l.mu.Lock()
+			if l.failures == nil {
+				l.failures = map[string]error{}
+			}
+			l.failures[id] = err
+			l.mu.Unlock()
+		}
 	}()
 	l.starts++
-	l.running[spec.Organization.ID] = func() { cancel(); <-done }
+	l.running[id] = func() { cancel(); <-done }
 	return nil
+}
+
+func (l *processLauncher) Failure(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failures[id]
 }
 
 func (l *processLauncher) Stop(id string) error {
@@ -304,6 +320,7 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 type silentLauncher struct {
 	mu       sync.Mutex
 	err      error
+	failure  error
 	running  map[string]bool
 	launches int
 	stops    int
@@ -332,6 +349,15 @@ func (l *silentLauncher) Stop(id string) error {
 
 func (l *silentLauncher) Close() error { return nil }
 
+func (l *silentLauncher) Failure(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.running[id] {
+		return nil
+	}
+	return l.failure
+}
+
 func (l *silentLauncher) counts() (launches, stops, running int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -343,22 +369,26 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		err          error
+		failure      error
+		retryLimit   int
 		wantLaunches int
+		wantDetail   string
 	}{
-		{name: "hub never becomes healthy", wantLaunches: 1},
-		{name: "launcher refuses", err: errors.New("launch refused at /private/tenant"), wantLaunches: 0},
+		{name: "hub never becomes healthy", retryLimit: 1, wantLaunches: 1, wantDetail: "the tenant Hub did not become healthy within 100ms"},
+		{name: "launcher refuses", err: errors.New("launch refused at /private/tenant"), retryLimit: 1, wantLaunches: 0},
+		{name: "supervisor gave up before the retry limit", failure: &TenantExitError{Exits: 5}, retryLimit: 5, wantLaunches: 1, wantDetail: "the tenant Hub exited 5 times in a row without staying up (last: exited cleanly)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			launcher := &silentLauncher{err: tc.err, running: map[string]bool{}}
-			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) {
+			launcher := &silentLauncher{err: tc.err, failure: tc.failure, running: map[string]bool{}}
+			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = tc.retryLimit; a.Launcher = launcher }, func(f *provisioningFixture) {
 				f.timeout = 100 * time.Millisecond
 			})
 			dana := newBrowser(t, f.service.Handler())
 			dana.login("/auth/oidc/start", "user_dana:")
 			id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
 			failed := f.waitState(t, id, "failed")
-			if failed.ErrorCode != "tenant_start_failed" || failed.Step != "tenant_files" {
+			if failed.ErrorCode != "tenant_start_failed" || failed.Step != "tenant_files" || failed.ErrorDetail != tc.wantDetail || failed.Attempts != tc.retryLimit && tc.failure == nil || tc.failure != nil && failed.Attempts != 1 {
 				t.Fatalf("failure = %+v", failed)
 			}
 			status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
@@ -367,7 +397,7 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 				Error     string `json:"error"`
 				CanResume bool   `json:"can_resume"`
 			}
-			if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, "tenant_start_failed") || strings.Contains(body.Error, "/private") {
+			if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, "tenant_start_failed") || !strings.Contains(body.Error, tc.wantDetail) || strings.Contains(body.Error, "/private") {
 				t.Fatalf("failed provisioning JSON = %s %v", status.Body, err)
 			}
 			if launches, stops, running := launcher.counts(); launches != tc.wantLaunches || stops != tc.wantLaunches || running != 0 {
@@ -383,6 +413,60 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 			f.waitState(t, id, "failed")
 			if launches, _, _ := launcher.counts(); launches != tc.wantLaunches+1 {
 				t.Fatalf("resume launches = %d, want a fresh launch", launches)
+			}
+		})
+	}
+}
+
+func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
+	t.Parallel()
+	launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: 2, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
+	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 2; a.Launcher = launcher }, func(f *provisioningFixture) {
+		f.timeout = 20 * time.Second
+	})
+	dana := newBrowser(t, f.service.Handler())
+	dana.login("/auth/oidc/start", "user_dana:")
+	id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+	failed := f.waitState(t, id, "failed")
+	want := "the tenant Hub exited 2 times in a row without staying up (last: exit status 1)"
+	if failed.ErrorCode != "tenant_start_failed" || failed.ErrorDetail != want || failed.Attempts > 2 {
+		t.Fatalf("failure = %+v", failed)
+	}
+	status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+	var body struct {
+		State     string `json:"state"`
+		Error     string `json:"error"`
+		CanResume bool   `json:"can_resume"`
+	}
+	if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, want) {
+		t.Fatalf("failed provisioning JSON = %s %v", status.Body, err)
+	}
+	launcher.mu.Lock()
+	running := len(launcher.running)
+	launcher.mu.Unlock()
+	if running != 0 {
+		t.Fatal("a tenant that never stays up is still supervised after provisioning failed")
+	}
+}
+
+func TestProvisioningStatusShowsFailureReason(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		organization Organization
+		want         string
+	}{
+		{name: "first attempt", organization: Organization{State: "allocating", Step: "tenant_files"}},
+		{name: "retrying with reason", organization: Organization{State: "allocating", Attempts: 2, ErrorDetail: "the tenant Hub did not become healthy within 30s"}, want: "Attempt 2 of 5 failed: the tenant Hub did not become healthy within 30s. Retrying automatically."},
+		{name: "retrying without reason", organization: Organization{State: "allocating", Attempts: 1}},
+		{name: "failed with reason", organization: Organization{State: "failed", ErrorCode: "tenant_start_failed", ErrorDetail: "the tenant Hub exited once without staying up (last: exit status 1)"}, want: "Setup stopped (tenant_start_failed): the tenant Hub exited once without staying up (last: exit status 1). Your request and any completed steps are kept."},
+		{name: "failed without reason", organization: Organization{State: "failed", ErrorCode: "owner_conflict"}, want: "Setup stopped (owner_conflict). Your request and any completed steps are kept."},
+		{name: "capacity", organization: Organization{State: "failed", ErrorCode: "capacity"}, want: "The service is at capacity. Your request is saved; resume it later without creating another organization."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := provisioningStatus(tc.organization, 5).Error; got != tc.want {
+				t.Fatalf("Error = %q, want %q", got, tc.want)
 			}
 		})
 	}

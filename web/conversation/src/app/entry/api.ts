@@ -53,6 +53,7 @@ export const PlatformOrganization = Schema.Struct({
   step: Schema.String,
   attempts: Schema.Number,
   error_code: Schema.String,
+  error_detail: Schema.optional(Schema.String),
   managed: Schema.Boolean,
   creator_email: Schema.String,
   created_at: Schema.String,

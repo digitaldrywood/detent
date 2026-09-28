@@ -3,9 +3,12 @@
 package cloudentry
 
 import (
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
@@ -40,5 +43,64 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 	}
 	if err := launcher.Stop("org_exec"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExecLauncherStopsSupervisingAfterRestartLimit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  string
+	}{
+		{name: "configured limit", limit: 2, want: "the tenant Hub exited 2 times in a row without staying up (last: exit status 1)"},
+		{name: "single exit", limit: 1, want: "the tenant Hub exited once without staying up (last: exit status 1)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: tc.limit, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
+			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
+			if err := launcher.Start(t.Context(), spec); err != nil {
+				t.Fatal(err)
+			}
+			failure := waitLauncherFailure(t, launcher, "org_exec")
+			var exit *TenantExitError
+			if !errors.As(failure, &exit) || exit.Exits != tc.limit || failure.Error() != tc.want {
+				t.Fatalf("Failure() = %v, want %q", failure, tc.want)
+			}
+			launcher.mu.Lock()
+			_, running := launcher.running["org_exec"]
+			launcher.mu.Unlock()
+			if running {
+				t.Fatal("a tenant that exhausted its restart limit is still supervised")
+			}
+			if err := launcher.Start(t.Context(), spec); err != nil {
+				t.Fatal(err)
+			}
+			if launcher.Failure("org_exec") != nil {
+				t.Fatal("a fresh start kept the previous failure")
+			}
+			if err := launcher.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if launcher.Failure("org_exec") != nil {
+				t.Fatal("a stopped tenant kept its failure")
+			}
+		})
+	}
+}
+
+func waitLauncherFailure(t *testing.T, launcher *ExecLauncher, id string) error {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if failure := launcher.Failure(id); failure != nil {
+			return failure
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("supervisor never stopped restarting a tenant that exits immediately")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
