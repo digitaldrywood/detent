@@ -47,7 +47,11 @@ func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
 	var decoded plain
 	// node.Decode does not inherit the caller's KnownFields, so the section is
 	// decoded again strictly: a misspelled key must fail, not zero a value.
-	raw, err := yaml.Marshal(resolvedYAMLNode(node))
+	resolved, err := resolvedYAMLNode(node)
+	if err != nil {
+		return err
+	}
+	raw, err := yaml.Marshal(resolved)
 	if err != nil {
 		return err
 	}
@@ -63,21 +67,32 @@ func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
 
 // resolvedYAMLNode copies node with every alias replaced by the value it
 // names, so the node can be encoded on its own even when an anchor it uses is
-// defined elsewhere in the document.
-func resolvedYAMLNode(node *yaml.Node) *yaml.Node {
-	if node == nil {
-		return nil
-	}
+// defined elsewhere in the document. An alias that leads back into a value
+// still being resolved is a cycle and an error, never unbounded recursion.
+func resolvedYAMLNode(node *yaml.Node) (*yaml.Node, error) {
+	return resolveYAMLNode(node, make(map[*yaml.Node]bool))
+}
+
+func resolveYAMLNode(node *yaml.Node, resolving map[*yaml.Node]bool) (*yaml.Node, error) {
 	if node.Kind == yaml.AliasNode && node.Alias != nil {
-		return resolvedYAMLNode(node.Alias)
+		return resolveYAMLNode(node.Alias, resolving)
 	}
+	if resolving[node] {
+		return nil, fmt.Errorf("hosted plan configuration line %d: an alias refers to a value that contains it", node.Line)
+	}
+	resolving[node] = true
+	defer delete(resolving, node)
 	copied := *node
 	copied.Anchor = ""
 	copied.Content = make([]*yaml.Node, len(node.Content))
 	for i, child := range node.Content {
-		copied.Content[i] = resolvedYAMLNode(child)
+		resolved, err := resolveYAMLNode(child, resolving)
+		if err != nil {
+			return nil, err
+		}
+		copied.Content[i] = resolved
 	}
-	return &copied
+	return &copied, nil
 }
 
 type HostedGrant struct {
