@@ -2618,6 +2618,9 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		var result gate.ValidatorResult
 		err := diffErr
+		if diffErr != nil && !connector.IsRetryable(diffErr) {
+			err = fmt.Errorf("%w: %w", runpkg.ErrValidatorInfrastructure, diffErr)
+		}
 		if err == nil {
 			result, err = o.validator.Validate(ctx, ValidatorRequest{
 				Issue:            issue,
@@ -2996,8 +2999,8 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		if o.validatorFailures == nil {
 			o.validatorFailures = map[string]validatorStageFailure{}
 		}
-		failure := o.validatorFailures[identity.Key]
-		if verdict.FailureAttempts > failure.Attempt {
+		failure, found := o.validatorFailures[identity.Key]
+		if !found || verdict.FailureAttempts > failure.Attempt {
 			o.validatorFailures[identity.Key] = validatorStageFailure{
 				Attempt:     verdict.FailureAttempts,
 				NextRetryAt: nextRetryAt,
