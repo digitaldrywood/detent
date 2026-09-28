@@ -742,7 +742,7 @@ func TestHostedPlansConfigDecodesStrictly(t *testing.T) {
 		{name: "valid catalog", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowances: {projects: 3}}\n", written: true},
 		{name: "empty section", body: "{}\n"},
 		{name: "misspelled nested key", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowences: {projects: 3}}\n", wantErr: true},
-		{name: "misspelled plan reference key", body: "base: {id: free, versoin: 1}\n", wantErr: true},
+		{name: "unknown plan reference key", body: "base: {id: free, release: 1}\n", wantErr: true},
 		{name: "misspelled section key", body: "windows_seconds: 3600\n", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
