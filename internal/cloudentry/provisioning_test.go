@@ -18,6 +18,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
@@ -29,6 +30,7 @@ type processLauncher struct {
 	key      ed25519.PrivateKey
 	mu       sync.Mutex
 	running  map[string]func()
+	failures map[string]error
 	starts   int
 }
 
@@ -57,13 +59,28 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if l.billing != nil {
 		config.Hosted.Billing = l.billing()
 	}
+	id := spec.Organization.ID
+	delete(l.failures, id)
 	go func() {
 		defer close(done)
-		_ = hubserver.Run(ctx, config)
+		if err := hubserver.Run(ctx, config); err != nil && ctx.Err() == nil {
+			l.mu.Lock()
+			if l.failures == nil {
+				l.failures = map[string]error{}
+			}
+			l.failures[id] = err
+			l.mu.Unlock()
+		}
 	}()
 	l.starts++
-	l.running[spec.Organization.ID] = func() { cancel(); <-done }
+	l.running[id] = func() { cancel(); <-done }
 	return nil
+}
+
+func (l *processLauncher) Failure(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failures[id]
 }
 
 func (l *processLauncher) Stop(id string) error {
@@ -99,6 +116,7 @@ type provisioningFixture struct {
 	roots    [2]string
 	key      ed25519.PrivateKey
 	timeout  time.Duration
+	now      func() time.Time
 }
 
 func shortTempDir(t *testing.T) string {
@@ -139,7 +157,7 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 		mutate(allocation)
 	}
 	service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout})
+		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, now: f.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,6 +322,7 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 type silentLauncher struct {
 	mu       sync.Mutex
 	err      error
+	failure  error
 	running  map[string]bool
 	launches int
 	stops    int
@@ -332,6 +351,15 @@ func (l *silentLauncher) Stop(id string) error {
 
 func (l *silentLauncher) Close() error { return nil }
 
+func (l *silentLauncher) Failure(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.running[id] {
+		return nil
+	}
+	return l.failure
+}
+
 func (l *silentLauncher) counts() (launches, stops, running int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -343,22 +371,26 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		err          error
+		failure      error
+		retryLimit   int
 		wantLaunches int
+		wantDetail   string
 	}{
-		{name: "hub never becomes healthy", wantLaunches: 1},
-		{name: "launcher refuses", err: errors.New("launch refused at /private/tenant"), wantLaunches: 0},
+		{name: "hub never becomes healthy", retryLimit: 1, wantLaunches: 1, wantDetail: "the tenant Hub did not become healthy within 100ms"},
+		{name: "launcher refuses", err: errors.New("launch refused at /private/tenant"), retryLimit: 1, wantLaunches: 0},
+		{name: "supervisor gave up before the retry limit", failure: &TenantExitError{Exits: 5}, retryLimit: 5, wantLaunches: 1, wantDetail: "the tenant Hub exited 5 times in a row without staying up (last: exited cleanly)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			launcher := &silentLauncher{err: tc.err, running: map[string]bool{}}
-			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) {
+			launcher := &silentLauncher{err: tc.err, failure: tc.failure, running: map[string]bool{}}
+			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = tc.retryLimit; a.Launcher = launcher }, func(f *provisioningFixture) {
 				f.timeout = 100 * time.Millisecond
 			})
 			dana := newBrowser(t, f.service.Handler())
 			dana.login("/auth/oidc/start", "user_dana:")
 			id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
 			failed := f.waitState(t, id, "failed")
-			if failed.ErrorCode != "tenant_start_failed" || failed.Step != "tenant_files" {
+			if failed.ErrorCode != "tenant_start_failed" || failed.Step != "tenant_files" || failed.ErrorDetail != tc.wantDetail || failed.Attempts != tc.retryLimit && tc.failure == nil || tc.failure != nil && failed.Attempts != 1 {
 				t.Fatalf("failure = %+v", failed)
 			}
 			status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
@@ -367,7 +399,7 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 				Error     string `json:"error"`
 				CanResume bool   `json:"can_resume"`
 			}
-			if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, "tenant_start_failed") || strings.Contains(body.Error, "/private") {
+			if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, "tenant_start_failed") || !strings.Contains(body.Error, tc.wantDetail) || strings.Contains(body.Error, "/private") {
 				t.Fatalf("failed provisioning JSON = %s %v", status.Body, err)
 			}
 			if launches, stops, running := launcher.counts(); launches != tc.wantLaunches || stops != tc.wantLaunches || running != 0 {
@@ -383,6 +415,130 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 			f.waitState(t, id, "failed")
 			if launches, _, _ := launcher.counts(); launches != tc.wantLaunches+1 {
 				t.Fatalf("resume launches = %d, want a fresh launch", launches)
+			}
+		})
+	}
+}
+
+func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
+	t.Parallel()
+	launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: 2, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
+	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 2; a.Launcher = launcher }, func(f *provisioningFixture) {
+		f.timeout = 20 * time.Second
+	})
+	dana := newBrowser(t, f.service.Handler())
+	dana.login("/auth/oidc/start", "user_dana:")
+	id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+	failed := f.waitState(t, id, "failed")
+	want := "the tenant Hub exited 2 times in a row without staying up (last: exit status 1)"
+	if failed.ErrorCode != "tenant_start_failed" || failed.ErrorDetail != want || failed.Attempts > 2 {
+		t.Fatalf("failure = %+v", failed)
+	}
+	status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+	var body struct {
+		State     string `json:"state"`
+		Error     string `json:"error"`
+		CanResume bool   `json:"can_resume"`
+	}
+	if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, want) {
+		t.Fatalf("failed provisioning JSON = %s %v", status.Body, err)
+	}
+	launcher.mu.Lock()
+	running := len(launcher.running)
+	launcher.mu.Unlock()
+	if running != 0 {
+		t.Fatal("a tenant that never stays up is still supervised after provisioning failed")
+	}
+}
+
+func TestProvisioningStatusShowsFailureReason(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		organization Organization
+		want         string
+	}{
+		{name: "first attempt", organization: Organization{State: "allocating", Step: "tenant_files"}},
+		{name: "retrying with reason", organization: Organization{State: "allocating", Attempts: 2, ErrorDetail: "the tenant Hub did not become healthy within 30s"}, want: "Attempt 2 of 5 failed: the tenant Hub did not become healthy within 30s. Retrying automatically."},
+		{name: "retrying without reason", organization: Organization{State: "allocating", Attempts: 1}},
+		{name: "failed with reason", organization: Organization{State: "failed", ErrorCode: "tenant_start_failed", ErrorDetail: "the tenant Hub exited once without staying up (last: exit status 1)"}, want: "Setup stopped (tenant_start_failed): the tenant Hub exited once without staying up (last: exit status 1). Your request and any completed steps are kept."},
+		{name: "failed without reason", organization: Organization{State: "failed", ErrorCode: "owner_conflict"}, want: "Setup stopped (owner_conflict). Your request and any completed steps are kept."},
+		{name: "capacity", organization: Organization{State: "failed", ErrorCode: "capacity"}, want: "The service is at capacity. Your request is saved; resume it later without creating another organization."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := provisioningStatus(tc.organization, 5).Error; got != tc.want {
+				t.Fatalf("Error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		polls     int
+		advance   time.Duration
+		mutate    bool
+		revoke    bool
+		wantCalls int
+		wantOK    bool
+	}{
+		{name: "polls within the interval share one verification", polls: 5, wantCalls: 1, wantOK: true},
+		{name: "poll just inside the interval", polls: 1, advance: providerSessionRecheck - time.Second, wantCalls: 1, wantOK: true},
+		{name: "poll after the interval verifies again", polls: 1, advance: providerSessionRecheck, wantCalls: 2, wantOK: true},
+		{name: "mutation always verifies", polls: 1, mutate: true, wantCalls: 2, wantOK: true},
+		{name: "revocation is trusted only within the interval", polls: 1, revoke: true, wantCalls: 1, wantOK: true},
+		{name: "revocation lands after the interval", polls: 1, advance: providerSessionRecheck, revoke: true, wantCalls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			clock := time.Now().UTC()
+			now := func() time.Time {
+				mu.Lock()
+				defer mu.Unlock()
+				return clock
+			}
+			launcher := &silentLauncher{err: errors.New("no tenant in this test"), running: map[string]bool{}}
+			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) { f.now = now })
+			dana := newBrowser(t, f.service.Handler())
+			dana.login("/auth/oidc/start", "user_dana:")
+			id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+			poll := func() page {
+				return dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+			}
+			if first := poll(); first.StatusCode != http.StatusOK {
+				t.Fatalf("first poll = %d", first.StatusCode)
+			}
+			f.provider.mu.Lock()
+			before := f.provider.verifications
+			f.provider.mu.Unlock()
+			if tc.revoke {
+				f.provider.mu.Lock()
+				clear(f.provider.sessions)
+				f.provider.mu.Unlock()
+			}
+			mu.Lock()
+			clock = clock.Add(tc.advance)
+			mu.Unlock()
+			if tc.mutate {
+				_, body := dana.get("/organizations/" + id + "/provisioning")
+				dana.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, body)}}, nil)
+			}
+			last := page{}
+			for range tc.polls {
+				last = poll()
+			}
+			f.provider.mu.Lock()
+			calls := f.provider.verifications - before
+			f.provider.mu.Unlock()
+			if calls != tc.wantCalls-1 {
+				t.Fatalf("provider verifications after the first poll = %d, want %d", calls, tc.wantCalls-1)
+			}
+			if (last.StatusCode == http.StatusOK) != tc.wantOK {
+				t.Fatalf("last poll = %d, want ok %v", last.StatusCode, tc.wantOK)
 			}
 		})
 	}
@@ -471,6 +627,15 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 		t.Fatalf("JSON create = %d %s", created.StatusCode, created.Body)
 	}
 	id := result.Organization["id"]
+	for _, path := range []string{"/api/cloud/organizations", "/api/cloud/session"} {
+		var limited struct {
+			CanCreate bool `json:"can_create"`
+		}
+		response := dana.do(http.MethodGet, path, nil, map[string]string{"Accept": "application/json"})
+		if err := json.Unmarshal([]byte(response.Body), &limited); err != nil || limited.CanCreate {
+			t.Fatalf("%s at the organization limit = %s %v", path, response.Body, err)
+		}
+	}
 	if response, body := dana.get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
 		t.Fatalf("provisioning shell = %s", body)
 	}
@@ -491,8 +656,55 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	if session.StatusCode != http.StatusOK || !strings.Contains(session.Body, `"csrf":"`+chooser.CSRF+`"`) {
 		t.Fatalf("session JSON = %d %s", session.StatusCode, session.Body)
 	}
+	ready := dana.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
+	if !strings.Contains(ready.Body, `"id":"`+id+`"`) || !strings.Contains(ready.Body, `"role":"owner"`) {
+		t.Fatalf("ready organizations JSON = %s", ready.Body)
+	}
 	dana.login("/organizations/"+id+"/work", "user_dana:porg_"+id)
 	if response, body := dana.get("/organizations/" + id + "/work"); response.StatusCode != http.StatusOK || !strings.Contains(body, `content="/organizations/`+id+`"`) {
 		t.Fatalf("organization client home = %d %s", response.StatusCode, body)
+	}
+}
+
+func TestCanCreateCountsOrganizationsTheIdentityCreated(t *testing.T) {
+	t.Parallel()
+	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.MaxPerIdentity = 2 })
+	seed := func(subject string, states ...string) {
+		for i, state := range states {
+			id := "org_" + subject + "_" + state + "_" + strings.Repeat("x", i+1)
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,created_at,updated_at) VALUES (?,'',?,?,'unix:/x.sock',1,1,?,?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+				id, id, state, subject, subject+"@example.test"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed("below", "ready")
+	seed("ready", "ready", "ready")
+	seed("pending", "ready", "failed")
+	seed("requested", "requested", "allocating")
+	seed("deleted", "ready", "deleted", "deleted")
+	tests := []struct {
+		name    string
+		service *Service
+		session accountSession
+		want    bool
+	}{
+		{name: "no organizations", service: f.service, session: accountSession{Subject: "none", Email: "none@example.test"}, want: true},
+		{name: "below limit", service: f.service, session: accountSession{Subject: "below", Email: "below@example.test"}, want: true},
+		{name: "at limit with ready", service: f.service, session: accountSession{Subject: "ready", Email: "ready@example.test"}, want: false},
+		{name: "at limit counting pending", service: f.service, session: accountSession{Subject: "pending", Email: "pending@example.test"}, want: false},
+		{name: "at limit with only pending", service: f.service, session: accountSession{Subject: "requested", Email: "requested@example.test"}, want: false},
+		{name: "deleted not counted", service: f.service, session: accountSession{Subject: "deleted", Email: "deleted@example.test"}, want: true},
+		{name: "staff", service: f.service, session: accountSession{Subject: "staff", Email: "staff@example.test"}, want: false},
+		{name: "support session", service: f.service, session: accountSession{Subject: "below", Email: "below@example.test", Identity: auth.HostedIdentity{SupportActor: "support@example.test"}}, want: false},
+		{name: "no allocation", service: &Service{}, session: accountSession{Subject: "none", Email: "none@example.test"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.service.canCreate(t.Context(), test.session)
+			if err != nil || got != test.want {
+				t.Fatalf("canCreate = %v, %v; want %v", got, err, test.want)
+			}
+		})
 	}
 }

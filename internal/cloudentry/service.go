@@ -93,6 +93,7 @@ type Service struct {
 	secure     bool
 	transports sync.Map
 	mutationMu sync.Mutex
+	verified   sessionVerifications
 
 	stopAllocator context.CancelFunc
 	allocatorDone chan struct{}
@@ -266,8 +267,17 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	if err != nil {
 		return accountSession{}, err
 	}
+	now := s.config.now()
+	method := c.Request().Method
+	// Staff and support sessions reach across organizations, so they are
+	// re-verified on every request rather than trusted for the recheck window.
+	cacheable := !s.staff(session.Email) && session.Identity.SupportActor == ""
+	if cacheable && (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
+		return session, nil
+	}
 	current, err := s.config.Provider.CurrentSession(c.Request().Context(), session.Identity)
-	if err != nil || current.Subject != session.Subject || !current.ExpiresAt.After(s.config.now()) {
+	if err != nil || current.Subject != session.Subject || !current.ExpiresAt.After(now) {
+		s.verified.forget(session.Hash)
 		reason := auth.HostedIdentityReason(err)
 		if err == nil {
 			reason = auth.HostedReasonSessionInvalid
@@ -275,6 +285,7 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 		s.config.Logger.InfoContext(c.Request().Context(), "hosted session revalidation failed", "reason", reason, "request_id", auth.HostedRequestID(c.Response(), c.Request()))
 		return accountSession{}, errNoSession
 	}
+	s.verified.record(session.Hash, now)
 	return session, nil
 }
 

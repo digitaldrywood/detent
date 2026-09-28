@@ -14,8 +14,10 @@ import { AccountError } from "../account/api.ts";
 import { newKey } from "../account/idempotency.ts";
 import { useMutation, useResource } from "../account/useResource.ts";
 import {
+  CHOOSE_ORGANIZATION,
   currentStepIndex,
   type EntryApi,
+  type EntryOrganization,
   type EntryOrganizations,
   type EntrySession,
   makeEntryApi,
@@ -119,12 +121,35 @@ const STATE_LABELS: Record<string, string> = {
   failed: "Needs attention",
 };
 
+const ROLE_LABELS: Record<string, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  member: "Member",
+  viewer: "Viewer",
+};
+
+/** The one organization to open without asking, unless the account chose to see the list. */
+export function autoEnterTarget(
+  listing: EntryOrganizations | undefined,
+  search: string = globalThis.location?.search ?? "",
+): EntryOrganization | null {
+  if (listing === undefined || listing.staff === true) return null;
+  if (new URLSearchParams(search).has("switch")) return null;
+  if (listing.organizations.length !== 1 || (listing.pending ?? []).length > 0) return null;
+  return listing.organizations[0] ?? null;
+}
+
 export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
   const api = useEntryApi();
   const listing = useResource<EntryOrganizations>(() => api.organizations(), [api]);
   const staff = useStaffRedirect(listing.value?.staff, onNavigate);
+  const enter = autoEnterTarget(listing.value);
+  React.useEffect(() => {
+    if (enter !== null) globalThis.location?.replace(enter.url);
+  }, [enter]);
   if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
   if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
+  if (enter !== null) return <EntryCard title={`Opening ${enter.name}…`}>{null}</EntryCard>;
   const value = listing.value;
   return (
     <EntryCard
@@ -146,16 +171,24 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
           {value.organizations.length === 0 ? null : (
             <ul className="flex flex-col gap-2" aria-label="Your organizations">
               {value.organizations.map((organization) => (
-                <li key={organization.id}>
-                  <a
-                    href={organization.url}
-                    className="flex min-h-11 items-center justify-between gap-3 rounded-[10px] border border-border px-4 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                <li
+                  key={organization.id}
+                  className="flex min-h-14 items-center justify-between gap-3 rounded-[10px] border border-border bg-background px-4 py-3"
+                >
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <span className="truncate text-sm font-medium">{organization.name}</span>
+                    {organization.role === undefined || organization.role === "" ? null : (
+                      <Badge variant="outline" className="self-start">
+                        {ROLE_LABELS[organization.role] ?? organization.role}
+                      </Badge>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    render={<a href={organization.url} aria-label={`Open ${organization.name}`} />}
                   >
-                    <span className="truncate">{organization.name}</span>
-                    <span aria-hidden="true" className="text-muted-foreground">
-                      →
-                    </span>
-                  </a>
+                    Open
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -244,7 +277,7 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
           >
             {create.pending ? "Creating…" : "Create organization"}
           </Button>
-          <Button type="button" variant="outline" onClick={() => onNavigate("/organizations")}>
+          <Button type="button" variant="outline" onClick={() => onNavigate(CHOOSE_ORGANIZATION)}>
             Back to organizations
           </Button>
         </div>
@@ -338,7 +371,7 @@ export function ProvisioningProgress({
                 {resume.pending ? "Resuming…" : "Resume setup"}
               </Button>
             ) : null}
-            <Button variant="outline" onClick={() => onNavigate("/organizations")}>
+            <Button variant="outline" onClick={() => onNavigate(CHOOSE_ORGANIZATION)}>
               Back to organizations
             </Button>
           </div>
@@ -389,7 +422,7 @@ export function JoinInvitation({ onNavigate }: { readonly onNavigate: Navigate }
           <Button type="submit" disabled={join.pending || token.trim().length === 0 || listing.value === undefined}>
             {join.pending ? "Joining…" : "Join organization"}
           </Button>
-          <Button type="button" variant="outline" onClick={() => onNavigate("/organizations")}>
+          <Button type="button" variant="outline" onClick={() => onNavigate(CHOOSE_ORGANIZATION)}>
             Back to organizations
           </Button>
         </div>

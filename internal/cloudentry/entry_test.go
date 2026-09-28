@@ -40,6 +40,7 @@ type fakeProvider struct {
 	revoked        []string
 	sequence       int
 	authorizeBase  string
+	verifications  int
 }
 
 func newFakeProvider() *fakeProvider {
@@ -100,6 +101,7 @@ func (p *fakeProvider) Exchange(_ context.Context, code, _, _ string) (auth.Iden
 func (p *fakeProvider) CurrentSession(_ context.Context, identity auth.HostedIdentity) (auth.HostedIdentity, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.verifications++
 	current, ok := p.sessions[identity.SessionID]
 	if !ok || current.Subject != identity.Subject || !current.CreatedAt.Equal(identity.CreatedAt) {
 		return auth.HostedIdentity{}, auth.ErrHostedIdentity

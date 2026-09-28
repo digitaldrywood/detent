@@ -9,6 +9,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type PlanReference struct {
@@ -29,6 +31,24 @@ type HostedPlansConfig struct {
 	RetentionWindows  int64         `yaml:"retention_windows"`
 	ConnectedSeconds  int64         `yaml:"connected_seconds"`
 	InvitationSeconds int64         `yaml:"invitation_seconds"`
+
+	// written records that the YAML section named at least one key, so an
+	// explicitly empty plan list is an error rather than the defaults.
+	written bool
+}
+
+// UnmarshalYAML decodes the catalog and remembers whether the section had
+// any keys: `entitlements: {}` means the default catalog, while a section
+// that names keys is the operator's own catalog and must validate.
+func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain HostedPlansConfig
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*c = HostedPlansConfig(decoded)
+	c.written = node.Kind == yaml.MappingNode && len(node.Content) > 0
+	return nil
 }
 
 type HostedGrant struct {
@@ -74,6 +94,10 @@ func pilotHostedPlans() HostedPlansConfig {
 	}
 }
 
+func (c *HostedPlansConfig) IsZero() bool {
+	return c == nil || !c.written && len(c.Plans) == 0 && c.Base == PlanReference{} && c.WindowSeconds == 0 && c.RetentionWindows == 0 && c.ConnectedSeconds == 0 && c.InvitationSeconds == 0
+}
+
 func (c HostedPlansConfig) validate() error {
 	if c.InvitationSeconds < 60 || c.InvitationSeconds > 7*86400 || len(c.Plans) == 0 || len(c.Plans) > 100 || c.WindowSeconds < 60 || c.WindowSeconds > 86400 || c.WindowSeconds%60 != 0 || c.RetentionWindows*c.WindowSeconds > 30*86400 || c.RetentionWindows < 1 || c.RetentionWindows > 720 || c.ConnectedSeconds < 30 || c.ConnectedSeconds > 3600 {
 		return errors.New("hosted pilot plan configuration is invalid")
@@ -106,7 +130,7 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 		return nil
 	}
 	config := pilotHostedPlans()
-	if cfg.Plans != nil {
+	if !cfg.Plans.IsZero() {
 		config = *cfg.Plans
 	} else {
 		if cfg.PlanID != "" {

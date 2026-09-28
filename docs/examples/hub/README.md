@@ -107,9 +107,14 @@ tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pi
 empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
 plan every new organization starts on, and no Stripe customer or card is created.
-Left empty, tenants use the default catalog: `pilot_free` as the base and
-`comp_team` for complimentary grants. An explicit catalog replaces both, so include
-a plan to grant alongside the base.
+Left empty (`entitlements: {}`, an empty block, or no key at all), tenants use the
+default catalog: `pilot_free` as the base and `comp_team` for complimentary grants.
+An explicit catalog replaces both, so include a plan to grant alongside the base.
+Any key set inside the section makes it an explicit catalog that must be complete
+(`base`, `plans` and the window settings). `detent cloud serve` generates the tenant
+configuration for a synthetic organization at startup and runs the same validation
+a tenant Hub runs, so an incomplete catalog or inconsistent tenant billing stops the
+entry with an error instead of leaving every tenant unable to start.
 `entitlement_administrator` and `entitlement_admin_token_env` are optional; when set,
 each tenant accepts complimentary grants on `POST /api/v2/organizations/ORG/entitlements`
 with that token (at least 32 bytes, read from the entry's environment and passed to
@@ -119,7 +124,11 @@ operator can grant complimentary access on the shared deployment.
 For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
 generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
 token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
-as a supervised child (restarted with backoff; stopped when the entry stops). The
+as a supervised child (restarted with backoff; stopped when the entry stops). A child
+that exits `retry_limit` times in a row without staying up for five minutes is no
+longer restarted: during setup the organization moves to `failed` with the reason
+shown on the provisioning screen and the platform console, and resuming setup
+starts it again. The
 child receives only `PATH`/`HOME`/`TMPDIR`/`LANG`/`TZ`/`LOG_LEVEL`/`DETENT_LOG_LEVEL`, the WorkOS key variable, the
 optional entitlement token variable and its own admin token. Each tenant owns its SQLite file exclusively; never place
 `tenant_root` on a network filesystem.

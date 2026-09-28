@@ -70,6 +70,7 @@ type platformOrganization struct {
 	Step         string          `json:"step"`
 	Attempts     int             `json:"attempts"`
 	ErrorCode    string          `json:"error_code"`
+	ErrorDetail  string          `json:"error_detail"`
 	Managed      bool            `json:"managed"`
 	CreatorEmail string          `json:"creator_email"`
 	CreatedAt    string          `json:"created_at"`
@@ -85,7 +86,7 @@ type platformOrganization struct {
 var platformUnavailable = []string{"plan", "grants", "member_count", "runner_count"}
 
 func (s *Service) platformOrganizations(ctx context.Context) ([]platformOrganization, error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id,name,state,step,attempts,error_code,managed,creator_email,created_at,updated_at FROM organizations WHERE state != 'deleted' ORDER BY created_at, id")
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id,name,state,step,attempts,error_code,error_detail,managed,creator_email,created_at,updated_at FROM organizations WHERE state != 'deleted' ORDER BY created_at, id")
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +94,7 @@ func (s *Service) platformOrganizations(ctx context.Context) ([]platformOrganiza
 	result := []platformOrganization{}
 	for rows.Next() {
 		var item platformOrganization
-		if err := rows.Scan(&item.ID, &item.Name, &item.State, &item.Step, &item.Attempts, &item.ErrorCode, &item.Managed, &item.CreatorEmail, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.State, &item.Step, &item.Attempts, &item.ErrorCode, &item.ErrorDetail, &item.Managed, &item.CreatorEmail, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, item)

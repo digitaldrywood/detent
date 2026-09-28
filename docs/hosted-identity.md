@@ -212,6 +212,13 @@ current organization. Use a `__Host-` cookie with `Secure`, `HttpOnly`,
 with other detent.build hosts. Loopback HTTP fixtures use an explicitly separate
 non-production cookie convention. Rotate authority on authentication changes;
 logout invalidates the shared session and all its tenant authorizations.
+The entry re-verifies the shared session with the provider on every mutation and
+at most once per 60 seconds for read-only `GET`/`HEAD` requests such as the
+provisioning status poll, so a provider-side revocation takes effect within that
+bound; logout and a failed verification take effect immediately. Requests routed
+to a tenant still verify the organization session and membership each time. Staff
+and support sessions, which reach across organizations, are verified on every
+request.
 
 Each request derives its organization from the canonical route and revalidates
 membership plus project grants. Body/header IDs must agree with the route. Reject

@@ -136,7 +136,7 @@ templ hostedCSRF(value string) {
 
 templ hostedOrganizationSwitcher(data HostedPageData) {
 	if data.SharedOrigin {
-		<a href="/organizations" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Switch organization</a>
+		<a href="/organizations?switch=1" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Switch organization</a>
 	} else if len(data.Organizations) > 0 {
 		<form method="post" action={ hostedURL(data, "/organization/switch") } class="flex flex-col gap-3 sm:flex-row sm:items-end">
 			@hostedCSRF(data.CSRF)
