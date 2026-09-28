@@ -5771,6 +5771,7 @@ func TestPullRequestValidationDiffPreservesFetchFailureClassification(t *testing
 				if err != nil {
 					t.Fatal(err)
 				}
+				c.client.restBackoffs = newRESTBackoffRegistry()
 				issue := connector.Issue{Identifier: "example/repo#155", PRRepository: "example/repo",
 					PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base", HeadSHA: "head"}}
 				_, err = c.PullRequestValidationDiff(t.Context(), issue)
