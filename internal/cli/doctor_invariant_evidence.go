@@ -94,7 +94,7 @@ func doctorInvariantRepositoryChecks(ctx context.Context, id string, project glo
 			default:
 				if policy.Strict {
 					check := doctorInvariantCheck(id, "INV-8", "no strict protection", doctorFail, repository+" branch "+policy.Branch+" requires branches to be up to date before merging; every merge invalidates every open PR")
-					check.Hint = "Disable strict status checks on " + repository + " and use a merge queue (docs/invariants.md INV-8)."
+					check.Hint = "Disable strict status checks on " + repository + " (docs/invariants.md INV-8)."
 					checks = append(checks, check)
 				} else {
 					checks = append(checks, doctorInvariantCheck(id, "INV-8", "no strict protection", doctorOK, repository+" branch "+policy.Branch+" does not require up-to-date branches"))
@@ -125,11 +125,10 @@ func doctorInvariantQueueCheck(ctx context.Context, id, repository, branch strin
 	return doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorOK, repository+": merge queue present on "+branch+"; no programmatic merge attempts in 24h")
 }
 
-// doctorInvariantWorkflowCheck reports whether any of the project's own
-// GitHub Actions workflows run real jobs on pull_request events. Projects may
-// choose that, so it warns.
+// doctorInvariantWorkflowCheck reports whether a project's GitHub Actions
+// workflows still trigger on pull requests or merge groups.
 func doctorInvariantWorkflowCheck(id string, sourceRoot string) doctorCheck {
-	check := doctorInvariantCheck(id, "INV-5", "CI once per ready head", doctorOK, "no GitHub Actions workflows in the project checkout; nothing to measure")
+	check := doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorOK, "no GitHub Actions workflows in the project checkout; nothing to measure")
 	sourceRoot = strings.TrimSpace(sourceRoot)
 	if sourceRoot == "" {
 		return check
@@ -155,7 +154,7 @@ func doctorInvariantWorkflowCheck(id string, sourceRoot string) doctorCheck {
 	for _, file := range files {
 		data, err := os.ReadFile(filepath.Join(directory, file))
 		if err != nil {
-			return doctorInvariantCheck(id, "INV-5", "CI once per ready head", doctorWarn, file+" could not be read: "+err.Error())
+			return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, file+" could not be read: "+err.Error())
 		}
 		sources[file] = data
 	}
@@ -163,57 +162,26 @@ func doctorInvariantWorkflowCheck(id string, sourceRoot string) doctorCheck {
 }
 
 func doctorInvariantWorkflowVerdict(id string, sources map[string][]byte) doctorCheck {
-	var realOnPR []string
-	triggered := false
+	var triggered []string
 	for _, file := range sortedStrings(mapKeys(sources)) {
 		var workflow struct {
-			On   map[string]any `yaml:"on"`
-			Jobs map[string]struct {
-				If string `yaml:"if"`
-			} `yaml:"jobs"`
+			On map[string]any `yaml:"on"`
 		}
 		if err := yaml.Unmarshal(sources[file], &workflow); err != nil {
-			return doctorInvariantCheck(id, "INV-5", "CI once per ready head", doctorWarn, file+" could not be parsed: "+err.Error())
+			return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, file+" could not be parsed: "+err.Error())
 		}
-		if _, ok := workflow.On["pull_request"]; !ok {
-			continue
-		}
-		triggered = true
-		for job, spec := range workflow.Jobs {
-			if doctorWorkflowJobSkipsPullRequests(spec.If) {
-				continue
+		for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
+			if _, ok := workflow.On[event]; ok {
+				triggered = append(triggered, file+":"+event)
 			}
-			realOnPR = append(realOnPR, file+":"+job)
 		}
 	}
-	if !triggered {
-		return doctorInvariantCheck(id, "INV-5", "CI once per ready head", doctorOK, "no workflow has a pull_request trigger; CI runs only in the merge queue and on main")
+	if len(triggered) == 0 {
+		return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorOK, "no workflow has a pull_request or merge_group trigger")
 	}
-	if len(realOnPR) == 0 {
-		return doctorInvariantCheck(id, "INV-5", "CI once per ready head", doctorOK, "pull_request events run only placeholder checks; real CI runs in the merge queue and on main")
-	}
-	check := doctorInvariantCheck(id, "INV-5", "CI once per ready head", doctorWarn, fmt.Sprintf("%d job(s) run on every pull_request push (%s); the default is one run per ready head, but this is the project's choice", len(realOnPR), strings.Join(sortedStrings(realOnPR), ", ")))
-	check.Hint = "docs/invariants.md INV-5: guard jobs with github.event_name != 'pull_request' or gate CI with gate.ci_trigger_label."
+	check := doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, "GitHub Actions triggers on PR or merge group events: "+strings.Join(triggered, ", "))
+	check.Hint = "docs/invariants.md INV-5: remove pull_request and merge_group workflow triggers for zero PR CI."
 	return check
-}
-
-// A job stays off pull_request events when its condition excludes them, or
-// when every || alternative requires a non-pull_request event; the bare
-// pull_request equality is a placeholder. Anything looser counts as a real job.
-func doctorWorkflowJobSkipsPullRequests(condition string) bool {
-	condition = strings.TrimSpace(condition)
-	if condition == "github.event_name == 'pull_request'" || strings.Contains(condition, "github.event_name != 'pull_request'") {
-		return true
-	}
-	if condition == "" || strings.Contains(condition, "'pull_request'") {
-		return false
-	}
-	for _, alternative := range strings.Split(condition, "||") {
-		if !strings.Contains(alternative, "github.event_name ==") {
-			return false
-		}
-	}
-	return true
 }
 
 func mapKeys(values map[string][]byte) []string {

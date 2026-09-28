@@ -33,7 +33,7 @@ jobs:
             exit 1
           fi
 
-      - name: Bind exact-commit check provenance
+      - name: Bind exact-commit check or local-gate status provenance
         env:
           GH_TOKEN: ${{ github.token }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}

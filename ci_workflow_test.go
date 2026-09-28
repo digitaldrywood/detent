@@ -19,7 +19,7 @@ type requiredStatusCheck struct {
 	markers  []string
 }
 
-var requiredPRStatusChecks = []requiredStatusCheck{
+var mainReleaseStatusChecks = []requiredStatusCheck{
 	{
 		name:     "Lint",
 		budget:   "2m",
@@ -136,18 +136,11 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 	}
 }
 
-func TestCIConcurrencyKeepsMainPushRuns(t *testing.T) {
+func TestCIHasNoPullRequestConcurrency(t *testing.T) {
 	t.Parallel()
-
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	concurrency := workflowBetween(t, workflow, "concurrency:\n", "\njobs:")
-	for _, want := range []string{
-		"group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
-		"cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-	} {
-		if !strings.Contains(concurrency, want) {
-			t.Fatalf("CI concurrency missing %q", want)
-		}
+	if strings.Contains(workflow, "concurrency:") || strings.Contains(workflow, "github.event.pull_request") {
+		t.Fatal("main-push CI must not retain pull-request concurrency")
 	}
 }
 
@@ -326,32 +319,22 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 
 func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 	t.Parallel()
-
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	docs := readNormalizedFile(t, "docs/execution-seams.md")
 	protection := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
-
-	for _, want := range []string{
-		"`required_status_checks.strict: true`",
-		"must not report success from a path- or event-dependent no-op",
-		"`gate.required_status_checks`",
-		"`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`",
-		"`Browser Visual`",
-	} {
+	for _, want := range []string{"`local-gate`", "`make check-fast`", "`make check`", "merge commit", "newest"} {
 		if !strings.Contains(protection, want) {
 			t.Fatalf("main branch protection docs missing %q", want)
 		}
 	}
-
-	for _, check := range append(append([]requiredStatusCheck{}, requiredPRStatusChecks...), integrationStatusChecks...) {
-		if !strings.Contains(protection, "- `"+check.name+"` - budget: `"+check.budget+"`") {
-			t.Fatalf("main branch protection docs missing required check %q", check.name)
+	for _, check := range append(append([]requiredStatusCheck{}, mainReleaseStatusChecks...), integrationStatusChecks...) {
+		if !strings.Contains(protection, "`"+check.name+"`") {
+			t.Fatalf("main branch protection docs missing check %q", check.name)
 		}
-
 		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
 		for _, marker := range check.markers {
 			if !strings.Contains(job, marker) {
-				t.Fatalf("workflow job for required check %q missing %q", check.name, marker)
+				t.Fatalf("workflow job for check %q missing %q", check.name, marker)
 			}
 		}
 	}
@@ -361,7 +344,7 @@ func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 	t.Parallel()
 
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, check := range requiredPRStatusChecks {
+	for _, check := range mainReleaseStatusChecks {
 		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
 		for _, forbidden := range []string{
 			"EVENT_NAME",
@@ -376,22 +359,13 @@ func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 	}
 }
 
-func TestCIPushCoversMainAndDevelop(t *testing.T) {
+func TestCIRunsOnlyOnMainPushOrDispatch(t *testing.T) {
 	t.Parallel()
-
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	for _, want := range []string{
-		"  push:\n    branches: [main, develop]\n",
-		"  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n",
-		"  merge_group:\n    types: [checks_requested]\n",
-	} {
-		if !strings.Contains(triggers, want) {
-			t.Fatalf("CI triggers missing %q", want)
-		}
-	}
-	if strings.Contains(triggers, "tags:") {
-		t.Fatal("CI push must not run on tags; tag checks invalidate release provenance")
+	want := "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n"
+	if triggers != want {
+		t.Fatalf("CI triggers = %q, want %q", triggers, want)
 	}
 }
 
@@ -431,16 +405,16 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 	}
 }
 
-func TestIntegrationChecksRunOnlyOnMainOrDevelopPushOrDispatch(t *testing.T) {
+func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	for _, check := range integrationStatusChecks {
 		t.Run(check.name, func(t *testing.T) {
 			t.Parallel()
 			job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-			want := "    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))"
+			want := "    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
 			if !strings.Contains(job, want) {
-				t.Fatalf("integration job %q must run only on main or develop pushes or dispatch", check.name)
+				t.Fatalf("integration job %q must run only on main pushes or dispatch", check.name)
 			}
 			for _, marker := range check.markers {
 				if !strings.Contains(job, marker) {
@@ -450,8 +424,8 @@ func TestIntegrationChecksRunOnlyOnMainOrDevelopPushOrDispatch(t *testing.T) {
 		})
 	}
 	security := workflowBetween(t, workflow, "  security:", "  browser-visual:")
-	if !strings.Contains(security, "if: github.event_name != 'pull_request'") || !strings.Contains(security, "make security") {
-		t.Fatal("Security must run in the merge queue and on main, never on pull_request events")
+	if !strings.Contains(security, "make security") {
+		t.Fatal("Security must run on main pushes and manual dispatch")
 	}
 	reporter := workflowBetween(t, workflow, "  report-integration-failures:", "")
 	for _, marker := range []string{
@@ -482,7 +456,6 @@ func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
 
 	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
 	for _, want := range []string{
-		"schedule:",
 		"workflow_dispatch:",
 		"timeout-minutes: 45",
 		"os: [macos-latest, windows-latest]",
@@ -495,8 +468,8 @@ func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
 			t.Fatalf("portability stress workflow missing %q", want)
 		}
 	}
-	if strings.Contains(stressWorkflow, "pull_request:") {
-		t.Fatal("portability stress workflow must not run for every pull request")
+	if strings.Contains(stressWorkflow, "pull_request:") || strings.Contains(stressWorkflow, "schedule:") {
+		t.Fatal("portability stress workflow must run only on manual dispatch")
 	}
 }
 
@@ -615,19 +588,8 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 func TestCIDraftAndVerifyDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review]") {
-		t.Fatal("pull_request events must report skipped required checks")
-	}
-	if strings.Contains(workflow, "  pr-required-placeholders:\n") {
-		t.Fatal("successful placeholder checks must not stand in for unrun jobs")
-	}
-	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "browser-visual-shard"} {
-		t.Run(job, func(t *testing.T) {
-			section := workflowBetween(t, workflow, "  "+job+":\n", "    steps:")
-			if !strings.Contains(section, "if: github.event_name != 'pull_request'") && !strings.Contains(section, "if: always() && github.event_name != 'pull_request'") {
-				t.Fatal("real CI jobs must not run on pull_request events")
-			}
-		})
+	if strings.Contains(workflow, "pull_request:") || strings.Contains(workflow, "merge_group:") || strings.Contains(workflow, "pr-required-placeholders") {
+		t.Fatal("CI must not trigger on PRs or merge groups or contain placeholder jobs")
 	}
 	aggregate := workflowBetween(t, workflow, "  verify:\n", "  verify-fast:\n")
 	for _, want := range []string{"needs: [verify-fast, verify-race]", "if: always()", `test "$FAST_RESULT" = success && test "$RACE_RESULT" = success`} {

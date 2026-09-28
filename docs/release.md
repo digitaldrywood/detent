@@ -23,12 +23,10 @@ package-manager manifests. Scoop publishing targets
 skips publishing when `SCOOP_BUCKET_GITHUB_TOKEN` or `WINGET_GITHUB_TOKEN` is
 not configured.
 
-CI runs `GoReleaser Snapshot` on pushes to `main` and `develop` and manual
-workflow dispatch to validate packaging after merge. It is not a PR-required check and does not
-run on tag pushes or the nightly CI schedule. See [Merge Train](merge-train.md)
-for the required-check split and main failure tracking.
-Required branch checks must not pass as path- or event-dependent no-ops on pull
-requests when the same check name runs real validation on `main`.
+CI runs `GoReleaser Snapshot` on pushes to `main` and manual workflow
+dispatch to validate packaging after promotion. It does not run on PRs,
+`develop` pushes, tags, or a nightly schedule. The hourly operator-host build
+runs `make check` on `develop` and can post `local-gate` status on a green head.
 
 ## Automatic coordination
 
@@ -118,7 +116,7 @@ owner are serialized.
 The Makefile pins sqlc in `SQLC_VERSION`; `make generate`, `make sqlc`, and
 `make setup` use that version. Commit regenerated SQL output with query changes.
 `make check-generated` checks SQL output with `sqlc diff` and checks the generated
-configuration reference without rewriting either. The required Verify check runs
-this verification in the merge queue and on main, before compilation; PR checks
-retain the repository’s placeholder policy. GoReleaser uses the same verification
-hook and builds committed sources instead of regenerating them during release.
+configuration reference without rewriting either. The Verify check runs this verification on main, before compilation. The
+local gate runs it on PR heads and the hourly build runs it on `develop`.
+GoReleaser uses the same verification hook and builds committed sources
+instead of regenerating them during release.

@@ -13,22 +13,11 @@ import (
 )
 
 const nonPRCondition = "github.event_name != 'pull_request'"
-const integrationCondition = "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))"
+const integrationCondition = "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
 
 func checkWorkflow(data []byte) error {
 	var workflow struct {
-		On struct {
-			Push struct {
-				Branches []string `yaml:"branches"`
-				Tags     []string `yaml:"tags"`
-			} `yaml:"push"`
-			PullRequest struct {
-				Types []string `yaml:"types"`
-			} `yaml:"pull_request"`
-			MergeGroup struct {
-				Types []string `yaml:"types"`
-			} `yaml:"merge_group"`
-		} `yaml:"on"`
+		On   map[string]yaml.Node `yaml:"on"`
 		Jobs map[string]struct {
 			If string `yaml:"if"`
 		} `yaml:"jobs"`
@@ -36,22 +25,25 @@ func checkWorkflow(data []byte) error {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return err
 	}
-	if !slices.Contains(workflow.On.MergeGroup.Types, "checks_requested") {
-		return errors.New("INV-4 merge_group checks_requested missing")
+	if len(workflow.On) != 2 {
+		return errors.New("INV-5 CI must trigger only on main push and workflow_dispatch")
 	}
-	if !slices.Equal(workflow.On.Push.Branches, []string{"main", "develop"}) || len(workflow.On.Push.Tags) != 0 {
-		return errors.New("INV-5 CI push must run only on main and develop; tag checks invalidate release provenance")
+	if _, ok := workflow.On["push"]; !ok {
+		return errors.New("INV-5 main push trigger missing")
 	}
-	events := workflow.On.PullRequest.Types
-	for _, event := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
-		if !slices.Contains(events, event) {
-			return fmt.Errorf("INV-5 missing PR activity %s", event)
-		}
+	if _, ok := workflow.On["workflow_dispatch"]; !ok {
+		return errors.New("INV-5 workflow_dispatch trigger missing")
 	}
-	for _, event := range events {
-		if !slices.Contains([]string{"opened", "synchronize", "reopened", "ready_for_review"}, event) {
-			return fmt.Errorf("INV-5 extra PR activity %s", event)
-		}
+	var push struct {
+		Branches []string `yaml:"branches"`
+		Tags     []string `yaml:"tags"`
+	}
+	pushNode := workflow.On["push"]
+	if err := pushNode.Decode(&push); err != nil {
+		return fmt.Errorf("INV-5 decode push trigger: %w", err)
+	}
+	if !slices.Equal(push.Branches, []string{"main"}) || len(push.Tags) != 0 {
+		return errors.New("INV-5 CI push must run only on main; tag checks invalidate release provenance")
 	}
 	for _, required := range []string{"invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
 		if _, ok := workflow.Jobs[required]; !ok {
@@ -63,19 +55,19 @@ func checkWorkflow(data []byte) error {
 		switch name {
 		case "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot":
 			if condition != integrationCondition {
-				return fmt.Errorf("INV-5 %s must run only on main or develop push or explicit manual dispatch", name)
+				return fmt.Errorf("INV-5 %s must run only on main push or explicit manual dispatch", name)
 			}
 		case "report-integration-failures":
 			if condition != "failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')" {
-				return errors.New("INV-5 integration failure reporting must exclude PRs")
+				return errors.New("INV-5 integration failure reporting must stay on main")
 			}
 		case "verify", "browser-visual":
-			if condition != "always() && "+nonPRCondition {
-				return fmt.Errorf("INV-5 %s must aggregate results and never run on pull_request events", name)
+			if condition != "always()" {
+				return fmt.Errorf("INV-5 %s must aggregate results on main push and manual dispatch", name)
 			}
 		default:
-			if condition != nonPRCondition {
-				return fmt.Errorf("INV-5 %s must not run on pull_request events; real CI runs in the merge queue and on main and develop", name)
+			if condition != "" {
+				return fmt.Errorf("INV-5 %s must run on main push and manual dispatch", name)
 			}
 		}
 	}
@@ -92,27 +84,77 @@ func TestRepositoryWorkflow(t *testing.T) {
 	}
 }
 
+func TestRepositoryHasNoPullRequestActions(t *testing.T) {
+	workflows := filepath.Join(repositoryRoot(t), ".github", "workflows")
+	entries, err := os.ReadDir(workflows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || (filepath.Ext(entry.Name()) != ".yml" && filepath.Ext(entry.Name()) != ".yaml") {
+			continue
+		}
+		t.Run(entry.Name(), func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(workflows, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var workflow struct {
+				On map[string]yaml.Node `yaml:"on"`
+			}
+			if err := yaml.Unmarshal(data, &workflow); err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
+				if _, ok := workflow.On[event]; ok {
+					t.Fatalf("INV-5 %s must not trigger on %s", entry.Name(), event)
+				}
+			}
+		})
+	}
+}
+
+func TestPortabilityStressIsManualOnly(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github", "workflows", "portability-stress.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On map[string]yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.On) != 1 {
+		t.Fatalf("INV-5 portability stress triggers = %v, want only workflow_dispatch", workflow.On)
+	}
+	if _, ok := workflow.On["workflow_dispatch"]; !ok {
+		t.Fatal("INV-5 portability stress must allow manual dispatch")
+	}
+}
+
 func TestWorkflowViolations(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github/workflows/ci.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ name, old, replacement string }{
-		{"duplicate tag checks", "branches: [main, develop]", "branches: [main, develop]\n    tags: ['v*']"},
-		{"unfiltered push", "branches: [main, develop]", "branches: []"},
-		{"develop push dropped", "branches: [main, develop]", "branches: [main]"},
-		{"main push dropped", "branches: [main, develop]", "branches: [develop]"},
-		{"feature branch push", "branches: [main, develop]", "branches: [main, develop, 'feature/*']"},
-		{"integration main only", "if: " + integrationCondition, "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"},
+		{"duplicate tag checks", "branches: [main]", "branches: [main]\n    tags: ['v*']"},
+		{"unfiltered push", "branches: [main]", "branches: []"},
+		{"develop push", "branches: [main]", "branches: [main, develop]"},
+		{"main push dropped", "branches: [main]", "branches: [develop]"},
+		{"feature branch push", "branches: [main]", "branches: [main, 'feature/*']"},
+		{"pull request trigger", "  workflow_dispatch:", "  pull_request:\n  workflow_dispatch:"},
+		{"merge group trigger", "  workflow_dispatch:", "  merge_group:\n  workflow_dispatch:"},
+		{"nightly trigger", "  workflow_dispatch:", "  schedule:\n    - cron: '0 0 * * *'\n  workflow_dispatch:"},
+		{"manual dispatch dropped", "  workflow_dispatch:", "  unused_event:"},
+		{"integration develop push", "if: " + integrationCondition, "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/develop')"},
 		{"failure reports on develop", "if: failure() && github.ref == 'refs/heads/main'", "if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')"},
-		{"real job on PR", "if: " + nonPRCondition, "if: true"},
-		{"pr bypass", "if: " + nonPRCondition, "if: " + nonPRCondition + " || true"},
-		{"successful placeholder", "jobs:", "jobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo skipped"},
-		{"missing merge group", "merge_group:", "unused_event:"},
-		{"label reruns", "types: [opened,", "types: [labeled, opened,"},
+		{"filtered real job", "  lint:\n", "  lint:\n    if: false\n"},
+		{"placeholder", "jobs:", "jobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo skipped"},
 		{"integration on PR", "if: " + integrationCondition, "if: " + nonPRCondition},
 		{"missing invariant job", "  invariants:", "  renamed:"},
-		{"aggregate on PR", "if: always() && " + nonPRCondition + "\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n      - name: Require every Browser Visual", "if: always()\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n      - name: Require every Browser Visual"},
+		{"aggregate filtered", "  browser-visual:\n", "  browser-visual:\n    if: false\n"},
 		{"malformed", "name: CI", "name: ["},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

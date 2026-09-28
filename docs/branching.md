@@ -6,9 +6,9 @@ Detent uses two long-lived branches.
 
 - `develop` is the default and integration branch. Start every change from
   current `origin/develop` and open the pull request against `develop`; it lands
-  through the merge queue. Pushes to `develop` run the full CI suite plus the
-  integration checks (portability, Windows core, installer smoke, GoReleaser
-  snapshot), so `develop` carries the same evidence `main` does.
+  after its pushed head passes the local `make check-fast` gate and receives a
+  `local-gate` commit status. An hourly operator-host build runs `make check`
+  on `develop` and promotes a green head to `main`.
 - `main` is production. Release tags point only at `origin/main`, the release
   coordinator inspects `main` regardless of the repository default branch, and
   installers and onboarding read from `main`. Failed integration checks file
@@ -36,8 +36,7 @@ promotion diff contains only new work and the release coordinator can map each
 commit back to the pull request and issue that produced it. A squash promotion
 would collapse that history into one commit that references no issues and
 would make the next promotion conflict wherever `develop` changed the same
-lines again, so the `main` merge queue must permit a merge commit for
-promotion. After the promotion merges, the release coordinator tags `main` as
+lines again. After the promotion merges, the release coordinator tags `main` as
 described in [Release](release.md).
 
 ## Hotfixes
