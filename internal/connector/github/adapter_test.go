@@ -5724,6 +5724,9 @@ func TestValidationDiffRejectsOtherPRFiles(t *testing.T) {
 		want  bool
 	}{
 		{name: "matching workflow", files: []string{"WORKFLOW.md"}, patch: patch, want: true},
+		{name: "path contains destination marker", files: []string{"docs b/readme.md"}, patch: "diff --git a/docs b/readme.md b/docs b/readme.md\n+docs\n", want: true},
+		{name: "ambiguous suffix is not the destination", files: []string{"readme.md"}, patch: "diff --git a/docs b/readme.md b/docs b/readme.md\n+docs\n"},
+		{name: "renamed file", files: []string{"new.md"}, patch: "diff --git a/old.md b/new.md\nsimilarity index 100%\nrename from old.md\nrename to new.md\n", want: true},
 		{name: "docs PR list with workflow patch", files: []string{"AGENTS.md", "README.md"}, patch: patch},
 		{name: "missing file list", files: nil, patch: patch},
 		{name: "PR220 receipt files", files: []string{"WORKFLOW.md", "ui/build.gradle.kts", "ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt"}, patch: pr220Patch, want: true},

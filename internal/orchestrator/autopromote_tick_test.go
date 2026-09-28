@@ -2986,13 +2986,17 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
 		finalHead   string
+		finalBase   string
+		finalPR     int
 		wantVerdict string
 		probeError  bool
 		degraded    bool
 		workerError bool
 	}{
 		{name: "stable head", finalHead: "B", wantVerdict: gate.ValidatorVerdictPass},
-		{name: "head changes during evaluation", finalHead: "C", wantVerdict: gate.ValidatorVerdictWait},
+		{name: "head changes during evaluation", finalHead: "C"},
+		{name: "base changes during evaluation", finalHead: "B", finalBase: "new-base"},
+		{name: "PR changes during evaluation", finalHead: "B", finalPR: 3032},
 		{name: "final head unavailable", finalHead: "B", probeError: true},
 		{name: "final head degraded", finalHead: "B", degraded: true},
 		{name: "workspace infrastructure failure", finalHead: "B", workerError: true},
@@ -3019,6 +3023,10 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 				t.Fatal("validator did not start")
 			}
 			current.PullRequest.HeadSHA = tt.finalHead
+			current.PullRequest.BaseSHA = tt.finalBase
+			if tt.finalPR != 0 {
+				current.PullRequest.Number = tt.finalPR
+			}
 			if tt.degraded {
 				current.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
 			}
@@ -3031,7 +3039,7 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 			validatedIssue := cloneIssue(issue)
 			validatedIssue.PullRequest.HeadSHA = "B"
 			result, _, ok := orch.validatorStageResult(t.Context(), validatedIssue)
-			if tt.probeError || tt.degraded || tt.workerError {
+			if tt.probeError || tt.degraded || tt.workerError || tt.wantVerdict == "" {
 				if ok {
 					t.Fatalf("unverified head cached verdict: %#v", result)
 				}
@@ -3039,9 +3047,6 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 			}
 			if !ok || result.Verdict != tt.wantVerdict {
 				t.Fatalf("verdict = %#v, want %s", result, tt.wantVerdict)
-			}
-			if tt.wantVerdict == gate.ValidatorVerdictWait && !strings.Contains(result.Summary, "reviewed B, current PR C") {
-				t.Fatalf("mismatch detail = %q", result.Summary)
 			}
 		})
 	}
@@ -3166,6 +3171,42 @@ func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
 			_, ok := o.loadValidatorVerdict(t.Context(), issue, identity)
 			if ok != tt.want {
 				t.Fatalf("loaded wrong-PR verdict = %t, want %t", ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidatorFailedMemoRejectsDifferentPRProvenance(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-failed-memo", Identifier: "digitaldrywood/detent#153",
+		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
+	identity := validatorStageIdentityForIssue(issue)
+	for _, tt := range []struct {
+		name string
+		repo string
+		pr   int64
+		base string
+		want bool
+	}{
+		{name: "other repository", repo: "other/repo", pr: 155, base: "base-docs"},
+		{name: "other PR", repo: "digitaldrywood/detent", pr: 156, base: "base-docs"},
+		{name: "other base", repo: "digitaldrywood/detent", pr: 155, base: "base-other"},
+		{name: "exact PR", repo: "digitaldrywood/detent", pr: 155, base: "base-docs", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			memo := openValidatorMemoStore(t)
+			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
+				ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA,
+				Repository: tt.repo, PRNumber: &tt.pr, BaseSHA: tt.base,
+				Verdict: gate.ValidatorVerdictError, FailureAttempts: gate.DefaultValidatorMaxAttempts,
+				RecordedAt: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			o := &Orchestrator{cfg: Config{Project: scheduler.ProjectCandidate{ID: "detent"}}, validatorMemo: memo}
+			_, ok := o.loadValidatorVerdict(t.Context(), issue, identity)
+			if ok != tt.want {
+				t.Fatalf("loaded failed memo = %t, want %t", ok, tt.want)
 			}
 		})
 	}
@@ -3404,6 +3445,7 @@ func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
 		Number:     1298,
 		URL:        "https://github.test/digitaldrywood/detent/pull/1298",
 		BranchName: "detent/digitaldrywood_detent_1298",
+		BaseSHA:    "base-validator-exhausted",
 		HeadSHA:    "head-validator-exhausted",
 		State:      "OPEN",
 		CIStatus:   "success",
@@ -3431,6 +3473,9 @@ func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
 	first := waitForPersistedValidatorFailure(t, memo, key, 1)
 	if first.Verdict != gate.ValidatorVerdictError || first.Submitted || first.NextRetryAt == nil {
 		t.Fatalf("first persisted validator failure = %#v", first)
+	}
+	if first.Repository != "digitaldrywood/detent" || first.PRNumber == nil || *first.PRNumber != 1298 || first.BaseSHA != issue.PullRequest.BaseSHA {
+		t.Fatalf("failed validator memo lacks PR provenance: %#v", first)
 	}
 
 	clock.Set(failure.NextRetryAt)

@@ -2748,10 +2748,14 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
 			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
-				currentHead := validatorStageIdentityForIssue(current).HeadSHA
-				if currentHead != identity.HeadSHA {
-					result = gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictWait,
-						Summary: fmt.Sprintf("validation head mismatch: reviewed %s, current PR %s", identity.HeadSHA, currentHead)}
+				if validatorStageIdentityForIssue(current).Key != identity.Key {
+					// The reviewed diff no longer describes the PR. Let the next
+					// tick validate its current identity instead of storing a verdict.
+					o.validatorMu.Lock()
+					o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+					delete(o.validatorRuns, identity.Key)
+					o.validatorMu.Unlock()
+					return
 				}
 			} else {
 				// The authoritative head is unavailable. Leave the verdict absent so
@@ -2979,7 +2983,7 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		}
 		return validatorStageResult{}, false
 	}
-	if verdict.Submitted && (verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.DiffDigest == "" || verdict.HeadSHA != identity.HeadSHA) {
+	if verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.HeadSHA != identity.HeadSHA || (verdict.Submitted && verdict.DiffDigest == "") {
 		return validatorStageResult{}, false
 	}
 	validatorConfig := gate.Effective(o.cfg.AutoPromote.Gate).Validator
@@ -3046,15 +3050,16 @@ func (o *Orchestrator) recordValidatorStageOutcome(
 	if recordedAt.IsZero() {
 		recordedAt = o.clockNow().UTC()
 	}
+	prNumber := int64(identity.PRNumber)
 	if err := o.validatorMemo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
 		ProjectID:       o.workflowMetricsProjectID(),
 		IssueID:         identity.IssueID,
 		HeadSHA:         identity.HeadSHA,
 		Identifier:      issue.Identifier,
 		IssueURL:        issue.URL,
-		PRNumber:        workflowMetricsPRNumber(issue),
-		Repository:      result.Repository,
-		BaseSHA:         result.BaseSHA,
+		PRNumber:        &prNumber,
+		Repository:      identity.Repository,
+		BaseSHA:         identity.BaseSHA,
 		DiffDigest:      result.DiffDigest,
 		DiffFiles:       append([]string(nil), result.DiffFiles...),
 		Submitted:       result.Submitted,

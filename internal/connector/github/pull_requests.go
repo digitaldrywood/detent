@@ -556,20 +556,41 @@ func (c *Connector) PullRequestValidationDiff(ctx context.Context, issue connect
 
 func sameValidationFiles(files []string, patch string) bool {
 	actual := map[string]bool{}
-	for _, line := range strings.Split(patch, "\n") {
+	lines := strings.Split(patch, "\n")
+	for i, line := range lines {
 		if !strings.HasPrefix(line, "diff --git ") {
 			continue
 		}
 		path := ""
-		if _, right, found := strings.Cut(line, " b/"); found {
-			path = right
-		} else if _, right, found := strings.Cut(line, " \"b/"); found {
+		if _, right, found := strings.Cut(line, " \"b/"); found {
 			quoted := "\"b/" + right
 			unquoted, err := strconv.Unquote(quoted)
 			if err != nil || !strings.HasPrefix(unquoted, "b/") {
 				return false
 			}
 			path = strings.TrimPrefix(unquoted, "b/")
+		} else {
+			// Unquoted Git paths may contain " b/" themselves. Match both
+			// fields for ordinary changes; renamed paths need Git's explicit
+			// destination metadata in the same diff block.
+			for _, file := range files {
+				if line == "diff --git a/"+file+" b/"+file {
+					path = file
+					break
+				}
+				if !strings.HasPrefix(line, "diff --git a/") || !strings.HasSuffix(line, " b/"+file) {
+					continue
+				}
+				for j := i + 1; j < len(lines) && !strings.HasPrefix(lines[j], "diff --git "); j++ {
+					if lines[j] == "rename to "+file || lines[j] == "copy to "+file {
+						path = file
+						break
+					}
+				}
+				if path != "" {
+					break
+				}
+			}
 		}
 		if path == "" {
 			return false
