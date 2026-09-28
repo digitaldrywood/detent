@@ -74,9 +74,6 @@ func resolvedYAMLNode(node *yaml.Node) (*yaml.Node, error) {
 }
 
 func resolveYAMLNode(node *yaml.Node, resolving map[*yaml.Node]bool) (*yaml.Node, error) {
-	if node == nil {
-		return nil, nil
-	}
 	if node.Kind == yaml.AliasNode && node.Alias != nil {
 		return resolveYAMLNode(node.Alias, resolving)
 	}
