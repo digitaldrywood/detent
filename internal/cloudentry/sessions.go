@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -13,6 +14,43 @@ import (
 )
 
 var errNoSession = errors.New("shared session is missing, expired or revoked")
+
+// providerSessionRecheck bounds how long a read-only request trusts the last
+// successful provider verification of a stored session, so polling screens do
+// not call the provider on every read while revocation still lands within it.
+const providerSessionRecheck = 60 * time.Second
+
+type sessionVerifications struct {
+	mu       sync.Mutex
+	verified map[string]time.Time
+}
+
+func (v *sessionVerifications) fresh(hash string, now time.Time) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	at, ok := v.verified[hash]
+	return ok && !now.Before(at) && now.Sub(at) < providerSessionRecheck
+}
+
+func (v *sessionVerifications) record(hash string, now time.Time) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.verified == nil {
+		v.verified = make(map[string]time.Time)
+	}
+	for key, at := range v.verified {
+		if now.Sub(at) >= providerSessionRecheck || now.Before(at) {
+			delete(v.verified, key)
+		}
+	}
+	v.verified[hash] = now
+}
+
+func (v *sessionVerifications) forget(hash string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.verified, hash)
+}
 
 type accountSession struct {
 	Hash       string

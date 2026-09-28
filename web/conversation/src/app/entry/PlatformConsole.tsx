@@ -165,6 +165,7 @@ export function PlatformOrganizationsPanel({
                     <div className="mt-1 text-destructive-foreground">
                       Last error: {organization.error_code}
                       {organization.step === "" ? "" : ` after ${organization.step}`}
+                      {organization.error_detail === undefined || organization.error_detail === "" ? "" : ` (${organization.error_detail})`}
                     </div>
                   )}
                 </TableCell>

@@ -183,8 +183,8 @@ func TestAppSharedEntry(t *testing.T) {
 		location string
 		shell    bool
 	}{
-		{name: "revoked work", user: &revoked, target: prefix + "/work", status: http.StatusSeeOther, location: "/organizations"},
-		{name: "revoked chat", user: &revoked, target: prefix + "/chat/c/conv_1", status: http.StatusSeeOther, location: "/organizations"},
+		{name: "revoked work", user: &revoked, target: prefix + "/work", status: http.StatusSeeOther, location: "/organizations?switch=1"},
+		{name: "revoked chat", user: &revoked, target: prefix + "/chat/c/conv_1", status: http.StatusSeeOther, location: "/organizations?switch=1"},
 		{name: "work", user: &owner, target: prefix + "/work", status: http.StatusOK, shell: true},
 		{name: "chat", user: &owner, target: prefix + "/chat", status: http.StatusOK, shell: true},
 		{name: "viewer settings", user: &viewer, target: prefix + "/settings/general", status: http.StatusOK, shell: true},
@@ -202,7 +202,7 @@ func TestAppSharedEntry(t *testing.T) {
 			if got := response.Header().Get("Location"); got != test.location {
 				t.Fatalf("location = %q, want %q", got, test.location)
 			}
-			if got := response.Body.String() == appShellWant(prefix, "/organizations"); got != test.shell {
+			if got := response.Body.String() == appShellWant(prefix, "/organizations?switch=1"); got != test.shell {
 				t.Fatalf("shell served = %t, want %t: %s", got, test.shell, response.Body.String())
 			}
 		})
@@ -215,7 +215,7 @@ func TestAppSharedEntry(t *testing.T) {
 			}
 			var payload appBootstrap
 			decodeHubResponse(t, response, &payload)
-			if payload.BasePath != prefix || payload.SignInPath != "/organizations" || payload.APIBase != "/api/v2/organizations/org_security" || payload.CSRFToken != csrf(owner) {
+			if payload.BasePath != prefix || payload.SignInPath != "/organizations?switch=1" || payload.APIBase != "/api/v2/organizations/org_security" || payload.CSRFToken != csrf(owner) {
 				t.Fatalf("bootstrap = %#v", payload)
 			}
 			if payload.Actor.Subject != "user_owner" || payload.Actor.Role != "owner" || len(payload.Projects) != 1 || len(payload.Organizations) != 0 {

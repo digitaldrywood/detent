@@ -235,7 +235,7 @@ func TestHostedSharedEntryScopesPagesAndMutations(t *testing.T) {
 		t.Fatalf("organization page status = %d: %s", page.Code, page.Body.String())
 	}
 	body := page.Body.String()
-	for _, want := range []string{`href="/organizations/org_security/projects/prj_security"`, `action="/organizations/org_security/logout"`, `action="/organizations/org_security/organization/invite"`, `value="` + csrf + `"`, `href="/organizations"`} {
+	for _, want := range []string{`href="/organizations/org_security/projects/prj_security"`, `action="/organizations/org_security/logout"`, `action="/organizations/org_security/organization/invite"`, `value="` + csrf + `"`, `href="/organizations?switch=1"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("organization page is missing %s", want)
 		}

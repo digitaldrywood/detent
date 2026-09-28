@@ -28,6 +28,7 @@ type Organization struct {
 	Attempts       int       `json:"attempts,omitempty"`
 	NextAttemptAt  string    `json:"-"`
 	ErrorCode      string    `json:"error_code,omitempty"`
+	ErrorDetail    string    `json:"error_detail,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -116,7 +117,7 @@ func (r *Registry) Register(ctx context.Context, organization Organization) (boo
 	return true, tx.Commit()
 }
 
-const organizationSelect = "SELECT id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,updated_at FROM organizations"
+const organizationSelect = "SELECT id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,error_detail,updated_at FROM organizations"
 
 type rowScanner interface {
 	Scan(...any) error
@@ -126,7 +127,7 @@ func scanOrganization(row rowScanner) (Organization, error) {
 	var organization Organization
 	var updated string
 	if err := row.Scan(&organization.ID, &organization.ProviderID, &organization.Name, &organization.State, &organization.Endpoint, &organization.Generation, &organization.Managed,
-		&organization.CreatorSubject, &organization.CreatorEmail, &organization.Step, &organization.Attempts, &organization.NextAttemptAt, &organization.ErrorCode, &updated); err != nil {
+		&organization.CreatorSubject, &organization.CreatorEmail, &organization.Step, &organization.Attempts, &organization.NextAttemptAt, &organization.ErrorCode, &organization.ErrorDetail, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Organization{}, ErrOrganizationNotFound
 		}

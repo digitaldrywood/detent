@@ -346,7 +346,7 @@ func (p *workosProvider) session(ctx context.Context, identity HostedIdentity) (
 
 func validWorkOSSession(session workosSession, identity HostedIdentity) bool {
 	now := time.Now()
-	if session.Status != "active" || session.UserID != identity.Subject || session.OrganizationID != identity.OrganizationID || session.EndedAt != nil || session.CreatedAt.IsZero() || session.CreatedAt.After(now.Add(time.Minute)) || !session.ExpiresAt.After(now) || !session.ExpiresAt.After(session.CreatedAt) {
+	if session.Status != "active" || session.UserID != identity.Subject || session.EndedAt != nil || session.CreatedAt.IsZero() || session.CreatedAt.After(now.Add(time.Minute)) || !session.ExpiresAt.After(now) || !session.ExpiresAt.After(session.CreatedAt) {
 		return false
 	}
 	if session.Impersonator == nil {

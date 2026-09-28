@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 func TestReadCloudConfig(t *testing.T) {
@@ -330,6 +331,79 @@ func TestSelfHostedIdentityNeverEnablesBilling(t *testing.T) {
 			}
 			if config.Billing != nil {
 				t.Fatal("billing enabled without an explicit billing section")
+			}
+		})
+	}
+}
+
+func TestCloudEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
+	t.Parallel()
+	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n"
+	for _, test := range []struct{ name, body string }{
+		{name: "absent", body: base},
+		{name: "empty mapping", body: base + "  entitlements: {}\n"},
+		{name: "empty block", body: base + "  entitlements:\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}
+			path := filepath.Join(t.TempDir(), "cloud.yaml")
+			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			if err != nil {
+				t.Fatalf("readCloudConfig() error = %v", err)
+			}
+			launcher := config.Allocation.Launcher.(*cloudentry.ExecLauncher)
+			raw, err := launcher.Configure(cloudentry.TenantSpec{Organization: cloudentry.Organization{ID: "org_tenant", ProviderID: "org_workos", Generation: 1}, PublicURL: "https://hub.example.test", Issuer: "detent-cloud", PublicKey: seed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), "\nentitlements: null\n") {
+				t.Fatalf("generated tenant configuration overrides the default catalog:\n%s", raw)
+			}
+			tenant, err := parseHostedConfig(bytes.NewReader(raw), func(name string) string { return env[name] })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := hubserver.ValidateHostedConfig(tenant); err != nil || tenant.Plans != nil {
+				t.Fatalf("tenant plans = %+v, %v; want default catalog", tenant.Plans, err)
+			}
+		})
+	}
+}
+
+func TestCloudRejectsInvalidTenantConfigurationAtStartup(t *testing.T) {
+	t.Parallel()
+	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n"
+	windows := "    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n"
+	plan := "    plans:\n      - {id: free, version: 1, features: [collaboration], allowances: {projects: 3}}\n"
+	for _, test := range []struct{ name, entitlements string }{
+		{name: "plans without windows", entitlements: "    base: {id: free, version: 1}\n" + plan},
+		{name: "windows without plans", entitlements: "    base: {id: free, version: 1}\n" + windows},
+		{name: "base only", entitlements: "    base: {id: free, version: 1}\n"},
+		{name: "explicitly empty plan list", entitlements: "    plans: []\n"},
+		{name: "missing base", entitlements: windows + plan},
+		{name: "base not configured", entitlements: "    base: {id: team, version: 1}\n" + windows + plan},
+		{name: "unknown feature", entitlements: "    base: {id: free, version: 1}\n" + windows + "    plans:\n      - {id: free, version: 1, features: [admin_bypass]}\n"},
+		{name: "unknown allowance", entitlements: "    base: {id: free, version: 1}\n" + windows + "    plans:\n      - {id: free, version: 1, allowances: {unlimited: 1}}\n"},
+		{name: "negative allowance", entitlements: "    base: {id: free, version: 1}\n" + windows + "    plans:\n      - {id: free, version: 1, allowances: {projects: -1}}\n"},
+		{name: "duplicate plan", entitlements: "    base: {id: free, version: 1}\n" + windows + plan + "      - {id: free, version: 1}\n"},
+		{name: "unbounded retention", entitlements: "    base: {id: free, version: 1}\n    window_seconds: 3600\n    retention_windows: 721\n    connected_seconds: 90\n    invitation_seconds: 86400\n" + plan},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}
+			path := filepath.Join(t.TempDir(), "cloud.yaml")
+			if err := os.WriteFile(path, []byte(base+"  entitlements:\n"+test.entitlements), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readCloudConfig(path, func(name string) string { return env[name] })
+			if err == nil || !strings.Contains(err.Error(), "allocated tenant configuration is invalid") {
+				t.Fatalf("readCloudConfig() error = %v, want tenant configuration rejection", err)
 			}
 		})
 	}

@@ -11,6 +11,7 @@ export const EntryOrganization = Schema.Struct({
   name: Schema.String,
   url: Schema.String,
   state: Schema.optional(Schema.String),
+  role: Schema.optional(Schema.String),
 });
 export type EntryOrganization = typeof EntryOrganization.Type;
 
@@ -53,6 +54,7 @@ export const PlatformOrganization = Schema.Struct({
   step: Schema.String,
   attempts: Schema.Number,
   error_code: Schema.String,
+  error_detail: Schema.optional(Schema.String),
   managed: Schema.Boolean,
   creator_email: Schema.String,
   created_at: Schema.String,
@@ -162,6 +164,7 @@ export type PlatformHealth = typeof PlatformHealth.Type;
 export const PLATFORM = "/platform";
 export const SUPPORT_REASONS = ["customer-request", "account-recovery", "troubleshooting"] as const;
 
+export const CHOOSE_ORGANIZATION = "/organizations?switch=1";
 export const SIGN_IN_ORGANIZATIONS = "/auth/oidc/start?return=%2Forganizations";
 export const SIGN_IN_PLATFORM = "/auth/oidc/start?return=%2Fplatform";
 
