@@ -3121,8 +3121,12 @@ printf '%s\n' "$DETENT_COMMON_DIR"
 			if commandErr != nil {
 				t.Fatalf("common dir probe error = %v, want successful identity after Git exits", commandErr)
 			}
-			if commonDir != dir {
-				t.Fatalf("common dir probe = %q, want %q", commonDir, dir)
+			want, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if commonDir != want {
+				t.Fatalf("common dir probe = %q, want %q", commonDir, want)
 			}
 		})
 	}
@@ -3154,8 +3158,12 @@ chmod 500 "$TMPDIR"
 	if err != nil {
 		t.Fatalf("gitCommonDir() error = %v, want successful identity despite cleanup failure", err)
 	}
-	if got != commonDir {
-		t.Fatalf("gitCommonDir() = %q, want %q", got, commonDir)
+	want, err := filepath.EvalSymlinks(commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("gitCommonDir() = %q, want %q", got, want)
 	}
 }
 
