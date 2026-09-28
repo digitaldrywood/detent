@@ -249,7 +249,7 @@ func TestHostedSharedTenantAPI(t *testing.T) {
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
 			}
-			if got := response.Body.String() == appShellWant("/organizations/org_security", "/organizations"); got != test.shell {
+			if got := response.Body.String() == appShellWant("/organizations/org_security", "/organizations?switch=1"); got != test.shell {
 				t.Fatalf("shell served = %t, want %t: %s", got, test.shell, response.Body.String())
 			}
 			if test.status != http.StatusOK || test.shell || !strings.HasPrefix(test.request.target, api) {

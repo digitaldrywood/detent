@@ -443,8 +443,8 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	var owned int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM organizations WHERE creator_subject = ? AND state != 'deleted'", session.Subject).Scan(&owned); err != nil {
+	owned, err := ownedOrganizations(ctx, tx, session.Subject)
+	if err != nil {
 		return "", err
 	}
 	if owned >= s.config.Allocation.MaxPerIdentity {
@@ -464,6 +464,27 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 		return "", err
 	}
 	return id, tx.Commit()
+}
+
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func ownedOrganizations(ctx context.Context, q rowQuerier, subject string) (int, error) {
+	var owned int
+	err := q.QueryRowContext(ctx, "SELECT count(*) FROM organizations WHERE creator_subject = ? AND state != 'deleted'", subject).Scan(&owned)
+	return owned, err
+}
+
+func (s *Service) canCreate(ctx context.Context, session accountSession) (bool, error) {
+	if s.config.Allocation == nil || s.staff(session.Email) || session.Identity.SupportActor != "" {
+		return false, nil
+	}
+	owned, err := ownedOrganizations(ctx, s.registry.store.db, session.Subject)
+	if err != nil {
+		return false, err
+	}
+	return owned < s.config.Allocation.MaxPerIdentity, nil
 }
 
 func (s *Service) creatorOrganization(c echo.Context) (accountSession, Organization, error) {

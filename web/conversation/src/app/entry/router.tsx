@@ -27,7 +27,7 @@ function useGo(): (to: string) => void {
   const navigate = useNavigate();
   return React.useCallback(
     (to: string) => {
-      void navigate({ to } as never);
+      void navigate((to.includes("?") ? { href: to } : { to }) as never);
     },
     [navigate],
   );

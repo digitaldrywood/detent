@@ -61,7 +61,7 @@ func (s *Service) hostedPath(path string) string {
 
 func (s *Service) hostedSignInPath() string {
 	if s.hostedShared() {
-		return "/organizations"
+		return "/organizations?switch=1"
 	}
 	return "/login"
 }
