@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -728,4 +730,53 @@ func TestHostedEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHostedPlansConfigDecodesStrictly(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, body string
+		wantErr    bool
+		written    bool
+	}{
+		{name: "valid catalog", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowances: {projects: 3}}\n", written: true},
+		{name: "empty section", body: "{}\n"},
+		{name: "alias to an anchor outside the section", body: "base: *free\nplans:\n  - {id: free, version: 1}\n", written: true},
+		{name: "merge key from an anchor outside the section", body: "base: {<<: *free}\n", written: true},
+		{name: "misspelled nested key", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowences: {projects: 3}}\n", wantErr: true},
+		{name: "unknown plan reference key", body: "base: {id: free, release: 1}\n", wantErr: true},
+		{name: "misspelled section key", body: "windows_seconds: 3600\n", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			decoder := yaml.NewDecoder(strings.NewReader("free: &free {id: free, version: 1}\nentitlements:\n" + indentYAML(test.body)))
+			decoder.KnownFields(true)
+			var document struct {
+				Free         PlanReference     `yaml:"free"`
+				Entitlements HostedPlansConfig `yaml:"entitlements"`
+			}
+			err := decoder.Decode(&document)
+			config := document.Entitlements
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("Decode() = %+v, want an unknown-field error", config)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.written != test.written {
+				t.Fatalf("written = %t, want %t", config.written, test.written)
+			}
+		})
+	}
+}
+
+func indentYAML(body string) string {
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "  " + line
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

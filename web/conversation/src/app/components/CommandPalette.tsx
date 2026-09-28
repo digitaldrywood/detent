@@ -1,7 +1,6 @@
 // Searches Detent conversations and destinations and dispatches available commands.
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useAccountBootstrap } from "../account/context.ts";
 import {
   FileSearchIcon,
   FolderIcon,
@@ -65,6 +64,7 @@ import { HUB_ENVIRONMENT_ID } from "../../contracts/index.ts";
 import type { Conversation } from "../../contracts/conversation.ts";
 import { resolveShortcutCommand } from "../../keybindings.ts";
 import { cn } from "../../lib/utils.ts";
+import { usePrimaryEnvironment, type EnvironmentPresentation } from "../../state/environments.ts";
 import { primaryServerKeybindingsAtom } from "../../state/server.ts";
 import type { SidebarThreadSummary } from "../../types.ts";
 import { usePaletteContext, usePaletteShell } from "../adapters/paletteContext.ts";
@@ -73,7 +73,16 @@ import { useSidebarData } from "../adapters/sidebarData.tsx";
 import { toEnvironmentProject } from "../adapters/shell.ts";
 import { toEnvironmentThreadShell } from "../adapters/sidebarThreads.ts";
 import { ProjectGlyph } from "./ProjectGlyph.tsx";
+import { useNewProject } from "../projects/NewProject.tsx";
 import { useWorkIssueItems } from "../work/lib/usePaletteIssues.ts";
+
+/**
+ * A Cloud environment runs its projects on runners, so the browser has no
+ * checkout: the file picker and the content search have nothing to act on.
+ */
+export function isHostedEnvironment(environment: EnvironmentPresentation | null): boolean {
+  return environment?.serverConfig?.environment.machine === "cloud";
+}
 
 const OVERLAY_MODE_BY_COMMAND = {
   "commandPalette.toggle": "command",
@@ -210,7 +219,8 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const { clearOpenIntent, openIntent, setOpen } = props;
   const navigate = useNavigate();
-  const canManageProjects = useAccountBootstrap()?.actor.can_manage ?? false;
+  const newProject = useNewProject();
+  const hosted = isHostedEnvironment(usePrimaryEnvironment());
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -471,29 +481,31 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  actionItems.push({
-    kind: "action",
-    value: "action:open-file-picker",
-    searchTerms: ["go to file", "open file", "file picker", "find file", "quick open"],
-    title: "Go to file",
-    description: "A hosted project has no checkout to open a file from",
-    disabled: true,
-    icon: <FileSearchIcon className={ITEM_ICON_CLASS} />,
-    keepOpen: true,
-    run: async () => undefined,
-  });
+  if (!hosted) {
+    actionItems.push({
+      kind: "action",
+      value: "action:open-file-picker",
+      searchTerms: ["go to file", "open file", "file picker", "find file", "quick open"],
+      title: "Go to file",
+      description: "This environment has no checkout to open a file from",
+      disabled: true,
+      icon: <FileSearchIcon className={ITEM_ICON_CLASS} />,
+      keepOpen: true,
+      run: async () => undefined,
+    });
 
-  actionItems.push({
-    kind: "action",
-    value: "action:search-project-contents",
-    searchTerms: ["search project", "find in files", "grep", "content search", "text search"],
-    title: "Search project contents",
-    description: "A hosted project has no checkout to search",
-    disabled: true,
-    icon: <TextSearchIcon className={ITEM_ICON_CLASS} />,
-    keepOpen: true,
-    run: async () => undefined,
-  });
+    actionItems.push({
+      kind: "action",
+      value: "action:search-project-contents",
+      searchTerms: ["search project", "find in files", "grep", "content search", "text search"],
+      title: "Search project contents",
+      description: "This environment has no checkout to search",
+      disabled: true,
+      icon: <TextSearchIcon className={ITEM_ICON_CLASS} />,
+      keepOpen: true,
+      run: async () => undefined,
+    });
+  }
 
   actionItems.push({
     kind: "action",
@@ -510,13 +522,12 @@ function OpenCommandPaletteDialog(props: {
       "git",
     ],
     title: "Add project",
-    description: canManageProjects
-      ? "Create it in Settings → Projects"
-      : "An organization owner or admin creates projects",
-    ...(canManageProjects ? {} : { disabled: true, keepOpen: true }),
+    ...(newProject.unavailableReason === null
+      ? {}
+      : { description: newProject.unavailableReason, disabled: true, keepOpen: true }),
     icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      if (canManageProjects) await navigateTo("/settings/projects");
+      newProject.openNewProject();
     },
   });
 

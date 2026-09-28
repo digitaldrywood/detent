@@ -220,6 +220,7 @@ import {
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarDestinations, SidebarLandmark } from "../app/adapters/sidebarDestinations";
+import { useNewProject } from "../app/projects/NewProject";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import {
@@ -2160,10 +2161,7 @@ export default function Sidebar() {
     },
   });
   const newThreadContext = useHandleNewThread();
-  const openAddProjectCommandPalette = useCallback(
-    () => openCommandPalette({ open: "add-project" }),
-    [],
-  );
+  const newProject = useNewProject();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
@@ -4504,10 +4502,11 @@ export default function Sidebar() {
                     render={
                       <SidebarMenuButton
                         size="icon"
-                        className="relative shrink-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                        onClick={openAddProjectCommandPalette}
+                        className="relative shrink-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar aria-disabled:opacity-50"
+                        onClick={newProject.openNewProject}
                         type="button"
                         aria-label="New project"
+                        aria-disabled={newProject.canCreate ? undefined : true}
                       />
                     }
                   >
@@ -4517,7 +4516,9 @@ export default function Sidebar() {
                       aria-hidden="true"
                     />
                   </TooltipTrigger>
-                  <TooltipPopup side="right">New project</TooltipPopup>
+                  <TooltipPopup side="right">
+                    {newProject.unavailableReason ?? "New project"}
+                  </TooltipPopup>
                 </Tooltip>
               </div>
             ) : null}
@@ -4883,14 +4884,20 @@ export default function Sidebar() {
               {projects.length === 0 ? (
                 <>
                   <span>No projects yet</span>
-                  <button
-                    type="button"
-                    onClick={openAddProjectCommandPalette}
-                    className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-sidebar-border px-2.5 py-1 text-[11px] font-medium text-sidebar-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
-                  >
-                    <PlusIcon className="-mx-0.5 size-3" />
-                    Add project
-                  </button>
+                  {newProject.canCreate ? (
+                    <button
+                      type="button"
+                      onClick={newProject.openNewProject}
+                      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-sidebar-border px-2.5 py-1 text-[11px] font-medium text-sidebar-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+                    >
+                      <PlusIcon className="-mx-0.5 size-3" />
+                      New project
+                    </button>
+                  ) : (
+                    <span data-testid="sidebar-new-project-unavailable">
+                      {newProject.unavailableReason}
+                    </span>
+                  )}
                 </>
               ) : scopedProjectGroup ? (
                 `No threads in ${scopedProjectGroup.displayName} yet`

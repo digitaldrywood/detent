@@ -52,6 +52,7 @@ import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
 import { publishPaletteShell } from "./adapters/paletteContext.ts";
 import { useKeybindingActions } from "./adapters/keybindingActions.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
+import { NewProjectProvider } from "./projects/NewProject.tsx";
 import { AnchoredToastProvider, ToastProvider } from "../components/ui/toast.tsx";
 import { useComposerAttachments } from "./adapters/attachments.ts";
 import { composerBanners } from "./adapters/composerBanners.tsx";
@@ -304,15 +305,17 @@ function ShellBody(): React.ReactElement {
 
       <SidebarDataProvider value={sidebarProps}>
 
-        <CommandPalette>
-          <AppSidebarLayout>
+        <NewProjectProvider>
+          <CommandPalette>
+            <AppSidebarLayout>
 
-            <ShellShortcuts onNewChat={startNewChat} />
-            <SidebarInset className="dc-main min-h-0 overflow-hidden">
-              <Outlet />
-            </SidebarInset>
-          </AppSidebarLayout>
-        </CommandPalette>
+              <ShellShortcuts onNewChat={startNewChat} />
+              <SidebarInset className="dc-main min-h-0 overflow-hidden">
+                <Outlet />
+              </SidebarInset>
+            </AppSidebarLayout>
+          </CommandPalette>
+        </NewProjectProvider>
       </SidebarDataProvider>
     </ShellContext.Provider>
   );
