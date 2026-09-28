@@ -1,0 +1,367 @@
+{
+  "users": [
+    {
+      "subject": "user_billing",
+      "email": "billing@detent.example",
+      "kind": "staff",
+      "last_sign_in_at": "2026-09-26T12:00:00Z",
+      "organizations": [],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_staff",
+      "email": "staff@detent.example",
+      "kind": "support",
+      "last_sign_in_at": "2026-09-27T17:57:00Z",
+      "organizations": [],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_priya_nort",
+      "email": "priya@northwind.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_northwind",
+            "name": "Northwind Robotics"
+          },
+          "role": "owner",
+          "status": "active"
+        },
+        {
+          "organization": {
+            "id": "org_quillstone",
+            "name": "Quillstone"
+          },
+          "role": "viewer",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 1
+    },
+    {
+      "subject": "user_jon_nort",
+      "email": "jon@northwind.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T22:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_northwind",
+            "name": "Northwind Robotics"
+          },
+          "role": "admin",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_ava_nort",
+      "email": "ava@northwind.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T04:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_northwind",
+            "name": "Northwind Robotics"
+          },
+          "role": "member",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_li_nort",
+      "email": "li@northwind.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-25T10:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_northwind",
+            "name": "Northwind Robotics"
+          },
+          "role": "member",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_noah_nort",
+      "email": "noah@northwind.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-24T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_northwind",
+            "name": "Northwind Robotics"
+          },
+          "role": "viewer",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_marcus_harb",
+      "email": "marcus@harborlabs.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_harbor",
+            "name": "Harbor Labs"
+          },
+          "role": "owner",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 1
+    },
+    {
+      "subject": "user_zoe_harb",
+      "email": "zoe@harborlabs.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T22:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_harbor",
+            "name": "Harbor Labs"
+          },
+          "role": "admin",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_ben_harb",
+      "email": "ben@harborlabs.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T04:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_harbor",
+            "name": "Harbor Labs"
+          },
+          "role": "member",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_lena_quil",
+      "email": "lena@quillstone.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_quillstone",
+            "name": "Quillstone"
+          },
+          "role": "owner",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 1
+    },
+    {
+      "subject": "user_omar_quil",
+      "email": "omar@quillstone.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T22:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_quillstone",
+            "name": "Quillstone"
+          },
+          "role": "member",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_tom_fern",
+      "email": "tom@fernhill.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_fernhill",
+            "name": "Fernhill Analytics"
+          },
+          "role": "owner",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 1
+    },
+    {
+      "subject": "user_ruth_fern",
+      "email": "ruth@fernhill.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T22:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_fernhill",
+            "name": "Fernhill Analytics"
+          },
+          "role": "member",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_kai_brig",
+      "email": "kai@brightpath.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_brightpath",
+            "name": "Brightpath"
+          },
+          "role": "owner",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 1
+    },
+    {
+      "subject": "user_dev_kest",
+      "email": "dev@kestrel.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_kestrel",
+            "name": "Kestrel Systems"
+          },
+          "role": "owner",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_ops_kest",
+      "email": "ops@kestrel.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T22:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_kestrel",
+            "name": "Kestrel Systems"
+          },
+          "role": "admin",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_it_meri",
+      "email": "it@meridian.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T16:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_meridian",
+            "name": "Meridian Health"
+          },
+          "role": "owner",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_clara_meri",
+      "email": "clara@meridian.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T22:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_meridian",
+            "name": "Meridian Health"
+          },
+          "role": "admin",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_hugo_meri",
+      "email": "hugo@meridian.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T04:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_meridian",
+            "name": "Meridian Health"
+          },
+          "role": "member",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_mia_meri",
+      "email": "mia@meridian.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-25T10:00:00Z",
+      "organizations": [
+        {
+          "organization": {
+            "id": "org_meridian",
+            "name": "Meridian Health"
+          },
+          "role": "member",
+          "status": "active"
+        }
+      ],
+      "created_organizations": 0
+    },
+    {
+      "subject": "user_sam_oakl",
+      "email": "sam@oakline.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-26T13:00:00Z",
+      "organizations": [],
+      "created_organizations": 1
+    },
+    {
+      "subject": "user_ines_tide",
+      "email": "ines@tidewater.example",
+      "kind": "customer",
+      "last_sign_in_at": "2026-09-27T17:48:00Z",
+      "organizations": [],
+      "created_organizations": 1
+    }
+  ]
+}

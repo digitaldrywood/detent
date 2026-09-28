@@ -1,0 +1,1196 @@
+{
+  "org_northwind": {
+    "detail": {
+      "id": "org_northwind",
+      "name": "Northwind Robotics",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "provider_id": "org_01JNORTHWWK7Q",
+      "creator_email": "priya@northwind.example",
+      "created_at": "2026-08-18T18:00:00Z",
+      "updated_at": "2026-08-18T19:00:00Z",
+      "plan": "team",
+      "billing_status": "active",
+      "metadata": {
+        "members": 14,
+        "projects": 5,
+        "runners": 5,
+        "events": 58940,
+        "last_activity": "2026-09-27T17:36:00Z",
+        "database_bytes": 557842432,
+        "healthy": true
+      },
+      "can_retry": false,
+      "can_suspend": true,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [
+        {
+          "id": "mem_northwind_0",
+          "email": "priya@northwind.example",
+          "role": "owner",
+          "status": "active",
+          "last_seen_at": "2026-09-27T16:00:00Z"
+        },
+        {
+          "id": "mem_northwind_1",
+          "email": "jon@northwind.example",
+          "role": "admin",
+          "status": "active",
+          "last_seen_at": "2026-09-26T06:00:00Z"
+        },
+        {
+          "id": "mem_northwind_2",
+          "email": "ava@northwind.example",
+          "role": "member",
+          "status": "active",
+          "last_seen_at": "2026-09-25T06:00:00Z"
+        },
+        {
+          "id": "mem_northwind_3",
+          "email": "li@northwind.example",
+          "role": "member",
+          "status": "active",
+          "last_seen_at": "2026-09-24T06:00:00Z"
+        },
+        {
+          "id": "mem_northwind_4",
+          "email": "noah@northwind.example",
+          "role": "viewer",
+          "status": "active",
+          "last_seen_at": "2026-09-23T06:00:00Z"
+        }
+      ],
+      "pending_invitations": 2
+    },
+    "projects": {
+      "projects": [
+        {
+          "id": "proj_northwind_0",
+          "name": "platform",
+          "repositories": 1,
+          "runners": 5,
+          "last_activity": "2026-09-27T17:30:00Z"
+        },
+        {
+          "id": "proj_northwind_1",
+          "name": "firmware",
+          "repositories": 2,
+          "runners": 4,
+          "last_activity": "2026-09-27T10:30:00Z"
+        },
+        {
+          "id": "proj_northwind_2",
+          "name": "web",
+          "repositories": 3,
+          "runners": 3,
+          "last_activity": "2026-09-27T03:30:00Z"
+        },
+        {
+          "id": "proj_northwind_3",
+          "name": "data",
+          "repositories": 1,
+          "runners": 2,
+          "last_activity": "2026-09-26T20:30:00Z"
+        },
+        {
+          "id": "proj_northwind_4",
+          "name": "infra",
+          "repositories": 2,
+          "runners": 1,
+          "last_activity": "2026-09-26T13:30:00Z"
+        }
+      ]
+    },
+    "usage": {
+      "window_ends_at": "2026-10-06T18:00:00Z",
+      "allowances": [
+        {
+          "name": "members",
+          "limit": 25,
+          "used": 14
+        },
+        {
+          "name": "projects",
+          "limit": 10,
+          "used": 5
+        },
+        {
+          "name": "registered_runners",
+          "limit": 10,
+          "used": 5
+        },
+        {
+          "name": "connected_runners",
+          "limit": 6,
+          "used": 5
+        },
+        {
+          "name": "concurrent_work",
+          "limit": 12,
+          "used": 5
+        },
+        {
+          "name": "api_mutations",
+          "limit": 250000,
+          "used": 102500
+        }
+      ]
+    },
+    "billing": {
+      "enabled": true,
+      "mode": "test",
+      "customer_id": "cus_northwinQ2m",
+      "status": "active",
+      "paid_through": "2026-10-15T18:00:00Z",
+      "access_until": "2026-10-02T18:00:00Z",
+      "grace_until": null,
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-08-18T18:03:00Z",
+          "from": "allocating",
+          "to": "ready",
+          "step": "publish",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-08-18T18:00:36Z",
+          "from": "requested",
+          "to": "allocating",
+          "step": "admission",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-08-18T18:00:00Z",
+          "from": null,
+          "to": "requested",
+          "step": "",
+          "error_code": "",
+          "actor": "priya@northwind.example"
+        }
+      ]
+    }
+  },
+  "org_harbor": {
+    "detail": {
+      "id": "org_harbor",
+      "name": "Harbor Labs",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "provider_id": "org_01JHARBORWK7Q",
+      "creator_email": "marcus@harborlabs.example",
+      "created_at": "2026-08-27T18:00:00Z",
+      "updated_at": "2026-08-27T19:00:00Z",
+      "plan": "team",
+      "billing_status": "payment_failed",
+      "metadata": {
+        "members": 9,
+        "projects": 3,
+        "runners": 3,
+        "events": 37890,
+        "last_activity": "2026-09-27T17:36:00Z",
+        "database_bytes": 358612992,
+        "healthy": true
+      },
+      "can_retry": false,
+      "can_suspend": true,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [
+        {
+          "id": "mem_harbor_0",
+          "email": "marcus@harborlabs.example",
+          "role": "owner",
+          "status": "active",
+          "last_seen_at": "2026-09-27T16:00:00Z"
+        },
+        {
+          "id": "mem_harbor_1",
+          "email": "zoe@harborlabs.example",
+          "role": "admin",
+          "status": "active",
+          "last_seen_at": "2026-09-26T06:00:00Z"
+        },
+        {
+          "id": "mem_harbor_2",
+          "email": "ben@harborlabs.example",
+          "role": "member",
+          "status": "active",
+          "last_seen_at": "2026-09-25T06:00:00Z"
+        }
+      ],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": [
+        {
+          "id": "proj_harbor_0",
+          "name": "platform",
+          "repositories": 1,
+          "runners": 3,
+          "last_activity": "2026-09-27T17:30:00Z"
+        },
+        {
+          "id": "proj_harbor_1",
+          "name": "firmware",
+          "repositories": 2,
+          "runners": 2,
+          "last_activity": "2026-09-27T10:30:00Z"
+        },
+        {
+          "id": "proj_harbor_2",
+          "name": "web",
+          "repositories": 3,
+          "runners": 1,
+          "last_activity": "2026-09-27T03:30:00Z"
+        }
+      ]
+    },
+    "usage": {
+      "window_ends_at": "2026-10-06T18:00:00Z",
+      "allowances": [
+        {
+          "name": "members",
+          "limit": 25,
+          "used": 9
+        },
+        {
+          "name": "projects",
+          "limit": 10,
+          "used": 3
+        },
+        {
+          "name": "registered_runners",
+          "limit": 10,
+          "used": 3
+        },
+        {
+          "name": "connected_runners",
+          "limit": 6,
+          "used": 3
+        },
+        {
+          "name": "concurrent_work",
+          "limit": 12,
+          "used": 11
+        },
+        {
+          "name": "api_mutations",
+          "limit": 250000,
+          "used": 230000
+        }
+      ]
+    },
+    "billing": {
+      "enabled": true,
+      "mode": "test",
+      "customer_id": "cus_harborQ2m",
+      "status": "payment_failed",
+      "paid_through": "2026-09-25T18:00:00Z",
+      "access_until": "2026-10-02T18:00:00Z",
+      "grace_until": "2026-10-02T18:00:00Z",
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-08-27T18:03:00Z",
+          "from": "allocating",
+          "to": "ready",
+          "step": "publish",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-08-27T18:00:36Z",
+          "from": "requested",
+          "to": "allocating",
+          "step": "admission",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-08-27T18:00:00Z",
+          "from": null,
+          "to": "requested",
+          "step": "",
+          "error_code": "",
+          "actor": "marcus@harborlabs.example"
+        }
+      ]
+    }
+  },
+  "org_quillstone": {
+    "detail": {
+      "id": "org_quillstone",
+      "name": "Quillstone",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "provider_id": "org_01JQUILLSWK7Q",
+      "creator_email": "lena@quillstone.example",
+      "created_at": "2026-09-05T18:00:00Z",
+      "updated_at": "2026-09-05T19:00:00Z",
+      "plan": "pilot_free",
+      "billing_status": "free",
+      "metadata": {
+        "members": 4,
+        "projects": 1,
+        "runners": 1,
+        "events": 16840,
+        "last_activity": "2026-09-27T17:36:00Z",
+        "database_bytes": 159383552,
+        "healthy": true
+      },
+      "can_retry": false,
+      "can_suspend": true,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [
+        {
+          "id": "mem_quillstone_0",
+          "email": "lena@quillstone.example",
+          "role": "owner",
+          "status": "active",
+          "last_seen_at": "2026-09-27T16:00:00Z"
+        },
+        {
+          "id": "mem_quillstone_1",
+          "email": "omar@quillstone.example",
+          "role": "member",
+          "status": "active",
+          "last_seen_at": "2026-09-26T06:00:00Z"
+        }
+      ],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": [
+        {
+          "id": "proj_quillstone_0",
+          "name": "platform",
+          "repositories": 1,
+          "runners": 1,
+          "last_activity": "2026-09-27T17:30:00Z"
+        }
+      ]
+    },
+    "usage": {
+      "window_ends_at": "2026-10-06T18:00:00Z",
+      "allowances": [
+        {
+          "name": "members",
+          "limit": 5,
+          "used": 4
+        },
+        {
+          "name": "projects",
+          "limit": 2,
+          "used": 1
+        },
+        {
+          "name": "registered_runners",
+          "limit": 2,
+          "used": 1
+        },
+        {
+          "name": "connected_runners",
+          "limit": 1,
+          "used": 1
+        },
+        {
+          "name": "concurrent_work",
+          "limit": 2,
+          "used": 1
+        },
+        {
+          "name": "api_mutations",
+          "limit": 20000,
+          "used": 8200
+        }
+      ]
+    },
+    "billing": {
+      "enabled": false,
+      "mode": null,
+      "customer_id": null,
+      "status": "free",
+      "paid_through": null,
+      "access_until": null,
+      "grace_until": null,
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-09-05T18:03:00Z",
+          "from": "allocating",
+          "to": "ready",
+          "step": "publish",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-05T18:00:36Z",
+          "from": "requested",
+          "to": "allocating",
+          "step": "admission",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-05T18:00:00Z",
+          "from": null,
+          "to": "requested",
+          "step": "",
+          "error_code": "",
+          "actor": "lena@quillstone.example"
+        }
+      ]
+    }
+  },
+  "org_fernhill": {
+    "detail": {
+      "id": "org_fernhill",
+      "name": "Fernhill Analytics",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "provider_id": "org_01JFERNHIWK7Q",
+      "creator_email": "tom@fernhill.example",
+      "created_at": "2026-09-15T18:00:00Z",
+      "updated_at": "2026-09-15T19:00:00Z",
+      "plan": "team",
+      "billing_status": "grace",
+      "metadata": {
+        "members": 6,
+        "projects": 2,
+        "runners": 2,
+        "events": 25260,
+        "last_activity": "2026-09-27T17:36:00Z",
+        "database_bytes": 239075328,
+        "healthy": true
+      },
+      "can_retry": false,
+      "can_suspend": true,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [
+        {
+          "id": "mem_fernhill_0",
+          "email": "tom@fernhill.example",
+          "role": "owner",
+          "status": "active",
+          "last_seen_at": "2026-09-27T16:00:00Z"
+        },
+        {
+          "id": "mem_fernhill_1",
+          "email": "ruth@fernhill.example",
+          "role": "member",
+          "status": "active",
+          "last_seen_at": "2026-09-26T06:00:00Z"
+        }
+      ],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": [
+        {
+          "id": "proj_fernhill_0",
+          "name": "platform",
+          "repositories": 1,
+          "runners": 2,
+          "last_activity": "2026-09-27T17:30:00Z"
+        },
+        {
+          "id": "proj_fernhill_1",
+          "name": "firmware",
+          "repositories": 2,
+          "runners": 1,
+          "last_activity": "2026-09-27T10:30:00Z"
+        }
+      ]
+    },
+    "usage": {
+      "window_ends_at": "2026-10-06T18:00:00Z",
+      "allowances": [
+        {
+          "name": "members",
+          "limit": 25,
+          "used": 6
+        },
+        {
+          "name": "projects",
+          "limit": 10,
+          "used": 2
+        },
+        {
+          "name": "registered_runners",
+          "limit": 10,
+          "used": 2
+        },
+        {
+          "name": "connected_runners",
+          "limit": 6,
+          "used": 2
+        },
+        {
+          "name": "concurrent_work",
+          "limit": 12,
+          "used": 5
+        },
+        {
+          "name": "api_mutations",
+          "limit": 250000,
+          "used": 102500
+        }
+      ]
+    },
+    "billing": {
+      "enabled": true,
+      "mode": "test",
+      "customer_id": "cus_fernhillQ2m",
+      "status": "grace",
+      "paid_through": "2026-09-25T18:00:00Z",
+      "access_until": "2026-10-02T18:00:00Z",
+      "grace_until": "2026-10-02T18:00:00Z",
+      "pending_events": 1
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-09-15T18:03:00Z",
+          "from": "allocating",
+          "to": "ready",
+          "step": "publish",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-15T18:00:36Z",
+          "from": "requested",
+          "to": "allocating",
+          "step": "admission",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-15T18:00:00Z",
+          "from": null,
+          "to": "requested",
+          "step": "",
+          "error_code": "",
+          "actor": "tom@fernhill.example"
+        }
+      ]
+    }
+  },
+  "org_oakline": {
+    "detail": {
+      "id": "org_oakline",
+      "name": "Oakline Studio",
+      "state": "failed",
+      "step": "tenant_files",
+      "attempts": 5,
+      "error_code": "tenant_start_failed",
+      "managed": true,
+      "provider_id": "org_01JOAKLINWK7Q",
+      "creator_email": "sam@oakline.example",
+      "created_at": "2026-09-26T12:00:00Z",
+      "updated_at": "2026-09-26T13:00:00Z",
+      "plan": null,
+      "billing_status": null,
+      "metadata": null,
+      "can_retry": true,
+      "can_suspend": false,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": []
+    },
+    "usage": {
+      "window_ends_at": null,
+      "allowances": []
+    },
+    "billing": {
+      "enabled": false,
+      "mode": null,
+      "customer_id": null,
+      "status": "free",
+      "paid_through": null,
+      "access_until": null,
+      "grace_until": null,
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-09-26T13:00:00Z",
+          "from": "allocating",
+          "to": "failed",
+          "step": "tenant_files",
+          "error_code": "tenant_start_failed",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-26T12:18:00Z",
+          "from": "allocating",
+          "to": "allocating",
+          "step": "tenant_files",
+          "error_code": "tenant_start_failed",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-26T12:00:36Z",
+          "from": "requested",
+          "to": "allocating",
+          "step": "admission",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-26T12:00:00Z",
+          "from": null,
+          "to": "requested",
+          "step": "",
+          "error_code": "",
+          "actor": "sam@oakline.example"
+        }
+      ]
+    }
+  },
+  "org_tidewater": {
+    "detail": {
+      "id": "org_tidewater",
+      "name": "Tidewater Bio",
+      "state": "allocating",
+      "step": "owner_membership",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "provider_id": "",
+      "creator_email": "ines@tidewater.example",
+      "created_at": "2026-09-27T17:48:00Z",
+      "updated_at": "2026-09-27T17:54:00Z",
+      "plan": null,
+      "billing_status": null,
+      "metadata": null,
+      "can_retry": false,
+      "can_suspend": false,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": []
+    },
+    "usage": {
+      "window_ends_at": null,
+      "allowances": []
+    },
+    "billing": {
+      "enabled": false,
+      "mode": null,
+      "customer_id": null,
+      "status": "free",
+      "paid_through": null,
+      "access_until": null,
+      "grace_until": null,
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-09-27T17:54:00Z",
+          "from": "allocating",
+          "to": "allocating",
+          "step": "owner_membership",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-27T17:48:36Z",
+          "from": "requested",
+          "to": "allocating",
+          "step": "admission",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-27T17:48:00Z",
+          "from": null,
+          "to": "requested",
+          "step": "",
+          "error_code": "",
+          "actor": "ines@tidewater.example"
+        }
+      ]
+    }
+  },
+  "org_brightpath": {
+    "detail": {
+      "id": "org_brightpath",
+      "name": "Brightpath",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "provider_id": "org_01JBRIGHTWK7Q",
+      "creator_email": "kai@brightpath.example",
+      "created_at": "2026-09-25T06:00:00Z",
+      "updated_at": "2026-09-25T07:00:00Z",
+      "plan": "pilot_free",
+      "billing_status": "free",
+      "metadata": {
+        "members": 2,
+        "projects": 1,
+        "runners": 0,
+        "events": 8420,
+        "last_activity": "2026-09-27T17:36:00Z",
+        "database_bytes": 79691776,
+        "healthy": true
+      },
+      "can_retry": false,
+      "can_suspend": true,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [
+        {
+          "id": "mem_brightpath_0",
+          "email": "kai@brightpath.example",
+          "role": "owner",
+          "status": "active",
+          "last_seen_at": "2026-09-27T16:00:00Z"
+        }
+      ],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": [
+        {
+          "id": "proj_brightpath_0",
+          "name": "platform",
+          "repositories": 1,
+          "runners": 0,
+          "last_activity": "2026-09-27T17:30:00Z"
+        }
+      ]
+    },
+    "usage": {
+      "window_ends_at": "2026-10-06T18:00:00Z",
+      "allowances": [
+        {
+          "name": "members",
+          "limit": 5,
+          "used": 2
+        },
+        {
+          "name": "projects",
+          "limit": 2,
+          "used": 1
+        },
+        {
+          "name": "registered_runners",
+          "limit": 2,
+          "used": 0
+        },
+        {
+          "name": "connected_runners",
+          "limit": 1,
+          "used": 0
+        },
+        {
+          "name": "concurrent_work",
+          "limit": 2,
+          "used": 1
+        },
+        {
+          "name": "api_mutations",
+          "limit": 20000,
+          "used": 8200
+        }
+      ]
+    },
+    "billing": {
+      "enabled": false,
+      "mode": null,
+      "customer_id": null,
+      "status": "free",
+      "paid_through": null,
+      "access_until": null,
+      "grace_until": null,
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-09-25T06:03:00Z",
+          "from": "allocating",
+          "to": "ready",
+          "step": "publish",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-25T06:00:36Z",
+          "from": "requested",
+          "to": "allocating",
+          "step": "admission",
+          "error_code": "",
+          "actor": "system"
+        },
+        {
+          "at": "2026-09-25T06:00:00Z",
+          "from": null,
+          "to": "requested",
+          "step": "",
+          "error_code": "",
+          "actor": "kai@brightpath.example"
+        }
+      ]
+    }
+  },
+  "org_kestrel": {
+    "detail": {
+      "id": "org_kestrel",
+      "name": "Kestrel Systems",
+      "state": "disabled",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": false,
+      "provider_id": "org_01JKESTREWK7Q",
+      "creator_email": "",
+      "created_at": "2026-08-03T18:00:00Z",
+      "updated_at": "2026-08-03T19:00:00Z",
+      "plan": "team",
+      "billing_status": "canceling",
+      "metadata": {
+        "members": 11,
+        "projects": 4,
+        "runners": 0,
+        "events": 46310,
+        "last_activity": "2026-09-24T18:00:00Z",
+        "database_bytes": 438304768,
+        "healthy": true
+      },
+      "can_retry": false,
+      "can_suspend": false,
+      "can_reactivate": true
+    },
+    "members": {
+      "members": [
+        {
+          "id": "mem_kestrel_0",
+          "email": "dev@kestrel.example",
+          "role": "owner",
+          "status": "active",
+          "last_seen_at": "2026-09-27T16:00:00Z"
+        },
+        {
+          "id": "mem_kestrel_1",
+          "email": "ops@kestrel.example",
+          "role": "admin",
+          "status": "active",
+          "last_seen_at": "2026-09-26T06:00:00Z"
+        }
+      ],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": [
+        {
+          "id": "proj_kestrel_0",
+          "name": "platform",
+          "repositories": 1,
+          "runners": 0,
+          "last_activity": "2026-09-27T17:30:00Z"
+        },
+        {
+          "id": "proj_kestrel_1",
+          "name": "firmware",
+          "repositories": 2,
+          "runners": 0,
+          "last_activity": "2026-09-27T10:30:00Z"
+        },
+        {
+          "id": "proj_kestrel_2",
+          "name": "web",
+          "repositories": 3,
+          "runners": 0,
+          "last_activity": "2026-09-27T03:30:00Z"
+        },
+        {
+          "id": "proj_kestrel_3",
+          "name": "data",
+          "repositories": 1,
+          "runners": 0,
+          "last_activity": "2026-09-26T20:30:00Z"
+        }
+      ]
+    },
+    "usage": {
+      "window_ends_at": "2026-10-06T18:00:00Z",
+      "allowances": [
+        {
+          "name": "members",
+          "limit": 25,
+          "used": 11
+        },
+        {
+          "name": "projects",
+          "limit": 10,
+          "used": 4
+        },
+        {
+          "name": "registered_runners",
+          "limit": 10,
+          "used": 0
+        },
+        {
+          "name": "connected_runners",
+          "limit": 6,
+          "used": 0
+        },
+        {
+          "name": "concurrent_work",
+          "limit": 12,
+          "used": 5
+        },
+        {
+          "name": "api_mutations",
+          "limit": 250000,
+          "used": 102500
+        }
+      ]
+    },
+    "billing": {
+      "enabled": true,
+      "mode": "test",
+      "customer_id": "cus_kestrelQ2m",
+      "status": "canceling",
+      "paid_through": "2026-09-25T18:00:00Z",
+      "access_until": "2026-10-02T18:00:00Z",
+      "grace_until": null,
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-08-03T18:00:00Z",
+          "from": null,
+          "to": "ready",
+          "step": "",
+          "error_code": "",
+          "actor": "operator"
+        }
+      ]
+    }
+  },
+  "org_meridian": {
+    "detail": {
+      "id": "org_meridian",
+      "name": "Meridian Health",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": false,
+      "provider_id": "org_01JMERIDIWK7Q",
+      "creator_email": "",
+      "created_at": "2026-07-19T18:00:00Z",
+      "updated_at": "2026-07-19T19:00:00Z",
+      "plan": "enterprise_pilot",
+      "billing_status": "active",
+      "metadata": {
+        "members": 23,
+        "projects": 8,
+        "runners": 8,
+        "events": 96830,
+        "last_activity": "2026-09-27T17:36:00Z",
+        "database_bytes": 916455424,
+        "healthy": false
+      },
+      "can_retry": false,
+      "can_suspend": true,
+      "can_reactivate": false
+    },
+    "members": {
+      "members": [
+        {
+          "id": "mem_meridian_0",
+          "email": "it@meridian.example",
+          "role": "owner",
+          "status": "active",
+          "last_seen_at": "2026-09-27T16:00:00Z"
+        },
+        {
+          "id": "mem_meridian_1",
+          "email": "clara@meridian.example",
+          "role": "admin",
+          "status": "active",
+          "last_seen_at": "2026-09-26T06:00:00Z"
+        },
+        {
+          "id": "mem_meridian_2",
+          "email": "hugo@meridian.example",
+          "role": "member",
+          "status": "active",
+          "last_seen_at": "2026-09-25T06:00:00Z"
+        },
+        {
+          "id": "mem_meridian_3",
+          "email": "mia@meridian.example",
+          "role": "member",
+          "status": "active",
+          "last_seen_at": "2026-09-24T06:00:00Z"
+        }
+      ],
+      "pending_invitations": 0
+    },
+    "projects": {
+      "projects": [
+        {
+          "id": "proj_meridian_0",
+          "name": "platform",
+          "repositories": 1,
+          "runners": 8,
+          "last_activity": "2026-09-27T17:30:00Z"
+        },
+        {
+          "id": "proj_meridian_1",
+          "name": "firmware",
+          "repositories": 2,
+          "runners": 7,
+          "last_activity": "2026-09-27T10:30:00Z"
+        },
+        {
+          "id": "proj_meridian_2",
+          "name": "web",
+          "repositories": 3,
+          "runners": 6,
+          "last_activity": "2026-09-27T03:30:00Z"
+        },
+        {
+          "id": "proj_meridian_3",
+          "name": "data",
+          "repositories": 1,
+          "runners": 5,
+          "last_activity": "2026-09-26T20:30:00Z"
+        },
+        {
+          "id": "proj_meridian_4",
+          "name": "infra",
+          "repositories": 2,
+          "runners": 4,
+          "last_activity": "2026-09-26T13:30:00Z"
+        },
+        {
+          "id": "proj_meridian_5",
+          "name": "mobile",
+          "repositories": 3,
+          "runners": 3,
+          "last_activity": "2026-09-26T06:30:00Z"
+        },
+        {
+          "id": "proj_meridian_6",
+          "name": "ml",
+          "repositories": 1,
+          "runners": 2,
+          "last_activity": "2026-09-25T23:30:00Z"
+        },
+        {
+          "id": "proj_meridian_7",
+          "name": "docs",
+          "repositories": 2,
+          "runners": 1,
+          "last_activity": "2026-09-25T16:30:00Z"
+        }
+      ]
+    },
+    "usage": {
+      "window_ends_at": "2026-10-06T18:00:00Z",
+      "allowances": [
+        {
+          "name": "members",
+          "limit": 100,
+          "used": 23
+        },
+        {
+          "name": "projects",
+          "limit": 50,
+          "used": 8
+        },
+        {
+          "name": "registered_runners",
+          "limit": 40,
+          "used": 8
+        },
+        {
+          "name": "connected_runners",
+          "limit": 20,
+          "used": 8
+        },
+        {
+          "name": "concurrent_work",
+          "limit": 40,
+          "used": 16
+        },
+        {
+          "name": "api_mutations",
+          "limit": 2000000,
+          "used": 820000
+        }
+      ]
+    },
+    "billing": {
+      "enabled": true,
+      "mode": "test",
+      "customer_id": "cus_meridianQ2m",
+      "status": "active",
+      "paid_through": "2026-10-15T18:00:00Z",
+      "access_until": "2026-10-02T18:00:00Z",
+      "grace_until": null,
+      "pending_events": 0
+    },
+    "provisioning": {
+      "events": [
+        {
+          "at": "2026-07-19T18:00:00Z",
+          "from": null,
+          "to": "ready",
+          "step": "",
+          "error_code": "",
+          "actor": "operator"
+        }
+      ]
+    }
+  }
+}

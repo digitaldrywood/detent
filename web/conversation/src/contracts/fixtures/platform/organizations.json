@@ -1,0 +1,196 @@
+{
+  "email": "staff@detent.example",
+  "csrf": "csrf_platform_mock",
+  "can_support": true,
+  "can_grant": true,
+  "unavailable": [],
+  "organizations": [
+    {
+      "id": "org_northwind",
+      "name": "Northwind Robotics",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "creator_email": "priya@northwind.example",
+      "created_at": "2026-08-18T18:00:00Z",
+      "updated_at": "2026-08-18T19:00:00Z",
+      "billing": {
+        "available": true,
+        "status": "active"
+      },
+      "can_support": true,
+      "plan": "team",
+      "grants": 0,
+      "member_count": 14,
+      "runner_count": 5
+    },
+    {
+      "id": "org_harbor",
+      "name": "Harbor Labs",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "creator_email": "marcus@harborlabs.example",
+      "created_at": "2026-08-27T18:00:00Z",
+      "updated_at": "2026-08-27T19:00:00Z",
+      "billing": {
+        "available": true,
+        "status": "payment_failed"
+      },
+      "can_support": true,
+      "plan": "team",
+      "grants": 1,
+      "member_count": 9,
+      "runner_count": 3
+    },
+    {
+      "id": "org_quillstone",
+      "name": "Quillstone",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "creator_email": "lena@quillstone.example",
+      "created_at": "2026-09-05T18:00:00Z",
+      "updated_at": "2026-09-05T19:00:00Z",
+      "billing": {
+        "available": true,
+        "status": "free"
+      },
+      "can_support": true,
+      "plan": "pilot_free",
+      "grants": 1,
+      "member_count": 4,
+      "runner_count": 1
+    },
+    {
+      "id": "org_fernhill",
+      "name": "Fernhill Analytics",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "creator_email": "tom@fernhill.example",
+      "created_at": "2026-09-15T18:00:00Z",
+      "updated_at": "2026-09-15T19:00:00Z",
+      "billing": {
+        "available": true,
+        "status": "grace"
+      },
+      "can_support": true,
+      "plan": "team",
+      "grants": 0,
+      "member_count": 6,
+      "runner_count": 2
+    },
+    {
+      "id": "org_oakline",
+      "name": "Oakline Studio",
+      "state": "failed",
+      "step": "tenant_files",
+      "attempts": 5,
+      "error_code": "tenant_start_failed",
+      "managed": true,
+      "creator_email": "sam@oakline.example",
+      "created_at": "2026-09-26T12:00:00Z",
+      "updated_at": "2026-09-26T13:00:00Z",
+      "billing": {
+        "available": false
+      },
+      "can_support": false,
+      "plan": null,
+      "grants": null,
+      "member_count": null,
+      "runner_count": null
+    },
+    {
+      "id": "org_tidewater",
+      "name": "Tidewater Bio",
+      "state": "allocating",
+      "step": "owner_membership",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "creator_email": "ines@tidewater.example",
+      "created_at": "2026-09-27T17:48:00Z",
+      "updated_at": "2026-09-27T17:54:00Z",
+      "billing": {
+        "available": false
+      },
+      "can_support": false,
+      "plan": null,
+      "grants": null,
+      "member_count": null,
+      "runner_count": null
+    },
+    {
+      "id": "org_brightpath",
+      "name": "Brightpath",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": true,
+      "creator_email": "kai@brightpath.example",
+      "created_at": "2026-09-25T06:00:00Z",
+      "updated_at": "2026-09-25T07:00:00Z",
+      "billing": {
+        "available": true,
+        "status": "free"
+      },
+      "can_support": true,
+      "plan": "pilot_free",
+      "grants": 0,
+      "member_count": 2,
+      "runner_count": 0
+    },
+    {
+      "id": "org_kestrel",
+      "name": "Kestrel Systems",
+      "state": "disabled",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": false,
+      "creator_email": "",
+      "created_at": "2026-08-03T18:00:00Z",
+      "updated_at": "2026-08-03T19:00:00Z",
+      "billing": {
+        "available": true,
+        "status": "canceling"
+      },
+      "can_support": false,
+      "plan": "team",
+      "grants": 0,
+      "member_count": 11,
+      "runner_count": 0
+    },
+    {
+      "id": "org_meridian",
+      "name": "Meridian Health",
+      "state": "ready",
+      "step": "publish",
+      "attempts": 0,
+      "error_code": "",
+      "managed": false,
+      "creator_email": "",
+      "created_at": "2026-07-19T18:00:00Z",
+      "updated_at": "2026-07-19T19:00:00Z",
+      "billing": {
+        "available": true,
+        "status": "active"
+      },
+      "can_support": true,
+      "plan": "enterprise_pilot",
+      "grants": 0,
+      "member_count": 23,
+      "runner_count": 8
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 
+import { createPlatformMock, type PlatformRole, type PlatformScenario } from "./mock-platform.ts";
 import { createWorkMock } from "./mock-work.ts";
 import type {
   Conversation,
@@ -3034,6 +3035,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     return true;
   }
 
+  const platform = createPlatformMock({
+    scenario: process.env.MOCK_PLATFORM_SCENARIO as PlatformScenario | undefined,
+    role: process.env.MOCK_PLATFORM_ROLE as PlatformRole | undefined,
+  });
+
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://mock.local");
@@ -3051,6 +3057,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         new RegExp(`^${API_BASE}/projects/[^/]+/work-items$`).test(path) &&
         (await handleAccountRoute(request, response, url, method))
       ) {
+        return;
+      }
+
+      // The platform console's endpoints and its `/__mock/platform` switch.
+      if (await platform.handle({ response, url, method, readBody: () => readBody(request) })) {
         return;
       }
 

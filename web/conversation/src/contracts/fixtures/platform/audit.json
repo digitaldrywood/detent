@@ -1,0 +1,110 @@
+{
+  "next_cursor": "cur_older",
+  "entries": [
+    {
+      "id": "aud_12",
+      "at": "2026-09-27T17:57:00Z",
+      "actor": "staff@detent.example",
+      "actor_kind": "staff",
+      "event": "platform_opened",
+      "organization": null,
+      "detail": "Opened the platform console."
+    },
+    {
+      "id": "aud_11",
+      "at": "2026-09-27T17:54:00Z",
+      "actor": "system",
+      "actor_kind": "system",
+      "event": "tenant_restarted",
+      "organization": {
+        "id": "org_meridian",
+        "name": "Meridian Health"
+      },
+      "detail": "Launcher restarted the Hub after a failed health check."
+    },
+    {
+      "id": "aud_10",
+      "at": "2026-09-27T16:30:00Z",
+      "actor": "staff@detent.example",
+      "actor_kind": "support",
+      "event": "support_started:troubleshooting",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "detail": "Signed in as priya@northwind.example for one hour."
+    },
+    {
+      "id": "aud_9",
+      "at": "2026-09-27T16:24:00Z",
+      "actor": "staff@detent.example",
+      "actor_kind": "staff",
+      "event": "support_requested:troubleshooting",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "detail": "Reason: troubleshooting."
+    },
+    {
+      "id": "aud_8",
+      "at": "2026-09-27T11:00:00Z",
+      "actor": "system",
+      "actor_kind": "system",
+      "event": "billing_event_quarantined",
+      "organization": {
+        "id": "org_fernhill",
+        "name": "Fernhill Analytics"
+      },
+      "detail": "evt_1Q9aa02 failed delivery 20 times."
+    },
+    {
+      "id": "aud_7",
+      "at": "2026-09-24T18:00:00Z",
+      "actor": "staff@detent.example",
+      "actor_kind": "staff",
+      "event": "organization_suspended",
+      "organization": {
+        "id": "org_kestrel",
+        "name": "Kestrel Systems"
+      },
+      "detail": "Reason: customer requested a pause during their contract renewal."
+    },
+    {
+      "id": "aud_6",
+      "at": "2026-09-12T18:00:00Z",
+      "actor": "billing@detent.example",
+      "actor_kind": "staff",
+      "event": "platform_entitlement_change_requested",
+      "organization": {
+        "id": "org_quillstone",
+        "name": "Quillstone"
+      },
+      "detail": "Granted team v2. Reason: Nonprofit education program."
+    },
+    {
+      "id": "aud_5",
+      "at": "2026-09-11T18:00:00Z",
+      "actor": "lena@quillstone.example",
+      "actor_kind": "member",
+      "event": "member_invited",
+      "organization": {
+        "id": "org_quillstone",
+        "name": "Quillstone"
+      },
+      "detail": "Invited omar@quillstone.example as member."
+    },
+    {
+      "id": "aud_4",
+      "at": "2026-09-07T18:00:00Z",
+      "actor": "staff@detent.example",
+      "actor_kind": "staff",
+      "event": "platform_entitlement_change_requested",
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "detail": "Granted enterprise_pilot v1. Reason: Design partner: artifact relay trial."
+    }
+  ]
+}

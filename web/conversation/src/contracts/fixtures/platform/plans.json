@@ -1,0 +1,93 @@
+{
+  "plans": [
+    {
+      "id": "pilot_free",
+      "version": 1,
+      "features": [
+        "collaboration"
+      ],
+      "allowances": {
+        "members": 5,
+        "projects": 2,
+        "registered_runners": 2,
+        "connected_runners": 1,
+        "concurrent_work": 2,
+        "api_mutations": 20000
+      },
+      "default": true,
+      "organizations": 2
+    },
+    {
+      "id": "team",
+      "version": 2,
+      "features": [
+        "collaboration",
+        "native_execution",
+        "github_integration"
+      ],
+      "allowances": {
+        "members": 25,
+        "projects": 10,
+        "registered_runners": 10,
+        "connected_runners": 6,
+        "concurrent_work": 12,
+        "api_mutations": 250000
+      },
+      "default": false,
+      "organizations": 4
+    },
+    {
+      "id": "enterprise_pilot",
+      "version": 1,
+      "features": [
+        "collaboration",
+        "native_execution",
+        "github_integration",
+        "hosted_artifacts"
+      ],
+      "allowances": {
+        "members": 100,
+        "projects": 50,
+        "registered_runners": 40,
+        "connected_runners": 20,
+        "concurrent_work": 40,
+        "api_mutations": 2000000
+      },
+      "default": false,
+      "organizations": 1
+    }
+  ],
+  "grant_count": 2,
+  "grants": [
+    {
+      "id": "comp_harbor_launch",
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "plan": {
+        "id": "enterprise_pilot",
+        "version": 1
+      },
+      "starts_at": "2026-09-07T18:00:00Z",
+      "expires_at": "2026-10-07T18:00:00Z",
+      "reason": "Design partner: artifact relay trial",
+      "granted_by": "staff@detent.example"
+    },
+    {
+      "id": "comp_quill_edu",
+      "organization": {
+        "id": "org_quillstone",
+        "name": "Quillstone"
+      },
+      "plan": {
+        "id": "team",
+        "version": 2
+      },
+      "starts_at": "2026-09-12T18:00:00Z",
+      "expires_at": null,
+      "reason": "Nonprofit education program",
+      "granted_by": "billing@detent.example"
+    }
+  ]
+}

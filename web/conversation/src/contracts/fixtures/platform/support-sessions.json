@@ -1,0 +1,46 @@
+{
+  "sessions": [
+    {
+      "id": "sup_3",
+      "actor": "staff@detent.example",
+      "organization": {
+        "id": "org_northwind",
+        "name": "Northwind Robotics"
+      },
+      "effective_email": "priya@northwind.example",
+      "reason": "troubleshooting",
+      "state": "active",
+      "started_at": "2026-09-27T16:30:00Z",
+      "expires_at": "2026-09-27T18:30:00Z",
+      "ended_at": null
+    },
+    {
+      "id": "sup_2",
+      "actor": "staff@detent.example",
+      "organization": {
+        "id": "org_harbor",
+        "name": "Harbor Labs"
+      },
+      "effective_email": "marcus@harborlabs.example",
+      "reason": "customer-request",
+      "state": "ended",
+      "started_at": "2026-09-26T16:00:00Z",
+      "expires_at": "2026-09-26T17:00:00Z",
+      "ended_at": "2026-09-26T16:24:00Z"
+    },
+    {
+      "id": "sup_1",
+      "actor": "staff@detent.example",
+      "organization": {
+        "id": "org_quillstone",
+        "name": "Quillstone"
+      },
+      "effective_email": "lena@quillstone.example",
+      "reason": "account-recovery",
+      "state": "expired",
+      "started_at": "2026-09-21T18:00:00Z",
+      "expires_at": "2026-09-21T19:00:00Z",
+      "ended_at": null
+    }
+  ]
+}

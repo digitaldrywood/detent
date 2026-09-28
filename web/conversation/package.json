@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:mock": "concurrently -k -n mock,vite \"tsx dev/mock-hub.ts\" \"vite\"",
+    "dev:mock": "concurrently -k -n mock,vite \"tsx dev/mock-hub.ts\" \"VITE_PLATFORM_PREVIEW=1 vite\"",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

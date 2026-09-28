@@ -1,0 +1,21 @@
+{
+  "registry": {
+    "ok": true
+  },
+  "tenants": {
+    "expected": 6,
+    "running": 5
+  },
+  "admission": {
+    "tenants": 8,
+    "max_tenants": 40,
+    "allocating": 1,
+    "max_concurrent": 2,
+    "disk_measured": true,
+    "free_disk_bytes": 65498251264,
+    "min_free_disk_bytes": 21474836480,
+    "memory_measured": true,
+    "available_memory_bytes": 10200547328,
+    "min_available_memory_bytes": 4294967296
+  }
+}
