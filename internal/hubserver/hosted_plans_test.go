@@ -686,3 +686,46 @@ func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		plans *HostedPlansConfig
+		zero  bool
+	}{
+		{name: "absent", zero: true},
+		{name: "empty mapping", plans: &HostedPlansConfig{}, zero: true},
+		{name: "empty plan list", plans: &HostedPlansConfig{Plans: []HostedPlan{}}, zero: true},
+		{name: "windows only", plans: &HostedPlansConfig{WindowSeconds: 3600}},
+		{name: "base only", plans: &HostedPlansConfig{Base: PlanReference{ID: "pilot_free", Version: 1}}},
+		{name: "default catalog", plans: func() *HostedPlansConfig { c := pilotHostedPlans(); return &c }()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.plans.IsZero(); got != test.zero {
+				t.Fatalf("IsZero() = %v, want %v", got, test.zero)
+			}
+			f := newHostedSecurityFixture(t)
+			cfg := *f.service.config.Hosted
+			cfg.Billing = nil
+			cfg.Plans = test.plans
+			err := ValidateHostedConfig(&cfg)
+			if test.zero {
+				if err != nil || cfg.Plans != nil {
+					t.Fatalf("ValidateHostedConfig() = %v, plans = %+v; want default catalog", err, cfg.Plans)
+				}
+				return
+			}
+			if test.name == "default catalog" {
+				if err != nil {
+					t.Fatalf("ValidateHostedConfig() = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("partial entitlements accepted")
+			}
+		})
+	}
+}

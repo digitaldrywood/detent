@@ -74,6 +74,10 @@ func pilotHostedPlans() HostedPlansConfig {
 	}
 }
 
+func (c *HostedPlansConfig) IsZero() bool {
+	return c == nil || len(c.Plans) == 0 && c.Base == PlanReference{} && c.WindowSeconds == 0 && c.RetentionWindows == 0 && c.ConnectedSeconds == 0 && c.InvitationSeconds == 0
+}
+
 func (c HostedPlansConfig) validate() error {
 	if c.InvitationSeconds < 60 || c.InvitationSeconds > 7*86400 || len(c.Plans) == 0 || len(c.Plans) > 100 || c.WindowSeconds < 60 || c.WindowSeconds > 86400 || c.WindowSeconds%60 != 0 || c.RetentionWindows*c.WindowSeconds > 30*86400 || c.RetentionWindows < 1 || c.RetentionWindows > 720 || c.ConnectedSeconds < 30 || c.ConnectedSeconds > 3600 {
 		return errors.New("hosted pilot plan configuration is invalid")
@@ -106,7 +110,7 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 		return nil
 	}
 	config := pilotHostedPlans()
-	if cfg.Plans != nil {
+	if !cfg.Plans.IsZero() {
 		config = *cfg.Plans
 	} else {
 		if cfg.PlanID != "" {

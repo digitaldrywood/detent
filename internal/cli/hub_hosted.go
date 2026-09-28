@@ -107,50 +107,58 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 			resultErr = errors.Join(resultErr, errors.New("hosted configuration could not be closed"))
 		}
 	}()
-	decoder := yaml.NewDecoder(io.LimitReader(file, 128*1024))
+	result, err = parseHostedConfig(file, lookupEnv)
+	if err != nil {
+		return nil, false, err
+	}
+	return result, true, nil
+}
+
+func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubserver.HostedConfig, error) {
+	decoder := yaml.NewDecoder(io.LimitReader(reader, 128*1024))
 	decoder.KnownFields(true)
 	var config hostedFileConfig
 	if err := decoder.Decode(&config); err != nil {
-		return nil, false, errors.New("hosted configuration is invalid")
+		return nil, errors.New("hosted configuration is invalid")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, false, errors.New("hosted configuration must contain one document")
+		return nil, errors.New("hosted configuration must contain one document")
 	}
 	if config.WorkOS.APIKeyEnv == "" {
 		config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
 	}
 	if !validEnvName(config.WorkOS.APIKeyEnv) {
-		return nil, false, errors.New("hosted API key environment variable name is invalid")
+		return nil, errors.New("hosted API key environment variable name is invalid")
 	}
 	provider, err := auth.NewHostedProvider(auth.IdentityProviderWorkOS, auth.WorkOSConfig{
 		APIURL: config.WorkOS.APIURL, IssuerURL: config.WorkOS.IssuerURL, ClientID: config.WorkOS.ClientID,
 		APIKey: lookupEnv(config.WorkOS.APIKeyEnv), RedirectURL: config.PublicURL + "/auth/oidc/callback",
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	var entitlementToken []byte
 	if config.EntitlementAdminTokenEnv != "" {
 		if !validEnvName(config.EntitlementAdminTokenEnv) {
-			return nil, false, errors.New("entitlement token environment name is invalid")
+			return nil, errors.New("entitlement token environment name is invalid")
 		}
 		entitlementToken = []byte(lookupEnv(config.EntitlementAdminTokenEnv))
 		if len(entitlementToken) < 32 {
-			return nil, false, errors.New("entitlement administration token is unavailable or too short")
+			return nil, errors.New("entitlement administration token is unavailable or too short")
 		}
 	}
 	var sharedEntry *hubserver.HostedSharedEntry
 	if config.SharedEntry != nil {
 		if sharedEntry, err = readHostedSharedEntry(config.SharedEntry); err != nil {
-			return nil, false, err
+			return nil, err
 		}
 	}
 	var billingConfig *hubserver.HostedBillingConfig
 	if config.Billing != nil {
 		billingConfig, err = readHostedBillingConfig(config.Billing, lookupEnv)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 	}
 	return &hubserver.HostedConfig{
@@ -161,5 +169,5 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 		BootstrapSubject: config.BootstrapSubject, PublicURL: config.PublicURL,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, SharedEntry: sharedEntry, Provider: provider,
 		PlanID: config.PlanID, StorageQuotaBytes: config.StorageQuotaBytes, EventQuota: config.EventQuota,
-	}, true, nil
+	}, nil
 }

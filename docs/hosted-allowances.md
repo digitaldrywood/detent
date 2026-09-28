@@ -48,7 +48,8 @@ entitlements:
         history_records: 20000
 ```
 
-Omitting the entire section selects exactly this catalog and these pilot settings:
+Omitting the entire section, or leaving it empty (`entitlements: {}`), selects
+exactly this catalog and these pilot settings:
 every organization starts on `pilot_free`, and `comp_team` exists only to be
 granted as complimentary access. `comp_team` doubles the `pilot_free` allowances
 and adds `hosted_artifacts`; its artifact allowances stay zero until an operator

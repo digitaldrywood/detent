@@ -107,9 +107,14 @@ tenant usage (#2308), not guesses. `allowed_domains`/`allowed_emails` bound a pi
 empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
 plan every new organization starts on, and no Stripe customer or card is created.
-Left empty, tenants use the default catalog: `pilot_free` as the base and
-`comp_team` for complimentary grants. An explicit catalog replaces both, so include
-a plan to grant alongside the base.
+Left empty (`entitlements: {}`, an empty block, or no key at all), tenants use the
+default catalog: `pilot_free` as the base and `comp_team` for complimentary grants.
+An explicit catalog replaces both, so include a plan to grant alongside the base.
+Any key set inside the section makes it an explicit catalog that must be complete
+(`base`, `plans` and the window settings). `detent cloud serve` generates the tenant
+configuration for a synthetic organization at startup and runs the same validation
+a tenant Hub runs, so an incomplete catalog or inconsistent tenant billing stops the
+entry with an error instead of leaving every tenant unable to start.
 `entitlement_administrator` and `entitlement_admin_token_env` are optional; when set,
 each tenant accepts complimentary grants on `POST /api/v2/organizations/ORG/entitlements`
 with that token (at least 32 bytes, read from the entry's environment and passed to

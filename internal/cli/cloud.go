@@ -114,6 +114,30 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 	}
 }
 
+func validateTenantConfiguration(config cloudFileConfig, key ed25519.PrivateKey, lookupEnv func(string) string) error {
+	spec := cloudentry.TenantSpec{
+		Organization: cloudentry.Organization{ID: "org_startup_validation", ProviderID: "org_startup_validation", Generation: 1},
+		PublicURL:    config.PublicURL, Issuer: config.Assertion.Issuer, PublicKey: cloudassert.PublicKeyOf(key),
+	}
+	raw, err := tenantConfiguration(config)(spec)
+	if err != nil {
+		return fmt.Errorf("allocated tenant configuration cannot be generated: %w", err)
+	}
+	environment := make(map[string]string)
+	for _, entry := range tenantEnvironment(config, lookupEnv) {
+		name, value, _ := strings.Cut(entry, "=")
+		environment[name] = value
+	}
+	tenant, err := parseHostedConfig(bytes.NewReader(raw), func(name string) string { return environment[name] })
+	if err == nil {
+		err = hubserver.ValidateHostedConfig(tenant)
+	}
+	if err != nil {
+		return fmt.Errorf("allocated tenant configuration is invalid; every tenant Hub would refuse to start: %w", err)
+	}
+	return nil
+}
+
 func entitlementActorValid(value string) bool {
 	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
@@ -225,6 +249,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		if err := validateEntitlementAdministration(config, lookupEnv); err != nil {
 			return cloudentry.Config{}, err
 		}
+		if allocation.Entitlements.IsZero() {
+			allocation.Entitlements = nil
+		}
 		result.Allocation = &cloudentry.AllocationConfig{
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
 			MaxPerIdentity: allocation.MaxPerIdentity, RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
@@ -241,6 +268,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			if _, err := readHostedBillingConfig(tenantBilling, lookupEnv); err != nil {
 				return cloudentry.Config{}, err
 			}
+		}
+		if err := validateTenantConfiguration(config, key, lookupEnv); err != nil {
+			return cloudentry.Config{}, err
 		}
 	}
 	if billingConfig := config.Billing; billingConfig != nil {
