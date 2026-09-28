@@ -6,16 +6,28 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
 func TestVerifyPrivateSocket(t *testing.T) {
 	t.Parallel()
-	private, err := os.MkdirTemp("", "entry")
+	absolute, err := os.MkdirTemp("", "entry")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(private) })
+	t.Cleanup(func() { _ = os.RemoveAll(absolute) })
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := filepath.Rel(working, absolute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filepath.Join(private, "public", "t.sock")) >= len(syscall.RawSockaddrUnix{}.Path) {
+		t.Skip("worker-owned socket path exceeds the platform Unix socket limit")
+	}
 	if err := os.Chmod(private, 0o700); err != nil {
 		t.Fatal(err)
 	}

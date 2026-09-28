@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -29,6 +30,9 @@ func TestRunServesPrivateUnixSocket(t *testing.T) {
 	t.Parallel()
 	directory := privateSocketDirectory(t)
 	socket := filepath.Join(directory, "t.sock")
+	if len(socket) >= len(syscall.RawSockaddrUnix{}.Path) {
+		t.Skip("worker-owned absolute socket path exceeds the platform Unix socket limit")
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
@@ -69,7 +73,18 @@ func TestRunServesPrivateUnixSocket(t *testing.T) {
 
 func TestPrepareUnixListener(t *testing.T) {
 	t.Parallel()
-	private := privateSocketDirectory(t)
+	absolute := privateSocketDirectory(t)
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := filepath.Rel(working, absolute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filepath.Join(private, "public", "live.sock")) >= len(syscall.RawSockaddrUnix{}.Path) {
+		t.Skip("worker-owned socket path exceeds the platform Unix socket limit")
+	}
 	public := filepath.Join(private, "public")
 	if err := os.Mkdir(public, 0o755); err != nil {
 		t.Fatal(err)

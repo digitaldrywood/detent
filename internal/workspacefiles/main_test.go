@@ -1,4 +1,4 @@
-package workspacerunner_test
+package workspacefiles_test
 
 import (
 	"os"
