@@ -780,3 +780,33 @@ func indentYAML(body string) string {
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
+
+func TestHostedPlansConfigRejectsAliasCycles(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, document string
+		wantErr        bool
+	}{
+		{name: "self-referential section", document: "entitlements: &e {base: *e}\n", wantErr: true},
+		{name: "cycle through a plan", document: "entitlements:\n  plans:\n    - &p {id: free, version: 1, features: [*p]}\n", wantErr: true},
+		{name: "one anchor used twice", document: "free: &free {id: free, version: 1}\nentitlements:\n  base: *free\n  plans:\n    - {<<: *free}\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var document struct {
+				Free         PlanReference     `yaml:"free"`
+				Entitlements HostedPlansConfig `yaml:"entitlements"`
+			}
+			done := make(chan error, 1)
+			go func() { done <- yaml.Unmarshal([]byte(test.document), &document) }()
+			select {
+			case err := <-done:
+				if (err != nil) != test.wantErr {
+					t.Fatalf("Unmarshal() error = %v, want error %t", err, test.wantErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("decoding did not finish")
+			}
+		})
+	}
+}

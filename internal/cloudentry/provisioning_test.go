@@ -8,12 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -24,14 +27,16 @@ import (
 )
 
 type processLauncher struct {
-	billing  func() *hubserver.HostedBillingConfig
-	plans    *hubserver.HostedPlansConfig
-	provider *fakeProvider
-	key      ed25519.PrivateKey
-	mu       sync.Mutex
-	running  map[string]func()
-	failures map[string]error
-	starts   int
+	billing    func() *hubserver.HostedBillingConfig
+	plans      *hubserver.HostedPlansConfig
+	provider   *fakeProvider
+	key        ed25519.PrivateKey
+	mu         sync.Mutex
+	running    map[string]func()
+	failures   map[string]error
+	transports map[string]*http.Transport
+	useUnix    bool
+	starts     int
 }
 
 func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
@@ -44,10 +49,8 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
 	config := hubserver.Config{
-		DatabasePath: filepath.Join(spec.Directory, "hub.db"), ListenAddress: "unix:" + spec.Socket, GitHubDisabled: true,
+		DatabasePath: filepath.Join(spec.Directory, "hub.db"), GitHubDisabled: true,
 		InitialAdminToken: []byte(testAdminKey), Logger: slog.New(slog.DiscardHandler),
 		Hosted: &hubserver.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
@@ -61,20 +64,54 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	id := spec.Organization.ID
 	delete(l.failures, id)
-	go func() {
-		defer close(done)
-		if err := hubserver.Run(ctx, config); err != nil && ctx.Err() == nil {
-			l.mu.Lock()
-			if l.failures == nil {
-				l.failures = map[string]error{}
+	if l.useUnix {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		config.ListenAddress = "unix:" + spec.Socket
+		go func() {
+			defer close(done)
+			if err := hubserver.Run(ctx, config); err != nil && ctx.Err() == nil {
+				l.mu.Lock()
+				if l.failures == nil {
+					l.failures = map[string]error{}
+				}
+				l.failures[id] = err
+				l.mu.Unlock()
 			}
-			l.failures[id] = err
-			l.mu.Unlock()
-		}
-	}()
+		}()
+		l.starts++
+		l.running[id] = func() { cancel(); <-done }
+		return nil
+	}
+	service, err := hubserver.Open(context.Background(), config)
+	if err != nil {
+		return err
+	}
+	server := httptest.NewServer(service.Handler())
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "tcp", server.Listener.Addr().String())
+	}}
 	l.starts++
-	l.running[id] = func() { cancel(); <-done }
+	l.transports[id] = transport
+	//nolint:contextcheck // The fixture server and service expose context-free close methods.
+	l.running[id] = func() {
+		transport.CloseIdleConnections()
+		server.CloseClientConnections()
+		server.Close()
+		_ = service.Close()
+	}
 	return nil
+}
+
+func (l *processLauncher) transport(organization Organization) (http.RoundTripper, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	transport := l.transports[organization.ID]
+	if transport == nil {
+		return nil, errors.New("tenant fixture is not running")
+	}
+	return transport, nil
 }
 
 func (l *processLauncher) Failure(id string) error {
@@ -87,6 +124,7 @@ func (l *processLauncher) Stop(id string) error {
 	l.mu.Lock()
 	stop, ok := l.running[id]
 	delete(l.running, id)
+	delete(l.transports, id)
 	l.mu.Unlock()
 	if ok {
 		stop()
@@ -129,6 +167,11 @@ func shortTempDir(t *testing.T) string {
 	return directory
 }
 
+func socketFixtureFits(root string) bool {
+	path := filepath.Join(root, "s", "org_"+strings.Repeat("f", 20)+".sock")
+	return len(path) < len(syscall.RawSockaddrUnix{}.Path)
+}
+
 func newProvisioningFixture(t *testing.T, maxTenants int, mutate func(*AllocationConfig)) *provisioningFixture {
 	return newProvisioningFixtureWith(t, maxTenants, mutate, nil)
 }
@@ -142,7 +185,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	for _, user := range []string{"dana", "eve", "fay"} {
 		f.provider.users["user_"+user] = user + "@example.test"
 	}
-	f.launcher = &processLauncher{provider: f.provider, key: f.key, running: map[string]func(){}}
+	f.launcher = &processLauncher{provider: f.provider, key: f.key, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
 	if configure != nil {
 		configure(f)
 	}
@@ -156,8 +199,12 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 	if mutate != nil {
 		mutate(allocation)
 	}
-	service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, now: f.now})
+	config := Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
+		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, now: f.now}
+	if !f.launcher.useUnix {
+		config.transport = f.launcher.transport
+	}
+	service, err := Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -190,6 +190,23 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
+Validator PR-diff provenance failures are production failures, not code findings (#3066).
+The validator uses a repository/PR/base/head snapshot whose file list and patch
+agree, records its digest and identity with the verdict, and reuses only a
+matching persisted verdict. Missing or mismatched evidence stays in the
+existing validator retry path and cannot publish a blocking severity finding.
+GitHub diff fetches retain the client's retryability: permanent failures use
+the existing instance-owned validator infrastructure path, while transient
+fetches and changing PR evidence remain retryable. Persisted retry deadlines
+also survive a restart when `max_attempts` is one and the stored attempt count
+is zero.
+`TestPullRequestValidationDiffConcurrentPRs`,
+`TestValidationDiffRejectsOtherPRFiles`, and
+`TestValidatorVerdictRejectsDifferentPRProvenance`,
+`TestPullRequestValidationDiffPreservesFetchFailureClassification`,
+`TestValidatorDiffFetchFailureUsesInstancePath`, and
+`TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt` cover this boundary.
+
 `TestAttemptAllowanceCountsIssueJourney` excludes successful reports whose stored
 blocker evidence includes an instance owner from the issue session allowance.
 Other ownership, absent evidence, and malformed metadata do not grant that exclusion.

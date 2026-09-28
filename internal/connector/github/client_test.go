@@ -2884,6 +2884,7 @@ func (c staticHTTPClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 func jsonResponse(req *http.Request, status int, body string, headers http.Header) *http.Response {
+	headers = headers.Clone()
 	if headers == nil {
 		headers = http.Header{}
 	}

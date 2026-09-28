@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -57,12 +58,14 @@ func pilotPlans() *hubserver.HostedPlansConfig {
 }
 
 type pilotTenantLauncher struct {
-	provider *fakeProvider
-	billing  billing.Provider
-	mu       sync.Mutex
-	running  map[string]func()
-	specs    map[string]TenantSpec
-	starts   int
+	provider   *fakeProvider
+	billing    billing.Provider
+	mu         sync.Mutex
+	running    map[string]func()
+	transports map[string]*http.Transport
+	useUnix    bool
+	specs      map[string]TenantSpec
+	starts     int
 }
 
 func pilotAdminToken(organization string) string {
@@ -79,10 +82,8 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
 	config := hubserver.Config{
-		DatabasePath: filepath.Join(spec.Directory, "hub.db"), ListenAddress: "unix:" + spec.Socket, GitHubDisabled: true,
+		DatabasePath: filepath.Join(spec.Directory, "hub.db"), GitHubDisabled: true,
 		InitialAdminToken: []byte(pilotAdminToken(spec.Organization.ID)), Logger: slog.New(slog.DiscardHandler),
 		Hosted: &hubserver.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
@@ -97,20 +98,56 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 		config.Hosted.Billing = &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", CustomerID: "cus_fixture_" + spec.Organization.ID, PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_e2e_secret_value"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: l.billing,
 			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_fixture_plus", Label: "Pilot plus", Plan: plans.Plans[len(plans.Plans)-1].PlanReference}}}
 	}
-	go func() {
-		defer close(done)
-		_ = hubserver.Run(ctx, config)
-	}()
+	if l.useUnix {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		config.ListenAddress = "unix:" + spec.Socket
+		go func() {
+			defer close(done)
+			_ = hubserver.Run(ctx, config)
+		}()
+		l.starts++
+		l.specs[spec.Organization.ID] = spec
+		l.running[spec.Organization.ID] = func() { cancel(); <-done }
+		return nil
+	}
+	service, err := hubserver.Open(context.Background(), config)
+	if err != nil {
+		return err
+	}
+	server := httptest.NewServer(service.Handler())
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "tcp", server.Listener.Addr().String())
+	}}
 	l.starts++
 	l.specs[spec.Organization.ID] = spec
-	l.running[spec.Organization.ID] = func() { cancel(); <-done }
+	l.transports[spec.Organization.ID] = transport
+	//nolint:contextcheck // The fixture server and service expose context-free close methods.
+	l.running[spec.Organization.ID] = func() {
+		transport.CloseIdleConnections()
+		server.CloseClientConnections()
+		server.Close()
+		_ = service.Close()
+	}
 	return nil
+}
+
+func (l *pilotTenantLauncher) transport(organization Organization) (http.RoundTripper, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	transport := l.transports[organization.ID]
+	if transport == nil {
+		return nil, fmt.Errorf("tenant fixture %s is not running", organization.ID)
+	}
+	return transport, nil
 }
 
 func (l *pilotTenantLauncher) Stop(id string) error {
 	l.mu.Lock()
 	stop, ok := l.running[id]
 	delete(l.running, id)
+	delete(l.transports, id)
 	l.mu.Unlock()
 	if ok {
 		stop()
@@ -166,7 +203,7 @@ func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client f
 	for _, user := range []string{"dana", "eve", "fay", "gus"} {
 		p.provider.users["user_"+user] = user + "@example.test"
 	}
-	p.launcher = &pilotTenantLauncher{provider: p.provider, billing: billingProvider, running: map[string]func(){}, specs: map[string]TenantSpec{}}
+	p.launcher = &pilotTenantLauncher{provider: p.provider, billing: billingProvider, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root), specs: map[string]TenantSpec{}}
 	p.server = httptest.NewUnstartedServer(p.handler)
 	p.base = "http://" + p.server.Listener.Addr().String()
 	p.open(t, maxTenants, retryLimit)
@@ -178,8 +215,12 @@ func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client f
 func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	t.Helper()
 	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, MaxPerIdentity: 1, RetryLimit: retryLimit, Launcher: p.launcher, EntitlementAdminToken: []byte(pilotOperatorToken)}
-	service, err := Open(t.Context(), Config{PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
-		StaffEmails: []string{"staff@example.test", "ops@example.test"}, EntitlementAdministrators: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: p.client, Allocation: allocation})
+	config := Config{PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
+		StaffEmails: []string{"staff@example.test", "ops@example.test"}, EntitlementAdministrators: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: p.client, Allocation: allocation}
+	if !p.launcher.useUnix {
+		config.transport = p.launcher.transport
+	}
+	service, err := Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}

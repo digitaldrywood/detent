@@ -718,6 +718,7 @@ const (
 
 type ValidatorRequest struct {
 	Issue            connector.Issue
+	Diff             *connector.ValidationDiff
 	StartedAt        time.Time
 	SelectorContext  selector.Context
 	OnUsageUpdate    UsageUpdateHandler
