@@ -908,21 +908,22 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function initialAccountState(): AccountState {
+function initialAccountState(organization: OrganizationMode = "seeded"): AccountState {
+  const empty = organization === "empty";
   return {
     organizations: clone(MOCK_ORGANIZATIONS),
-    projects: clone(SEED_PROJECTS),
+    projects: empty ? [] : clone(SEED_PROJECTS),
     members: clone(SEED_MEMBERS),
     invitations: clone(SEED_INVITATIONS),
     support: null,
     spend: true,
     usage: true,
-    integrations: new Map(Object.entries(clone(SEED_INTEGRATIONS))),
-    policies: new Map([["proj_alpha", clone(SEED_POLICY)]]),
-    progress: new Map(Object.entries(clone(SEED_PROGRESS))),
+    integrations: new Map(empty ? [] : Object.entries(clone(SEED_INTEGRATIONS))),
+    policies: new Map(empty ? [] : [["proj_alpha", clone(SEED_POLICY)]]),
+    progress: new Map(empty ? [] : Object.entries(clone(SEED_PROGRESS))),
     artifactServices: new Map(),
-    runners: clone(SEED_RUNNERS),
-    enrolled: new Set(SEED_RUNNERS.map((entry) => entry.runner.runner_id)),
+    runners: empty ? [] : clone(SEED_RUNNERS),
+    enrolled: new Set(empty ? [] : SEED_RUNNERS.map((entry) => entry.runner.runner_id)),
     workItems: 0,
     mutations: new Map(),
   };
@@ -1030,6 +1031,9 @@ export type CoordinatorMode = "hub" | "runner" | "none";
  */
 export type AccountMode = "write" | "read_only";
 
+/** `empty` is a new owner's organization: no projects, runners or issues yet. */
+export type OrganizationMode = "seeded" | "empty";
+
 export interface MockHubOptions {
   readonly port?: number;
   /** Delay between streamed deltas. Tests set 0. */
@@ -1039,6 +1043,8 @@ export interface MockHubOptions {
   readonly coordinator?: CoordinatorMode;
   /** Default `write`, or `MOCK_ACCOUNT` when it names a mode. */
   readonly account?: AccountMode;
+  /** Default `seeded`, or `MOCK_ORGANIZATION` when it names a mode. */
+  readonly organization?: OrganizationMode;
 }
 
 /** The enrollment request body, as `POST /runner-enrollments` received it. */
@@ -1087,6 +1093,10 @@ function readCoordinatorMode(value: string | undefined | null): CoordinatorMode 
 
 function readAccountMode(value: string | undefined | null): AccountMode | null {
   return value === "write" || value === "read_only" ? value : null;
+}
+
+function readOrganizationMode(value: string | undefined | null): OrganizationMode | null {
+  return value === "seeded" || value === "empty" ? value : null;
 }
 
 export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
@@ -2099,7 +2109,9 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   // decline every path they do not own so the conversation routes below still
   // see `${API_BASE}/projects/:project/conversations/...`.
 
-  let account = initialAccountState();
+  const organizationMode: OrganizationMode =
+    options.organization ?? readOrganizationMode(process.env.MOCK_ORGANIZATION) ?? "seeded";
+  let account = initialAccountState(organizationMode);
   // Kept outside `account` on purpose: it is test cover for what was sent, not
   // hub state, so `POST /__mock/reset` leaves it alone.
   let lastEnrollment: MockEnrollmentRequest | null = null;
@@ -2578,6 +2590,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       // rather than drawing a zero that looks like a measurement.
       json(response, 200, {
         ...clone(SEED_FLEET),
+        ...(organizationMode === "empty" ? { runners: [] } : {}),
         spend: account.spend ? clone(SEED_FLEET.spend) : null,
       });
       return true;
@@ -3227,7 +3240,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             injected.revokeAccess = false;
             injected.serverErrorOnce = false;
             injected.uploadFailsOnce = false;
-            account = initialAccountState();
+            account = initialAccountState(organizationMode);
             break;
           default:
             json(response, 404, { code: "not_found", message: "Unknown control endpoint." });
@@ -3629,7 +3642,8 @@ if (isEntryPoint) {
   const port = Number(process.env.MOCK_HUB_PORT ?? "4100");
   const mode = readCoordinatorMode(process.env.MOCK_COORDINATOR) ?? "hub";
   const account = readAccountMode(process.env.MOCK_ACCOUNT) ?? "write";
-  void startMockHub({ port, coordinator: mode, account }).then((hub) => {
+  const organization = readOrganizationMode(process.env.MOCK_ORGANIZATION) ?? "seeded";
+  void startMockHub({ port, coordinator: mode, account, organization }).then((hub) => {
     process.stdout.write(
       `Mock conversation hub listening on ${hub.url} (coordinator: ${mode}, account: ${account})\n`,
     );
