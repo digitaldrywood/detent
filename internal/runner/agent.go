@@ -663,14 +663,16 @@ func (r *Runner) prepareMergeFastPath(
 	req RunRequest,
 	info workspace.Info,
 	issue workspace.Issue,
+	validationCommand string,
 ) (RunResult, workspace.MergePrepareResult, bool, error) {
 	preparer, ok := r.workspace.(workspace.MergePreparer)
 	if !ok {
 		return RunResult{}, workspace.MergePrepareResult{}, false, nil
 	}
-	opts := workspace.MergePrepareOptions{}
+	opts := workspace.MergePrepareOptions{ValidationCommand: validationCommand}
 	if req.Issue.PullRequest != nil {
 		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
+		opts.ExpectedRemoteHead = strings.TrimSpace(req.Issue.PullRequest.HeadSHA)
 	}
 	precheck, err := preparer.PrepareMerge(ctx, info, issue, opts)
 	if err != nil {
@@ -753,7 +755,7 @@ func (r *Runner) verifyMergeFallback(
 		if ctx.Err() != nil {
 			return result, fmt.Errorf("verify merge fallback: %w", errors.Join(ctx.Err(), err))
 		}
-		if !errors.Is(err, workspace.ErrMergeResolutionInvalid) && !errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
+		if !errors.Is(err, workspace.ErrMergeResolutionInvalid) || errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
 			return result, fmt.Errorf("verify merge fallback: %w", err)
 		}
 		result.Output = RunOutputMergeFallbackRework
@@ -1501,7 +1503,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if req.MergePrecheck != nil {
 			mergePrecheck = *req.MergePrecheck
 		} else {
-			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue)
+			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue, gate.Effective(workflow.Config.Gate).Run)
 			if err != nil {
 				operation := "git fetch"
 				if strings.Contains(strings.ToLower(err.Error()), "git push") {

@@ -3957,7 +3957,7 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 			Identifier: "digitaldrywood/detent#860",
 			BranchName: "detent/digitaldrywood_detent_860",
 			PullRequest: &connector.PullRequest{
-				BaseRef: " dev ",
+				BaseRef: " dev ", HeadSHA: "pr-head",
 			},
 		},
 		Mode: RunModeMerge,
@@ -3976,6 +3976,9 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	}
 	if workspaceBackend.prepareOptions.TargetBranch != "dev" {
 		t.Fatalf("PrepareMerge() TargetBranch = %q, want dev", workspaceBackend.prepareOptions.TargetBranch)
+	}
+	if workspaceBackend.prepareOptions.ExpectedRemoteHead != "pr-head" || workspaceBackend.prepareOptions.ValidationCommand != "make check" {
+		t.Fatalf("PrepareMerge() verification options = %#v, want PR head and configured gate", workspaceBackend.prepareOptions)
 	}
 	if !workspaceBackend.afterRun {
 		t.Fatal("AfterRun() was not called")
@@ -4319,7 +4322,9 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 		name             string
 		agentOutput      string
 		verification     workspace.MergePrepareResult
+		verificationErr  error
 		wantOutput       string
+		wantError        string
 		wantPrepareCalls int
 		wantHeadPushed   bool
 	}{
@@ -4336,6 +4341,22 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
 			verification:     workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean},
 			wantOutput:       RunOutputMergeFallbackRework,
+			wantPrepareCalls: 2,
+		},
+		{
+			name:             "gate failure fails resolved attempt",
+			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
+			verificationErr:  errors.New("merge resolution gate failed: exit status 1"),
+			wantOutput:       RunOutputMergeFallbackResolved,
+			wantError:        "merge resolution gate failed",
+			wantPrepareCalls: 2,
+		},
+		{
+			name:             "push failure fails resolved attempt",
+			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
+			verificationErr:  errors.New("push validated merge resolution: rejected"),
+			wantOutput:       RunOutputMergeFallbackResolved,
+			wantError:        "push validated merge resolution",
 			wantPrepareCalls: 2,
 		},
 		{
@@ -4376,6 +4397,14 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 					tt.verification,
 				},
 			}
+			if tt.verificationErr != nil {
+				workspaceBackend.prepareFunc = func(_ context.Context, call int) (workspace.MergePrepareResult, error) {
+					if call == 0 {
+						return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict}, nil
+					}
+					return workspace.MergePrepareResult{}, tt.verificationErr
+				}
+			}
 			agentBackend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: tt.agentOutput}}}
 			runner, err := NewRunner(Dependencies{
 				Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 20 * 60 * 1000}}},
@@ -4398,7 +4427,11 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 				},
 				Mode: RunModeMerge,
 			})
-			if err != nil {
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) || result.FinalState != FinalStateFailed {
+					t.Fatalf("Run() = %#v, %v; want failed attempt containing %q", result, err, tt.wantError)
+				}
+			} else if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
 			if result.Output != tt.wantOutput {
