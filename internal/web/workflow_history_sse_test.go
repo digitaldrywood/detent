@@ -49,7 +49,14 @@ func TestWorkflowHistoryUnchangedSSETickSkipsQueries(t *testing.T) {
 	}
 	addr := startWebServer(t, server)
 	conn, reader := openRawEventStream(t, addr)
-	first := telemetry.Snapshot{Seq: 1, GeneratedAt: now, BoardIssues: []telemetry.Issue{{ID: "issue-1", Title: "Idle card", CurrentLaneAgeSeconds: 100}}}
+	first := telemetry.Snapshot{
+		Seq:         1,
+		GeneratedAt: now,
+		BoardIssues: []telemetry.Issue{{ID: "issue-1", Title: "Idle card", CurrentLaneAgeSeconds: 100}},
+		Tokens:      telemetry.Tokens{Input: 100, Output: 20, Total: 120},
+		TokenTrend:  []telemetry.TokenTrendPoint{{At: now, Input: 100, Output: 20, Total: 120}},
+		Throughput:  telemetry.TokenThroughput{WindowSeconds: 60},
+	}
 	if err := deps.Hub.Publish(first); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +71,9 @@ func TestWorkflowHistoryUnchangedSSETickSkipsQueries(t *testing.T) {
 	second.GeneratedAt = now.Add(time.Second)
 	second.BoardIssues = append([]telemetry.Issue(nil), first.BoardIssues...)
 	second.BoardIssues[0].CurrentLaneAgeSeconds++
+	second.TokenTrend = append(append([]telemetry.TokenTrendPoint(nil), first.TokenTrend...), telemetry.TokenTrendPoint{
+		At: second.GeneratedAt, Input: 100, Output: 20, Total: 120,
+	})
 	if err := deps.Hub.Publish(second); err != nil {
 		t.Fatal(err)
 	}

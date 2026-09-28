@@ -286,7 +286,15 @@ func (s *sseStream) skipUnchangedSnapshot(snapshot telemetry.Snapshot) bool {
 }
 
 func sameSnapshotForSSE(left, right telemetry.Snapshot) bool {
-	return reflect.DeepEqual(snapshotWithoutTickFields(left), snapshotWithoutTickFields(right))
+	left = snapshotWithoutTickFields(left)
+	right = snapshotWithoutTickFields(right)
+	if reflect.DeepEqual(left.Tokens, right.Tokens) {
+		// The publisher appends a timestamped sample on every tick after any
+		// token use, and its rolling throughput can change while idle.
+		left.TokenTrend, right.TokenTrend = nil, nil
+		left.Throughput, right.Throughput = telemetry.TokenThroughput{}, telemetry.TokenThroughput{}
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func snapshotWithoutTickFields(snapshot telemetry.Snapshot) telemetry.Snapshot {

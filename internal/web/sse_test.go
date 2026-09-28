@@ -360,6 +360,50 @@ func TestSameSnapshotForSSEInitializingRefresh(t *testing.T) {
 	}
 }
 
+func TestSameSnapshotForSSERollingTokenTrend(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	first := telemetry.Snapshot{
+		Seq:         1,
+		GeneratedAt: now,
+		Tokens:      telemetry.Tokens{Input: 100, Output: 20, Total: 120},
+		Throughput:  telemetry.TokenThroughput{WindowSeconds: 60, Tokens: 20, TokensPerSecond: 1},
+	}
+	for i := range 60 {
+		first.TokenTrend = append(first.TokenTrend, telemetry.TokenTrendPoint{
+			At: now.Add(time.Duration(i-59) * time.Second), Input: 100, Output: 20, Total: 120,
+		})
+	}
+	for _, tt := range []struct {
+		name   string
+		mutate func(*telemetry.Snapshot)
+		want   bool
+	}{
+		{name: "idle sample rolls window and throughput decays", mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.TokenTrend = append(append([]telemetry.TokenTrendPoint(nil), first.TokenTrend[1:]...), telemetry.TokenTrendPoint{
+				At: now.Add(time.Second), Input: 100, Output: 20, Total: 120,
+			})
+			snapshot.Throughput = telemetry.TokenThroughput{WindowSeconds: 60}
+		}, want: true},
+		{name: "new token use", mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.Tokens.Total++
+		}},
+		{name: "real card change", mutate: func(snapshot *telemetry.Snapshot) {
+			snapshot.BoardIssues = []telemetry.Issue{{ID: "new"}}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			second := first
+			second.Seq = 2
+			second.GeneratedAt = now.Add(time.Second)
+			tt.mutate(&second)
+			if got := sameSnapshotForSSE(first, second); got != tt.want {
+				t.Fatalf("sameSnapshotForSSE() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSSEStreamSkipsUnchangedFragments(t *testing.T) {
 	t.Parallel()
 
