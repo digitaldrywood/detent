@@ -155,7 +155,6 @@ type provisioningFixture struct {
 	key      ed25519.PrivateKey
 	timeout  time.Duration
 	now      func() time.Time
-	now      func() time.Time
 }
 
 func shortTempDir(t *testing.T) string {
