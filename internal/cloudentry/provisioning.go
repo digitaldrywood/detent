@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,9 +51,34 @@ var provisioningSteps = []string{"admission", "provider_organization", "owner_me
 
 var errCapacity = errors.New("no capacity")
 
-type terminalError struct{ code string }
+type terminalError struct{ code, detail string }
 
 func (e terminalError) Error() string { return e.code }
+
+func (e terminalError) Detail() string { return e.detail }
+
+type detailedError struct {
+	detail string
+	cause  error
+}
+
+func (e detailedError) Error() string { return e.detail }
+
+func (e detailedError) Unwrap() error { return e.cause }
+
+func (e detailedError) Detail() string { return e.detail }
+
+func failureDetail(cause error) string {
+	var detailed interface{ Detail() string }
+	if !errors.As(cause, &detailed) {
+		return ""
+	}
+	detail := detailed.Detail()
+	if len(detail) > 300 {
+		detail = detail[:300]
+	}
+	return detail
+}
 
 func nextStep(completed string) string {
 	for i, step := range provisioningSteps {
@@ -171,7 +197,7 @@ func (s *Service) provision(ctx context.Context, organization Organization) {
 		if step == "publish" {
 			organization.State = "ready"
 		}
-		if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = '', error_code = '', updated_at = ? WHERE id = ?",
+		if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ?",
 			organization.State, organization.ProviderID, step, formatTime(s.config.now()), organization.ID); err != nil {
 			return
 		}
@@ -190,9 +216,10 @@ func (s *Service) recordFailure(ctx context.Context, organization Organization, 
 	case attempts >= s.config.Allocation.RetryLimit:
 		state, code, next = "failed", step+"_failed", ""
 	}
-	s.config.Logger.Warn("organization provisioning step failed", "organization", organization.ID, "step", step, "attempt", attempts)
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = ?, error_code = ?, updated_at = ? WHERE id = ?",
-		state, attempts, next, code, formatTime(s.config.now()), organization.ID); err != nil {
+	detail := failureDetail(cause)
+	s.config.Logger.Warn("organization provisioning step failed", "organization", organization.ID, "step", step, "attempt", attempts, "retry_limit", s.config.Allocation.RetryLimit, "state", state, "detail", detail)
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = ?, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?",
+		state, attempts, next, code, detail, formatTime(s.config.now()), organization.ID); err != nil {
 		s.config.Logger.Warn("organization provisioning state could not be recorded", "organization", organization.ID)
 	}
 }
@@ -255,8 +282,12 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 			if err == nil && status == http.StatusNoContent {
 				return nil
 			}
+			if failure := allocation.Launcher.Failure(organization.ID); failure != nil {
+				return errors.Join(terminalError{code: "tenant_start_failed", detail: failure.Error()}, allocation.Launcher.Stop(organization.ID))
+			}
 			if time.Now().After(deadline) {
-				return errors.Join(errors.New("tenant did not become healthy"), err, allocation.Launcher.Stop(organization.ID))
+				detail := fmt.Sprintf("the tenant Hub did not become healthy within %s", s.config.tenantStartTimeout)
+				return errors.Join(detailedError{detail: detail, cause: err}, allocation.Launcher.Stop(organization.ID))
 			}
 			select {
 			case <-ctx.Done():
@@ -451,13 +482,26 @@ func provisioningRetryable(organization Organization) bool {
 	return organization.State == "failed" && (organization.ErrorCode == "capacity" || strings.HasSuffix(organization.ErrorCode, "_failed"))
 }
 
-func provisioningStatus(organization Organization) templates.HostedProvisioning {
+func (s *Service) retryLimit() int {
+	if s.config.Allocation == nil {
+		return 0
+	}
+	return s.config.Allocation.RetryLimit
+}
+
+func provisioningStatus(organization Organization, retryLimit int) templates.HostedProvisioning {
 	status := templates.HostedProvisioning{ID: organization.ID, Name: organization.Name, State: organization.State, Step: organization.Step, CanResume: provisioningRetryable(organization)}
+	reason := ""
+	if organization.ErrorDetail != "" {
+		reason = ": " + organization.ErrorDetail
+	}
 	switch {
 	case organization.ErrorCode == "capacity":
 		status.Error = "The service is at capacity. Your request is saved; resume it later without creating another organization."
 	case organization.State == "failed":
-		status.Error = "Setup stopped (" + organization.ErrorCode + "). Your request and any completed steps are kept."
+		status.Error = "Setup stopped (" + organization.ErrorCode + ")" + reason + ". Your request and any completed steps are kept."
+	case organization.Attempts > 0 && reason != "":
+		status.Error = fmt.Sprintf("Attempt %d of %d failed%s. Retrying automatically.", organization.Attempts, retryLimit, reason)
 	}
 	return status
 }
@@ -473,7 +517,7 @@ func (s *Service) provisioningPage(c echo.Context) error {
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
 	}
-	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "provisioning", Title: "Setting up " + organization.Name, Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), Provisioning: provisioningStatus(organization)})
+	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "provisioning", Title: "Setting up " + organization.Name, Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), Provisioning: provisioningStatus(organization, s.retryLimit())})
 }
 
 func (s *Service) provisioningJSON(c echo.Context) error {
@@ -481,7 +525,7 @@ func (s *Service) provisioningJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
-	status := provisioningStatus(organization)
+	status := provisioningStatus(organization, s.retryLimit())
 	result := map[string]any{"id": status.ID, "name": status.Name, "state": status.State, "step": status.Step, "error": status.Error, "can_resume": status.CanResume}
 	if organization.State == "ready" {
 		result["next"] = s.organizationHome(organization.ID)
@@ -504,7 +548,7 @@ func (s *Service) resumeProvisioning(c echo.Context) error {
 	if organization.Step == "" {
 		state = "requested"
 	}
-	if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
 		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Setup could not be resumed")
 	}
 	s.wakeAllocator()

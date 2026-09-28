@@ -105,7 +105,7 @@ func TestWorkOSAuthorizationAndExchange(t *testing.T) {
 		{name: "support-wrong-session-actor", noPKCE: true, wantErr: true}, {name: "support-wrong-session-reason", noPKCE: true, wantErr: true},
 		{name: "support-expired-hour", noPKCE: true, wantErr: true},
 		{name: "session-revoked", wantErr: true}, {name: "session-ended", wantErr: true}, {name: "session-expired", wantErr: true},
-		{name: "session-wrong-user", wantErr: true}, {name: "session-wrong-org", wantErr: true},
+		{name: "session-wrong-user", wantErr: true}, {name: "session-listed-other-org"},
 		{name: "session-missing", wantErr: true}, {name: "session-page-cycle", wantErr: true},
 		{name: "http-error", wantErr: true}, {name: "malformed", wantErr: true}, {name: "oversized", wantErr: true}, {name: "trailing-json", wantErr: true},
 	}
@@ -165,7 +165,7 @@ func TestWorkOSCurrentSessionRevocation(t *testing.T) {
 		{name: "session-extended"},
 		{name: "session-shortened"},
 		{name: "session-revoked", wantErr: true},
-		{name: "session-wrong-org", wantErr: true},
+		{name: "session-listed-other-org"},
 		{name: "session-wrong-user", wantErr: true},
 		{name: "session-ended", wantErr: true},
 		{name: "session-missing", wantErr: true},
@@ -204,6 +204,70 @@ func TestWorkOSCurrentSessionRevocation(t *testing.T) {
 			f.mode.Store(mode)
 			if _, err := provider.CurrentSession(t.Context(), *support.Hosted); !errors.Is(err, auth.ErrHostedIdentity) {
 				t.Fatalf("CurrentSession() error = %v, want support mismatch rejection", err)
+			}
+		})
+	}
+}
+
+func TestWorkOSOrganizationScopedReauthenticationReusesSession(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		mode    string
+		verify  string
+		noPKCE  bool
+		wantErr bool
+	}{
+		{name: "same session keeps original empty organization", mode: "valid", verify: "valid"},
+		{name: "same session listed with another organization", mode: "valid", verify: "session-listed-other-org"},
+		{name: "session of another user", mode: "session-wrong-user", verify: "session-wrong-user", wantErr: true},
+		{name: "revoked session", mode: "session-revoked", verify: "session-revoked", wantErr: true},
+		{name: "ended session", mode: "session-ended", verify: "session-ended", wantErr: true},
+		{name: "expired session", mode: "session-expired", verify: "session-expired", wantErr: true},
+		{name: "support session", mode: "support", verify: "support", noPKCE: true},
+		{name: "support wrong session actor", mode: "support-wrong-session-actor", verify: "support-wrong-session-actor", noPKCE: true, wantErr: true},
+		{name: "support wrong session reason", mode: "support-wrong-session-reason", verify: "support-wrong-session-reason", noPKCE: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkOSFixture(t)
+			provider := f.provider(t)
+			f.mode.Store("unscoped")
+			first, err := provider.Exchange(t.Context(), "first-sign-in", "verifier", "")
+			if err != nil {
+				t.Fatalf("unscoped Exchange() error = %v", err)
+			}
+			if first.Hosted.OrganizationID != "" || first.Hosted.SessionID != "session_customer" {
+				t.Fatalf("unscoped identity = %#v", first.Hosted)
+			}
+			verifier := "verifier"
+			if tt.noPKCE {
+				verifier = ""
+			}
+			f.mode.Store(tt.mode)
+			scoped, err := provider.Exchange(t.Context(), "organization-sign-in", verifier, "")
+			if tt.wantErr {
+				if !errors.Is(err, auth.ErrHostedIdentity) {
+					t.Fatalf("scoped Exchange() error = %v, want rejection", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("scoped Exchange() error = %v", err)
+			}
+			if scoped.Hosted.OrganizationID != "org_customer" || scoped.Hosted.SessionID != first.Hosted.SessionID {
+				t.Fatalf("scoped identity = %#v", scoped.Hosted)
+			}
+			f.mode.Store(tt.verify)
+			if _, err := provider.CurrentSession(t.Context(), *scoped.Hosted); err != nil {
+				t.Fatalf("CurrentSession() after organization switch error = %v", err)
+			}
+			if tt.noPKCE {
+				return
+			}
+			if _, err := provider.CurrentSession(t.Context(), *first.Hosted); err != nil {
+				t.Fatalf("CurrentSession() for original identity error = %v", err)
 			}
 		})
 	}
@@ -579,17 +643,18 @@ func TestWorkOSInvalidArgumentsAndRedirects(t *testing.T) {
 }
 
 type workosFixture struct {
-	t        *testing.T
-	server   *httptest.Server
-	key      *rsa.PrivateKey
-	wrongKey *rsa.PrivateKey
-	now      time.Time
-	mode     atomic.Value
-	redirect atomic.Value
-	issuer   atomic.Value
-	accepted atomic.Int64
-	mu       sync.Mutex
-	codes    map[string]bool
+	t          *testing.T
+	server     *httptest.Server
+	key        *rsa.PrivateKey
+	wrongKey   *rsa.PrivateKey
+	now        time.Time
+	mode       atomic.Value
+	redirect   atomic.Value
+	issuer     atomic.Value
+	accepted   atomic.Int64
+	mu         sync.Mutex
+	codes      map[string]bool
+	sessionOrg *string
 }
 
 func newWorkOSFixture(t *testing.T) *workosFixture {
@@ -805,10 +870,16 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		claims["act"] = map[string]string{"sub": "other@example.com", "email": "support@example.com"}
 	case "support-unknown-reason":
 		response["impersonator"] = map[string]string{"email": "support@example.com", "reason": "customer content"}
-	case "support-no-org":
+	case "support-no-org", "unscoped":
 		delete(claims, "org_id")
 		delete(response, "organization_id")
 	}
+	f.mu.Lock()
+	if f.sessionOrg == nil {
+		organization, _ := claims["org_id"].(string)
+		f.sessionOrg = &organization
+	}
+	f.mu.Unlock()
 	if mode != "missing-token" {
 		response["access_token"] = signTestJWT(f.t, key, claims)
 	}
@@ -817,7 +888,7 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 
 func (f *workosFixture) sessions(w http.ResponseWriter, r *http.Request, mode string) {
 	session := map[string]any{
-		"id": "session_customer", "user_id": "user_customer", "organization_id": "org_customer", "status": "active",
+		"id": "session_customer", "user_id": "user_customer", "organization_id": f.originalSessionOrganization(), "status": "active",
 		"created_at": f.now.Add(-10 * time.Minute), "expires_at": f.now.Add(50 * time.Minute), "ended_at": nil,
 	}
 	if strings.HasPrefix(mode, "support") {
@@ -833,7 +904,7 @@ func (f *workosFixture) sessions(w http.ResponseWriter, r *http.Request, mode st
 		session["expires_at"] = f.now.Add(-time.Minute)
 	case "session-wrong-user":
 		session["user_id"] = "user_other"
-	case "session-wrong-org":
+	case "session-listed-other-org":
 		session["organization_id"] = "org_other"
 	case "session-created-changed":
 		session["created_at"] = f.now.Add(-time.Minute)
@@ -859,6 +930,15 @@ func (f *workosFixture) sessions(w http.ResponseWriter, r *http.Request, mode st
 		}
 	}
 	f.writeJSON(w, map[string]any{"data": data, "list_metadata": map[string]string{"after": after}})
+}
+
+func (f *workosFixture) originalSessionOrganization() any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sessionOrg == nil || *f.sessionOrg == "" {
+		return nil
+	}
+	return *f.sessionOrg
 }
 
 func (f *workosFixture) memberships(w http.ResponseWriter, r *http.Request, mode string) {

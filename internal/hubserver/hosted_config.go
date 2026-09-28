@@ -35,9 +35,16 @@ type HostedConfig struct {
 	EventQuota               int64
 }
 
+func ValidateHostedConfig(c *HostedConfig) error {
+	return c.validate()
+}
+
 func (c *HostedConfig) validate() error {
 	if c == nil {
 		return nil
+	}
+	if c.Plans.IsZero() {
+		c.Plans = nil
 	}
 	if len(c.EntitlementAdminToken) > 0 && (len(c.EntitlementAdminToken) < 32 || !hostedSafeID(c.EntitlementAdministrator)) || len(c.EntitlementAdminToken) == 0 && c.EntitlementAdministrator != "" {
 		return errors.New("entitlement administration requires an actor ID and a separate token of at least 32 bytes")

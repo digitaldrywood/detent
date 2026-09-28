@@ -468,3 +468,48 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 		})
 	}
 }
+
+func TestStaffSessionsReverifyEveryRead(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, email string
+		staff       bool
+		wantExtra   int
+	}{
+		{name: "staff re-verify every read", email: "support@example.test", staff: true, wantExtra: 3},
+		{name: "customers reuse the recent check", email: "dana@example.test", wantExtra: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			seed := make([]byte, ed25519.SeedSize)
+			provider := newFakeProvider()
+			provider.users["user_reader"] = test.email
+			staff := []string{"other-staff@example.test"}
+			if test.staff {
+				staff = append(staff, test.email)
+			}
+			service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
+				StaffEmails: staff, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
+				transport: func(Organization) (http.RoundTripper, error) { return &fanOutTransport{}, nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = service.Close() })
+			reader := newBrowser(t, service.Handler())
+			reader.login("/auth/oidc/start", "user_reader:")
+			reader.get("/api/cloud/session")
+			provider.mu.Lock()
+			before := provider.verifications
+			provider.mu.Unlock()
+			for range 3 {
+				reader.get("/api/cloud/session")
+			}
+			provider.mu.Lock()
+			extra := provider.verifications - before
+			provider.mu.Unlock()
+			if extra != test.wantExtra {
+				t.Fatalf("provider verifications for 3 reads = %d, want %d", extra, test.wantExtra)
+			}
+		})
+	}
+}

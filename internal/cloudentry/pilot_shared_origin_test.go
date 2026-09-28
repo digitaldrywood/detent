@@ -118,6 +118,8 @@ func (l *pilotTenantLauncher) Stop(id string) error {
 	return nil
 }
 
+func (*pilotTenantLauncher) Failure(string) error { return nil }
+
 func (l *pilotTenantLauncher) Close() error {
 	l.mu.Lock()
 	ids := make([]string, 0, len(l.running))

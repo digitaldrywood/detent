@@ -27,17 +27,41 @@ type Launcher interface {
 	Start(context.Context, TenantSpec) error
 	Stop(string) error
 	Close() error
+	Failure(string) error
+}
+
+type TenantExitError struct {
+	Exits int
+	Cause error
+}
+
+func (e *TenantExitError) Error() string {
+	cause := "the process could not run"
+	if exit := (*exec.ExitError)(nil); errors.As(e.Cause, &exit) {
+		cause = exit.String()
+	} else if e.Cause == nil {
+		cause = "exited cleanly"
+	}
+	times := "once"
+	if e.Exits != 1 {
+		times = fmt.Sprintf("%d times in a row", e.Exits)
+	}
+	return fmt.Sprintf("the tenant Hub exited %s without staying up (last: %s)", times, cause)
 }
 
 type ExecLauncher struct {
-	Binary      string
-	Environment []string
-	Configure   func(TenantSpec) ([]byte, error)
-	Logger      *slog.Logger
+	Binary       string
+	Environment  []string
+	Configure    func(TenantSpec) ([]byte, error)
+	Logger       *slog.Logger
+	RestartLimit int
 
-	mu      sync.Mutex
-	running map[string]*supervisedTenant
+	mu       sync.Mutex
+	running  map[string]*supervisedTenant
+	failures map[string]error
 }
+
+const tenantStableUptime = 5 * time.Minute
 
 type supervisedTenant struct {
 	cancel context.CancelFunc
@@ -53,6 +77,7 @@ func (l *ExecLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if _, ok := l.running[spec.Organization.ID]; ok {
 		return nil
 	}
+	delete(l.failures, spec.Organization.ID)
 	config, err := l.Configure(spec)
 	if err != nil {
 		return err
@@ -67,13 +92,18 @@ func (l *ExecLauncher) Start(_ context.Context, spec TenantSpec) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	tenant := &supervisedTenant{cancel: cancel, done: make(chan struct{})}
 	l.running[spec.Organization.ID] = tenant
-	go l.supervise(ctx, spec, token, tenant.done)
+	go l.supervise(ctx, spec, token, tenant)
 	return nil
 }
 
-func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token string, done chan struct{}) {
-	defer close(done)
+func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token string, tenant *supervisedTenant) {
+	defer close(tenant.done)
 	backoff := time.Second
+	exits := 0
+	// Only a tenant that has not yet served gives up at the limit: that is a
+	// provisioning failure the organization reports. A tenant that was ready,
+	// or has stayed up once, keeps restarting with backoff after a crash burst.
+	limited := spec.Organization.State != "ready"
 	for ctx.Err() == nil {
 		started := time.Now()
 		cmd := exec.CommandContext(ctx, l.Binary, "hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml"),
@@ -86,10 +116,15 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		if ctx.Err() != nil {
 			return
 		}
-		if time.Since(started) > 5*time.Minute {
-			backoff = time.Second
+		if time.Since(started) > tenantStableUptime {
+			backoff, exits, limited = time.Second, 0, false
 		}
-		l.logger().Warn("tenant Hub exited; restarting", "organization", spec.Organization.ID, "error", err, "backoff", backoff)
+		exits++
+		if limited && exits >= l.restartLimit() {
+			l.giveUp(spec.Organization.ID, tenant, &TenantExitError{Exits: exits, Cause: err})
+			return
+		}
+		l.logger().Warn("tenant Hub exited; restarting", "organization", spec.Organization.ID, "error", err, "backoff", backoff, "exits", exits)
 		select {
 		case <-ctx.Done():
 			return
@@ -97,6 +132,36 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		}
 		backoff = min(backoff*2, time.Minute)
 	}
+}
+
+func (l *ExecLauncher) restartLimit() int {
+	if l.RestartLimit < 1 {
+		return 5
+	}
+	return l.RestartLimit
+}
+
+func (l *ExecLauncher) giveUp(id string, tenant *supervisedTenant, failure error) {
+	l.logger().Error("tenant Hub keeps exiting; supervision stopped", "organization", id, "error", failure, "cause", errors.Unwrap(failure))
+	tenant.cancel()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.running[id] != tenant {
+		return
+	}
+	delete(l.running, id)
+	if l.failures == nil {
+		l.failures = make(map[string]error)
+	}
+	l.failures[id] = failure
+}
+
+func (e *TenantExitError) Unwrap() error { return e.Cause }
+
+func (l *ExecLauncher) Failure(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failures[id]
 }
 
 func (l *ExecLauncher) logger() *slog.Logger {
@@ -110,6 +175,7 @@ func (l *ExecLauncher) Stop(id string) error {
 	l.mu.Lock()
 	tenant, ok := l.running[id]
 	delete(l.running, id)
+	delete(l.failures, id)
 	l.mu.Unlock()
 	if !ok {
 		return nil

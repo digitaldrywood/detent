@@ -159,6 +159,26 @@ describe("provisioning progress", () => {
     expect(await screen.findByText("Setting up…")).toBeTruthy();
   });
 
+  it("shows each failed tenant start while retrying, then the stored reason once setup stops", async () => {
+    const reason = "the tenant Hub exited 5 times in a row without staying up (last: exit status 1)";
+    const provisioning = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "org_b", name: "Beta", state: "allocating", step: "tenant_files", error: "Attempt 1 of 5 failed: the tenant Hub did not become healthy within 30s. Retrying automatically.", can_resume: false })
+      .mockResolvedValue({ id: "org_b", name: "Beta", state: "failed", step: "tenant_files", error: `Setup stopped (tenant_start_failed): ${reason}. Your request and any completed steps are kept.`, can_resume: true });
+    renderWith(fakeApi({ provisioning }), <ProvisioningProgress organization="org_b" onNavigate={vi.fn()} pollMs={5} />);
+    expect(await screen.findByText(/Attempt 1 of 5 failed/)).toBeTruthy();
+    expect(screen.getByText("Setting up…")).toBeTruthy();
+    expect(await screen.findByText("Setup stopped.")).toBeTruthy();
+    expect(screen.getByText(new RegExp(reason.replace(/[()]/g, "\\$&")))).toBeTruthy();
+    const current = screen.getByText("Starting your Hub").closest("li");
+    expect(current?.getAttribute("aria-current")).toBe("step");
+    expect(current?.textContent).toContain("!");
+    expect(screen.getByRole("button", { name: "Resume setup" })).toBeTruthy();
+    const settled = provisioning.mock.calls.length;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+    expect(provisioning.mock.calls.length).toBe(settled);
+  });
+
   it("opens the organization once it is ready", async () => {
     renderWith(
       fakeApi({ provisioning: vi.fn(async () => ({ id: "org_b", name: "Beta", state: "ready", step: "publish", error: "", can_resume: false, next: "/organizations/org_b/" })) }),
