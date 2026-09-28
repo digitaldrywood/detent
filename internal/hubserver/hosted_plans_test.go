@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -725,6 +727,41 @@ func TestHostedEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatal("partial entitlements accepted")
+			}
+		})
+	}
+}
+
+func TestHostedPlansConfigDecodesStrictly(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, body string
+		wantErr    bool
+		written    bool
+	}{
+		{name: "valid catalog", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowances: {projects: 3}}\n", written: true},
+		{name: "empty section", body: "{}\n"},
+		{name: "misspelled nested key", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowences: {projects: 3}}\n", wantErr: true},
+		{name: "misspelled plan reference key", body: "base: {id: free, versoin: 1}\n", wantErr: true},
+		{name: "misspelled section key", body: "windows_seconds: 3600\n", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			decoder := yaml.NewDecoder(strings.NewReader(test.body))
+			decoder.KnownFields(true)
+			var config HostedPlansConfig
+			err := decoder.Decode(&config)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("Decode() = %+v, want an unknown-field error", config)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.written != test.written {
+				t.Fatalf("written = %t, want %t", config.written, test.written)
 			}
 		})
 	}

@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"time"
@@ -43,7 +45,15 @@ type HostedPlansConfig struct {
 func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
 	type plain HostedPlansConfig
 	var decoded plain
-	if err := node.Decode(&decoded); err != nil {
+	// node.Decode does not inherit the caller's KnownFields, so the section is
+	// decoded again strictly: a misspelled key must fail, not zero a value.
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&decoded); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	*c = HostedPlansConfig(decoded)
