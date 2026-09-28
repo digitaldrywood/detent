@@ -1060,8 +1060,13 @@ new branches start at the base. Before the fast path rebases, the observed remot
 head must be an ancestor of the local head. The rebase may rewrite those commits,
 but the push uses the lease on that same observed remote head. Agent conflict
 resolution merges the target into the PR branch, preserving remote ancestry,
-which is checked before validation and publication. Unsafe local heads abort any
-unfinished rebase and attempt to restore the observed PR head without discarding
+which is checked before validation. A resolved head passes the configured gate
+before a normal push; a gate or push error fails the attempt, and a divergent
+remote advance makes the push fail without replacing published work. A retry
+with an unpublished local head repeats verified publication when it contains
+the current target; otherwise it returns to worker conflict resolution instead
+of the fast-path rebase and push. Unsafe local heads abort any unfinished rebase
+and attempt to restore the observed PR head without discarding
 uncommitted work. Restoration failures remain conflicts with diagnostic details,
 not runner failures. No push may replace published work with a stale or freshly
 created base branch.
