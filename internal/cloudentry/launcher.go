@@ -100,6 +100,10 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 	defer close(tenant.done)
 	backoff := time.Second
 	exits := 0
+	// Only a tenant that has not yet served gives up at the limit: that is a
+	// provisioning failure the organization reports. A tenant that was ready,
+	// or has stayed up once, keeps restarting with backoff after a crash burst.
+	limited := spec.Organization.State != "ready"
 	for ctx.Err() == nil {
 		started := time.Now()
 		cmd := exec.CommandContext(ctx, l.Binary, "hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml"),
@@ -113,10 +117,10 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 			return
 		}
 		if time.Since(started) > tenantStableUptime {
-			backoff, exits = time.Second, 0
+			backoff, exits, limited = time.Second, 0, false
 		}
 		exits++
-		if exits >= l.restartLimit() {
+		if limited && exits >= l.restartLimit() {
 			l.giveUp(spec.Organization.ID, tenant, &TenantExitError{Exits: exits, Cause: err})
 			return
 		}

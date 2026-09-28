@@ -216,7 +216,9 @@ The entry re-verifies the shared session with the provider on every mutation and
 at most once per 60 seconds for read-only `GET`/`HEAD` requests such as the
 provisioning status poll, so a provider-side revocation takes effect within that
 bound; logout and a failed verification take effect immediately. Requests routed
-to a tenant still verify the organization session and membership each time.
+to a tenant still verify the organization session and membership each time. Staff
+and support sessions, which reach across organizations, are verified on every
+request.
 
 Each request derives its organization from the canonical route and revalidates
 membership plus project grants. Body/header IDs must agree with the route. Reject

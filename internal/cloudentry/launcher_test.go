@@ -104,3 +104,24 @@ func waitLauncherFailure(t *testing.T, launcher *ExecLauncher, id string) error 
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestExecLauncherKeepsRestartingReadyTenants(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: 1, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
+	spec := TenantSpec{Organization: Organization{ID: "org_ready", State: "ready"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
+	if err := launcher.Start(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Close() })
+	time.Sleep(2500 * time.Millisecond)
+	if failure := launcher.Failure("org_ready"); failure != nil {
+		t.Fatalf("a ready tenant gave up after a crash burst: %v", failure)
+	}
+	launcher.mu.Lock()
+	_, running := launcher.running["org_ready"]
+	launcher.mu.Unlock()
+	if !running {
+		t.Fatal("a ready tenant stopped being supervised")
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type PlanReference struct {
@@ -29,6 +31,24 @@ type HostedPlansConfig struct {
 	RetentionWindows  int64         `yaml:"retention_windows"`
 	ConnectedSeconds  int64         `yaml:"connected_seconds"`
 	InvitationSeconds int64         `yaml:"invitation_seconds"`
+
+	// written records that the YAML section named at least one key, so an
+	// explicitly empty plan list is an error rather than the defaults.
+	written bool
+}
+
+// UnmarshalYAML decodes the catalog and remembers whether the section had
+// any keys: `entitlements: {}` means the default catalog, while a section
+// that names keys is the operator's own catalog and must validate.
+func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain HostedPlansConfig
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*c = HostedPlansConfig(decoded)
+	c.written = node.Kind == yaml.MappingNode && len(node.Content) > 0
+	return nil
 }
 
 type HostedGrant struct {
@@ -75,7 +95,7 @@ func pilotHostedPlans() HostedPlansConfig {
 }
 
 func (c *HostedPlansConfig) IsZero() bool {
-	return c == nil || len(c.Plans) == 0 && c.Base == PlanReference{} && c.WindowSeconds == 0 && c.RetentionWindows == 0 && c.ConnectedSeconds == 0 && c.InvitationSeconds == 0
+	return c == nil || !c.written && len(c.Plans) == 0 && c.Base == PlanReference{} && c.WindowSeconds == 0 && c.RetentionWindows == 0 && c.ConnectedSeconds == 0 && c.InvitationSeconds == 0
 }
 
 func (c HostedPlansConfig) validate() error {

@@ -344,7 +344,6 @@ func TestCloudEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 		{name: "absent", body: base},
 		{name: "empty mapping", body: base + "  entitlements: {}\n"},
 		{name: "empty block", body: base + "  entitlements:\n"},
-		{name: "empty plan list", body: base + "  entitlements:\n    plans: []\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -386,6 +385,7 @@ func TestCloudRejectsInvalidTenantConfigurationAtStartup(t *testing.T) {
 		{name: "plans without windows", entitlements: "    base: {id: free, version: 1}\n" + plan},
 		{name: "windows without plans", entitlements: "    base: {id: free, version: 1}\n" + windows},
 		{name: "base only", entitlements: "    base: {id: free, version: 1}\n"},
+		{name: "explicitly empty plan list", entitlements: "    plans: []\n"},
 		{name: "missing base", entitlements: windows + plan},
 		{name: "base not configured", entitlements: "    base: {id: team, version: 1}\n" + windows + plan},
 		{name: "unknown feature", entitlements: "    base: {id: free, version: 1}\n" + windows + "    plans:\n      - {id: free, version: 1, features: [admin_bypass]}\n"},

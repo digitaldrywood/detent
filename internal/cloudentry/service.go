@@ -269,7 +269,10 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	}
 	now := s.config.now()
 	method := c.Request().Method
-	if (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
+	// Staff and support sessions reach across organizations, so they are
+	// re-verified on every request rather than trusted for the recheck window.
+	cacheable := !s.staff(session.Email) && session.Identity.SupportActor == ""
+	if cacheable && (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
 		return session, nil
 	}
 	current, err := s.config.Provider.CurrentSession(c.Request().Context(), session.Identity)
