@@ -35,6 +35,7 @@ import {
   firstRunSteps,
   type FirstRunFacts,
 } from "../../src/app/work/components/FirstRun.tsx";
+import { newIssueProject, newIssueProjects, newIssueState } from "../../src/app/work/NewIssue.tsx";
 import type { AccountProject } from "../../src/contracts/account.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
@@ -362,5 +363,56 @@ describe("NewProjectProvider", () => {
     expect(createdProjectId(null)).toBeNull();
     expect(createdProjectId("prj_1")).toBeNull();
     expect(projectBoardPath("prj 1")).toBe("/work/p/prj%201");
+  });
+});
+
+describe("where a new issue goes", () => {
+  const project = (id: string, can_write: boolean): AccountProject => ({
+    id,
+    name: id,
+    profile: "native",
+    can_write,
+    can_manage_runners: false,
+    states: [
+      { name: "Backlog", terminal: false, dispatchable: false },
+      { name: "Todo", terminal: false, dispatchable: true },
+      { name: "Done", terminal: true, dispatchable: false },
+    ],
+  });
+
+  it.each([
+    { name: "the requested writable project", requested: "b", want: "b" },
+    { name: "the first writable project when none was requested", requested: null, want: "b" },
+    { name: "the first writable project instead of a read-only one", requested: "a", want: "b" },
+    { name: "the first writable project for an unknown id", requested: "missing", want: "b" },
+  ])("picks $name", ({ requested, want }) => {
+    const projects = [project("a", false), project("b", true), project("c", true)];
+    expect(newIssueProject(projects, requested)?.id).toBe(want);
+  });
+
+  it.each([
+    { name: "every writable project without a lane", state: null, want: ["b", "c"] },
+    { name: "only writable projects with the lane", state: "Review", want: ["c"] },
+    { name: "none when no writable project has the lane", state: "Missing", want: [] },
+  ])("offers $name", ({ state, want }) => {
+    const review = project("c", true);
+    const projects = [
+      project("a", false),
+      project("b", true),
+      { ...review, states: [...review.states, { name: "Review", terminal: false, dispatchable: true }] },
+    ];
+    expect(newIssueProjects(projects, state).map((entry) => entry.id)).toEqual(want);
+  });
+
+  it("picks no project when none is writable", () => {
+    expect(newIssueProject([project("a", false)], "a")).toBeUndefined();
+  });
+
+  it.each([
+    { name: "the lane it was started from", requested: "Backlog", want: "Backlog" },
+    { name: "the first working lane without a request", requested: null, want: "Todo" },
+    { name: "the first working lane for a lane the project lacks", requested: "Review", want: "Todo" },
+  ])("starts in $name", ({ requested, want }) => {
+    expect(newIssueState(project("a", true), requested)).toBe(want);
   });
 });

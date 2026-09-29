@@ -1,4 +1,4 @@
-// The shell's two keyboard shortcuts (design inventory B.13 rule 4, B.14).
+// The shell's keyboard shortcuts (design inventory B.13 rule 4, B.14).
 //
 // The rule worth a test is the one that goes wrong silently: a single-key
 // shortcut that fires while the reader is typing eats the keystroke, and the
@@ -86,6 +86,36 @@ describe("shortcutFor", () => {
     {
       name: "Meta+/ is not the search shortcut",
       event: event({ key: "/", metaKey: true, target: element("BODY") }),
+      expected: null,
+    },
+    {
+      name: "c outside a field opens a new issue",
+      event: event({ key: "c", target: element("BODY") }),
+      expected: "new-issue",
+    },
+    {
+      name: "c with caps lock on still opens a new issue",
+      event: event({ key: "C", target: element("BUTTON") }),
+      expected: "new-issue",
+    },
+    {
+      name: "c inside the composer is a letter",
+      event: event({ key: "c", target: element("TEXTAREA") }),
+      expected: null,
+    },
+    {
+      name: "c inside a combobox is a letter",
+      event: event({ key: "c", target: element("DIV", { role: "combobox" }) }),
+      expected: null,
+    },
+    {
+      name: "Meta+C is copy, not a new issue",
+      event: event({ key: "c", metaKey: true, target: element("BODY") }),
+      expected: null,
+    },
+    {
+      name: "Shift+C is not the new-issue shortcut",
+      event: event({ key: "C", shiftKey: true, target: element("BODY") }),
       expected: null,
     },
     {

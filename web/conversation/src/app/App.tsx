@@ -53,6 +53,7 @@ import { publishPaletteShell } from "./adapters/paletteContext.ts";
 import { useKeybindingActions } from "./adapters/keybindingActions.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { NewProjectProvider } from "./projects/NewProject.tsx";
+import { NewIssueProvider, useNewIssue } from "./work/NewIssue.tsx";
 import { AnchoredToastProvider, ToastProvider } from "../components/ui/toast.tsx";
 import { useComposerAttachments } from "./adapters/attachments.ts";
 import { composerBanners } from "./adapters/composerBanners.tsx";
@@ -306,15 +307,17 @@ function ShellBody(): React.ReactElement {
       <SidebarDataProvider value={sidebarProps}>
 
         <NewProjectProvider>
-          <CommandPalette>
-            <AppSidebarLayout>
+          <NewIssueProvider>
+            <CommandPalette>
+              <AppSidebarLayout>
 
-              <ShellShortcuts onNewChat={startNewChat} />
-              <SidebarInset className="dc-main min-h-0 overflow-hidden">
-                <Outlet />
-              </SidebarInset>
-            </AppSidebarLayout>
-          </CommandPalette>
+                <ShellShortcuts onNewChat={startNewChat} />
+                <SidebarInset className="dc-main min-h-0 overflow-hidden">
+                  <Outlet />
+                </SidebarInset>
+              </AppSidebarLayout>
+            </CommandPalette>
+          </NewIssueProvider>
         </NewProjectProvider>
       </SidebarDataProvider>
     </ShellContext.Provider>
@@ -323,6 +326,7 @@ function ShellBody(): React.ReactElement {
 
 function ShellShortcuts({ onNewChat }: { readonly onNewChat: () => void }): null {
   const { isMobile, openMobile, setOpenMobile, toggleSidebar } = useSidebar();
+  const { openNewIssue } = useNewIssue();
 
   React.useEffect(() => publishPaletteShell({ toggleSidebar }), [toggleSidebar]);
 
@@ -345,8 +349,11 @@ function ShellShortcuts({ onNewChat }: { readonly onNewChat: () => void }): null
     const onKeyDown = (event: KeyboardEvent) => {
       const shortcut = shortcutFor(event);
       if (shortcut === null) return;
+      // A single key belongs to whatever dialog is open, the palette included.
+      if (shortcut === "new-issue" && globalThis.document?.querySelector('[role="dialog"]') != null) return;
       event.preventDefault();
       if (shortcut === "focus-search") focusSearch();
+      else if (shortcut === "new-issue") openNewIssue();
       else {
         if (isMobile) setOpenMobile(false);
         onNewChat();
@@ -354,7 +361,7 @@ function ShellShortcuts({ onNewChat }: { readonly onNewChat: () => void }): null
     };
     globalThis.document?.addEventListener("keydown", onKeyDown);
     return () => globalThis.document?.removeEventListener("keydown", onKeyDown);
-  }, [focusSearch, onNewChat, isMobile, setOpenMobile]);
+  }, [focusSearch, onNewChat, openNewIssue, isMobile, setOpenMobile]);
 
   return null;
 }

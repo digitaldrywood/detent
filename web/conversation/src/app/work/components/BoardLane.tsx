@@ -8,9 +8,10 @@
 // The drop target is the lane body. It accepts a drop only when the dragged
 // card's workflow allows this lane, so a card cannot be dropped into a lane
 // the hub would refuse — the refusal is prevented rather than reported.
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
 import React from "react";
 
+import { Button } from "../../../components/ui/button.tsx";
 import { cn } from "../../../lib/utils.ts";
 import type { Lane, WorkItemView } from "../lib/model.ts";
 import { IssueCard } from "./IssueCard.tsx";
@@ -32,6 +33,8 @@ export interface BoardLaneProps {
   readonly collapsed: boolean;
   readonly onToggleCollapsed: () => void;
   readonly emptyLabel?: string;
+  /** Opens the New issue dialog on this lane. Null when this lane takes no new issues. */
+  readonly onCreate?: (() => void) | null;
 }
 
 export function BoardLane({
@@ -50,6 +53,7 @@ export function BoardLane({
   collapsed,
   onToggleCollapsed,
   emptyLabel,
+  onCreate = null,
 }: BoardLaneProps): React.ReactElement {
   const [over, setOver] = React.useState(false);
   const live = items.filter((item) => item.attempt?.running === true).length;
@@ -103,6 +107,19 @@ export function BoardLane({
         </span>
         {collapsed || live === 0 ? null : (
           <span className="font-normal text-[11px] text-muted-foreground">{live} live</span>
+        )}
+        {collapsed || onCreate === null ? null : (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            data-testid={`lane-new-issue-${lane.name}`}
+            aria-label={`New issue in ${lane.name}`}
+            title={`New issue in ${lane.name}`}
+            onClick={onCreate}
+            className="ml-auto text-muted-foreground"
+          >
+            <PlusIcon />
+          </Button>
         )}
       </h2>
       {collapsed ? null : (
