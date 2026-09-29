@@ -3083,15 +3083,22 @@ func (o *Orchestrator) recordCompletionUsage(ctx context.Context, state *State, 
 
 // postValidatedGateStatus posts the configured local gate status for the pull
 // request head when, and only when, the merge worker ran the command gate on
-// exactly that head and it passed. A head that moved since, a gate Detent did
-// not run itself, or a project without gate.local_status posts nothing. The
+// exactly that head and it passed. A head that moved since, a gate command
+// that changed since, a gate Detent did not run itself, or a project without
+// gate.local_status posts nothing. The
 // pull request is re-read afterwards so the new status counts toward its
 // required checks. A failed post or re-read is returned so the merge worker
 // retries and validates again instead of waiting on a status that never comes.
 func (o *Orchestrator) postValidatedGateStatus(ctx context.Context, hydrator connector.PullRequestHydrator, event runpkg.Completion, issue connector.Issue) (connector.Issue, error) {
-	statusContext := gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus
+	gateConfig := gate.Effective(o.cfg.AutoPromote.Gate)
+	statusContext := gateConfig.LocalStatus
 	head := strings.TrimSpace(event.Result.GateValidatedHead)
 	if statusContext == "" || head == "" || issue.PullRequest == nil {
+		return issue, nil
+	}
+	if strings.TrimSpace(event.Result.GateValidatedRun) != strings.TrimSpace(gateConfig.Run) {
+		o.logger.Warn("local gate status not posted: gate command changed after validation",
+			"issue_id", issue.ID, "identifier", issue.Identifier, "validated_run", event.Result.GateValidatedRun, "current_run", gateConfig.Run)
 		return issue, nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(issue.PullRequest.HeadSHA), head) {

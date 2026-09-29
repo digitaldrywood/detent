@@ -770,7 +770,9 @@ type RunResult struct {
 	MergePrecheck           *MergePrecheck
 	// GateValidatedHead is the pull request head on which Detent itself ran
 	// the configured command gate and saw it pass. Empty when it did not.
-	GateValidatedHead     string
+	GateValidatedHead string
+	// GateValidatedRun is the gate command that passed on GateValidatedHead.
+	GateValidatedRun      string
 	MergeFallbackFindings string
 	// NativeChange is what a successful hub-native work run left for review.
 	// It is nil for every other run, and for a native run whose lease was

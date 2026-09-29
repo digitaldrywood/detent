@@ -59,8 +59,11 @@ Detent does this itself: the merge worker runs the configured `gate.run` on the
 head it pushes (after a clean rebase or a resolved merge), and the orchestrator
 posts `local-gate` with state `success` for that SHA only when the gate passed
 and the pull request head still equals it. A failing gate posts nothing and
-hands the branch to the merge-fallback turn. A changed head needs a new gate
-and status. Pull requests to
+hands the branch to the merge-fallback turn. A changed head, or a `gate.run`
+changed while the gate ran, needs a new gate and status. Do not also list the
+context in `gate.required_status_checks`: that list is evaluated before
+`Merging`, where the status cannot exist yet, so configuration validation
+rejects it. Pull requests to
 `develop` run no GitHub Actions workflows. The hourly operator-host build runs
 `make check` on `develop`; a green build promotes it to `main` by merge commit.
 Current-head checks that GitHub reports as skipped are not test evidence.

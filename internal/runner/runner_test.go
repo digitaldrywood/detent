@@ -8087,6 +8087,9 @@ func TestRunnerMergeFastPathValidatesTheHeadForALocalStatus(t *testing.T) {
 			if result.Output != RunOutputMergeFastPathClean || result.GateValidatedHead != tt.wantHead {
 				t.Fatalf("result = output %q validated head %q, want %q", result.Output, result.GateValidatedHead, tt.wantHead)
 			}
+			if wantRun := map[bool]string{true: "make check-fast"}[tt.wantHead != ""]; result.GateValidatedRun != wantRun {
+				t.Fatalf("GateValidatedRun = %q, want %q", result.GateValidatedRun, wantRun)
+			}
 		})
 	}
 }

@@ -995,6 +995,7 @@ func TestLocalStatusConfiguration(t *testing.T) {
 		{name: "human review gate", cfg: Config{Kind: KindHumanReview, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
 		{name: "artifact gate", cfg: Config{Kind: KindArtifact, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
 		{name: "multi-line context", cfg: Config{Kind: KindCommand, LocalStatus: "local\ngate"}, effective: "local\ngate", problem: "gate.local_status must be a single-line status context of at most 100 characters"},
+		{name: "also a pre-merge required check", cfg: Config{Kind: KindCommand, LocalStatus: "local-gate", RequiredStatusChecks: []string{"build", " local-gate "}}, effective: "local-gate", problem: "gate.local_status must not be listed in gate.required_status_checks: Detent posts it in the merge lane, after the pre-merge gate"},
 		{name: "overlong context", cfg: Config{Kind: KindCommand, LocalStatus: strings.Repeat("x", 101)}, effective: strings.Repeat("x", 101), problem: "gate.local_status must be a single-line status context of at most 100 characters"},
 	}
 	for _, tt := range tests {

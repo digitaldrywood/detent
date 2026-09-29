@@ -43,6 +43,7 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 		name          string
 		localStatus   string
 		validatedHead string
+		validatedRun  string
 		prHead        string
 		postErr       error
 		wantPosted    []string
@@ -53,6 +54,7 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 		{name: "head changed after validation", localStatus: "local-gate", validatedHead: head, prHead: other},
 		{name: "gate not run by Detent", localStatus: "local-gate", validatedHead: "", prHead: head},
 		{name: "no local status configured", localStatus: "", validatedHead: head, prHead: head},
+		{name: "gate command changed after validation", localStatus: "local-gate", validatedHead: head, validatedRun: "make lint", prHead: head},
 		{name: "post fails", localStatus: "local-gate", validatedHead: head, prHead: head, postErr: errors.New("forbidden"), wantErr: true},
 	}
 	for _, tt := range tests {
@@ -63,7 +65,10 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 			cfg.AutoPromote.Gate = gate.Config{Kind: gate.KindCommand, Run: "make check-fast", LocalStatus: tt.localStatus}
 			orch := &Orchestrator{cfg: cfg, connector: fake, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			issue := connector.Issue{ID: "1", Identifier: "example/repo#7", PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 7, HeadSHA: tt.prHead}}
-			event := runpkg.Completion{Result: runpkg.RunResult{GateValidatedHead: tt.validatedHead}}
+			event := runpkg.Completion{Result: runpkg.RunResult{GateValidatedHead: tt.validatedHead, GateValidatedRun: tt.validatedRun}}
+			if tt.validatedRun == "" && tt.validatedHead != "" {
+				event.Result.GateValidatedRun = "make check-fast"
+			}
 
 			got, err := orch.postValidatedGateStatus(context.Background(), fake, event, issue)
 			if (err != nil) != tt.wantErr {

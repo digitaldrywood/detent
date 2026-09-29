@@ -697,6 +697,7 @@ func (r *Runner) prepareMergeFastPath(
 			PullRequestHeadPushed: precheck.HeadChanged,
 			ForgeWriteCompleted:   true,
 			GateValidatedHead:     validatedHead(precheck),
+			GateValidatedRun:      validatedRun(precheck, opts),
 		}, precheck, true, nil
 	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
@@ -778,6 +779,7 @@ func (r *Runner) verifyMergeFallback(
 	result.PullRequestHeadPushed = result.PullRequestHeadPushed || precheck.HeadChanged
 	result.ForgeWriteCompleted = true
 	result.GateValidatedHead = validatedHead(precheck)
+	result.GateValidatedRun = validatedRun(precheck, opts)
 	return result, nil
 }
 
@@ -786,6 +788,13 @@ func validatedHead(precheck workspace.MergePrepareResult) string {
 		return ""
 	}
 	return strings.TrimSpace(precheck.HeadSHA)
+}
+
+func validatedRun(precheck workspace.MergePrepareResult, opts workspace.MergePrepareOptions) string {
+	if validatedHead(precheck) == "" {
+		return ""
+	}
+	return strings.TrimSpace(opts.ValidationCommand)
 }
 
 func cloneMergePrecheck(precheck *MergePrecheck) *MergePrecheck {

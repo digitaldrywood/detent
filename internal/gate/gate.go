@@ -2,6 +2,7 @@ package gate
 
 import (
 	"encoding/base64"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -52,7 +53,8 @@ type Config struct {
 	TransientCIRetryLimit        *int     `yaml:"transient_ci_retry_limit"`
 	// LocalStatus is the commit status context Detent posts, with state
 	// success, for a pull request head after it ran the command gate on
-	// exactly that head itself. Empty posts nothing.
+	// exactly that head itself. Empty posts nothing. It must not also be a
+	// required status check, which is evaluated before the merge lane runs.
 	LocalStatus   string              `yaml:"local_status"`
 	Validator     ValidatorConfig     `yaml:"validator"`
 	SecurityAudit SecurityAuditConfig `yaml:"security_audit"`
@@ -405,6 +407,9 @@ func Validate(prefix string, cfg Config) []string {
 		}
 		if len(status) > 100 || strings.ContainsAny(status, "\r\n\t") {
 			problems = append(problems, prefix+".local_status must be a single-line status context of at most 100 characters")
+		}
+		if slices.Contains(NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks), status) {
+			problems = append(problems, prefix+".local_status must not be listed in "+prefix+".required_status_checks: Detent posts it in the merge lane, after the pre-merge gate")
 		}
 	}
 	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
