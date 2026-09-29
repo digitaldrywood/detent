@@ -71,6 +71,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		},
 		AutoPromote: normalizeAutoPromoteConfig(AutoPromoteConfig{
 			Enabled:               cfg.Agent.AutoPromote.Enabled,
+			HumanReview:           &cfg.Review.Human,
 			QuietDuration:         durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
 			OptoutLabel:           cfg.Agent.AutoPromote.OptoutLabel,
 			AllowedIssueLabels:    append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),

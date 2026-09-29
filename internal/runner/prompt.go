@@ -124,6 +124,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendBlockedHandoffBlock(rendered, opts)
 	rendered = appendGateBlock(rendered, workflow.Config)
+	rendered = appendHumanReviewPolicyBlock(rendered, workflow.Config)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	rendered = appendNativeIssueInstructions(rendered, issue)
 	if workflow.Config.Tracker.Kind == config.TrackerHubNative {
@@ -141,6 +142,17 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		rendered = strings.TrimRight(rendered, " \t\r\n") + "\n\n## Merge CI handoff\n\nAfter completing the required local validation, return immediately after pushing a new pull request head. Do not watch or wait for CI in this agent session, even if the project workflow above asks you to. Detent uses its current-head CI wait and requeues the issue in normal Merging order when checks finish. Report the pushed head in your final response.\n"
 	}
 	return rendered, nil
+}
+
+func appendHumanReviewPolicyBlock(prompt string, cfg config.Config) string {
+	if cfg.Review.Human {
+		return prompt
+	}
+	labels := []string{"`requires-human-review`"}
+	if label := strings.TrimSpace(cfg.Agent.AutoPromote.OptoutLabel); label != "" && !strings.EqualFold(label, "requires-human-review") {
+		labels = append(labels, "`"+label+"`")
+	}
+	return prompt + "\n\nreview.human: false. Do not add the opt-out label " + strings.Join(labels, " or ") + " to issues. Record blockers in the Workpad; Detent routes them to Blocked.\n"
 }
 
 func BuildRoutinePrompt(workflow config.Workflow, issue connector.Issue, routine RoutineRequest, opts PromptOptions) (string, error) {

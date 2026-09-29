@@ -212,7 +212,6 @@ agent:
   auto_promote:
     enabled: false
     quiet_seconds: 600
-    optout_label: requires-human-review
     allowed_issue_labels: []
     gate_wait_state: review
     gate_wait_timeout_seconds: 3600

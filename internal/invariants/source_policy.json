@@ -46,13 +46,14 @@
     "internal/orchestrator/autopromote_tick.go:applyStaleMergedPullRequestDecision": "b244fe108d32adec7c008795a08c6c1ebf0cb78cfa9fe1232c832a5c00fd45e1",
     "internal/orchestrator/autopromote_tick.go:applyStaleTodoPullRequestDecision": "bc21a3871b4509cd8118ed97b4ef7d1f1158770ef60210badb2a35aa536b96c2",
     "internal/orchestrator/autopromote_tick.go:applyAutoPromoteDecisionWithTarget": "49344c3e6b91bc4e50dfa467fa5af550f6ce49a9165b897c0e56b39844e0a5c1",
+    "internal/orchestrator/completion_transition.go:transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads": "0163d1dac68ac92b9605cb98b44f3cde7e64439592383a717b4d6473fb79e59e",
     "internal/orchestrator/deliverable_recovery.go:blockDeliverableRecoveryFailure": "89e1e4edb638590695e01d674ee279ca49a3feb9ea079875e44224a43dbc8f87",
     "internal/orchestrator/deliverable_recovery.go:blockHumanOwnedWorkerFailure": "3befb701b009a454bca09078a7eb600949e4ca7119c027dfde3ef71b09bd1fbc",
     "internal/orchestrator/implement_progress.go:blockImplementProgress": "7d5ced0b0a6b3dcf7963fff04f59b96625d04d1a7662d9c4ca4d88b0b7451126",
     "internal/orchestrator/merge_queue.go:delegateNativeMergeQueueIssues": "2a13eca06d764de7db2927b6e0b70e80fb30a4e1ca95017b15fc621aefa0e3a1",
     "internal/orchestrator/merge_required_checks.go:blockPersistentlyMissingRequiredChecks": "5d96ad96ed802fc7dee73588823030d87b1339417e40e142331b13acdb18e9d9",
     "internal/orchestrator/merge_revocation.go:routeMergeRevocation": "1b5d434da8cd95d3627a52265cd319018585cb3856628fcd3cb6584aa684d1bd",
-    "internal/orchestrator/merge_revocation.go:escalateMergeRevocationCommentLoss": "97e848da374c568c9bbc4d8ab741fbb502c5da74bf574490448703a860c87722",
+    "internal/orchestrator/merge_revocation.go:escalateMergeRevocationCommentLoss": "b56fc2365a8879135fc3d3c946036c2563869960942d1158a57060172fe0a9d8",
     "internal/orchestrator/operator_move.go:applyOperatorMove": "5b2c893ec43931e4d85b6e38eba5d29ed7078d9e8decff73f5da868953a46164",
     "internal/orchestrator/run_completion.go:commentObservedLaneTransition": "54fa914f9a030bc27f892d931186ca6f949d6ae2aac8430c233046ff9672769c",
     "internal/orchestrator/run_completion.go:reworkMergeWorkerResult": "467470a31fd6a9635b5dbebe26c3c4199d927337eac1bc694ef65643d23708f1",
@@ -63,6 +64,6 @@
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByID": "072e7213f3009b9d2bea4458af718434a8f7f9497b306490e51ad4d20b26c8fd",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadata": "f9e2541bd1a2f834b30a364e7b18be5d8901d437f63ee1c0778c3f6b30669cb6",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDStrictWithMetadata": "656ee6ae67664fb30ab795a18a9fd010758063d68944674b69c9c1b603f63b13",
-    "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadataMode": "1b70cdf3eb7773ea59ec840327cbff2268e4dc1be1d8ac0a9216ddd449fcdc36"
+    "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadataMode": "245b077ba0d2117db8e8583d24364a8bdb4f10f828ac48260982199e72b7e6fe"
   }
 }

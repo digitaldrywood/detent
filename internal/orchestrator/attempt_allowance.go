@@ -407,7 +407,7 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 			return err
 		}
 	}
-	targetState := o.nonReviewDecisionTargetState(issue, autoPromoteSourceState)
+	targetState := o.nonReviewDecisionTargetState(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState())
 	if metadata.PreserveLane || normalizeState(issue.State) == normalizeState(targetState) {
 		return nil
 	}

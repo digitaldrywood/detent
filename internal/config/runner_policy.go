@@ -57,6 +57,7 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 		Requirements:   cfg.Runners.Profiles[cfg.Runners.Profile].Normalized(),
 		Gates: policy.Gates{
 			Kind: g.Kind, PlanEnabled: p.Enabled, PlanReview: p.Review, PlanStopDigest: policy.Digest([]byte(p.Stop)),
+			HumanReview: cfg.Review.Human,
 			AutoPromote: cfg.Agent.AutoPromote.Enabled, AutomatedReview: g.AutomatedReview,
 			RequiredChecks: len(g.RequiredStatusChecks), Validator: g.Validator.Enabled,
 			SecurityAudit: g.SecurityAudit.Enabled, MergeMethod: cfg.Deliverable.EffectiveMergeMethod(),

@@ -154,12 +154,15 @@ func TestAttemptAllowanceTriagePublication(t *testing.T) {
 		name                           string
 		kind                           string
 		interrupted, optout, noBlocked bool
+		humanReview                    *bool
 		want                           string
 	}{
 		{name: "command gate", kind: gate.KindCommand, want: "Blocked"},
 		{name: "interrupted command gate", kind: gate.KindCommand, interrupted: true, want: "Blocked"},
 		{name: "human review gate", kind: gate.KindHumanReview, want: "Human Review"},
 		{name: "explicit opt out", kind: gate.KindCommand, optout: true, want: "Human Review"},
+		{name: "review disabled human gate", kind: gate.KindHumanReview, humanReview: new(false), want: "Blocked"},
+		{name: "review disabled opt out", kind: gate.KindCommand, optout: true, humanReview: new(false), want: "Blocked"},
 		{name: "no blocked lane", kind: gate.KindCommand, noBlocked: true, want: "Human Review"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,6 +171,7 @@ func TestAttemptAllowanceTriagePublication(t *testing.T) {
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue}}
 			cfg := laneMutationTestConfig()
 			cfg.AutoPromote.Gate.Kind = tt.kind
+			cfg.AutoPromote.HumanReview = tt.humanReview
 			cfg.AutoPromote.Gate.RequireAutomatedReview = new(false)
 			cfg.AutoPromote.OptoutLabel = "manual-review"
 			if tt.optout {

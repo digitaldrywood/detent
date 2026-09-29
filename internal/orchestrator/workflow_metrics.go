@@ -179,6 +179,10 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 ) error {
 	unlock := o.lockLaneWrites()
 	defer unlock()
+	if !o.cfg.AutoPromote.humanReviewEnabled() &&
+		normalizeState(targetState) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState) {
+		targetState = blockedStatusState
+	}
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
