@@ -55,10 +55,17 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	}
 	machine := s.machine
 	if s.checkoutRepository != nil {
-		for name, candidate := range s.nativeProjects {
-			if candidate == source {
-				machine.CheckoutRepository = s.checkoutRepository(name)
-				break
+		supported, err := source.client.HubFeature(ctx, tracker.NativeCheckoutRepositoryCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			for name, candidate := range s.nativeProjects {
+				if candidate == source {
+					repository := s.checkoutRepository(name)
+					machine.CheckoutRepository = &repository
+					break
+				}
 			}
 		}
 	}

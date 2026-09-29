@@ -220,7 +220,7 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 		// requires set and checks the heartbeat that carried them is fresh.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-		CheckoutRepository    string                         `json:"checkout_repository"`
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 }
