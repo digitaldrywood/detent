@@ -1224,51 +1224,33 @@ cover this consolidation of the Rework detour into existing queue admission.
 **Change:** Edit INV-4 and the queue delegation tests in the same PR before
 changing the ownership or fallback behavior.
 
-## INV-5 — Local PR gate and hourly integration build
+## INV-5 — Local pull-request validation and scheduled release evidence
 
-**Statement:** Pull requests to `develop` run no GitHub Actions workflows. Each pushed PR head requires a successful `local-gate` commit status after `make check-fast` passes locally; for Detent board pull requests Detent posts it only for the head its merge worker validated (`gate.local_status`). An hourly operator-host build runs `make check` on `develop`; a green build promotes `develop` to `main` by merge commit and cuts a release, while a red build files one hotfix issue. Pull requests into `main` (promotions and hotfixes) keep the `main` merge queue: CI reports its required jobs as skipped on the pull request and runs them on the merge-group commit. CI on `main` pushes remains release evidence during the transition.
+**Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
+`merge_group`, and no branch ruleset requires a status check. Each pull request
+runs `make check-fast` in its own worktree before merge. The target takes no
+shared validation lock and supports concurrent worktrees. Short tests skip
+shared databases and ports. Focused tests and vet remain available during edits.
 
-The implementation handoff records the local gate on the exact pushed head and
-records current-head PR checks as absent or skipped, never as test evidence.
-The hourly build owns full-suite integration evidence. Its `local-gate` status
-on the promoted commit can serve as signed release provenance, provided it is
-the newest authenticated status for that commit and context.
+GitHub Actions schedules the full suite hourly from the default `main` branch.
+Preflight pins the current `develop` SHA and skips when that commit already has
+a validated release tag. Every full-suite job runs on the pinned commit. A green
+run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
+exact status evidence, and dispatches the release workflow. It does not merge
+to `main` or deploy production. A failing run opens or updates one fingerprinted
+Todo hotfix issue per failed job. A later green run closes those issues. Manual
+dispatch can force `verify-fast` to fail to exercise issue filing and closure.
 
-**Why:** Repeated PR and merge-group runs consumed time and CI capacity for work
-already checked by the local gate. The hourly full build validates the shared
-integration branch before promotion.
+Every `develop` push deploys to staging even when that commit has not passed
+scheduled validation. Production release artifacts use validated tags only.
 
-**Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML and
-requires exactly four triggers: `main` push, `pull_request` limited to `main`,
-`merge_group` limited to `main`, and `workflow_dispatch`, plus all real jobs. It rejects develop
-pull requests, develop pushes, schedule, and tag triggers. Every real job
-reports skipped on pull requests (`github.event_name != 'pull_request'`) so the
-`main` ruleset's required contexts exist for the queue, and only the
-merge-group run is test evidence. Verify and Browser Visual aggregate their
-dependencies with `always()` outside pull requests; portability,
-Windows core, installer, and snapshot jobs run on main push or manual dispatch,
-and integration failure reporting stays main-only. `TestRepositoryPullRequestActionsOnlyForMain`
-checks that no workflow uses `pull_request_target` and that only `ci.yml`
-triggers on pull requests or merge groups, and `TestPortabilityStressIsManualOnly` rejects scheduled
-stress runs. The manual dispatch is an
-operator exception. `TestCoordinatorTagToSigningProvenance` covers newest
-check-run evidence, and `TestCoordinatorLocalGateStatusToSigningProvenance`
-covers newest `local-gate` commit-status evidence. The worker
-posts `local-gate` only after its final pushed head passes `make check-fast`.
+**Enforcement:** `TestRepositoryWorkflow` checks schedule, manual dispatch,
+required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
+checks every workflow for forbidden pull-request and merge-group events.
+`TestWorkflowViolations` rejects trigger and coverage regressions.
 
-CI push triggers are restricted to main (see [Branching](branching.md)): release
-tags run the release workflow without creating newer mandatory check IDs that
-invalidate their own provenance (#2419).
-
-`detent doctor` reads every workflow under the project's source root and warns
-when a workflow has a `pull_request` or `merge_group` trigger. This is
-diagnostic evidence for the zero-PR-CI convention; other projects may choose
-different workflows. Its required-check producer diagnostics still inspect
-GitHub Actions contexts for other projects. They recognize `local-gate` as a
-worker-published commit status when the project uses a command gate.
-
-**Change:** Edit INV-5 and workflow assertions in the same PR when changing
-these triggers or release-evidence requirements.
+**Change:** Update this invariant and its workflow assertions in the same pull
+request when changing validation or release evidence.
 
 ## INV-6 — Isolated Codex home
 
