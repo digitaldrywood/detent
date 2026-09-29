@@ -57,7 +57,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -254,6 +254,9 @@ security: security-gosec-determinism
 
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
+
+nilaway-changed:
+	python3 scripts/nilaway-changed.py $(NILAWAY_VERSION) $(NILAWAY_INCLUDE_PKGS)
 
 check: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."

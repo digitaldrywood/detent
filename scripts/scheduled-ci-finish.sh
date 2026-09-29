@@ -19,7 +19,7 @@ report_failure() {
   fi
   body_file="$RUNNER_TEMP/scheduled-ci-issue-${fingerprint}.md"
   cat > "$body_file" <<EOF
-The scheduled full suite failed in job $job on development commit $GITHUB_SHA.
+The scheduled full suite failed in job $job on development commit $CI_DEVELOP_SHA.
 
 Run: $run_url
 
@@ -56,7 +56,7 @@ if [ "$job_count" -ne 21 ]; then
   false
 fi
 
-status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full scheduled validation passed' --jq .id)"
+status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full scheduled validation passed' --jq .id)"
 
 git fetch --tags --force origin
 git config user.name 'github-actions[bot]'
@@ -72,9 +72,9 @@ message_file="$RUNNER_TEMP/scheduled-ci-tag-message"
 cat > "$message_file" <<EOF
 Validated development build $tag
 
-<!-- detent-release-provenance:{"schema":1,"repository":"$GITHUB_REPOSITORY","tag":"$tag","commit":"$GITHUB_SHA","checks":[{"name":"scheduled-full-ci","status":"completed","conclusion":"success","status_id":$status_id}]} -->
+<!-- detent-release-provenance:{"schema":1,"repository":"$GITHUB_REPOSITORY","tag":"$tag","commit":"$CI_DEVELOP_SHA","checks":[{"name":"scheduled-full-ci","status":"completed","conclusion":"success","status_id":$status_id}]} -->
 EOF
-git tag -a "$tag" "$GITHUB_SHA" -F "$message_file"
+git tag -a "$tag" "$CI_DEVELOP_SHA" -F "$message_file"
 git push origin "refs/tags/$tag"
 gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$tag"
 for number in $(jq -r '.[].number' "$issues_file"); do
