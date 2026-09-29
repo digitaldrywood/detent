@@ -4,33 +4,20 @@ import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
 import {
-  Dialog,
-  DialogClose,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../../../components/ui/dialog.tsx";
-import {
   Empty,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
 } from "../../../components/ui/empty.tsx";
-import { Input } from "../../../components/ui/input.tsx";
-import { Label } from "../../../components/ui/label.tsx";
-import { Textarea } from "../../../components/ui/textarea.tsx";
-import type { AccountProject } from "../../../contracts/account.ts";
 import { cn } from "../../../lib/utils.ts";
-import { ControlError, NativeSelect } from "../../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../../account/context.ts";
-import { newKey } from "../../account/idempotency.ts";
-import { useMutation, useResource } from "../../account/useResource.ts";
+import { useResource } from "../../account/useResource.ts";
 import { EnrollRunnerDialog } from "../../fleet/EnrollRunner.tsx";
 import { PROJECT_CREATION_UNAVAILABLE, useNewProject } from "../../projects/NewProject.tsx";
+import { NewIssueDialog } from "../NewIssue.tsx";
+
+export { firstIssueState } from "../NewIssue.tsx";
 
 export type FirstRunStepId = "project" | "runner" | "setup" | "issue";
 
@@ -248,113 +235,6 @@ export function FirstRunChecklist({
   );
 }
 
-export function firstIssueState(project: AccountProject | undefined): string {
-  return (
-    project?.states.find((state) => state.dispatchable === true && state.terminal !== true)
-      ?.name ??
-    project?.states[0]?.name ??
-    ""
-  );
-}
-
-export function NewIssueDialog({
-  open,
-  onOpenChange,
-  project,
-  onCreated,
-}: {
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly project: AccountProject;
-  readonly onCreated: () => void;
-}): React.ReactElement {
-  const api = useAccountApi();
-  const [title, setTitle] = React.useState("");
-  const [body, setBody] = React.useState("");
-  const [state, setState] = React.useState(() => firstIssueState(project));
-  const key = React.useRef(newKey());
-  const create = useMutation(async () => {
-    const created = await api.createFirstIssue({
-      projectId: project.id,
-      title: title.trim(),
-      body: body.trim(),
-      state,
-      key: key.current,
-    });
-    key.current = newKey();
-    setTitle("");
-    setBody("");
-    onOpenChange(false);
-    onCreated();
-    return created;
-  });
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup>
-        <DialogHeader>
-          <DialogTitle>New issue</DialogTitle>
-          <DialogDescription>
-            The first card on {project.name}'s board. A runner picks it up from its lane.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogPanel>
-          <form
-            id="new-issue-form"
-            className="flex flex-col gap-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (title.trim().length > 0) void create.call();
-            }}
-          >
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="new-issue-title">Title</Label>
-              <Input
-                id="new-issue-title"
-                value={title}
-                onChange={(event) => setTitle(event.currentTarget.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="new-issue-body">What needs doing</Label>
-              <Textarea
-                id="new-issue-body"
-                value={body}
-                onChange={(event) => setBody(event.currentTarget.value)}
-              />
-            </div>
-            {project.states.length > 1 ? (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="new-issue-state">Lane</Label>
-                <NativeSelect
-                  id="new-issue-state"
-                  value={state}
-                  options={project.states.map((entry) => ({
-                    value: entry.name,
-                    label: entry.name,
-                  }))}
-                  onValueChange={setState}
-                />
-              </div>
-            ) : null}
-            <ControlError message={create.error?.message ?? null} />
-          </form>
-        </DialogPanel>
-        <DialogFooter>
-          <DialogClose render={<Button variant="outline">Cancel</Button>} />
-          <Button
-            type="submit"
-            form="new-issue-form"
-            disabled={create.pending || title.trim().length === 0}
-          >
-            {create.pending ? "Creating…" : "Create issue"}
-          </Button>
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
-  );
-}
-
 export function FirstRunPanel({
   projectId,
   issues,
@@ -448,8 +328,10 @@ export function FirstRunPanel({
           key={target.id}
           open={creatingIssue}
           onOpenChange={setCreatingIssue}
-          project={target}
-          onCreated={onIssueCreated}
+          projects={[target]}
+          projectId={target.id}
+          description={`The first card on ${target.name}'s board. A runner picks it up from its lane.`}
+          onCreated={() => onIssueCreated()}
         />
       )}
     </>

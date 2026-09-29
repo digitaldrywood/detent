@@ -180,7 +180,10 @@ describe("the activity merge", () => {
 
   it("names a runner by its own id and a stranger by a shortened principal", () => {
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, "rnr_mac")).toBe("rnr_mac");
-    expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, null)).toBe("The runner");
+    expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, null)).toBe("tok_r");
+    expect(
+      actorLabel({ kind: "runner", principal_id: "runner_be4aaeec1c424bb6afbe94aea6d605d6" }, null, null),
+    ).toBe("runner_be4aaeec");
     expect(actorLabel({ kind: "human", principal_id: "me" }, "me", null)).toBe("You");
     expect(
       actorLabel({ kind: "human", principal_id: "0".repeat(40) }, null, null),

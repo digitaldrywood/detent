@@ -979,3 +979,38 @@ func TestInstructionsDoNotDuplicateWorkpadPredicates(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalStatusConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cfg       Config
+		effective string
+		problem   string
+	}{
+		{name: "unset", cfg: Config{Kind: KindCommand}, effective: ""},
+		{name: "command gate", cfg: Config{Kind: KindCommand, LocalStatus: " local-gate "}, effective: "local-gate"},
+		{name: "default kind is command", cfg: Config{LocalStatus: "local-gate"}, effective: "local-gate"},
+		{name: "human review gate", cfg: Config{Kind: KindHumanReview, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
+		{name: "artifact gate", cfg: Config{Kind: KindArtifact, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
+		{name: "multi-line context", cfg: Config{Kind: KindCommand, LocalStatus: "local\ngate"}, effective: "local\ngate", problem: "gate.local_status must be a single-line status context of at most 100 characters"},
+		{name: "also a pre-merge required check", cfg: Config{Kind: KindCommand, LocalStatus: "local-gate", RequiredStatusChecks: []string{"build", " local-gate "}}, effective: "local-gate", problem: "gate.local_status must not be listed in gate.required_status_checks: Detent posts it in the merge lane, after the pre-merge gate"},
+		{name: "overlong context", cfg: Config{Kind: KindCommand, LocalStatus: strings.Repeat("x", 101)}, effective: strings.Repeat("x", 101), problem: "gate.local_status must be a single-line status context of at most 100 characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Effective(tt.cfg).LocalStatus; got != tt.effective {
+				t.Fatalf("Effective().LocalStatus = %q, want %q", got, tt.effective)
+			}
+			problems := Validate("gate", tt.cfg)
+			if tt.problem == "" && len(problems) != 0 {
+				t.Fatalf("Validate() = %v, want none", problems)
+			}
+			if tt.problem != "" && !slices.Contains(problems, tt.problem) {
+				t.Fatalf("Validate() = %v, want %q", problems, tt.problem)
+			}
+		})
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -570,5 +571,116 @@ func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRequestChangesReturnsToWork checks what a request for changes means for
+// the primary issue: the review text lands on the issue as the reviewer's
+// comment, and an issue waiting in review moves back to a working lane, while
+// an issue already being worked stays put and a finished one is untouched.
+func TestRequestChangesReturnsToWork(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		from        string
+		want        string
+		wantComment bool
+	}{
+		{name: "review returns to In Progress", from: "Human Review", want: "In Progress", wantComment: true},
+		{name: "landing lane returns to In Progress", from: "Merging", want: "In Progress", wantComment: true},
+		{name: "a working item stays where it is", from: "In Progress", want: "In Progress", wantComment: true},
+		{name: "a finished item is untouched", from: "Done", want: "Done", wantComment: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "rework")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			states := HostedProjectStates()
+			raw, err := marshalNative(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Rework me", State: test.from})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "rework"}, Decision: "changes_requested", Body: "Move the link to the end of the row."}), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
+			if issue.State != test.want {
+				t.Fatalf("after the request the item is in %s, want %s", issue.State, test.want)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var comments tracker.Page[tracker.NativeComment]
+			decodeHubResponse(t, response, &comments)
+			found := false
+			for _, comment := range comments.Items {
+				if strings.Contains(comment.Body, "Changes requested on Change Request "+change.ID) && strings.Contains(comment.Body, "Move the link to the end of the row.") && comment.Actor.Kind == "human" {
+					found = true
+				}
+			}
+			if found != test.wantComment {
+				t.Fatalf("instruction comment present = %t, want %t: %#v", found, test.wantComment, comments.Items)
+			}
+		})
+	}
+}
+
+// TestRequestChangesOnAnOlderVersionMovesNothing checks that a late decision
+// on a superseded version is recorded on the change and leaves the issue
+// where the current version put it.
+func TestRequestChangesOnAnOlderVersionMovesNothing(t *testing.T) {
+	t.Parallel()
+	f := newChangeFixture(t, nil)
+	first := f.publish(t, "v1", "")
+	f.publish(t, "v2", first.ID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+first.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "late"}, Decision: "changes_requested", Body: "About round one."}), http.StatusOK)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var comments tracker.Page[tracker.NativeComment]
+	decodeHubResponse(t, response, &comments)
+	for _, comment := range comments.Items {
+		if strings.Contains(comment.Body, "About round one.") {
+			t.Fatalf("a decision on an older version reached the issue: %#v", comment)
+		}
+	}
+	if len(f.detail(t).Reviews) != 1 {
+		t.Fatal("the late review was not recorded on the change")
+	}
+}
+
+func TestReviewInstructionsStayWithinTheCommentLimit(t *testing.T) {
+	t.Parallel()
+	change := tracker.ChangeRequest{ID: "change_1"}
+	review := tracker.ChangeReview{VersionID: "version_1", Body: strings.Repeat("é", 40<<10)}
+	body := reviewInstructions(change, review)
+	if len(body) > maxNativeCommentBytes || !utf8.ValidString(body) || !strings.HasPrefix(body, "Changes requested on Change Request change_1 (version version_1).\n\n") {
+		t.Fatalf("instructions = %d bytes, valid = %t", len(body), utf8.ValidString(body))
+	}
+	if short := reviewInstructions(change, tracker.ChangeReview{Body: " Move it. "}); short != "Changes requested on Change Request change_1.\n\nMove it." {
+		t.Fatalf("short instructions = %q", short)
 	}
 }

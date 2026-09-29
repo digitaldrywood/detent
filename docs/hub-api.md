@@ -798,6 +798,14 @@ require a still-running implementation lease. To rerun validation, publish a new
 version with fresh check identities. Customer-run evidence is visibly distinct
 from independent validation and cannot satisfy an independent expectation.
 
+A `changes_requested` decision puts the review text on the primary issue as a
+comment by the reviewer, where the next run reads it with the rest of the
+discussion, and moves an issue waiting in review or in the landing lane back to
+a dispatchable working lane (`In Progress` when the workflow has it), so the
+runner picks it up again; an issue already being worked stays where it is. The
+rework run reuses the item's Change Request and publishes its new head as the
+next version.
+
 An `approved` decision that leaves the current version `reviewed` moves the
 primary issue to the landing lane: the lane named `Merging`, when the issue's
 lane may move there and it dispatches. The runner that holds the project claims

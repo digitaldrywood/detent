@@ -170,7 +170,10 @@ type MergePreparer interface {
 }
 
 type MergePrepareOptions struct {
-	VerifyResolution   bool
+	VerifyResolution bool
+	// ValidateHead runs ValidationCommand on a cleanly rebased head before it
+	// is pushed. A resolved merge always runs it.
+	ValidateHead       bool
 	ValidationCommand  string
 	ExpectedRemoteHead string
 	Remote             string
@@ -184,6 +187,8 @@ type MergePrepareResult struct {
 	DiffStat      DiffStat
 	Message       string
 	HeadChanged   bool
+	// Validated reports that ValidationCommand passed on exactly HeadSHA.
+	Validated bool
 }
 
 type MergePrepareStatus string

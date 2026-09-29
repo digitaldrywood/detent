@@ -15,6 +15,7 @@
 //  - **Nothing is invented.** Where the hub serves no actor name, the row
 //    names the principal it does serve rather than a display name that does
 //    not exist.
+import { runnerDisplay, shortRunnerId, type RunnerNames } from "./runnerNames.ts";
 import type { Message, Question } from "../../../contracts/conversation.ts";
 import type {
   CollaborationEvent,
@@ -86,18 +87,27 @@ export function actorLabel(
   actor: NativeActor | undefined,
   viewerPrincipalId: string | null,
   runnerName: string | null,
+  runnerNames?: RunnerNames,
 ): string {
   if (actor === undefined) return "Someone";
   if (viewerPrincipalId !== null && actor.principal_id === viewerPrincipalId) return "You";
-  if (actor.kind === "runner") return runnerName ?? "The runner";
+  if (actor.kind === "runner") {
+    // A runner's principal is its runner id, so the fleet names it directly;
+    // otherwise the latest attempt's runner stands in, and failing that the
+    // principal's short id keeps two runners distinguishable.
+    return runnerNames?.get(actor.principal_id)?.display ?? runnerName ?? shortRunnerId(actor.principal_id);
+  }
   const id = actor.principal_id;
   return id.length > 20 ? `${id.slice(0, 18)}…` : id;
 }
 
 /** The runner an attempt ran on, as a sentence names it. */
-export function runnerLabel(attempt: NativeAttempt | undefined): string | null {
+export function runnerLabel(
+  attempt: NativeAttempt | undefined,
+  runnerNames?: RunnerNames,
+): string | null {
   if (attempt === undefined) return null;
-  return attempt.runner_id ?? attempt.machine_id ?? null;
+  return runnerDisplay(runnerNames, attempt.runner_id ?? attempt.machine_id ?? null);
 }
 
 interface HistorySentence {
@@ -212,6 +222,8 @@ export interface ActivityInput {
   readonly conversation: ConversationActivity | null;
   /** The signed-in principal, so their own rows read "You". */
   readonly viewerPrincipalId: string | null;
+  /** The fleet's runner names, so a runner row reads "Mac Studio". */
+  readonly runnerNames?: RunnerNames;
 }
 
 /**
@@ -225,7 +237,7 @@ export interface ActivityInput {
  */
 export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
   const rows: ActivityRow[] = [];
-  const runner = runnerLabel(input.attempts.at(-1) ?? undefined);
+  const runner = runnerLabel(input.attempts.at(-1) ?? undefined, input.runnerNames);
   // A comment the reader can see as a card does not also need a line saying a
   // comment happened. The log's row is dropped rather than folded: the card is
   // directly below it and the fold would be a disclosure over a duplicate.
@@ -239,14 +251,14 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
       kind: "event",
       icon: written.icon,
       at: stamp(event.recorded_at),
-      actor: actorLabel(event.actor, input.viewerPrincipalId, runner),
+      actor: actorLabel(event.actor, input.viewerPrincipalId, runner, input.runnerNames),
       sentence: written.sentence,
       lowValue: written.lowValue,
     });
   }
 
   input.attempts.forEach((attempt, index) => {
-    const claimed = runnerLabel(attempt) ?? "A runner";
+    const claimed = runnerLabel(attempt, input.runnerNames) ?? "A runner";
     rows.push({
       key: `attempt:${attempt.attempt_id}:claimed`,
       kind: "event",
@@ -279,13 +291,13 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
       kind: "comment",
       icon: "comment",
       at: stamp(comment.created_at),
-      actor: actorLabel(comment.actor, input.viewerPrincipalId, runner),
+      actor: actorLabel(comment.actor, input.viewerPrincipalId, runner, input.runnerNames),
       sentence: "commented",
       lowValue: false,
       comment: {
         id: comment.comment_id,
         body: comment.body,
-        actor: actorLabel(comment.actor, input.viewerPrincipalId, runner),
+        actor: actorLabel(comment.actor, input.viewerPrincipalId, runner, input.runnerNames),
         at: comment.created_at,
       },
     });

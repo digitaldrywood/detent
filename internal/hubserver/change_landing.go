@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
@@ -85,6 +86,112 @@ func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	issue.State = target
 	_, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "user_requested"}, now)
 	return err
+}
+
+// reworkTarget is the lane a request for changes moves the primary issue
+// to: a dispatchable, non-terminal lane the current lane may move to, where
+// the runner picks the item up again. "In Progress" is preferred when the
+// workflow has it, so the item resumes rather than restarts.
+func reworkTarget(project tracker.NativeProject, current string) string {
+	first := ""
+	for _, state := range project.States {
+		if state.Name != current {
+			continue
+		}
+		for _, name := range state.Transitions {
+			for _, target := range project.States {
+				if target.Name != name || !target.Dispatchable || target.Terminal || target.OperatorOnly {
+					continue
+				}
+				if strings.EqualFold(target.Name, "In Progress") {
+					return target.Name
+				}
+				if first == "" {
+					first = target.Name
+				}
+			}
+		}
+	}
+	return first
+}
+
+// returnChangeForRework sends the change's primary issue back to work when
+// changes are requested on the current version: the review text lands on
+// the issue as the next run's instructions, and an issue waiting in review
+// or in the landing lane moves to a working lane. A decision on an older
+// version is recorded on the change and moves nothing; a finished issue is
+// left alone; an issue already being worked stays where it is.
+func returnChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, review tracker.ChangeReview, now time.Time) error {
+	if review.VersionID != change.CurrentVersion {
+		return nil
+	}
+	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
+	if err != nil {
+		return err
+	}
+	if issue.Terminal {
+		return nil
+	}
+	if err := appendReviewInstructions(ctx, tx, scope, issue, change, review, now); err != nil {
+		return err
+	}
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	// An item already being worked stays; one waiting to land leaves the
+	// landing lane, since the review it was landing on is withdrawn.
+	for _, state := range project.States {
+		if state.Name == issue.State && state.Dispatchable && !strings.EqualFold(state.Name, landingLane) {
+			return nil
+		}
+	}
+	target := reworkTarget(project, issue.State)
+	if target == "" || target == issue.State {
+		return nil
+	}
+	from := issue.State
+	issue.State = target
+	_, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "user_requested"}, now)
+	return err
+}
+
+// appendReviewInstructions puts the review text on the primary issue as a
+// comment by the reviewer, where the next run reads it with the rest of the
+// discussion. The change's own review record stays the decision of record.
+func appendReviewInstructions(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, change tracker.ChangeRequest, review tracker.ChangeReview, now time.Time) error {
+	_, err := insertNativeComment(ctx, tx, scope, issue, reviewInstructions(change, review), nil, now)
+	return err
+}
+
+// maxNativeCommentBytes is the comment body limit createNativeComment
+// enforces; the generated header counts against it.
+const maxNativeCommentBytes = 64 << 10
+
+// reviewInstructions is the comment a request for changes leaves on the
+// issue: a header naming the change and version, then the review text, cut
+// at a character boundary so the whole comment stays within the limit a
+// comment may be edited under.
+func reviewInstructions(change tracker.ChangeRequest, review tracker.ChangeReview) string {
+	body := "Changes requested on Change Request " + change.ID
+	if review.VersionID != "" {
+		body += " (version " + review.VersionID + ")"
+	}
+	body += "."
+	text := strings.TrimSpace(review.Body)
+	if text == "" {
+		return body
+	}
+	body += "\n\n"
+	room := maxNativeCommentBytes - len(body)
+	if len(text) > room {
+		cut := room
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = text[:cut]
+	}
+	return body + text
 }
 
 func (s *Service) landChange(c echo.Context) error {

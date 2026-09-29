@@ -55,6 +55,7 @@ import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts"
 import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
 import type { WorkItemView } from "./lib/model.ts";
+import { useRunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 
@@ -683,8 +684,9 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const { data, item, conversation } = props;
   const [expanded, setExpanded] = React.useState(false);
 
+  const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
-  const runner = runnerLabel(running);
+  const runner = runnerLabel(running, runnerNames);
   const lane = data.project.states.find((state) => state.name === data.issue.state);
   const laneCategory =
     lane === undefined ? "" : lane.terminal ? "completed" : lane.dispatchable ? "unstarted" : "started";
@@ -695,6 +697,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
         history: data.history,
         attempts: data.attempts,
         comments: data.comments,
+        runnerNames,
         conversation:
           conversation?.detail === undefined
             ? null
@@ -704,7 +707,14 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               },
         viewerPrincipalId: props.viewerPrincipalId,
       }),
-    [conversation?.detail, data.attempts, data.comments, data.history, props.viewerPrincipalId],
+    [
+      runnerNames,
+      conversation?.detail,
+      data.attempts,
+      data.comments,
+      data.history,
+      props.viewerPrincipalId,
+    ],
   );
 
   const execution = conversation?.execution ?? null;

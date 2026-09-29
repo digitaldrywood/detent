@@ -1,9 +1,10 @@
 // The shell's keyboard shortcuts (design inventory B.13 rule 4 and B.14).
 //
-// Two, and only two: `/` focuses the sidebar search, and `Mod+Shift+N` starts
-// a new chat in the current project context. The second one deliberately has
-// no button of its own — B.13 allows a shortcut to duplicate the one create
-// action, and this one fires exactly the same handler the compose pencil does.
+// Three: `/` focuses the sidebar search, `Mod+Shift+N` starts a new chat in
+// the current project context, and `c` opens the New issue dialog. The last
+// two deliberately have no button of their own — B.13 allows a shortcut to
+// duplicate a create action, and each fires exactly the same handler as its
+// button (the compose pencil, and the board's New issue button).
 //
 // Both are decided by a pure function so the rules can be tested without a
 // browser: the single case that matters is that a single-key shortcut must
@@ -21,10 +22,13 @@ export interface ShortcutEvent {
   readonly target?: unknown;
 }
 
-export type Shortcut = "focus-search" | "new-chat";
+export type Shortcut = "focus-search" | "new-chat" | "new-issue";
 
 /** The `aria-keyshortcuts` value advertising the new-chat shortcut. */
 export const NEW_CHAT_KEYSHORTCUTS = "Meta+Shift+N Control+Shift+N";
+
+/** The `aria-keyshortcuts` value advertising the new-issue shortcut. */
+export const NEW_ISSUE_KEYSHORTCUTS = "C";
 
 /** The `aria-keyshortcuts` value advertising the search shortcut. */
 export const SEARCH_KEYSHORTCUTS = "/";
@@ -62,6 +66,10 @@ export function shortcutFor(event: ShortcutEvent): Shortcut | null {
 
   if (event.key === "/" && !mod && !event.altKey && !event.shiftKey) {
     return isEditableTarget(event.target) ? null : "focus-search";
+  }
+
+  if ((event.key === "c" || event.key === "C") && !mod && !event.altKey && !event.shiftKey) {
+    return isEditableTarget(event.target) ? null : "new-issue";
   }
 
   return null;

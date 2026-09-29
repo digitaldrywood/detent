@@ -912,6 +912,25 @@ func (c *Connector) checkWorkflowRerunsReady(ctx context.Context, repo pullReque
 	return nil
 }
 
+var commitSHAPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
+
+// PostCommitStatus records a successful commit status for sha. It only ever
+// writes success: a gate that did not pass posts nothing.
+func (c *Connector) PostCommitStatus(ctx context.Context, repository, sha, statusContext, description string) error {
+	repo, ok := pullRequestRepoFromName(repository)
+	sha = strings.TrimSpace(sha)
+	statusContext = strings.TrimSpace(statusContext)
+	if !ok || !commitSHAPattern.MatchString(sha) || statusContext == "" {
+		return fmt.Errorf("post github commit status: invalid repository %q, commit %q or context %q", strings.TrimSpace(repository), sha, statusContext)
+	}
+	var response restCommitStatus
+	body := map[string]any{"state": "success", "context": statusContext, "description": description}
+	if err := c.client.REST(ctx, http.MethodPost, restCreateCommitStatusPath(repo, sha), body, &response); err != nil {
+		return fmt.Errorf("post github commit status: %w", err)
+	}
+	return nil
+}
+
 func (c *Connector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, labelName string, stagger time.Duration) error {
 	repo, ok := pullRequestRepoFromName(repository)
 	labelName = strings.TrimSpace(labelName)
