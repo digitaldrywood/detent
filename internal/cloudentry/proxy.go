@@ -149,6 +149,9 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	if err == nil {
 		return access, verificationToken, http.StatusOK, nil
 	}
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		return auth.HostedAccess{}, verificationToken, http.StatusServiceUnavailable, err
+	}
 	if !errors.Is(err, auth.ErrAccessExpired) {
 		s.dropAuthorization(ctx, authorized)
 		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, errNoSession
@@ -172,6 +175,9 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	defer cancel()
 	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken)
 	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		if rotated.RefreshToken != "" {
+			_ = s.auth.storeTokens(detached, authorized.Binding, rotated)
+		}
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
 	}
 	if err != nil {

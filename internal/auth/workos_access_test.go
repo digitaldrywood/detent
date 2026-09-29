@@ -109,6 +109,19 @@ func TestWorkOSVerifyAccessIsLocal(t *testing.T) {
 	}
 }
 
+func TestWorkOSVerifyAccessKeySetUnavailable(t *testing.T) {
+	f := newWorkOSFixture(t)
+	f.mode.Store("jwks-down")
+	claims := map[string]any{
+		"iss": f.server.URL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
+		"org_id": "org_customer", "role": "admin", "iat": f.now.Unix(), "exp": f.now.Add(5 * time.Minute).Unix(),
+	}
+	_, err := f.provider(t).VerifyAccess(t.Context(), signTestJWT(t, f.key, claims))
+	if auth.HostedIdentityReason(err) != auth.HostedReasonProviderUnavailable {
+		t.Fatalf("reason = %q (%v), want %q", auth.HostedIdentityReason(err), err, auth.HostedReasonProviderUnavailable)
+	}
+}
+
 func TestWorkOSRefreshAccess(t *testing.T) {
 	tests := []struct {
 		name     string

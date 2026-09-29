@@ -698,6 +698,10 @@ func (f *workosFixture) writeJSON(w http.ResponseWriter, value any) {
 func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := f.mode.Load().(string)
 	if r.URL.Path == "/sso/jwks/client_detent" {
+		if mode == "jwks-down" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		f.writeJSON(w, map[string]any{"keys": []any{rsaJWK(&f.key.PublicKey, "primary")}})
 		return
 	}

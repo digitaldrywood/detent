@@ -45,6 +45,7 @@ type fakeProvider struct {
 	membershipLists int
 	refreshes       int
 	refreshDelay    time.Duration
+	keysDown        bool
 	access          map[string]fakeAccess
 	refresh         map[string]string
 }
@@ -96,6 +97,9 @@ func (p *fakeProvider) expireAccess() {
 func (p *fakeProvider) VerifyAccess(_ context.Context, token string) (auth.HostedAccess, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.keysDown {
+		return auth.HostedAccess{}, &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable}
+	}
 	issued, ok := p.access[token]
 	if !ok {
 		return auth.HostedAccess{}, &auth.HostedIdentityError{Reason: auth.HostedReasonTokenInvalid}

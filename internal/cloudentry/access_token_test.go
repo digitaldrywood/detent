@@ -112,6 +112,20 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 				t.Fatalf("provider calls after the drop = %d, want 0", calls)
 			}
 		}},
+		{"unreachable key set keeps the authorization", func(t *testing.T, f entryFixture, alice *browser) {
+			f.provider.mu.Lock()
+			f.provider.keysDown = true
+			f.provider.mu.Unlock()
+			if response, _ := alice.get(target); response.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("status with the key set down = %d", response.StatusCode)
+			}
+			f.provider.mu.Lock()
+			f.provider.keysDown = false
+			f.provider.mu.Unlock()
+			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
+				t.Fatalf("status after the key set recovered = %d, want 200", response.StatusCode)
+			}
+		}},
 		{"concurrent requests on an expired token refresh once", func(t *testing.T, f entryFixture, alice *browser) {
 			f.provider.expireAccess()
 			f.provider.mu.Lock()

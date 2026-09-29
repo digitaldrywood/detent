@@ -249,6 +249,11 @@ func (p *workosProvider) parseAccessToken(ctx context.Context, raw string) (*cor
 	if expired := (*coreoidc.TokenExpiredError)(nil); errors.As(err, &expired) {
 		return nil, workosAccessClaims{}, ErrAccessExpired
 	}
+	if err != nil && (ctx.Err() != nil || strings.Contains(err.Error(), "fetching keys")) {
+		// go-oidc flattens the key-set fetch error into a string. A JWKS
+		// that could not be fetched says nothing about the token itself.
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonProviderUnavailable)
+	}
 	if err != nil {
 		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
 	}
@@ -335,6 +340,11 @@ func (p *workosProvider) RefreshAccess(ctx context.Context, refreshToken string)
 	access, err := p.access(ctx, response.AccessToken)
 	if errors.Is(err, ErrAccessExpired) {
 		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	if HostedIdentityReason(err) == HostedReasonProviderUnavailable && strings.TrimSpace(response.RefreshToken) != "" {
+		// The old refresh token is spent; hand back the rotated pair so the
+		// caller keeps it and verifies once the key set is reachable.
+		return HostedAccess{}, HostedTokens{AccessToken: response.AccessToken, RefreshToken: response.RefreshToken}, err
 	}
 	if err != nil {
 		return HostedAccess{}, HostedTokens{}, err
