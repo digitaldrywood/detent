@@ -508,7 +508,7 @@ func TestAppUpdates(t *testing.T) {
 	}
 
 	heartbeat := "/api/v2/organizations/org_browser_preview/projects/" + f.project + "/machines/" + string(behind.MachineID) + "/heartbeat"
-	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v1.2.4"}), http.StatusNoContent)
+	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v1.2.4"}), http.StatusOK)
 	payload = read(t, "owner")
 	if payload.BehindCount != 1 || payload.Runners[0].Version != "v1.2.4" || payload.Runners[0].Behind {
 		t.Fatalf("after upgrade heartbeat = %#v", payload)

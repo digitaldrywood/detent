@@ -17,19 +17,22 @@ import (
 
 func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.Runner, error) {
 	var r runnerauth.Runner
-	var tags, operations, heartbeat, created, expires, token string
+	var tags, operations, heartbeat, created, expires, token, settings string
 	var revoked sql.NullString
 	err := db.QueryRowContext(ctx, `SELECT r.id, r.organization_id, r.machine_id, r.token_id, r.display_name, r.tags_json, r.state, r.capacity_limit,
-r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json,
+r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json,
 m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
 WHERE r.organization_id = ? AND r.id = ?`, organization, id).Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
-		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations,
+		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings,
 		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked)
 	if err != nil {
 		return r, err
 	}
 	if err := json.Unmarshal([]byte(tags), &r.Tags); err != nil {
+		return r, err
+	}
+	if err := unmarshalRunnerSettings(settings, &r.Routing); err != nil {
 		return r, err
 	}
 	if err := json.Unmarshal([]byte(operations), &r.Operations); err != nil {
@@ -52,6 +55,7 @@ WHERE r.organization_id = ? AND r.id = ?`, organization, id).Scan(&r.RunnerID, &
 	if err != nil {
 		return r, err
 	}
+	r.Routing = r.Normalized()
 	r.Leases = []runnerauth.RunnerLease{}
 	rows, err := db.QueryContext(ctx, `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, '')
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
@@ -118,6 +122,49 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 	return r, nil
 }
 
+type runnerSettings struct {
+	IsolationTier string                  `json:"isolation_tier"`
+	HostServices  []string                `json:"host_services"`
+	Availability  runnerauth.Availability `json:"availability"`
+	Spillover     runnerauth.Spillover    `json:"spillover"`
+}
+
+func settingsFromRouting(r runnerauth.Routing) runnerSettings {
+	return runnerSettings{IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
+}
+
+func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
+	var settings runnerSettings
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return err
+	}
+	routing.IsolationTier = settings.IsolationTier
+	routing.HostServices = settings.HostServices
+	routing.Availability = settings.Availability
+	routing.Spillover = settings.Spillover
+	return nil
+}
+
+func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string) (runnerauth.RoutingSnapshot, error) {
+	snapshot := runnerauth.RoutingSnapshot{RunnerID: id}
+	var tags, settings, token string
+	err := db.QueryRowContext(ctx, `SELECT display_name, tags_json, state, capacity_limit, revision, routing_settings_json, token_id
+FROM runner_identities WHERE organization_id = ? AND id = ?`, organization, id).Scan(&snapshot.Routing.DisplayName, &tags, &snapshot.Routing.State,
+		&snapshot.Routing.CapacityLimit, &snapshot.Revision, &settings, &token)
+	if err != nil {
+		return snapshot, err
+	}
+	if err := json.Unmarshal([]byte(tags), &snapshot.Routing.Tags); err != nil {
+		return snapshot, err
+	}
+	if err := unmarshalRunnerSettings(settings, &snapshot.Routing); err != nil {
+		return snapshot, err
+	}
+	snapshot.Routing.ProjectIDs, err = readRunnerProjects(ctx, db, token)
+	snapshot.Routing = snapshot.Routing.Normalized()
+	return snapshot, err
+}
+
 func (s *Service) getRunnerRouting(c echo.Context) error {
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok || credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != c.Param("runner") || string(credential.Runner.OrganizationID) != c.Param("organization")) {
@@ -139,10 +186,7 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 	if err := decodeAPIJSON(c, &change); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	change.Routing = change.Normalized()
-	if err := change.Validate(); err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
-	}
+	legacySettings := change.IsolationTier == "" && change.HostServices == nil && change.Availability.Timezone == "" && change.Availability.Windows == nil && change.Availability.HardDeadline == "" && change.Spillover.Mode == "" && change.Spillover.AfterMinutes == 0
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		organization := tracker.OrganizationID(c.Param("organization"))
 		r, err := readRunner(ctx, tx, organization, c.Param("runner"), now)
@@ -151,6 +195,16 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 		}
 		if r.Revision != change.ExpectedRevision {
 			return nil, nativeConflict(tracker.Revision(r.Revision))
+		}
+		if legacySettings {
+			change.IsolationTier = r.IsolationTier
+			change.HostServices = r.HostServices
+			change.Availability = r.Availability
+			change.Spillover = r.Spillover
+		}
+		change.Routing = change.Normalized()
+		if err := change.Validate(); err != nil {
+			return nil, nativeInvalid(err.Error())
 		}
 		for _, project := range change.ProjectIDs {
 			var count int
@@ -165,7 +219,11 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET display_name = ?, tags_json = ?, state = ?, capacity_limit = ?, revision = revision + 1 WHERE id = ?`, change.DisplayName, tags, change.State, change.CapacityLimit, r.RunnerID); err != nil {
+		settings, err := marshalNative(settingsFromRouting(change.Routing))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET display_name = ?, tags_json = ?, state = ?, capacity_limit = ?, routing_settings_json = ?, revision = revision + 1 WHERE id = ?`, change.DisplayName, tags, change.State, change.CapacityLimit, settings, r.RunnerID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM token_grants WHERE token_id = (SELECT token_id FROM runner_identities WHERE id = ?)", r.RunnerID); err != nil {

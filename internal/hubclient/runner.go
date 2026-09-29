@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -221,5 +222,15 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
-	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
+	if c.client.runner == nil {
+		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
+	}
+	var snapshot runnerauth.RoutingSnapshot
+	if err := c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, &snapshot); err != nil {
+		return err
+	}
+	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
+		slog.Default().Warn("runner routing cache not updated", "error", err)
+	}
+	return nil
 }

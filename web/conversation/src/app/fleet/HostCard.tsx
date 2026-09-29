@@ -53,11 +53,13 @@ export function HostCard({
   runner,
   now,
   current = "",
+  settings,
 }: {
   readonly runner: FleetRunner;
   readonly now?: number;
   /** The hub's own build, which is the version a runner should be on. */
   readonly current?: string;
+  readonly settings?: React.ReactNode;
 }): React.ReactElement {
   const behind = hostIsBehind(runner.version ?? "", current);
   const percent =
@@ -96,6 +98,15 @@ export function HostCard({
         </Field>
         <Field label="Last heartbeat">{formatRelativeTime(runner.last_heartbeat_at, now)}</Field>
       </div>
+
+      {runner.isolation_tier === undefined ? null : (
+        <div className="text-xs text-muted-foreground">
+          {`Configured (not yet enforced): ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
+          {runner.availability?.windows.length
+            ? ` · ${runner.availability.windows.join(", ")} (${runner.availability.timezone})`
+            : " · Always available"}
+        </div>
+      )}
 
       {behind ? (
         // Where the footer's update pill sends a reader. Nothing here can
@@ -158,6 +169,7 @@ export function HostCard({
           ))}
         </ul>
       ) : null}
+      {settings}
     </article>
   );
 }

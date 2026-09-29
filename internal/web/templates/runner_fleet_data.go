@@ -44,3 +44,17 @@ func runnerRequirement(value, empty string) string {
 	}
 	return value
 }
+
+func runnerIsolationLabel(tier string) string {
+	if tier == "native-trusted" {
+		return "Trusted only: full host access"
+	}
+	return "Sandbox"
+}
+
+func runnerAvailabilityLabel(availability runnerauth.Availability) string {
+	if len(availability.Windows) == 0 {
+		return "Always available"
+	}
+	return strings.Join(availability.Windows, ", ") + " (" + availability.Timezone + ")"
+}

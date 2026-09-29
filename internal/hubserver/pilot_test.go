@@ -45,7 +45,7 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 			for _, mode := range []ReconcileMode{ReconcileIncremental, ReconcileFullRepair} {
 				for range 3 {
 					for _, runner := range runners {
-						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 2, "version": "test"}), http.StatusNoContent)
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 2, "version": "test"}), http.StatusOK)
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?state=Todo", runner.redemption.Credential, nil), http.StatusOK)
 					}
 					backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: time.Now().UTC()}}})
@@ -132,7 +132,7 @@ func TestPilotHostedWorkloads(t *testing.T) {
 			for range 10 {
 				for _, runner := range runners {
 					path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, map[string]any{"capacity": 2, "version": "test", "os": "linux", "architecture": "amd64"}), http.StatusNoContent)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, map[string]any{"capacity": 2, "version": "test", "os": "linux", "architecture": "amd64"}), http.StatusOK)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items?state=Todo", runner.Credential, nil), http.StatusOK)
 				}
 				requireNativeStatus(t, f.page(t, "owner", "/organization/plan"), http.StatusOK)

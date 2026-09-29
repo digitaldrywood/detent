@@ -41,6 +41,52 @@ func TestRoutingNormalizationAndValidation(t *testing.T) {
 	}
 }
 
+func TestRoutingSettingsValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		settings func(*Routing)
+		valid    bool
+	}{
+		{"defaults", func(*Routing) {}, true},
+		{"trusted", func(r *Routing) { r.IsolationTier = "native-trusted" }, true},
+		{"unknown tier", func(r *Routing) { r.IsolationTier = "root" }, false},
+		{"loopback service", func(r *Routing) { r.HostServices = []string{"tcp:127.0.0.1:8080"} }, true},
+		{"non-loopback service", func(r *Routing) { r.HostServices = []string{"tcp:0.0.0.0:8080"} }, false},
+		{"docker socket", func(r *Routing) { r.HostServices = []string{"unix:/var/run/docker.sock"} }, false},
+		{"valid window", func(r *Routing) {
+			r.Availability = Availability{Timezone: "America/Chicago", Windows: []string{"Mon-Fri 09:00-17:00"}}
+		}, true},
+		{"unknown timezone", func(r *Routing) {
+			r.Availability = Availability{Timezone: "Nowhere/Unknown", Windows: []string{"Mon-Fri 09:00-17:00"}}
+		}, false},
+		{"zero window", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-09:00"}}
+		}, false},
+		{"overlapping windows", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00", "Wed-Wed 12:00-18:00"}}
+		}, false},
+		{"deadline", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "30m"}
+		}, true},
+		{"deadline without window", func(r *Routing) { r.Availability.HardDeadline = "30m" }, false},
+		{"negative deadline", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "-1m"}
+		}, false},
+		{"zero spillover", func(r *Routing) { r.Spillover = Spillover{Mode: "after", AfterMinutes: 0} }, true},
+		{"negative spillover", func(r *Routing) { r.Spillover = Spillover{Mode: "after", AfterMinutes: -1} }, false},
+		{"unknown spillover", func(r *Routing) { r.Spillover.Mode = "always" }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}
+			test.settings(&r)
+			if err := r.Normalized().Validate(); (err == nil) != test.valid {
+				t.Fatalf("Validate() = %v, want valid %v", err, test.valid)
+			}
+		})
+	}
+}
+
 func TestRunnerEligibility(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

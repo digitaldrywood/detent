@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -106,7 +107,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}}}
+	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}, IsolationTier: "native-trusted", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}, Spillover: runnerauth.Spillover{Mode: "after", AfterMinutes: 0}}}
 	if err := fleetAdmin.UpdateRunner(t.Context(), file.Identity.RunnerID, change); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +166,16 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	}
 	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
 		t.Fatal(err)
+	}
+	cached, err := runnerauth.LoadRoutingCache(path)
+	if err != nil || cached.Revision != 2 || cached.Routing.IsolationTier != "native-trusted" || cached.Routing.Spillover.Mode != "after" || len(cached.Routing.ProjectIDs) != 1 {
+		t.Fatalf("heartbeat routing cache = %#v, %v", cached, err)
+	}
+	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatalf("accepted heartbeat failed on cache permission error: %v", err)
 	}
 	file, err = runnerauth.Load(path)
 	if err != nil {
