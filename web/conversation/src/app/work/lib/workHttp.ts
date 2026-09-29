@@ -98,7 +98,12 @@ function errorFromBody(status: number, body: unknown): WorkApiError {
     return new WorkApiError({
       status,
       code: parsed.code,
-      message: parsed.message.length > 0 ? parsed.message : messageForStatus(status),
+      message:
+        parsed.code === "transition_not_allowed"
+          ? "This status change is not allowed by the project's workflow."
+          : parsed.message.length > 0
+            ? parsed.message
+            : messageForStatus(status),
       currentRevision: parsed.current_revision ?? null,
       details: (parsed.details as Record<string, unknown> | undefined) ?? null,
     });
