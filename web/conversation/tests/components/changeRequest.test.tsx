@@ -174,6 +174,21 @@ describe("the round helpers", () => {
     const reviewed: ChangeDetail = { ...CHANGE, summary: { ...CHANGE.summary, status: "reviewed" } };
     expect(statusSentence(reviewed, currentVersion(reviewed))).toContain("Ready to land");
   });
+
+  it("says a round that needs no review lands without one", () => {
+    const accepted: ChangeDetail = {
+      ...CHANGE,
+      summary: { ...CHANGE.summary, status: "reviewed", native_review: "not_required" },
+    };
+    const sentence = statusSentence(accepted, currentVersion(accepted));
+    expect(sentence).toContain("No review needed");
+    expect(sentence).not.toContain("Approved");
+  });
+
+  it("reports a landed round", () => {
+    const landed: ChangeDetail = { ...CHANGE, summary: { ...CHANGE.summary, status: "landed" } };
+    expect(statusSentence(landed, currentVersion(landed))).toBe("Landed on the base branch.");
+  });
 });
 
 describe("the round's diff", () => {

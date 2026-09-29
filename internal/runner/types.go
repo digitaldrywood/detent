@@ -830,9 +830,16 @@ type NativeChange struct {
 	// published; VersionError then says why.
 	VersionID    string
 	VersionError string
-	BaseSHA      string
-	HeadSHA      string
-	Files        int
+	// VersionCode is the hub's error code for an unpublished version, such
+	// as policy_mismatch, so the item's comment can say who has to act.
+	VersionCode string
+	// Reviewed reports that the project's review policy already accepts the
+	// published version: no person has to review it, so the item goes
+	// straight to the landing lane.
+	Reviewed bool
+	BaseSHA  string
+	HeadSHA  string
+	Files    int
 }
 
 type ArtifactProgressEvidence struct {

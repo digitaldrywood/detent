@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -236,23 +237,31 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 }
 
 // defaultChangeReviewPolicy is the review expectation a native project starts
-// with: a person reviews every version and no CI check is pinned. It is what
-// approving the repository policy means for a project nobody configured
-// further, so a runner can publish the versions the reviewer decides on.
-func defaultChangeReviewPolicy(policyID string) tracker.ChangeReviewPolicy {
-	rules := tracker.ChangeReviewPolicy{PolicyID: policyID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
+// with: no CI check is pinned, and a person reviews each version only when
+// the repository gate asks for one. Under any other gate a published version
+// is already reviewed, so the runner lands it without waiting for anybody.
+// It is what approving the repository policy means for a project nobody
+// configured further.
+func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeReviewPolicy {
+	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.Kind == "human_review", RequiredChecks: []tracker.ChangeCheckSpec{}}
 	rules.ID = changerequest.PolicyID(rules)
 	return rules
 }
 
+// followsRepositoryGate reports a review policy that pins no CI check. Its
+// review requirement is not a separate decision: it follows the repository
+// gate, the way the default does, so a descriptor approval may rewrite it.
+func followsRepositoryGate(rules tracker.ChangeReviewPolicy) bool {
+	return rules.ID != "" && len(rules.RequiredChecks) == 0
+}
+
 // followDefaultChangeReviewPolicy keeps a native project's review policy usable
-// across a repository policy approval. A project with no review policy gets
-// the default under the approved descriptor, and a project whose review policy
-// is exactly the default follows the descriptor to its new identity. A review
-// policy an administrator shaped, by pinning checks or lifting the review
-// requirement, is never rewritten: it goes stale, and publishing says so until
-// the administrator approves it again against the new descriptor. A descriptor
-// whose gates the default cannot satisfy leaves the project without one.
+// across a repository policy approval. A project with no review policy, or
+// one that pins no checks, gets the default under the approved descriptor. A
+// review policy an administrator shaped by pinning checks is never
+// rewritten: it goes stale, and publishing says so until the administrator
+// approves it again against the new descriptor. A descriptor whose gates the
+// default cannot satisfy leaves the project as it is.
 func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope string, descriptor policy.Descriptor) error {
 	organization, project, ok := strings.Cut(scope, "/")
 	if !ok || strings.HasPrefix(scope, "repository:") {
@@ -263,10 +272,10 @@ func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope stri
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if err == nil && (current.PolicyID == descriptor.ID || current.ID != defaultChangeReviewPolicy(current.PolicyID).ID) {
+	rules := defaultChangeReviewPolicy(descriptor)
+	if err == nil && (current.ID == rules.ID || !followsRepositoryGate(current)) {
 		return nil
 	}
-	rules := defaultChangeReviewPolicy(descriptor.ID)
 	if changerequest.ValidatePolicy(rules, descriptor) != nil {
 		return nil
 	}
@@ -277,6 +286,44 @@ func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope stri
 	_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
 ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, native.organization, native.project, string(raw))
 	return err
+}
+
+// backfillChangeReviewPolicies gives every project with an approved
+// repository policy the review policy approving it now seeds: projects
+// approved before seeding existed had none, so no run could publish a
+// version, and projects seeded while the default required review follow the
+// repository gate like any other default. It is hub migration 40.
+func backfillChangeReviewPolicies(ctx context.Context, tx *sql.Tx) error {
+	scopes, err := approvedProjectScopes(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, scope := range scopes {
+		approval, err := readProjectPolicy(ctx, tx, scope)
+		if err != nil {
+			continue
+		}
+		if err := followDefaultChangeReviewPolicy(ctx, tx, scope, approval.Policy); err != nil {
+			return fmt.Errorf("backfill review policy for %s: %w", scope, err)
+		}
+	}
+	return nil
+}
+
+func approvedProjectScopes(ctx context.Context, tx *sql.Tx) (scopes []string, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT scope FROM project_policies WHERE scope NOT LIKE 'repository:%' ORDER BY scope`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
 }
 
 type policyQuerier interface {

@@ -684,3 +684,64 @@ func TestReviewInstructionsStayWithinTheCommentLimit(t *testing.T) {
 		t.Fatalf("short instructions = %q", short)
 	}
 }
+
+// TestPublishUnderTheDefaultPolicyLands checks the default review policy on
+// the hosted template: a published version needs nobody, so an item waiting
+// in review moves to Merging when it is published, while an item a run is
+// still working stays where it is for that run's completion to move.
+func TestPublishUnderTheDefaultPolicyLands(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		from string
+		want string
+	}{
+		{from: "Human Review", want: "Merging"},
+		{from: "In Progress", want: "In Progress"},
+	} {
+		t.Run(test.from, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "default")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			states := HostedProjectStates()
+			raw, err := marshalNative(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Land me", State: test.from})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()}), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var detail tracker.ChangeDetail
+			decodeHubResponse(t, response, &detail)
+			if detail.Summary.Status != "reviewed" || detail.Summary.NativeReview != "not_required" {
+				t.Fatalf("summary under the default policy = %#v, want reviewed with no review required", detail.Summary)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
+			if issue.State != test.want {
+				t.Fatalf("after publishing the item is in %s, want %s", issue.State, test.want)
+			}
+		})
+	}
+}

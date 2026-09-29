@@ -114,6 +114,9 @@ func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	}
 	if landed := detail.Change.Landed; landed != nil {
 		summary.NativeReview, summary.Checks, summary.Status = "approved", "not_required", "landed"
+		if !current.ReviewPolicy.RequireReview {
+			summary.NativeReview = "not_required"
+		}
 		summary.Messages = append(summary.Messages, "Landed on "+landed.BaseRef+" as "+landed.MergeSHA+".")
 		return summary
 	}

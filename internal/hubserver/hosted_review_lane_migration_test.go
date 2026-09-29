@@ -42,6 +42,18 @@ func TestHostedReviewLaneMigration(t *testing.T) {
 	})
 }
 
+// hostedLandingLaneStates is the hosted template migration 38 produces: the
+// landing lane, before migration 39 let a run go straight to it.
+func hostedLandingLaneStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
+}
+
 // TestHostedLandingLaneMigration moves projects on the review-lane template
 // onto the template with Merging, where an approved Change Request waits for
 // the runner that lands it, and leaves every other workflow as it was.
@@ -51,6 +63,18 @@ func TestHostedLandingLaneMigration(t *testing.T) {
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 37, to: 38, file: "migrations/00038_hosted_landing_lane.sql", lane: "Merging", dispatchable: true,
 		before: hostedReviewLaneStates(),
+		after:  hostedLandingLaneStates(),
+	})
+}
+
+// TestHostedDirectLandingMigration lets a run on the landing-lane template
+// move from In Progress straight to Merging when its version needs no
+// review, and leaves every other workflow as it was.
+func TestHostedDirectLandingMigration(t *testing.T) {
+	t.Parallel()
+	hostedLaneMigrationTest(t, hostedLaneMigration{
+		from: 38, to: 39, file: "migrations/00039_hosted_direct_landing.sql", lane: "Merging", dispatchable: true,
+		before: hostedLandingLaneStates(),
 		after:  HostedProjectStates(),
 	})
 }
