@@ -1,6 +1,9 @@
 package workspace
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestHTTPSRemoteURL(t *testing.T) {
 	t.Parallel()
@@ -31,5 +34,20 @@ func TestHTTPSRemoteURL(t *testing.T) {
 				t.Fatalf("HTTPSRemoteURL(%q) = %q, want %q", test.remote, got, test.want)
 			}
 		})
+	}
+}
+
+func TestRepositoryURLReadsTheConfiguredRemote(t *testing.T) {
+	t.Parallel()
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", "https://example.test/fixture.git")
+	runGit(t, source, "config", "url."+remote+".insteadOf", "https://example.test/fixture.git")
+	if got := RepositoryURL(context.Background(), source); got != "https://example.test/fixture" {
+		t.Fatalf("RepositoryURL() = %q, want the configured https remote", got)
+	}
+	runGit(t, source, "remote", "set-url", "origin", remote)
+	if got := RepositoryURL(context.Background(), source); got != "" {
+		t.Fatalf("RepositoryURL() with a path remote = %q, want empty", got)
 	}
 }
