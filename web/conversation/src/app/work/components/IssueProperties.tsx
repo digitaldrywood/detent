@@ -99,6 +99,8 @@ export interface IssuePropertiesProps {
   readonly relatedCandidates: readonly RelatedCandidate[];
   readonly onAddRelated: (workItemId: string) => void;
   readonly onOpenPullRequest: (() => void) | null;
+  /** Opens the issue's Change Request page; null where there is none. */
+  readonly onOpenChangeRequest?: (() => void) | null;
   /**
    * True where the list is already named by whatever is showing it — the
    * disclosure at the top of the issue column while the panel is open. The
@@ -308,14 +310,25 @@ export function IssueProperties(props: IssuePropertiesProps): React.ReactElement
         </div>
       </Group>
 
-      <Group title="Pull request">
-        {pullRequest === null || change === null ? (
+      <Group title={pullRequest === null && change !== null ? "Change Request" : "Pull request"}>
+        {change === null ? (
           <div className={ROW_CLASS} data-testid="issue-pull-request">
             <GitPullRequestIcon className={ICON_CLASS} />
-            <span className="text-muted-foreground">
-              {change === null ? "None yet" : "Not mirrored to a host"}
-            </span>
+            <span className="text-muted-foreground">None yet</span>
           </div>
+        ) : pullRequest === null ? (
+          <button
+            type="button"
+            data-testid="issue-change-request"
+            disabled={props.onOpenChangeRequest === null || props.onOpenChangeRequest === undefined}
+            onClick={() => props.onOpenChangeRequest?.()}
+            className={cn(ROW_ACTION_CLASS, "text-left")}
+          >
+            <GitPullRequestIcon className={ICON_CLASS} />
+            <span className="truncate">
+              {change.review === "" ? "Review" : change.review.replaceAll("_", " ")}
+            </span>
+          </button>
         ) : (
           <button
             type="button"

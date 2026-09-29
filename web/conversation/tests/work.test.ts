@@ -419,3 +419,95 @@ describe("the activity stream", () => {
     await reader.cancel();
   });
 });
+
+describe("reviewing a change", () => {
+  async function reviewable() {
+    const board = await http.listWorkItems({ projectId: PROJECT, limit: 200 });
+    for (const item of board.items) {
+      const changes = await http.listChanges(PROJECT, item.work_item_id);
+      const change = changes.at(-1);
+      if (change === undefined) continue;
+      const detail = await http.getChange(PROJECT, item.work_item_id, change.change_id);
+      return { itemId: item.work_item_id, changeId: change.change_id, detail };
+    }
+    throw new Error("the mock serves no issue with a change");
+  }
+
+  it("reads the diff behind the round from the attempt that published it", async () => {
+    const { detail } = await reviewable();
+    const version = detail.versions.find(
+      (candidate) => candidate.version_id === detail.change.current_version_id,
+    )!;
+    const diff = await http.getAttemptDiff(PROJECT, version.attempt_id!);
+    expect(diff.attempt_id).toBe(version.attempt_id);
+    expect(diff.head_sha).toBe(version.head_sha);
+    expect(diff.files.map((file) => file.path)).toEqual(["README.md"]);
+    await expect(http.getAttemptDiff(PROJECT, "att_nobody")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("records an approval on the current version and the summary follows", async () => {
+    const { itemId, changeId, detail } = await reviewable();
+    const review = await http.reviewChange({
+      projectId: PROJECT,
+      itemId,
+      changeId,
+      versionId: detail.change.current_version_id,
+      key: "review_1",
+      decision: "approved",
+      body: "Looks right.",
+      expectedVersionId: detail.change.current_version_id,
+    });
+    expect(review.decision).toBe("approved");
+    expect(review.version_id).toBe(detail.change.current_version_id);
+    const after = await http.getChange(PROJECT, itemId, changeId);
+    expect(after.reviews.map((entry) => entry.review_id)).toContain(review.review_id);
+    expect(after.summary.native_review).toBe("approved");
+  });
+
+  it("refuses an approval pinned to a version that is not current", async () => {
+    const { itemId, changeId, detail } = await reviewable();
+    await expect(
+      http.reviewChange({
+        projectId: PROJECT,
+        itemId,
+        changeId,
+        versionId: detail.change.current_version_id,
+        key: "review_stale",
+        decision: "approved",
+        body: "",
+        expectedVersionId: "version_gone",
+      }),
+    ).rejects.toSatisfy((error: unknown) => error instanceof WorkApiError && error.conflict);
+  });
+
+  it("carries a request for changes with its text", async () => {
+    const { itemId, changeId, detail } = await reviewable();
+    const review = await http.reviewChange({
+      projectId: PROJECT,
+      itemId,
+      changeId,
+      versionId: detail.change.current_version_id,
+      key: "review_2",
+      decision: "changes_requested",
+      body: "Move the link to the end of the row.",
+    });
+    expect(review.body).toBe("Move the link to the end of the row.");
+    const after = await http.getChange(PROJECT, itemId, changeId);
+    expect(after.summary.native_review).toBe("changes_requested");
+  });
+
+  it("appends discussion to the change", async () => {
+    const { itemId, changeId, detail } = await reviewable();
+    const comment = await http.discussChange({
+      projectId: PROJECT,
+      itemId,
+      changeId,
+      key: "discuss_1",
+      body: "Do we want this on mobile too?",
+      versionId: detail.change.current_version_id,
+    });
+    expect(comment.version_id).toBe(detail.change.current_version_id);
+    const after = await http.getChange(PROJECT, itemId, changeId);
+    expect(after.discussion.map((entry) => entry.comment_id)).toContain(comment.comment_id);
+  });
+});

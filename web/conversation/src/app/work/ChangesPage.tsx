@@ -33,10 +33,14 @@ function reviewTone(review: string): PillTone {
   switch (review) {
     case "ready":
     case "merged":
+    case "reviewed":
+    case "landed":
       return "ok";
     case "blocked":
+    case "stale_policy":
       return "err";
     case "pending":
+    case "needs_evidence":
       return "warn";
     default:
       return "mute";
@@ -111,17 +115,29 @@ export function ChangesPage(): React.ReactElement {
                       </span>
                     </TableCell>
                     <TableCell className="max-w-0 whitespace-normal">
-                      {change.url === null ? (
-                        change.title
-                      ) : (
+                      <button
+                        type="button"
+                        data-testid="changes-title-link"
+                        onClick={() =>
+                          void navigate({
+                            to: "/work/i/$workItemId/changes/$changeId",
+                            params: { workItemId: item.id, changeId: change.id },
+                            search: { project: item.projectId },
+                          })
+                        }
+                        className="cursor-pointer text-left underline-offset-4 hover:underline"
+                      >
+                        {change.title}
+                      </button>
+                      {change.url === null ? null : (
                         <a
-                          className="inline-flex items-center gap-1 underline-offset-4 hover:underline"
+                          className="ml-1.5 inline-flex items-center gap-1 text-muted-foreground underline-offset-4 hover:underline"
                           href={change.url}
                           rel="noreferrer noopener"
                           target="_blank"
+                          aria-label="Open the pull request on the host"
                         >
-                          {change.title}
-                          <ExternalLinkIcon className="size-3 text-muted-foreground" />
+                          <ExternalLinkIcon className="size-3" />
                         </a>
                       )}
                     </TableCell>
@@ -142,7 +158,7 @@ export function ChangesPage(): React.ReactElement {
                     </TableCell>
                     <TableCell>
                       <Pill tone={reviewTone(change.review)}>
-                        {change.review === "" ? "unknown" : change.review}
+                        {change.review === "" ? "unknown" : change.review.replaceAll("_", " ")}
                       </Pill>
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground tabular-nums">
