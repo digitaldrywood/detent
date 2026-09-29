@@ -228,7 +228,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 
 	deps.pauseProjects = append([]globalconfig.Project(nil), cfg.Projects...)
 	deps.pauseGitHubToken = runtimeGlobalGitHubToken(githubToken)
-	jobs := []doctorCheckJob{{Name: "Host native toolchain caches", Run: func(ctx context.Context) []doctorCheck {
+	jobs := []doctorCheckJob{{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn, Run: func(ctx context.Context) []doctorCheck {
 		return []doctorCheck{checkDoctorNativeCaches(ctx, deps, cfg.Global.Cache)}
 	}}}
 	for _, project := range cfg.Projects {
