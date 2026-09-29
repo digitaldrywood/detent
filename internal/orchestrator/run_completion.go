@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -3085,7 +3086,8 @@ func (o *Orchestrator) recordCompletionUsage(ctx context.Context, state *State, 
 // request head when, and only when, the merge worker ran the command gate on
 // exactly that head and it passed. A head that moved since, a gate command
 // that changed since, a gate Detent did not run itself, or a project without
-// gate.local_status posts nothing. The
+// gate.local_status posts nothing, and neither does a head that already
+// carries a successful status for that context. The
 // pull request is re-read afterwards so the new status counts toward its
 // required checks. A failed post or re-read is returned so the merge worker
 // retries and validates again instead of waiting on a status that never comes.
@@ -3104,6 +3106,11 @@ func (o *Orchestrator) postValidatedGateStatus(ctx context.Context, hydrator con
 	if !strings.EqualFold(strings.TrimSpace(issue.PullRequest.HeadSHA), head) {
 		o.logger.Warn("local gate status not posted: pull request head changed after validation",
 			"issue_id", issue.ID, "identifier", issue.Identifier, "validated_head", head, "pull_request_head", issue.PullRequest.HeadSHA)
+		return issue, nil
+	}
+	if slices.ContainsFunc(issue.PullRequest.Checks, func(check connector.PullRequestCheck) bool {
+		return check.Name == statusContext && check.Conclusion == "success"
+	}) {
 		return issue, nil
 	}
 	poster, ok := o.connector.(connector.CommitStatusPoster)

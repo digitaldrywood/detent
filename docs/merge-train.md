@@ -58,7 +58,8 @@ for it. With `gate.local_status: local-gate` in the project's `detent.yaml`,
 Detent does this itself: the merge worker runs the configured `gate.run` on the
 head it pushes (after a clean rebase or a resolved merge), and the orchestrator
 posts `local-gate` with state `success` for that SHA only when the gate passed
-and the pull request head still equals it. A failing gate posts nothing and
+and the pull request head still equals it, and skips the post when that head
+already carries a successful `local-gate`. A failing gate posts nothing and
 hands the branch to the merge-fallback turn. A changed head, or a `gate.run`
 changed while the gate ran, needs a new gate and status. Do not also list the
 context in `gate.required_status_checks`: that list is evaluated before

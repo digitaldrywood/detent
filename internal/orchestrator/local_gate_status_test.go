@@ -45,6 +45,7 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 		validatedHead string
 		validatedRun  string
 		prHead        string
+		prChecks      []connector.PullRequestCheck
 		postErr       error
 		wantPosted    []string
 		wantRefreshed bool
@@ -55,6 +56,8 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 		{name: "gate not run by Detent", localStatus: "local-gate", validatedHead: "", prHead: head},
 		{name: "no local status configured", localStatus: "", validatedHead: head, prHead: head},
 		{name: "gate command changed after validation", localStatus: "local-gate", validatedHead: head, validatedRun: "make lint", prHead: head},
+		{name: "success already on the head", localStatus: "local-gate", validatedHead: head, prHead: head, prChecks: []connector.PullRequestCheck{{Name: "local-gate", Status: "success", Conclusion: "success"}}},
+		{name: "pending status on the head", localStatus: "local-gate", validatedHead: head, prHead: head, prChecks: []connector.PullRequestCheck{{Name: "local-gate", Status: "pending", Conclusion: "pending"}}, wantPosted: []string{"example/repo@" + head + "=local-gate"}, wantRefreshed: true},
 		{name: "post fails", localStatus: "local-gate", validatedHead: head, prHead: head, postErr: errors.New("forbidden"), wantErr: true},
 	}
 	for _, tt := range tests {
@@ -64,7 +67,7 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 			cfg := Config{}
 			cfg.AutoPromote.Gate = gate.Config{Kind: gate.KindCommand, Run: "make check-fast", LocalStatus: tt.localStatus}
 			orch := &Orchestrator{cfg: cfg, connector: fake, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			issue := connector.Issue{ID: "1", Identifier: "example/repo#7", PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 7, HeadSHA: tt.prHead}}
+			issue := connector.Issue{ID: "1", Identifier: "example/repo#7", PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 7, HeadSHA: tt.prHead, Checks: tt.prChecks}}
 			event := runpkg.Completion{Result: runpkg.RunResult{GateValidatedHead: tt.validatedHead, GateValidatedRun: tt.validatedRun}}
 			if tt.validatedRun == "" && tt.validatedHead != "" {
 				event.Result.GateValidatedRun = "make check-fast"
