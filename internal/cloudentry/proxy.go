@@ -176,7 +176,9 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken)
 	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 		if rotated.RefreshToken != "" {
-			_ = s.auth.storeTokens(detached, authorized.Binding, rotated)
+			if err := s.auth.storeTokens(detached, authorized.Binding, rotated); err != nil {
+				s.config.Logger.WarnContext(ctx, "shared entry could not store rotated tokens", "organization", authorized.Organization)
+			}
 		}
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
 	}
