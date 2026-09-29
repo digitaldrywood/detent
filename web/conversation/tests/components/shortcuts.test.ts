@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // The shell's keyboard shortcuts (design inventory B.13 rule 4, B.14).
 //
 // The rule worth a test is the one that goes wrong silently: a single-key
@@ -6,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dialogOpen,
   isEditableTarget,
   NEW_CHAT_KEYSHORTCUTS,
   SEARCH_KEYSHORTCUTS,
@@ -33,6 +35,26 @@ function element(tagName: string, attributes: Record<string, string> = {}) {
     getAttribute: (name: string) => attributes[name] ?? null,
   };
 }
+
+describe("dialogOpen", () => {
+  function page(html: string) {
+    return new DOMParser().parseFromString(html, "text/html");
+  }
+
+  it.each([
+    { name: "an open dialog", html: '<div role="dialog" data-open></div>', want: true },
+    { name: "a dialog without state attributes", html: '<div role="dialog"></div>', want: true },
+    { name: "only a closing dialog", html: '<div role="dialog" data-closed></div>', want: false },
+    { name: "a closing dialog and an open one", html: '<div role="dialog" data-closed></div><div role="dialog" data-open></div>', want: true },
+    { name: "no dialog", html: "<main></main>", want: false },
+  ])("reads $name", ({ html, want }) => {
+    expect(dialogOpen(page(html))).toBe(want);
+  });
+
+  it("reads no document as no dialog", () => {
+    expect(dialogOpen(undefined)).toBe(false);
+  });
+});
 
 describe("isEditableTarget", () => {
   it("names the places a reader types", () => {
