@@ -51,7 +51,7 @@ func TestSystemdInspectAndCommands(t *testing.T) {
 			switch name {
 			case "systemctl":
 				if len(args) > 1 && args[1] == "kill" {
-					if !reflect.DeepEqual(args, []string{"--user", "kill", "--kill-whom=main", "--signal=SIGTERM", systemdUnitName}) {
+					if !reflect.DeepEqual(args, []string{"--user", "kill", "--kill-whom=main", "--signal=SIGTERM", SystemdUnit(DefaultName)}) {
 						t.Errorf("signal command = %v", args)
 					}
 					stopped = true
@@ -81,7 +81,7 @@ func TestSystemdInspectAndCommands(t *testing.T) {
 	if err := manager.Restart(t.Context()); err != nil {
 		t.Fatalf("Restart() error = %v", err)
 	}
-	if got := commands[len(commands)-1]; !reflect.DeepEqual(got, []string{"systemctl", "--user", "start", systemdUnitName}) {
+	if got := commands[len(commands)-1]; !reflect.DeepEqual(got, []string{"systemctl", "--user", "start", SystemdUnit(DefaultName)}) {
 		t.Fatalf("restart command = %#v", got)
 	}
 }
@@ -144,7 +144,7 @@ func TestSystemdDetectsLoadedUnitWithoutDefinitionFile(t *testing.T) {
 func TestSystemdInstallWritesEnablesAndStarts(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "systemd", systemdUnitName)
+	path := filepath.Join(t.TempDir(), "systemd", SystemdUnit(DefaultName))
 	var commands [][]string
 	cfg := normalizeConfig(Config{
 		UserSystemdPath: path,
@@ -168,8 +168,8 @@ func TestSystemdInstallWritesEnablesAndStarts(t *testing.T) {
 	}
 	wantCommands := [][]string{
 		{"systemctl", "--user", "daemon-reload"},
-		{"systemctl", "--user", "enable", systemdUnitName},
-		{"systemctl", "--user", "start", systemdUnitName},
+		{"systemctl", "--user", "enable", SystemdUnit(DefaultName)},
+		{"systemctl", "--user", "start", SystemdUnit(DefaultName)},
 	}
 	if !reflect.DeepEqual(commands, wantCommands) {
 		t.Fatalf("commands = %#v, want %#v", commands, wantCommands)

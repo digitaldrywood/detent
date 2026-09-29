@@ -1902,3 +1902,52 @@ func validDecodedConfig(paths projectPaths) map[string]any {
 		},
 	}
 }
+
+func TestServiceName(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		valid bool
+	}{
+		{name: "detent", valid: true},
+		{name: "detent.runner", valid: true},
+		{name: "detent-runner-2", valid: true},
+		{name: "", valid: false},
+		{name: "Detent", valid: false},
+		{name: "detent runner", valid: false},
+		{name: "detent/runner", valid: false},
+		{name: ".detent", valid: false},
+		{name: "-detent", valid: false},
+		{name: "detent.", valid: false},
+		{name: "detent..runner", valid: false},
+		{name: strings.Repeat("a", 65), valid: false},
+	} {
+		if got := ValidServiceName(test.name); got != test.valid {
+			t.Errorf("ValidServiceName(%q) = %v, want %v", test.name, got, test.valid)
+		}
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "global.yaml")
+	for _, test := range []struct {
+		value   string
+		want    string
+		wantErr bool
+	}{
+		{value: "", want: ""},
+		{value: "service_name: detent.runner\n", want: "detent.runner"},
+		{value: "service_name: Bad Name\n", wantErr: true},
+		{value: "service_name: [a]\n", wantErr: true},
+	} {
+		raw := "apiVersion: detent/v1\nkind: GlobalConfig\n" + test.value + "global:\n  scheduling: weighted\n  max_concurrent_agents: 1\nprojects: []\n"
+		cfg, err := Parse([]byte(raw), path)
+		if test.wantErr {
+			if err == nil {
+				t.Errorf("Parse(%q) accepted an invalid service name", test.value)
+			}
+			continue
+		}
+		if err != nil || cfg.ServiceName != test.want {
+			t.Errorf("Parse(%q) = %q, %v; want %q", test.value, cfg.ServiceName, err, test.want)
+		}
+	}
+}

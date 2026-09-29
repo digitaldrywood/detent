@@ -288,6 +288,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | tmux window status | | `$TMUX` detection | `ops.tmux_window_status` | enabled inside tmux |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
+| Service name | | | `service_name` | `detent` |
 | Health webhook | | | `notifications.health.webhook.url` | disabled |
 | Health notification debounce | | | `notifications.health.debounce_seconds` | `300` |
 | Health webhook timeout | | | `notifications.health.webhook.timeout_ms` | `5000` |
@@ -410,6 +411,19 @@ from the first non-empty value in this order: top-level `instance_name` in
 single-project fallback mode without `global.yaml`, workflow top-level
 `identity.name` is used before the short hostname. Names are trimmed, must be a
 single line, and are capped at 40 characters in the web UI.
+
+`service_name` names the background service `detent start` installs: the
+launchd job `com.digitaldrywood.NAME` and the systemd user unit `NAME.service`.
+It defaults to `detent`. Give each configuration on one host its own name, for
+example a local board and a Detent Cloud runner; `detent hub runner register`
+writes `service_name: detent.runner`. Names use lowercase letters, digits, dots
+and hyphens.
+
+A project listed under `client.native_projects` whose committed `detent.yaml`
+uses the GitHub tracker (`github` or `github_local`) uses the Hub instead
+(`tracker.kind: hub_native`), so a runner host can use a repository checkout
+as it is. Any other tracker kind is treated as a deliberate local choice and
+kept.
 
 Configure `client.hub_url` to move candidate discovery and claiming to a Detent
 Hub. The machine registers its identity, project and pool capabilities,
