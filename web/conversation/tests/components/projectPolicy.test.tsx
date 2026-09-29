@@ -83,6 +83,35 @@ describe("repository policy after setup", () => {
     expect(screen.queryByRole("button", { name: "Approve reported policy" })).toBeNull();
   });
 
+  it("names the current approval even while the policy read is still loading", async () => {
+    const { base } = await mount();
+    const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
+    await fetch(`${base}/policy/observed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...current.policy, policy_id: "pol_slow" }),
+    });
+    const realFetch = globalThis.fetch;
+    let releasePolicy: () => void = () => undefined;
+    const policyHeld = new Promise<void>((resolve) => {
+      releasePolicy = resolve;
+    });
+    const requests = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if ((init?.method ?? "GET") === "GET" && String(input).endsWith("/projects/proj_alpha/policy")) await policyHeld;
+      return realFetch(input, init);
+    });
+    renderSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Approve reported policy pol_slow" }));
+    await waitFor(async () => {
+      const after = (await (await realFetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
+      expect(after.policy.policy_id).toBe("pol_slow");
+    });
+    const put = requests.mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(JSON.parse(String(put?.[1]?.body)).expected_policy_id).toBe(current.policy.policy_id);
+    releasePolicy();
+    requests.mockRestore();
+  });
+
   it("lists each runner's reported policy and approves the chosen one after a conflicting approval", async () => {
     const { base } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };

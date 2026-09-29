@@ -451,7 +451,10 @@ export function ProjectSettingsRoute({
     try {
       const approved = await api.approvePolicy({
         projectId,
-        expectedPolicyId: policy.value?.policy.policy_id ?? "",
+        // The onboarding response that listed the reported policies also
+        // carries the approval they were compared with, so the two never
+        // disagree, even while the separate policy read is still loading.
+        expectedPolicyId: (setup.value?.policy ?? policy.value)?.policy.policy_id ?? "",
         policy: descriptor,
         onboarding: true,
       });
