@@ -21,7 +21,7 @@ type nativeWorkflowConnector struct {
 	reviewed *bool
 }
 
-func (c *nativeWorkflowConnector) ChangeReviewed(context.Context, string, string) (bool, error) {
+func (c *nativeWorkflowConnector) ChangeReviewed(context.Context, string, string, string) (bool, error) {
 	if c.reviewed == nil {
 		return false, errors.New("hub unavailable")
 	}
@@ -82,6 +82,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "a version waiting for a reviewer goes to review", change: opened, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version without a landing move goes to review", change: accepted, states: workflow, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "an approval that arrived after the publish lands", change: waiting, states: landing, reviewed: &yes, wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "a run that published no version never lands an earlier reviewed one", change: opened, states: landing, reviewed: &yes, wantState: "In Review", wantComment: "No version was published for review"},
 		{name: "a version that lost its acceptance goes to review", change: accepted, states: landing, reviewed: &no, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version never goes to a landing lane that does not dispatch", change: accepted, states: undispatched, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},

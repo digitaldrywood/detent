@@ -106,17 +106,18 @@ func (o *Orchestrator) completeNativeChangeRun(
 	return true
 }
 
-// refreshNativeChangeReview reads whether the change is reviewed as the
-// completion is applied. The run captured it when it published the version,
+// refreshNativeChangeReview reads whether the version the run published is
+// reviewed as the completion is applied. A run that published no version has
+// nothing to land, whatever an earlier version's review says. The run captured it when it published the version,
 // and an approval or check that arrives before the completion lands is
 // deliberately left to the completion by the Hub, so the answer the run
 // captured may be stale. A failed read keeps the captured answer.
 func (o *Orchestrator) refreshNativeChangeReview(ctx context.Context, issueID string, change *runpkg.NativeChange) *runpkg.NativeChange {
 	reader, ok := o.connector.(connector.ChangeReviewReader)
-	if !ok || !change.Changed || change.ChangeID == "" {
+	if !ok || !change.Changed || change.ChangeID == "" || change.VersionID == "" {
 		return change
 	}
-	reviewed, err := reader.ChangeReviewed(ctx, issueID, change.ChangeID)
+	reviewed, err := reader.ChangeReviewed(ctx, issueID, change.ChangeID, change.VersionID)
 	if err != nil || reviewed == change.Reviewed {
 		return change
 	}
