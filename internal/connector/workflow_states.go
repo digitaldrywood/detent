@@ -21,6 +21,14 @@ type WorkflowStateReader interface {
 	WorkflowStates(context.Context) ([]WorkflowState, error)
 }
 
+// ChangeReviewReader is a connector whose tracker keeps Change Requests. A
+// run's completion asks it whether the change's current version is reviewed
+// when the completion is applied, since an approval or a check can arrive
+// between the run publishing the version and its completion moving the item.
+type ChangeReviewReader interface {
+	ChangeReviewed(ctx context.Context, issueID, changeID string) (bool, error)
+}
+
 // CompletionLane is the lane a successful run moves an item to, chosen only
 // from the moves the workflow allows out of its current lane and never an
 // operator-only lane. The workflow states no review kind, so the review lane

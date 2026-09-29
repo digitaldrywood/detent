@@ -119,6 +119,17 @@ func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.Issue
 	return issueFromNative(issue), err
 }
 
+// ChangeReviewed reports whether the change's current version is reviewed:
+// accepted by the project's review policy, with every approval and check it
+// asks for in place.
+func (c *NativeConnector) ChangeReviewed(ctx context.Context, issueID, changeID string) (bool, error) {
+	detail, err := c.client.Change(ctx, tracker.NativeWorkItemID(issueID), changeID)
+	if err != nil {
+		return false, err
+	}
+	return detail.Summary.Status == "reviewed", nil
+}
+
 func (c *NativeConnector) CreateComment(ctx context.Context, id, body string) error {
 	_, err := c.client.CreateComment(ctx, tracker.NativeWorkItemID(id), tracker.CreateComment{Mutation: nativeMutationKey(), Body: body})
 	return err
