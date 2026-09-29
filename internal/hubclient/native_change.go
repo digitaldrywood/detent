@@ -124,8 +124,11 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err != nil {
 		return "", fmt.Errorf("read change: %w", err)
 	}
+	// The current version is reused only when it carries this head under the
+	// policy this run was claimed with and is not stale: a policy change
+	// between attempts needs a new version to review, head or no new head.
 	for _, version := range detail.Versions {
-		if version.ID == detail.Change.CurrentVersion && version.HeadSHA == diff.HeadSHA {
+		if version.ID == detail.Change.CurrentVersion && version.HeadSHA == diff.HeadSHA && version.PolicyID == e.data.PolicyID && detail.Summary.Status != "stale_policy" {
 			return version.ID, nil
 		}
 	}

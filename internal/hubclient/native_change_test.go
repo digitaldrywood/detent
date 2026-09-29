@@ -227,6 +227,20 @@ func (h *nativeChangeHub) changes(t *testing.T, issueID string) []tracker.Change
 
 const nativeChangeRepository = "https://github.com/example/native-change"
 
+// repolicy approves a changed repository policy, as an operator editing the
+// project's definition between attempts does; the seeded review policy
+// follows it, and versions published before it are stale.
+func (h *nativeChangeHub) repolicy(t *testing.T) {
+	t.Helper()
+	next := h.descriptor
+	next.ConfigDigest = policy.Digest([]byte("changed between attempts"))
+	next = next.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = next
+}
+
 // publish puts a version at the given head on the change as an operator
 // would, so a rework run finds a current version to compare its head with.
 func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, changeID, head string) tracker.ChangeVersion {
@@ -275,6 +289,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		failDiff    bool
 		existing    bool
 		published   string
+		repolicy    bool
 		noRemote    bool
 		wantChange  *runner.NativeChange
 		wantError   bool
@@ -291,6 +306,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
 		{name: "rework keeps the version that already carries its head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "rework republishes the same head under a changed policy", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
 		{name: "a remote no https URL names opens the change without a version", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), noRemote: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1},
 		{name: "a clean worktree with no commits opens nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base),
@@ -319,6 +336,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				if test.published != "" {
 					h.publish(t, item, earlier.ID, test.published)
+				}
+				if test.repolicy {
+					h.repolicy(t)
 				}
 			}
 			h.claim(t, issue.ID)
@@ -390,7 +410,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							}
 						} else {
 							current := detail.Versions[len(detail.Versions)-1]
-							runPublished := test.published != got.HeadSHA
+							runPublished := test.published != got.HeadSHA || test.repolicy
 							if got.VersionID != current.ID || got.VersionError != "" || detail.Change.CurrentVersion != current.ID || current.HeadSHA != got.HeadSHA || current.BaseSHA != got.BaseSHA || runPublished && (current.RunID == "" || current.AttemptID == "") || current.Repository != nativeChangeRepository || current.Code.Kind != "code" || detail.Summary.Status != "needs_evidence" {
 								t.Fatalf("version = %#v for native change %#v (summary %#v)", current, got, detail.Summary)
 							}
