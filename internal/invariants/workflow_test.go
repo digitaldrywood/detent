@@ -54,6 +54,16 @@ func checkWorkflow(data []byte) error {
 	if !slices.Equal(pullRequest.Branches, []string{"main"}) {
 		return errors.New("INV-5 CI pull requests must target only main; develop pull requests use the local gate")
 	}
+	var mergeGroup struct {
+		Branches []string `yaml:"branches"`
+	}
+	mergeGroupNode := workflow.On["merge_group"]
+	if err := mergeGroupNode.Decode(&mergeGroup); err != nil {
+		return fmt.Errorf("INV-5 decode merge_group trigger: %w", err)
+	}
+	if !slices.Equal(mergeGroup.Branches, []string{"main"}) {
+		return errors.New("INV-5 CI merge groups must target only main")
+	}
 	for _, required := range []string{"invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
 		if _, ok := workflow.Jobs[required]; !ok {
 			return fmt.Errorf("required CI job %s missing", required)
@@ -161,7 +171,9 @@ func TestWorkflowViolations(t *testing.T) {
 		{"feature branch push", "branches: [main]", "branches: [main, 'feature/*']"},
 		{"develop pull requests", "    branches: [main]\n    types:", "    branches: [main, develop]\n    types:"},
 		{"pull requests into any branch", "    branches: [main]\n    types:", "    types:"},
-		{"merge group dropped", "  merge_group:\n    types: [checks_requested]\n", ""},
+		{"merge group dropped", "  merge_group:\n    branches: [main]\n    types: [checks_requested]\n", ""},
+		{"merge group on develop", "  merge_group:\n    branches: [main]\n", "  merge_group:\n    branches: [main, develop]\n"},
+		{"merge group on any branch", "  merge_group:\n    branches: [main]\n", "  merge_group:\n"},
 		{"nightly trigger", "  workflow_dispatch:", "  schedule:\n    - cron: '0 0 * * *'\n  workflow_dispatch:"},
 		{"manual dispatch dropped", "  workflow_dispatch:", "  unused_event:"},
 		{"integration develop push", "if: " + integrationCondition, "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/develop')"},

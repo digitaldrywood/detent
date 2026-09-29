@@ -1235,7 +1235,7 @@ integration branch before promotion.
 
 **Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML and
 requires exactly four triggers: `main` push, `pull_request` limited to `main`,
-`merge_group`, and `workflow_dispatch`, plus all real jobs. It rejects develop
+`merge_group` limited to `main`, and `workflow_dispatch`, plus all real jobs. It rejects develop
 pull requests, develop pushes, schedule, and tag triggers. Every real job
 reports skipped on pull requests (`github.event_name != 'pull_request'`) so the
 `main` ruleset's required contexts exist for the queue, and only the

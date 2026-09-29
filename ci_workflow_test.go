@@ -363,7 +363,7 @@ func TestCIRunsOnlyForMain(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	want := "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review]\n  merge_group:\n    types: [checks_requested]\n  workflow_dispatch:\n"
+	want := "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review]\n  merge_group:\n    branches: [main]\n    types: [checks_requested]\n  workflow_dispatch:\n"
 	if triggers != want {
 		t.Fatalf("CI triggers = %q, want %q", triggers, want)
 	}
