@@ -1,12 +1,60 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/policy"
 )
+
+func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	if err := os.WriteFile(path, []byte("---\ntracker:\n  kind: memory\ngate:\n  kind: command\n  run: make check-fast\n---\nRun the work.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := LoadProjectDefinition(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRaw, err := json.Marshal(struct {
+		Config Config
+		Prompt string
+	}{workflow.Config, workflow.Prompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRaw = bytes.Replace(legacyRaw, []byte(`,"LocalStatus":""`), nil, 1)
+	if bytes.Contains(legacyRaw, []byte(`"LocalStatus"`)) {
+		t.Fatal("legacy policy still includes the later binary field")
+	}
+	current, err := ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := current
+	approved.ConfigDigest = policy.Digest(legacyRaw)
+	approved = approved.WithID()
+	const priorReleaseID = "policy_ff99389fa698b343889b2a05755b2d056be24cb64556ea59c45f7ccc08800e7c"
+	if approved.ID != priorReleaseID {
+		t.Fatalf("v0.116.0 policy ID = %s, want %s", approved.ID, priorReleaseID)
+	}
+	if err := current.Match(approved); err != nil {
+		t.Fatalf("unchanged repository policy after binary upgrade: %v", err)
+	}
+	workflow.Config.Gate.LocalStatus = "local-gate"
+	changed, err := ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Match(approved) == nil {
+		t.Fatal("explicit local status change matched the old approval")
+	}
+}
 
 func TestRunnerPolicyCompatibility(t *testing.T) {
 	t.Parallel()

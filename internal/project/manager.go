@@ -990,7 +990,7 @@ func (m *Manager) handleInitialCreationFailureLocked(
 		return false
 	}
 	cfg.ID = string(id)
-	if !isConnectorFailure || !connector.IsRetryable(err) {
+	if !connector.IsRetryable(err) {
 		runtimeErr := RuntimeError{Message: err.Error(), At: m.nowUTC(), Terminal: true}
 		if pendingErr := m.registry.SetPending(cfg, runtimeErr); pendingErr != nil {
 			return false
@@ -1067,7 +1067,7 @@ func (m *Manager) retryPendingProject(
 		if trackedProject == nil {
 			_, candidate, err := m.createProjectLocked(cfg)
 			if err != nil {
-				if !errors.Is(err, ErrConnectorCreation) || !connector.IsRetryable(err) {
+				if !connector.IsRetryable(err) {
 					m.recordPendingFailure(cfg, err, time.Time{}, true)
 					m.logProjectStartupFailure(id, err, time.Time{}, true)
 					return

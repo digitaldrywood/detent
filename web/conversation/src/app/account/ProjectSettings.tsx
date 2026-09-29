@@ -98,7 +98,7 @@ export function PolicyRow({
   const [pasted, setPasted] = React.useState("");
   const description =
     observed.length > 0
-      ? `A runner resolved a different policy from the repository's detent.yaml and WORKFLOW.md and is waiting for it to be approved. Nothing runs on this project until it is.`
+      ? "A runner resolved an updated policy and is waiting for owner approval. Repository settings or a runner upgrade can change the policy. Nothing runs on this project until it is approved."
       : policy === null
         ? "No policy is approved. Start a runner for this project and it reports the policy it resolved here, or paste the output of the inspect command."
         : "The resolved policy descriptor a human approved. When the repository's detent.yaml or WORKFLOW.md changes, the runner reports the new policy here for approval.";
@@ -125,10 +125,10 @@ export function PolicyRow({
                 <Button
                   size="xs"
                   disabled={approving}
-                  aria-label={`Approve reported policy ${entry.policy.policy_id}`}
+                  aria-label={`Approve updated policy ${entry.policy.policy_id}`}
                   onClick={() => onApprove(entry.policy.policy_id)}
                 >
-                  {approving ? "Approving…" : "Approve reported policy"}
+                  {approving ? "Approving…" : "Approve updated policy"}
                 </Button>
               ) : null}
             </span>
@@ -250,15 +250,15 @@ export function ProjectSettingsView({
                 onClick={() => onApprovePolicy(observedPolicies[0]!.policy.policy_id)}
                 disabled={approving}
               >
-                {approving ? "Approving…" : "Approve reported policy"}
+                {approving ? "Approving…" : "Approve updated policy"}
               </Button>
             ) : null
           }
         >
           {observedPolicies.length > 0 ? (
             <>
-              <b className="font-semibold">A runner is waiting for a new policy.</b> The repository&apos;s
-              detent.yaml or WORKFLOW.md changed, and nothing runs until the policy it resolved is approved.
+              <b className="font-semibold">A runner is waiting for a new policy.</b> Repository settings or a runner
+              upgrade changed the resolved policy. Approve the updated policy to resume work.
             </>
           ) : (
             <>

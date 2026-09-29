@@ -8,6 +8,12 @@ mandatory check succeeds for the exact candidate commit. It creates an
 annotated semver tag containing that check evidence. Plain manually-created
 tags do not carry this provenance and the release workflow rejects them.
 
+Runner upgrades preserve policy approval when the repository and permitted local
+configuration are unchanged. If a release intentionally changes the resolved
+policy, its release notes must say that an organization owner needs to select
+**Approve updated policy** in the project's Settings. The runner reports the
+new descriptor and retries while approval is pending.
+
 General CI runs on the main push, not the release tag. Tag pushes run only the
 release workflow, so creating the tag does not supersede its recorded mandatory
 check IDs. An independent check rerun still invalidates older evidence even if
