@@ -114,7 +114,6 @@ export function RunnersSectionView({
   now,
   onEnroll,
   enrollments = [],
-  organizationId = "",
 }: {
   readonly fleet: FleetResponse;
   readonly now?: number;
@@ -127,7 +126,6 @@ export function RunnersSectionView({
   readonly onEnroll?: () => void;
   /** Enrollments this screen created, newest first. */
   readonly enrollments?: readonly PendingEnrollment[];
-  readonly organizationId?: string;
 }): React.ReactElement {
   const leases = fleet.runners.reduce((count, runner) => count + runner.leases.length, 0);
   return (
@@ -193,7 +191,7 @@ export function RunnersSectionView({
             <span className="text-xs text-muted-foreground">Created in this session</span>
           }
         >
-          <PendingEnrollments enrollments={enrollments} organizationId={organizationId} />
+          <PendingEnrollments enrollments={enrollments} />
         </SettingsSection>
       )}
     </>
@@ -243,7 +241,6 @@ export function RunnersSettings(): React.ReactElement {
         <RunnersSectionView
           fleet={fleet.value}
           enrollments={enrollments}
-          organizationId={bootstrap?.organization.id ?? ""}
           {...(canEnroll ? { onEnroll: () => setOpen(true) } : {})}
         />
       )}

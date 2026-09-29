@@ -312,19 +312,21 @@ export function makeAccountApi(options: AccountApiOptions) {
      * is shown once and the hub stores only its hash.
      *
      * No idempotency key, because `POST /runner-enrollments` is not a native
-     * mutation and would refuse the field. A retry of the same identifiers is
-     * made safe by the hub's identity collision (409) instead.
+     * mutation and would refuse the field. Without runner and machine IDs the
+     * token binds to whatever fresh IDs the host presents when it redeems it
+     * (`detent hub runner register`); with them, a retry of the same
+     * identifiers is made safe by the hub's identity collision (409).
      */
     enrollRunner: (input: {
       projectIds: readonly string[];
-      runnerId: string;
-      machineId: string;
+      runnerId?: string;
+      machineId?: string;
       operations?: readonly string[];
       ttlSeconds?: number;
     }) =>
       send(RunnerEnrollment, "POST", `${base}/runner-enrollments`, {
-        runner_id: input.runnerId,
-        machine_id: input.machineId,
+        ...(input.runnerId === undefined ? {} : { runner_id: input.runnerId }),
+        ...(input.machineId === undefined ? {} : { machine_id: input.machineId }),
         project_ids: [...input.projectIds],
         operations: [
           ...(input.operations ?? ["read", "collaborate", "claim", "heartbeat", "events"]),

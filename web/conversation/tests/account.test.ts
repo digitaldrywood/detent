@@ -15,7 +15,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { startMockHub, type MockHub } from "../dev/mock-hub.ts";
 import { makeAccountApi, AccountError, type AccountApi } from "../src/app/account/api.ts";
-import { enrollCommand } from "../src/app/fleet/EnrollRunner.tsx";
+import { registerCommand } from "../src/app/fleet/EnrollRunner.tsx";
 import { clearSetupKeys, setupKey, retireKey, SETUP_KEY_PREFIX } from "../src/app/account/idempotency.ts";
 import { lastAccountBootstrap, loadBootstrap } from "../src/runtime/bootstrap.ts";
 import type { AccountBootstrap } from "../src/contracts/account.ts";
@@ -455,22 +455,35 @@ describe("the first-run wizard", () => {
     expect(ids.length).toBeGreaterThan(1);
     const enrollment = await api.enrollRunner({
       projectIds: ids,
-      runnerId: "runner_" + "a".repeat(32),
-      machineId: "machine_" + "b".repeat(32),
       operations: ["read", "collaborate", "claim", "heartbeat", "events"],
       ttlSeconds: 900,
     });
     expect(enrollment.id.length).toBeGreaterThan(0);
     expect(enrollment.token.length).toBeGreaterThan(0);
     const sent = hub.lastEnrollment();
+    expect(sent?.runner_id).toBe("");
+    expect(sent?.machine_id).toBe("");
     expect(sent?.project_ids).toEqual(ids);
     expect(sent?.operations).toEqual(["read", "collaborate", "claim", "heartbeat", "events"]);
     expect(sent?.ttl_seconds).toBe(900);
     // The one-time token is what the host needs, and the command the dialog
     // shows is the command the CLI actually parses.
-    expect(enrollCommand(enrollment.token, bootstrap.organization.id)).toBe(
-      `DETENT_RUNNER_ENROLLMENT_TOKEN=${enrollment.token} detent hub runner enroll --organization ${bootstrap.organization.id}`,
+    const url = `https://hub.example.test/organizations/${bootstrap.organization.id}`;
+    expect(
+      registerCommand({
+        hubUrl: url,
+        organizationId: bootstrap.organization.id,
+        token: enrollment.token,
+        name: "Build host",
+        capacity: 2,
+        service: true,
+      }),
+    ).toBe(
+      `detent hub runner register --url ${url} --token ${enrollment.token} --name 'Build host' --capacity 2 --service`,
     );
+    // Token-first enrollments never collide: a second one for the same
+    // projects is a second runner.
+    await api.enrollRunner({ projectIds: ids });
   });
 
   it("creates the first issue once, however often the same body is sent", async () => {

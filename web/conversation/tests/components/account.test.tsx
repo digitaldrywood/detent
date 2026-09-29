@@ -26,7 +26,7 @@ import {
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
 import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
-import { initCommand, runnerHubUrl } from "../../src/app/fleet/EnrollRunner.tsx";
+import { registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { noApprovedPolicy, saveMessage } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
@@ -377,6 +377,35 @@ describe("the runner hub URL", () => {
     { name: "a public URL that already names the tenant", url: "https://cloud.example.com/organizations/org_1", base: "/organizations/org_1", want: "https://cloud.example.com/organizations/org_1" },
   ])("addresses $name", ({ url, base, want }) => {
     expect(runnerHubUrl(url, base)).toBe(want);
-    expect(initCommand(runnerHubUrl(url, base))).toBe(`detent hub runner init --hub-url ${want}`);
+  });
+});
+
+describe("the register command", () => {
+  const input = {
+    hubUrl: "https://cloud.example.com/organizations/org_1",
+    organizationId: "org_1",
+    token: "det_enroll_abc",
+    name: "",
+    capacity: 1,
+    service: false,
+  };
+  it.each([
+    { name: "the minimum", change: {}, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc" },
+    { name: "a plain name", change: { name: "mac-studio" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name mac-studio" },
+    { name: "a name with spaces", change: { name: " Build host " }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name 'Build host'" },
+    { name: "capacity and service", change: { capacity: 3, service: true }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --capacity 3 --service" },
+    { name: "a standalone hub", change: { hubUrl: "https://hub.example.com" }, want: "detent hub runner register --url https://hub.example.com --organization org_1 --token det_enroll_abc" },
+  ])("builds it for $name", ({ change, want }) => {
+    expect(registerCommand({ ...input, ...change })).toBe(want);
+  });
+
+  it.each([
+    { value: "plain", want: "plain" },
+    { value: "two words", want: "'two words'" },
+    { value: "Cory's Mac", want: "'Cory'\\''s Mac'" },
+    { value: "$(rm -rf /)", want: "'$(rm -rf /)'" },
+    { value: "", want: "''" },
+  ])("quotes $value for the shell", ({ value, want }) => {
+    expect(shellArgument(value)).toBe(want);
   });
 });
