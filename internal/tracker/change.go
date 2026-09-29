@@ -16,9 +16,33 @@ type ChangeRequest struct {
 	Title          string             `json:"title"`
 	Body           string             `json:"body"`
 	CurrentVersion string             `json:"current_version_id"`
+	Landed         *ChangeLanding     `json:"landed,omitempty"`
 	Revision       Revision           `json:"revision,string"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
+}
+
+// ChangeLanding records that a reviewed version reached the base branch: the
+// commit the runner pushed there, the branch, and the merge method it used.
+// A landed Change Request is finished; no later version is published on it.
+type ChangeLanding struct {
+	VersionID string    `json:"version_id"`
+	HeadSHA   string    `json:"head_sha"`
+	MergeSHA  string    `json:"merge_sha"`
+	BaseRef   string    `json:"base_ref"`
+	Method    string    `json:"method"`
+	Actor     Actor     `json:"actor"`
+	LandedAt  time.Time `json:"landed_at"`
+}
+
+// LandChangeVersion is the runner's report that it landed a reviewed version
+// with its own git credentials: the merge commit now on the base branch. The
+// Hub records it and finishes the primary issue in the same transaction.
+type LandChangeVersion struct {
+	Mutation
+	MergeSHA string `json:"merge_sha"`
+	BaseRef  string `json:"base_ref"`
+	Method   string `json:"method"`
 }
 
 type ChangeArtifact struct {

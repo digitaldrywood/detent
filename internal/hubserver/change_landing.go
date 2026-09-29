@@ -1,0 +1,160 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+// landingLane is the lane a reviewed Change Request waits in for the runner
+// that lands it. It is dispatchable so the runner claims the item, and it is
+// named rather than inferred so a workflow without one keeps its reviewed
+// changes in review, where a person lands them by hand.
+const landingLane = "Merging"
+
+// landingTarget is the lane an approved review moves the primary issue to:
+// the landing lane, when the issue's current lane may move there. It reports
+// "" when the workflow has no such move.
+func landingTarget(project tracker.NativeProject, current string) string {
+	for _, state := range project.States {
+		if state.Name != current {
+			continue
+		}
+		for _, name := range state.Transitions {
+			for _, target := range project.States {
+				if target.Name == name && strings.EqualFold(target.Name, landingLane) && target.Dispatchable && !target.Terminal && !target.OperatorOnly {
+					return target.Name
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// terminalTarget is the lane a landed issue finishes in: the first terminal
+// lane the current lane may move to.
+func terminalTarget(project tracker.NativeProject, current string) string {
+	for _, state := range project.States {
+		if state.Name != current {
+			continue
+		}
+		for _, name := range state.Transitions {
+			for _, target := range project.States {
+				if target.Name == name && target.Terminal {
+					return target.Name
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// promoteReviewedChange moves the change's primary issue to the landing lane
+// once its current version is reviewed. It runs after every write that can
+// complete the evidence: an approval, a check result, and a version publish
+// under a policy that requires no review. An issue the workflow cannot move
+// stays where it is; the evidence is recorded either way.
+func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
+	detail, err := readChangeDetail(ctx, tx, scope, string(change.WorkItemID), change.ID, now)
+	if err != nil {
+		return err
+	}
+	if detail.Summary.Status != "reviewed" {
+		return nil
+	}
+	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
+	if err != nil {
+		return err
+	}
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	target := landingTarget(project, issue.State)
+	if target == "" || target == issue.State {
+		return nil
+	}
+	from := issue.State
+	issue.State = target
+	_, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "user_requested"}, now)
+	return err
+}
+
+func (s *Service) landChange(c echo.Context) error {
+	var request tracker.LandChangeVersion
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
+		if err != nil {
+			return nil, err
+		}
+		if change.WorkItemID != tracker.NativeWorkItemID(c.Param("item")) {
+			return nil, nativeInvalid("Land through the Change Request's primary issue")
+		}
+		version, err := readChangeVersion(ctx, tx, change.ID, c.Param("version"))
+		if err != nil {
+			return nil, err
+		}
+		if !changerequest.ValidHash(request.MergeSHA, 40) && !changerequest.ValidHash(request.MergeSHA, 64) {
+			return nil, nativeInvalid("The landed commit must be a lowercase commit identity")
+		}
+		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
+			return nil, nativeInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
+		}
+		if change.Landed != nil {
+			if change.Landed.VersionID == version.ID && change.Landed.MergeSHA == request.MergeSHA {
+				return change, nil
+			}
+			return nil, nativeConflict(change.Revision)
+		}
+		if change.CurrentVersion != version.ID {
+			return nil, nativeConflict(change.Revision)
+		}
+		detail, err := readChangeDetail(ctx, tx, scope, string(change.WorkItemID), change.ID, now)
+		if err != nil {
+			return nil, err
+		}
+		if detail.Summary.Status != "reviewed" {
+			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
+		}
+		change.Landed = &tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now}
+		change.UpdatedAt = now
+		change.Revision++
+		raw, err := marshalNative(change)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ? WHERE id = ?", raw, change.ID); err != nil {
+			return nil, err
+		}
+		issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
+		if err != nil {
+			return nil, err
+		}
+		project, err := readNativeProject(ctx, tx, scope)
+		if err != nil {
+			return nil, err
+		}
+		if !issue.Terminal {
+			target := terminalTarget(project, issue.State)
+			if target == "" {
+				return nil, nativeInvalid("The workflow allows no move from " + issue.State + " to a terminal lane")
+			}
+			from := issue.State
+			issue.State = target
+			if _, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "worker_progress"}, now); err != nil {
+				return nil, err
+			}
+		}
+		return change, nil
+	})
+}

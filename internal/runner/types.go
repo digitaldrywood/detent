@@ -49,6 +49,8 @@ const (
 	RunOutputMergeFallbackDeferred    = "merge_fallback_deferred"
 	RunOutputMergeFallbackResolved    = "merge_fallback_resolved"
 	RunOutputMergeFallbackRework      = "merge_fallback_rework"
+	RunOutputNativeLanded             = "native_landed"
+	RunOutputNativeLandingRefused     = "native_landing_refused"
 )
 
 var (
@@ -770,8 +772,39 @@ type RunResult struct {
 	// NativeChange is what a successful hub-native work run left for review.
 	// It is nil for every other run, and for a native run whose lease was
 	// lost or whose worktree could not be read.
-	NativeChange     *NativeChange
+	NativeChange *NativeChange
+	// NativeLanding is what a hub-native landing run did with the reviewed
+	// version: landed it, or refused with a reason a person acts on. It is
+	// nil for every other run.
+	NativeLanding    *NativeLanding
 	budgetProjection *dispatchBudgetProjection
+}
+
+// NativeLandingTarget is the reviewed version a landing run puts on the
+// base branch: the Change Request, the version, its head, and the merge
+// method the approved policy names.
+type NativeLandingTarget struct {
+	ChangeID  string
+	VersionID string
+	HeadSHA   string
+	Method    string
+	Title     string
+	Number    int64
+}
+
+// NativeLanding reports a landing run's outcome. A landed version names the
+// commit the base branch advanced to; a refused one carries the refusal kind
+// and the reason, and the base branch is unchanged.
+type NativeLanding struct {
+	ChangeID    string
+	VersionID   string
+	HeadSHA     string
+	Landed      bool
+	MergeSHA    string
+	BaseRef     string
+	Method      string
+	RefusalKind string
+	Refusal     string
 }
 
 // NativeChange describes a successful hub-native work run's change. A hub

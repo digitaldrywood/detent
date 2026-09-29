@@ -445,11 +445,13 @@ Project state names and transitions are explicit; there is no prescribed workflo
 A project created through the hosted client starts from a fixed template instead:
 `Todo` and `In Progress` (dispatchable), `Human Review` (neither dispatchable nor
 terminal, and not `operator_only`, so the orchestrator can move a completed run's
-Change Request there) and `Done` (terminal). `In Progress` may move to `Todo`,
-`Human Review` or `Done`; `Human Review` may move to `Done` or back to `In Progress`.
-Hub migration 36 moves projects whose workflow is exactly the earlier
-`Todo`/`In Progress`/`Done` template onto it and leaves customized workflows
-unchanged. A native project's Change Requests wait in the lane named by the
+Change Request there), `Merging` (dispatchable: an approved Change Request waits
+there for the runner that lands it) and `Done` (terminal). `In Progress` may move
+to `Todo`, `Human Review` or `Done`; `Human Review` may move to `Done`, `Merging`
+or back to `In Progress`; `Merging` may move to `Done`, back to `Human Review`,
+or back to `In Progress`.
+Hub migrations 36 and 37 move projects whose workflow is exactly an earlier
+template onto it and leave customized workflows unchanged. A native project's Change Requests wait in the lane named by the
 runner's `auto_promote.source_state` (default `Human Review`), so a customized
 workflow needs that lane, non-`operator_only` and reachable from its active
 lanes, for completed runs to reach review.
@@ -728,6 +730,7 @@ also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id
 | `POST /work-items/{item}/changes/{change}/discussion` | Append `body`, optional `version_id`; only operators can import `provenance` |
 | `POST /work-items/{item}/changes/{change}/versions/{version}/reviews` | Operator decision: `approved`, `changes_requested`, or `commented`, plus optional `body` |
 | `POST /work-items/{item}/changes/{change}/versions/{version}/checks` | Credential pinned in the immutable expected check set |
+| `POST /work-items/{item}/changes/{change}/versions/{version}/landing` | Worker under its lease: `merge_sha`, `base_ref`, `method`; records the landed commit and finishes the primary issue |
 | `GET /change-review-policy` | Inspect the approved native review/CI expectations |
 | `PUT /change-review-policy` | Self-hosted instance administrator, or hosted owner/admin with a target-project write grant; compare `expected_review_policy_id` and approve `policy` |
 
@@ -794,6 +797,32 @@ to their original version and cannot move the current pointer. CI callbacks do n
 require a still-running implementation lease. To rerun validation, publish a new
 version with fresh check identities. Customer-run evidence is visibly distinct
 from independent validation and cannot satisfy an independent expectation.
+
+An `approved` decision that leaves the current version `reviewed` moves the
+primary issue to the landing lane: the lane named `Merging`, when the issue's
+lane may move there and it dispatches. The runner that holds the project claims
+the issue there and lands the reviewed head with plain git and its own
+credentials: it fetches the base branch (the remote's default), verifies the
+worktree still stands at the reviewed head, combines the two by the approved
+policy's `merge_method` (a squash commit, a merge commit, or the head's commits
+replayed onto the base), and pushes the result to the base branch, refusing to
+move a base that changed underneath it. It then reports the commit through the
+landing route, and the Hub records it on the Change Request (`landed`, with the
+version, head, merge commit, base branch, method and actor), marks the summary
+`landed`, and moves the issue to the first terminal lane its lane may reach, in
+one transaction. A landed Change Request accepts no further review or landing.
+The Hub never holds git credentials and makes no forge API call to land.
+
+A landing the repository does not allow is refused, never worked around: a
+worktree that moved past the reviewed head, a reviewed head the checkout no
+longer has, a conflict with the base, a base that already contains the head, a
+base branch that moved during the landing, or a base branch the forge protects
+(a pull request requirement, a protected branch, a hook that declines). The
+runner reports the reason, and the orchestrator moves the issue back to the
+review lane with a comment that carries it, such as "allow the runner to push
+to develop, or enable GitHub pull request mode for this project". Only an
+infrastructure failure (the remote unreachable, the Hub refusing the report)
+fails the run and retries it.
 
 Native approval never becomes a required GitHub review. Detail optionally reuses
 the existing projected `PullRequestSummary`, labels it as a snapshot, and identifies
