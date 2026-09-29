@@ -437,7 +437,7 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 			}
 		}
 		if !allowed {
-			return nil, nativeInvalid("Workflow transition is not allowed")
+			return nil, &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
 		}
 		from := issue.State
 		issue.State = request.State
