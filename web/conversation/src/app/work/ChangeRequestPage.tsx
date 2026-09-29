@@ -10,7 +10,7 @@
 // the decision, not this client's.
 import { ArrowLeftIcon, GitPullRequestIcon } from "lucide-react";
 import React from "react";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
@@ -194,7 +194,9 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
   const text = draft.trim();
   const current = version !== null && version.version_id === change.change.current_version_id;
   const decisions = props.canWrite && version !== null;
-  const disabled = props.busy || !decisions;
+  // No decision while the round's diff is still being read: what the reader
+  // sees must be the round they decide on.
+  const disabled = props.busy || props.diffLoading || !decisions;
 
   const act = async (run: () => Promise<void>) => {
     await run();
@@ -290,8 +292,14 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
                 size="sm"
                 variant="destructive-outline"
                 data-testid="change-request-changes"
-                disabled={disabled || text.length === 0}
-                title={text.length === 0 ? "Say what needs to change first" : undefined}
+                disabled={disabled || !current || text.length === 0}
+                title={
+                  !current
+                    ? "Only the current round can be sent back"
+                    : text.length === 0
+                      ? "Say what needs to change first"
+                      : undefined
+                }
                 onClick={() => void act(() => props.onReview("changes_requested", text))}
               >
                 Request changes
@@ -494,26 +502,41 @@ function useChangeRequest(
 }
 
 /**
- * The diff behind one round: the attempt that published it, else the issue's
- * latest, else nothing. Read per version so switching rounds switches diffs.
+ * The diff a round is decided on: a stored diff whose head is the round's
+ * head, and nothing else. The attempt that published the round is asked
+ * first; the issue's latest diff stands in only when it carries the same
+ * head, so a reader never approves one round while looking at another's
+ * code. The previous round's diff is dropped the moment the round changes.
  */
+export function diffForRound(
+  headSha: string | null,
+  candidate: AttemptDiff | null,
+): AttemptDiff | null {
+  if (headSha === null || candidate === null || candidate.files.length === 0) return null;
+  return candidate.head_sha === headSha ? candidate : null;
+}
+
 function useRoundDiff(
   http: WorkHttp,
   projectId: string | null,
   workItemId: string,
   version: ChangeVersion | null,
 ): { diff: AttemptDiff | null; loading: boolean } {
-  const [diff, setDiff] = React.useState<AttemptDiff | null>(null);
-  const [loading, setLoading] = React.useState(false);
+  const [state, setState] = React.useState<{
+    versionId: string | null;
+    diff: AttemptDiff | null;
+    loading: boolean;
+  }>({ versionId: null, diff: null, loading: false });
   const attemptId = version?.attempt_id ?? null;
   const versionId = version?.version_id ?? null;
+  const headSha = version?.head_sha ?? null;
   React.useEffect(() => {
-    if (projectId === null || versionId === null) {
-      setDiff(null);
+    if (projectId === null || versionId === null || headSha === null) {
+      setState({ versionId, diff: null, loading: false });
       return;
     }
     let cancelled = false;
-    setLoading(true);
+    setState({ versionId, diff: null, loading: true });
     void (async () => {
       const byAttempt =
         attemptId === null
@@ -526,18 +549,20 @@ function useRoundDiff(
           .then((answer) => answer.diff)
           .catch(() => null));
       if (cancelled) return;
-      setDiff(found !== null && found.files.length > 0 ? found : null);
-      setLoading(false);
+      setState({ versionId, diff: diffForRound(headSha, found), loading: false });
     })();
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, attemptId, versionId]);
-  return { diff, loading };
+  }, [http, projectId, workItemId, attemptId, versionId, headSha]);
+  // A diff is only ever shown for the round it was read for.
+  if (state.versionId !== versionId) return { diff: null, loading: versionId !== null };
+  return { diff: state.diff, loading: state.loading };
 }
 
 export function ChangeRequestPage(): React.ReactElement {
   const { workItemId, changeId } = useParams({ from: "/work/i/$workItemId/changes/$changeId" });
+  const search = useSearch({ strict: false }) as { project?: string };
   const shell = useShell();
   const navigate = useNavigate();
   const client = useClient();
@@ -545,10 +570,16 @@ export function ChangeRequestPage(): React.ReactElement {
   const now = useNow();
   const { resolvedTheme } = useTheme();
 
+  // The project comes from the link when the row that opened this page knew
+  // it (the all-projects Pull requests list), else from the linked
+  // conversation, else from the shell's selected project.
   const linked = shell.conversations.find(
     (conversation) => conversation.work_item_id === workItemId,
   );
-  const projectId = linked?.project_id ?? (shell.projectId === "" ? null : shell.projectId);
+  const projectId =
+    (search.project !== undefined && search.project.length > 0 ? search.project : null) ??
+    linked?.project_id ??
+    (shell.projectId === "" ? null : shell.projectId);
   const { data, error, loading, reload } = useChangeRequest(http, projectId, workItemId, changeId);
   const [requestedVersion, setRequestedVersion] = React.useState<string | null>(null);
   const version = data === null ? null : selectVersion(data.change, requestedVersion);

@@ -522,6 +522,7 @@ function IssueSurface({
               void navigate({
                 to: "/work/i/$workItemId/changes/$changeId",
                 params: { workItemId, changeId: item.change!.id },
+                ...(projectId === null ? {} : { search: { project: projectId } }),
               })
       }
       canWrite={canWrite}

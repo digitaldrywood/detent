@@ -28,7 +28,8 @@ import {
 // jsdom has no Worker, and the page draws the patch through @pierre/diffs'
 // worker pool; the file sections are stubbed so the decisions can be checked
 // without one. The renderer itself is covered by the Diff surface tests.
-vi.mock("@pierre/diffs/react", () => ({
+vi.mock("@pierre/diffs/react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pierre/diffs/react")>()),
   FileDiff: ({ fileDiff }: { fileDiff: { name?: string } }) => (
     <div data-testid="file-diff-stub">{fileDiff.name ?? ""}</div>
   ),
@@ -172,5 +173,29 @@ describe("the round helpers", () => {
   it("reports an approved current round as ready to land", () => {
     const reviewed: ChangeDetail = { ...CHANGE, summary: { ...CHANGE.summary, status: "reviewed" } };
     expect(statusSentence(reviewed, currentVersion(reviewed))).toContain("Ready to land");
+  });
+});
+
+describe("the round's diff", () => {
+  it("shows a stored diff only when it carries the round's head", async () => {
+    const { diffForRound } = await import("../../src/app/work/ChangeRequestPage.tsx");
+    expect(diffForRound(ATTEMPT_DIFF.head_sha, ATTEMPT_DIFF)).toBe(ATTEMPT_DIFF);
+    expect(diffForRound("f".repeat(40), ATTEMPT_DIFF)).toBeNull();
+    expect(diffForRound(ATTEMPT_DIFF.head_sha, { ...ATTEMPT_DIFF, files: [] })).toBeNull();
+    expect(diffForRound(null, ATTEMPT_DIFF)).toBeNull();
+  });
+
+  it("withholds every decision while the diff is loading", () => {
+    renderView({ diffLoading: true, diff: null });
+    expect((screen.getByTestId("change-approve") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId("change-request-changes") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("sends back only the current round", async () => {
+    const older = { ...currentVersion(CHANGE)!, version_id: "version_older", number: "1" };
+    const change: ChangeDetail = { ...CHANGE, versions: [older, ...CHANGE.versions] };
+    renderView({ change, version: older });
+    await userEvent.type(screen.getByLabelText("Review comment"), "Too late for this round.");
+    expect((screen.getByTestId("change-request-changes") as HTMLButtonElement).disabled).toBe(true);
   });
 });

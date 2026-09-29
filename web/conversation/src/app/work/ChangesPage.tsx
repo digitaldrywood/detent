@@ -122,6 +122,7 @@ export function ChangesPage(): React.ReactElement {
                           void navigate({
                             to: "/work/i/$workItemId/changes/$changeId",
                             params: { workItemId: item.id, changeId: change.id },
+                            search: { project: item.projectId },
                           })
                         }
                         className="cursor-pointer text-left underline-offset-4 hover:underline"
