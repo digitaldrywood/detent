@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -75,11 +77,12 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 				return errors.New("host name is unavailable")
 			}
 			name = strings.TrimSpace(firstNonBlankString(name, hostname))
-			if _, err := os.Stat(paths.identity); errors.Is(err, os.ErrNotExist) {
-				if _, err := runnerauth.Initialize(paths.identity, base); err != nil {
+			if _, err := os.Lstat(paths.config); err == nil {
+				if err := existingRunnerConfigMatches(paths.config, runnerConfig(base, org, name, capacity, paths, nil), false); err != nil {
 					return err
 				}
-			} else if err != nil {
+			}
+			if err := prepareRunnerIdentity(paths.identity, base, org); err != nil {
 				return err
 			}
 			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev")})
@@ -93,19 +96,23 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
 			for _, project := range projects {
 				workdir := filepath.Join(paths.workspaces, project.Name)
-				_, statErr := os.Stat(filepath.Join(workdir, ".git"))
-				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: statErr == nil})
+				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: runnerCheckoutReady(workdir)})
 			}
 			config := runnerConfig(base, org, name, capacity, paths, result.Projects)
 			result.Created, err = writeRunnerConfig(paths.config, config)
 			if err != nil {
 				return err
 			}
+			if !result.Created {
+				if err := existingRunnerConfigMatches(paths.config, config, true); err != nil {
+					return err
+				}
+			}
 			missing := false
 			for _, project := range result.Projects {
 				if !project.Checkout {
 					missing = true
-					result.NextSteps = append(result.NextSteps, fmt.Sprintf("Clone the %s repository into %s", project.Name, project.Workdir))
+					result.NextSteps = append(result.NextSteps, fmt.Sprintf("Clone the %s repository into %s (it needs its WORKFLOW.md and detent.yaml)", project.Name, project.Workdir))
 				}
 			}
 			start := fmt.Sprintf("detent start --config %s --yes", shellQuote(paths.config))
@@ -133,6 +140,70 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
 	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service ("+runnerServiceName+")")
 	return cmd
+}
+
+// prepareRunnerIdentity creates the host identity, or checks that an existing
+// one belongs to this Hub and organization so a retry never sends the new
+// token to another Hub.
+func prepareRunnerIdentity(path, base string, org tracker.OrganizationID) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		_, err = runnerauth.Initialize(path, base)
+		return err
+	}
+	file, err := runnerauth.Load(path)
+	if err != nil {
+		return err
+	}
+	if strings.TrimRight(file.HubURL, "/") != base {
+		return fmt.Errorf("%s belongs to the runner for %s; pass --config with another directory to register a separate runner", path, file.HubURL)
+	}
+	if file.Identity.OrganizationID != "" && file.Identity.OrganizationID != org {
+		return fmt.Errorf("%s belongs to a runner in %s; pass --config with another directory to register a separate runner", path, file.Identity.OrganizationID)
+	}
+	return nil
+}
+
+// runnerCheckoutReady reports whether a project's checkout can boot: a
+// repository with its WORKFLOW.md.
+func runnerCheckoutReady(workdir string) bool {
+	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(workdir, "WORKFLOW.md"))
+	return err == nil
+}
+
+// existingRunnerConfigMatches refuses to keep a configuration written for a
+// different Hub, organization, identity or project set.
+func existingRunnerConfigMatches(path string, want runnerConfigFile, projects bool) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var have runnerConfigFile
+	if err := yaml.Unmarshal(body, &have); err != nil {
+		return fmt.Errorf("%s exists but cannot be read (%v); move it aside and run register again", path, err)
+	}
+	mismatch := func(what string) error {
+		return fmt.Errorf("%s exists but its %s does not match this runner; move it aside and run register again, or pass --config with another path", path, what)
+	}
+	switch {
+	case strings.TrimRight(have.Client.HubURL, "/") != want.Client.HubURL:
+		return mismatch("client.hub_url")
+	case have.Client.OrganizationID != want.Client.OrganizationID:
+		return mismatch("client.organization_id")
+	case have.Client.IdentityFile != want.Client.IdentityFile:
+		return mismatch("client.identity_file")
+	}
+	if !projects {
+		return nil
+	}
+	for name, id := range have.Client.NativeProjects {
+		if !slices.Contains(slices.Collect(maps.Values(want.Client.NativeProjects)), id) {
+			return mismatch("client.native_projects entry " + name)
+		}
+	}
+	return nil
 }
 
 // runnerHubTarget splits the Enroll dialog's URL into the Hub base the runner
@@ -311,16 +382,28 @@ func writeRunnerConfig(path string, config runnerConfigFile) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return false, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
+	if _, err := os.Lstat(path); err == nil {
 		return false, nil
 	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".global.yaml.*")
 	if err != nil {
 		return false, err
 	}
+	defer os.Remove(temporary.Name())
 	header := "# Detent runner configuration written by `detent hub runner register`.\n# The Hub assigns work for the projects below; each workdir is that project's repository checkout.\n"
-	_, writeErr := file.Write(append([]byte(header), body...))
-	return true, errors.Join(writeErr, file.Close())
+	_, writeErr := temporary.Write(append([]byte(header), body...))
+	if err := errors.Join(writeErr, temporary.Chmod(0o600), temporary.Sync(), temporary.Close()); err != nil {
+		return false, err
+	}
+	// A hard link publishes the complete file or nothing, and fails rather than
+	// replacing a configuration that appeared meanwhile.
+	if err := os.Link(temporary.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func writeRunnerRegistration(cmd *cobra.Command, result runnerRegistration) error {

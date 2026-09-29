@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -333,6 +334,7 @@ func runningServiceArguments(ctx context.Context, configPath string, opts option
 		runCommand = defaultCommandRunner
 	}
 	runner, err := factory(servicepkg.Config{
+		Name:       configuredServiceName(configPath, opts),
 		GOOS:       runtime.GOOS,
 		ConfigPath: configPath,
 		LockPath:   filepath.Join(filepath.Dir(configPath), "detent.db.lock"),
@@ -659,4 +661,18 @@ func pointerInt(value *int, fallback int) int {
 		return fallback
 	}
 	return *value
+}
+
+// configuredServiceName is the config's service_name, or empty for the
+// default service when the config cannot be read.
+func configuredServiceName(configPath string, opts options) string {
+	read := opts.readOrDefault
+	if read == nil {
+		read = func(path string) (globalconfig.Config, error) { return globalconfig.ReadOrDefault(path) }
+	}
+	cfg, err := read(configPath)
+	if err != nil {
+		return ""
+	}
+	return cfg.ServiceName
 }

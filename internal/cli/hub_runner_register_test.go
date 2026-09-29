@@ -267,6 +267,60 @@ func TestHubRunnerRegisterRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
+	t.Parallel()
+	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+	url := hub.server.URL + "/organizations/org_example"
+	never := func(*cobra.Command, string) error { return nil }
+
+	t.Run("identity for another hub", func(t *testing.T) {
+		t.Parallel()
+		configPath := filepath.Join(t.TempDir(), "runner", "global.yaml")
+		if _, err := runnerauth.Initialize(filepath.Join(filepath.Dir(configPath), "identity.json"), "https://other-hub.example.test"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := runRegister(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
+		if err == nil || !strings.Contains(err.Error(), "other-hub.example.test") {
+			t.Fatalf("err = %v, want a refusal naming the other hub", err)
+		}
+	})
+
+	t.Run("config for another organization", func(t *testing.T) {
+		t.Parallel()
+		configPath := filepath.Join(t.TempDir(), "runner", "global.yaml")
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		existing := "client:\n  hub_url: " + url + "\n  organization_id: org_other\n  identity_file: " + filepath.Join(filepath.Dir(configPath), "identity.json") + "\n"
+		if err := os.WriteFile(configPath, []byte(existing), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := runRegister(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
+		if err == nil || !strings.Contains(err.Error(), "client.organization_id") {
+			t.Fatalf("err = %v, want a refusal naming the mismatched key", err)
+		}
+		if mustRead(t, configPath) != existing || hub.redeemed.Load() != 0 {
+			t.Fatalf("register rewrote the configuration or spent the token (%d redemptions)", hub.redeemed.Load())
+		}
+	})
+}
+
+func TestRunnerCheckoutReady(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	if err := os.MkdirAll(filepath.Join(repository, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if runnerCheckoutReady(filepath.Join(root, "missing")) || runnerCheckoutReady(repository) {
+		t.Fatal("a missing directory or a repository without WORKFLOW.md counted as ready")
+	}
+	checkout(t, repository)
+	if !runnerCheckoutReady(repository) {
+		t.Fatal("a repository with WORKFLOW.md did not count as ready")
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	body, err := os.ReadFile(path)

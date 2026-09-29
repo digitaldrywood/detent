@@ -127,8 +127,11 @@ The token appears in the command because it is single-use and expires within 15
 minutes; once redeemed it grants nothing. To keep it out of shell history,
 omit `--token` and set `DETENT_RUNNER_ENROLLMENT_TOKEN` instead. A self-hosted
 Hub whose URL does not include `/organizations/ORG` needs `--organization`.
-Projects listed in `client.native_projects` always use the Hub as their
-tracker, so the repository's committed `detent.yaml` needs no local override.
+Projects listed in `client.native_projects` use the Hub in place of the
+GitHub tracker their committed `detent.yaml` names, so the checkout needs no
+local override. `register` starts the service only once every checkout has its
+`WORKFLOW.md`, and refuses an existing identity or configuration that belongs
+to another Hub, organization or project set rather than reusing it.
 
 `init` and `enroll` below remain for scripted setups that bind the IDs before
 the token exists.

@@ -323,7 +323,9 @@ func TestWithMappedNativeTrackerUsesTheHubForMappedProjects(t *testing.T) {
 		want       string
 	}{
 		{name: "mapped github project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerHubNative},
+		{name: "mapped github_local project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerGitHubLocal, want: workflowconfig.TrackerHubNative},
 		{name: "mapped native project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerHubNative, want: workflowconfig.TrackerHubNative},
+		{name: "mapped project with an explicit local tracker", scheduling: mapped, project: "site", kind: workflowconfig.TrackerLocalSQLite, want: workflowconfig.TrackerLocalSQLite},
 		{name: "unmapped project", scheduling: mapped, project: "other", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerGitHub},
 		{name: "no hub client", scheduling: nil, project: "site", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerGitHub},
 		{name: "scheduling without native projects", scheduling: &testSchedulingSource{}, project: "site", kind: workflowconfig.TrackerMemory, want: workflowconfig.TrackerMemory},

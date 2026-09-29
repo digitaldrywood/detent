@@ -419,9 +419,11 @@ example a local board and a Detent Cloud runner; `detent hub runner register`
 writes `service_name: detent.runner`. Names use lowercase letters, digits, dots
 and hyphens.
 
-A project listed under `client.native_projects` always uses the Hub as its
-tracker (`tracker.kind: hub_native`), whatever its committed `detent.yaml`
-says, so a runner host can use a repository checkout as it is.
+A project listed under `client.native_projects` whose committed `detent.yaml`
+uses the GitHub tracker (`github` or `github_local`) uses the Hub instead
+(`tracker.kind: hub_native`), so a runner host can use a repository checkout
+as it is. Any other tracker kind is treated as a deliberate local choice and
+kept.
 
 Configure `client.hub_url` to move candidate discovery and claiming to a Detent
 Hub. The machine registers its identity, project and pool capabilities,

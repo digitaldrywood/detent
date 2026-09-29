@@ -1743,8 +1743,9 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 }
 
 // withMappedNativeTracker makes a project that client.native_projects maps to
-// a Hub project use the Hub as its tracker, so a runner host can reuse a
-// repository's committed detent.yaml without a local tracker override.
+// a Hub project use the Hub instead of the repository's GitHub tracker, so a
+// runner host can reuse a committed detent.yaml without a local override. Any
+// other tracker kind is an explicit local choice and is kept.
 func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
 	source, ok := scheduling.(interface {
 		ConnectorForProject(string) (connector.Connector, bool)
@@ -1752,7 +1753,8 @@ func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestr
 	if !ok {
 		return workflow
 	}
-	if _, mapped := source.ConnectorForProject(string(id)); mapped {
+	repositoryTracker := workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal
+	if _, mapped := source.ConnectorForProject(string(id)); mapped && repositoryTracker {
 		workflow.Tracker.Kind = workflowconfig.TrackerHubNative
 	}
 	return workflow
