@@ -472,6 +472,22 @@ there is no fallback scheduler. The [Hub API](hub-api.md#native-collaboration-pr
 documents project provisioning, workflow states and the typed operations.
 Repository workflow files and machine-local overrides keep their existing paths.
 
+A native project reuses the repository `WORKFLOW.md` as its prompt. Detent
+appends a native completion contract to every native run prompt that overrides
+tracker-specific steps in that file: the agent commits on the attempt branch,
+never pushes or opens pull requests on the forge, never runs `gh` or calls the
+GitHub API, and does not post Workpad or issue comments or change issue state.
+The runner records the Change Request from those commits. Native projects make
+no GitHub REST or GraphQL calls by default: workers do not receive the instance
+GitHub credential, and checkpoints do not look up or open pull requests. No
+separate key turns this on; an explicit `worker.github_token` is the only opt-in
+for worker GitHub access. The
+contract is added at render time, so it does not change the approved policy
+digest. `detent doctor` (check `Project <id> native workflow instructions`) and
+`detent hub policy inspect` warn when a native project's `WORKFLOW.md` still
+mentions GitHub-only steps such as `Codex Workpad`, a `gh` command,
+`pull request`, `detent-status` or the GitHub API.
+
 Health notifications deliver fleet and project needs-attention transitions to
 one generic webhook. They are disabled when
 `notifications.health.webhook.url` is absent, preserving the silent default.
@@ -596,8 +612,10 @@ hosts; per-state and global concurrency limits remain under `agent`.
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
 enterprise variants, or the host's GitHub CLI configuration. When omitted or
 empty, `worker.github_token` defaults to the resolved top-level `github_token`
-(including `github_token: gh`). An explicit project worker credential overrides
-that default; with neither credential configured, the worker policy is disabled.
+(including `github_token: gh`), except for `tracker.kind: hub_native`
+projects, which never inherit the instance credential. An explicit project worker
+credential overrides that default; with neither credential configured, the worker
+policy is disabled.
 Set the worker override to `gh` to resolve `gh auth token` in the Detent process
 and copy only the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
 reference remains available when permission or revocation isolation is useful:

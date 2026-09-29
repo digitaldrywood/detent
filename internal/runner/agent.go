@@ -604,6 +604,9 @@ func normalizeRunMode(mode string) string {
 }
 
 func agentTurnDeliverable(cfg config.Config, issue connector.Issue, mode string) (string, string) {
+	if cfg.Tracker.Kind == config.TrackerHubNative {
+		return "", ""
+	}
 	switch normalizeRunMode(mode) {
 	case RunModeImplement, RunModeMerge:
 	default:
@@ -1813,6 +1816,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if req.WorkAttemptID > 0 && req.Generation > 0 {
 			turnPrompt = appendBlockedHandoffBlock(turnPrompt+"\n\nThe current attempt fields below supersede any completion lease values in earlier provider history. Use these values for the completion handshake when this attempt succeeds.", promptOptions)
 			turnPrompt = appendNativeIssueInstructions(turnPrompt, req.Issue)
+		}
+		if workflow.Config.Tracker.Kind == config.TrackerHubNative {
+			turnPrompt = appendNativeCompletionContract(turnPrompt)
 		}
 	}
 	var extraWritableRoots []string

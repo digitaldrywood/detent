@@ -104,6 +104,17 @@ access approves it explicitly. Approval retains the existing compare-and-swap
 and active-lease guards. Edit gate, review, auto-promotion, merge and runner
 requirements in the repository, then inspect and approve the new descriptor.
 
+A native project (`tracker.kind: hub_native`) makes no GitHub REST or GraphQL
+calls by default. The runner does not give the agent the instance GitHub
+credential, open or look up pull requests, or ask the agent for Workpad comments;
+it opens the native Change Request from the attempt's commits after a successful
+run, and the local gate is the CI. Git transport (clone, fetch) still works. The
+agent prompt ends with a native completion contract that overrides GitHub steps
+in `WORKFLOW.md`. `detent doctor` and `detent hub policy inspect` warn when the
+repository `WORKFLOW.md` still describes GitHub steps; remove them from a
+native project's workflow. Setting `worker.github_token` explicitly in the
+project is the only way to give its workers GitHub access.
+
 ## Customer host enrollment
 
 On the selected host, run `detent hub runner init --hub-url HUB_URL`.
