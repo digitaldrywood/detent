@@ -16,7 +16,7 @@ longer, so the package is split by top-level test name instead and each
 partition keeps the 15-minute ceiling.
 
 `HUB_RACE_PARTITION` in the Makefile holds `^Test[A-GI-O]` and
-`HUB_RACE_PARTITION_B` holds `^TestH`. `make test-race-hub-a` passes the
+`HUB_RACE_PARTITION_B` holds `^Test[HW]`. `make test-race-hub-a` passes the
 first to `go test -run`, `make test-race-hub-b` passes the second to
 `go test -run`, and `make test-race-hub-c` passes both, joined with `|`, to
 `go test -skip`. A pattern without `/` matches only top-level names, and the
@@ -38,7 +38,9 @@ stayed near 545 s on CI through September 2026, while the complement
 (`H` and `P` onward) grew past the 900 s ceiling on `main` push runs once
 the Change Request landing, review and policy tests landed (`W` about 360 s,
 `P` about 250 s and `H` about 225 s of summed elapsed time). Splitting `H`
-into its own partition keeps every partition under the ceiling. Rebalance by
+into its own partition kept every partition under the ceiling; the first
+three-way run still put partition C at about 14 minutes of job time and B at
+about 5, so the `W` (workspace) tests moved to B. Rebalance by
 changing the letter sets when one partition approaches its ceiling; the
 complement guarantee does not depend on which letters are chosen.
 

@@ -40,7 +40,7 @@ GO_TEST := env -u DETENT_API_TOKEN go test -count=1
 HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
 HUB_RACE_PARTITION := ^Test[A-GI-O]
-HUB_RACE_PARTITION_B := ^TestH
+HUB_RACE_PARTITION_B := ^Test[HW]
 HUB_RACE_COVER_TIMEOUT ?= 30m
 # Persisted orchestrator fixtures serialize migrations; retain the full race suite.
 ORCHESTRATOR_RACE_TIMEOUT ?= 20m
