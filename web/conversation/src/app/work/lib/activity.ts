@@ -15,7 +15,7 @@
 //  - **Nothing is invented.** Where the hub serves no actor name, the row
 //    names the principal it does serve rather than a display name that does
 //    not exist.
-import { runnerDisplay, type RunnerNames } from "./runnerNames.ts";
+import { runnerDisplay, shortRunnerId, type RunnerNames } from "./runnerNames.ts";
 import type { Message, Question } from "../../../contracts/conversation.ts";
 import type {
   CollaborationEvent,
@@ -93,8 +93,9 @@ export function actorLabel(
   if (viewerPrincipalId !== null && actor.principal_id === viewerPrincipalId) return "You";
   if (actor.kind === "runner") {
     // A runner's principal is its runner id, so the fleet names it directly;
-    // otherwise the latest attempt's runner stands in for every runner row.
-    return runnerNames?.get(actor.principal_id)?.display ?? runnerName ?? "The runner";
+    // otherwise the latest attempt's runner stands in, and failing that the
+    // principal's short id keeps two runners distinguishable.
+    return runnerNames?.get(actor.principal_id)?.display ?? runnerName ?? shortRunnerId(actor.principal_id);
   }
   const id = actor.principal_id;
   return id.length > 20 ? `${id.slice(0, 18)}…` : id;

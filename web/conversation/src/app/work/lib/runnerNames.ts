@@ -57,33 +57,41 @@ export function useRunnerNames(): RunnerNames {
   React.useEffect(() => {
     if (client === null) return;
     let cancelled = false;
-    if (cached !== null && Date.now() - cached.at < FLEET_TTL_MS) {
-      setNames(cached.names);
-      return;
-    }
-    inflight ??= makeAccountApi({
-      origin: client.http.origin,
-      apiBase: client.http.apiBase,
-      csrfToken: client.http.csrfToken,
-    })
-      .fleet()
-      .then((fleet) => {
-        const next = new Map<string, RunnerName>();
-        for (const runner of fleet.runners) {
-          next.set(runner.id, { display: runner.display_name, host: runner.hostname });
-        }
-        cached = { at: Date.now(), names: next };
-        return next as RunnerNames;
+    const refresh = () => {
+      if (cached !== null && Date.now() - cached.at < FLEET_TTL_MS) {
+        setNames(cached.names);
+        return;
+      }
+      inflight ??= makeAccountApi({
+        origin: client.http.origin,
+        apiBase: client.http.apiBase,
+        csrfToken: client.http.csrfToken,
       })
-      .catch(() => cached?.names ?? NO_RUNNER_NAMES)
-      .finally(() => {
-        inflight = null;
+        .fleet()
+        .then((fleet) => {
+          const next = new Map<string, RunnerName>();
+          for (const runner of fleet.runners) {
+            next.set(runner.id, { display: runner.display_name, host: runner.hostname });
+          }
+          cached = { at: Date.now(), names: next };
+          return next as RunnerNames;
+        })
+        .catch(() => cached?.names ?? NO_RUNNER_NAMES)
+        .finally(() => {
+          inflight = null;
+        });
+      void inflight.then((next) => {
+        if (!cancelled) setNames(next);
       });
-    void inflight.then((next) => {
-      if (!cancelled) setNames(next);
-    });
+    };
+    refresh();
+    // A surface that stays open outlives the cache: read the fleet again
+    // each time the entry expires, so a renamed or newly enrolled runner
+    // gets its name without a reload.
+    const timer = setInterval(refresh, FLEET_TTL_MS);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, [client]);
   return names;

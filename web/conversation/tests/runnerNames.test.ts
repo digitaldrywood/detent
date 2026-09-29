@@ -30,6 +30,9 @@ describe("runner names", () => {
     const actor = { kind: "runner" as const, principal_id: "runner_be4aaeec1c424bb6afbe94aea6d605d6" };
     expect(actorLabel(actor, null, "rnr_other", NAMES)).toBe("Mac Studio");
     expect(actorLabel({ kind: "runner", principal_id: "tok_r" }, null, "rnr_other", NAMES)).toBe("rnr_other");
+    expect(
+      actorLabel({ kind: "runner", principal_id: "runner_0000000000000000000000000000dead" }, null, null, NAMES),
+    ).toBe("runner_00000000");
     expect(actorLabel({ kind: "human", principal_id: "hosted_1" }, null, null, NAMES)).toBe("hosted_1");
   });
 
