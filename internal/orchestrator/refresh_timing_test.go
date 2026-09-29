@@ -112,3 +112,26 @@ func TestRefreshTimingGraphQLPoints(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshTimingLogsGraphQLOperationsAndCache(t *testing.T) {
+	var logs bytes.Buffer
+	timing := newRefreshTiming(slog.New(slog.NewTextHandler(&logs, nil)), "project", false)
+	ctx, points := connector.WithGraphQLPoints(t.Context())
+	timing.points = points
+	connector.RecordGraphQLPoints(ctx, 7)
+	connector.RecordGraphQLOperation(ctx, connector.GraphQLOperation{Name: "DetentQuery", Requests: 1, Points: 7, NodesRequested: 201, NodesReturned: 3, WallTime: time.Millisecond})
+	connector.RecordGraphQLCache(ctx, "DetentQuery", "hit")
+	connector.RecordGraphQLCache(ctx, "DetentQuery", "requery")
+	connector.RecordGraphQLCache(ctx, "DetentQuery", "ttl_expired")
+	timing.log(ctx, true, nil)
+	got := logs.String()
+	for _, want := range []string{
+		`msg="project refresh graphql operation"`, "operation=DetentQuery", "requests=1", "points=7",
+		"nodes_requested=201", "nodes_returned=3", "wall_time=1ms", "cache_hits=1",
+		"cache_requeries=1", "cache_hit_rate=0.5", "ttl_expired:1", "refresh_id=" + timing.refreshID,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log missing %q: %s", want, got)
+		}
+	}
+}

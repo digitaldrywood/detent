@@ -213,8 +213,13 @@ func TestAttachLabelIssuePullRequestReferencesRefreshesPRSensitiveStates(t *test
 			updatedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 			issue := connector.Issue{ID: "I_1", Identifier: "example/repo#1", State: tt.state, UpdatedAt: &updatedAt}
 			for range 2 {
-				if err := c.attachLabelIssuePullRequestReferences(t.Context(), []connector.Issue{issue}); err != nil {
+				ctx, metrics := connector.WithGraphQLPoints(t.Context())
+				if err := c.attachLabelIssuePullRequestReferences(ctx, []connector.Issue{issue}); err != nil {
 					t.Fatal(err)
+				}
+				operations := metrics.Operations()
+				if len(operations) != 1 || operations[0].Cache["lane_ineligible"] != 1 || operations[0].Cache["requery"] != 1 {
+					t.Fatalf("cache metrics = %+v, want lane ineligible requery", operations)
 				}
 			}
 			if got := len(server.requests()); got != 2 {
@@ -238,16 +243,25 @@ func TestAttachLabelIssuePullRequestReferencesExpiresIdleSnapshot(t *testing.T) 
 		name         string
 		advance      time.Duration
 		wantRequests int
+		cacheOutcome string
 	}{
-		{name: "initial", wantRequests: 1},
-		{name: "within max age", advance: labelIssueReferenceMaxAge - time.Second, wantRequests: 1},
-		{name: "at max age", advance: time.Second, wantRequests: 2},
+		{name: "initial", wantRequests: 1, cacheOutcome: "cold"},
+		{name: "within max age", advance: labelIssueReferenceMaxAge - time.Second, wantRequests: 1, cacheOutcome: "hit"},
+		{name: "at max age", advance: time.Second, wantRequests: 2, cacheOutcome: "ttl_expired"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now = now.Add(tt.advance)
 			issues := []connector.Issue{issue}
-			if err := c.attachLabelIssuePullRequestReferences(t.Context(), issues); err != nil {
+			ctx, metrics := connector.WithGraphQLPoints(t.Context())
+			if err := c.attachLabelIssuePullRequestReferences(ctx, issues); err != nil {
 				t.Fatal(err)
+			}
+			operations := metrics.Operations()
+			if len(operations) != 1 || operations[0].Cache[tt.cacheOutcome] != 1 {
+				t.Fatalf("cache metrics = %+v, want %s", operations, tt.cacheOutcome)
+			}
+			if tt.cacheOutcome == "hit" && (operations[0].Requests != 0 || operations[0].Cache["requery"] != 0) {
+				t.Fatalf("cache hit queried GraphQL: %+v", operations[0])
 			}
 			if got := len(server.requests()); got != tt.wantRequests {
 				t.Fatalf("GraphQL requests = %d, want %d", got, tt.wantRequests)
@@ -273,16 +287,22 @@ func TestAttachLabelIssuePullRequestReferencesRefreshesLinkedPR(t *testing.T) {
 	updatedAt := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
 	issue := connector.Issue{ID: "I_1", Identifier: "example/repo#1", State: "Blocked", UpdatedAt: &updatedAt}
 	for index, want := range []struct {
-		state string
-		head  string
-		at    time.Time
+		state        string
+		head         string
+		at           time.Time
+		cacheOutcome string
 	}{
-		{state: "OPEN", head: "first-head", at: time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)},
-		{state: "MERGED", head: "second-head", at: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)},
+		{state: "OPEN", head: "first-head", at: time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC), cacheOutcome: "cold"},
+		{state: "MERGED", head: "second-head", at: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC), cacheOutcome: "linked_pr"},
 	} {
 		issues := []connector.Issue{issue}
-		if err := c.attachLabelIssuePullRequestReferencesWithState(t.Context(), issues, true); err != nil {
+		ctx, metrics := connector.WithGraphQLPoints(t.Context())
+		if err := c.attachLabelIssuePullRequestReferencesWithState(ctx, issues, true); err != nil {
 			t.Fatal(err)
+		}
+		operations := metrics.Operations()
+		if len(operations) != 1 || operations[0].Cache[want.cacheOutcome] != 1 {
+			t.Fatalf("cache metrics = %+v, want %s", operations, want.cacheOutcome)
 		}
 		got := issues[0]
 		if got.PRNumber == nil || *got.PRNumber != 20 || got.PullRequest == nil || got.PullRequest.State != want.state || got.PRHeadSHA != want.head || got.PRHeadCommittedAt == nil || !got.PRHeadCommittedAt.Equal(want.at) {
