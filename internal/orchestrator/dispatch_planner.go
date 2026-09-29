@@ -308,9 +308,6 @@ func (p dispatchPlanner) retryAction(
 	if p.forgeAvailabilityBlocks(state, issue, retry, now) {
 		return dispatchAction{}, false, dispatchSkipForgeUnavailable
 	}
-	if workerGitHubMonitorBlocks(state, issue.ID, retry, now) {
-		return dispatchAction{}, false, dispatchSkipGitHubMonitor
-	}
 	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		if retry.DueAt.Before(outage.ResumeAt) {
 			retry.DueAt = outage.ResumeAt
@@ -384,19 +381,6 @@ func (p dispatchPlanner) retryAction(
 		}
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
 	}
-	// Reserve only after eligibility and worker selection succeed. A carrier
-	// that cannot run must not consume attempts or renew an expired hold.
-	if retry.GitHubMonitor {
-		if _, active := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; active {
-			if _, reserved := reserveWorkerGitHubMonitorProbe(state, issue.ID, retry, now); !reserved {
-				state.Retry[retry.Issue.ID] = retry
-				if forgeProbeReserved {
-					releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchSkipGitHubMonitor, now)
-				}
-				return dispatchAction{}, false, dispatchSkipGitHubMonitor
-			}
-		}
-	}
 	return action, true, ""
 }
 
@@ -449,7 +433,6 @@ func (p dispatchPlanner) newDispatchAction(
 
 func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
 	issue := cloneIssue(action.issue)
-	reserveIdleWorkerGitHubMonitorProbe(state, issue.ID, now)
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	reserveMergeCandidate(state, issue, now)
 	state.Running[issue.ID] = Running{
@@ -457,7 +440,6 @@ func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now
 		Attempt:           action.attempt,
 		StartedAt:         now,
 		WorkerHost:        action.workerHost,
-		GitHubCredential:  reservedGitHubCredential(state, issue.ID),
 		ForgeProbeHost:    reservedForgeProbeHost(state, issue.ID),
 		ModelPermitExempt: !action.modelPermitRequired,
 	}
@@ -670,7 +652,6 @@ const (
 	dispatchSkipTrackerUnavailable        = scheduler.DecisionReasonTrackerUnavailable
 	dispatchSkipCompletionDeferred        = scheduler.DecisionReasonCompletionDeferred
 	dispatchSkipForgeUnavailable          = scheduler.DecisionReasonForgeUnavailable
-	dispatchSkipGitHubMonitor             = scheduler.DecisionReasonGitHubMonitor
 	dispatchSkipCIUnavailable             = scheduler.DecisionReasonCIUnavailable
 	dispatchSkipProjectFailureBreaker     = scheduler.DecisionReasonProjectFailureBreakerPaused
 	dispatchSkipRateWindowBackpressure    = scheduler.DecisionReasonProviderRateWindowBackpressure
@@ -747,9 +728,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if p.forgeAvailabilityBlocks(state, issue, Retry{}, now) {
 		return dispatchableDecision{reason: dispatchSkipForgeUnavailable}
-	}
-	if workerGitHubMonitorBlocks(state, issue.ID, Retry{}, now) {
-		return dispatchableDecision{reason: dispatchSkipGitHubMonitor}
 	}
 	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipCIUnavailable}

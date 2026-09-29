@@ -122,7 +122,6 @@ type State struct {
 	trackerEvidence          map[string]trackerAvailabilityEvidence
 	deferredCompletions      map[string]deferredCompletion
 	ForgeUnavailable         map[string]ForgeCondition
-	GitHubMonitors           map[string]GitHubMonitor
 	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
@@ -198,7 +197,6 @@ type Running struct {
 	CapacityProbe               bool
 	ForgeProbeHost              string
 	ForgeWriteCompleted         bool
-	GitHubCredential            string
 	ModelPermitExempt           bool
 	CIStopRequested             bool
 	CompletionOwnershipReleased bool
@@ -307,8 +305,6 @@ type Retry struct {
 	ForgeUnavailable   bool
 	ForgeHost          string
 	ForgeRetry         *runpkg.ForgeRetry
-	GitHubMonitor      bool
-	GitHubCredential   string
 	Wait               RetryWait
 }
 
@@ -450,7 +446,6 @@ func newState(cfg Config) State {
 		trackerEvidence:          map[string]trackerAvailabilityEvidence{},
 		deferredCompletions:      map[string]deferredCompletion{},
 		ForgeUnavailable:         map[string]ForgeCondition{},
-		GitHubMonitors:           map[string]GitHubMonitor{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -561,7 +556,6 @@ func (s State) clone() State {
 		trackerEvidence:          maps.Clone(s.trackerEvidence),
 		deferredCompletions:      cloneDeferredCompletions(s.deferredCompletions),
 		ForgeUnavailable:         maps.Clone(s.ForgeUnavailable),
-		GitHubMonitors:           maps.Clone(s.GitHubMonitors),
 		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        cloneBackendRecoveries(s.BackendRecoveries),
