@@ -118,6 +118,30 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	if stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" || stored.Spillover.Mode != "never" {
 		t.Fatalf("explicit availability and spillover clear lost settings: %#v", stored.Routing)
 	}
+	disabled := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}
+	disabled.State = "disabled"
+	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, disabled)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &stored)
+	heartbeat := map[string]any{"display_name": "Build runner", "capacity": 2, "version": "test", "os": "linux", "architecture": "arm64"}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/projects/"+string(f.project.ID)+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &snapshot)
+	if snapshot.Routing.State != "disabled" || snapshot.Revision != stored.Revision {
+		t.Fatalf("disabled runner heartbeat routing = %#v", snapshot)
+	}
+	unassigned := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}
+	unassigned.State = "active"
+	unassigned.ProjectIDs = []tracker.ProjectID{}
+	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, unassigned)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &stored)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/projects/"+string(f.project.ID)+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &snapshot)
+	if len(snapshot.Routing.ProjectIDs) != 0 || snapshot.Revision != stored.Revision {
+		t.Fatalf("unassigned runner heartbeat routing = %#v", snapshot)
+	}
 }
 
 func sharedRunner(t *testing.T, first runnerFixture) runnerFixture {

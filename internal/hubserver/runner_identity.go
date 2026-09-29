@@ -232,9 +232,6 @@ func validRunnerPlatform(os, architecture string) bool {
 }
 
 func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, capacity int, version, os, architecture string, now time.Time) error {
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return err
-	}
 	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET reported_capacity = ?, os = ?, architecture = ?, last_heartbeat_at = ? WHERE id = ? AND token_id = ? AND organization_id = ?`, capacity, os, architecture, formatHubTime(now), scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
 	if err != nil {
 		return err
