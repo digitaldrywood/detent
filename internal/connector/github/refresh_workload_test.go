@@ -447,11 +447,20 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 			t.Fatalf("refresh errors=(%v,%v) candidates=%d observed=%d", result.CandidateError, result.StatusError, len(result.Candidates), len(result.Statuses))
 		}
 		if candidateState == "Human Review" {
-			if associations-beforeAssociations != 2 || statuses-beforeStatuses != 8 {
-				t.Fatalf("PR requests per refresh: associations=%d status=%d; want 2 and 8", associations-beforeAssociations, statuses-beforeStatuses)
+			wantAssociations, wantStatuses := 2, 8
+			if resumed {
+				// A resumed scan reobserves retained PR state once before
+				// publishing its snapshot.
+				wantAssociations, wantStatuses = 3, 13
+			}
+			if associations-beforeAssociations != wantAssociations || statuses-beforeStatuses != wantStatuses {
+				t.Fatalf("PR requests per refresh: associations=%d status=%d; want %d and %d", associations-beforeAssociations, statuses-beforeStatuses, wantAssociations, wantStatuses)
 			}
 			for n := 1; n <= candidates; n++ {
 				want := 1
+				if resumed && n <= 100 {
+					want = 2
+				}
 				if shared && n == 26 {
 					want = 0
 				}
@@ -511,6 +520,10 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 	if candidateState == "Human Review" {
 		wantQueries += 40
 		wantPoints += 80
+		if resumed {
+			wantQueries += 24
+			wantPoints += 48
+		}
 	}
 	if preflights != wantPreflights {
 		t.Fatalf("preflights=%d want=%d", preflights, wantPreflights)
