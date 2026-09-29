@@ -452,12 +452,12 @@ func TestAppUpdates(t *testing.T) {
 		{account: "wrong-organization", status: http.StatusForbidden},
 		{account: "invitee", status: http.StatusForbidden},
 		{account: "viewer", status: http.StatusNotFound},
-		{account: "owner", status: http.StatusNotFound},
 	} {
 		t.Run("denied "+test.account, func(t *testing.T) {
 			browserHostedStatus(t, f.appRequest(t, test.account, http.MethodGet, "/app/updates"), test.status)
 		})
 	}
+	browserHostedStatus(t, f.appRequest(t, "owner", http.MethodGet, "/app/updates"), http.StatusOK)
 	grantAppRunners(t, f)
 	browserHostedStatus(t, f.appRequest(t, "viewer", http.MethodGet, "/app/updates"), http.StatusNotFound)
 	payload := read(t, "owner")

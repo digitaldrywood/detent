@@ -257,7 +257,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return "", err
 	}
 	err = tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
@@ -290,7 +290,8 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 			return "", err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write) VALUES (?,?,?,1)", credential.Hosted.Subject, s.config.Hosted.OrganizationID, project); err != nil {
+	manageRunner := credential.HostedRole == "owner" || credential.HostedRole == "admin"
+	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,1,?)", credential.Hosted.Subject, s.config.Hosted.OrganizationID, project, manageRunner); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?)", credential.ID, s.config.Hosted.OrganizationID, project); err != nil {
