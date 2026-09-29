@@ -154,3 +154,60 @@ func TestSchedulersRequireScheduleOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeScheduleOwnershipRequiresExplicitGitHubRepository(t *testing.T) {
+	tests := []struct {
+		name       string
+		repository string
+		wantError  bool
+	}{
+		{name: "inherited tracker repository", wantError: true},
+		{name: "explicit coordination repository", repository: "example/coordination"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Tracker.Kind = TrackerHubNative
+			cfg.Tracker.Repository = "example/project"
+			cfg.ScheduleOwnership.Enabled = true
+			cfg.ScheduleOwnership.Key = "example/production"
+			cfg.ScheduleOwnership.Repository = tt.repository
+			err := cfg.Validate()
+			if tt.wantError {
+				if err == nil || !strings.Contains(err.Error(), "explicit schedule_ownership.repository") {
+					t.Fatalf("Validate() error = %v, want explicit GitHub coordination repository", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestMappedNativeScheduleOwnershipDoesNotInheritGitHubRepository(t *testing.T) {
+	tests := []struct {
+		name       string
+		repository string
+		wantError  bool
+	}{
+		{name: "implicit GitHub repository", wantError: true},
+		{name: "explicit coordination repository", repository: "  repository: example/coordination\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  repository: example/project\nschedule_ownership:\n  enabled: true\n  key: example/production\n" + tt.repository + "---\nPrompt\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := workflow.Config.ForNativeTracker()
+			err = cfg.Validate()
+			if tt.wantError {
+				if err == nil || !strings.Contains(err.Error(), "explicit schedule_ownership.repository") {
+					t.Fatalf("mapped Validate() error = %v, want explicit repository", err)
+				}
+			} else if err != nil {
+				t.Fatalf("mapped Validate() error = %v", err)
+			}
+		})
+	}
+}

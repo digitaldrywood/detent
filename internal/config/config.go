@@ -1741,7 +1741,14 @@ func (c *Config) Validate() error {
 	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
 		coordinationEndpoint = c.Tracker.Endpoint
 	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
+	coordinationRepository := c.Tracker.Repository
+	if c.Tracker.Kind == TrackerHubNative {
+		coordinationRepository = ""
+		if c.ScheduleOwnership.Enabled && strings.TrimSpace(c.ScheduleOwnership.Repository) == "" {
+			problems = append(problems, "native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
+		}
+	}
+	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(coordinationRepository, coordinationEndpoint)
 	problems = append(problems, c.ScheduleOwnership.Validate("schedule_ownership")...)
 	states := make([]string, 0, len(c.configuredWorkflowStates()))
 	for _, state := range c.configuredWorkflowStates() {
@@ -1980,7 +1987,11 @@ func (c *Config) normalize() {
 	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
 		coordinationEndpoint = c.Tracker.Endpoint
 	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
+	coordinationRepository := c.Tracker.Repository
+	if c.Tracker.Kind == TrackerHubNative {
+		coordinationRepository = ""
+	}
+	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(coordinationRepository, coordinationEndpoint)
 	c.Intake.Normalize()
 	c.Retro.Normalize()
 	c.Routines = NormalizeRoutines(c.Routines)
@@ -1997,6 +2008,18 @@ func (c Config) SchedulersEnabled() bool {
 		}
 	}
 	return false
+}
+
+// ForNativeTracker applies a Hub mapping without carrying an implicit GitHub
+// coordination repository from a committed GitHub workflow into native mode.
+func (c Config) ForNativeTracker() Config {
+	c.Tracker.Kind = TrackerHubNative
+	if c.configuredFields != nil {
+		if _, explicit := c.configuredFields["schedule_ownership.repository"]; !explicit {
+			c.ScheduleOwnership.Repository = ""
+		}
+	}
+	return c
 }
 
 func (c *Config) validateTracker(problems *[]string) {

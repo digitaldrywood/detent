@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"log/slog"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -85,6 +86,19 @@ func TestWorkflowConfigWithGitHubTokenSupportsScheduleOwnership(t *testing.T) {
 	got := workflowConfigWithGitHubToken(cfg, "runtime-token")
 	if got.Tracker.APIKey != "runtime-token" {
 		t.Fatalf("Tracker.APIKey = %q, want runtime-token", got.Tracker.APIKey)
+	}
+}
+
+func TestBuildScheduleOwnershipRejectsImplicitNativeGitHubRepository(t *testing.T) {
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	cfg.Tracker.Repository = "example/project"
+	cfg.ScheduleOwnership.Enabled = true
+	cfg.ScheduleOwnership.Key = "example/production"
+
+	manager, _, _, err := buildScheduleOwnership(cfg, Dependencies{}, slog.Default(), nil)
+	if err == nil || manager != nil {
+		t.Fatalf("buildScheduleOwnership() = (%v, %v), want explicit repository error", manager, err)
 	}
 }
 
@@ -287,7 +301,7 @@ func TestWithMappedNativeTrackerUsesTheHubForMappedProjects(t *testing.T) {
 			t.Parallel()
 			workflow := workflowconfig.Config{}
 			workflow.Tracker.Kind = test.kind
-			if got := withMappedNativeTracker(workflow, test.scheduling, test.project).Tracker.Kind; got != test.want {
+			if got := WithMappedNativeTracker(workflow, test.scheduling, test.project).Tracker.Kind; got != test.want {
 				t.Fatalf("tracker kind = %q, want %q", got, test.want)
 			}
 		})

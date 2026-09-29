@@ -111,6 +111,7 @@ func withRunnerFactoryWithIsolation(
 			workflow.Config.Identity = cfg.Identity
 			workflow.Config.Identity.Normalize()
 		}
+		workflow.Config = project.WithMappedNativeTracker(workflow.Config, deps.Scheduling, project.ID(cfg.ID))
 		token := strings.TrimSpace(deps.GitHubToken)
 		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
 			token = strings.TrimSpace(githubTokenSource[0]())
@@ -313,12 +314,13 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 		OutputRoot: outputRoot,
 		AutoBranch: cfg.Workspace.AutoBranch,
 		Hooks: workspace.Hooks{
-			Shell:        cfg.Hooks.Shell,
-			AfterCreate:  cfg.Hooks.AfterCreate,
-			BeforeRun:    cfg.Hooks.BeforeRun,
-			AfterRun:     cfg.Hooks.AfterRun,
-			BeforeRemove: cfg.Hooks.BeforeRemove,
-			Timeout:      durationFromMillis(cfg.Hooks.TimeoutMS),
+			Shell:             cfg.Hooks.Shell,
+			AfterCreate:       cfg.Hooks.AfterCreate,
+			BeforeRun:         cfg.Hooks.BeforeRun,
+			AfterRun:          cfg.Hooks.AfterRun,
+			BeforeRemove:      cfg.Hooks.BeforeRemove,
+			Timeout:           durationFromMillis(cfg.Hooks.TimeoutMS),
+			StripGitHubTokens: cfg.Tracker.Kind == workflowconfig.TrackerHubNative,
 		},
 		Logger: logger,
 	})

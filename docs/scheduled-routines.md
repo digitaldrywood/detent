@@ -30,6 +30,12 @@ branch on first use. The credential must be able to read the repository and
 create commits on that branch. A dedicated coordination repository keeps these
 small state commits out of a product repository's normal branch history.
 
+For `hub_native` projects, scheduled work requires an explicit
+`schedule_ownership.repository` to opt into this GitHub-backed coordination.
+Detent does not infer that repository from `tracker.repository`, including when
+a GitHub workflow is mapped to a native Hub project. Without an explicit
+coordination repository, validation fails before a GitHub client is built.
+
 `key` is the committed fleet-wide project identity and must be identical on
 every host. `instance_name` supplies the owner shown by `detent doctor`; Detent
 uses the hostname when it is omitted. The heartbeat renews before the holder's

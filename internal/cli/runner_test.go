@@ -641,6 +641,45 @@ func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 	}
 }
 
+func TestWorkspaceHookGitHubTokenInheritance(t *testing.T) {
+	source := initRunnerSourceRepo(t)
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Setenv(key, "operator-secret")
+	}
+	tests := []struct {
+		name string
+		kind string
+		want string
+	}{
+		{name: "native", kind: workflowconfig.TrackerHubNative, want: "|||"},
+		{name: "GitHub", kind: workflowconfig.TrackerGitHub, want: "operator-secret|operator-secret|operator-secret|operator-secret"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = tt.kind
+			cfg.Workspace.Root = filepath.Join(t.TempDir(), "workspaces")
+			trace := filepath.Join(t.TempDir(), "tokens")
+			cfg.Hooks.AfterCreate = "printf '%s|%s|%s|%s' \"$GH_TOKEN\" \"$GITHUB_TOKEN\" \"$GH_ENTERPRISE_TOKEN\" \"$GITHUB_ENTERPRISE_TOKEN\" > " + runnerShellQuote(trace)
+
+			backend, err := buildWorkspaceBackend(cfg, source, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := backend.Create(t.Context(), workspace.Issue{Identifier: "DD-3187"}); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(trace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(data); got != tt.want {
+				t.Fatalf("hook tokens = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassifyWorkspaceBackendError(t *testing.T) {
 	t.Parallel()
 

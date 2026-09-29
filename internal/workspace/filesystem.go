@@ -404,7 +404,7 @@ func (f *Filesystem) runHook(ctx context.Context, name string, command string, i
 
 	cmd := commandshell.Command(hookCtx, command, f.hooks.Shell)
 	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue)
+	cmd.Env = hookEnv(info, issue, f.hooks.StripGitHubTokens)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	f.logger.Info("running filesystem workspace hook", slog.String("hook", name), slog.String("path", info.Path), slog.String("command", command))
 
