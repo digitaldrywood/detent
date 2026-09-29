@@ -1697,6 +1697,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if diffs, ok := req.Execution.(DiffExecution); ok {
 			diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
 		}
+		if repository, ok := req.Execution.(RepositoryExecution); ok {
+			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
+		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
 		}

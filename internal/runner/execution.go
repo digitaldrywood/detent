@@ -53,6 +53,15 @@ type ChangeExecution interface {
 	NativeChange() *NativeChange
 }
 
+// RepositoryExecution is an Execution that publishes the finished run's
+// commits as an immutable Change Request version, which names the repository
+// the commits live in. The runner installs the checkout's https remote once
+// it has a worktree; an execution with no repository to name opens the
+// Change Request but publishes no version, and reports why.
+type RepositoryExecution interface {
+	SetRepository(string)
+}
+
 // attemptDiffSource returns the source for one run's worktree. A diff is
 // best-effort: a failure is logged and reported as "nothing to post", so a
 // worktree the runner cannot read never fails the run it is describing.

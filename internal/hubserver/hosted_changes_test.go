@@ -36,18 +36,29 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			owner := f.user(t, "setup", "owner", "setup@example.test", "write", "")
 			requireNativeStatus(t, f.request(t, owner, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: hubTestPolicy()}), http.StatusOK)
+			// Approving the repository policy seeds the default review
+			// policy, which the request below replaces by its identity.
+			seeded := defaultChangeReviewPolicy(hubTestPolicy().ID)
 			user := f.user(t, "approver", test.role, test.email, test.grant, "")
 			if test.grant != "" {
 				f.grant(t, user, test.grant == "write", test.runner)
 			}
-			request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Policy: tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: true}}
+			request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, ExpectedID: seeded.ID, Policy: tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: false}}
 			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/change-review-policy", request), test.want)
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_review_policies").Scan(&count); err != nil {
+			var stored tracker.ChangeReviewPolicy
+			var raw string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT policy_json FROM change_review_policies").Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
-			if (count == 1) != (test.want == http.StatusOK) {
-				t.Fatalf("stored policies = %d, response status = %d", count, test.want)
+			if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+				t.Fatal(err)
+			}
+			want := seeded.ID
+			if test.want == http.StatusOK {
+				want = changerequest.PolicyID(request.Policy)
+			}
+			if stored.ID != want {
+				t.Fatalf("stored review policy = %s, want %s after status %d", stored.ID, want, test.want)
 			}
 		})
 	}
@@ -320,12 +331,18 @@ func TestHostedChangePolicyRevocation(t *testing.T) {
 				if body.beforeRead != nil {
 					t.Fatal("revocation did not run after middleware authorization")
 				}
-				var count int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_review_policies").Scan(&count); err != nil {
+				// The repository approval seeded the default; only the
+				// replayed approval had already replaced it.
+				var storedRaw string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT policy_json FROM change_review_policies").Scan(&storedRaw); err != nil {
 					t.Fatal(err)
 				}
-				if count != map[bool]int{false: 0, true: 1}[replay] {
-					t.Fatalf("stored policies after revocation = %d", count)
+				var stored tracker.ChangeReviewPolicy
+				if err := json.Unmarshal([]byte(storedRaw), &stored); err != nil {
+					t.Fatal(err)
+				}
+				if want := map[bool]string{false: defaultChangeReviewPolicy(hubTestPolicy().ID).ID, true: changerequest.PolicyID(command.Policy)}[replay]; stored.ID != want {
+					t.Fatalf("stored policy after revocation = %s, want %s", stored.ID, want)
 				}
 			})
 		}

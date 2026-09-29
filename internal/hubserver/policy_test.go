@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -243,4 +244,62 @@ func TestPolicyClaimChecksUseDatabaseTime(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProjectPolicyApprovalSeedsChangeReviewPolicy checks what approving a
+// repository policy means for a native project's review expectation: a project
+// with none gets the default, the default follows the descriptor when it is
+// approved again, an administrator's own review policy is left to go stale, and
+// a descriptor the default cannot satisfy seeds nothing.
+func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "seeded")
+	rulesPath := f.base + "/change-review-policy"
+	read := func(t *testing.T, status int) tracker.ChangeReviewPolicy {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, rulesPath, f.token, nil)
+		requireNativeStatus(t, response, status)
+		var rules tracker.ChangeReviewPolicy
+		if status == http.StatusOK {
+			decodeHubResponse(t, response, &rules)
+		}
+		return rules
+	}
+	read(t, http.StatusNotFound)
+	first := hubTestPolicy()
+	approveHubTestPolicy(t, f.service, f.base+"/policy", first)
+	seeded := read(t, http.StatusOK)
+	if seeded.PolicyID != first.ID || !seeded.RequireReview || len(seeded.RequiredChecks) != 0 || seeded.ID != changerequest.PolicyID(seeded) {
+		t.Fatalf("seeded review policy = %#v", seeded)
+	}
+	second := first
+	second.ConfigDigest = policy.Digest([]byte("second"))
+	second = second.WithID()
+	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: first.ID, Policy: second})
+	requireNativeStatus(t, response, http.StatusOK)
+	if followed := read(t, http.StatusOK); followed.PolicyID != second.ID || !followed.RequireReview || len(followed.RequiredChecks) != 0 {
+		t.Fatalf("default review policy did not follow the descriptor: %#v", followed)
+	}
+	var principal string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-seeded'").Scan(&principal); err != nil {
+		t.Fatal(err)
+	}
+	custom := tracker.ChangeReviewPolicy{PolicyID: second.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
+	response = performHubAPIRequest(t, f.service, http.MethodPut, rulesPath, testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "custom"}, ExpectedID: read(t, http.StatusOK).ID, Policy: custom})
+	requireNativeStatus(t, response, http.StatusOK)
+	third := second
+	third.ConfigDigest = policy.Digest([]byte("third"))
+	third = third.WithID()
+	response = performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: second.ID, Policy: third})
+	requireNativeStatus(t, response, http.StatusOK)
+	if kept := read(t, http.StatusOK); kept.PolicyID != second.ID || len(kept.RequiredChecks) != 1 {
+		t.Fatalf("an administrator's review policy was rewritten: %#v", kept)
+	}
+
+	checked := newNativeFixture(t, nil, "", "checked")
+	descriptor := hubTestPolicy()
+	descriptor.Gates.RequiredChecks = 1
+	descriptor = descriptor.WithID()
+	approveHubTestPolicy(t, checked.service, checked.base+"/policy", descriptor)
+	requireNativeStatus(t, performHubAPIRequest(t, checked.service, http.MethodGet, checked.base+"/change-review-policy", checked.token, nil), http.StatusNotFound)
 }

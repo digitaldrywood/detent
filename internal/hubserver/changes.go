@@ -144,7 +144,11 @@ AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organizat
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		if previous.ID != request.ExpectedID {
+		// The seeded default is nobody's decision, so an approval that
+		// expects no review policy may replace it; any other policy must be
+		// named by the identity the approver read.
+		seeded := previous.ID != "" && previous.ID == defaultChangeReviewPolicy(previous.PolicyID).ID
+		if previous.ID != request.ExpectedID && (request.ExpectedID != "" || !seeded) {
 			return nil, policyMismatch("Review policy changed; supply its current identity")
 		}
 		rules := request.Policy

@@ -2,6 +2,8 @@ package hubclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -76,6 +78,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		var id string
 		if id, err = e.openChange(ctx, diff); err == nil {
 			change.ChangeID, change.Error = id, ""
+			e.publishVersion(ctx, diff, change)
 			e.settled = true
 			return
 		}
@@ -93,6 +96,68 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	slog.Default().Warn("native change not opened",
 		"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "error", err)
 	change.Error = errorText(err)
+}
+
+// publishVersion puts the run's head on the Change Request as an immutable
+// version, the record a reviewer approves or sends back. A change whose
+// current version already carries this head, as a rework run that changed
+// nothing new leaves, is not published again. A version the hub refuses is
+// reported on the change rather than failing the run: the Change Request
+// exists and the item still reaches review, where the reason is shown, and
+// the next successful run publishes again. The idempotency key is the
+// attempt's, so a retried finish cannot publish two. e.mu is held by the
+// caller.
+func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.AttemptDiffRequest, change *runner.NativeChange) {
+	id, err := e.publishChangeVersion(ctx, change.ChangeID, diff)
+	if err != nil {
+		slog.Default().Warn("native change version not published",
+			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "change", change.ChangeID, "error", err)
+		change.VersionID, change.VersionError = "", err.Error()
+		return
+	}
+	change.VersionID, change.VersionError = id, ""
+}
+
+func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID string, diff tracker.AttemptDiffRequest) (string, error) {
+	client, item := e.claim.source.client, e.claim.lease.WorkItemID
+	detail, err := client.Change(ctx, item, changeID)
+	if err != nil {
+		return "", fmt.Errorf("read change: %w", err)
+	}
+	// The current version is reused only when it carries this head under the
+	// policy this run was claimed with and is not stale: a policy change
+	// between attempts needs a new version to review, head or no new head.
+	for _, version := range detail.Versions {
+		if version.ID == detail.Change.CurrentVersion && version.HeadSHA == diff.HeadSHA && version.PolicyID == e.data.PolicyID && detail.Summary.Status != "stale_policy" {
+			return version.ID, nil
+		}
+	}
+	if e.repository == "" {
+		return "", errors.New("the checkout's origin remote is not an https repository the version can name")
+	}
+	digest := sha256.Sum256([]byte(diff.HeadSHA))
+	version, err := client.PublishChangeVersion(ctx, item, changeID, tracker.PublishChangeVersion{
+		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":version", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
+		ExpectedVersionID: detail.Change.CurrentVersion,
+		ChangeVersionInput: tracker.ChangeVersionInput{
+			BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, MergeBaseSHA: diff.BaseSHA,
+			Repository: e.repository,
+			Code:       tracker.ChangeArtifact{Kind: "code", URI: e.repository + "/commit/" + diff.HeadSHA, SHA256: hex.EncodeToString(digest[:]), Availability: "unverified"},
+			Artifacts:  []tracker.ChangeArtifact{},
+			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("publish version: %w", err)
+	}
+	return version.ID, nil
+}
+
+// SetRepository names the repository a published version refers to.
+func (e *nativeExecution) SetRepository(repository string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.repository = repository
 }
 
 const (
