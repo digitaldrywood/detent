@@ -74,16 +74,14 @@ appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
 
 A persisted successful completion with a complete Workpad and ready PR remains
-owned by the existing active-lane gate while current-head CI is pending. Stranded
-active recovery excludes that completion instead of sending its open PR to
-Rework only while the PR identity and head still match the completion-time
-snapshot. A replacement head or an ended attempt without completion still
-recovers its open PR to Rework. The gate promotes a green matching head to
-Merging. This preserves the single
-orchestrator lane writer and removes an overlapping recovery decision (#3073).
-`TestCompletedReadyPullRequestEntersMergeGate` and
-`TestRecoverStrandedActiveIssues` cover the recorded completion and recovery
-sequence.
+owned by the existing active-lane gate until the matching head is eligible for
+Merging. A replacement head or an ended
+attempt without completion remains in In Progress for normal dispatch; elapsed
+time without a worker is diagnostic only. The stranded-active sweep no longer
+writes a Todo or Rework lane transition (#3238), removing its competing lane
+decision. `TestCompletedReadyPullRequestEntersMergeGate` and
+`TestTickDispatchesPlanApprovedIssueAfterLongRefresh` cover completion and
+next-cycle dispatch.
 
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
@@ -163,7 +161,7 @@ excluded identity contributes to the aggregate skip count; only open cards in
 configured active, non-terminal lanes record a per-card scheduler decision
 (#2916). `TestTickAuthorizationDeclineMixedLanes` covers mixed lanes, custom
 active states, terminal overlap, closed cards, and duplicate retained inputs. `TestTickAuthorizationBeforeRecovery` covers mixed instance labels across
-stranded recovery, stale Todo PR reconciliation, blocked recovery, and both
+stale Todo PR reconciliation, blocked recovery, and both
 dependency sweep orderings. `TestTickAuthorizationSelectorSemantics` preserves
 nested selectors, identity/field predicates, and declined retry cleanup.
 
@@ -420,6 +418,14 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+The stranded-active lane recovery is removed (#3238). In Progress remains an
+active dispatch candidate after a long refresh, and the existing completion
+transition owns finished attempts. The diagnostic snapshot still reports the
+idle interval; `stranded_active_recovery` is removed from the transition-reason
+allowlist so the deleted lane writer cannot be restored under that reason.
+`TestTickDispatchesPlanApprovedIssueAfterLongRefresh` covers the reported
+approval-to-dispatch sequence.
 
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate

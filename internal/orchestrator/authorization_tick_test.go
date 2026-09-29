@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -20,7 +19,6 @@ func TestTickAuthorizationBeforeRecovery(t *testing.T) {
 		name, lane, target string
 		early              bool
 	}{
-		{"stranded active", "In Progress", "Todo", false},
 		{"stale todo PR", "Todo", "Human Review", false},
 		{"blocked recovery", "Blocked", "Rework", false},
 		{"auto promote", "Human Review", "Merging", false},
@@ -62,7 +60,7 @@ func TestTickAuthorizationBeforeRecovery(t *testing.T) {
 			tracker := &autoPromoteTickConnector{stateIssues: issues, resolvedIssues: []connector.Issue{{ID: "done", Identifier: "digitaldrywood/detent#123", State: "Done", Closed: true}}}
 			tracker.resolvedIssues = append(tracker.resolvedIssues, issues...)
 			var logs bytes.Buffer
-			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), recoveryInspector: strandedActiveRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 			state := newState(cfg)
 			state.StrandedActiveThreshold = 10 * time.Minute
 			state.BoardIssues = cloneIssues(issues)
