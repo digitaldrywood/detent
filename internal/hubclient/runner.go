@@ -132,7 +132,7 @@ func (c *Client) prepareRunnerCredential(ctx context.Context, path string, file 
 }
 
 func validateRunnerResponse(file runnerauth.File, identity runnerauth.Identity) error {
-	if identity.Binding != file.Identity.Binding || identity.OrganizationID != file.Identity.OrganizationID || identity.ExpiresAt.IsZero() || len(identity.ProjectIDs) == 0 || !runnerauth.ValidOperations(identity.Operations) {
+	if identity.Binding != file.Identity.Binding || identity.OrganizationID != file.Identity.OrganizationID || identity.ExpiresAt.IsZero() || !runnerauth.ValidOperations(identity.Operations) {
 		return errors.New("hub returned an unexpected runner identity")
 	}
 	return nil

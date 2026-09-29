@@ -177,6 +177,9 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
 		t.Fatalf("accepted heartbeat failed on cache permission error: %v", err)
 	}
+	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	file, err = runnerauth.Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +194,43 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	renewed, err := runnerauth.Load(path)
 	if err != nil || !renewed.Identity.ExpiresAt.After(file.Identity.ExpiresAt.Add(time.Hour)) {
 		t.Fatalf("automatic renewal not persisted: %v", err)
+	}
+	unassigned := change
+	unassigned.ExpectedRevision = 2
+	unassigned.ProjectIDs = []tracker.ProjectID{}
+	if err := fleetAdmin.UpdateRunner(t.Context(), file.Identity.RunnerID, unassigned); err != nil {
+		t.Fatal(err)
+	}
+	renewed.Identity.ExpiresAt = time.Now().Add(time.Minute)
+	if err := runnerauth.Save(path, renewed); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatalf("unassigned runner heartbeat after credential renewal: %v", err)
+	}
+	unassignedFile, err := runnerauth.Load(path)
+	if err != nil || len(unassignedFile.Identity.ProjectIDs) != 0 || !unassignedFile.Identity.ExpiresAt.After(renewed.Identity.ExpiresAt.Add(time.Hour)) {
+		t.Fatalf("unassigned runner renewal = %#v, %v", unassignedFile.Identity, err)
+	}
+	cached, err = runnerauth.LoadRoutingCache(path)
+	if err != nil || cached.Revision != 3 || len(cached.Routing.ProjectIDs) != 0 {
+		t.Fatalf("unassigned runner routing cache = %#v, %v", cached, err)
+	}
+	reassigned := change
+	reassigned.ExpectedRevision = 3
+	if err := fleetAdmin.UpdateRunner(t.Context(), file.Identity.RunnerID, reassigned); err != nil {
+		t.Fatal(err)
+	}
+	unassignedFile.Identity.ExpiresAt = time.Now().Add(time.Minute)
+	if err := runnerauth.Save(path, unassignedFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatalf("reassigned runner heartbeat after credential renewal: %v", err)
+	}
+	reassignedFile, err := runnerauth.Load(path)
+	if err != nil || len(reassignedFile.Identity.ProjectIDs) != 1 || reassignedFile.Identity.ProjectIDs[0] != project.ID {
+		t.Fatalf("reassigned runner renewal = %#v, %v", reassignedFile.Identity, err)
 	}
 	dropRotation.Store(true)
 	if _, err := RefreshRunner(t.Context(), path, true); err == nil {
