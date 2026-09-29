@@ -856,7 +856,7 @@ func freezeDoctorCheck(job doctorCheckJob) doctorCheckSnapshot {
 
 func doctorTimedOutChecks(job doctorCheckJob, snapshot doctorCheckSnapshot, timeout time.Duration, err error) []doctorCheck {
 	status, detail := doctorFail, doctorTimeoutDetail(job.Name, snapshot.Current, timeout, err)
-	if job.TimeoutStatus != "" {
+	if job.TimeoutStatus != "" && errors.Is(err, context.DeadlineExceeded) {
 		status, detail = job.TimeoutStatus, "inconclusive: "+detail
 	}
 	return append(snapshot.Checks, doctorCheck{

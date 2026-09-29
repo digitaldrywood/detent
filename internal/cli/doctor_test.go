@@ -6982,17 +6982,19 @@ func TestDoctorTimedOutChecksUsesJobTimeoutStatus(t *testing.T) {
 	tests := []struct {
 		name       string
 		job        doctorCheckJob
+		err        error
 		wantStatus doctorStatus
 		wantPrefix string
 	}{
-		{name: "default fails", job: doctorCheckJob{Name: "Project detent checks"}, wantStatus: doctorFail, wantPrefix: "timed out after 30s"},
-		{name: "cache scan warns", job: doctorCheckJob{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn}, wantStatus: doctorWarn, wantPrefix: "inconclusive: timed out after 30s"},
+		{name: "default fails", job: doctorCheckJob{Name: "Project detent checks"}, err: context.DeadlineExceeded, wantStatus: doctorFail, wantPrefix: "timed out after 30s"},
+		{name: "cache scan warns", job: doctorCheckJob{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn}, err: context.DeadlineExceeded, wantStatus: doctorWarn, wantPrefix: "inconclusive: timed out after 30s"},
+		{name: "cancelled cache scan still fails", job: doctorCheckJob{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn}, err: context.Canceled, wantStatus: doctorFail, wantPrefix: "timed out after 30s: context canceled"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			checks := doctorTimedOutChecks(tt.job, doctorCheckSnapshot{}, 30*time.Second, context.DeadlineExceeded)
+			checks := doctorTimedOutChecks(tt.job, doctorCheckSnapshot{}, 30*time.Second, tt.err)
 			if len(checks) != 1 || checks[0].Status != tt.wantStatus || !strings.HasPrefix(checks[0].Detail, tt.wantPrefix) || checks[0].Name != tt.job.Name {
 				t.Fatalf("doctorTimedOutChecks() = %#v, want one %s check with detail prefix %q", checks, tt.wantStatus, tt.wantPrefix)
 			}
