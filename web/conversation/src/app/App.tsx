@@ -12,10 +12,12 @@ import type {
   IssueProposal,
   IssueResult,
   Message,
+  PreferenceChoices,
   Question,
   TurnPreferences,
 } from "../contracts/index.ts";
 import {
+  AUTO_PREFERENCE,
   DEFAULT_TURN_PREFERENCES,
   HUB_ENVIRONMENT_ID,
   projectCoordinatorAvailable,
@@ -79,6 +81,18 @@ import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
 import { hubPath } from "../runtime/basePath.ts";
 import { usePageTitle } from "./pageTitle.ts";
+
+function generalChatChoices(choices: PreferenceChoices | undefined): PreferenceChoices | undefined {
+  if (choices === undefined) return undefined;
+  if (!choices.models.some((choice) => choice.id === "gpt-6-luna" && choice.provider === "openai")) {
+    return choices;
+  }
+  return {
+    ...choices,
+    models: choices.models.filter((choice) => choice.id === AUTO_PREFERENCE || choice.id === "gpt-6-luna"),
+    efforts: choices.efforts.filter((choice) => [AUTO_PREFERENCE, "low", "medium"].includes(choice.id)),
+  };
+}
 
 export interface ConnectionChip {
   readonly tone: "dc-ok" | "dc-warn" | "dc-err" | "";
@@ -533,7 +547,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             blockedReason={project?.can_write === false ? "Read-only project" : null}
             attachments={attachments}
             preferences={preferences}
-            preferenceChoices={client.bootstrap.preferences}
+            preferenceChoices={generalChatChoices(client.bootstrap.preferences)}
             onPreferencesChange={setPreferences}
             // There is no conversation to hand off yet, so `/issue` and
             // `/handoff` are not on offer here; the draft's pickers, paperclip
@@ -1217,7 +1231,7 @@ export function ConversationView({
               blockedReason={composerBlockedReason}
               disabled={closed}
               preferences={turnPreferences(detail.conversation)}
-              preferenceChoices={client.bootstrap.preferences}
+              preferenceChoices={linked ? client.bootstrap.preferences : generalChatChoices(client.bootstrap.preferences)}
               onPreferencesChange={(next) =>
                 void setPreferences({ projectId, conversationId, preferences: next })
               }

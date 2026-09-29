@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1301,6 +1302,9 @@ func (s *Service) patchConversation(c echo.Context) error {
 		models, err := s.conversationModelChoices(ctx, tx, record.OrganizationID, []string{string(record.ProjectID)}, now)
 		if err != nil {
 			return err
+		}
+		if record.WorkItemID == "" && s.hasLunaCoordinator() {
+			models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID != s.conversationDefaultModel() })
 		}
 		if err := conversation.ValidatePreferences(preferences, conversationModelValidationChoices(models)); err != nil {
 			return nativeInvalid(err.Error())

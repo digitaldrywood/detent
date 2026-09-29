@@ -13,7 +13,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // Coordinator limits. The durable store is the queue, so every limit here
@@ -410,6 +412,10 @@ var errCoordinatorLinked = errors.New("coordinator: conversation is linked")
 type coordinatorTurnState struct {
 	coordinator    *conversationTurnCoordinator
 	conversationID string
+	organizationID tracker.OrganizationID
+	projectID      tracker.ProjectID
+	model          string
+	usage          runner.AgentTokenCounts
 	mu             sync.Mutex
 	assistant      conversationMessageRecord
 	users          []conversationMessageRecord
@@ -469,6 +475,8 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 			pending[i].UpdatedAt = now
 		}
 		state.users = pending
+		state.organizationID = record.OrganizationID
+		state.projectID = record.ProjectID
 		state.threadID = record.ProviderThreadID
 		state.preferences = record.Preferences
 		state.assistant = conversationMessageRecord{
@@ -518,6 +526,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	if effort := state.preferences.EffortValue(); effort != "" {
 		request.ReasoningEffort = effort
 	}
+	state.model = request.Model
 	var result runner.AgentTurnResult
 	if runErr == nil {
 		// A turn that cannot read its attachments ends as failed through
@@ -543,6 +552,19 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	outcome := coordinatorOutcome(runErr, cancelled, stopping)
 	if err := state.finish(writeCtx, outcome, runErr); err != nil {
 		return true, fmt.Errorf("finish coordinator turn: %w", err)
+	}
+	if sink := c.service.config.UsageSink; sink != nil && state.usage.TotalTokens > 0 {
+		provider := "codex"
+		if _, ok := c.service.config.Backend.(*genkitbackend.Backend); ok {
+			provider = "openai"
+		}
+		if err := sink.RecordConversationUsage(writeCtx, ConversationUsage{
+			OrganizationID: state.organizationID, ProjectID: state.projectID,
+			ConversationID: conversationID, TurnID: state.assistant.ID,
+			Provider: provider, Model: state.model, Tokens: state.usage, Outcome: outcome,
+		}); err != nil {
+			c.logger.Warn("coordinator usage report failed", "conversation_id", conversationID, "error", err)
+		}
 	}
 	if runErr != nil && outcome == conversation.DeliveryFailed {
 		c.logger.Warn("coordinator turn failed", "conversation_id", conversationID, "error", runErr)
@@ -746,6 +768,14 @@ func (s *coordinatorTurnState) handleUpdate(ctx context.Context, update runner.A
 	switch update.Type {
 	case runner.AgentUpdateMessageDelta:
 		s.bufferDelta(ctx, update.Delta)
+	case runner.AgentUpdateTokenUsage:
+		s.mu.Lock()
+		s.usage = runner.AgentTokenCounts{
+			InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens,
+			OutputTokens: update.Tokens.OutputTokens, ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
+			TotalTokens: update.Tokens.TotalTokens,
+		}
+		s.mu.Unlock()
 	case runner.AgentUpdateToolStarted, runner.AgentUpdateToolCompleted:
 		s.flush(ctx)
 		s.recordTool(ctx, update)

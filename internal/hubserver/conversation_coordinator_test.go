@@ -310,6 +310,44 @@ func TestConversationCoordinatorAvailability(t *testing.T) {
 	}
 }
 
+type recordingConversationUsageSink struct {
+	usage chan ConversationUsage
+}
+
+func (s recordingConversationUsageSink) RecordConversationUsage(_ context.Context, usage ConversationUsage) error {
+	s.usage <- usage
+	return nil
+}
+
+func TestConversationCoordinatorReportsUsage(t *testing.T) {
+	t.Parallel()
+	f := newCoordinatorFixture(t, "usage")
+	sink := recordingConversationUsageSink{usage: make(chan ConversationUsage, 1)}
+	f.conversations.config.UsageSink = sink
+	f.conversations.config.Model = "gpt-6-luna"
+	f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{
+			InputTokens: 20, CachedInputTokens: 5, OutputTokens: 10, ReasoningOutputTokens: 3, TotalTokens: 30,
+		}}); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Done."})
+	})
+	record := f.seed(t, "Usage", nil)
+	f.say(t, &record, "Hello")
+	assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+	select {
+	case usage := <-sink.usage:
+		if usage.TurnID != assistant.ID || usage.ConversationID != record.ID || usage.OrganizationID != f.organization || usage.ProjectID != f.project.ID ||
+			usage.Model != "gpt-6-luna" || usage.Tokens.InputTokens != 20 || usage.Tokens.CachedInputTokens != 5 ||
+			usage.Tokens.OutputTokens != 10 || usage.Tokens.ReasoningOutputTokens != 3 || usage.Outcome != conversation.DeliveryCompleted {
+			t.Fatalf("usage = %+v", usage)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage was not reported")
+	}
+}
+
 func TestConversationCoordinatorAnswersPendingMessages(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "answers")
