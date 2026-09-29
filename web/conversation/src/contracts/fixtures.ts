@@ -125,6 +125,7 @@ export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "usage-30d.json": UsageReport,
   "usage-empty.json": UsageReport,
   "work-attempt-diff.json": AttemptDiff,
+  "work-attempt-diff-partial.json": AttemptDiff,
   "work-attempt-list.json": AttemptPage,
   "work-change-detail.json": ChangeDetail,
   "work-change-list.json": ChangeRequestList,
