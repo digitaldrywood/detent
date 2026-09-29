@@ -26,7 +26,7 @@ import {
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
 import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
-import { registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
+import { hubUrlNamesOrganization, parseCapacity, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { noApprovedPolicy, saveMessage } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
@@ -395,6 +395,7 @@ describe("the register command", () => {
     { name: "a name with spaces", change: { name: " Build host " }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name 'Build host'" },
     { name: "capacity and service", change: { capacity: 3, service: true }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --capacity 3 --service" },
     { name: "a standalone hub", change: { hubUrl: "https://hub.example.com" }, want: "detent hub runner register --url https://hub.example.com --organization org_1 --token det_enroll_abc" },
+    { name: "a URL naming a longer organization ID", change: { hubUrl: "https://cloud.example.com/organizations/org_1-extra" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1-extra --organization org_1 --token det_enroll_abc" },
   ])("builds it for $name", ({ change, want }) => {
     expect(registerCommand({ ...input, ...change })).toBe(want);
   });
@@ -407,5 +408,32 @@ describe("the register command", () => {
     { value: "", want: "''" },
   ])("quotes $value for the shell", ({ value, want }) => {
     expect(shellArgument(value)).toBe(want);
+  });
+});
+
+describe("the enrollment inputs", () => {
+  it.each([
+    { url: "https://cloud.example.com/organizations/org_1", want: true },
+    { url: "https://cloud.example.com/organizations/org_1/", want: true },
+    { url: "https://cloud.example.com/organizations/org_1-extra", want: false },
+    { url: "https://cloud.example.com/x/organizations/org_10", want: false },
+    { url: "https://cloud.example.com", want: false },
+    { url: "not a url", want: false },
+  ])("reads $url as naming org_1: $want", ({ url, want }) => {
+    expect(hubUrlNamesOrganization(url, "org_1")).toBe(want);
+  });
+
+  it.each([
+    { value: "1", want: 1 },
+    { value: " 4 ", want: 4 },
+    { value: "16", want: 16 },
+    { value: "0", want: null },
+    { value: "17", want: null },
+    { value: "2.9", want: null },
+    { value: "", want: null },
+    { value: "-1", want: null },
+    { value: "1e1", want: null },
+  ])("parses capacity $value as $want", ({ value, want }) => {
+    expect(parseCapacity(value)).toBe(want);
   });
 });

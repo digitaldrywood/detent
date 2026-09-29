@@ -93,6 +93,9 @@ describe("the Enroll dialog", () => {
     const create = screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement;
     fireEvent.change(screen.getByLabelText("Runs at once"), { target: { value: "0" } });
     expect(create.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Runs at once"), { target: { value: "2.9" } });
+    expect(create.disabled).toBe(true);
+    expect(screen.getByText("A whole number from 1 to 16")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Runs at once"), { target: { value: "1" } });
     expect(create.disabled).toBe(false);
     for (const project of projects) fireEvent.click(projectBox(project.id));

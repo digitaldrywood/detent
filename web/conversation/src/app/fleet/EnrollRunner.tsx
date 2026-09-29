@@ -53,6 +53,30 @@ export function shellArgument(value: string): string {
   return /^[A-Za-z0-9._/:@%+=-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+/**
+ * True when the URL's path carries `/organizations/ORG` for exactly this
+ * organization, which is how the CLI derives the organization from it.
+ */
+export function hubUrlNamesOrganization(hubUrl: string, organizationId: string): boolean {
+  let path: string;
+  try {
+    path = new URL(hubUrl).pathname;
+  } catch {
+    return false;
+  }
+  const segments = path.split("/").filter((segment) => segment !== "");
+  return segments.some(
+    (segment, index) => segment === "organizations" && segments[index + 1] === organizationId,
+  );
+}
+
+/** The capacity field's value as the CLI's integer, or null when it is not one. */
+export function parseCapacity(value: string): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const capacity = Number(value.trim());
+  return capacity >= 1 && capacity <= MAX_RUNNER_CAPACITY ? capacity : null;
+}
+
 export interface RegisterCommandInput {
   readonly hubUrl: string;
   readonly organizationId: string;
@@ -70,7 +94,7 @@ export interface RegisterCommandInput {
  */
 export function registerCommand(input: RegisterCommandInput): string {
   const parts = ["detent hub runner register", "--url", shellArgument(input.hubUrl)];
-  if (!input.hubUrl.includes(`/organizations/${input.organizationId}`)) {
+  if (!hubUrlNamesOrganization(input.hubUrl, input.organizationId)) {
     parts.push("--organization", shellArgument(input.organizationId));
   }
   parts.push("--token", shellArgument(input.token));
@@ -152,7 +176,11 @@ export function EnrollRunnerDialog({
   );
 
   const [name, setName] = React.useState("");
-  const [capacity, setCapacity] = React.useState(1);
+  const [capacityText, setCapacityText] = React.useState("1");
+  const capacity = parseCapacity(capacityText);
+  // A response for a dialog the reader already closed must not come back as
+  // the next opening's command.
+  const generation = React.useRef(0);
   const [service, setService] = React.useState(true);
   const [selected, setSelected] = React.useState<readonly string[]>(initialSelection);
   const [enrollment, setEnrollment] = React.useState<PendingEnrollment | null>(null);
@@ -161,14 +189,16 @@ export function EnrollRunnerDialog({
   // leaving it on screen invites redeeming a token that has already expired.
   React.useEffect(() => {
     if (open) return;
+    generation.current += 1;
     setName("");
-    setCapacity(1);
+    setCapacityText("1");
     setService(true);
     setEnrollment(null);
     setSelected(initialSelection());
   }, [open, initialSelection]);
 
   const create = useMutation(async () => {
+    const mine = generation.current;
     const created = await api.enrollRunner({
       projectIds: selected,
       operations: [...ENROLLMENT_OPERATIONS],
@@ -179,17 +209,17 @@ export function EnrollRunnerDialog({
       token: created.token,
       expiresAt: created.expires_at,
       name: name.trim(),
-      command: registerCommand({ hubUrl, organizationId, token: created.token, name, capacity, service }),
+      command: registerCommand({ hubUrl, organizationId, token: created.token, name, capacity: capacity ?? 1, service }),
       projectNames: projects
         .filter((project) => selected.includes(project.id))
         .map((project) => project.name),
     };
-    setEnrollment(entry);
+    if (generation.current === mine) setEnrollment(entry);
     onEnrolled(entry);
     return created;
   });
 
-  const ready = selected.length > 0 && capacity >= 1 && capacity <= MAX_RUNNER_CAPACITY;
+  const ready = selected.length > 0 && capacity !== null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -225,9 +255,22 @@ export function EnrollRunnerDialog({
                     inputMode="numeric"
                     min={1}
                     max={MAX_RUNNER_CAPACITY}
-                    value={String(capacity)}
-                    onChange={(event) => setCapacity(Math.trunc(Number(event.currentTarget.value)))}
+                    step={1}
+                    aria-invalid={capacity === null}
+                    aria-describedby="enroll-runner-capacity-hint"
+                    value={capacityText}
+                    onChange={(event) => setCapacityText(event.currentTarget.value)}
                   />
+                  <p
+                    id="enroll-runner-capacity-hint"
+                    className={
+                      capacity === null
+                        ? "text-xs text-destructive-foreground"
+                        : "text-xs text-muted-foreground"
+                    }
+                  >
+                    {capacity === null ? `A whole number from 1 to ${MAX_RUNNER_CAPACITY}` : `1 to ${MAX_RUNNER_CAPACITY}`}
+                  </p>
                 </div>
               </div>
               <fieldset className="flex flex-col gap-2">
@@ -272,7 +315,8 @@ export function EnrollRunnerDialog({
                   Install it as a background service
                   <span className="block text-muted-foreground">
                     Starts at login and keeps running, separate from any local Detent board on the
-                    same machine.
+                    same machine. It starts once each project's repository is cloned there; until
+                    then the command prints what to clone and how to start it.
                   </span>
                 </span>
               </label>
