@@ -102,7 +102,11 @@ accepts validated, bounded policy metadata, including source revision and digest
 never arbitrary workflow fields. An organization owner/admin with project write
 access approves it explicitly. Approval retains the existing compare-and-swap
 and active-lease guards. Edit gate, review, auto-promotion, merge and runner
-requirements in the repository, then inspect and approve the new descriptor.
+requirements in the repository, then approve the new descriptor. A running
+runner reports the policy it resolved: Settings, Projects, then the project's
+Settings shows "A runner is waiting for a new policy" with an "Approve reported
+policy" button, so pasting the inspect output is only needed before any runner
+has started.
 
 A native project (`tracker.kind: hub_native`) makes no GitHub REST or GraphQL
 calls by default. The runner does not give the agent the instance GitHub

@@ -17,6 +17,14 @@ organization/project scope. Policies are resolved on the customer host. See
 | `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor and approval provenance within native project grants |
 | Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports the descriptor it resolved when nothing is approved or the approved policy differs. The Hub keeps the latest report per project and offers it for approval as `observed_policy` in `GET .../onboarding`; it grants nothing by itself. |
+
+Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
+(owner or admin); the generic `PUT .../policy` above stays instance-administrator
+only and is not served in hosted mode. A runner reports each new unapproved
+descriptor once, so after the repository's `detent.yaml` or `WORKFLOW.md`
+changes, project settings shows "Approve reported policy" with the runner's own
+descriptor and nobody pastes JSON.
 
 Descriptors reject unknown JSON fields and validate all metadata, hashes and
 content-derived identities. Worker/operator tokens cannot approve or revoke a

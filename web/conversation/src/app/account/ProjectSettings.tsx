@@ -1,7 +1,8 @@
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
-import type { PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
+import { Textarea } from "../../components/ui/textarea.tsx";
+import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
 import { INTAKE_CHOICES, PROJECTION_CHOICES } from "../../contracts/account.ts";
 import {
   SettingsPageContainer,
@@ -13,6 +14,7 @@ import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect, PathValue, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
+import { parsePolicyDescriptor, POLICY_INSPECT_COMMAND } from "./Setup.tsx";
 import { useMutation, useResource } from "./useResource.ts";
 
 /** The editable half of the integration: what a save sends. */
@@ -48,6 +50,8 @@ export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean 
  * policy_mismatch` is a stored approval that no longer describes what the host
  * resolves. Neither is an error the reader can act on except by approving.
  */
+export const OBSERVED_POLICY_REFRESH_MS = 30_000;
+
 export function noApprovedPolicy(error: AccountError): boolean {
   return error.status === 404 || error.code === "policy_mismatch";
 }
@@ -74,48 +78,104 @@ const PROJECTION_OPTIONS = PROJECTION_CHOICES.map((value) => ({
 
 export function PolicyRow({
   policy,
+  observed,
   canManage,
   onApprove,
+  onApprovePasted,
   approving,
   error,
 }: {
   readonly policy: PolicyApproval | null;
+  /** Descriptors runners resolved and could not run, newest first. */
+  readonly observed: readonly ObservedPolicy[];
   readonly canManage: boolean;
-  readonly onApprove: () => void;
+  readonly onApprove: (policyId: string) => void;
+  readonly onApprovePasted: (text: string) => void;
   readonly approving: boolean;
   readonly error: string | null;
 }): React.ReactElement {
+  const [pasting, setPasting] = React.useState(false);
+  const [pasted, setPasted] = React.useState("");
+  const description =
+    observed.length > 0
+      ? `A runner resolved a different policy from the repository's detent.yaml and WORKFLOW.md and is waiting for it to be approved. Nothing runs on this project until it is.`
+      : policy === null
+        ? "No policy is approved. Start a runner for this project and it reports the policy it resolved here, or paste the output of the inspect command."
+        : "The resolved policy descriptor a human approved. When the repository's detent.yaml or WORKFLOW.md changes, the runner reports the new policy here for approval.";
   return (
     <SettingsRow
-      title="Approved policy"
-      description={
-        policy === null
-          ? "No policy is approved. Nothing runs on this project until somebody inspects the resolved descriptor and approves it."
-          : "The resolved policy descriptor a human approved. Approving again re-reads the host's detent.yaml and WORKFLOW.md."
-      }
+      title="Repository policy"
+      description={description}
       status={
-        policy === null ? null : (
-          <>
-            <span className="font-mono">{policy.policy.policy_id}</span> · approved by{" "}
-            {policy.approved_by} on {policy.approved_at}
-          </>
-        )
+        <>
+          {policy === null ? null : (
+            <span className="block">
+              Approved <span className="font-mono">{policy.policy.policy_id}</span> by {policy.approved_by} on{" "}
+              {policy.approved_at}
+            </span>
+          )}
+          {observed.map((entry) => (
+            <span key={entry.policy.policy_id} className="mt-1 flex flex-wrap items-center gap-2 text-warning-foreground">
+              <span>
+                Runner <span className="font-mono">{entry.runner_id}</span> reports{" "}
+                <span className="font-mono">{entry.policy.policy_id}</span> (source revision{" "}
+                <span className="font-mono">{entry.policy.source_revision.slice(0, 12)}</span>) at {entry.observed_at}
+              </span>
+              {canManage ? (
+                <Button
+                  size="xs"
+                  disabled={approving}
+                  aria-label={`Approve reported policy ${entry.policy.policy_id}`}
+                  onClick={() => onApprove(entry.policy.policy_id)}
+                >
+                  {approving ? "Approving…" : "Approve reported policy"}
+                </Button>
+              ) : null}
+            </span>
+          ))}
+        </>
       }
       control={
         canManage ? (
           <div className="flex flex-col items-end gap-1.5">
-            <Button size="sm" variant={policy === null ? "default" : "outline"} disabled={approving} onClick={onApprove}>
-              {approving ? "Approving…" : policy === null ? "Approve policy" : "Re-approve"}
+            <Button size="sm" variant="ghost-muted" onClick={() => setPasting((open) => !open)}>
+              {pasting ? "Cancel pasting" : "Paste a descriptor"}
             </Button>
             <ControlError message={error} />
           </div>
         ) : (
           <span className="text-sm text-muted-foreground">
-            {policy === null ? "Not approved" : "Approved"}
+            {observed.length > 0 ? "Waiting for approval" : policy === null ? "Not approved" : "Approved"}
           </span>
         )
       }
-    />
+    >
+      {canManage && pasting ? (
+        <div className="flex flex-col gap-2 pb-3">
+          <p className="text-[13px] text-muted-foreground">
+            Run <code className="font-mono text-xs">{POLICY_INSPECT_COMMAND}</code> on the runner host and paste its
+            output.
+          </p>
+          <Textarea
+            aria-label="Policy descriptor"
+            className="font-mono text-xs"
+            rows={6}
+            value={pasted}
+            onChange={(event) => setPasted(event.currentTarget.value)}
+          />
+          <div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={approving || pasted.trim() === ""}
+              onClick={() => onApprovePasted(pasted)}
+            >
+              Approve pasted descriptor
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </SettingsRow>
   );
 }
 
@@ -128,6 +188,8 @@ export function ProjectSettingsView({
   onDraftChange,
   onSave,
   onApprovePolicy,
+  onApprovePastedPolicy,
+  observedPolicies,
   saving,
   approving,
   saveError,
@@ -142,7 +204,9 @@ export function ProjectSettingsView({
   readonly draft: IntegrationDraft;
   readonly onDraftChange: (draft: IntegrationDraft) => void;
   readonly onSave: () => void;
-  readonly onApprovePolicy: () => void;
+  readonly onApprovePolicy: (policyId: string) => void;
+  readonly onApprovePastedPolicy: (text: string) => void;
+  readonly observedPolicies: readonly ObservedPolicy[];
   readonly saving: boolean;
   readonly approving: boolean;
   readonly saveError: string | null;
@@ -176,19 +240,32 @@ export function ProjectSettingsView({
         </SettingsWarning>
       )}
 
-      {policy === null ? (
+      {policy === null || observedPolicies.length > 0 ? (
         <SettingsWarning
           action={
-            canManage ? (
-              <Button size="sm" variant="warning-outline" onClick={onApprovePolicy} disabled={approving}>
-                {approving ? "Approving…" : "Approve policy"}
+            canManage && observedPolicies.length === 1 ? (
+              <Button
+                size="sm"
+                variant="warning-outline"
+                onClick={() => onApprovePolicy(observedPolicies[0]!.policy.policy_id)}
+                disabled={approving}
+              >
+                {approving ? "Approving…" : "Approve reported policy"}
               </Button>
             ) : null
           }
         >
-          <b className="font-semibold">No policy is approved for this project.</b> Detent will not
-          dispatch work until somebody inspects the resolved descriptor on the execution host and
-          approves it.
+          {observedPolicies.length > 0 ? (
+            <>
+              <b className="font-semibold">A runner is waiting for a new policy.</b> The repository&apos;s
+              detent.yaml or WORKFLOW.md changed, and nothing runs until the policy it resolved is approved.
+            </>
+          ) : (
+            <>
+              <b className="font-semibold">No policy is approved for this project.</b> Detent will not
+              dispatch work until a runner reports the policy it resolved and somebody approves it.
+            </>
+          )}
         </SettingsWarning>
       ) : null}
 
@@ -264,6 +341,8 @@ export function ProjectSettingsView({
           policy={policy}
           canManage={canManage}
           onApprove={onApprovePolicy}
+          onApprovePasted={onApprovePastedPolicy}
+          observed={observedPolicies}
           approving={approving}
           error={approveError}
         />
@@ -343,23 +422,49 @@ export function ProjectSettingsRoute({
     }
   });
 
-  const approve = useMutation(async () => {
-    const descriptor = policy.value?.policy;
+  // What a runner resolved and could not run: the Hub records it so the owner
+  // approves exactly that descriptor instead of pasting it.
+  const setup = useResource(() => api.onboarding(projectId), [api, projectId]);
+  const observed = setup.value?.observed_policies ?? [];
+  // A runner reports a changed policy whenever the repository changes, so the
+  // page looks again while it is open instead of only on the next visit.
+  React.useEffect(() => {
+    const timer = globalThis.setInterval(() => void setup.refresh(), OBSERVED_POLICY_REFRESH_MS);
+    return () => globalThis.clearInterval(timer);
+  }, [setup.refresh]);
+
+  // Approves what the runner reported, or a descriptor pasted from the inspect
+  // command. Both go through the onboarding route, the one the hosted Hub
+  // serves to owners and admins.
+  const approve = useMutation(async (choice: { readonly reported: string } | { readonly pasted: string }) => {
+    const descriptor: { readonly policy_id: string } | undefined =
+      "pasted" in choice
+        ? parsePolicyDescriptor(choice.pasted)
+        : observed.find((entry) => entry.policy.policy_id === choice.reported)?.policy;
     if (descriptor === undefined) {
       throw new AccountError({
         status: 422,
         code: "invalid_request",
-        message:
-          "There is no resolved policy to approve yet. Run the first-run setup for this project, which reads the descriptor from the execution host.",
+        message: "No runner has reported a policy for this project yet.",
       });
     }
-    const approved = await api.approvePolicy({
-      projectId,
-      expectedPolicyId: descriptor.policy_id,
-      policy: descriptor,
-    });
-    policy.set(approved);
-    return approved;
+    try {
+      const approved = await api.approvePolicy({
+        projectId,
+        // The onboarding response that listed the reported policies also
+        // carries the approval they were compared with, so the two never
+        // disagree, even while the separate policy read is still loading.
+        expectedPolicyId: (setup.value?.policy ?? policy.value)?.policy.policy_id ?? "",
+        policy: descriptor,
+        onboarding: true,
+      });
+      policy.set(approved);
+      return approved;
+    } finally {
+      // A conflict means somebody else approved meanwhile: re-read both, so a
+      // retry names the approval that is actually current.
+      await Promise.all([setup.refresh(), policy.refresh()]);
+    }
   });
 
   if (integration.error !== null && integration.error.isAccessError) {
@@ -400,7 +505,9 @@ export function ProjectSettingsRoute({
       draft={draft}
       onDraftChange={setDraft}
       onSave={() => void save.call(draft)}
-      onApprovePolicy={() => void approve.call()}
+      onApprovePolicy={(policyId) => void approve.call({ reported: policyId })}
+      onApprovePastedPolicy={(text) => void approve.call({ pasted: text })}
+      observedPolicies={observed}
       saving={save.pending}
       approving={approve.pending}
       saveError={saveMessage(save.error)}

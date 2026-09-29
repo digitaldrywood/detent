@@ -56,6 +56,14 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 			return result, err
 		}
 	}
+	approvedID := ""
+	if result.Policy != nil {
+		approvedID = result.Policy.Policy.ID
+	}
+	result.ObservedPolicies, err = readObservedPolicies(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project), approvedID)
+	if err != nil {
+		return result, err
+	}
 	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?) ORDER BY r.display_name,r.id`, scope.organization, scope.organization, scope.project)
 	if err != nil {
 		return result, err
