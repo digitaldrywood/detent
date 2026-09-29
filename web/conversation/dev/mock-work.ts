@@ -113,6 +113,10 @@ const TITLES = [
   "reports: cost outcomes by project",
 ];
 
+function randomSuffix(): string {
+  return Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+}
+
 function pad(index: number): string {
   return index.toString(16).padStart(32, "0");
 }
@@ -148,6 +152,10 @@ export function createWorkMock(options: {
   let issues: MockIssue[] = [];
   let sequence = 40;
   let conflictOn: string | null = null;
+  // Reviews and discussion posted through the mock, per change id, so a
+  // decision shows up on the next detail read the way the hub's does.
+  const reviews = new Map<string, Record<string, unknown>[]>();
+  const discussion = new Map<string, Record<string, unknown>[]>();
   const streams = new Set<ServerResponse>();
 
   function build(): void {
@@ -314,8 +322,8 @@ export function createWorkMock(options: {
           created_at: issue.updated_at,
         },
       ],
-      reviews:
-        issue.state === "In Review"
+      reviews: [
+        ...(issue.state === "In Review"
           ? [
               {
                 review_id: `review_${pad(issue.number)}`,
@@ -326,7 +334,9 @@ export function createWorkMock(options: {
                 created_at: issue.updated_at,
               },
             ]
-          : [],
+          : []),
+        ...(reviews.get(String(change.change_id)) ?? []),
+      ],
       checks: [
         {
           check_run_id: `check_${pad(issue.number)}`,
@@ -345,14 +355,73 @@ export function createWorkMock(options: {
           received_at: issue.updated_at,
         },
       ],
-      discussion: [],
-      summary: {
-        native_review: issue.state === "In Review" ? "changes_requested" : "approved",
+      discussion: discussion.get(String(change.change_id)) ?? [],
+      summary: mockSummary(issue, reviews.get(String(change.change_id)) ?? []),
+    };
+  }
+
+  // The hub's rolled-up verdict, as far as the mock reproduces it: the latest
+  // decision posted through the mock wins over the seeded one.
+  function mockSummary(issue: MockIssue, posted: Record<string, unknown>[]): Record<string, unknown> {
+    const latest = posted.at(-1);
+    const decision =
+      latest === undefined
+        ? issue.state === "In Review"
+          ? "changes_requested"
+          : "approved"
+        : String(latest.decision);
+    if (decision === "changes_requested") {
+      return {
+        native_review: "changes_requested",
         external_review: "snapshot: APPROVED",
         checks: "passed",
-        status: issue.state === "In Review" ? "blocked" : "ready",
-        messages: issue.state === "In Review" ? ["A reviewer requested changes."] : [],
+        status: "blocked",
+        messages: ["A reviewer requested changes."],
+      };
+    }
+    return {
+      native_review: decision === "approved" ? "approved" : "pending",
+      external_review: "snapshot: APPROVED",
+      checks: "passed",
+      status: decision === "approved" ? "ready" : "pending",
+      messages: [],
+    };
+  }
+
+  // One attempt's stored diff (§18.5): a small real patch, so the review page
+  // has files to draw. The head is the attempt's, as the runner posts it.
+  function attemptDiff(issue: MockIssue): Record<string, unknown> {
+    const head = `a41f0c2${pad(issue.number).slice(0, 33)}`;
+    return {
+      id: `diff_${pad(issue.number)}`,
+      attempt_id: `att_${pad(issue.number * 3)}`,
+      producer: {
+        kind: "attempt",
+        id: `att_${pad(issue.number * 3)}`,
+        runner_id: "rnr_mac_studio",
+        lease_id: "lease_6e19",
+        fencing_token: 6,
       },
+      generation: { source: "attempt", seq: 2 },
+      base_sha: pad(1).slice(0, 40),
+      head_sha: head,
+      files: [
+        {
+          path: "README.md",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          binary: false,
+          patch:
+            "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,2 +1,3 @@\n # Fixture\n \n+Recorded by the stub agent.\n",
+          truncated: false,
+          denied: false,
+        },
+      ],
+      file_count: 1,
+      patch_bytes: 96,
+      truncated: false,
+      created_at: issue.updated_at,
     };
   }
 
@@ -445,6 +514,8 @@ export function createWorkMock(options: {
       build();
       conflictOn = null;
       sequence = 40;
+      reviews.clear();
+      discussion.clear();
     },
     close() {
       for (const stream of streams) stream.end();
@@ -463,6 +534,8 @@ export function createWorkMock(options: {
       if (path === "/__mock/work/reset" && method === "POST") {
         build();
         conflictOn = null;
+        reviews.clear();
+        discussion.clear();
         json(response, 200, { reset: true });
         return true;
       }
@@ -517,6 +590,19 @@ export function createWorkMock(options: {
           .map(([name, count]) => ({ name, color: mockLabelColor(name), count }))
           .toSorted((a, b) => (b.count - a.count === 0 ? a.name.localeCompare(b.name) : b.count - a.count));
         json(response, 200, { items });
+        return true;
+      }
+
+      // `GET {nativeBase}/attempts/:attempt/diff`, attempt-addressed.
+      if (segments[1] === "attempts" && segments[3] === "diff" && segments.length === 4 && method === "GET") {
+        const owner = issues.find(
+          (issue) => issue.project_id === projectId && `att_${pad(issue.number * 3)}` === segments[2],
+        );
+        if (owner === undefined || !changed().includes(owner)) {
+          json(response, 404, { code: "not_found", message: "Resource was not found" });
+          return true;
+        }
+        json(response, 200, attemptDiff(owner));
         return true;
       }
 
@@ -724,6 +810,83 @@ export function createWorkMock(options: {
         }
         json(response, 200, detail);
         return true;
+      }
+
+      if (action === "diff" && segments.length === 4 && method === "GET") {
+        json(response, 200, { diff: changed().includes(issue) ? attemptDiff(issue) : null });
+        return true;
+      }
+
+      // `POST .../changes/:change/versions/:version/reviews` and
+      // `POST .../changes/:change/discussion`, as `change_evidence.go` serves
+      // them: a key, a decision from the fixed set, and `approved` only on
+      // the current version.
+      if (action === "changes" && method === "POST" && (segments.length === 8 || segments.length === 6)) {
+        const detail = changeDetail(issue);
+        const changeId = segments[4] ?? "";
+        if (detail === null || (detail.change as { change_id: string }).change_id !== changeId) {
+          json(response, 404, { code: "not_found", message: "Resource was not found" });
+          return true;
+        }
+        const body = await readBody();
+        const key = String(body.idempotency_key ?? "");
+        if (key.length === 0 || key.length > 128) {
+          invalid(response, "An idempotency key of at most 128 bytes is required");
+          return true;
+        }
+        const text = String(body.body ?? "");
+        const currentVersion = (detail.change as { current_version_id: string }).current_version_id;
+        if (segments.length === 6 && segments[5] === "discussion") {
+          if (text.trim().length === 0 || text.length > 64 * 1024) {
+            invalid(response, "Discussion requires 1 byte to 64 KiB");
+            return true;
+          }
+          const versionId = body.version_id === undefined ? undefined : String(body.version_id);
+          if (versionId !== undefined && versionId !== currentVersion) {
+            json(response, 404, { code: "not_found", message: "Resource was not found" });
+            return true;
+          }
+          const comment = {
+            comment_id: `cmt_${randomSuffix()}`,
+            ...(versionId === undefined ? {} : { version_id: versionId }),
+            body: text,
+            actor: { kind: "human", principal_id: "tok_mock" },
+            created_at: new Date().toISOString(),
+          };
+          discussion.set(changeId, [...(discussion.get(changeId) ?? []), comment]);
+          bump();
+          json(response, 200, comment);
+          return true;
+        }
+        if (segments.length === 8 && segments[5] === "versions" && segments[7] === "reviews") {
+          const versionId = segments[6] ?? "";
+          if (versionId !== currentVersion) {
+            json(response, 404, { code: "not_found", message: "Resource was not found" });
+            return true;
+          }
+          const decision = String(body.decision ?? "");
+          const expected = body.expected_version_id === undefined ? "" : String(body.expected_version_id);
+          if (expected !== "" && expected !== currentVersion) {
+            json(response, 409, { code: "revision_conflict", message: "The requested operation is unavailable" });
+            return true;
+          }
+          if (!["approved", "changes_requested", "commented"].includes(decision) || text.length > 64 * 1024) {
+            invalid(response, "Review decision is invalid or body exceeds 64 KiB");
+            return true;
+          }
+          const review = {
+            review_id: `review_${randomSuffix()}`,
+            version_id: versionId,
+            decision,
+            body: text,
+            actor: { kind: "human", principal_id: "tok_mock" },
+            created_at: new Date().toISOString(),
+          };
+          reviews.set(changeId, [...(reviews.get(changeId) ?? []), review]);
+          bump();
+          json(response, 200, review);
+          return true;
+        }
       }
 
       json(response, 404, { code: "not_found", message: "Resource was not found" });

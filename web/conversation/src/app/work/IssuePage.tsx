@@ -515,6 +515,15 @@ function IssueSurface({
       data={data}
       moves={moves}
       now={now}
+      onOpenChange={
+        item.change === null
+          ? null
+          : () =>
+              void navigate({
+                to: "/work/i/$workItemId/changes/$changeId",
+                params: { workItemId, changeId: item.change!.id },
+              })
+      }
       canWrite={canWrite}
       saving={saving}
       posting={posting}
@@ -653,6 +662,8 @@ interface IssueBodyProps {
   readonly onComment: (body: string) => Promise<void>;
   readonly onOpenIssue: (workItemId: string) => void;
   readonly onOpenConversationPage: () => void;
+  /** Opens the issue's Change Request page; null when it has no change. */
+  readonly onOpenChange: (() => void) | null;
 }
 
 /**
@@ -733,6 +744,17 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
     running === undefined ? Number.MAX_SAFE_INTEGER : Date.parse(running.started_at);
 
   const resources: ResourceRow[] = [];
+  // The Change Request page: the round under review, its diff and the
+  // decisions. Every issue with a change has one, mirrored to a host or not.
+  if (item.change !== null && props.onOpenChange !== null) {
+    resources.push({
+      key: "change-request",
+      icon: "diff",
+      label: item.change.title,
+      detail: item.change.review === "" ? "review" : item.change.review.replaceAll("_", " "),
+      onOpen: props.onOpenChange,
+    });
+  }
   // The attempt diff is absent rather than empty. A change version's code is
   // one opaque artifact and the hub serves no file list, no hunks and no
   // per-file counts, so there is no `1 file · +1 −1` to put on a row; the
@@ -875,6 +897,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       onOpenPullRequest={
         panel !== null && panel.pullRequestAvailable ? panel.openPullRequest : null
       }
+      onOpenChangeRequest={props.onOpenChange}
     />
   );
 

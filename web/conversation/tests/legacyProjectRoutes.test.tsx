@@ -62,3 +62,14 @@ describe("legacy project pages", () => {
     expect(readLastProject()).toBeNull();
   });
 });
+
+describe("the Change Request route", () => {
+  it("resolves under the issue that owns the change", async () => {
+    const router = makeRouter(
+      createMemoryHistory({ initialEntries: ["/work/i/wi_1/changes/change_1"] }),
+    );
+    await router.load();
+    expect(router.state.location.pathname).toBe("/work/i/wi_1/changes/change_1");
+    expect(router.state.matches.at(-1)?.params).toEqual({ workItemId: "wi_1", changeId: "change_1" });
+  });
+});
