@@ -207,6 +207,10 @@ func TestHostedProjectsAPI(t *testing.T) {
 	if !slices.ContainsFunc(projects, func(project hostedProjectView) bool { return project.ID == string(created.ID) && project.CanWrite }) {
 		t.Fatalf("creator has no write grant on %s: %#v", created.ID, projects)
 	}
+	var manageRunner bool
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT manage_runner FROM hosted_project_grants WHERE project_id = ?", created.ID).Scan(&manageRunner); err != nil || !manageRunner {
+		t.Fatalf("owner-created project runner management = %v, %v; want granted", manageRunner, err)
+	}
 	browserHostedDecode(t, f.api(t, "viewer", http.MethodGet, browserHostedOrganizationBase+"/projects", nil, http.StatusOK), &projects)
 	if slices.ContainsFunc(projects, func(project hostedProjectView) bool { return project.ID == string(created.ID) }) {
 		t.Fatal("a new project was shared with a member who was not granted it")

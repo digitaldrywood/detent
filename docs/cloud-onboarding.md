@@ -113,7 +113,9 @@ configuration, not inferred from hostname. Keep its
 private identity file outside repositories. Use the IDs printed on that host in
 the enrollment form, which grants only the selected project. The existing Hub
 runner administration contract requires runner-management grants for every
-organization project; an administrator grants these separately in Organization.
+organization project. An owner or administrator who creates a project receives
+that grant on it automatically; grants for other members are still set in
+Organization.
 The short-lived token is displayed only in the response, not persisted as setup
 progress. Set `DETENT_RUNNER_ENROLLMENT_TOKEN` locally and run
 `detent hub runner enroll --organization ORGANIZATION_ID --display-name NAME`.

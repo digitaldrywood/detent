@@ -76,7 +76,7 @@ Enrollment redemption accepts its separate one-time bearer token, which cannot c
 
 | Credential | Owner and lifetime | Revocation |
 | --- | --- | --- |
-| Enrollment token | Hub issues a grant for one organization, explicit projects, operations and host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
+| Enrollment token | Hub issues a grant for one organization, explicit projects, operations and, optionally, host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
 | Runner credential | Customer host generates a random 256-bit bearer credential; Hub stores its SHA-256 hash; valid for 24 hours from enrollment or renewal | Administrator revokes the runner; no resurrection by renewal, rotation, generic token rotation or ID reuse |
 | Provider/repository/storage credential | Customer login, keychain, workload identity or private host configuration; may outlive many runner sessions | Customer revokes it at its provider; revoking Hub access does not revoke this credential |
 
@@ -89,6 +89,12 @@ Copying the private identity file copies bearer authority: never clone it into
 machine images or share it across hosts. Multiple logical runners on one host
 share the same machine ID and capacity ceiling through explicit enrollment
 approval. Hardware attestation is not implemented.
+
+An enrollment created without `runner_id` and `machine_id` is token-first: it
+binds to the fresh IDs the host presents when it redeems the token, and the Hub
+records them on the enrollment at that moment. The host still generates its IDs
+and credential locally, the IDs must be unused, and the token can be redeemed
+once. The steps below bind the IDs up front instead.
 
 1. On the customer host, run `detent hub runner init --hub-url https://hub.example.com`.
    It prints only runner/machine IDs and stores the credential under the OS user
