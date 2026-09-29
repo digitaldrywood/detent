@@ -47,12 +47,13 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 		postErr       error
 		wantPosted    []string
 		wantRefreshed bool
+		wantErr       bool
 	}{
 		{name: "validated current head", localStatus: "local-gate", validatedHead: head, prHead: head, wantPosted: []string{"example/repo@" + head + "=local-gate"}, wantRefreshed: true},
 		{name: "head changed after validation", localStatus: "local-gate", validatedHead: head, prHead: other},
 		{name: "gate not run by Detent", localStatus: "local-gate", validatedHead: "", prHead: head},
 		{name: "no local status configured", localStatus: "", validatedHead: head, prHead: head},
-		{name: "post fails", localStatus: "local-gate", validatedHead: head, prHead: head, postErr: errors.New("forbidden")},
+		{name: "post fails", localStatus: "local-gate", validatedHead: head, prHead: head, postErr: errors.New("forbidden"), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -64,7 +65,10 @@ func TestPostValidatedGateStatusOnlyForTheValidatedHead(t *testing.T) {
 			issue := connector.Issue{ID: "1", Identifier: "example/repo#7", PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 7, HeadSHA: tt.prHead}}
 			event := runpkg.Completion{Result: runpkg.RunResult{GateValidatedHead: tt.validatedHead}}
 
-			got := orch.postValidatedGateStatus(context.Background(), fake, event, issue)
+			got, err := orch.postValidatedGateStatus(context.Background(), fake, event, issue)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tt.wantErr)
+			}
 			if strings.Join(fake.posted, ",") != strings.Join(tt.wantPosted, ",") {
 				t.Fatalf("posted = %v, want %v", fake.posted, tt.wantPosted)
 			}
