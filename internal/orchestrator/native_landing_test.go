@@ -166,3 +166,36 @@ func TestNativeCandidateStatesIncludeTheLandingLane(t *testing.T) {
 		})
 	}
 }
+
+// TestNativeMergingLaneIsNotReconciledAsAStalePullRequest checks that a
+// native item waiting to land is left to the landing run: the stale-Merging
+// reconciliation reads pull request state, and a native item has none.
+func TestNativeMergingLaneIsNotReconciledAsAStalePullRequest(t *testing.T) {
+	t.Parallel()
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}})
+	now := time.Date(2026, 9, 29, 2, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name      string
+		native    bool
+		wantMoves int
+	}{
+		{name: "native stays for the landing run", native: true, wantMoves: 0},
+		{name: "a tracker with pull requests still reconciles", native: false, wantMoves: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			issue := completionTransitionIssue("Merging", "")
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			var tracker connector.Connector = tick
+			if test.native {
+				tracker = &nativeWorkflowConnector{autoPromoteTickConnector: tick}
+			}
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			transitioned := orch.reconcileStaleMergingPullRequestIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if len(transitioned) != test.wantMoves || len(tick.updates) != test.wantMoves {
+				t.Fatalf("transitioned = %#v, updates = %#v, want %d", transitioned, tick.updates, test.wantMoves)
+			}
+		})
+	}
+}
