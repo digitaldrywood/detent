@@ -65,6 +65,35 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 	}
 }
 
+func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, feature, want string
+	}{
+		{"intake", "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", "intake.sources"},
+		{"routines", "schedule_ownership:\n  enabled: true\n  key: acme/alpha\n  repository: acme/alpha\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", "routines"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "global.yaml")
+			global := validDoctorGlobalWithProjects(configPath, "alpha")
+			global.Client.NativeProjects = map[string]string{"alpha": "prj_test"}
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/alpha\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			deps := successfulDoctorDeps()
+			deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) { return workflow, nil }
+			report := runDoctorStartupPreflight(t.Context(), doctorConfig{ConfigPath: configPath}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+			assertDoctorCheck(t, report, "Candidate startup", doctorOK, "candidate resolved")
+			assertDoctorCheck(t, report, "Project alpha startup", doctorFail, test.want)
+			assertDoctorCheck(t, report, "Project alpha startup", doctorFail, "migrate")
+			if !report.HasFailures() {
+				t.Fatal("preflight accepted a mapped native project that cannot start")
+			}
+		})
+	}
+}
+
 func TestRunDoctorStartupPreflightRejectsUnresolvableBootConfig(t *testing.T) {
 	t.Parallel()
 

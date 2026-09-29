@@ -158,6 +158,7 @@ func newWorkspaceLane(
 	if err != nil {
 		return nil, fmt.Errorf("load workflow for %s: %w", projectID, err)
 	}
+	workflow.Config = project.MapNativeTracker(workflow.Config, true)
 	descriptor, err := project.ResolvePolicy(selected, workflow)
 	if err != nil {
 		return nil, fmt.Errorf("resolve policy for %s: %w", projectID, err)
