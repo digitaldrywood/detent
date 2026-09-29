@@ -1469,12 +1469,11 @@ authorization.
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-   Use `MAX_TURNS`, `MAX_SESSION_DURATION_MS`, and `NO_PROGRESS_TIMEOUT_MS`
-   as the independent per-session catastrophe bounds. Their defaults allow 20
-   turns, two hours of wall-clock time, and 90 minutes without a workspace or
-   Workpad change. Keep `MAX_SESSION_TOKENS` as an additional token-consumption
-   backstop. Codex re-counts cached context on every turn, so do not emit
-   `MAX_SESSION_CONTEXT_MULTIPLIER` by default and do not recommend small
+   Use `MAX_TURNS` and `MAX_SESSION_DURATION_MS` as the per-session catastrophe
+   bounds. Their defaults allow 20 turns and two hours of wall-clock time.
+   Keep `MAX_SESSION_TOKENS` as an additional token-consumption backstop. Codex
+   re-counts cached context on every turn, so do not emit
+   `MAX_SESSION_CONTEXT_MULTIPLIER` by default or recommend small
    values such as `4`. The multiplier is a coarse, advanced opt-in that caps
    roughly how many full-context turns fit; record it only when the operator
    explicitly requests that additional ceiling.
@@ -2554,10 +2553,11 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    Keep `agent.max_session_context_multiplier` absent unless the operator
    explicitly requested the coarse ceiling. The primary catastrophe bounds are
-   `agent.max_turns` and `agent.max_session_duration_ms`; keep `agent.max_session_tokens` as an
-   additional token-consumption backstop because cached context is counted
-   again on every Codex turn. A small multiplier can terminate otherwise
-   healthy sessions after only a few full-context turns. Whenever
+   `agent.max_turns` and `agent.max_session_duration_ms`; keep
+   `agent.max_session_tokens` as an additional token-consumption backstop
+   because cached context is counted again on every Codex turn. A small
+   multiplier can terminate otherwise healthy sessions after only a few
+   full-context turns. Whenever
    `MAX_SESSION_TOKENS` is positive, record the per-issue escape hatch that the
    generated config will reference:
 
