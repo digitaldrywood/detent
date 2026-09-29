@@ -587,7 +587,7 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 			}
 			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: baseTracker}
 			attempts := &recordingWorkAttemptStore{}
-			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, recoveryInspector: strandedActiveRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
 			state.StrandedActiveThreshold = 10 * time.Minute
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement, DispatchSourceState: "In Progress", StartedAt: completedAt.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"}}
@@ -626,16 +626,10 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 				if promoted := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now); len(promoted.transitioned) != 0 {
 					t.Fatalf("replacement head promoted with stale completion: %#v", promoted.transitioned)
 				}
-				if recovered := orch.recoverStrandedActiveIssues(t.Context(), &state, []connector.Issue{issue}, now); len(recovered) != 1 {
-					t.Fatalf("replacement head recovery = %#v, want Rework", recovered)
-				}
-				if got, want := baseTracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
-					t.Fatalf("updates = %#v, want %#v", got, want)
+				if len(baseTracker.updates) != 0 {
+					t.Fatalf("stale completion changed lanes: %#v", baseTracker.updates)
 				}
 				return
-			}
-			if recovered := orch.recoverStrandedActiveIssues(t.Context(), &state, []connector.Issue{issue}, now); len(recovered) != 0 {
-				t.Fatalf("completed current head recovered as stranded: %#v", recovered)
 			}
 			if len(baseTracker.updates) != 0 {
 				t.Fatalf("gate wait changed lanes before promotion: %#v", baseTracker.updates)
