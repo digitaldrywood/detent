@@ -52,6 +52,15 @@ export function isEditableTarget(target: unknown): boolean {
   return role === "textbox" || role === "searchbox" || role === "combobox";
 }
 
+/**
+ * True when a dialog is open. A dialog that is closing stays in the document,
+ * marked `data-closed`, until its exit animation ends (which never happens in
+ * a hidden tab); it no longer owns the keyboard, so it must not swallow `c`.
+ */
+export function dialogOpen(root: { querySelector: (selector: string) => unknown } | undefined): boolean {
+  return root?.querySelector('[role="dialog"]:not([data-closed])') != null;
+}
+
 /** Which shortcut this event is, if any. */
 export function shortcutFor(event: ShortcutEvent): Shortcut | null {
   if (event.defaultPrevented === true) return null;
