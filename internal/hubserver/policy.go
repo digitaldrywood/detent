@@ -294,19 +294,8 @@ ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.p
 // version, and projects seeded while the default required review follow the
 // repository gate like any other default. It is hub migration 40.
 func backfillChangeReviewPolicies(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `SELECT scope FROM project_policies WHERE scope NOT LIKE 'repository:%' ORDER BY scope`)
+	scopes, err := approvedProjectScopes(ctx, tx)
 	if err != nil {
-		return err
-	}
-	var scopes []string
-	for rows.Next() {
-		var scope string
-		if err := rows.Scan(&scope); err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		scopes = append(scopes, scope)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
 	for _, scope := range scopes {
@@ -319,6 +308,22 @@ func backfillChangeReviewPolicies(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func approvedProjectScopes(ctx context.Context, tx *sql.Tx) (scopes []string, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT scope FROM project_policies WHERE scope NOT LIKE 'repository:%' ORDER BY scope`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
 }
 
 type policyQuerier interface {
