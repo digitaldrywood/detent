@@ -25,7 +25,7 @@ that committed a change there (`Human Review` is the default
 A person approves the change in the client, which moves it to `Merging`; the
 runner that holds the project lands the reviewed head on the base branch with
 plain git and the Hub finishes the issue in `Done`. Or the person requests
-changes, which sends it back to `In Progress`. Hub migrations 36 and 37 move
+changes, which sends it back to `In Progress`. Hub migrations 36 and 38 move
 projects whose workflow is exactly an earlier template onto this one. A
 customized workflow is left unchanged; it needs a lane matching the runner's
 `auto_promote.source_state` that `In Progress` can move to, or a completed

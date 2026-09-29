@@ -45,10 +45,11 @@ func TestHostedReviewLaneMigration(t *testing.T) {
 // TestHostedLandingLaneMigration moves projects on the review-lane template
 // onto the template with Merging, where an approved Change Request waits for
 // the runner that lands it, and leaves every other workflow as it was.
+// Migration 37 (observed policies) lies between them and touches no lanes.
 func TestHostedLandingLaneMigration(t *testing.T) {
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
-		from: 36, to: 37, file: "migrations/00037_hosted_landing_lane.sql", lane: "Merging", dispatchable: true,
+		from: 37, to: 38, file: "migrations/00038_hosted_landing_lane.sql", lane: "Merging", dispatchable: true,
 		before: hostedReviewLaneStates(),
 		after:  HostedProjectStates(),
 	})

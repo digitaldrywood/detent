@@ -310,7 +310,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 // Merging, where the runner that holds the project lands it and the Hub
 // finishes it in Done; or sends it back to In Progress. Human Review is the
 // default auto_promote.source_state, which is how the orchestrator names its
-// review lane. Migrations 36 and 37 move projects created from the earlier
+// review lane. Migrations 36 and 38 move projects created from the earlier
 // templates onto this one.
 func HostedProjectStates() []tracker.NativeState {
 	return []tracker.NativeState{

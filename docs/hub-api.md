@@ -450,7 +450,7 @@ there for the runner that lands it) and `Done` (terminal). `In Progress` may mov
 to `Todo`, `Human Review` or `Done`; `Human Review` may move to `Done`, `Merging`
 or back to `In Progress`; `Merging` may move to `Done`, back to `Human Review`,
 or back to `In Progress`.
-Hub migrations 36 and 37 move projects whose workflow is exactly an earlier
+Hub migrations 36 and 38 move projects whose workflow is exactly an earlier
 template onto it and leave customized workflows unchanged. A native project's Change Requests wait in the lane named by the
 runner's `auto_promote.source_state` (default `Human Review`), so a customized
 workflow needs that lane, non-`operator_only` and reachable from its active
