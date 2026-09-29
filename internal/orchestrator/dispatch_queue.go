@@ -170,11 +170,16 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 	// State reads need not include PR enrichment. Keep fresh tracker fields
 	// authoritative (including an empty lane or assignee), while preserving the
 	// PR identity needed by the existing hydrator to refresh its head and checks.
-	// Lightweight state reads may omit Workpad comments. Retain recorded
-	// predicates so the grant recheck still evaluates their live evidence.
-	if fresh.WorkpadSignal == nil && len(fresh.Comments) == 0 {
-		fresh.WorkpadSignal = cloneIssue(action.issue).WorkpadSignal
-		fresh.Comments = cloneIssue(action.issue).Comments
+	// A lightweight state read can omit comments. Read current Workpad evidence
+	// rather than carrying a predicate from the request that was queued.
+	if action.issue.WorkpadSignal != nil && fresh.WorkpadSignal == nil {
+		if _, canRead := o.connector.(connector.IssueCommentReader); !canRead {
+			return
+		}
+	}
+	fresh, err = o.refreshDependencyAutoUnblockComments(ctx, fresh)
+	if err != nil {
+		return
 	}
 	if fresh.PullRequest == nil {
 		fresh.PullRequest = cloneIssue(action.issue).PullRequest
@@ -191,7 +196,11 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 			return
 		}
 	}
-	action.issue = o.hydrateDispatchDependencies(ctx, fresh, make(map[string]dependencyBlocker))
+	prepared := o.prepareDispatchCandidates(ctx, state, []connector.Issue{fresh}, now)
+	if len(prepared) == 0 {
+		return
+	}
+	action.issue = o.hydrateDispatchDependencies(ctx, prepared[0], make(map[string]dependencyBlocker))
 	action.workerHost = grant.Slot.Host
 	retry, retryQueued := state.Retry[action.issue.ID]
 	if retryQueued {

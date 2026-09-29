@@ -301,6 +301,7 @@ type Orchestrator struct {
 	globalDispatchGate      scheduler.ProjectDispatchGate
 	globalDispatchReady     chan struct{}
 	globalDispatchPending   map[string]pendingGlobalDispatch
+	lastDispatchCandidates  []connector.Issue
 	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
 	readIOPressure          func(context.Context) (hostpressure.Sample, error)
 	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
@@ -888,7 +889,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case request := <-o.stopRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleStopRunRequest(ctx, &state, request)
+			if len(state.Running) < before {
+				o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), request.request.IssueID)
+			}
 		case request := <-o.modelPermitRequests:
 			state.syncWorkerProgress()
 			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
@@ -900,7 +905,16 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
 			o.startCompletion(&state)
+			before := len(state.Running)
+			_, operatorStopped := o.pendingStops[result.IssueID]
 			o.handleRunResult(ctx, &state, result)
+			if len(state.Running) < before {
+				if operatorStopped {
+					o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), result.IssueID)
+				} else {
+					o.refillProjectSlots(ctx, &state, o.clockNow())
+				}
+			}
 			o.publishState(&state)
 			o.completionState.Store(nil)
 			continue
@@ -912,7 +926,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case result := <-heartbeatResults:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleHeartbeatResult(&state, result)
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case event := <-o.validatorCapacityEvents:
 			state.syncWorkerProgress()
 			o.handleValidatorCapacityEvent(&state, event)
@@ -926,6 +944,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- o.forceQuit(request.ctx, &state, request.at)
 		case request := <-o.recoveryRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			var response WorkAttemptRecoveryResponse
 			var err error
 			if request.receiptOnly {
@@ -937,17 +956,28 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				response, err = o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
 			}
 			request.reply <- workAttemptRecoveryReply{response: response, err: err}
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 			if !request.receiptOnly && err == nil && response.Queued {
 				resetTicker(ticker, time.Millisecond)
 			}
 		case request := <-o.operatorMoves:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			request.reply <- o.applyOperatorMove(ctx, &state, request.request, request.at)
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case update := <-o.configUpdates:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
+			previousCapacity := state.MaxConcurrentAgents
 			o.applyRuntimeUpdate(&state, update.update, ticker)
+			if state.MaxConcurrentAgents > previousCapacity {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 			o.finishTick(&state)
 			update.reply <- struct{}{}
 		case request := <-o.stateRequests:

@@ -1370,6 +1370,10 @@ Owners consume grants in acquisition order and revalidate current candidates;
 refreshes retain standing requests and update their actions and slot requirements
 in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
 explicit pause/configuration invalidation discard requests and release unused grants.
+Project run completion, lease release, and increased project capacity recheck
+candidates from the last refresh on the orchestrator event loop. The pass reads
+current tracker evidence and uses the tick's eligibility planner before claiming,
+so a stale higher-ranked candidate cannot keep a free project slot idle.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
@@ -1379,6 +1383,8 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
+`TestCompletionRefillsProjectSlotWithoutRefresh`, `TestCapacityIncreaseRefillsWithoutRefresh`,
+`TestEventAndTickDispatchEligibilityParity`, `TestQueuedDispatchUsesCurrentWorkpad`,
 `TestQueuedDispatchChoosesAvailableHost`,
 `TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
