@@ -182,7 +182,7 @@ func existingRunnerConfigMatches(path string, want runnerConfigFile, projects bo
 	}
 	var have runnerConfigFile
 	if err := yaml.Unmarshal(body, &have); err != nil {
-		return fmt.Errorf("%s exists but cannot be read (%v); move it aside and run register again", path, err)
+		return fmt.Errorf("%s exists but cannot be read; move it aside and run register again: %w", path, err)
 	}
 	mismatch := func(what string) error {
 		return fmt.Errorf("%s exists but its %s does not match this runner; move it aside and run register again, or pass --config with another path", path, what)
@@ -371,7 +371,7 @@ func runnerConfig(base string, org tracker.OrganizationID, name string, capacity
 
 // writeRunnerConfig creates the runner configuration once. An existing file
 // is the operator's and is never rewritten.
-func writeRunnerConfig(path string, config runnerConfigFile) (bool, error) {
+func writeRunnerConfig(path string, config runnerConfigFile) (created bool, resultErr error) {
 	if !globalconfig.ValidServiceName(config.ServiceName) {
 		return false, errors.New("runner service name is invalid")
 	}
@@ -389,7 +389,11 @@ func writeRunnerConfig(path string, config runnerConfigFile) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer os.Remove(temporary.Name())
+	defer func() {
+		if err := os.Remove(temporary.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
 	header := "# Detent runner configuration written by `detent hub runner register`.\n# The Hub assigns work for the projects below; each workdir is that project's repository checkout.\n"
 	_, writeErr := temporary.Write(append([]byte(header), body...))
 	if err := errors.Join(writeErr, temporary.Chmod(0o600), temporary.Sync(), temporary.Close()); err != nil {
