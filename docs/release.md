@@ -37,8 +37,10 @@ tag annotation prevents signing and publication.
 
 GoReleaser generates the package manifests during snapshots and skips
 publishing when the corresponding package-manager token is unavailable. The
-release workflow is explicitly dispatched after tag publication because tags
-pushed by `GITHUB_TOKEN` do not start another workflow automatically.
+Scoop bucket uses `SCOOP_BUCKET_GITHUB_TOKEN`; Winget uses
+`WINGET_GITHUB_TOKEN`. The release workflow is explicitly dispatched after tag
+publication because tags pushed by `GITHUB_TOKEN` do not start another workflow
+automatically.
 
 The updater fails closed if the signature, provenance checksum, repository,
 tag, full commit, or successful mandatory-check evidence is absent or
