@@ -1053,6 +1053,27 @@ test.describe("decisions.md §10 corrections", () => {
     expect(await shell.text()).toContain("/static/app/conversation/app.js");
   });
 
+  test("serves the Detent favicon on Hub routes", async ({ page }) => {
+    await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
+    for (const route of ["/chat", "/work"]) {
+      await page.goto(`${hub.fixture.url}${route}`, { waitUntil: "domcontentloaded" });
+      for (const icon of [
+        { rel: "icon", type: "image/svg+xml", sizes: null, file: "favicon.svg" },
+        { rel: "icon", type: "image/png", sizes: "32x32", file: "favicon-32.png" },
+        { rel: "apple-touch-icon", type: null, sizes: "180x180", file: "apple-touch-icon.png" },
+      ]) {
+        const link = page.locator(`head link[rel="${icon.rel}"][href$="/${icon.file}"]`);
+        await expect(link).toHaveCount(1);
+        if (icon.type) await expect(link).toHaveAttribute("type", icon.type);
+        if (icon.sizes) await expect(link).toHaveAttribute("sizes", icon.sizes);
+        const href = await link.getAttribute("href");
+        const response = await page.request.get(new URL(href, page.url()).toString());
+        expect(response.status()).toBe(200);
+        expect(response.headers()["content-type"]).toContain(icon.type ?? "image/png");
+      }
+    }
+  });
+
   // §10.14, restated for the one frontend (§11). There are no hosted Templ
   // pages left to link from: the sidebar is the shell for every route, so the
   // assertion is that its own Work and Chat destinations navigate the client.
