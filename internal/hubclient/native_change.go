@@ -108,32 +108,36 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 // attempt's, so a retried finish cannot publish two. e.mu is held by the
 // caller.
 func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.AttemptDiffRequest, change *runner.NativeChange) {
-	id, err := e.publishChangeVersion(ctx, change.ChangeID, diff)
+	id, reviewed, err := e.publishChangeVersion(ctx, change.ChangeID, diff)
 	if err != nil {
 		slog.Default().Warn("native change version not published",
 			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "change", change.ChangeID, "error", err)
-		change.VersionID, change.VersionError = "", err.Error()
+		change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = "", err.Error(), hubErrorCode(err), false
 		return
 	}
-	change.VersionID, change.VersionError = id, ""
+	change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = id, "", "", reviewed
 }
 
-func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID string, diff tracker.AttemptDiffRequest) (string, error) {
+// publishChangeVersion reports the version that carries the head and whether
+// the project's review policy already accepts it, which is what lets the
+// run's completion send the item straight to landing. A version whose
+// acceptance cannot be read back is treated as waiting for review.
+func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID string, diff tracker.AttemptDiffRequest) (string, bool, error) {
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
 	detail, err := client.Change(ctx, item, changeID)
 	if err != nil {
-		return "", fmt.Errorf("read change: %w", err)
+		return "", false, fmt.Errorf("read change: %w", err)
 	}
 	// The current version is reused only when it carries this head under the
 	// policy this run was claimed with and is not stale: a policy change
 	// between attempts needs a new version to review, head or no new head.
 	for _, version := range detail.Versions {
 		if version.ID == detail.Change.CurrentVersion && version.HeadSHA == diff.HeadSHA && version.PolicyID == e.data.PolicyID && detail.Summary.Status != "stale_policy" {
-			return version.ID, nil
+			return version.ID, detail.Summary.Status == "reviewed", nil
 		}
 	}
 	if e.repository == "" {
-		return "", errors.New("the checkout's origin remote is not an https repository the version can name")
+		return "", false, errors.New("the checkout's origin remote is not an https repository the version can name")
 	}
 	digest := sha256.Sum256([]byte(diff.HeadSHA))
 	version, err := client.PublishChangeVersion(ctx, item, changeID, tracker.PublishChangeVersion{
@@ -148,9 +152,13 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("publish version: %w", err)
+		return "", false, fmt.Errorf("publish version: %w", err)
 	}
-	return version.ID, nil
+	published, err := client.Change(ctx, item, changeID)
+	if err != nil || published.Change.CurrentVersion != version.ID {
+		return version.ID, false, nil
+	}
+	return version.ID, published.Summary.Status == "reviewed", nil
 }
 
 // SetRepository names the repository a published version refers to.
@@ -222,4 +230,12 @@ func nativeLeaseLost(err error) bool {
 	}
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr != nil && apiErr.Code == "stale_execution"
+}
+
+func hubErrorCode(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		return apiErr.Code
+	}
+	return ""
 }

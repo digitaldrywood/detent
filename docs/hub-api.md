@@ -445,12 +445,14 @@ Project state names and transitions are explicit; there is no prescribed workflo
 A project created through the hosted client starts from a fixed template instead:
 `Todo` and `In Progress` (dispatchable), `Human Review` (neither dispatchable nor
 terminal, and not `operator_only`, so the orchestrator can move a completed run's
-Change Request there), `Merging` (dispatchable: an approved Change Request waits
+Change Request there), `Merging` (dispatchable: an accepted Change Request waits
 there for the runner that lands it) and `Done` (terminal). `In Progress` may move
-to `Todo`, `Human Review` or `Done`; `Human Review` may move to `Done`, `Merging`
-or back to `In Progress`; `Merging` may move to `Done`, back to `Human Review`,
-or back to `In Progress`.
-Hub migrations 36 and 38 move projects whose workflow is exactly an earlier
+to `Todo`, `Human Review`, `Merging` or `Done`; `Human Review` may move to `Done`,
+`Merging` or back to `In Progress`; `Merging` may move to `Done`, back to
+`Human Review`, or back to `In Progress`. A completed run whose published
+version the review policy already accepts moves from `In Progress` straight to
+`Merging`; any other committed change waits in the review lane.
+Hub migrations 36, 38 and 39 move projects whose workflow is exactly an earlier
 template onto it and leave customized workflows unchanged. A native project's Change Requests wait in the lane named by the
 runner's `auto_promote.source_state` (default `Human Review`), so a customized
 workflow needs that lane, non-`operator_only` and reachable from its active
@@ -742,13 +744,17 @@ mutation transaction, including before returning a cached approval response.
 
 Before publishing, an administrator approves a review policy tied to the current
 repository `policy_id`. Approving a native project's repository policy seeds the
-default review policy when the project has none: a person reviews every version
-and no CI check is pinned. The default follows the repository policy when that is
-approved again, and an approval that expects no review policy may replace it. A
-review policy an administrator shaped, by pinning checks or lifting the review
-requirement, is never rewritten; it goes stale when the repository policy changes
-and must be approved again. A repository policy whose gates the default cannot
-satisfy (a required check count or validator) seeds nothing.
+default review policy when the project has none: no CI check is pinned, and
+`require_review` is set only when the repository gate is `human_review`, so under
+any other gate a published version is `reviewed` and lands without a person.
+A review policy that pins no checks follows the repository gate: approving the
+repository policy again rewrites it to the default, and an approval that expects
+no review policy may replace it. A review policy an administrator shaped by
+pinning checks is never rewritten; it goes stale when the repository policy
+changes and must be approved again. A repository policy whose gates the default
+cannot satisfy (a required check count or validator) seeds nothing. Hub
+migration 40 applies the same rule once to every project with an approved
+repository policy, so projects approved before seeding existed can publish.
 Its `require_review` setting cannot weaken a repository
 human-review gate. `required_checks` cannot fall below the repository check count,
 and a repository validator requires an independent check. Every check pins `name`,

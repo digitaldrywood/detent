@@ -291,6 +291,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		published   string
 		repolicy    bool
 		noRemote    bool
+		reviewer    bool
 		wantChange  *runner.NativeChange
 		wantError   bool
 		wantChanges int
@@ -308,6 +309,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "rework republishes the same head under a changed policy", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
+		{name: "a policy that asks for a reviewer leaves the version waiting", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), reviewer: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "a remote no https URL names opens the change without a version", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), noRemote: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1},
 		{name: "a clean worktree with no commits opens nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base),
@@ -339,6 +342,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				if test.repolicy {
 					h.repolicy(t)
+				}
+			}
+			if test.reviewer {
+				rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
+					t.Fatal(err)
 				}
 			}
 			h.claim(t, issue.ID)
@@ -388,7 +397,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						t.Fatalf("native change = %#v, want error = %t", got, wantError)
 					}
 					want := *test.wantChange
-					want.ChangeID, want.Error, want.VersionID, want.VersionError = got.ChangeID, got.Error, got.VersionID, got.VersionError
+					want.ChangeID, want.Error, want.VersionID, want.VersionError, want.VersionCode, want.Reviewed = got.ChangeID, got.Error, got.VersionID, got.VersionError, got.VersionCode, got.Reviewed
 					if *got != want {
 						t.Fatalf("native change = %#v, want %#v", *got, want)
 					}
@@ -405,13 +414,13 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							t.Fatalf("versions = %#v, want %d", detail.Versions, wantVersions)
 						}
 						if wantVersions == 0 {
-							if got.VersionID != "" || !strings.Contains(got.VersionError, "https") {
+							if got.VersionID != "" || got.Reviewed || !strings.Contains(got.VersionError, "https") {
 								t.Fatalf("native change without a version = %#v", got)
 							}
 						} else {
 							current := detail.Versions[len(detail.Versions)-1]
 							runPublished := test.published != got.HeadSHA || test.repolicy
-							if got.VersionID != current.ID || got.VersionError != "" || detail.Change.CurrentVersion != current.ID || current.HeadSHA != got.HeadSHA || current.BaseSHA != got.BaseSHA || runPublished && (current.RunID == "" || current.AttemptID == "") || current.Repository != nativeChangeRepository || current.Code.Kind != "code" || detail.Summary.Status != "needs_evidence" {
+							if got.VersionID != current.ID || got.VersionError != "" || detail.Change.CurrentVersion != current.ID || current.HeadSHA != got.HeadSHA || current.BaseSHA != got.BaseSHA || runPublished && (current.RunID == "" || current.AttemptID == "") || current.Repository != nativeChangeRepository || current.Code.Kind != "code" || detail.Summary.Status != map[bool]string{false: "reviewed", true: "needs_evidence"}[test.reviewer] || got.Reviewed == test.reviewer {
 								t.Fatalf("version = %#v for native change %#v (summary %#v)", current, got, detail.Summary)
 							}
 						}

@@ -145,10 +145,11 @@ AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organizat
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		// The seeded default is nobody's decision, so an approval that
-		// expects no review policy may replace it; any other policy must be
-		// named by the identity the approver read.
-		seeded := previous.ID != "" && previous.ID == defaultChangeReviewPolicy(previous.PolicyID).ID
+		// A policy that pins no checks follows the repository gate and is
+		// nobody's separate decision, so an approval that expects no review
+		// policy may replace it; any other policy must be named by the
+		// identity the approver read.
+		seeded := followsRepositoryGate(previous)
 		if previous.ID != request.ExpectedID && (request.ExpectedID != "" || !seeded) {
 			return nil, policyMismatch("Review policy changed; supply its current identity")
 		}

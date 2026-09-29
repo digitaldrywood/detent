@@ -38,7 +38,7 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 			requireNativeStatus(t, f.request(t, owner, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: hubTestPolicy()}), http.StatusOK)
 			// Approving the repository policy seeds the default review
 			// policy, which the request below replaces by its identity.
-			seeded := defaultChangeReviewPolicy(hubTestPolicy().ID)
+			seeded := defaultChangeReviewPolicy(hubTestPolicy())
 			user := f.user(t, "approver", test.role, test.email, test.grant, "")
 			if test.grant != "" {
 				f.grant(t, user, test.grant == "write", test.runner)
@@ -341,7 +341,7 @@ func TestHostedChangePolicyRevocation(t *testing.T) {
 				if err := json.Unmarshal([]byte(storedRaw), &stored); err != nil {
 					t.Fatal(err)
 				}
-				if want := map[bool]string{false: defaultChangeReviewPolicy(hubTestPolicy().ID).ID, true: changerequest.PolicyID(command.Policy)}[replay]; stored.ID != want {
+				if want := map[bool]string{false: defaultChangeReviewPolicy(hubTestPolicy()).ID, true: changerequest.PolicyID(command.Policy)}[replay]; stored.ID != want {
 					t.Fatalf("stored policy after revocation = %s, want %s", stored.ID, want)
 				}
 			})

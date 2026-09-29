@@ -17,9 +17,11 @@ import (
 // used to continue the item in its active lane, dispatching it again after
 // every success. The runner has already opened the Change Request under the
 // run's lease and reported what the run left; this moves the item out of the
-// dispatchable set along the workflow the hub enforces: to the project's
-// configured review lane when the run committed a change, and to the lane the
-// workflow marks terminal when it committed nothing.
+// dispatchable set along the workflow the hub enforces: to the landing lane
+// when the project's review policy already accepts the published version,
+// so the runner lands it with no one waiting on it; to the project's
+// configured review lane for any other committed change; and to the lane
+// the workflow marks terminal when it committed nothing.
 //
 // When the item cannot be moved -- the workflow cannot be read or allows no
 // such move, the Change Request was not opened, or the lane write fails --
@@ -60,6 +62,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed)
+	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && direct {
+		target, ok = landing, true
+	}
 	if !ok {
 		if change.Changed {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
@@ -127,8 +132,15 @@ func nativeCompletionComment(change *runpkg.NativeChange, from, to string) strin
 	if change.Changed {
 		comment := fmt.Sprintf("The run succeeded and opened Change Request %s (%d files, head %s). Moved from %s to %s.",
 			change.ChangeID, change.Files, shortCommit(change.HeadSHA), from, to)
-		if change.VersionID == "" {
+		switch {
+		case change.VersionID == "" && change.VersionCode == "policy_mismatch":
+			comment += fmt.Sprintf(" No version was published for review: %s. A project owner or admin has to approve a review policy for the current repository policy: approving the repository policy again in Project settings sets the default one. Then move this item back to In Progress so the runner publishes the version.", change.VersionError)
+		case change.VersionID == "":
 			comment += fmt.Sprintf(" No version was published for review: %s. The next successful run publishes one.", change.VersionError)
+		case change.Reviewed && normalizeState(to) == normalizeState(autoPromoteMergingState):
+			comment += " The project's review policy needs no reviewer for this version, so the runner lands it next."
+		case change.Reviewed:
+			comment += fmt.Sprintf(" The project's review policy needs no reviewer for this version, but the workflow has no move from %s to %s, so it waits in %s.", from, displayStateName(autoPromoteMergingState), to)
 		}
 		return comment
 	}
