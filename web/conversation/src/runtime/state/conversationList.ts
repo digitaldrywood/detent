@@ -98,7 +98,7 @@ export const makeConversationListState = Effect.fn("ConversationList.make")(func
 
   const refresh = Effect.gen(function* () {
     if (!options.enabled) {
-      yield* SubscriptionRef.set(state, { ...EMPTY_CONVERSATION_LIST_STATE, status: "live" });
+      yield* SubscriptionRef.set(state, { ...EMPTY_CONVERSATION_LIST_STATE, status: "live" as const });
       return;
     }
     const session = yield* SubscriptionRef.get(supervisor.session);
