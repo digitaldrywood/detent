@@ -74,7 +74,7 @@ import {
   staleClientTooltip,
 } from "./lib/connectionTooltips.ts";
 import { expectedOwner, isActive } from "./lib/execution.ts";
-import { shortcutFor } from "./lib/shortcuts.ts";
+import { dialogOpen, shortcutFor } from "./lib/shortcuts.ts";
 import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
 import { hubPath } from "../runtime/basePath.ts";
@@ -350,7 +350,7 @@ function ShellShortcuts({ onNewChat }: { readonly onNewChat: () => void }): null
       const shortcut = shortcutFor(event);
       if (shortcut === null) return;
       // A single key belongs to whatever dialog is open, the palette included.
-      if (shortcut === "new-issue" && globalThis.document?.querySelector('[role="dialog"]') != null) return;
+      if (shortcut === "new-issue" && dialogOpen(globalThis.document)) return;
       event.preventDefault();
       if (shortcut === "focus-search") focusSearch();
       else if (shortcut === "new-issue") openNewIssue();
