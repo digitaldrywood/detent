@@ -75,7 +75,10 @@ func (o *Orchestrator) completeNativeLandingRun(
 			return handoff(fmt.Errorf("the landed item %s was not returned by the hub", issueID))
 		}
 	} else {
-		reader, _ := o.connector.(connector.WorkflowStateReader)
+		reader, ok := o.connector.(connector.WorkflowStateReader)
+		if !ok {
+			return false
+		}
 		states, err := reader.WorkflowStates(ctx)
 		if err != nil {
 			return handoff(fmt.Errorf("read native workflow states: %w", err))

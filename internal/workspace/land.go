@@ -126,17 +126,11 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	}
 
 	staging := filepath.Join(l.root, "landing-"+normalized.Key)
-	_, _ = runGitAt(ctx, normalized.Path, "worktree", "remove", "--force", staging)
-	if err := os.RemoveAll(staging); err != nil {
-		return LandResult{}, fmt.Errorf("clear landing worktree: %w", err)
-	}
+	l.removeLandingWorktree(ctx, normalized.Path, staging)
 	if _, err := runGitAt(ctx, normalized.Path, "worktree", "add", "--detach", staging, targetHead); err != nil {
 		return LandResult{}, fmt.Errorf("add landing worktree: %w", err)
 	}
-	defer func() {
-		_, _ = runGitAt(context.WithoutCancel(ctx), normalized.Path, "worktree", "remove", "--force", staging)
-		_ = os.RemoveAll(staging)
-	}()
+	defer l.removeLandingWorktree(context.WithoutCancel(ctx), normalized.Path, staging)
 
 	mergeSHA, err := combine(ctx, staging, method, head, targetHead, opts.Message)
 	if err != nil {
@@ -157,6 +151,17 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	return result, nil
 }
 
+// removeLandingWorktree drops the detached staging worktree a landing used.
+// A leftover is reported, not fatal: the next landing clears it again.
+func (l *LocalGit) removeLandingWorktree(ctx context.Context, workspacePath, staging string) {
+	if _, err := runGitAt(ctx, workspacePath, "worktree", "remove", "--force", staging); err != nil && l.logger != nil {
+		l.logger.Debug("landing worktree not removed by git", "path", staging, "error", err)
+	}
+	if err := os.RemoveAll(staging); err != nil && l.logger != nil {
+		l.logger.Warn("landing worktree left behind", "path", staging, "error", err)
+	}
+}
+
 // combine produces the commit the base branch advances to: a squash commit,
 // a merge commit, or the head's commits replayed onto the base. It runs in
 // the detached landing worktree, so a conflict leaves the source and the
@@ -168,8 +173,7 @@ func combine(ctx context.Context, staging, method, head, targetHead, message str
 	switch method {
 	case "squash":
 		if _, err := runGitAt(ctx, staging, "merge", "--squash", head); err != nil {
-			_, _ = runGitAt(ctx, staging, "reset", "--merge")
-			return "", refuse(LandRefusalConflict, "squashing "+head+" onto the base conflicts: "+commandErrorOutput(err))
+			return "", abandon(refuse(LandRefusalConflict, "squashing "+head+" onto the base conflicts: "+commandErrorOutput(err)), gitErr(ctx, staging, "reset", "--merge"))
 		}
 		status, err := runGitAt(ctx, staging, "status", "--porcelain")
 		if err != nil {
@@ -186,8 +190,7 @@ func combine(ctx context.Context, staging, method, head, targetHead, message str
 			return "", refuse(LandRefusalNothing, "the base branch already contains "+head)
 		}
 		if _, err := runGitAt(ctx, staging, "merge", "--no-ff", "--no-verify", "-m", message, head); err != nil {
-			_, _ = runGitAt(ctx, staging, "merge", "--abort")
-			return "", refuse(LandRefusalConflict, "merging "+head+" into the base conflicts: "+commandErrorOutput(err))
+			return "", abandon(refuse(LandRefusalConflict, "merging "+head+" into the base conflicts: "+commandErrorOutput(err)), gitErr(ctx, staging, "merge", "--abort"))
 		}
 	case "rebase":
 		mergeBase, err := runGitAt(ctx, staging, "merge-base", targetHead, head)
@@ -198,8 +201,7 @@ func combine(ctx context.Context, staging, method, head, targetHead, message str
 			return "", refuse(LandRefusalNothing, "the base branch already contains "+head)
 		}
 		if _, err := runGitAt(ctx, staging, "cherry-pick", strings.TrimSpace(mergeBase)+".."+head); err != nil {
-			_, _ = runGitAt(ctx, staging, "cherry-pick", "--abort")
-			return "", refuse(LandRefusalConflict, "replaying "+head+" onto the base conflicts: "+commandErrorOutput(err))
+			return "", abandon(refuse(LandRefusalConflict, "replaying "+head+" onto the base conflicts: "+commandErrorOutput(err)), gitErr(ctx, staging, "cherry-pick", "--abort"))
 		}
 	}
 	sha, err := runGitAt(ctx, staging, "rev-parse", "HEAD")
@@ -207,6 +209,22 @@ func combine(ctx context.Context, staging, method, head, targetHead, message str
 		return "", fmt.Errorf("inspect landed commit: %w", err)
 	}
 	return strings.TrimSpace(sha), nil
+}
+
+// abandon returns the refusal for a combine that conflicted, joined with any
+// failure of the abort that put the staging worktree back; the staging
+// worktree is removed afterwards either way.
+func abandon(refusal error, abortErr error) error {
+	if abortErr != nil {
+		return errors.Join(refusal, fmt.Errorf("abort after conflict: %w", abortErr))
+	}
+	return refusal
+}
+
+// gitErr runs a git command for its outcome alone.
+func gitErr(ctx context.Context, dir string, args ...string) error {
+	_, err := runGitAt(ctx, dir, args...)
+	return err
 }
 
 // mustOutput folds git's ancestor check into a word: "ancestor" when the
@@ -310,12 +328,19 @@ func keptLanding(ctx context.Context, workspacePath, head, targetRef string) (La
 	}
 	var record landingRecord
 	if err := json.Unmarshal(raw, &record); err != nil || !strings.EqualFold(record.HeadSHA, head) || record.Result.MergeSHA == "" {
-		_ = os.Remove(path)
-		return LandResult{}, false
+		return LandResult{}, forgetStale(path)
 	}
 	if _, err := runGitAt(ctx, workspacePath, "merge-base", "--is-ancestor", record.Result.MergeSHA, targetRef); err != nil {
-		_ = os.Remove(path)
-		return LandResult{}, false
+		return LandResult{}, forgetStale(path)
 	}
 	return record.Result, true
+}
+
+// forgetStale removes a kept landing that no longer applies and reports
+// that nothing was kept; a record that cannot be removed is still ignored.
+func forgetStale(path string) bool {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	return false
 }

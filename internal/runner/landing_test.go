@@ -145,7 +145,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 }
 
 func gitCommand(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
