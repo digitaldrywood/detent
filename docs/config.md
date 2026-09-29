@@ -1214,6 +1214,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `gate.ci_trigger_label` | `string` | `none` | No | None |
 | `gate.ci_trigger_label_stagger_seconds` | `integer` | `none` | No | must be greater than 0 |
 | `gate.kind` | `string` | `"command"` | No | must be one of command, human_review, artifact |
+| `gate.local_status` | `string` | `none` | No | None |
 | `gate.require_automated_review` | `boolean` | `true` | No | None |
 | `gate.required_status_checks` | `list<string>` | `[]` | No | None |
 | `gate.run` | `string` | `"make check"` | No | None |

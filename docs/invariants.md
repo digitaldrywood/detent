@@ -1221,7 +1221,7 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local PR gate and hourly integration build
 
-**Statement:** Pull requests to `develop` run no GitHub Actions workflows. Each pushed PR head requires a successful `local-gate` commit status after `make check-fast` passes locally. An hourly operator-host build runs `make check` on `develop`; a green build promotes `develop` to `main` by merge commit and cuts a release, while a red build files one hotfix issue. Pull requests into `main` (promotions and hotfixes) keep the `main` merge queue: CI reports its required jobs as skipped on the pull request and runs them on the merge-group commit. CI on `main` pushes remains release evidence during the transition.
+**Statement:** Pull requests to `develop` run no GitHub Actions workflows. Each pushed PR head requires a successful `local-gate` commit status after `make check-fast` passes locally; for Detent board pull requests Detent posts it only for the head its merge worker validated (`gate.local_status`). An hourly operator-host build runs `make check` on `develop`; a green build promotes `develop` to `main` by merge commit and cuts a release, while a red build files one hotfix issue. Pull requests into `main` (promotions and hotfixes) keep the `main` merge queue: CI reports its required jobs as skipped on the pull request and runs them on the merge-group commit. CI on `main` pushes remains release evidence during the transition.
 
 The implementation handoff records the local gate on the exact pushed head and
 records current-head PR checks as absent or skipped, never as test evidence.

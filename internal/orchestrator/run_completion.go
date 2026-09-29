@@ -1523,7 +1523,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
 		return true
 	}
-	issue = refreshedIssue
+	issue = o.postValidatedGateStatus(ctx, hydrator, event, refreshedIssue)
 	if mergeWorkerIssue(running.Issue) && mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
 		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
 		return true
@@ -3074,4 +3074,37 @@ func (o *Orchestrator) recordCompletionUsage(ctx context.Context, state *State, 
 		state.BudgetRefusals[event.IssueID] = refusal
 		o.commentBudgetRefusal(ctx, event.IssueID, refusal)
 	}
+}
+
+// postValidatedGateStatus posts the configured local gate status for the pull
+// request head when, and only when, the merge worker ran the command gate on
+// exactly that head and it passed. A head that moved since, a gate Detent did
+// not run itself, or a project without gate.local_status posts nothing. The
+// pull request is re-read afterwards so the new status counts toward its
+// required checks.
+func (o *Orchestrator) postValidatedGateStatus(ctx context.Context, hydrator connector.PullRequestHydrator, event runpkg.Completion, issue connector.Issue) connector.Issue {
+	statusContext := gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus
+	head := strings.TrimSpace(event.Result.GateValidatedHead)
+	if statusContext == "" || head == "" || issue.PullRequest == nil {
+		return issue
+	}
+	if !strings.EqualFold(strings.TrimSpace(issue.PullRequest.HeadSHA), head) {
+		o.logger.Warn("local gate status not posted: pull request head changed after validation",
+			"issue_id", issue.ID, "identifier", issue.Identifier, "validated_head", head, "pull_request_head", issue.PullRequest.HeadSHA)
+		return issue
+	}
+	poster, ok := o.connector.(connector.CommitStatusPoster)
+	if !ok {
+		return issue
+	}
+	if err := poster.PostCommitStatus(ctx, pullRequestRepository(issue), head, statusContext, "Detent ran the configured gate on this head"); err != nil {
+		o.logger.Warn("local gate status not posted", "issue_id", issue.ID, "identifier", issue.Identifier, "head", head, "error", err)
+		return issue
+	}
+	refreshed, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		o.logger.Warn("pull request refresh after local gate status failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		return issue
+	}
+	return refreshed
 }

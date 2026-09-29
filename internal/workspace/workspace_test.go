@@ -3437,3 +3437,74 @@ func TestHookCompletionBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		validate      bool
+		command       string
+		wantStatus    MergePrepareStatus
+		wantValidated bool
+		wantPublished bool
+	}{
+		{name: "gate passes on the rebased head", validate: true, command: "test -f main.txt", wantStatus: MergePrepareStatusClean, wantValidated: true, wantPublished: true},
+		{name: "gate fails on the rebased head", validate: true, command: "test ! -f main.txt", wantStatus: MergePrepareStatusConflict},
+		{name: "validation not requested", validate: false, command: "false", wantStatus: MergePrepareStatusClean, wantPublished: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewBackend() error = %v", err)
+			}
+			preparer := backend.(MergePreparer)
+			issue := Issue{Identifier: "DD-GATE"}
+			info, err := backend.Create(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
+				t.Fatalf("write feature: %v", err)
+			}
+			runGit(t, info.Path, "add", "feature.txt")
+			runGit(t, info.Path, "commit", "-m", "feature")
+			runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/"+info.Branch)
+			published := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(source, "main.txt"), []byte("main\n"), 0o600); err != nil {
+				t.Fatalf("write main: %v", err)
+			}
+			runGit(t, source, "add", "main.txt")
+			runGit(t, source, "commit", "-m", "main change")
+			runGit(t, source, "push", "origin", "main")
+
+			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{ValidateHead: tt.validate, ValidationCommand: tt.command, ExpectedRemoteHead: published})
+			if err != nil {
+				t.Fatalf("PrepareMerge() error = %v", err)
+			}
+			if result.Status != tt.wantStatus || result.Validated != tt.wantValidated {
+				t.Fatalf("PrepareMerge() = status %q validated %v, want %q %v (%s)", result.Status, result.Validated, tt.wantStatus, tt.wantValidated, result.Message)
+			}
+			local := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			remoteHead := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]
+			if tt.wantPublished {
+				if remoteHead != local || result.HeadSHA != local || local == published {
+					t.Fatalf("published head: remote %s, local %s, result %s, before %s", remoteHead, local, result.HeadSHA, published)
+				}
+				return
+			}
+			if local != published || remoteHead != published || result.HeadSHA != "" {
+				t.Fatalf("a failed gate must leave the published head: local %s, remote %s, result %q, want %s", local, remoteHead, result.HeadSHA, published)
+			}
+			if !strings.Contains(result.Message, "configured gate failed") {
+				t.Fatalf("conflict message = %q", result.Message)
+			}
+		})
+	}
+}

@@ -666,13 +666,15 @@ func (r *Runner) prepareMergeFastPath(
 	req RunRequest,
 	info workspace.Info,
 	issue workspace.Issue,
-	validationCommand string,
+	gateConfig gate.Config,
 ) (RunResult, workspace.MergePrepareResult, bool, error) {
 	preparer, ok := r.workspace.(workspace.MergePreparer)
 	if !ok {
 		return RunResult{}, workspace.MergePrepareResult{}, false, nil
 	}
-	opts := workspace.MergePrepareOptions{ValidationCommand: validationCommand}
+	// With a local status to post, the clean path runs the gate on the head
+	// it pushes, so the status names a head Detent validated itself.
+	opts := workspace.MergePrepareOptions{ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
 	if req.Issue.PullRequest != nil {
 		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
 		opts.ExpectedRemoteHead = strings.TrimSpace(req.Issue.PullRequest.HeadSHA)
@@ -694,6 +696,7 @@ func (r *Runner) prepareMergeFastPath(
 			DiffStats:             diffStatsFromWorkspace(precheck.DiffStat),
 			PullRequestHeadPushed: precheck.HeadChanged,
 			ForgeWriteCompleted:   true,
+			GateValidatedHead:     validatedHead(precheck),
 		}, precheck, true, nil
 	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
@@ -774,7 +777,15 @@ func (r *Runner) verifyMergeFallback(
 	}
 	result.PullRequestHeadPushed = result.PullRequestHeadPushed || precheck.HeadChanged
 	result.ForgeWriteCompleted = true
+	result.GateValidatedHead = validatedHead(precheck)
 	return result, nil
+}
+
+func validatedHead(precheck workspace.MergePrepareResult) string {
+	if !precheck.Validated || precheck.Status != workspace.MergePrepareStatusClean {
+		return ""
+	}
+	return strings.TrimSpace(precheck.HeadSHA)
 }
 
 func cloneMergePrecheck(precheck *MergePrecheck) *MergePrecheck {
@@ -1516,7 +1527,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if req.MergePrecheck != nil {
 			mergePrecheck = *req.MergePrecheck
 		} else {
-			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue, gate.Effective(workflow.Config.Gate).Run)
+			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue, gate.Effective(workflow.Config.Gate))
 			if err != nil {
 				operation := "git fetch"
 				if strings.Contains(strings.ToLower(err.Error()), "git push") {

@@ -97,6 +97,7 @@ func (l *LocalGit) PrepareMerge(
 		opts.VerifyResolution = true
 		return l.prepareResolvedMerge(ctx, normalized, issue, opts)
 	}
+	originalHead := strings.TrimSpace(localHead)
 	if _, err := runGitAt(ctx, normalized.Path, "rebase", targetRef); err != nil {
 		conflicts, conflictErr := runGitAt(ctx, normalized.Path, "diff", "--name-only", "--diff-filter=U", "-z")
 		var conflictPaths []string
@@ -132,19 +133,68 @@ func (l *LocalGit) PrepareMerge(
 	if err != nil {
 		return MergePrepareResult{}, fmt.Errorf("inspect rebased head: %w", err)
 	}
-	headChanged := !remoteBranchExists || !strings.EqualFold(strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
+	localHead = strings.TrimSpace(localHead)
+	validated := false
+	if opts.ValidateHead && strings.TrimSpace(opts.ValidationCommand) != "" {
+		// The gate can run for many minutes; other workspaces of this source
+		// repository must not wait on it.
+		release()
+		release = nil
+		if err := l.validateMergeResolution(ctx, normalized, issue, opts.ValidationCommand); err != nil {
+			if ctx.Err() != nil {
+				return MergePrepareResult{}, err
+			}
+			return l.restoreAfterFailedGate(ctx, normalized, originalHead, err)
+		}
+		release, err = l.acquireSourceOperation(ctx)
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("wait for source repository operation: %w", err)
+		}
+		current, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("inspect validated head: %w", err)
+		}
+		after, err := l.DiffStat(ctx, normalized, issue)
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("workspace diff stat after gate: %w", err)
+		}
+		if strings.TrimSpace(current) != localHead || after != (DiffStat{}) {
+			return MergePrepareResult{}, fmt.Errorf("%w: workspace changed while the gate ran", ErrMergeResolutionInvalid)
+		}
+		validated = true
+	}
+	headChanged := !remoteBranchExists || !strings.EqualFold(localHead, strings.TrimSpace(remoteHead))
 	pushArgs := []string{"push"}
 	if remoteBranchExists {
 		pushArgs = append(pushArgs, "--force-with-lease=refs/heads/"+branch+":"+remoteHead)
 	}
-	pushArgs = append(pushArgs, remote, strings.TrimSpace(localHead)+":refs/heads/"+branch)
+	pushArgs = append(pushArgs, remote, localHead+":refs/heads/"+branch)
 	if _, err := runGitAt(ctx, normalized.Path, pushArgs...); err != nil {
 		return MergePrepareResult{}, errors.Join(
 			fmt.Errorf("git %s: %w", strings.Join(pushArgs, " "), err),
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
-	return MergePrepareResult{Status: MergePrepareStatusClean, DiffStat: diffStat, HeadChanged: headChanged}, nil
+	return MergePrepareResult{Status: MergePrepareStatusClean, DiffStat: diffStat, HeadChanged: headChanged, HeadSHA: localHead, Validated: validated}, nil
+}
+
+// restoreAfterFailedGate puts the branch back on its published head after the
+// configured gate failed on the rebased one, and reports a conflict so the
+// merge-fallback turn resolves the integration and the validated push path
+// re-runs the gate before anything is published.
+func (l *LocalGit) restoreAfterFailedGate(ctx context.Context, info Info, originalHead string, gateErr error) (MergePrepareResult, error) {
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(gateErr, fmt.Errorf("wait for source repository operation: %w", err))
+	}
+	defer release()
+	if _, err := runGitAt(ctx, info.Path, "reset", "--keep", originalHead); err != nil {
+		return MergePrepareResult{}, errors.Join(gateErr, fmt.Errorf("restore published head after gate failure: %w", err))
+	}
+	return MergePrepareResult{
+		Status:  MergePrepareStatusConflict,
+		Message: "The configured gate failed on the branch rebased onto the current target:\n" + gateErr.Error(),
+	}, nil
 }
 
 func remoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {
@@ -287,7 +337,7 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 	if _, err := runGitAt(ctx, info.Path, "push", remote, head+":refs/heads/"+info.Branch); err != nil {
 		return MergePrepareResult{}, fmt.Errorf("push validated merge resolution: %w", err)
 	}
-	return MergePrepareResult{Status: MergePrepareStatusClean, HeadSHA: head, HeadChanged: remoteHead != head}, nil
+	return MergePrepareResult{Status: MergePrepareStatusClean, HeadSHA: head, HeadChanged: remoteHead != head, Validated: strings.TrimSpace(opts.ValidationCommand) != ""}, nil
 }
 
 func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issue, remote, target string) (string, string, string, error) {

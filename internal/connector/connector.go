@@ -252,6 +252,12 @@ type PullRequestLabelReapplier interface {
 	ReapplyPullRequestLabel(context.Context, string, int, string, time.Duration) error
 }
 
+// CommitStatusPoster records a commit status on a repository commit, such as
+// the local gate's success on the exact pull request head Detent validated.
+type CommitStatusPoster interface {
+	PostCommitStatus(ctx context.Context, repository, sha, statusContext, description string) error
+}
+
 type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }
