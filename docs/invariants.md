@@ -1242,8 +1242,8 @@ runs `make check-fast` in its own worktree before merge. The target takes no
 shared validation lock and supports concurrent worktrees. Short tests skip
 shared databases and ports. Focused tests and vet remain available during edits.
 
-GitHub Actions schedules the full suite hourly on the default `develop` branch.
-The run validates its pinned `github.sha` and skips when that commit already has
+GitHub Actions schedules the full suite hourly from the default `main` branch.
+Preflight pins the current `develop` SHA and skips when that commit already has
 a validated release tag. Every full-suite job runs on the pinned commit. A green
 run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
 exact status evidence, and dispatches the release workflow. It does not merge

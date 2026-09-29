@@ -58,7 +58,7 @@ func checkWorkflow(data []byte) error {
 			}
 		}
 	}
-	if !strings.Contains(string(data), "ref: ${{ github.sha }}") {
+	if !strings.Contains(string(data), "git ls-remote origin refs/heads/develop") || strings.Count(string(data), "ref: ${{ needs.preflight.outputs.develop_sha }}") < 12 {
 		return errors.New("INV-5 CI must validate the pinned development SHA")
 	}
 	if !strings.Contains(string(data), "scripts/scheduled-ci-finish.sh") {
@@ -136,6 +136,7 @@ func TestWorkflowViolations(t *testing.T) {
 		{"manual dispatch dropped", "  workflow_dispatch:\n", "  unused_event:\n"},
 		{"missing invariant job", "  invariants:\n", "  renamed:\n"},
 		{"filtered real job", "  lint:\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'", "  lint:\n    needs: preflight\n    if: false"},
+		{"unbound development branch", "git ls-remote origin refs/heads/develop", "git ls-remote origin refs/heads/main"},
 		{"malformed", "name: CI", "name: ["},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

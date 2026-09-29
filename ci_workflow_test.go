@@ -266,10 +266,10 @@ func TestCIRunsOnScheduleAndManualDispatch(t *testing.T) {
 func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if !strings.Contains(workflow, "test \"$GITHUB_REF\" = refs/heads/develop") {
-		t.Fatal("scheduled CI must pin develop")
+	if !strings.Contains(workflow, "git ls-remote origin refs/heads/develop") || !strings.Contains(workflow, "echo \"develop_sha=$develop_sha\" >> \"$GITHUB_OUTPUT\"") {
+		t.Fatal("scheduled CI must resolve and pin develop")
 	}
-	if count := strings.Count(workflow, "ref: ${{ github.sha }}"); count < 12 {
+	if count := strings.Count(workflow, "ref: ${{ needs.preflight.outputs.develop_sha }}"); count < 12 {
 		t.Fatalf("only %d jobs checkout the pinned SHA", count)
 	}
 	for _, want := range []string{"make test", "make security", "make test-cover-packages", "npm run test:visual", "make check-invariants"} {
