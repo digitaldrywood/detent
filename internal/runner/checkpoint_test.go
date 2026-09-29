@@ -563,3 +563,42 @@ func TestUnsupportedCheckpointProviderDoesNotInterruptPeriodically(t *testing.T)
 		t.Fatalf("provider recovery = %+v", execution.result.Checkpoint)
 	}
 }
+
+func TestAgentTurnDeliverableNativeTracker(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name           string
+		kind           string
+		mode           string
+		wantKind       string
+		wantRepository string
+	}{
+		{name: "github implement", kind: config.TrackerGitHub, mode: RunModeImplement, wantKind: config.DeliverablePullRequest, wantRepository: "acme/orders"},
+		{name: "github plan", kind: config.TrackerGitHub, mode: RunModePlan},
+		{name: "native implement", kind: config.TrackerHubNative, mode: RunModeImplement},
+		{name: "native merge", kind: config.TrackerHubNative, mode: RunModeMerge},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Config{
+				Tracker:     config.Tracker{Kind: tt.kind, Repository: "acme/orders"},
+				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
+			}
+			kind, repository := agentTurnDeliverable(cfg, connector.Issue{}, tt.mode)
+			if kind != tt.wantKind || repository != tt.wantRepository {
+				t.Fatalf("deliverable = %q %q, want %q %q", kind, repository, tt.wantKind, tt.wantRepository)
+			}
+			calls := 0
+			command := func(AgentTurnRequest, *exec.Cmd) (string, error) {
+				calls++
+				return "[]", nil
+			}
+			turn := AgentTurnRequest{DeliverableKind: kind, DeliverableRepository: repository}
+			if tt.kind == config.TrackerHubNative {
+				if url, err := checkpointPullRequest(t.Context(), &workerCheckpoint{}, turn, command); err != nil || url != "" || calls != 0 {
+					t.Fatalf("native checkpoint ran gh: url=%q err=%v calls=%d", url, err, calls)
+				}
+			}
+		})
+	}
+}

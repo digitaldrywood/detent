@@ -126,6 +126,9 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendGateBlock(rendered, workflow.Config)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	rendered = appendNativeIssueInstructions(rendered, issue)
+	if workflow.Config.Tracker.Kind == config.TrackerHubNative {
+		return appendNativeCompletionContract(rendered), nil
+	}
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
 		return rendered, nil
 	}
@@ -708,6 +711,17 @@ func appendNativeIssueInstructions(prompt string, issue connector.Issue) string 
 		"Use --project " + issue.Metadata["hub_project_id"] + " and work-item " + issue.ID + ". Preserve the persistent Workpad as a native comment. " +
 		"Historical GitHub issue links are provenance; do not use gh issue, GitHub issue labels, or GitHub issue comments for this native work item. " +
 		"GitHub repository, pull request, CI and merge operations remain subject to the configured repository integration and required GitHub protections. Native approval does not satisfy a required GitHub review."
+}
+
+const nativeCompletionContract = "## Native completion contract\n\n" +
+	"This project uses Detent's native tracker. These rules override any tracker, Workpad, or pull request instructions above. " +
+	"Commit your work on the current attempt branch in this workspace. " +
+	"Never push to or open or update pull requests on the forge, never run `gh` or call the GitHub API, do not post or edit tracker, GitHub issue, or Workpad comments, and do not change issue state or labels. " +
+	"When the run finishes, Detent records the Change Request from your commits. " +
+	"Report any blocker in your final message."
+
+func appendNativeCompletionContract(prompt string) string {
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + nativeCompletionContract + "\n"
 }
 
 func githubTrackerHostname(tracker config.Tracker) string {

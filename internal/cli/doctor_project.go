@@ -462,6 +462,10 @@ func checkDoctorProjectWithProgress(
 	}
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		setDoctorCurrentCheck("Project " + id + " native workflow instructions")
+		checks = append(checks, checkDoctorNativeWorkflowInstructions(id, workflow.Config, workflow.Prompt))
+	}
 	setDoctorCurrentCheck("Project " + id + " pinned route models")
 	checks = append(checks, checkDoctorRouteModels(ctx, id, project, workflow.Config, deps))
 	if workflow.Config.Agents.ModelSelection.Configured() || len(workflow.Config.Agents.Sources) > 0 {
