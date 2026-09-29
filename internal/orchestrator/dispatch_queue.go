@@ -134,6 +134,9 @@ func (o *Orchestrator) removePendingGlobalDispatches(remove func(string) bool) {
 }
 
 func (o *Orchestrator) dispatchGrantedRequests(ctx context.Context, state *State, now time.Time) {
+	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "global_grants"}
+	ctx = connector.WithRESTScope(ctx, restScope)
+	defer connector.LogRESTScope(o.logger, restScope)
 	type readyDispatch struct {
 		pending pendingGlobalDispatch
 		grant   scheduler.DispatchResult

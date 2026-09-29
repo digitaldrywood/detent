@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -106,10 +108,11 @@ type TokenResolverConfig struct {
 }
 
 type TokenResolver struct {
-	cfg       TokenResolverConfig
-	lookupEnv func(string) string
-	mu        sync.Mutex
-	app       *InstallationTokenSource
+	cfg               TokenResolverConfig
+	lookupEnv         func(string) string
+	mu                sync.Mutex
+	app               *InstallationTokenSource
+	unscopedRESTScope *connector.RESTScope
 }
 
 func NewTokenResolver(cfg TokenResolverConfig) *TokenResolver {
@@ -118,8 +121,9 @@ func NewTokenResolver(cfg TokenResolverConfig) *TokenResolver {
 		lookupEnv = os.Getenv
 	}
 	return &TokenResolver{
-		cfg:       cfg,
-		lookupEnv: lookupEnv,
+		cfg:               cfg,
+		lookupEnv:         lookupEnv,
+		unscopedRESTScope: &connector.RESTScope{Name: "outside_refresh"},
 	}
 }
 
@@ -184,6 +188,7 @@ func (r *TokenResolver) gitHubAppToken(ctx context.Context) (string, error) {
 			return "", err
 		}
 		r.app = app
+		r.app.unscopedRESTScope = r.unscopedRESTScope
 	}
 
 	return r.app.Token(ctx)

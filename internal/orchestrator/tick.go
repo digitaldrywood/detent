@@ -56,6 +56,8 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	defer o.endGlobalProjectCycle()
 	completed := false
 	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, manual != nil)
+	timing.restScope = &connector.RESTScope{ProjectID: o.cfg.Project.ID, RefreshID: timing.refreshID, Name: "refresh"}
+	ctx = connector.WithRESTScope(ctx, timing.restScope)
 	ctx, timing.points = connector.WithGraphQLPoints(ctx)
 	timing.progress = &o.refreshProgress
 	timing.next("preflight")
@@ -134,16 +136,19 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		return
 	}
 	timing.next("tracker_fetch")
+	timing.step("fetch_issues")
 	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve, timing)
 	if !ok {
 		return
 	}
+	timing.step("authorize_candidates")
 	fetched = o.filterAuthorizedTickIssues(ctx, state, fetched, &previous, now)
 	trackerCandidates := cloneIssues(fetched.candidates)
 	if earlyDependencyUnblock && o.cfg.Authorization.Configured() {
 		earlyUnblocked = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	}
 	fetched = filterReconciledTickIssues(state, fetched, earlyUnblocked)
+	timing.step("observe_lanes")
 	for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
 		if _, _, err := o.observeLane(ctx, state, issue, now); err != nil {
 			if o.logger != nil {
@@ -308,7 +313,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.syncGitHubRESTCapacityOutage(state, now)
 	restRateLimitsCaptured = true
 	timing.next("dispatch")
-	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
+	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now, timing)
 	timing.next("publish")
 	refreshOK := refreshSucceeded(state)
 	if refreshOK {
@@ -446,6 +451,7 @@ func (o *Orchestrator) fetchTickIssues(
 	timing *refreshTiming,
 ) (tickFetchedIssues, bool) {
 	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
+		timing.step("wait_for_scan")
 		finishWait := o.tickWatchdog.excludeScanWait()
 		release, err := scanner.BeginRefreshScan(ctx)
 		wait := finishWait()
@@ -466,9 +472,10 @@ func (o *Orchestrator) fetchTickIssues(
 	fetcher, canRefresh := o.connector.(connector.RefreshIssueFetcher)
 	canRefresh = canRefresh && fetcher.CombinedRefreshEnabled()
 	if o.scheduling == nil && canRefresh && !reserve.degraded {
-		return o.fetchCombinedTickIssues(ctx, state, now, observedStates, fetcher)
+		return o.fetchCombinedTickIssues(ctx, state, now, observedStates, fetcher, timing)
 	}
 
+	timing.step("fetch_candidates")
 	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
@@ -502,6 +509,7 @@ func (o *Orchestrator) fetchTickIssues(
 		return fetched, true
 	}
 	if !canRefresh && !tickHasActiveWork(state, candidateIssues) {
+		timing.step("probe_observed_work")
 		exists, probeErr := o.observedWorkExists(ctx, observedStates)
 		if probeErr != nil {
 			o.logger.Warn("fetch observed status probe failed", "error", probeErr)
@@ -521,6 +529,7 @@ func (o *Orchestrator) fetchTickIssues(
 
 	var statusIssues []connector.Issue
 	var statusErr error
+	timing.step("fetch_observed_statuses")
 	if canRefresh {
 		// Hub owns candidate claims; reuse the project read for observed lanes
 		// and diagnostics, including when no configured lane has active work.
@@ -544,6 +553,7 @@ func (o *Orchestrator) fetchTickIssues(
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
+	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
@@ -560,7 +570,13 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	now time.Time,
 	observedStates []string,
 	fetcher connector.RefreshIssueFetcher,
+	timings ...*refreshTiming,
 ) (tickFetchedIssues, bool) {
+	var timing *refreshTiming
+	if len(timings) != 0 {
+		timing = timings[0]
+	}
+	timing.step("combined_refresh")
 	result := fetcher.FetchRefreshIssues(
 		ctx,
 		o.candidateFetchStatesForTick(state),
@@ -597,6 +613,7 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(result.Statuses)
 	fetched.statusOK = true
+	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
@@ -1101,7 +1118,9 @@ func (o *Orchestrator) dispatchTickIssues(
 	previous tickPreviousState,
 	completedEpics map[string]struct{},
 	now time.Time,
+	timing *refreshTiming,
 ) {
+	timing.step("prepare_candidates")
 	issues := filterCompletedEpicCandidates(fetched.candidates, completedEpics)
 	planner := o.dispatchPlanner()
 	planner.pruneInactiveIssueBudgetRefusals(state, fetched.candidates)
@@ -1109,6 +1128,7 @@ func (o *Orchestrator) dispatchTickIssues(
 	planner.trackBlockedCandidates(state, issues, now)
 	candidateBlockedStatusIssues := issuesInStates(fetched.candidates, []string{blockedStatusState})
 	if fetched.statusOK {
+		timing.step("track_blocked_statuses")
 		currentBlockedStatusIssues := candidateBlockedStatusIssues
 		currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, issuesInStates(fetched.status, []string{blockedStatusState}))
 		if !transitions.blockedRefreshOK {
@@ -1116,8 +1136,10 @@ func (o *Orchestrator) dispatchTickIssues(
 		}
 		o.trackBlockedStatusIssues(ctx, state, currentBlockedStatusIssues, now)
 	} else {
+		timing.step("track_candidate_blocked_statuses")
 		o.trackCandidateBlockedStatusIssues(ctx, state, fetched.candidates, now)
 	}
+	timing.step("dispatch_ready_issues")
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 

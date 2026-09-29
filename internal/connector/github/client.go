@@ -84,6 +84,7 @@ type Client struct {
 	restDivergenceKeys     map[string]struct{}
 	restDivergences        *restDivergenceRegistry
 	restRequests           map[string]connector.RESTEndpointUsage
+	unscopedRESTScope      *connector.RESTScope
 	restFanoutUnits        int64
 	restReserveHeld        bool
 	restFanoutDeferred     bool
@@ -143,7 +144,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		"fanout_scope", "shared across endpoint families",
 	)
 
-	return &Client{
+	client := &Client{
 		endpoint:            endpoint,
 		restEndpoint:        restEndpoint,
 		tokenSource:         cfg.TokenSource,
@@ -155,9 +156,17 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		restBackoffs:        defaultRESTBackoffs,
 		graphQLSecondary:    newGraphQLSecondaryState(),
 		restDivergences:     defaultRESTDivergences,
+		unscopedRESTScope:   &connector.RESTScope{Name: "outside_refresh"},
 		conditionalRequests: !cfg.DisableConditionalRequests,
 		restCache:           map[string]restCacheEntry{},
-	}, nil
+	}
+	if resolver, ok := cfg.TokenSource.(*TokenResolver); ok {
+		resolver.unscopedRESTScope = client.unscopedRESTScope
+	}
+	if source, ok := cfg.TokenSource.(*InstallationTokenSource); ok {
+		source.unscopedRESTScope = client.unscopedRESTScope
+	}
+	return client, nil
 }
 
 func (c *Client) GraphQL(ctx context.Context, query string, variables map[string]any, out any) error {
@@ -349,6 +358,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	trackerRead := restTrackerRead(http.MethodGet, family)
 	c.logRESTRequest(ctx, "github rest text request", http.MethodGet, path, family, false)
 	resp, err := c.httpClient.Do(req)
+	c.recordRESTScopeOutcome(ctx, http.MethodGet, path, resp, err)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
@@ -437,6 +447,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest probe request", method, path, family, body != nil)
 	resp, err := c.httpClient.Do(req)
+	c.recordRESTScopeOutcome(ctx, method, path, resp, err)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
@@ -545,6 +556,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest request", method, path, family, body != nil)
 	resp, err := c.httpClient.Do(req)
+	c.recordRESTScopeOutcome(ctx, method, path, resp, err)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
@@ -613,6 +625,35 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	return headers, nil
+}
+
+func (c *Client) restScope(ctx context.Context) *connector.RESTScope {
+	if scope := connector.RESTScopeFromContext(ctx); scope != nil {
+		return scope
+	}
+	return c.unscopedRESTScope
+}
+
+func (c *Client) recordRESTScopeOutcome(ctx context.Context, method, path string, response *http.Response, requestErr error) {
+	c.restScope(ctx).Record(restEndpointFamily(method, path), classifyRESTScopeOutcome(response, requestErr))
+}
+
+func classifyRESTScopeOutcome(response *http.Response, requestErr error) string {
+	outcome := "error"
+	if requestErr == nil && response != nil {
+		switch {
+		case response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices:
+			outcome = "200"
+		case response.StatusCode == http.StatusNotModified:
+			outcome = "304"
+		case response.StatusCode == http.StatusTooManyRequests:
+			outcome = "429"
+		case response.StatusCode == http.StatusForbidden &&
+			(response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""):
+			outcome = "429"
+		}
+	}
+	return outcome
 }
 
 func (c *Client) logRESTRequest(ctx context.Context, message string, method string, path string, family string, bodyPresent bool) {
@@ -839,6 +880,7 @@ func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
 func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	connector.LogRESTScope(c.logger, c.unscopedRESTScope.Drain())
 
 	rateLimit := c.restRateLimit
 	if core, ok := c.restRateLimits["core"]; ok {
@@ -859,6 +901,16 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 		BackoffUntil:   backoffUntil,
 		ReserveHeld:    c.restReserveHeld,
 		FanoutDeferred: c.restFanoutDeferred,
+	}
+	if c.logger != nil {
+		for _, window := range usage.Divergences {
+			c.logger.Info("github rest quota window", "credential_identity", window.CredentialIdentity,
+				"resource", window.Resource, "window_started_at", window.WindowStartedAt,
+				"reset_at", window.ResetAt, "last_observed_at", window.LastObservedAt,
+				"consumed_quota", window.ObservedRequests,
+				"instrumented_billable_requests", window.DetentRequests,
+				"unattributed_remainder", window.AttributedRequests+window.UnattributedRequests)
+		}
 	}
 	for _, request := range usage.Requests {
 		usage.TotalRequests += request.Count
@@ -964,6 +1016,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 			var allowed bool
 			fanoutUnits, allowed = budget.Reserve(maxUnits, requestCost)
 			if !allowed {
+				c.restScope(ctx).Record(family, "fanout-deferred")
 				c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
 				return &RESTFanoutDeferralError{
 					EndpointFamily: family,
@@ -975,6 +1028,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 			}
 			reservedScoped = true
 		} else if fanoutUnits+requestCost > maxUnits {
+			c.restScope(ctx).Record(family, "fanout-deferred")
 			c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
 			return &RESTFanoutDeferralError{
 				EndpointFamily: family,
@@ -994,6 +1048,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 		if reservedScoped {
 			budget.Add(-requestCost)
 		}
+		c.restScope(ctx).Record(family, "reserve-refused")
 		c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateReserve, fanoutUnits, rateLimit, hasRateLimit, now)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
@@ -1198,7 +1253,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 				restDivergenceAttribution(credentialIdentity),
 				RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve),
 			)
-			if divergence.ObservedRequests > 0 {
+			if !divergence.WindowStartedAt.IsZero() {
 				if c.restDivergenceKeys == nil {
 					c.restDivergenceKeys = make(map[string]struct{})
 				}
@@ -2174,12 +2229,7 @@ func (r *restDivergenceRegistry) observe(
 	divergence, diverged := restBudgetDivergence(window.last, current, billable)
 	previous := window.last
 	window.last = current
-	if !diverged {
-		r.windows[key] = window
-		return window.usage, restDivergenceReport{}
-	}
-
-	if window.usage.ObservedRequests == 0 {
+	if window.usage.WindowStartedAt.IsZero() {
 		window.usage = connector.RESTUsageDivergence{
 			CredentialIdentity: credentialIdentity,
 			Resource:           current.Resource,
@@ -2191,14 +2241,16 @@ func (r *restDivergenceRegistry) observe(
 	window.usage.ObservedRequests += divergence.ObservedDrop
 	window.usage.DetentRequests += divergence.DetentBillableRequests
 	window.usage.LastObservedAt = current.UpdatedAt
-	if attribution == connector.RESTDivergenceExpectedShared {
-		window.usage.AttributedRequests += divergence.UnexplainedRequests
-	} else {
-		window.usage.UnattributedRequests += divergence.UnexplainedRequests
+	if diverged {
+		if attribution == connector.RESTDivergenceExpectedShared {
+			window.usage.AttributedRequests += divergence.UnexplainedRequests
+		} else {
+			window.usage.UnattributedRequests += divergence.UnexplainedRequests
+		}
 	}
 
 	report := restDivergenceReport{}
-	reserveThreat := reserve > 0 && current.Remaining <= reserve
+	reserveThreat := diverged && reserve > 0 && current.Remaining <= reserve
 	if reserveThreat && !window.warningReported {
 		report = restDivergenceReport{Level: slog.LevelWarn, Reason: "reserve_threat", Emit: true}
 		window.warningReported = true
@@ -2229,7 +2281,7 @@ func (r *restDivergenceRegistry) snapshots(keys map[string]struct{}) []connector
 	out := make([]connector.RESTUsageDivergence, 0, len(keys))
 	for key := range keys {
 		window, ok := r.windows[key]
-		if ok && window.usage.ObservedRequests > 0 {
+		if ok && !window.usage.WindowStartedAt.IsZero() {
 			out = append(out, window.usage)
 		}
 	}
