@@ -72,32 +72,38 @@ func (s *Service) createNativeComment(c echo.Context) error {
 				return nil, err
 			}
 		}
-		comment := tracker.NativeComment{ID: newNativeID("cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID,
-			Revision: 1, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now}
-		if err := tx.QueryRowContext(ctx, "SELECT event_sequence + 1 FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, issue.WorkItemID).Scan(&comment.Sequence); err != nil {
-			return nil, err
-		}
-		actor, err := marshalNative(comment.Actor)
-		if err != nil {
-			return nil, err
-		}
-		provenance, err := marshalNative(comment.Provenance)
-		if err != nil {
-			return nil, err
-		}
-		var sourceKey any
-		if comment.Provenance != nil {
-			sourceKey = comment.Provenance.Provider + ":" + comment.Provenance.ExternalID
-		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now))
-		if err != nil {
-			return nil, err
-		}
-		if err := recordNativeChange(ctx, tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.created", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
-			return nil, err
-		}
-		return comment, nil
+		return insertNativeComment(ctx, tx, scope, issue, request.Body, request.Provenance, now)
 	})
+}
+
+// insertNativeComment appends a comment by the request's actor to a native
+// issue and records it in the issue's history.
+func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, body string, provenance *tracker.Provenance, now time.Time) (tracker.NativeComment, error) {
+	comment := tracker.NativeComment{ID: newNativeID("cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID,
+		Revision: 1, Body: body, Actor: scope.actor(), Provenance: provenance, CreatedAt: now, UpdatedAt: now}
+	if err := tx.QueryRowContext(ctx, "SELECT event_sequence + 1 FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, issue.WorkItemID).Scan(&comment.Sequence); err != nil {
+		return comment, err
+	}
+	actor, err := marshalNative(comment.Actor)
+	if err != nil {
+		return comment, err
+	}
+	encodedProvenance, err := marshalNative(comment.Provenance)
+	if err != nil {
+		return comment, err
+	}
+	var sourceKey any
+	if comment.Provenance != nil {
+		sourceKey = comment.Provenance.Provider + ":" + comment.Provenance.ExternalID
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, encodedProvenance, sourceKey, formatHubTime(now), formatHubTime(now))
+	if err != nil {
+		return comment, err
+	}
+	if err := recordNativeChange(ctx, tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.created", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
+		return comment, err
+	}
+	return comment, nil
 }
 
 func (s *Service) updateNativeComment(c echo.Context) error {
