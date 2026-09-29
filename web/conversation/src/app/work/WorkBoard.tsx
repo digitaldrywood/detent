@@ -16,6 +16,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { useAccountBootstrap } from "../account/context.ts";
 import { useClient } from "../client.ts";
 import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
@@ -25,7 +26,12 @@ import { useViewState } from "./lib/useViewState.ts";
 import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
 import { FirstRunPanel } from "./components/FirstRun.tsx";
-import { useNewIssue, useNewIssueScope } from "./NewIssue.tsx";
+import {
+  ISSUE_CREATION_NEEDS_WRITE,
+  newIssueProjects,
+  useNewIssue,
+  useNewIssueScope,
+} from "./NewIssue.tsx";
 import { NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { StatsRow } from "./components/StatsRow.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
@@ -75,6 +81,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const board = useBoard(projectId, view);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const newIssue = useNewIssue();
+  const accountBootstrap = useAccountBootstrap();
   useNewIssueScope(projectId);
 
   // An issue created from any entry point, this board's or the palette's,
@@ -290,6 +297,13 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const laneNames = board.lanes.map((lane) => lane.name);
   const visible = board.lanes.filter((lane) => laneVisible(view, lane.name));
   const noProjects = client.bootstrap.projects.length === 0;
+  // A project board creates into its own project only; the all-projects board
+  // into any project the reader can write to.
+  const creatable = newIssueProjects(
+    (accountBootstrap?.projects ?? []).filter((project) => projectId === null || project.id === projectId),
+    null,
+  );
+  const canCreateHere = newIssue.canCreate && creatable.length > 0;
   const firstRun =
     noProjects ||
     (!board.loading && board.error === null && board.items.length === 0 && !narrowed(view));
@@ -309,8 +323,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
             size="sm"
             data-testid="board-new-issue"
             aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
-            disabled={!newIssue.canCreate}
-            title={newIssue.unavailableReason ?? "New issue (C)"}
+            disabled={!canCreateHere}
+            title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
             onClick={() => newIssue.openNewIssue({ projectId })}
           >
             <PlusIcon />
@@ -402,7 +416,9 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   collapsed={laneCollapsed(lane)}
                   onToggleCollapsed={() => toggleCollapsed(lane)}
                   onCreate={
-                    newIssue.canCreate && !lane.terminal
+                    newIssue.canCreate &&
+                    !lane.terminal &&
+                    newIssueProjects(creatable, lane.name).length > 0
                       ? () => newIssue.openNewIssue({ projectId, state: lane.name })
                       : null
                   }

@@ -50,6 +50,21 @@ export function newIssueState(project: AccountProject | undefined, requested: st
 }
 
 /**
+ * The projects a new issue may go to: the writable ones, and when it was
+ * started from a lane, only those whose workflow has that lane, so "New issue
+ * in Review" never lands in another lane.
+ */
+export function newIssueProjects(
+  projects: readonly AccountProject[],
+  state: string | null,
+): readonly AccountProject[] {
+  return projects.filter(
+    (project) =>
+      project.can_write && (state === null || project.states.some((entry) => entry.name === state)),
+  );
+}
+
+/**
  * The project a new issue goes to: the requested one when the reader may
  * write to it, otherwise the first writable project.
  */
@@ -121,7 +136,9 @@ export function NewIssueDialog({
               if (title.trim().length > 0 && project !== undefined) void create.call();
             }}
           >
-            {projects.length > 1 ? (
+            {/* The picker also shows when the issue cannot go where it was
+                started, so it never lands in another project unannounced. */}
+            {projects.length > 1 || (projectId !== null && projectId !== target) ? (
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="new-issue-project">Project</Label>
                 <NativeSelect
@@ -239,10 +256,8 @@ interface OpenRequest {
 export function NewIssueProvider({ children }: { readonly children: React.ReactNode }): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const activeProjectId = useSidebarData()?.activeProjectId ?? null;
-  const writable = React.useMemo(
-    () => (bootstrap?.projects ?? []).filter((project) => project.can_write),
-    [bootstrap],
-  );
+  const allProjects = bootstrap?.projects;
+  const writable = React.useMemo(() => newIssueProjects(allProjects ?? [], null), [allProjects]);
   const canCreate = writable.length > 0;
   const [request, setRequest] = React.useState<OpenRequest | null>(null);
   const [open, setOpen] = React.useState(false);
@@ -294,7 +309,7 @@ export function NewIssueProvider({ children }: { readonly children: React.ReactN
           key={request.seq}
           open={open}
           onOpenChange={setOpen}
-          projects={writable}
+          projects={newIssueProjects(writable, request.state)}
           projectId={request.projectId}
           state={request.state}
           onCreated={onCreated}

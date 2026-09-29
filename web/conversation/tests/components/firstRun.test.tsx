@@ -35,7 +35,7 @@ import {
   firstRunSteps,
   type FirstRunFacts,
 } from "../../src/app/work/components/FirstRun.tsx";
-import { newIssueProject, newIssueState } from "../../src/app/work/NewIssue.tsx";
+import { newIssueProject, newIssueProjects, newIssueState } from "../../src/app/work/NewIssue.tsx";
 import type { AccountProject } from "../../src/contracts/account.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
@@ -388,6 +388,20 @@ describe("where a new issue goes", () => {
   ])("picks $name", ({ requested, want }) => {
     const projects = [project("a", false), project("b", true), project("c", true)];
     expect(newIssueProject(projects, requested)?.id).toBe(want);
+  });
+
+  it.each([
+    { name: "every writable project without a lane", state: null, want: ["b", "c"] },
+    { name: "only writable projects with the lane", state: "Review", want: ["c"] },
+    { name: "none when no writable project has the lane", state: "Missing", want: [] },
+  ])("offers $name", ({ state, want }) => {
+    const review = project("c", true);
+    const projects = [
+      project("a", false),
+      project("b", true),
+      { ...review, states: [...review.states, { name: "Review", terminal: false, dispatchable: true }] },
+    ];
+    expect(newIssueProjects(projects, state).map((entry) => entry.id)).toEqual(want);
   });
 
   it("picks no project when none is writable", () => {
