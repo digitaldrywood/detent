@@ -233,6 +233,9 @@ type Issue struct {
 	ProjectID             string
 	ID                    string
 	Identifier            string
+	Terminal              bool
+	LandedHeadSHA         string
+	LandedMergeSHA        string
 	BranchName            string
 	BaseRef               string
 	ProgressBaseRef       string
@@ -624,7 +627,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if pruneErr != nil {
 			return result, pruneErr
 		}
-		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session)
+		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue)
 		if branchErr != nil {
 			return result, branchErr
 		}
@@ -653,7 +656,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return result, err
 	}
-	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session)
+	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue)
 	if err != nil {
 		return result, err
 	}
@@ -1555,7 +1558,7 @@ func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error
 	return false, err
 }
 
-func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool) (bool, error) {
+func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool, issue Issue) (bool, error) {
 	branch = strings.TrimSpace(branch)
 	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return false, nil
@@ -1567,7 +1570,7 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool
 	if !exists {
 		return false, nil
 	}
-	if err := l.checkCleanupBranch(ctx, branch, session); err != nil {
+	if err := l.checkCleanupBranch(ctx, branch, session, issue); err != nil {
 		return false, err
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)

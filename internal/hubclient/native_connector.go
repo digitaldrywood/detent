@@ -74,7 +74,11 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 				return nil, err
 			}
 			for _, issue := range page.Items {
-				issues = append(issues, issueFromNative(issue))
+				converted, err := c.issueWithLanding(ctx, issue)
+				if err != nil {
+					return nil, err
+				}
+				issues = append(issues, converted)
 			}
 			connector.ReportProgress(ctx)
 			if page.NextCursor == "" {
@@ -100,9 +104,35 @@ func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []strin
 			}
 			return nil, err
 		}
-		issues = append(issues, issueFromNative(issue))
+		converted, err := c.issueWithLanding(ctx, issue)
+		if err != nil {
+			return nil, err
+		}
+		issues = append(issues, converted)
 	}
 	return issues, nil
+}
+
+func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.NativeIssue) (connector.Issue, error) {
+	issue := issueFromNative(native)
+	if !native.Terminal {
+		return issue, nil
+	}
+	changes, err := c.client.Changes(ctx, native.WorkItemID)
+	if err != nil {
+		return connector.Issue{}, err
+	}
+	for _, change := range changes {
+		if change.WorkItemID != native.WorkItemID || change.Landed == nil {
+			continue
+		}
+		if change.Landed.HeadSHA == "" || change.Landed.MergeSHA == "" {
+			continue
+		}
+		issue.Metadata["hub_landed_head_sha"] = change.Landed.HeadSHA
+		issue.Metadata["hub_landed_merge_sha"] = change.Landed.MergeSHA
+	}
+	return issue, nil
 }
 
 func nativeMutationKey() tracker.Mutation { return tracker.Mutation{IdempotencyKey: uuid.NewString()} }
