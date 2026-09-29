@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestMakeCheckGeneratedPreflight(t *testing.T) {
+func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Makefile requires POSIX shell commands")
 	}
@@ -24,17 +24,15 @@ func TestMakeCheckGeneratedPreflight(t *testing.T) {
 	tests := []struct {
 		name      string
 		stale     bool
-		change    bool
 		invalid   bool
 		wantTrace string
 		wantError bool
 		staleSQL  bool
 	}{
-		{"stale SQL before admission", false, false, false, "migrations\nsqlc\n", true, true},
-		{"stale before admission", true, false, false, "migrations\nsqlc\ngenerated\n", true, false},
-		{"changed during admission", false, true, false, "migrations\nsqlc\ngenerated\nlock\ninvariants\nmigrations\nsqlc\ngenerated\n", true, false},
-		{"unchanged inputs", false, false, false, "migrations\nsqlc\ngenerated\nlock\ninvariants\nmigrations\nsqlc\ngenerated\n", false, false},
-		{"invariant failure", false, false, true, "migrations\nsqlc\ngenerated\nlock\ninvariants\n", true, false},
+		{"stale SQL", false, false, "invariants\nmigrations\nsqlc\n", true, true},
+		{"stale generated sources", true, false, "invariants\nmigrations\nsqlc\ngenerated\n", true, false},
+		{"unchanged inputs", false, false, "invariants\nmigrations\nsqlc\ngenerated\n", false, false},
+		{"invariant failure", false, true, "invariants\n", true, false},
 	}
 	for _, target := range []string{"check", "check-fast"} {
 		for _, tt := range tests {
@@ -55,9 +53,6 @@ func TestMakeCheckGeneratedPreflight(t *testing.T) {
 					document = "stale"
 				}
 				write("reference", document, 0o600)
-				if tt.change {
-					write("change-at-admission", "", 0o600)
-				}
 				if tt.staleSQL {
 					write("stale-sql", "", 0o600)
 				}
@@ -83,16 +78,8 @@ case "$*" in
     echo generated >> trace
     cmp input reference
     ;;
-  'run ./tools/checklock '*)
-    echo lock >> trace
-    test "$3" = '-lock'
-    test "$4" = "$PWD/detent-validation.lock"
-    if [ -f change-at-admission ]; then
-      echo changed > input
-    fi
-    while [ "$1" != '--' ]; do shift; done
-    shift
-    exec "$@"
+  'build ./...')
+    echo build >> trace
     ;;
   *) exit 99 ;;
 esac
@@ -103,7 +90,7 @@ esac
 				t.Setenv("MAKEOVERRIDES", "")
 				ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 				defer cancel()
-				cmd := exec.CommandContext(ctx, "make", target, "VERSION=test", "COMMIT=test", "DATE=test", "GOLANGCI_LINT_VERSION=test", "MAKE=make -o build -o lint -o vet -o nilaway-audit -o test-race-cover -o test")
+				cmd := exec.CommandContext(ctx, "make", "-o", "check-app", "-o", "build", "-o", "lint", "-o", "vet", "-o", "nilaway-audit", "-o", "test-race-cover", "-o", "test-fast", target, "VERSION=test", "COMMIT=test", "DATE=test", "GOLANGCI_LINT_VERSION=test")
 				cmd.Dir = dir
 				output, err := cmd.CombinedOutput()
 				if (err != nil) != tt.wantError {
@@ -113,8 +100,12 @@ esac
 				if err != nil {
 					t.Fatal(err)
 				}
-				if string(trace) != tt.wantTrace {
-					t.Errorf("trace = %q, want %q\n%s", trace, tt.wantTrace, output)
+				wantTrace := tt.wantTrace
+				if target == "check-fast" && !tt.wantError {
+					wantTrace += "build\n"
+				}
+				if string(trace) != wantTrace {
+					t.Errorf("trace = %q, want %q\n%s", trace, wantTrace, output)
 				}
 				if got := strings.Contains(string(output), "checks passed"); got == tt.wantError {
 					t.Errorf("success message = %v, want %v\n%s", got, !tt.wantError, output)

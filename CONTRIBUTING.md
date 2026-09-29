@@ -174,8 +174,8 @@ test(scheduler): cover fair-share selection
 2. Create a focused branch for the issue.
 3. Make the smallest complete change that satisfies the issue.
 4. Run focused tests for touched packages.
-5. Run `make check`.
+5. Run `make check-fast` in the dedicated worktree before merging.
 6. Open a pull request against `develop` with a clear summary, a `Fixes #N` line, and the exact test plan.
 7. Address review feedback with follow-up commits on the same branch.
 
-Do not commit directly to `develop` or `main`. `main` is production: it receives `develop` through a `release: promote develop` pull request and carries release tags; see [Branching](docs/branching.md). Do not bypass hooks. If validation fails, fix the blocker before requesting review.
+Do not commit directly to `develop` or `main`. Scheduled full validation tags passing `develop` commits; production releases use those tags. `develop` always deploys to staging; see [Branching](docs/branching.md). Do not bypass hooks. If validation fails, fix the blocker before requesting review.

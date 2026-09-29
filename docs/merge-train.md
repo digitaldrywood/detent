@@ -52,51 +52,20 @@ releases the reservation even after the tracker omits the completed issue from
 queue fetches. Diagnostics record
 reservation release reasons, head/base identities, and validation invalidation.
 
-Inside the serialized `Merging` lane, this repository validates the exact PR
-head with `make check-fast` and posts a successful `local-gate` commit status
-for it. With `gate.local_status: local-gate` in the project's `detent.yaml`,
-Detent does this itself: the merge worker runs the configured `gate.run` on the
-head it pushes (after a clean rebase or a resolved merge), and the orchestrator
-posts `local-gate` with state `success` for that SHA only when the gate passed
-and the pull request head still equals it, and skips the post when that head
-already carries a successful `local-gate`. A failing gate posts nothing and
-hands the branch to the merge-fallback turn. A changed head, or a `gate.run`
-changed while the gate ran, needs a new gate and status. Do not also list the
-context in `gate.required_status_checks`: that list is evaluated before
-`Merging`, where the status cannot exist yet, so configuration validation
-rejects it. Pull requests to
-`develop` run no GitHub Actions workflows. The hourly operator-host build runs
-`make check` on `develop`; a green build promotes it to `main` by merge commit.
-Current-head checks that GitHub reports as skipped are not test evidence.
+Each Detent pull request runs `make check-fast` in its own worktree before
+merge. The target has no repository or machine-wide validation lock, so
+independent worktrees can validate concurrently. No pull-request GitHub Actions
+workflow or required status check delays the merge. The scheduled full suite
+validates a pinned `develop` commit after integration; only a green commit gets
+an annotated version tag and release artifacts. Every `develop` push still
+deploys to staging.
 
-The repository CI caches the project-pinned golangci-lint binary and only builds
-it with `go install` on cache miss. CI builds golangci-lint `v2.9.0` with the
-repository Go toolchain so analyzer behavior and toolchain provenance stay
-aligned.
-
-`Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and `Browser Visual` are
-release evidence from `main` push CI during the transition. A newest successful
-`local-gate` status on the tagged commit is also accepted by the release
-provenance validator.
-
-`Portability Verify (macos-latest)`, `Portability Verify (windows-latest)`,
-`Windows Core`, `Installer Smoke (ubuntu-latest)`,
-`Installer Smoke (windows-latest)`, and `GoReleaser Snapshot` run on `main`
-pushes or manual dispatch. Portability stress is manual only.
-
-Failed integration jobs on main (including manual runs on main; never develop) use the existing
-machine intake to open a tracking issue or comment on the open match, with
-origin kind `doctor` and a stable fingerprint per job name. The issue links to
-the failed job and records the commit. These track CI instance health; logs
-must establish a product defect before proposing product changes. Infrastructure
-failures remain attributed to the instance. Reporting errors fail the reporting job.
-
-The `develop` ruleset requires a pull request and `local-gate` status. The
-`main` ruleset keeps its merge queue and required checks (Lint, Verify
-(ubuntu-latest), Test Coverage, Browser Visual): CI triggers on pull requests
-into `main`, reports those jobs as skipped there, and runs them on the
-merge-group commit, so promotions and hotfixes can enter the queue. Workflow
-edits do not change GitHub rulesets.
+The local target verifies generated sources, migrations, frontend build and
+unit tests, Go build and vet, lint, invariants, and short tests that avoid
+shared database and port resources. The scheduled suite includes race,
+coverage, security, browser visual, portability, installer, and packaging
+checks. Scheduled failures file one fingerprinted Todo hotfix issue per job;
+a later green run closes them.
 
 When implementation workers fill project or global capacity, a clean PR with
 passing current-head checks and a known base can complete through the existing
@@ -146,10 +115,10 @@ Base advancement alone does not rewrite queued PRs: GitHub validates its new
 integration group. Cancelling a dispatch stops further admissions; it does not
 withdraw already admitted work from GitHub.
 
-This repository's CI accepts `merge_group: checks_requested`. Checkout uses the
-merge-group commit, all required jobs run, and visual detection defaults to the
-full visual gate when there is no PR base ref. PR workflow cancellation is
-scoped to that PR; it cannot cancel an integration-group run.
+This repository now runs no pull-request or merge-group GitHub Actions workflow.
+Its branch rulesets require no status checks. The following queue migration
+notes document the older model and apply only to repositories that still choose
+a native merge queue.
 
 Migration is an operator action, never a side effect of starting Detent:
 
