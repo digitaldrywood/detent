@@ -3,6 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    branches: [main]
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +16,10 @@ permissions:
   pull-requests: read
 
 jobs:
+  # Pull requests into main report these jobs as skipped (INV-5); the merge
+  # group runs them. Pull requests into develop run no workflows.
   invariants:
+    if: github.event_name != 'pull_request'
     name: Invariant Gate
     runs-on: ubuntu-latest
     steps:
@@ -23,6 +32,7 @@ jobs:
         run: make check-invariants
 
   lint:
+    if: github.event_name != 'pull_request'
     name: Lint
     runs-on: ubuntu-latest
     steps:
@@ -56,7 +66,7 @@ jobs:
   verify:
     name: Verify (ubuntu-latest)
     needs: [verify-fast, verify-race]
-    if: always()
+    if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -67,6 +77,7 @@ jobs:
         run: test "$FAST_RESULT" = success && test "$RACE_RESULT" = success
 
   verify-fast:
+    if: github.event_name != 'pull_request'
     name: Verify build and vet
     runs-on: ubuntu-latest
     # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
@@ -119,6 +130,7 @@ jobs:
         run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
 
   verify-race:
+    if: github.event_name != 'pull_request'
     name: Verify race (${{ matrix.shard }})
     runs-on: ubuntu-latest
     # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
@@ -158,6 +170,7 @@ jobs:
           retention-days: 14
 
   test-cover:
+    if: github.event_name != 'pull_request'
     name: Test Coverage
     runs-on: ubuntu-latest
     steps:
@@ -172,6 +185,7 @@ jobs:
         run: make test-cover-packages
 
   security:
+    if: github.event_name != 'pull_request'
     name: Security
     runs-on: ubuntu-latest
     steps:
@@ -188,7 +202,7 @@ jobs:
   browser-visual:
     name: Browser Visual
     needs: [browser-visual-shard]
-    if: always()
+    if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -198,6 +212,7 @@ jobs:
         run: test "$SHARD_RESULT" = success
 
   browser-visual-shard:
+    if: github.event_name != 'pull_request'
     name: Browser Visual (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 15

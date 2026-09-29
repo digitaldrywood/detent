@@ -1185,8 +1185,8 @@ and `TestCommandGateQueueEligibleCI` cover the handoff to the merge group.
 contributed to the measured rebase and CI loop.
 
 **Enforcement:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`
-exercises native queue delegation. `TestRepositoryWorkflow` requires
-no `merge_group` trigger in this repository. Other repositories retain
+exercises native queue delegation. `TestRepositoryWorkflow` allows the
+`merge_group` trigger only for pull requests into `main`. Other repositories retain
 their chosen settings; Detent detects the queue and uses its serialized merge
 worker where no queue exists. These tests do not inspect live GitHub settings.
 
@@ -1221,7 +1221,7 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local PR gate and hourly integration build
 
-**Statement:** Pull requests to `develop` run no GitHub Actions workflows. Each pushed PR head requires a successful `local-gate` commit status after `make check-fast` passes locally. An hourly operator-host build runs `make check` on `develop`; a green build promotes `develop` to `main` by merge commit and cuts a release, while a red build files one hotfix issue. CI on `main` pushes remains release evidence during the transition.
+**Statement:** Pull requests to `develop` run no GitHub Actions workflows. Each pushed PR head requires a successful `local-gate` commit status after `make check-fast` passes locally. An hourly operator-host build runs `make check` on `develop`; a green build promotes `develop` to `main` by merge commit and cuts a release, while a red build files one hotfix issue. Pull requests into `main` (promotions and hotfixes) keep the `main` merge queue: CI reports its required jobs as skipped on the pull request and runs them on the merge-group commit. CI on `main` pushes remains release evidence during the transition.
 
 The implementation handoff records the local gate on the exact pushed head and
 records current-head PR checks as absent or skipped, never as test evidence.
@@ -1233,13 +1233,18 @@ the newest authenticated status for that commit and context.
 already checked by the local gate. The hourly full build validates the shared
 integration branch before promotion.
 
-**Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
-requires exactly `main` push and `workflow_dispatch` triggers and all real jobs.
-It rejects PR, merge-group, develop-push, schedule, and tag triggers. Verify
-and Browser Visual still aggregate their dependencies with `always()`; portability,
+**Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML and
+requires exactly four triggers: `main` push, `pull_request` limited to `main`,
+`merge_group` limited to `main`, and `workflow_dispatch`, plus all real jobs. It rejects develop
+pull requests, develop pushes, schedule, and tag triggers. Every real job
+reports skipped on pull requests (`github.event_name != 'pull_request'`) so the
+`main` ruleset's required contexts exist for the queue, and only the
+merge-group run is test evidence. Verify and Browser Visual aggregate their
+dependencies with `always()` outside pull requests; portability,
 Windows core, installer, and snapshot jobs run on main push or manual dispatch,
-and integration failure reporting stays main-only. `TestRepositoryHasNoPullRequestActions`
-checks every workflow, and `TestPortabilityStressIsManualOnly` rejects scheduled
+and integration failure reporting stays main-only. `TestRepositoryPullRequestActionsOnlyForMain`
+checks that no workflow uses `pull_request_target` and that only `ci.yml`
+triggers on pull requests or merge groups, and `TestPortabilityStressIsManualOnly` rejects scheduled
 stress runs. The manual dispatch is an
 operator exception. `TestCoordinatorTagToSigningProvenance` covers newest
 check-run evidence, and `TestCoordinatorLocalGateStatusToSigningProvenance`

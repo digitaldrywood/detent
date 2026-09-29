@@ -359,13 +359,38 @@ func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 	}
 }
 
-func TestCIRunsOnlyOnMainPushOrDispatch(t *testing.T) {
+func TestCIRunsOnlyForMain(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	want := "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n"
+	want := "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review]\n  merge_group:\n    branches: [main]\n    types: [checks_requested]\n  workflow_dispatch:\n"
 	if triggers != want {
 		t.Fatalf("CI triggers = %q, want %q", triggers, want)
+	}
+}
+
+func TestCIRequiredChecksSkipOnPullRequestsIntoMain(t *testing.T) {
+	t.Parallel()
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	for _, test := range []struct {
+		name, start, end, want string
+	}{
+		{name: "Invariant Gate", start: "  invariants:\n", end: "  lint:\n", want: "if: github.event_name != 'pull_request'"},
+		{name: "Lint", start: "  lint:\n", end: "  verify:\n", want: "if: github.event_name != 'pull_request'"},
+		{name: "Verify (ubuntu-latest)", start: "  verify:\n", end: "  verify-fast:\n", want: "if: always() && github.event_name != 'pull_request'"},
+		{name: "Verify build and vet", start: "  verify-fast:\n", end: "  verify-race:\n", want: "if: github.event_name != 'pull_request'"},
+		{name: "Verify race", start: "  verify-race:\n", end: "  test-cover:\n", want: "if: github.event_name != 'pull_request'"},
+		{name: "Test Coverage", start: "  test-cover:\n", end: "  security:\n", want: "if: github.event_name != 'pull_request'"},
+		{name: "Security", start: "  security:\n", end: "  browser-visual:\n", want: "if: github.event_name != 'pull_request'"},
+		{name: "Browser Visual", start: "  browser-visual:\n", end: "  browser-visual-shard:\n", want: "if: always() && github.event_name != 'pull_request'"},
+		{name: "Browser Visual shards", start: "  browser-visual-shard:\n", end: "  portability-verify:\n", want: "if: github.event_name != 'pull_request'"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if job := workflowBetween(t, workflow, test.start, test.end); !strings.Contains(job, test.want) {
+				t.Fatalf("%s job must report skipped on pull requests into main and run in the merge group: missing %q", test.name, test.want)
+			}
+		})
 	}
 }
 
@@ -589,8 +614,8 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 func TestCIDraftAndVerifyDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if strings.Contains(workflow, "pull_request:") || strings.Contains(workflow, "merge_group:") || strings.Contains(workflow, "pr-required-placeholders") {
-		t.Fatal("CI must not trigger on PRs or merge groups or contain placeholder jobs")
+	if strings.Contains(workflow, "pr-required-placeholders") {
+		t.Fatal("CI must not contain placeholder jobs")
 	}
 	aggregate := workflowBetween(t, workflow, "  verify:\n", "  verify-fast:\n")
 	for _, want := range []string{"needs: [verify-fast, verify-race]", "if: always()", `test "$FAST_RESULT" = success && test "$RACE_RESULT" = success`} {

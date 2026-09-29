@@ -82,8 +82,11 @@ must establish a product defect before proposing product changes. Infrastructure
 failures remain attributed to the instance. Reporting errors fail the reporting job.
 
 The `develop` ruleset requires a pull request and `local-gate` status. The
-operator switches the `main` ruleset from merge-group checks to `local-gate`
-when this workflow change merges. Workflow edits do not change GitHub rulesets.
+`main` ruleset keeps its merge queue and required checks (Lint, Verify
+(ubuntu-latest), Test Coverage, Browser Visual): CI triggers on pull requests
+into `main`, reports those jobs as skipped there, and runs them on the
+merge-group commit, so promotions and hotfixes can enter the queue. Workflow
+edits do not change GitHub rulesets.
 
 When implementation workers fill project or global capacity, a clean PR with
 passing current-head checks and a known base can complete through the existing
