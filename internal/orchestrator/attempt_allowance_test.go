@@ -591,6 +591,8 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Blocked"},
 		{name: "observed lane is preserved", preserve: true, ci: "green", mergeable: "clean", want: ""},
 		{name: "green head promotes", ci: "green", mergeable: "clean", want: "Merging"},
+		{name: "pending CI waits", ci: "pending", mergeable: "blocked", pending: true},
+		{name: "pending CI and missing audit wait", ci: "pending", mergeable: "blocked", audit: true, pending: true},
 		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Blocked"},
 		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Blocked"},
 		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Blocked"},
@@ -601,6 +603,10 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "Rework", PullRequest: &connector.PullRequest{Number: 2, State: "open", CIStatus: "failure", HeadSHA: "live"}}
 			live := cloneIssue(issue)
 			live.PullRequest = &connector.PullRequest{Number: 2, URL: "https://github.com/owner/repo/pull/2", State: "open", HeadSHA: "live", CIStatus: tt.ci, MergeableState: tt.mergeable, CodexReviewState: "COMMENTED", UnresolvedReviewThreads: tt.threads, HydrationUnavailableReason: tt.unavailable, Checks: []connector.PullRequestCheck{{ID: 42, Name: "Smoke", Status: "completed", Conclusion: tt.ci}}}
+			if tt.ci == "pending" {
+				live.PullRequest.Checks[0].Status = "in_progress"
+				live.PullRequest.RunningChecks = []string{"Smoke"}
+			}
 			if tt.merged {
 				live.PullRequest.State = "merged"
 			}
@@ -638,7 +644,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 				return
 			}
 			if tt.pending {
-				if tt.audit && !tt.auditRunning {
+				if tt.audit && !tt.auditRunning && tt.ci != "pending" {
 					orch.securityAuditWG.Wait()
 					if _, err := db.LatestSecurityAuditRun(t.Context(), orch.securityAuditIdentity(live).key); err != nil {
 						t.Fatalf("missing audit was not started: %v", err)

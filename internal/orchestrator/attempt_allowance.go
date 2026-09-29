@@ -376,6 +376,11 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issue.ID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
 		issue, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		// CI that is still running belongs to the gate, not the exhausted
+		// source-worker allowance. Re-evaluate this durable triage on the next tick.
+		if decision.Reason == AutoPromoteReasonCINotGreen && attemptTriageCIPending(issue.PullRequest) {
+			return nil
+		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
 			return nil
@@ -412,6 +417,18 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		return nil
 	}
 	return o.updateIssueState(ctx, state, issue, targetState, now, attemptAllowanceExhaustedReason)
+}
+
+func attemptTriageCIPending(pr *connector.PullRequest) bool {
+	if pr == nil || !currentHeadCIStatusPending(pr.CIStatus) {
+		return false
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		if !autoPromoteCheckPending(check) {
+			return false
+		}
+	}
+	return true
 }
 
 // Observation timestamps qualify the historical worker explanation without
