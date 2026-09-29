@@ -16,12 +16,18 @@ type policyChecker interface {
 }
 
 func ResolvePolicy(cfg globalconfig.Project, workflow workflowconfig.Workflow) (policy.Descriptor, error) {
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
-	workflow.Config = workflowConfigWithProjectIdentity(cfg, workflow.Config)
+	workflow.Config = EffectivePolicyConfig(cfg, workflow.Config)
 	if err := ValidateNativeTrackerFeatures(workflow.Config); err != nil {
 		return policy.Descriptor{}, err
 	}
 	return workflowconfig.ResolvePolicy(workflow)
+}
+
+// EffectivePolicyConfig applies the project settings used when resolving a
+// policy, including the global intake override.
+func EffectivePolicyConfig(cfg globalconfig.Project, workflow workflowconfig.Config) workflowconfig.Config {
+	workflow = workflow.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
+	return workflowConfigWithProjectIdentity(cfg, workflow)
 }
 
 // MapNativeTracker applies the same tracker selection used at project startup.

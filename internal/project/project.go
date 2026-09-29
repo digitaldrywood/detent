@@ -186,6 +186,7 @@ type Project struct {
 	orchFactory               OrchestratorFactory
 	orchConfig                orchestrator.Config
 	orchDeps                  orchestrator.Dependencies
+	policyScheduling          orchestrator.SchedulingSource
 	runner                    orchestrator.Runner
 	scheduler                 scheduler.Scheduler
 	schedulerFactory          schedulerFactory
@@ -509,6 +510,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchFactory:               orchestratorFactory,
 		orchConfig:                orchConfig,
 		orchDeps:                  orchDeps,
+		policyScheduling:          deps.Scheduling,
 		runner:                    deps.Runner,
 		scheduler:                 projectScheduler,
 		schedulerFactory:          schedulerFactory,
@@ -1502,7 +1504,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
-	scheduling := p.orchDeps.Scheduling
+	scheduling := p.policyScheduling
 	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)

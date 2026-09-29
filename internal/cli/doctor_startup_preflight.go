@@ -42,14 +42,9 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 		var migrationErr error
 		if loadErr == nil {
 			workflow.Config = projectpkg.MapNativeTracker(workflow.Config, boot.Global.Client.NativeProjects[id] != "")
-			migrationErr = projectpkg.ValidateNativeTrackerFeatures(workflow.Config)
 			workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
-			if configuredProject.Identity.Configured() {
-				identity := configuredProject.Identity
-				identity.Normalize()
-				workflow.Config.Identity = identity
-			}
-			workflow.Config.ActiveHours = projectpkg.EffectiveActiveHours(configuredProject, workflow.Config.ActiveHours)
+			workflow.Config = projectpkg.EffectivePolicyConfig(configuredProject, workflow.Config)
+			migrationErr = projectpkg.ValidateNativeTrackerFeatures(workflow.Config)
 			loadErr = errors.Join(migrationErr, workflow.Config.Validate(), workflowconfig.ValidateWorkflowAdmission(workflow))
 		}
 		if loadErr != nil {
