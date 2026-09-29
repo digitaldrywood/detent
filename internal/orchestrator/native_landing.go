@@ -18,6 +18,18 @@ func (o *Orchestrator) nativeWorkflow() bool {
 	return ok
 }
 
+// withNativeLandingLane makes the landing lane an active state of a
+// hub-native project whether or not the configuration lists it: the hub
+// names the lane, a reviewed Change Request waits there for the runner that
+// lands it, and every dispatch decision reads the active states.
+func withNativeLandingLane(cfg Config, tracker connector.Connector) Config {
+	if _, ok := tracker.(connector.WorkflowStateReader); !ok || stateIn(autoPromoteMergingState, cfg.ActiveStates) {
+		return cfg
+	}
+	cfg.ActiveStates = append(append([]string(nil), cfg.ActiveStates...), normalizeState(autoPromoteMergingState))
+	return cfg
+}
+
 // completeNativeLandingRun finishes a hub-native landing run. A landed
 // version was finished by the hub in the same write that recorded its merge
 // commit, so the item is read back rather than moved; a refused landing

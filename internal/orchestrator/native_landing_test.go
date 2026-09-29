@@ -199,3 +199,25 @@ func TestNativeMergingLaneIsNotReconciledAsAStalePullRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestWithNativeLandingLane(t *testing.T) {
+	t.Parallel()
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+	tick := &autoPromoteTickConnector{}
+	native := withNativeLandingLane(cfg, &nativeWorkflowConnector{autoPromoteTickConnector: tick})
+	if strings.Join(native.ActiveStates, ",") != "todo,in progress,merging" {
+		t.Fatalf("native active states = %v", native.ActiveStates)
+	}
+	if again := withNativeLandingLane(native, &nativeWorkflowConnector{autoPromoteTickConnector: tick}); len(again.ActiveStates) != 3 {
+		t.Fatalf("the lane was added twice: %v", again.ActiveStates)
+	}
+	if plain := withNativeLandingLane(cfg, tick); strings.Join(plain.ActiveStates, ",") != "todo,in progress" {
+		t.Fatalf("a tracker with pull requests gained a lane: %v", plain.ActiveStates)
+	}
+	planner := dispatchPlanner{cfg: native}
+	issue := completionTransitionIssue("Merging", "")
+	state := newState(native)
+	if decision := planner.dispatchableIssueDecisionForModelRequirement(issue, &state, false, time.Now(), "", false); decision.reason == dispatchSkipInactiveState {
+		t.Fatalf("a native Merging item is skipped as inactive: %#v", decision)
+	}
+}
