@@ -2554,8 +2554,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    Keep `agent.max_session_context_multiplier` absent unless the operator
    explicitly requested the coarse ceiling. The primary catastrophe bounds are
-   `agent.max_turns`, `agent.max_session_duration_ms`, and
-   `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an
+   `agent.max_turns` and `agent.max_session_duration_ms`; keep `agent.max_session_tokens` as an
    additional token-consumption backstop because cached context is counted
    again on every Codex turn. A small multiplier can terminate otherwise
    healthy sessions after only a few full-context turns. Whenever
@@ -3462,7 +3461,7 @@ the card instead of auto-resolving it.
 | Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `detent.yaml`. |
 | Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. Onboarding records the repository's enabled methods and, with explicit interview and mutation approval, aligns GitHub to the selected method. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `detent.yaml`. |
-| Session catastrophe bounds | `agent.max_turns`, `agent.max_session_duration_ms`, and `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
+| Session catastrophe bounds | `agent.max_turns` and `agent.max_session_duration_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `detent.yaml`. |
 | Work-intake profile | `INTAKE_PROFILE` selects `manual_intake`, `assisted_intake`, or `autonomous_intake`. |

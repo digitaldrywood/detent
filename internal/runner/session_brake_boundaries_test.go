@@ -27,25 +27,23 @@ func TestSessionBrakeProbeInitialization(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
-			controller := newSessionBrakeController(ctx, time.Time{}, 0, 0, time.Minute, cancel,
+			controller := newSessionBrakeController(ctx, time.Time{}, time.Minute, 0, cancel,
 				func(context.Context) (sessionProgressSnapshot, error) { return sessionProgressSnapshot{}, tt.probeErr },
-				func() time.Time { return at }, newControlledSessionTickerFactory().New,
+				func() time.Time { return at },
 				slog.New(slog.NewTextHandler(io.Discard, nil)), connector.Issue{},
 				&sessionProgressJournal{store: &progressJournalStore{readErr: tt.storeErr}, sessionID: 1},
 			)
-			defer controller.Stop()
-			controller.checkProgress(ctx, at.Add(time.Minute))
-			if !errors.Is(context.Cause(ctx), ErrSessionNoProgress) {
-				t.Fatalf("cause=%v", context.Cause(ctx))
+			if controller == nil || context.Cause(ctx) != nil {
+				t.Fatalf("initialization canceled session: controller=%v cause=%v", controller, context.Cause(ctx))
 			}
 		})
 	}
-	if got := newSessionBrakeController(t.Context(), at, 0, 0, 0, nil, nil, nil, nil, nil, connector.Issue{}); got != nil {
+	if got := newSessionBrakeController(t.Context(), at, 0, 0, nil, nil, nil, nil, connector.Issue{}); got != nil {
 		t.Fatal("disabled brake created")
 	}
-	controller := newSessionBrakeController(t.Context(), at, time.Minute, 0, 0, nil, nil, nil, nil, nil, connector.Issue{})
-	if controller == nil || controller.watchDone != nil {
-		t.Fatal("duration-only controller starts progress watch")
+	controller := newSessionBrakeController(t.Context(), at, time.Minute, 0, nil, nil, nil, nil, connector.Issue{})
+	if controller == nil {
+		t.Fatal("duration-only controller was not created")
 	}
 }
 
@@ -116,7 +114,7 @@ func TestSessionProgressSnapshotReadFailures(t *testing.T) {
 func TestSessionBrakeErrorBoundaries(t *testing.T) {
 	t.Parallel()
 	var empty *SessionBrakeError
-	if empty.Error() == "" || empty.Unwrap() != nil || empty.Is(ErrSessionNoProgress) || sessionBrakeFingerprint(empty) != "" {
+	if empty.Error() == "" || empty.Unwrap() != nil || sessionBrakeFingerprint(empty) != "" {
 		t.Fatal("invalid nil error behavior")
 	}
 	if (&SessionBrakeError{}).Error() == "" {
@@ -133,9 +131,6 @@ func TestSessionBrakeErrorBoundaries(t *testing.T) {
 	}
 	if !(&SessionBrakeError{cause: io.EOF}).Is(io.EOF) {
 		t.Fatal("wrapped cause lost")
-	}
-	if sessionProgressCheckInterval(time.Hour) != 5*time.Minute {
-		t.Fatal("progress interval not bounded")
 	}
 	controller.probe = func(context.Context) (sessionProgressSnapshot, error) { return sessionProgressSnapshot{}, io.EOF }
 	controller.refreshSnapshot(t.Context())
