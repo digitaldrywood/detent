@@ -14,7 +14,7 @@ Described below but not yet on main:
 
 - Any coordinator: neither the hub-side `conversation.codex` backend nor the runner-dispatched coordinator (`detent:coordinator`, `coordinator_items`). A message in an unlinked chat is stored with delivery `saved` and waits; linking the chat hands the saved messages to the issue's first attempt.
 - Runner-side live conversation control (in flight): no runner, Codex or hubclient code binds a conversation yet.
-- `GET /app/bootstrap` always reports `feature.conversation: false`, every `capabilities` flag false and empty preference choice lists.
+- `GET /app/bootstrap` capability flags and preference choice lists: `feature.conversation` is `true` whenever the hub serves conversations (#3193), but the `capabilities` flags and preference choices are not fully populated yet.
 - The rest of the Templ page removal and of the JSON organization API of sections 1.1 and 1.2. PR #3098 moved `/` and `/projects/:project/...` to the client and mounted the members, invitations, roles, grants, projects list, project creation and fleet endpoints, but the hub still renders the Templ `/login`, `/organization`, `/organization/plan`, `/organization/billing` and `/support` pages and keeps their form handlers, and `POST …/switch`, `POST …/support/start` and `GET …/plan` are not mounted. Also hosted `PUT …/projects/:project/policy` and the typed project event stream.
 - Workspace sessions, the relay, the files, exec, git and terminal channels, project actions, pull request actions, the `workspaces:` configuration section and their migrations.
 - `include=attempts,changes` and `include=coordinator` on the work item list.
@@ -1272,8 +1272,8 @@ components then re-read durable state; the wake carries no payload.
 Set `enabled: false` or remove the `conversation:` section, then restart the
 hub. The service is not constructed, so the conversation API and the worker
 endpoints return 404 and `/app/bootstrap` reports `feature.conversation:
-false`, which is how the client hides the chat screens. On main the bootstrap
-reports `false` whether or not the feature is enabled (see Status on main). The application shell
+false`, which is how the client hides the chat screens. With the section
+enabled the bootstrap reports `true`. The application shell
 itself still answers `/chat` and every other client route: since
 `decisions.md` section 11 it serves the whole frontend, not only chat.
 
