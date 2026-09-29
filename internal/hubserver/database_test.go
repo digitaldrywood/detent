@@ -125,6 +125,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"pull_requests",
 		"queue_entries",
 		"repositories",
+		"runner_checkout_repositories",
 		"runner_enrollment_projects",
 		"runner_enrollments",
 		"runner_identities",

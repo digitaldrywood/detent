@@ -21,33 +21,35 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
-	ProviderReports   func() ([]providercapacity.Report, error)
-	OrganizationID    tracker.OrganizationID
-	NativeProjects    map[string]tracker.ProjectID
-	Machine           Machine
-	HeartbeatInterval time.Duration
-	LeaseTTL          time.Duration
-	Now               func() time.Time
-	SessionID         func() (string, error)
+	ProviderReports    func() ([]providercapacity.Report, error)
+	OrganizationID     tracker.OrganizationID
+	NativeProjects     map[string]tracker.ProjectID
+	CheckoutRepository func(project string) string
+	Machine            Machine
+	HeartbeatInterval  time.Duration
+	LeaseTTL           time.Duration
+	Now                func() time.Time
+	SessionID          func() (string, error)
 }
 
 type Scheduler struct {
-	providerReports   func() ([]providercapacity.Report, error)
-	claimPolicies     map[string]claimPolicy
-	nativeProjects    map[string]*NativeConnector
-	nativeClaims      map[string]nativeClaim
-	nativeHeartbeats  map[tracker.ProjectID]time.Time
-	reportedPolicies  map[string]string
-	client            *Client
-	machine           Machine
-	heartbeatInterval time.Duration
-	leaseTTL          time.Duration
-	now               func() time.Time
-	sessionID         func() (string, error)
-	mu                sync.Mutex
-	registered        bool
-	lastHeartbeat     time.Time
-	claims            map[string]tracker.Lease
+	providerReports    func() ([]providercapacity.Report, error)
+	claimPolicies      map[string]claimPolicy
+	nativeProjects     map[string]*NativeConnector
+	nativeClaims       map[string]nativeClaim
+	nativeHeartbeats   map[tracker.ProjectID]time.Time
+	checkoutRepository func(project string) string
+	reportedPolicies   map[string]string
+	client             *Client
+	machine            Machine
+	heartbeatInterval  time.Duration
+	leaseTTL           time.Duration
+	now                func() time.Time
+	sessionID          func() (string, error)
+	mu                 sync.Mutex
+	registered         bool
+	lastHeartbeat      time.Time
+	claims             map[string]tracker.Lease
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -76,6 +78,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		client:          client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
+		checkoutRepository: config.CheckoutRepository,
 	}
 	for project, id := range config.NativeProjects {
 		native, err := client.Native(config.OrganizationID, id)

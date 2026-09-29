@@ -53,12 +53,21 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		}
 		s.machine.ProviderReports = reports
 	}
+	machine := s.machine
+	if s.checkoutRepository != nil {
+		for name, candidate := range s.nativeProjects {
+			if candidate == source {
+				machine.CheckoutRepository = s.checkoutRepository(name)
+				break
+			}
+		}
+	}
 	if s.client.runner != nil && !last.IsZero() {
-		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
+		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 			return err
 		}
 	} else {
-		if err := source.client.RegisterMachine(ctx, s.machine); err != nil {
+		if err := source.client.RegisterMachine(ctx, machine); err != nil {
 			return err
 		}
 	}

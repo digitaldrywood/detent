@@ -191,6 +191,76 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {first}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
 }
 
+func TestHostedRunnerCheckoutAssociation(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedFixture(t, true)
+	grantAppRunners(t, f)
+	runner := enrollAppRunner(t, f, "Private checkout host", "test")
+	base := browserHostedOrganizationBase + "/projects/" + f.project
+	request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": "1", "repository": "Acme/Private", "source": "runner_checkout"}
+
+	for _, test := range []struct {
+		name, account string
+		status        int
+		message       string
+	}{
+		{"viewer cannot associate", "viewer", http.StatusNotFound, ""},
+		{"missing local checkout", "owner", http.StatusUnprocessableEntity, "Start an enrolled runner"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := f.setupRequest(t, test.account, http.MethodPost, base+"/onboarding/repository", request)
+			requireNativeStatus(t, response, test.status)
+			if test.message != "" && !strings.Contains(response.Body.String(), test.message) {
+				t.Fatalf("error did not explain next action: %s", response.Body.String())
+			}
+		})
+	}
+
+	path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
+	heartbeat := map[string]any{"display_name": "Private checkout host", "capacity": 1, "version": "test", "checkout_repository": "Other/Repository"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusNoContent)
+	response := f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
+	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	if !strings.Contains(response.Body.String(), "matching GitHub origin") {
+		t.Fatalf("mismatch did not explain next action: %s", response.Body.String())
+	}
+
+	heartbeat["checkout_repository"] = "https://alice:private-secret@github.com/Acme/Private.git"
+	response = performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat)
+	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	if strings.Contains(response.Body.String(), "private-secret") || strings.Contains(response.Body.String(), runner.Credential) {
+		t.Fatal("invalid checkout report exposed credentials")
+	}
+	heartbeat["checkout_repository"] = "Acme/Private"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusNoContent)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", formatHubTime(time.Now()), runner.RunnerID); err != nil {
+		t.Fatal(err)
+	}
+	response = f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
+	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	if !strings.Contains(response.Body.String(), "Start an enrolled runner") {
+		t.Fatalf("revoked runner error did not explain next action: %s", response.Body.String())
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=NULL WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", runner.RunnerID); err != nil {
+		t.Fatal(err)
+	}
+	response = f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
+	requireNativeStatus(t, response, http.StatusOK)
+	var integration ProjectIntegration
+	decodeHubResponse(t, response, &integration)
+	if integration.CheckoutRepository != "Acme/Private" || integration.RepositoryEnabled || integration.Repository != "" || integration.Revision != 2 {
+		t.Fatalf("association = %+v", integration)
+	}
+	if strings.Contains(response.Body.String(), runner.Credential) || strings.Contains(response.Body.String(), "private-secret") {
+		t.Fatal("credential leaked in association response")
+	}
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request), http.StatusOK)
+	var count int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM repositories").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("GitHub repository projection count = %d: %v", count, err)
+	}
+}
+
 func TestOnboardingCustomerBindingValidation(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)

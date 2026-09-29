@@ -20,6 +20,35 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if got := runnerCheckoutRepository(t.Context(), root); got != "" {
+		t.Fatalf("missing checkout = %q", got)
+	}
+	runDoctorWorkflowSourceGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte("# Workflow\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index, test := range []struct {
+		name, remote, want string
+	}{
+		{"private HTTPS origin", "https://alice:private-secret@github.com/Acme/Private.git", "Acme/Private"},
+		{"SSH origin", "git@github.com:Acme/Private.git", "Acme/Private"},
+		{"unsupported origin", "https://alice:private-secret@example.test/Acme/Private.git", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if index > 0 {
+				runDoctorWorkflowSourceGit(t, root, "remote", "remove", "origin")
+			}
+			runDoctorWorkflowSourceGit(t, root, "remote", "add", "origin", test.remote)
+			if got := runnerCheckoutRepository(t.Context(), root); got != test.want || strings.Contains(got, "private-secret") {
+				t.Fatalf("repository = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRunnerHubTarget(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

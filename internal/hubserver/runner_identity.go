@@ -185,6 +185,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		// answer and the heartbeat are the same row.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -207,6 +208,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
+			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
+				return nil, err
+			}
 			return struct{}{}, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
 		}
 		if len(request.ProviderReports) != 0 {
@@ -214,6 +218,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		}
 		if request.WorkspaceCapabilities != nil {
 			return nil, nativeInvalid("Workspace capabilities require an enrolled runner")
+		}
+		if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
+			return nil, nativeInvalid("Checkout reports require an enrolled runner")
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE machines SET display_name = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND token_id = ?`, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), c.Param("machine"), scope.organization, scope.credential.ID)
 		return struct{}{}, requireRunnerUpdate(result, err)
