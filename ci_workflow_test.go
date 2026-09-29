@@ -389,7 +389,7 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
 		{name: "strict host key", want: "-o StrictHostKeyChecking=yes", present: true},
 		{name: "stale run skips deploy", want: `if [ "$head" != "$GITHUB_SHA" ]; then`, present: true},
-		{name: "only connection failures retry", want: `if [ "$status" -ne 255 ]; then`, present: true},
+		{name: "only pre-key-exchange failures retry", want: `grep -qE '^(kex_exchange_identification:|ssh: connect to host )'`, present: true},
 		{name: "self-hosted runner", want: "self-hosted"},
 		{name: "pull request trigger", want: "pull_request"},
 		{name: "secrets inherited from repository", want: "secrets: inherit"},

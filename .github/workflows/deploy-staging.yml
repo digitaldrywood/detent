@@ -82,11 +82,12 @@ jobs:
                 -o BatchMode=yes \
                 -o ConnectTimeout=20 \
                 apprunner@staging.hub.detent.build \
-                "deploy ${GITHUB_SHA}" < "$RUNNER_TEMP/detent" || status=$?
-            if [ "$status" -ne 255 ]; then
+                "deploy ${GITHUB_SHA}" < "$RUNNER_TEMP/detent" 2> "$RUNNER_TEMP/ssh/stderr" || status=$?
+            cat "$RUNNER_TEMP/ssh/stderr" >&2
+            if [ "$status" -ne 255 ] || ! grep -qE '^(kex_exchange_identification:|ssh: connect to host )' "$RUNNER_TEMP/ssh/stderr"; then
               exit "$status"
             fi
-            echo "::warning::ssh connection failed (attempt ${attempt}/4)"
+            echo "::warning::ssh connection refused before key exchange (attempt ${attempt}/4)"
             sleep $((attempt * 15))
           done
           exit 255
