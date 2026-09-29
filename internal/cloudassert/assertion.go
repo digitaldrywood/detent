@@ -42,6 +42,8 @@ type Claims struct {
 	SessionExpiresAt     time.Time `json:"session_expires_at,omitzero"`
 	SupportActor         string    `json:"support_actor,omitempty"`
 	SupportReason        string    `json:"support_reason,omitempty"`
+	Role                 string    `json:"role,omitempty"`
+	AccessExpiresAt      time.Time `json:"access_expires_at,omitzero"`
 	Binding              string    `json:"binding,omitempty"`
 	CSRF                 string    `json:"csrf,omitempty"`
 	Method               string    `json:"method"`
@@ -143,14 +145,23 @@ func (v *Verifier) Verify(value, method, path string, body []byte) (Claims, erro
 }
 
 func validKind(claims Claims) bool {
-	browser := claims.Subject != "" || claims.Email != "" || claims.ProviderOrganization != "" || claims.ProviderSession != "" || claims.Binding != "" || claims.CSRF != "" || claims.SupportActor != "" || claims.SupportReason != "" || !claims.SessionCreatedAt.IsZero() || !claims.SessionExpiresAt.IsZero()
+	browser := claims.Subject != "" || claims.Email != "" || claims.ProviderOrganization != "" || claims.ProviderSession != "" || claims.Binding != "" || claims.CSRF != "" || claims.SupportActor != "" || claims.SupportReason != "" || !claims.SessionCreatedAt.IsZero() || !claims.SessionExpiresAt.IsZero() || claims.Role != "" || !claims.AccessExpiresAt.IsZero()
 	switch claims.Kind {
 	case KindBrowser:
-		return claims.Subject != "" && claims.Email != "" && claims.ProviderOrganization != "" && claims.ProviderSession != "" && len(claims.Binding) == 64 && len(claims.CSRF) == 64 && !claims.SessionCreatedAt.IsZero() && claims.SessionExpiresAt.After(claims.SessionCreatedAt)
+		return claims.Subject != "" && claims.Email != "" && claims.ProviderOrganization != "" && claims.ProviderSession != "" && len(claims.Binding) == 64 && len(claims.CSRF) == 64 && !claims.SessionCreatedAt.IsZero() && claims.SessionExpiresAt.After(claims.SessionCreatedAt) && validRole(claims.Role) && !claims.AccessExpiresAt.IsZero()
 	case KindMachine:
 		return !browser
 	case KindService:
 		return !browser || claims.Subject != "" && claims.Email != "" && claims.ProviderOrganization == "" && claims.Binding == "" && claims.CSRF == "" && claims.SupportActor == ""
+	default:
+		return false
+	}
+}
+
+func validRole(role string) bool {
+	switch role {
+	case "owner", "admin", "member", "viewer":
+		return true
 	default:
 		return false
 	}

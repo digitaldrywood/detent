@@ -891,6 +891,10 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			streams[o.id] = stream
 		}
 		p.provider.removeMember("user_fay", "porg_"+alpha.id)
+		p.provider.expireAccess()
+		if response := fay.get(alpha.page()); response.status == http.StatusOK {
+			t.Fatal("removed member still reads alpha after the access token refresh")
+		}
 		ended := false
 		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
 			if _, open, _ := streams[alpha.id].next(time.Second); !open {

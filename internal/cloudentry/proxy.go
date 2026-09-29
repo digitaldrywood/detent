@@ -16,6 +16,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
@@ -79,55 +80,105 @@ func (s *Service) browserDenied(c echo.Context, organization string, status int)
 	return s.denied(c, status, "This organization is unavailable to your account. Choose another organization.")
 }
 
-func (s *Service) browserClaims(c echo.Context, organization Organization, claims *cloudassert.Claims) (int, error) {
+const (
+	verificationToken     = "token"
+	verificationRefreshed = "refreshed"
+)
+
+// browserClaims authorizes a proxied browser request from the stored
+// session and the organization's WorkOS access token, verified locally
+// against the cached JWKS. The provider is called only to refresh an expired
+// access token, so revocation and membership removal take effect at the next
+// refresh, one access-token lifetime at most.
+func (s *Service) browserClaims(c echo.Context, organization Organization, claims *cloudassert.Claims) (int, string, error) {
 	ctx := c.Request().Context()
-	session, err := s.session(c)
+	session, err := s.storedSession(c)
 	if err != nil {
-		return http.StatusUnauthorized, err
+		return http.StatusUnauthorized, "", err
 	}
 	method := c.Request().Method
 	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions && !s.sameOrigin(c) {
-		return http.StatusForbidden, errors.New("cross-origin browser mutation")
+		return http.StatusForbidden, "", errors.New("cross-origin browser mutation")
 	}
 	authorized, err := s.auth.authorization(ctx, session, organization.ID)
 	if err != nil {
-		return http.StatusUnauthorized, err
+		return http.StatusUnauthorized, "", err
 	}
 	subject, email := session.Subject, session.Email
 	if authorized.Support {
 		if !s.supportActor(session.Email) || authorized.EffectiveEmail == "" {
 			s.dropAuthorization(ctx, authorized)
-			return http.StatusForbidden, errNoSession
+			return http.StatusForbidden, "", errNoSession
 		}
 		subject, email = authorized.Identity.Subject, authorized.EffectiveEmail
 	}
-	current, err := s.config.Provider.CurrentSession(ctx, authorized.Identity)
-	if err != nil || current.Subject != subject || current.SupportActor != authorized.Identity.SupportActor || current.SupportReason != authorized.Identity.SupportReason || current.OrganizationID != organization.ProviderID || current.SessionID != authorized.Identity.SessionID || !current.ExpiresAt.After(s.config.now()) {
-		s.dropAuthorization(ctx, authorized)
-		return http.StatusUnauthorized, errNoSession
-	}
-	memberships, err := s.config.Provider.Memberships(ctx, subject, organization.ProviderID)
+	access, verification, status, err := s.verifiedAccess(ctx, authorized)
 	if err != nil {
-		return http.StatusServiceUnavailable, err
+		return status, verification, err
 	}
-	active := false
-	for _, membership := range memberships {
-		active = active || membership.UserID == subject && membership.OrganizationID == organization.ProviderID && membership.Status == "active"
-	}
-	if !active {
+	switch {
+	case access.Subject != subject || access.SessionID != authorized.Identity.SessionID || !strings.EqualFold(access.SupportActor, authorized.Identity.SupportActor):
 		s.dropAuthorization(ctx, authorized)
-		return http.StatusForbidden, errNoSession
+		return http.StatusUnauthorized, verification, errNoSession
+	case access.OrganizationID != organization.ProviderID || !auth.ValidOrganizationRole(access.Role):
+		s.dropAuthorization(ctx, authorized)
+		return http.StatusForbidden, verification, errNoSession
 	}
 	identity := authorized.Identity
-	if current.ExpiresAt.Before(identity.ExpiresAt) {
-		identity.ExpiresAt = current.ExpiresAt
-	}
 	claims.Kind = cloudassert.KindBrowser
 	claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = subject, email, organization.ProviderID, identity.SessionID
 	claims.SupportActor, claims.SupportReason = identity.SupportActor, identity.SupportReason
 	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.CreatedAt, identity.ExpiresAt
+	claims.Role, claims.AccessExpiresAt = access.Role, access.ExpiresAt
 	claims.Binding, claims.CSRF = authorized.Binding, cloudassert.CSRFToken(session.CSRFSecret, organization.ID)
-	return http.StatusOK, nil
+	return http.StatusOK, verification, nil
+}
+
+// verifiedAccess returns the authorization's current access claims. A valid
+// stored token costs no provider call; an expired one is refreshed once,
+// serialized per authorization because WorkOS refresh tokens are single use.
+// A rejected refresh means the provider session ended, so the authorization
+// is dropped; an unreachable provider is a transient 503.
+func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) (auth.HostedAccess, string, int, error) {
+	tokens, err := s.auth.tokens(authorized)
+	if err != nil || tokens.AccessToken == "" || tokens.RefreshToken == "" {
+		s.dropAuthorization(ctx, authorized)
+		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, errNoSession
+	}
+	access, err := s.config.Provider.VerifyAccess(ctx, tokens.AccessToken)
+	if err == nil {
+		return access, verificationToken, http.StatusOK, nil
+	}
+	if !errors.Is(err, auth.ErrAccessExpired) {
+		s.dropAuthorization(ctx, authorized)
+		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, errNoSession
+	}
+	unlock := s.refreshes.lock(authorized.Binding)
+	defer unlock()
+	current, err := s.auth.authorizationByBinding(ctx, authorized.Binding)
+	if err != nil {
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+	}
+	if tokens, err = s.auth.tokens(current); err != nil {
+		s.dropAuthorization(ctx, authorized)
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+	}
+	if access, err := s.config.Provider.VerifyAccess(ctx, tokens.AccessToken); err == nil {
+		return access, verificationRefreshed, http.StatusOK, nil
+	}
+	access, rotated, err := s.config.Provider.RefreshAccess(ctx, tokens.RefreshToken)
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
+	}
+	if err != nil {
+		s.config.Logger.InfoContext(ctx, "shared entry token refresh rejected", "organization", authorized.Organization, "reason", auth.HostedIdentityReason(err))
+		s.dropAuthorization(ctx, authorized)
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+	}
+	if err := s.auth.storeTokens(ctx, authorized.Binding, rotated); err != nil {
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+	}
+	return access, verificationRefreshed, http.StatusOK, nil
 }
 
 func (s *Service) dropAuthorization(ctx context.Context, item authorization) {
@@ -137,7 +188,17 @@ func (s *Service) dropAuthorization(ctx context.Context, item authorization) {
 	s.revokeAtTenants(ctx, []authorization{item})
 }
 
+// logProxied records one proxied request's latency and how its browser
+// identity was verified. It logs the path without its query and never
+// tokens, cookies or email addresses.
+func (s *Service) logProxied(c echo.Context, organization, verification string, started time.Time, extra ...any) {
+	request := c.Request()
+	fields := append([]any{"organization", organization, "method", request.Method, "path", request.URL.Path, "status", c.Response().Status, "duration_ms", time.Since(started).Milliseconds(), "verification", verification}, extra...)
+	s.config.Logger.InfoContext(request.Context(), "shared entry proxied request", fields...)
+}
+
 func (s *Service) proxy(c echo.Context) error {
+	started := time.Now()
 	request := c.Request()
 	ctx := request.Context()
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
@@ -158,11 +219,17 @@ func (s *Service) proxy(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
 	}
+	verification := "machine"
 	if request.Header.Get(echo.HeaderAuthorization) == "" {
-		if status, err := s.browserClaims(c, organization, &claims); err != nil {
+		status, verified, err := s.browserClaims(c, organization, &claims)
+		verification = verified
+		if err != nil {
+			defer s.logProxied(c, organization.ID, verification, started)
 			return s.browserDenied(c, organization.ID, status)
 		}
 	}
+	authorized := time.Since(started)
+	defer func() { s.logProxied(c, organization.ID, verification, started, "auth_ms", authorized.Milliseconds()) }()
 	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})

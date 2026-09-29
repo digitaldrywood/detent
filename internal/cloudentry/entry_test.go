@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,22 +30,98 @@ const (
 )
 
 type fakeProvider struct {
-	organizations  map[string]auth.Organization
-	createFailures int
-	creates        int
-	mu             sync.Mutex
-	users          map[string]string
-	sessions       map[string]auth.HostedIdentity
-	memberships    map[string]auth.Membership
-	invitations    map[string]auth.Invitation
-	revoked        []string
-	sequence       int
-	authorizeBase  string
-	verifications  int
+	organizations   map[string]auth.Organization
+	createFailures  int
+	creates         int
+	mu              sync.Mutex
+	users           map[string]string
+	sessions        map[string]auth.HostedIdentity
+	memberships     map[string]auth.Membership
+	invitations     map[string]auth.Invitation
+	revoked         []string
+	sequence        int
+	authorizeBase   string
+	verifications   int
+	membershipLists int
+	refreshes       int
+	refreshDelay    time.Duration
+	access          map[string]fakeAccess
+	refresh         map[string]string
+}
+
+type fakeAccess struct {
+	access  auth.HostedAccess
+	expires time.Time
 }
 
 func newFakeProvider() *fakeProvider {
-	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}}
+	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
+}
+
+// providerCalls counts the provider API calls a request can make; local
+// access-token verification is not one.
+func (p *fakeProvider) providerCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.verifications + p.membershipLists + p.refreshes
+}
+
+// issueLocked mints an access and refresh token for a provider session, with
+// the organization and role its current membership grants.
+func (p *fakeProvider) issueLocked(session auth.HostedIdentity) auth.HostedTokens {
+	p.sequence++
+	suffix := session.SessionID + "_" + strconv.Itoa(p.sequence)
+	access := auth.HostedAccess{Subject: session.Subject, SessionID: session.SessionID, SupportActor: session.SupportActor}
+	if membership, ok := p.memberships["om_"+session.Subject+"_"+session.OrganizationID]; ok && session.OrganizationID != "" {
+		access.OrganizationID, access.Role = session.OrganizationID, membership.Role.Slug
+	}
+	expires := time.Now().Add(5 * time.Minute)
+	access.ExpiresAt = expires
+	p.access["access_"+suffix] = fakeAccess{access: access, expires: expires}
+	p.refresh["refresh_"+suffix] = session.SessionID
+	return auth.HostedTokens{AccessToken: "access_" + suffix, RefreshToken: "refresh_" + suffix}
+}
+
+// expireAccess ends the lifetime of every issued access token, as the
+// passage of one access-token lifetime would.
+func (p *fakeProvider) expireAccess() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for token, issued := range p.access {
+		issued.expires = time.Now().Add(-time.Second)
+		p.access[token] = issued
+	}
+}
+
+func (p *fakeProvider) VerifyAccess(_ context.Context, token string) (auth.HostedAccess, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	issued, ok := p.access[token]
+	if !ok {
+		return auth.HostedAccess{}, &auth.HostedIdentityError{Reason: auth.HostedReasonTokenInvalid}
+	}
+	if !issued.expires.After(time.Now()) {
+		return auth.HostedAccess{}, auth.ErrAccessExpired
+	}
+	return issued.access, nil
+}
+
+func (p *fakeProvider) RefreshAccess(_ context.Context, token string) (auth.HostedAccess, auth.HostedTokens, error) {
+	p.mu.Lock()
+	p.refreshes++
+	delay := p.refreshDelay
+	p.mu.Unlock()
+	time.Sleep(delay)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sessionID, ok := p.refresh[token]
+	delete(p.refresh, token)
+	session, active := p.sessions[sessionID]
+	if !ok || !active {
+		return auth.HostedAccess{}, auth.HostedTokens{}, &auth.HostedIdentityError{Reason: auth.HostedReasonProviderRejected, Status: http.StatusBadRequest}
+	}
+	tokens := p.issueLocked(session)
+	return p.access[tokens.AccessToken].access, tokens, nil
 }
 
 func (p *fakeProvider) member(user, organization, role string) {
@@ -76,7 +153,7 @@ func (p *fakeProvider) Exchange(_ context.Context, code, _, _ string) (auth.Iden
 		now := time.Now().UTC().Truncate(time.Second)
 		hosted := auth.HostedIdentity{Subject: parts[2], OrganizationID: parts[3], SessionID: "support_session_" + string(rune('a'+p.sequence)), CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour), SupportActor: parts[1], SupportReason: parts[4]}
 		p.sessions[hosted.SessionID] = hosted
-		return auth.Identity{Subject: parts[2], Email: p.users[parts[2]], EmailVerified: true, Hosted: &hosted}, nil
+		return auth.Identity{Subject: parts[2], Email: p.users[parts[2]], EmailVerified: true, Hosted: &hosted, Tokens: p.issueLocked(hosted)}, nil
 	}
 	if reason, ok := strings.CutPrefix(code, "deny:"); ok {
 		return auth.Identity{}, &auth.HostedIdentityError{Reason: reason, TokenIssuer: "https://api.workos.com"}
@@ -95,7 +172,7 @@ func (p *fakeProvider) Exchange(_ context.Context, code, _, _ string) (auth.Iden
 	now := time.Now().UTC().Truncate(time.Second)
 	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: "session_" + user + "_" + string(rune('a'+p.sequence)), CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour)}
 	p.sessions[hosted.SessionID] = hosted
-	return auth.Identity{Subject: user, Email: email, EmailVerified: true, Hosted: &hosted}, nil
+	return auth.Identity{Subject: user, Email: email, EmailVerified: true, Hosted: &hosted, Tokens: p.issueLocked(hosted)}, nil
 }
 
 func (p *fakeProvider) CurrentSession(_ context.Context, identity auth.HostedIdentity) (auth.HostedIdentity, error) {
@@ -112,6 +189,7 @@ func (p *fakeProvider) CurrentSession(_ context.Context, identity auth.HostedIde
 func (p *fakeProvider) Memberships(_ context.Context, user, organization string) ([]auth.Membership, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.membershipLists++
 	var result []auth.Membership
 	for _, membership := range p.memberships {
 		if (user == "" || membership.UserID == user) && (organization == "" || membership.OrganizationID == organization) {
@@ -482,6 +560,7 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 		t.Fatalf("chooser = %s", chooser)
 	}
 	f.provider.removeMember("user_alice", "porg_beta")
+	f.provider.expireAccess()
 	if response, _ := alice.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("removed membership status = %d", response.StatusCode)
 	}

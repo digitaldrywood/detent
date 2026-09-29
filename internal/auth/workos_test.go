@@ -790,6 +790,10 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	if request["grant_type"] == "refresh_token" {
+		f.refresh(w, r, request, mode)
+		return
+	}
 	if r.Method != http.MethodPost || request["grant_type"] != "authorization_code" || request["client_id"] != "client_detent" || request["client_secret"] != "fixture-secret" {
 		f.t.Error("incorrect code exchange request")
 	}
@@ -882,6 +886,7 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 	f.mu.Unlock()
 	if mode != "missing-token" {
 		response["access_token"] = signTestJWT(f.t, key, claims)
+		response["refresh_token"] = "refresh_customer"
 	}
 	f.writeJSON(w, response)
 }

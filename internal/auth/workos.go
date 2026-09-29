@@ -187,12 +187,7 @@ func (p *workosProvider) Exchange(ctx context.Context, code string, verifier str
 		Code         string `json:"code"`
 		CodeVerifier string `json:"code_verifier,omitempty"`
 	}{"authorization_code", p.clientID, p.apiKey, code, verifier}
-	var response struct {
-		User           workosUser   `json:"user"`
-		AccessToken    string       `json:"access_token"`
-		OrganizationID string       `json:"organization_id"`
-		Impersonator   *workosActor `json:"impersonator"`
-	}
+	var response workosAuthentication
 	if err := p.request(ctx, http.MethodPost, "/user_management/authenticate", request, &response); err != nil {
 		return Identity{}, hostedDenialWrap(HostedReasonExchangeFailed, err)
 	}
@@ -226,39 +221,56 @@ func (p *workosProvider) Exchange(ctx context.Context, code string, verifier str
 	if !identity.ExpiresAt.After(time.Now()) {
 		return Identity{}, hostedDenial(HostedReasonSessionExpired)
 	}
-	return Identity{Subject: identity.Subject, Email: email, EmailVerified: true, Hosted: &identity}, nil
+	return Identity{Subject: identity.Subject, Email: email, EmailVerified: true, Hosted: &identity, Tokens: HostedTokens{AccessToken: response.AccessToken, RefreshToken: response.RefreshToken}}, nil
 }
 
-func (p *workosProvider) verifyToken(ctx context.Context, raw string, actor *workosActor) (HostedIdentity, error) {
+type workosAuthentication struct {
+	User           workosUser   `json:"user"`
+	AccessToken    string       `json:"access_token"`
+	RefreshToken   string       `json:"refresh_token"`
+	OrganizationID string       `json:"organization_id"`
+	Impersonator   *workosActor `json:"impersonator"`
+}
+
+type workosAccessClaims struct {
+	ClientID       string          `json:"client_id"`
+	SessionID      string          `json:"sid"`
+	OrganizationID string          `json:"org_id"`
+	Role           string          `json:"role"`
+	Audience       json.RawMessage `json:"aud"`
+	Actor          *struct {
+		Email   string `json:"email"`
+		Subject string `json:"sub"`
+	} `json:"act"`
+}
+
+func (p *workosProvider) parseAccessToken(ctx context.Context, raw string) (*coreoidc.IDToken, workosAccessClaims, error) {
 	token, err := p.verifier.Verify(ctx, raw)
+	if expired := (*coreoidc.TokenExpiredError)(nil); errors.As(err, &expired) {
+		return nil, workosAccessClaims{}, ErrAccessExpired
+	}
 	if err != nil {
-		return HostedIdentity{}, hostedDenial(HostedReasonTokenInvalid)
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
 	}
 	if token.Issuer != p.issuerURL && token.Issuer != p.issuerURL+"/" {
-		return HostedIdentity{}, &HostedIdentityError{Reason: HostedReasonIssuerMismatch, TokenIssuer: loggableIssuer(token.Issuer)}
+		return nil, workosAccessClaims{}, &HostedIdentityError{Reason: HostedReasonIssuerMismatch, TokenIssuer: loggableIssuer(token.Issuer)}
 	}
 	if !validWorkOSID(token.Subject) {
-		return HostedIdentity{}, hostedDenial(HostedReasonTokenInvalid)
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
 	}
 	now := time.Now()
-	if token.IssuedAt.IsZero() || token.IssuedAt.After(now.Add(5*time.Minute)) || !token.Expiry.After(token.IssuedAt) || !token.Expiry.After(now) {
-		return HostedIdentity{}, hostedDenial(HostedReasonTokenInvalid)
+	if token.IssuedAt.IsZero() || token.IssuedAt.After(now.Add(5*time.Minute)) || !token.Expiry.After(token.IssuedAt) {
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
 	}
-	var claims struct {
-		ClientID       string          `json:"client_id"`
-		SessionID      string          `json:"sid"`
-		OrganizationID string          `json:"org_id"`
-		Audience       json.RawMessage `json:"aud"`
-		Actor          *struct {
-			Email   string `json:"email"`
-			Subject string `json:"sub"`
-		} `json:"act"`
+	if !token.Expiry.After(now) {
+		return nil, workosAccessClaims{}, ErrAccessExpired
 	}
+	var claims workosAccessClaims
 	if err := token.Claims(&claims); err != nil || !validWorkOSID(claims.SessionID) || (claims.OrganizationID != "" && !validWorkOSID(claims.OrganizationID)) {
-		return HostedIdentity{}, hostedDenial(HostedReasonTokenInvalid)
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
 	}
 	if claims.ClientID != p.clientID {
-		return HostedIdentity{}, hostedDenial(HostedReasonClientMismatch)
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonClientMismatch)
 	}
 	if len(claims.Audience) > 0 {
 		matched := false
@@ -266,8 +278,80 @@ func (p *workosProvider) verifyToken(ctx context.Context, raw string, actor *wor
 			matched = matched || audience == p.clientID
 		}
 		if !matched {
-			return HostedIdentity{}, hostedDenial(HostedReasonAudienceMismatch)
+			return nil, workosAccessClaims{}, hostedDenial(HostedReasonAudienceMismatch)
 		}
+	}
+	return token, claims, nil
+}
+
+func (p *workosProvider) access(ctx context.Context, raw string) (HostedAccess, error) {
+	token, claims, err := p.parseAccessToken(ctx, raw)
+	if err != nil {
+		return HostedAccess{}, err
+	}
+	access := HostedAccess{Subject: token.Subject, OrganizationID: claims.OrganizationID, SessionID: claims.SessionID, Role: claims.Role, ExpiresAt: token.Expiry}
+	if claims.Actor != nil {
+		signedEmail, signedSubject := normalizeEmail(claims.Actor.Email), normalizeEmail(claims.Actor.Subject)
+		if signedEmail != "" && signedSubject != "" && signedEmail != signedSubject {
+			return HostedAccess{}, hostedDenial(HostedReasonSupportActorInvalid)
+		}
+		access.SupportActor = signedEmail
+		if access.SupportActor == "" {
+			access.SupportActor = signedSubject
+		}
+		if !validWorkOSEmail(access.SupportActor) {
+			return HostedAccess{}, hostedDenial(HostedReasonSupportActorInvalid)
+		}
+	}
+	return access, nil
+}
+
+// VerifyAccess checks a stored access token against the cached JWKS without
+// calling the provider API. An expired token returns ErrAccessExpired so the
+// caller refreshes it.
+func (p *workosProvider) VerifyAccess(ctx context.Context, token string) (HostedAccess, error) {
+	if strings.TrimSpace(token) == "" {
+		return HostedAccess{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	return p.access(ctx, token)
+}
+
+// RefreshAccess redeems a refresh token. WorkOS refresh tokens are single
+// use, so the caller persists the rotated pair before using it again.
+func (p *workosProvider) RefreshAccess(ctx context.Context, refreshToken string) (HostedAccess, HostedTokens, error) {
+	if strings.TrimSpace(refreshToken) == "" {
+		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonSessionInvalid)
+	}
+	request := struct {
+		GrantType    string `json:"grant_type"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		RefreshToken string `json:"refresh_token"`
+	}{"refresh_token", p.clientID, p.apiKey, refreshToken}
+	var response workosAuthentication
+	if err := p.request(ctx, http.MethodPost, "/user_management/authenticate", request, &response); err != nil {
+		return HostedAccess{}, HostedTokens{}, err
+	}
+	access, err := p.access(ctx, response.AccessToken)
+	if errors.Is(err, ErrAccessExpired) {
+		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	if err != nil {
+		return HostedAccess{}, HostedTokens{}, err
+	}
+	if access.Subject != response.User.ID || access.OrganizationID != response.OrganizationID || strings.TrimSpace(response.RefreshToken) == "" {
+		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonProviderInvalid)
+	}
+	return access, HostedTokens{AccessToken: response.AccessToken, RefreshToken: response.RefreshToken}, nil
+}
+
+func (p *workosProvider) verifyToken(ctx context.Context, raw string, actor *workosActor) (HostedIdentity, error) {
+	token, claims, err := p.parseAccessToken(ctx, raw)
+	if errors.Is(err, ErrAccessExpired) {
+		return HostedIdentity{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	if err != nil {
+		return HostedIdentity{}, err
 	}
 	identity := HostedIdentity{Subject: token.Subject, OrganizationID: claims.OrganizationID, SessionID: claims.SessionID}
 	if (claims.Actor == nil) != (actor == nil) {
