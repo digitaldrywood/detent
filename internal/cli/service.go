@@ -206,6 +206,7 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	}
 	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
 	runner, err := factory(servicepkg.Config{
+		Name:         cfg.ServiceName,
 		GOOS:         runtime.GOOS,
 		BinaryPath:   binaryPath,
 		ConfigPath:   resolution.Path,

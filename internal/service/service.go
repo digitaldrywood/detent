@@ -37,6 +37,22 @@ const ManagerEnvironment = "DETENT_SERVICE_MANAGER"
 
 const launchdServiceEnvironment = "XPC_SERVICE_NAME"
 
+// DefaultName is the service a plain `detent start` installs.
+const DefaultName = "detent"
+
+const launchdLabelPrefix = "com.digitaldrywood."
+
+func serviceName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return DefaultName
+	}
+	return name
+}
+
+func LaunchdLabel(name string) string { return launchdLabelPrefix + serviceName(name) }
+
+func SystemdUnit(name string) string { return serviceName(name) + ".service" }
+
 type State string
 
 const (
@@ -91,6 +107,9 @@ type ManualInspector func(string) (Inspection, error)
 type CommandRunner func(context.Context, string, ...string) (string, error)
 
 type Config struct {
+	// Name selects the service: launchd label com.digitaldrywood.NAME and
+	// systemd unit NAME.service. Empty means DefaultName.
+	Name             string
 	GOOS             string
 	HomeDir          string
 	UID              string
@@ -157,7 +176,7 @@ func ManagerFromProcessEnvironment(goos string, lookupEnv func(string) (string, 
 		return ManagerName(strings.TrimSpace(manager))
 	}
 	if goos == "darwin" {
-		if serviceName, ok := lookupEnv(launchdServiceEnvironment); ok && strings.TrimSpace(serviceName) == launchdLabel {
+		if serviceName, ok := lookupEnv(launchdServiceEnvironment); ok && strings.HasPrefix(strings.TrimSpace(serviceName), launchdLabelPrefix) {
 			return ManagerLaunchd
 		}
 	}
@@ -316,6 +335,9 @@ func active(state State) bool {
 func normalizeConfig(cfg Config) Config {
 	if strings.TrimSpace(cfg.GOOS) == "" {
 		cfg.GOOS = runtime.GOOS
+	}
+	if strings.TrimSpace(cfg.Name) == "" {
+		cfg.Name = DefaultName
 	}
 	if strings.TrimSpace(cfg.HomeDir) == "" {
 		if homeDir, err := os.UserHomeDir(); err == nil {

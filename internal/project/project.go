@@ -260,6 +260,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget)
+	workflow.Config = withMappedNativeTracker(workflow.Config, deps.Scheduling, id)
 	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
@@ -1739,6 +1740,22 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 		FlakyCheckNames:    append([]string(nil), cfg.Release.FlakyCheckNames...),
 		RequiredCheckNames: append([]string(nil), cfg.Release.RequiredCheckNames...),
 	}, releaseBackend)}, nil
+}
+
+// withMappedNativeTracker makes a project that client.native_projects maps to
+// a Hub project use the Hub as its tracker, so a runner host can reuse a
+// repository's committed detent.yaml without a local tracker override.
+func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
+	source, ok := scheduling.(interface {
+		ConnectorForProject(string) (connector.Connector, bool)
+	})
+	if !ok {
+		return workflow
+	}
+	if _, mapped := source.ConnectorForProject(string(id)); mapped {
+		workflow.Tracker.Kind = workflowconfig.TrackerHubNative
+	}
+	return workflow
 }
 
 func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {

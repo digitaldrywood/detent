@@ -90,6 +90,49 @@ machine images or share it across hosts. Multiple logical runners on one host
 share the same machine ID and capacity ceiling through explicit enrollment
 approval. Hardware attestation is not implemented.
 
+### Register a runner with one command
+
+The Enroll dialog in the organization's runner settings asks for a display name
+and the projects the runner may work on, creates a token-first enrollment, and
+shows one command to run on the host:
+
+```sh
+detent hub runner register --url https://hub.detent.build/organizations/org_example \
+  --token det_enroll_example --name "Build host" --capacity 2 --service
+```
+
+`register` does, in order:
+
+1. Generates the runner and machine IDs and a random credential on the host and
+   writes them to `identity.json` beside the runner configuration (default
+   `~/.config/detent-runner/`, private, outside any repository). An existing
+   identity there is reused, so a retry never creates a second runner.
+2. Redeems the token. The request carries the IDs, host name, display name,
+   capacity, version, OS and architecture, and the host credential, which the
+   Hub stores only as a SHA-256 hash. No provider or repository credential is
+   read or sent.
+3. Reads the names of the granted projects and writes `global.yaml` once: the
+   `client:` block (`hub_url`, `identity_file`, `organization_id`,
+   `native_projects`, `display_name`, `capacity`), `service_name:
+   detent.runner`, and one `projects:` entry per project whose `workdir` is the
+   project's checkout under `--workspace-root` (default `~/detent-runner/NAME`).
+   An existing `global.yaml` is left untouched.
+4. With `--service`, installs and starts the `detent.runner` background service
+   (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
+   separate from a local board's `detent` service on the same host. If a
+   project's checkout is missing, it prints the clone step and the
+   `detent start --config ... --yes` command to run afterwards instead.
+
+The token appears in the command because it is single-use and expires within 15
+minutes; once redeemed it grants nothing. To keep it out of shell history,
+omit `--token` and set `DETENT_RUNNER_ENROLLMENT_TOKEN` instead. A self-hosted
+Hub whose URL does not include `/organizations/ORG` needs `--organization`.
+Projects listed in `client.native_projects` always use the Hub as their
+tracker, so the repository's committed `detent.yaml` needs no local override.
+
+`init` and `enroll` below remain for scripted setups that bind the IDs before
+the token exists.
+
 An enrollment created without `runner_id` and `machine_id` is token-first: it
 binds to the fresh IDs the host presents when it redeems the token, and the Hub
 records them on the enrollment at that moment. The host still generates its IDs

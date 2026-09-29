@@ -301,3 +301,41 @@ func TestTrackerPriorityMapConvertsWorkflowMap(t *testing.T) {
 		t.Fatalf("trackerPriorityMap(string) = %#v, want nil", got)
 	}
 }
+
+type mappedSchedulingSource struct {
+	testSchedulingSource
+	projects map[string]bool
+}
+
+func (s *mappedSchedulingSource) ConnectorForProject(project string) (connector.Connector, bool) {
+	return nil, s.projects[project]
+}
+
+func TestWithMappedNativeTrackerUsesTheHubForMappedProjects(t *testing.T) {
+	t.Parallel()
+
+	mapped := &mappedSchedulingSource{projects: map[string]bool{"site": true}}
+	tests := []struct {
+		name       string
+		scheduling orchestrator.SchedulingSource
+		project    ID
+		kind       string
+		want       string
+	}{
+		{name: "mapped github project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerHubNative},
+		{name: "mapped native project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerHubNative, want: workflowconfig.TrackerHubNative},
+		{name: "unmapped project", scheduling: mapped, project: "other", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerGitHub},
+		{name: "no hub client", scheduling: nil, project: "site", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerGitHub},
+		{name: "scheduling without native projects", scheduling: &testSchedulingSource{}, project: "site", kind: workflowconfig.TrackerMemory, want: workflowconfig.TrackerMemory},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			workflow := workflowconfig.Config{}
+			workflow.Tracker.Kind = test.kind
+			if got := withMappedNativeTracker(workflow, test.scheduling, test.project).Tracker.Kind; got != test.want {
+				t.Fatalf("tracker kind = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

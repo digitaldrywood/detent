@@ -106,24 +106,33 @@ requirements in the repository, then inspect and approve the new descriptor.
 
 ## Customer host enrollment
 
-On the selected host, run `detent hub runner init --hub-url HUB_URL`.
-For shared hosting, `HUB_URL` is `https://hub.detent.build`; self-hosting uses the
-customer endpoint. The selected organization is explicit in enrollment and client
-configuration, not inferred from hostname. Keep its
-private identity file outside repositories. Use the IDs printed on that host in
-the enrollment form, which grants only the selected project. The existing Hub
-runner administration contract requires runner-management grants for every
-organization project. An owner or administrator who creates a project receives
-that grant on it automatically; grants for other members are still set in
-Organization.
-The short-lived token is displayed only in the response, not persisted as setup
-progress. Set `DETENT_RUNNER_ENROLLMENT_TOKEN` locally and run
-`detent hub runner enroll --organization ORGANIZATION_ID --display-name NAME`.
+In the organization's runner settings, choose Enroll a runner, give the runner
+a name, pick its projects, and copy the one command the dialog shows. Run it on
+the host:
 
-Retry with the same identity file. Init and enrollment reuse its generated
-identity; a display name never transfers host ownership. Do not copy an enrolled
-identity file to another machine. Use the existing `--host-identity-file` protocol
-for multiple distinct runners on one already enrolled host.
+```sh
+detent hub runner register --url https://hub.detent.build/organizations/ORGANIZATION_ID \
+  --token TOKEN --name "Build host" --service
+```
+
+The command generates the host's identity locally, redeems the one-time token,
+writes `~/.config/detent-runner/global.yaml` and `identity.json`, and installs
+the `detent.runner` background service. Clone each project's repository into
+the directory it prints (`~/detent-runner/PROJECT` by default) first, or run the
+`detent start --config ... --yes` command it prints after cloning. Nobody copies
+a runner or machine ID by hand. See `docs/hub-api.md` "Register a runner with
+one command" for what each step writes.
+
+Enrolling needs runner management on every organization project. An owner or
+administrator who creates a project receives it automatically; grants for other
+members are set in Organization.
+
+Retry `register` with the same configuration directory: it reuses the identity
+it generated, never creates a second runner, and never rewrites an existing
+`global.yaml`. Do not copy an enrolled identity file to another machine. The
+older `detent hub runner init` and `enroll` commands, and the
+`--host-identity-file` protocol for several runners on one host, remain for
+scripted setups.
 
 The page lists only runners authorized for this project. Names, host IDs, tags,
 health and exclusion reasons come from the existing routing evaluator. Tag edits

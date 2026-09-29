@@ -40,7 +40,7 @@ func TestLaunchdPlistIncludesRuntimeSettings(t *testing.T) {
 func TestLaunchdInspectStartAndRestart(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), launchdLabel+".plist")
+	path := filepath.Join(t.TempDir(), LaunchdLabel(DefaultName)+".plist")
 	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 				return "", nil
 			}
 			if len(args) > 0 && args[0] == "kill" {
-				if !reflect.DeepEqual(args, []string{"kill", "SIGTERM", "gui/501/" + launchdLabel}) {
+				if !reflect.DeepEqual(args, []string{"kill", "SIGTERM", "gui/501/" + LaunchdLabel(DefaultName)}) {
 					t.Errorf("signal command = %v", args)
 				}
 				stopped = true
@@ -101,7 +101,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 	if err := manager.Restart(t.Context()); err != nil {
 		t.Fatalf("Restart() error = %v", err)
 	}
-	wantRestart := []string{"launchctl", "kickstart", "gui/501/" + launchdLabel}
+	wantRestart := []string{"launchctl", "kickstart", "gui/501/" + LaunchdLabel(DefaultName)}
 	if len(commands) == 0 {
 		t.Fatal("commands are empty after restart")
 	}
@@ -113,7 +113,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 func TestLaunchdInstallWritesDefinition(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "LaunchAgents", launchdLabel+".plist")
+	path := filepath.Join(t.TempDir(), "LaunchAgents", LaunchdLabel(DefaultName)+".plist")
 	cfg := normalizeConfig(Config{
 		UID:              "501",
 		LaunchdPlistPath: path,
@@ -141,7 +141,7 @@ func TestLaunchdDetectsLoadedJobWithoutDefinitionFile(t *testing.T) {
 		UID:              "501",
 		LaunchdPlistPath: filepath.Join(t.TempDir(), "missing.plist"),
 		RunCommand: func(_ context.Context, name string, args ...string) (string, error) {
-			if name != "launchctl" || !reflect.DeepEqual(args, []string{"print", "gui/501/" + launchdLabel}) {
+			if name != "launchctl" || !reflect.DeepEqual(args, []string{"print", "gui/501/" + LaunchdLabel(DefaultName)}) {
 				t.Fatalf("command = %s %#v", name, args)
 			}
 			return "state = running\npid = 0\n", nil
