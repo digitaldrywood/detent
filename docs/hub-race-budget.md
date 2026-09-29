@@ -44,11 +44,11 @@ about 5, so the `W` (workspace) tests moved to B. Rebalance by
 changing the letter sets when one partition approaches its ceiling; the
 complement guarantee does not depend on which letters are chosen.
 
-`make test-race-cover` (used by `make check`) still runs Hub once, whole,
-because coverage profiles from two runs of one package would overlap and
-`tools/covermerge` rejects overlapping profiles. That local run has no CI
-shard timeout, so it uses `HUB_RACE_COVER_TIMEOUT` (30 minutes, the sum of
-both partition budgets).
+`make test-race-cover` (used by `make check` and the hourly build) runs the
+same three Hub race partitions, then collects one ordinary Hub coverage profile.
+The race runs have a 15-minute package timeout each. The one coverage profile
+keeps package inputs disjoint for `tools/covermerge`, which rejects overlapping
+profiles from multiple runs of the same package.
 
 The `Verify race` jobs keep their 60-minute workflow timeout; the Hub
 partitions use at most 15 minutes of it plus setup and evidence upload.
@@ -66,11 +66,11 @@ contention on constrained runners. `HUB_RACE_TIMEOUT` and
 
 ## Evidence and interpretation
 
-CI uploads each partition's evidence in the `race-evidence-0` and
-`race-evidence-4` artifacts for 14 days even when the race step fails.
-Locally the same evidence lives in `tmp/hub-race-evidence-a` and
-`tmp/hub-race-evidence-b` (`make test-race-cover` writes the whole-package
-run to `tmp/hub-race-evidence`):
+CI uploads each partition's evidence in the `race-evidence-0`,
+`race-evidence-4`, and `race-evidence-5` artifacts for 14 days even when
+the race step fails.
+Locally the same evidence lives in `tmp/hub-race-evidence-a`,
+`tmp/hub-race-evidence-b`, and `tmp/hub-race-evidence-c`:
 
 - `combined.jsonl` and `internal__hubserver.jsonl` preserve Go's timestamped
   run, pause, cont, pass, fail, skip, output, and package events, including

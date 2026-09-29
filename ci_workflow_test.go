@@ -870,3 +870,90 @@ func TestHubRacePartitionsCoverEveryTestOnce(t *testing.T) {
 		t.Fatalf("partition sizes = %v, want all three Hub race partitions nonempty", counts)
 	}
 }
+
+func TestRaceCoverKeepsHubRacePartitioned(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failHubRace bool
+	}{
+		{name: "publishes coverage after the bounded race suite"},
+		{name: "stops before coverage when a race shard fails", failHubRace: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, dir := range []string{"bin", "scripts"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			files := map[string]string{
+				"scripts/test-race-cover.sh": readNormalizedFile(t, "scripts/test-race-cover.sh"),
+				"scripts/test-workspace.sh": `#!/bin/sh
+for arg do case "$arg" in -coverprofile=*) printf 'mode: set\nexample.com/workspace/a.go:1.1,1.2 1 1\n' > "${arg#-coverprofile=}";; esac; done
+`,
+				"bin/make": `#!/bin/sh
+echo "make $*" >> "$CALLS"
+test "$*" = test-race-hub || exit 91
+test "$FAIL_HUB_RACE" != 1
+`,
+				"bin/go": `#!/bin/sh
+echo "go $*" >> "$CALLS"
+case "$*" in
+  *'run ./tools/testgate -race -coverprofile='*'./internal/hubserver'*) exit 92 ;;
+  'list -f '*|'list -race -f '*) echo same ;;
+  'list ./...') printf '%s\n' github.com/digitaldrywood/detent/internal/hubserver github.com/digitaldrywood/detent/internal/orchestrator ;;
+  'run ./tools/covermerge '*) printf 'mode: set\nexample.com/hub/a.go:1.1,1.2 1 1\n' ;;
+  test\ *)
+    for arg do case "$arg" in -coverprofile=*) printf 'mode: set\nexample.com/hub/a.go:1.1,1.2 1 1\n' > "${arg#-coverprofile=}";; esac; done
+    ;;
+  'run ./tools/testgate '*) ;;
+  *) exit 93 ;;
+esac
+`,
+			}
+			for name, content := range files {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := filepath.Join(root, "calls")
+			profile := filepath.Join(root, "combined.out")
+			cmd := exec.CommandContext(t.Context(), "bash", "scripts/test-race-cover.sh", profile, "4", "20m")
+			cmd.Dir = root
+			failHubRace := "FAIL_HUB_RACE=0"
+			if tc.failHubRace {
+				failHubRace = "FAIL_HUB_RACE=1"
+			}
+			cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+":"+os.Getenv("PATH"), "TMPDIR="+root, "CALLS="+calls, failHubRace)
+			output, err := cmd.CombinedOutput()
+			if (err != nil) != tc.failHubRace {
+				t.Fatalf("race-cover exit = %v, want failure %t: %s", err, tc.failHubRace, output)
+			}
+			invocations, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log := string(invocations)
+			if !strings.HasPrefix(log, "go list -f ") || !strings.Contains(log, "make test-race-hub\n") {
+				t.Fatalf("Hub race suite was not invoked: %s", log)
+			}
+			if tc.failHubRace {
+				if strings.Contains(log, "go test -count=1 -coverprofile=") {
+					t.Fatalf("coverage ran after a failed race shard: %s", log)
+				}
+				if _, err := os.Stat(profile); !os.IsNotExist(err) {
+					t.Fatalf("coverage profile published after failed race shard: %v", err)
+				}
+				return
+			}
+			if strings.Count(log, "go test -count=1 -coverprofile=") < 1 ||
+				strings.Index(log, "make test-race-hub\n") > strings.Index(log, "go test -count=1 -coverprofile=") ||
+				!strings.Contains(log, "./internal/hubserver\n") {
+				t.Fatalf("Hub coverage did not follow the race suite: %s", log)
+			}
+			if data, err := os.ReadFile(profile); err != nil || !strings.HasPrefix(string(data), "mode: set\n") {
+				t.Fatalf("combined coverage profile = %q, %v: %s", data, err, output)
+			}
+		})
+	}
+}

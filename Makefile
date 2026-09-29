@@ -41,7 +41,6 @@ HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
 HUB_RACE_PARTITION := ^Test[A-GI-O]
 HUB_RACE_PARTITION_B := ^Test[HW]
-HUB_RACE_COVER_TIMEOUT ?= 30m
 # Persisted orchestrator fixtures serialize migrations; retain the full race suite.
 ORCHESTRATOR_RACE_TIMEOUT ?= 20m
 ORCHESTRATOR_RACE_PARALLEL ?= 4
@@ -192,7 +191,7 @@ test-race-orchestrator:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(ORCHESTRATOR_RACE_PARALLEL) -timeout $(ORCHESTRATOR_RACE_TIMEOUT) -output tmp/orchestrator-race-evidence ./internal/orchestrator
 
 test-race-cover:
-	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)"
+	bash scripts/test-race-cover.sh "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)"
 	@$(MAKE) coverage-check
 	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
 
@@ -321,7 +320,7 @@ help:
 	@echo "  test-race-hub-a  Run Hub race partition A (tests matching $(HUB_RACE_PARTITION))"
 	@echo "  test-race-hub-b  Run Hub race partition B (tests matching $(HUB_RACE_PARTITION_B))"
 	@echo "  test-race-hub-c  Run Hub race partition C (all other Hub tests)"
-	@echo "  test-race-cover  Run race and coverage gates with shared Hub execution"
+	@echo "  test-race-cover  Run partitioned Hub race and disjoint coverage gates"
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  test-cover-packages  Run per-package coverage floor checks"
 	@echo "  soak         Run opt-in orchestrator incident and adversarial soak tests"

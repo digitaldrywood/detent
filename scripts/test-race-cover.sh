@@ -14,7 +14,9 @@ if ! cmp -s "$profile_dir/ordinary-inputs" "$profile_dir/race-inputs"; then
     exit 1
 fi
 
-env -u DETENT_API_TOKEN go run ./tools/testgate -race -coverprofile "$profile_dir/hub.out" -parallel "$1" -timeout "$2" -output tmp/hub-race-evidence ./internal/hubserver
+# The whole Hub race suite exceeds one package timeout; reuse its bounded shards.
+make test-race-hub
+env -u DETENT_API_TOKEN go test -count=1 -coverprofile="$profile_dir/hub.out" ./internal/hubserver
 go list ./... > "$profile_dir/packages"
 packages=()
 while IFS= read -r package; do
@@ -28,7 +30,7 @@ if [ "${#packages[@]}" -eq 0 ]; then
 fi
 # Keep orchestrator timing evidence and its cumulative fixture budget identical
 # to make test-race; ordinary coverage still includes this package below.
-env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel "$4" -timeout "$5" -output tmp/orchestrator-race-evidence ./internal/orchestrator
+env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel "$2" -timeout "$3" -output tmp/orchestrator-race-evidence ./internal/orchestrator
 race_packages=()
 for package in "${packages[@]}"; do
     if [ "$package" != github.com/digitaldrywood/detent/internal/orchestrator ]; then
@@ -43,6 +45,6 @@ env -u DETENT_API_TOKEN go test -count=1 -coverprofile="$profile_dir/rest.out" "
 env -u DETENT_API_TOKEN go test -count=1 -coverprofile="$profile_dir/web.out" ./internal/web
 bash scripts/test-workspace.sh -coverprofile "$profile_dir/workspace.out" -output tmp/workspace-cover-evidence
 go run ./tools/covermerge "$profile_dir/hub.out" "$profile_dir/workspace.out" "$profile_dir/rest.out" "$profile_dir/web.out" > "$profile_dir/merged.out"
-publish_path="$(mktemp "$3.XXXXXX")"
+publish_path="$(mktemp "$1.XXXXXX")"
 cat "$profile_dir/merged.out" > "$publish_path"
-mv "$publish_path" "$3"
+mv "$publish_path" "$1"
