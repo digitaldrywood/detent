@@ -60,6 +60,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if err != nil {
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
+	change = o.refreshNativeChangeReview(ctx, issueID, change)
 	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed)
 	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && direct && dispatchableState(states, landing) {
@@ -105,6 +106,26 @@ func (o *Orchestrator) completeNativeChangeRun(
 	return true
 }
 
+// refreshNativeChangeReview reads whether the version the run published is
+// reviewed as the completion is applied. A run that published no version has
+// nothing to land, whatever an earlier version's review says. The run captured it when it published the version,
+// and an approval or check that arrives before the completion lands is
+// deliberately left to the completion by the Hub, so the answer the run
+// captured may be stale. A failed read keeps the captured answer.
+func (o *Orchestrator) refreshNativeChangeReview(ctx context.Context, issueID string, change *runpkg.NativeChange) *runpkg.NativeChange {
+	reader, ok := o.connector.(connector.ChangeReviewReader)
+	if !ok || !change.Changed || change.ChangeID == "" || change.VersionID == "" {
+		return change
+	}
+	reviewed, err := reader.ChangeReviewed(ctx, issueID, change.ChangeID, change.VersionID)
+	if err != nil || reviewed == change.Reviewed {
+		return change
+	}
+	refreshed := *change
+	refreshed.Reviewed = reviewed
+	return &refreshed
+}
+
 // dispatchableState reports a lane a runner claims work from. A landing lane
 // that does not dispatch would hold an accepted change where nothing lands it.
 func dispatchableState(states []connector.WorkflowState, name string) bool {
@@ -144,14 +165,14 @@ func nativeCompletionComment(change *runpkg.NativeChange, from, to string) strin
 		comment := fmt.Sprintf("The run succeeded and opened Change Request %s (%d files, head %s). Moved from %s to %s.",
 			change.ChangeID, change.Files, shortCommit(change.HeadSHA), from, to)
 		switch {
+		case change.Reviewed && normalizeState(to) == normalizeState(autoPromoteMergingState):
+			comment += " The current version needs no further review, so the runner lands it next."
 		case change.VersionID == "" && change.VersionCode == "policy_mismatch":
 			comment += fmt.Sprintf(" No version was published for review: %s. A project owner or admin has to approve a review policy for the current repository policy: approving the repository policy again in Project settings sets the default one. Then move this item back to In Progress so the runner publishes the version.", change.VersionError)
 		case change.VersionID == "":
 			comment += fmt.Sprintf(" No version was published for review: %s. The next successful run publishes one.", change.VersionError)
-		case change.Reviewed && normalizeState(to) == normalizeState(autoPromoteMergingState):
-			comment += " The project's review policy needs no reviewer for this version, so the runner lands it next."
 		case change.Reviewed:
-			comment += fmt.Sprintf(" The project's review policy needs no reviewer for this version, but the workflow has no move from %s to %s, so it waits in %s.", from, displayStateName(autoPromoteMergingState), to)
+			comment += fmt.Sprintf(" The current version needs no further review, but the workflow has no move from %s to %s, so it waits in %s.", from, displayStateName(autoPromoteMergingState), to)
 		}
 		return comment
 	}
