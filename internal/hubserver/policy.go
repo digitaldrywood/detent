@@ -78,8 +78,8 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 }
 
 // observeProjectPolicy records the descriptor a runner resolved for a native
-// project when it could not run it. Only the latest report is kept; the
-// approved policy is untouched until an owner approves the observed one.
+// project when it could not run it. Each runner's latest report is kept; the
+// approved policy is untouched until an owner approves one of them.
 func (s *Service) observeProjectPolicy(c echo.Context) error {
 	var descriptor policy.Descriptor
 	if err := decodeAPIJSON(c, &descriptor); err != nil {
@@ -105,26 +105,39 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(scope) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, runner_id = excluded.runner_id, observed_at = excluded.observed_at`,
+ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at`,
 		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now())); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-// readObservedPolicy returns the descriptor a runner last reported for scope,
-// and false when none was reported.
-func readObservedPolicy(ctx context.Context, query nativeQueryer, scope string) (policy.ObservedPolicy, bool, error) {
-	var raw string
-	result := policy.ObservedPolicy{}
-	err := query.QueryRowContext(ctx, "SELECT descriptor_json, runner_id, observed_at FROM project_observed_policies WHERE scope = ?", scope).Scan(&raw, &result.RunnerID, &result.ObservedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return result, false, nil
-	}
+// readObservedPolicies returns the distinct descriptors runners reported for
+// scope and could not run, newest first, leaving out approvedID.
+func readObservedPolicies(ctx context.Context, query nativeQueryer, scope, approvedID string) ([]policy.ObservedPolicy, error) {
+	rows, err := query.QueryContext(ctx, "SELECT descriptor_json, runner_id, observed_at, policy_id FROM project_observed_policies WHERE scope = ? AND policy_id <> ? ORDER BY observed_at DESC, runner_id", scope, approvedID)
 	if err != nil {
-		return result, false, err
+		return nil, err
 	}
-	return result, true, json.Unmarshal([]byte(raw), &result.Policy)
+	defer rows.Close()
+	result := []policy.ObservedPolicy{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var raw, id string
+		var observed policy.ObservedPolicy
+		if err := rows.Scan(&raw, &observed.RunnerID, &observed.ObservedAt, &id); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		result = append(result, observed)
+	}
+	return result, errors.Join(rows.Err(), rows.Close())
 }
 
 func (s *Service) revokeProjectPolicy(c echo.Context) error {

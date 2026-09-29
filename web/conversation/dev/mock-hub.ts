@@ -889,8 +889,8 @@ interface AccountState {
   usage: boolean;
   integrations: Map<string, IntegrationRow>;
   policies: Map<string, PolicyRow>;
-  /** What a runner last reported it resolved and could not run, per project. */
-  observedPolicies: Map<string, { policy: Record<string, unknown>; runner_id: string; observed_at: string }>;
+  /** What runners last reported they resolved and could not run, per project, newest first. */
+  observedPolicies: Map<string, Array<{ policy: Record<string, unknown>; runner_id: string; observed_at: string }>>;
   progress: Map<string, ProgressRow>;
   artifactServices: Map<string, ArtifactBindingRow[]>;
   runners: RunnerEligibilityRow[];
@@ -2873,11 +2873,12 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         invalidRequest(response, "A policy descriptor is required.");
         return true;
       }
-      account.observedPolicies.set(projectId, {
-        policy: body as Record<string, unknown>,
-        runner_id: "runner_mock",
-        observed_at: now(),
-      });
+      const runnerId = new URL(request.url ?? "/", "http://mock.local").searchParams.get("runner") ?? "runner_mock";
+      const others = (account.observedPolicies.get(projectId) ?? []).filter((entry) => entry.runner_id !== runnerId);
+      account.observedPolicies.set(projectId, [
+        { policy: body as Record<string, unknown>, runner_id: runnerId, observed_at: now() },
+        ...others,
+      ]);
       noContent(response);
       return true;
     }
@@ -2885,13 +2886,17 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     if (tail === "onboarding" && method === "GET") {
       const evaluated = evaluateOnboarding(projectId);
       const approved = account.policies.get(projectId) ?? null;
-      const observed = account.observedPolicies.get(projectId) ?? null;
+      const seen = new Set<unknown>();
+      const observed = (account.observedPolicies.get(projectId) ?? []).filter((entry) => {
+        if (entry.policy.policy_id === approved?.policy.policy_id || seen.has(entry.policy.policy_id)) return false;
+        seen.add(entry.policy.policy_id);
+        return true;
+      });
       json(response, 200, {
         latest_run: "succeeded",
         progress: account.progress.get(projectId),
         policy: approved,
-        observed_policy:
-          observed !== null && observed.policy.policy_id !== approved?.policy.policy_id ? clone(observed) : null,
+        observed_policies: clone(observed),
         runners: account.runners,
         artifact_services: account.artifactServices.get(projectId) ?? [],
         steps: evaluated.steps,

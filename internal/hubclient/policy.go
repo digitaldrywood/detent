@@ -88,23 +88,28 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 }
 
 // reportObservedPolicy sends each new unapproved descriptor once per project,
-// not on every candidate poll.
+// not on every candidate poll. The descriptor is claimed before the request
+// so concurrent checks send it once, and released if the request fails.
 func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, descriptor policy.Descriptor) error {
 	s.mu.Lock()
-	reported := s.reportedPolicies[project] == descriptor.ID
-	s.mu.Unlock()
-	if reported {
+	if s.reportedPolicies[project] == descriptor.ID {
+		s.mu.Unlock()
 		return nil
 	}
-	if err := source.client.ReportObservedPolicy(ctx, descriptor); err != nil {
-		return fmt.Errorf("report the resolved repository policy to the Hub: %w", err)
-	}
-	s.mu.Lock()
 	if s.reportedPolicies == nil {
 		s.reportedPolicies = map[string]string{}
 	}
+	previous := s.reportedPolicies[project]
 	s.reportedPolicies[project] = descriptor.ID
 	s.mu.Unlock()
+	if err := source.client.ReportObservedPolicy(ctx, descriptor); err != nil {
+		s.mu.Lock()
+		if s.reportedPolicies[project] == descriptor.ID {
+			s.reportedPolicies[project] = previous
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("report the resolved repository policy to the Hub: %w", err)
+	}
 	return nil
 }
 

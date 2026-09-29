@@ -50,6 +50,8 @@ export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean 
  * policy_mismatch` is a stored approval that no longer describes what the host
  * resolves. Neither is an error the reader can act on except by approving.
  */
+export const OBSERVED_POLICY_REFRESH_MS = 30_000;
+
 export function noApprovedPolicy(error: AccountError): boolean {
   return error.status === 404 || error.code === "policy_mismatch";
 }
@@ -84,11 +86,10 @@ export function PolicyRow({
   error,
 }: {
   readonly policy: PolicyApproval | null;
-  /** A descriptor a runner resolved and could not run, if it differs from `policy`. */
-  readonly observed: ObservedPolicy | null;
+  /** Descriptors runners resolved and could not run, newest first. */
+  readonly observed: readonly ObservedPolicy[];
   readonly canManage: boolean;
-  /** Approves `observed`. */
-  readonly onApprove: () => void;
+  readonly onApprove: (policyId: string) => void;
   readonly onApprovePasted: (text: string) => void;
   readonly approving: boolean;
   readonly error: string | null;
@@ -96,7 +97,7 @@ export function PolicyRow({
   const [pasting, setPasting] = React.useState(false);
   const [pasted, setPasted] = React.useState("");
   const description =
-    observed !== null
+    observed.length > 0
       ? `A runner resolved a different policy from the repository's detent.yaml and WORKFLOW.md and is waiting for it to be approved. Nothing runs on this project until it is.`
       : policy === null
         ? "No policy is approved. Start a runner for this project and it reports the policy it resolved here, or paste the output of the inspect command."
@@ -113,24 +114,30 @@ export function PolicyRow({
               {policy.approved_at}
             </span>
           )}
-          {observed === null ? null : (
-            <span className="block text-warning-foreground">
-              Runner <span className="font-mono">{observed.runner_id}</span> reports{" "}
-              <span className="font-mono">{observed.policy.policy_id}</span> (source revision{" "}
-              <span className="font-mono">{observed.policy.source_revision.slice(0, 12)}</span>) at{" "}
-              {observed.observed_at}
+          {observed.map((entry) => (
+            <span key={entry.policy.policy_id} className="mt-1 flex flex-wrap items-center gap-2 text-warning-foreground">
+              <span>
+                Runner <span className="font-mono">{entry.runner_id}</span> reports{" "}
+                <span className="font-mono">{entry.policy.policy_id}</span> (source revision{" "}
+                <span className="font-mono">{entry.policy.source_revision.slice(0, 12)}</span>) at {entry.observed_at}
+              </span>
+              {canManage ? (
+                <Button
+                  size="xs"
+                  disabled={approving}
+                  aria-label={`Approve reported policy ${entry.policy.policy_id}`}
+                  onClick={() => onApprove(entry.policy.policy_id)}
+                >
+                  {approving ? "Approving…" : "Approve reported policy"}
+                </Button>
+              ) : null}
             </span>
-          )}
+          ))}
         </>
       }
       control={
         canManage ? (
           <div className="flex flex-col items-end gap-1.5">
-            {observed === null ? null : (
-              <Button size="sm" disabled={approving} onClick={onApprove}>
-                {approving ? "Approving…" : "Approve reported policy"}
-              </Button>
-            )}
             <Button size="sm" variant="ghost-muted" onClick={() => setPasting((open) => !open)}>
               {pasting ? "Cancel pasting" : "Paste a descriptor"}
             </Button>
@@ -138,7 +145,7 @@ export function PolicyRow({
           </div>
         ) : (
           <span className="text-sm text-muted-foreground">
-            {observed !== null ? "Waiting for approval" : policy === null ? "Not approved" : "Approved"}
+            {observed.length > 0 ? "Waiting for approval" : policy === null ? "Not approved" : "Approved"}
           </span>
         )
       }
@@ -182,7 +189,7 @@ export function ProjectSettingsView({
   onSave,
   onApprovePolicy,
   onApprovePastedPolicy,
-  observedPolicy,
+  observedPolicies,
   saving,
   approving,
   saveError,
@@ -197,9 +204,9 @@ export function ProjectSettingsView({
   readonly draft: IntegrationDraft;
   readonly onDraftChange: (draft: IntegrationDraft) => void;
   readonly onSave: () => void;
-  readonly onApprovePolicy: () => void;
+  readonly onApprovePolicy: (policyId: string) => void;
   readonly onApprovePastedPolicy: (text: string) => void;
-  readonly observedPolicy: ObservedPolicy | null;
+  readonly observedPolicies: readonly ObservedPolicy[];
   readonly saving: boolean;
   readonly approving: boolean;
   readonly saveError: string | null;
@@ -233,17 +240,22 @@ export function ProjectSettingsView({
         </SettingsWarning>
       )}
 
-      {policy === null || observedPolicy !== null ? (
+      {policy === null || observedPolicies.length > 0 ? (
         <SettingsWarning
           action={
-            canManage && observedPolicy !== null ? (
-              <Button size="sm" variant="warning-outline" onClick={onApprovePolicy} disabled={approving}>
+            canManage && observedPolicies.length === 1 ? (
+              <Button
+                size="sm"
+                variant="warning-outline"
+                onClick={() => onApprovePolicy(observedPolicies[0]!.policy.policy_id)}
+                disabled={approving}
+              >
                 {approving ? "Approving…" : "Approve reported policy"}
               </Button>
             ) : null
           }
         >
-          {observedPolicy !== null ? (
+          {observedPolicies.length > 0 ? (
             <>
               <b className="font-semibold">A runner is waiting for a new policy.</b> The repository&apos;s
               detent.yaml or WORKFLOW.md changed, and nothing runs until the policy it resolved is approved.
@@ -330,7 +342,7 @@ export function ProjectSettingsView({
           canManage={canManage}
           onApprove={onApprovePolicy}
           onApprovePasted={onApprovePastedPolicy}
-          observed={observedPolicy}
+          observed={observedPolicies}
           approving={approving}
           error={approveError}
         />
@@ -413,14 +425,22 @@ export function ProjectSettingsRoute({
   // What a runner resolved and could not run: the Hub records it so the owner
   // approves exactly that descriptor instead of pasting it.
   const setup = useResource(() => api.onboarding(projectId), [api, projectId]);
-  const observed = setup.value?.observed_policy ?? null;
+  const observed = setup.value?.observed_policies ?? [];
+  // A runner reports a changed policy whenever the repository changes, so the
+  // page looks again while it is open instead of only on the next visit.
+  React.useEffect(() => {
+    const timer = globalThis.setInterval(() => void setup.refresh(), OBSERVED_POLICY_REFRESH_MS);
+    return () => globalThis.clearInterval(timer);
+  }, [setup.refresh]);
 
   // Approves what the runner reported, or a descriptor pasted from the inspect
   // command. Both go through the onboarding route, the one the hosted Hub
   // serves to owners and admins.
-  const approve = useMutation(async (pasted: string | null) => {
+  const approve = useMutation(async (choice: { readonly reported: string } | { readonly pasted: string }) => {
     const descriptor: { readonly policy_id: string } | undefined =
-      pasted === null ? observed?.policy : parsePolicyDescriptor(pasted);
+      "pasted" in choice
+        ? parsePolicyDescriptor(choice.pasted)
+        : observed.find((entry) => entry.policy.policy_id === choice.reported)?.policy;
     if (descriptor === undefined) {
       throw new AccountError({
         status: 422,
@@ -438,7 +458,9 @@ export function ProjectSettingsRoute({
       policy.set(approved);
       return approved;
     } finally {
-      await setup.refresh();
+      // A conflict means somebody else approved meanwhile: re-read both, so a
+      // retry names the approval that is actually current.
+      await Promise.all([setup.refresh(), policy.refresh()]);
     }
   });
 
@@ -480,9 +502,9 @@ export function ProjectSettingsRoute({
       draft={draft}
       onDraftChange={setDraft}
       onSave={() => void save.call(draft)}
-      onApprovePolicy={() => void approve.call(null)}
-      onApprovePastedPolicy={(text) => void approve.call(text)}
-      observedPolicy={observed}
+      onApprovePolicy={(policyId) => void approve.call({ reported: policyId })}
+      onApprovePastedPolicy={(text) => void approve.call({ pasted: text })}
+      observedPolicies={observed}
       saving={save.pending}
       approving={approve.pending}
       saveError={saveMessage(save.error)}

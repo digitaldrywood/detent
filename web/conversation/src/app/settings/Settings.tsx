@@ -293,7 +293,7 @@ export function IntegrationsSettings({
 
   // One scroll container, not two: the picker goes inside the project screen's
   // own `SettingsPageContainer` through its `header` slot.
-  return <ProjectSettingsRoute projectId={selected} onNavigate={onNavigate} header={picker} />;
+  return <ProjectSettingsRoute key={selected} projectId={selected} onNavigate={onNavigate} header={picker} />;
 }
 
 export function PlanSettings(): React.ReactElement {

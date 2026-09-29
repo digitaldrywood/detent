@@ -83,6 +83,35 @@ describe("repository policy after setup", () => {
     expect(screen.queryByRole("button", { name: "Approve reported policy" })).toBeNull();
   });
 
+  it("lists each runner's reported policy and approves the chosen one after a conflicting approval", async () => {
+    const { base } = await mount();
+    const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
+    for (const [runner, id] of [["runner_a", "pol_a"], ["runner_b", "pol_b"]] as const) {
+      await fetch(`${base}/policy/observed?runner=${runner}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...current.policy, policy_id: id }),
+      });
+    }
+    renderSettings();
+    expect(await screen.findByRole("button", { name: "Approve reported policy pol_a" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve reported policy pol_b" })).toBeTruthy();
+
+    // Another owner approves pol_b while this page is open.
+    await fetch(`${base}/onboarding/policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_policy_id: current.policy.policy_id, policy: { ...current.policy, policy_id: "pol_b" } }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Approve reported policy pol_a" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve reported policy pol_b" })).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Approve reported policy pol_a" }));
+    await waitFor(async () => {
+      const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
+      expect(after.policy.policy_id).toBe("pol_a");
+    });
+  });
+
   it("approves a pasted descriptor and refuses one that is not JSON", async () => {
     const { base } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
