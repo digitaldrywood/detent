@@ -167,11 +167,11 @@ func TestDoctorInvariantWorkflowVerdict(t *testing.T) {
 		want    doctorStatus
 		detail  string
 	}{
-		{"main push only", map[string][]byte{"ci.yml": []byte("on:\n  push:\n    branches: [main]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request or merge_group trigger"},
-		{"PR placeholder still triggers", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n")}, doctorWarn, "ci.yml:pull_request"},
-		{"merge group still triggers", map[string][]byte{"ci.yml": []byte("on:\n  merge_group:\n    types: [checks_requested]\n")}, doctorWarn, "ci.yml:merge_group"},
+		{"main push only", map[string][]byte{"ci.yml": []byte("on:\n  push:\n    branches: [main]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request_target trigger"},
+		{"PR checks allowed", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request_target trigger"},
+		{"merge group allowed", map[string][]byte{"ci.yml": []byte("on:\n  merge_group:\n    types: [checks_requested]\n")}, doctorOK, "no workflow has a pull_request_target trigger"},
 		{"target still triggers", map[string][]byte{"ci.yml": []byte("on:\n  pull_request_target:\n")}, doctorWarn, "ci.yml:pull_request_target"},
-		{"second workflow triggers", map[string][]byte{"ci.yml": []byte("on:\n  push:\n"), "extra.yaml": []byte("on:\n  pull_request:\n")}, doctorWarn, "extra.yaml:pull_request"},
+		{"second workflow target triggers", map[string][]byte{"ci.yml": []byte("on:\n  push:\n"), "extra.yaml": []byte("on:\n  pull_request_target:\n")}, doctorWarn, "extra.yaml:pull_request_target"},
 		{"malformed", map[string][]byte{"ci.yml": []byte("on: [\n")}, doctorWarn, "could not be parsed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -194,10 +194,10 @@ func TestDoctorInvariantWorkflowCheckReadsEverySourceRootWorkflow(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(workflows, "ci.yml"), []byte("on:\n  push:\n    branches: [main]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workflows, "preview.yaml"), []byte("on:\n  pull_request:\njobs:\n  preview:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workflows, "preview.yaml"), []byte("on:\n  pull_request_target:\njobs:\n  preview:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := doctorInvariantWorkflowCheck("alpha", root); got.Status != doctorWarn || !strings.Contains(got.Detail, "preview.yaml:pull_request") {
+	if got := doctorInvariantWorkflowCheck("alpha", root); got.Status != doctorWarn || !strings.Contains(got.Detail, "preview.yaml:pull_request_target") {
 		t.Fatalf("check = %#v", got)
 	}
 	if got := doctorInvariantWorkflowCheck("alpha", filepath.Join(root, "missing")); got.Status != doctorOK {

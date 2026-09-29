@@ -125,10 +125,8 @@ func doctorInvariantQueueCheck(ctx context.Context, id, repository, branch strin
 	return doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorOK, repository+": merge queue present on "+branch+"; no programmatic merge attempts in 24h")
 }
 
-// doctorInvariantWorkflowCheck reports whether a project's GitHub Actions
-// workflows still trigger on pull requests or merge groups.
 func doctorInvariantWorkflowCheck(id string, sourceRoot string) doctorCheck {
-	check := doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorOK, "no GitHub Actions workflows in the project checkout; nothing to measure")
+	check := doctorInvariantCheck(id, "INV-5", "workflow trigger safety", doctorOK, "no GitHub Actions workflows in the project checkout; nothing to measure")
 	sourceRoot = strings.TrimSpace(sourceRoot)
 	if sourceRoot == "" {
 		return check
@@ -154,7 +152,7 @@ func doctorInvariantWorkflowCheck(id string, sourceRoot string) doctorCheck {
 	for _, file := range files {
 		data, err := os.ReadFile(filepath.Join(directory, file))
 		if err != nil {
-			return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, file+" could not be read: "+err.Error())
+			return doctorInvariantCheck(id, "INV-5", "workflow trigger safety", doctorWarn, file+" could not be read: "+err.Error())
 		}
 		sources[file] = data
 	}
@@ -168,19 +166,17 @@ func doctorInvariantWorkflowVerdict(id string, sources map[string][]byte) doctor
 			On map[string]any `yaml:"on"`
 		}
 		if err := yaml.Unmarshal(sources[file], &workflow); err != nil {
-			return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, file+" could not be parsed: "+err.Error())
+			return doctorInvariantCheck(id, "INV-5", "workflow trigger safety", doctorWarn, file+" could not be parsed: "+err.Error())
 		}
-		for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
-			if _, ok := workflow.On[event]; ok {
-				triggered = append(triggered, file+":"+event)
-			}
+		if _, ok := workflow.On["pull_request_target"]; ok {
+			triggered = append(triggered, file+":pull_request_target")
 		}
 	}
 	if len(triggered) == 0 {
-		return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorOK, "no workflow has a pull_request or merge_group trigger")
+		return doctorInvariantCheck(id, "INV-5", "workflow trigger safety", doctorOK, "no workflow has a pull_request_target trigger")
 	}
-	check := doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, "GitHub Actions triggers on PR or merge group events: "+strings.Join(triggered, ", "))
-	check.Hint = "docs/invariants.md INV-5: remove pull_request and merge_group workflow triggers for zero PR CI."
+	check := doctorInvariantCheck(id, "INV-5", "workflow trigger safety", doctorWarn, "GitHub Actions triggers on privileged pull request events: "+strings.Join(triggered, ", "))
+	check.Hint = "docs/invariants.md INV-5: use pull_request instead of pull_request_target."
 	return check
 }
 

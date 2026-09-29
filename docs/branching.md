@@ -6,12 +6,10 @@ Detent uses two long-lived branches.
 
 - `develop` is the default and integration branch. Start every change from
   current `origin/develop` and open the pull request against `develop`; it lands
-  after its pushed head passes the local `make check-fast` gate and receives a
-  `local-gate` commit status. For Detent board pull requests the orchestrator
-  posts it (`gate.local_status: local-gate`) once the merge worker has run the
-  configured gate on exactly that head; people and other workers post it
-  themselves after a passing `make check-fast` on the pushed head. An hourly operator-host build runs `make check`
-  on `develop` and promotes a green head to `main`.
+  after its pushed head passes the parallel `PR Lint` and `PR Tests` jobs,
+  aggregated by `PR Fast`. Workers run focused local tests and vet before
+  pushing. Full CI runs every six hours on `develop`; a green run on the exact
+  head permits promotion to `main`.
 - `main` is production. Release tags point only at `origin/main`, the release
   coordinator inspects `main` regardless of the repository default branch, and
   installers and onboarding read from `main`. Failed integration checks file

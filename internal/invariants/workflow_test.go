@@ -13,6 +13,7 @@ import (
 )
 
 const nonPRCondition = "github.event_name != 'pull_request'"
+const developPRCondition = "github.event_name == 'pull_request' && github.base_ref == 'develop'"
 const integrationCondition = "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
 
 func checkWorkflow(data []byte) error {
@@ -25,10 +26,10 @@ func checkWorkflow(data []byte) error {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return err
 	}
-	if len(workflow.On) != 4 {
-		return errors.New("INV-5 CI must trigger only on main push, pull requests into main, merge groups and workflow_dispatch")
+	if len(workflow.On) != 5 {
+		return errors.New("INV-5 CI must trigger on main push, pull requests into main or develop, main merge groups, six-hour schedule and workflow_dispatch")
 	}
-	for _, event := range []string{"push", "pull_request", "merge_group", "workflow_dispatch"} {
+	for _, event := range []string{"push", "pull_request", "merge_group", "schedule", "workflow_dispatch"} {
 		if _, ok := workflow.On[event]; !ok {
 			return fmt.Errorf("INV-5 %s trigger missing", event)
 		}
@@ -51,8 +52,18 @@ func checkWorkflow(data []byte) error {
 	if err := pullRequestNode.Decode(&pullRequest); err != nil {
 		return fmt.Errorf("INV-5 decode pull_request trigger: %w", err)
 	}
-	if !slices.Equal(pullRequest.Branches, []string{"main"}) {
-		return errors.New("INV-5 CI pull requests must target only main; develop pull requests use the local gate")
+	if !slices.Equal(pullRequest.Branches, []string{"main", "develop"}) {
+		return errors.New("INV-5 CI pull requests must target main or develop")
+	}
+	var schedule []struct {
+		Cron string `yaml:"cron"`
+	}
+	scheduleNode := workflow.On["schedule"]
+	if err := scheduleNode.Decode(&schedule); err != nil {
+		return fmt.Errorf("INV-5 decode schedule: %w", err)
+	}
+	if len(schedule) != 1 || schedule[0].Cron != "0 */6 * * *" {
+		return errors.New("INV-5 full CI must run every six hours")
 	}
 	var mergeGroup struct {
 		Branches []string `yaml:"branches"`
@@ -64,7 +75,7 @@ func checkWorkflow(data []byte) error {
 	if !slices.Equal(mergeGroup.Branches, []string{"main"}) {
 		return errors.New("INV-5 CI merge groups must target only main")
 	}
-	for _, required := range []string{"invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
+	for _, required := range []string{"pr-lint", "pr-test", "pr-fast", "invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
 		if _, ok := workflow.Jobs[required]; !ok {
 			return fmt.Errorf("required CI job %s missing", required)
 		}
@@ -72,6 +83,14 @@ func checkWorkflow(data []byte) error {
 	for name, job := range workflow.Jobs {
 		condition := strings.TrimSpace(job.If)
 		switch name {
+		case "pr-lint", "pr-test":
+			if condition != developPRCondition {
+				return fmt.Errorf("INV-5 %s must run on develop pull requests", name)
+			}
+		case "pr-fast":
+			if condition != "always() && "+developPRCondition {
+				return errors.New("INV-5 PR Fast must aggregate develop pull request checks")
+			}
 		case "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot":
 			if condition != integrationCondition {
 				return fmt.Errorf("INV-5 %s must run only on main push or explicit manual dispatch", name)
@@ -103,7 +122,7 @@ func TestRepositoryWorkflow(t *testing.T) {
 	}
 }
 
-func TestRepositoryPullRequestActionsOnlyForMain(t *testing.T) {
+func TestRepositoryPullRequestActionsOnlyInCI(t *testing.T) {
 	workflows := filepath.Join(repositoryRoot(t), ".github", "workflows")
 	entries, err := os.ReadDir(workflows)
 	if err != nil {
@@ -132,7 +151,7 @@ func TestRepositoryPullRequestActionsOnlyForMain(t *testing.T) {
 			}
 			for _, event := range []string{"pull_request", "merge_group"} {
 				if _, ok := workflow.On[event]; ok {
-					t.Fatalf("INV-5 %s must not trigger on %s; only ci.yml gates pull requests into main", entry.Name(), event)
+						t.Fatalf("INV-5 %s must not trigger on %s; only ci.yml gates pull requests", entry.Name(), event)
 				}
 			}
 		})
@@ -169,16 +188,18 @@ func TestWorkflowViolations(t *testing.T) {
 		{"develop push", "branches: [main]", "branches: [main, develop]"},
 		{"main push dropped", "branches: [main]", "branches: [develop]"},
 		{"feature branch push", "branches: [main]", "branches: [main, 'feature/*']"},
-		{"develop pull requests", "    branches: [main]\n    types:", "    branches: [main, develop]\n    types:"},
-		{"pull requests into any branch", "    branches: [main]\n    types:", "    types:"},
+		{"develop pull requests dropped", "    branches: [main, develop]\n    types:", "    branches: [main]\n    types:"},
+		{"pull requests into any branch", "    branches: [main, develop]\n    types:", "    types:"},
 		{"merge group dropped", "  merge_group:\n    branches: [main]\n    types: [checks_requested]\n", ""},
 		{"merge group on develop", "  merge_group:\n    branches: [main]\n", "  merge_group:\n    branches: [main, develop]\n"},
 		{"merge group on any branch", "  merge_group:\n    branches: [main]\n", "  merge_group:\n"},
-		{"nightly trigger", "  workflow_dispatch:", "  schedule:\n    - cron: '0 0 * * *'\n  workflow_dispatch:"},
+		{"nightly trigger", "cron: '0 */6 * * *'", "cron: '0 0 * * *'"},
 		{"manual dispatch dropped", "  workflow_dispatch:", "  unused_event:"},
 		{"integration develop push", "if: " + integrationCondition, "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/develop')"},
 		{"failure reports on develop", "if: failure() && github.ref == 'refs/heads/main'", "if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')"},
 		{"filtered real job", "  lint:\n    if: " + nonPRCondition + "\n", "  lint:\n    if: false\n"},
+		{"PR test skipped", "  pr-test:\n    if: " + developPRCondition + "\n", "  pr-test:\n    if: false\n"},
+		{"PR aggregate skipped", "  pr-fast:\n    if: always() && " + developPRCondition + "\n", "  pr-fast:\n    if: false\n"},
 		{"real job runs on pull requests", "  lint:\n    if: " + nonPRCondition + "\n", "  lint:\n"},
 		{"placeholder", "jobs:", "jobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo skipped"},
 		{"integration on PR", "if: " + integrationCondition, "if: " + nonPRCondition},

@@ -4,11 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     branches: [main]
     types: [checks_requested]
+  schedule:
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -16,8 +18,44 @@ permissions:
   pull-requests: read
 
 jobs:
-  # Pull requests into main report these jobs as skipped (INV-5); the merge
-  # group runs them. Pull requests into develop run no workflows.
+  pr-lint:
+    if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+    name: PR Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: make lint
+
+  pr-test:
+    if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+    name: PR Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: make check-invariants check-migrations check-generated
+      - run: go vet ./...
+      - run: go test -short ./...
+
+  pr-fast:
+    if: always() && github.event_name == 'pull_request' && github.base_ref == 'develop'
+    name: PR Fast
+    needs: [pr-lint, pr-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require parallel PR checks
+        env:
+          LINT_RESULT: ${{ needs.pr-lint.result }}
+          TEST_RESULT: ${{ needs.pr-test.result }}
+        run: test "$LINT_RESULT" = success && test "$TEST_RESULT" = success
+
   invariants:
     if: github.event_name != 'pull_request'
     name: Invariant Gate

@@ -98,7 +98,7 @@
     "./internal/invariants": [
       "TestRepositorySources",
       "TestRepositoryWorkflow",
-      "TestRepositoryPullRequestActionsOnlyForMain",
+      "TestRepositoryPullRequestActionsOnlyInCI",
       "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
