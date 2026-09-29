@@ -119,6 +119,47 @@ func TestMergePromptHandsOffPushedHeadBeforeCI(t *testing.T) {
 	}
 }
 
+func TestSourcePromptHandsOffReadyHeadBeforeCI(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "Todo", want: true},
+		{state: "Rework", want: true},
+		{state: "In Progress", want: true},
+		{state: "Merging"},
+		{state: "Human Review"},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			workflow := config.Workflow{
+				Prompt: "Watch CI after pushing the head.",
+				Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}},
+			}
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#3076", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Source CI handoff")
+			if (index >= 0) != tt.want {
+				t.Fatalf("source CI handoff present = %t, want %t", index >= 0, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if strings.Index(prompt, "Watch CI after pushing the head.") >= index {
+				t.Fatal("source CI handoff must follow the project workflow instruction")
+			}
+			for _, required := range []string{"required local gate", "full-diff review", "Workpad handoff", "current-head CI is the only remaining work", "without watching or waiting for CI", "failing check requires normal Rework", "required runtime evidence is unfinished"} {
+				if !strings.Contains(prompt[index:], required) {
+					t.Errorf("source CI handoff missing %q", required)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	t.Parallel()
 
