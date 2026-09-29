@@ -1199,6 +1199,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `codex.turn_sandbox_policy` | `mapping<string, value>` | `{"type":"workspaceWrite"}` | No | None |
 | `codex.turn_timeout_ms` | `integer` | `3600000` | No | must be greater than 0 |
 | `deliverable` | `object` | `see child fields` | No | None |
+| `deliverable.github_pull_request` | `boolean` | `false` | No | None |
 | `deliverable.kind` | `string` | `"pull_request"` | No | must be one of pull_request, artifact |
 | `deliverable.merge_method` | `string` | `"squash"` | No | must be one of squash, merge, rebase |
 | `deliverable.output_root` | `string` | `none` | No | None |

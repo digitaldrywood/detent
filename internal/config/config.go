@@ -312,6 +312,7 @@ type Workpad struct {
 type Deliverable struct {
 	Kind                  string `yaml:"kind"`
 	MergeMethod           string `yaml:"merge_method,omitempty"`
+	GitHubPullRequest     bool   `yaml:"github_pull_request,omitempty" json:"github_pull_request,omitempty"`
 	OutputRoot            string `yaml:"output_root,omitempty"`
 	ReviewURL             string `yaml:"review_url,omitempty"`
 	mergeMethodConfigured bool

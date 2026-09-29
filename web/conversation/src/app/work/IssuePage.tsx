@@ -67,6 +67,24 @@ interface IssueData {
   readonly history: readonly CollaborationEvent[];
   readonly comments: readonly NativeComment[];
   readonly change: ChangeDetail | null;
+  readonly changes: readonly {
+    readonly record: { readonly change_id: string; readonly title: string };
+    readonly detail: ChangeDetail | null;
+  }[];
+}
+
+/** Keep every linked change visible, including one whose detail read failed. */
+export function changeResourceRows(
+  changes: IssueData["changes"],
+  onOpen: (changeId: string) => void,
+): ResourceRow[] {
+  return changes.map(({ record, detail }) => ({
+    key: record.change_id,
+    icon: "diff" as const,
+    label: record.title,
+    detail: detail?.summary.status.replaceAll("_", " ") ?? "unavailable",
+    onOpen: () => onOpen(record.change_id),
+  }));
 }
 
 /**
@@ -128,13 +146,16 @@ function useIssue(
             .catch(() => []),
           http.listChanges(projectId, workItemId).catch(() => []),
         ]);
+        const details = await Promise.all(
+          changes.map(async (record) => ({
+            record,
+            detail: await http.getChange(projectId, workItemId, record.change_id).catch(() => null),
+          })),
+        );
         const selected = selectChangeId(changes, requestedChange);
-        const change =
-          selected === null
-            ? null
-            : await http.getChange(projectId, workItemId, selected).catch(() => null);
+        const change = details.find((entry) => entry.record.change_id === selected)?.detail ?? null;
         if (cancelled) return;
-        setData({ issue, project, attempts, history, comments, change });
+        setData({ issue, project, attempts, history, comments, change, changes: details });
         setError(null);
       } catch (cause) {
         if (cancelled) return;
@@ -521,15 +542,12 @@ function IssueSurface({
       data={data}
       moves={moves}
       now={now}
-      onOpenChange={
-        item.change === null
-          ? null
-          : () =>
-              void navigate({
-                to: "/work/i/$workItemId/changes/$changeId",
-                params: { workItemId, changeId: item.change!.id },
-                ...(projectId === null ? {} : { search: { project: projectId } }),
-              })
+      onOpenChange={(changeId) =>
+        void navigate({
+          to: "/work/i/$workItemId/changes/$changeId",
+          params: { workItemId, changeId },
+          ...(projectId === null ? {} : { search: { project: projectId } }),
+        })
       }
       canWrite={canWrite}
       saving={saving}
@@ -669,8 +687,8 @@ interface IssueBodyProps {
   readonly onComment: (body: string) => Promise<void>;
   readonly onOpenIssue: (workItemId: string) => void;
   readonly onOpenConversationPage: () => void;
-  /** Opens the issue's Change Request page; null when it has no change. */
-  readonly onOpenChange: (() => void) | null;
+  /** Opens any Change Request linked to this issue. */
+  readonly onOpenChange: (changeId: string) => void;
 }
 
 /**
@@ -762,15 +780,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const resources: ResourceRow[] = [];
   // The Change Request page: the round under review, its diff and the
   // decisions. Every issue with a change has one, mirrored to a host or not.
-  if (item.change !== null && props.onOpenChange !== null) {
-    resources.push({
-      key: "change-request",
-      icon: "diff",
-      label: item.change.title,
-      detail: item.change.review === "" ? "review" : item.change.review.replaceAll("_", " "),
-      onOpen: props.onOpenChange,
-    });
-  }
+  resources.push(...changeResourceRows(data.changes, props.onOpenChange));
   // The attempt diff is absent rather than empty. A change version's code is
   // one opaque artifact and the hub serves no file list, no hunks and no
   // per-file counts, so there is no `1 file · +1 −1` to put on a row; the
@@ -913,7 +923,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       onOpenPullRequest={
         panel !== null && panel.pullRequestAvailable ? panel.openPullRequest : null
       }
-      onOpenChangeRequest={props.onOpenChange}
+      onOpenChangeRequest={item.change === null ? null : () => props.onOpenChange(item.change!.id)}
     />
   );
 

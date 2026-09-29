@@ -789,12 +789,14 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
-	ChangeID  string
-	VersionID string
-	HeadSHA   string
-	Method    string
-	Title     string
-	Number    int64
+	ChangeID          string
+	VersionID         string
+	HeadSHA           string
+	Method            string
+	Repository        string
+	GitHubPullRequest bool
+	Title             string
+	Number            int64
 }
 
 // NativeLanding reports a landing run's outcome. A landed version names the
