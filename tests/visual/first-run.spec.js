@@ -14,6 +14,7 @@ const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 test.describe.configure({ mode: "serial" });
 
 let hub;
+let studioBoard;
 
 test.beforeAll(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
@@ -177,7 +178,87 @@ test("creating the first project lands on its board and the checklist advances",
 
   await expect(page.getByText("Write the welcome page").first()).toBeVisible();
   await expect(page.getByTestId("first-run")).toHaveCount(0);
+  studioBoard = page.url();
   expect(errors).toEqual([]);
+});
+
+// Once a project has an issue the first-run panel is gone; every one of these
+// must still reach the same dialog, and a created issue must land on the board.
+test.describe("a board that already has issues", () => {
+  async function openStudioBoard(page) {
+    expect(studioBoard, "the first-project test ran first").toBeTruthy();
+    await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
+    await page.goto(studioBoard, { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("work-board")).toBeVisible();
+    await expect(page.getByTestId("first-run")).toHaveCount(0);
+  }
+
+  async function createFrom(page, title) {
+    const dialog = page.getByRole("dialog", { name: "New issue" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel("Title")).toBeFocused();
+    await dialog.getByLabel("Title").fill(title);
+    await dialog.getByRole("button", { name: "Create issue" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByTestId("work-board").getByText(title)).toBeVisible();
+  }
+
+  test("the board header creates an issue", async ({ page }) => {
+    const errors = watchConsole(page);
+    await openStudioBoard(page);
+    await page.getByTestId("board-new-issue").click();
+    // The board's live dot pulses forever, so `evidence` would never settle.
+    fs.mkdirSync(EVIDENCE, { recursive: true });
+    await page.getByRole("dialog", { name: "New issue" }).screenshot({
+      path: path.join(EVIDENCE, "new-issue-from-header-desktop.png"),
+      animations: "disabled",
+    });
+    await createFrom(page, "Created from the header");
+    expect(errors).toEqual([]);
+  });
+
+  test("a lane's add button creates into that lane", async ({ page }) => {
+    const errors = watchConsole(page);
+    await openStudioBoard(page);
+    const lane = page.locator('[data-testid="board-lane"]:not([data-terminal])').first();
+    const laneName = await lane.getAttribute("data-lane");
+    await lane.getByRole("button", { name: `New issue in ${laneName}` }).click();
+    const dialog = page.getByRole("dialog", { name: "New issue" });
+    await expect(dialog.getByLabel("Lane")).toHaveValue(laneName);
+    await createFrom(page, "Created from a lane");
+    await expect(
+      page.locator(`[data-testid="board-lane"][data-lane="${laneName}"]`).getByText("Created from a lane"),
+    ).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test("the palette offers New issue", async ({ page }) => {
+    const errors = watchConsole(page);
+    await openStudioBoard(page);
+    await page.keyboard.press("ControlOrMeta+k");
+    const palette = page.getByTestId("command-palette");
+    await expect(palette).toBeVisible();
+    await page.keyboard.type("issue");
+    await palette.getByText("New issue", { exact: true }).click();
+    await expect(palette).toHaveCount(0);
+    await createFrom(page, "Created from the palette");
+    expect(errors).toEqual([]);
+  });
+
+  test("the c shortcut opens the dialog, but not while typing", async ({ page }) => {
+    const errors = watchConsole(page);
+    await openStudioBoard(page);
+    const search = page.getByTestId("work-search");
+    await search.focus();
+    await page.keyboard.type("c");
+    await expect(search).toHaveValue("c");
+    await expect(page.getByRole("dialog", { name: "New issue" })).toHaveCount(0);
+    await search.fill("");
+    await search.blur();
+    await page.keyboard.press("c");
+    await createFrom(page, "Created with the shortcut");
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe("on a phone", () => {

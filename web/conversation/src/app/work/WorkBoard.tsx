@@ -13,6 +13,7 @@
 // into a silent overwrite.
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { PlusIcon } from "lucide-react";
 
 import { Button } from "../../components/ui/button.tsx";
 import { useClient } from "../client.ts";
@@ -24,6 +25,8 @@ import { useViewState } from "./lib/useViewState.ts";
 import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
 import { FirstRunPanel } from "./components/FirstRun.tsx";
+import { useNewIssue, useNewIssueScope } from "./NewIssue.tsx";
+import { NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { StatsRow } from "./components/StatsRow.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
@@ -71,6 +74,18 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const [view, setView] = useViewState(projectId);
   const board = useBoard(projectId, view);
   const searchRef = React.useRef<HTMLInputElement>(null);
+  const newIssue = useNewIssue();
+  useNewIssueScope(projectId);
+
+  // An issue created from any entry point, this board's or the palette's,
+  // shows up here without waiting for the activity stream.
+  const reloadBoard = board.reload;
+  const createdSeen = React.useRef(newIssue.created);
+  React.useEffect(() => {
+    if (newIssue.created === createdSeen.current) return;
+    createdSeen.current = newIssue.created;
+    reloadBoard();
+  }, [newIssue.created, reloadBoard]);
 
   // Optimistic overrides, keyed by work item. They survive until the next load
   // replaces them, which is what makes a moved card stay moved across the
@@ -288,6 +303,21 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       title={scopeName}
       meta={boardScopeMeta(projectId, client.bootstrap.projects.length, items.length)}
       connection={chip}
+      actions={
+        noProjects ? null : (
+          <Button
+            size="sm"
+            data-testid="board-new-issue"
+            aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
+            disabled={!newIssue.canCreate}
+            title={newIssue.unavailableReason ?? "New issue (C)"}
+            onClick={() => newIssue.openNewIssue({ projectId })}
+          >
+            <PlusIcon />
+            New issue
+          </Button>
+        )
+      }
     />
   );
 
@@ -371,6 +401,11 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   }
                   collapsed={laneCollapsed(lane)}
                   onToggleCollapsed={() => toggleCollapsed(lane)}
+                  onCreate={
+                    newIssue.canCreate && !lane.terminal
+                      ? () => newIssue.openNewIssue({ projectId, state: lane.name })
+                      : null
+                  }
                 />
               ))
             )}

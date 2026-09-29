@@ -74,6 +74,7 @@ import { toEnvironmentProject } from "../adapters/shell.ts";
 import { toEnvironmentThreadShell } from "../adapters/sidebarThreads.ts";
 import { ProjectGlyph } from "./ProjectGlyph.tsx";
 import { useNewProject } from "../projects/NewProject.tsx";
+import { useNewIssue } from "../work/NewIssue.tsx";
 import { useWorkIssueItems } from "../work/lib/usePaletteIssues.ts";
 
 /**
@@ -220,6 +221,7 @@ function OpenCommandPaletteDialog(props: {
   const { clearOpenIntent, openIntent, setOpen } = props;
   const navigate = useNavigate();
   const newProject = useNewProject();
+  const newIssue = useNewIssue();
   const hosted = isHostedEnvironment(usePrimaryEnvironment());
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const [query, setQuery] = useState("");
@@ -416,6 +418,22 @@ function OpenCommandPaletteDialog(props: {
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
+    });
+  }
+
+  if (projects.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:new-issue",
+      searchTerms: ["new issue", "issue", "create", "task", "card", "work item"],
+      title: "New issue",
+      ...(newIssue.unavailableReason === null
+        ? {}
+        : { description: newIssue.unavailableReason, disabled: true, keepOpen: true }),
+      icon: <PlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        newIssue.openNewIssue();
+      },
     });
   }
 
