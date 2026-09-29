@@ -17,38 +17,79 @@ import (
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 )
 
-func TestDoctorTokenAuditWorkflowSourceDrift(t *testing.T) {
-	for _, tt := range []struct {
-		name, ref, branch string
-		modify            bool
-		want              doctorStatus
-	}{
-		{"default branch", "", "main", false, doctorOK},
-		{"side branch", "", "side", false, doctorWarn},
-		{"pinned side branch", "origin/main", "side", false, doctorOK},
-		{"pinned content drift", "origin/main", "main", true, doctorWarn},
-		{"missing ref", "missing", "main", false, doctorWarn},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root, _ := initDoctorWorkflowSourceRepository(t)
-			if tt.branch != "main" {
-				runDoctorWorkflowSourceGit(t, root, "checkout", "-b", tt.branch)
-			}
-			if tt.modify {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "Changed instructions")
-			}
-			cfg := workflowconfig.Config{}
-			cfg.Tracker.Kind = "github"
-			cfg.Tracker.Repository = "owner/repo"
-			deps := doctorDeps{githubRepositoryInfo: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error) {
-				return ghconnector.RepositoryInfo{DefaultBranch: "main"}, nil
-			}}
-			got := checkDoctorWorkflowSourceDrift(t.Context(), "p", globalconfig.Project{Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md"), WorkflowRef: tt.ref}, cfg, deps)
-			if got.Status != tt.want || !strings.Contains(got.Detail, "bytes") {
-				t.Fatalf("got %+v, want %s", got, tt.want)
-			}
-		})
+// Exercise each original instruction-audit regression with fixture checkouts
+// and linked worktrees, both beneath an enclosing repository and outside one.
+func forEachDoctorInstructionAuditLayout(t *testing.T, test func(*testing.T, func(*testing.T) (string, string))) {
+	t.Helper()
+	for _, placement := range []string{"outside repository", "inside repository"} {
+		for _, layout := range []string{"checkout", "worktree"} {
+			t.Run(placement+"/"+layout, func(t *testing.T) {
+				parent := t.TempDir()
+				physical, err := filepath.EvalSymlinks(parent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if placement == "inside repository" {
+					t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(physical))
+					runDoctorWorkflowSourceGit(t, "", "init", "--initial-branch=main", parent)
+				} else {
+					t.Setenv("GIT_CEILING_DIRECTORIES", physical)
+				}
+				newRepo := func(t *testing.T) (string, string) {
+					t.Helper()
+					root, err := os.MkdirTemp(parent, "fixture-")
+					if err != nil {
+						t.Fatal(err)
+					}
+					repo, remote := initDoctorWorkflowSourceRepositoryAt(t, root)
+					if layout == "worktree" {
+						runDoctorWorkflowSourceGit(t, repo, "checkout", "--detach")
+						worker := filepath.Join(root, "worker")
+						runDoctorWorkflowSourceGit(t, repo, "worktree", "add", worker, "main")
+						repo = worker
+					}
+					return repo, remote
+				}
+				test(t, newRepo)
+			})
+		}
 	}
+}
+
+func TestDoctorTokenAuditWorkflowSourceDrift(t *testing.T) {
+	forEachDoctorInstructionAuditLayout(t, func(t *testing.T, newRepo func(*testing.T) (string, string)) {
+		for _, tt := range []struct {
+			name, ref, branch string
+			modify            bool
+			want              doctorStatus
+		}{
+			{"default branch", "", "main", false, doctorOK},
+			{"side branch", "", "side", false, doctorWarn},
+			{"pinned side branch", "origin/main", "side", false, doctorOK},
+			{"pinned content drift", "origin/main", "main", true, doctorWarn},
+			{"missing ref", "missing", "main", false, doctorWarn},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				root, _ := newRepo(t)
+				if tt.branch != "main" {
+					runDoctorWorkflowSourceGit(t, root, "checkout", "-b", tt.branch)
+				}
+				if tt.modify {
+					writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "Changed instructions")
+				}
+				cfg := workflowconfig.Config{}
+				cfg.Tracker.Kind = "github"
+				cfg.Tracker.Repository = "owner/repo"
+				deps := doctorDeps{githubRepositoryInfo: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error) {
+					return ghconnector.RepositoryInfo{DefaultBranch: "main"}, nil
+				}}
+				got := checkDoctorWorkflowSourceDrift(t.Context(), "p", globalconfig.Project{Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md"), WorkflowRef: tt.ref}, cfg, deps)
+				if got.Status != tt.want || !strings.Contains(got.Detail, "bytes") {
+					t.Fatalf("got %+v, want %s", got, tt.want)
+				}
+			})
+		}
+	})
 }
 
 func TestDoctorTokenAuditInstructionBudget(t *testing.T) {
@@ -68,85 +109,89 @@ func TestDoctorTokenAuditInstructionBudget(t *testing.T) {
 }
 
 func TestDoctorTokenAuditInstructionFiles(t *testing.T) {
-	for _, tt := range []struct {
-		name              string
-		override, missing bool
-	}{
-		{name: "chain cap and directives"}, {name: "override precedence", override: true}, {name: "missing reference", missing: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root, _ := initDoctorWorkflowSourceRepository(t)
-			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), strings.Repeat("a", 40*1024))
-			if tt.override {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.override.md"), "override")
-			}
-			sub := filepath.Join(root, "sub")
-			if err := os.Mkdir(sub, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			writeDoctorWorkflowSourceFile(t, filepath.Join(sub, "AGENTS.md"), "nested")
-			if !tt.missing {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(sub, "CLAUDE.md"), "Run make check.")
-			}
-			prompt := "Follow AGENTS.md and CLAUDE.md.\nRead CLAUDE.md."
-			files, problems := doctorInstructionFiles(t.Context(), sub, prompt, "")
-			if (len(problems) > 0) != tt.missing {
-				t.Fatalf("problems %v", problems)
-			}
-			total := 0
-			claude := 0
-			for _, f := range files {
-				if strings.Contains(f.path, "AGENTS") {
-					total += f.bytes
+	forEachDoctorInstructionAuditLayout(t, func(t *testing.T, newRepo func(*testing.T) (string, string)) {
+		for _, tt := range []struct {
+			name              string
+			override, missing bool
+		}{
+			{name: "chain cap and directives"}, {name: "override precedence", override: true}, {name: "missing reference", missing: true},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				root, _ := newRepo(t)
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), strings.Repeat("a", 40*1024))
+				if tt.override {
+					writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.override.md"), "override")
 				}
-				if strings.HasSuffix(f.path, "CLAUDE.md") {
-					claude++
+				sub := filepath.Join(root, "sub")
+				if err := os.Mkdir(sub, 0o755); err != nil {
+					t.Fatal(err)
 				}
-			}
-			want := 32 * 1024
-			if tt.override {
-				want = len("override") + len("nested")
-			}
-			if total != want || (!tt.missing && claude != 1) {
-				t.Fatalf("total %d, files %+v", total, files)
-			}
-		})
-	}
+				writeDoctorWorkflowSourceFile(t, filepath.Join(sub, "AGENTS.md"), "nested")
+				if !tt.missing {
+					writeDoctorWorkflowSourceFile(t, filepath.Join(sub, "CLAUDE.md"), "Run make check.")
+				}
+				prompt := "Follow AGENTS.md and CLAUDE.md.\nRead CLAUDE.md."
+				files, problems := doctorInstructionFiles(t.Context(), sub, prompt, "")
+				if (len(problems) > 0) != tt.missing {
+					t.Fatalf("problems %v", problems)
+				}
+				total := 0
+				claude := 0
+				for _, f := range files {
+					if strings.Contains(f.path, "AGENTS") {
+						total += f.bytes
+					}
+					if strings.HasSuffix(f.path, "CLAUDE.md") {
+						claude++
+					}
+				}
+				want := 32 * 1024
+				if tt.override {
+					want = len("override") + len("nested")
+				}
+				if total != want || (!tt.missing && claude != 1) {
+					t.Fatalf("total %d, files %+v", total, files)
+				}
+			})
+		}
+	})
 }
 
 func TestDoctorTokenAuditTransitiveInstructions(t *testing.T) {
-	for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
-		t.Run(name, func(t *testing.T) {
-			root, _ := initDoctorWorkflowSourceRepository(t)
-			instructions := "Follow policy.md."
-			policy := "Read nested.md.\nRun make check.\n" + strings.Repeat("x", 25*1024)
-			nested := "Follow policy.md and AGENTS.md."
-			writeDoctorWorkflowSourceFile(t, filepath.Join(root, name), instructions)
-			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "policy.md"), policy)
-			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "nested.md"), nested)
-			if name == "AGENTS.override.md" {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), "ignored")
-			}
-			prompt := "Do not run make check."
-			files, problems := doctorInstructionFiles(t.Context(), root, prompt, "")
-			if len(problems) != 0 {
-				t.Fatal(problems)
-			}
-			counts := map[string]int{}
-			for _, file := range files {
-				counts[filepath.Base(file.path)]++
-			}
-			if counts["policy.md"] != 1 || counts["nested.md"] != 1 {
-				t.Fatalf("reference counts: %v", counts)
-			}
-			if got := checkDoctorInstructionBudget("p", files, problems); got.Status != doctorWarn {
-				t.Fatalf("budget: %+v", got)
-			}
-			if got := checkDoctorGateInstructionConflict("p", "make check", files, problems); got.Status != doctorWarn {
-				t.Fatalf("conflict: %+v", got)
-			}
-		})
-	}
+	forEachDoctorInstructionAuditLayout(t, func(t *testing.T, newRepo func(*testing.T) (string, string)) {
+		for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
+			t.Run(name, func(t *testing.T) {
+				root, _ := newRepo(t)
+				instructions := "Follow policy.md."
+				policy := "Read nested.md.\nRun make check.\n" + strings.Repeat("x", 25*1024)
+				nested := "Follow policy.md and AGENTS.md."
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, name), instructions)
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "policy.md"), policy)
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "nested.md"), nested)
+				if name == "AGENTS.override.md" {
+					writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), "ignored")
+				}
+				prompt := "Do not run make check."
+				files, problems := doctorInstructionFiles(t.Context(), root, prompt, "")
+				if len(problems) != 0 {
+					t.Fatal(problems)
+				}
+				counts := map[string]int{}
+				for _, file := range files {
+					counts[filepath.Base(file.path)]++
+				}
+				if counts["policy.md"] != 1 || counts["nested.md"] != 1 {
+					t.Fatalf("reference counts: %v", counts)
+				}
+				if got := checkDoctorInstructionBudget("p", files, problems); got.Status != doctorWarn {
+					t.Fatalf("budget: %+v", got)
+				}
+				if got := checkDoctorGateInstructionConflict("p", "make check", files, problems); got.Status != doctorWarn {
+					t.Fatalf("conflict: %+v", got)
+				}
+			})
+		}
+	})
 }
 
 func TestDoctorTokenAuditGateConflict(t *testing.T) {
@@ -325,19 +370,21 @@ func TestDoctorTokenAuditNonGitInstructions(t *testing.T) {
 }
 
 func TestDoctorTokenAuditExternalWorkflow(t *testing.T) {
-	root, _ := initDoctorWorkflowSourceRepository(t)
-	external, _ := initDoctorWorkflowSourceRepository(t)
-	runDoctorWorkflowSourceGit(t, root, "checkout", "-b", "side")
-	cfg := workflowconfig.Config{}
-	cfg.Tracker.Kind = "github"
-	cfg.Tracker.Repository = "owner/repo"
-	deps := doctorDeps{githubRepositoryInfo: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error) {
-		return ghconnector.RepositoryInfo{DefaultBranch: "main"}, nil
-	}}
-	got := checkDoctorWorkflowSourceDrift(t.Context(), "p", globalconfig.Project{Workdir: root, Workflow: filepath.Join(external, "WORKFLOW.md")}, cfg, deps)
-	if got.Status != doctorWarn || !strings.Contains(got.Detail, `checkout branch "side"`) || strings.Count(got.Detail, "17 bytes") != 2 {
-		t.Fatalf("got %+v", got)
-	}
+	forEachDoctorInstructionAuditLayout(t, func(t *testing.T, newRepo func(*testing.T) (string, string)) {
+		root, _ := newRepo(t)
+		external, _ := newRepo(t)
+		runDoctorWorkflowSourceGit(t, root, "checkout", "-b", "side")
+		cfg := workflowconfig.Config{}
+		cfg.Tracker.Kind = "github"
+		cfg.Tracker.Repository = "owner/repo"
+		deps := doctorDeps{githubRepositoryInfo: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error) {
+			return ghconnector.RepositoryInfo{DefaultBranch: "main"}, nil
+		}}
+		got := checkDoctorWorkflowSourceDrift(t.Context(), "p", globalconfig.Project{Workdir: root, Workflow: filepath.Join(external, "WORKFLOW.md")}, cfg, deps)
+		if got.Status != doctorWarn || !strings.Contains(got.Detail, `checkout branch "side"`) || strings.Count(got.Detail, "17 bytes") != 2 {
+			t.Fatalf("got %+v", got)
+		}
+	})
 }
 
 func TestDoctorTokenAuditCIEvidence(t *testing.T) {
@@ -398,80 +445,179 @@ func TestDoctorTokenAuditFastGateConflict(t *testing.T) {
 }
 
 func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
-	for _, tt := range []struct {
-		name, agents string
-		want         doctorStatus
-	}{
-		{"conflicting command", "Run make check.", doctorWarn},
-		{"configured command reference", "Use the configured gate.run.", doctorOK},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root, _ := initDoctorWorkflowSourceRepository(t)
-			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), tt.agents+"\nFollow WORKFLOW.md.")
-			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "The validation gate is make check-fast.\nDo not run make check unless safety-critical files change.\nFollow AGENTS.md and WORKFLOW.md.")
-			files, problems := doctorInstructionFiles(t.Context(), root, "Follow AGENTS.md.", "")
-			if len(problems) != 0 {
-				t.Fatal(problems)
-			}
-			got := checkDoctorGateInstructionConflict("p", "make check-fast", files, problems)
-			if got.Status != tt.want {
-				t.Fatalf("got %+v; want %s", got, tt.want)
-			}
-			count := 0
-			for _, file := range files {
-				if file.path == filepath.Join(root, "WORKFLOW.md") {
-					count++
+	forEachDoctorInstructionAuditLayout(t, func(t *testing.T, newRepo func(*testing.T) (string, string)) {
+		for _, tt := range []struct {
+			name, agents string
+			want         doctorStatus
+		}{
+			{"conflicting command", "Run make check.", doctorWarn},
+			{"configured command reference", "Use the configured gate.run.", doctorOK},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				root, _ := newRepo(t)
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), tt.agents+"\nFollow WORKFLOW.md.")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "The validation gate is make check-fast.\nDo not run make check unless safety-critical files change.\nFollow AGENTS.md and WORKFLOW.md.")
+				files, problems := doctorInstructionFiles(t.Context(), root, "Follow AGENTS.md.", "")
+				if len(problems) != 0 {
+					t.Fatal(problems)
 				}
-			}
-			if count != 1 {
-				t.Fatalf("referenced workflow count = %d; want 1", count)
-			}
-		})
-	}
+				got := checkDoctorGateInstructionConflict("p", "make check-fast", files, problems)
+				if got.Status != tt.want {
+					t.Fatalf("got %+v; want %s", got, tt.want)
+				}
+				workflowPath, err := filepath.EvalSymlinks(filepath.Join(root, "WORKFLOW.md"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				count := 0
+				for _, file := range files {
+					if file.path == workflowPath {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Fatalf("referenced workflow count = %d; want 1", count)
+				}
+			})
+		}
+	})
 }
 
 func TestDoctorEffectiveWorkflowDeduplicated(t *testing.T) {
-	for _, tt := range []struct {
-		name               string
-		external, distinct bool
-		want               doctorStatus
-	}{
-		{"colocated", false, false, doctorOK},
-		{"external", true, false, doctorOK},
-		{"distinct local workflow", true, true, doctorWarn},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root, _ := initDoctorWorkflowSourceRepository(t)
-			agents := "Follow WORKFLOW.md."
-			prompt := "The validation gate is make check-fast."
-			source := filepath.Join(root, "WORKFLOW.md")
-			if tt.external {
-				if err := os.Remove(source); err != nil {
+	forEachDoctorInstructionAuditLayout(t, func(t *testing.T, newRepo func(*testing.T) (string, string)) {
+		for _, tt := range []struct {
+			name               string
+			external, distinct bool
+			want               doctorStatus
+		}{
+			{"colocated", false, false, doctorOK},
+			{"external", true, false, doctorOK},
+			{"distinct local workflow", true, true, doctorWarn},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				root, _ := newRepo(t)
+				agents := "Follow WORKFLOW.md."
+				prompt := "The validation gate is make check-fast."
+				source := filepath.Join(root, "WORKFLOW.md")
+				if tt.external {
+					if err := os.Remove(source); err != nil {
+						t.Fatal(err)
+					}
+					external, _ := newRepo(t)
+					source = filepath.Join(external, "WORKFLOW.md")
+				}
+				writeDoctorWorkflowSourceFile(t, source, prompt)
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), agents)
+				if tt.distinct {
+					writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "Do not run make check-fast.")
+				}
+				files, problems := doctorInstructionFiles(t.Context(), root, prompt, source)
+				if len(problems) != 0 {
+					t.Fatal(problems)
+				}
+				got := checkDoctorGateInstructionConflict("p", "make check-fast", files, problems)
+				if got.Status != tt.want {
+					t.Fatalf("got %+v; want %s", got, tt.want)
+				}
+				if !tt.distinct {
+					total := 0
+					for _, file := range files {
+						total += file.bytes
+					}
+					if total != len(agents)+len(prompt) {
+						t.Fatalf("instruction bytes = %d; want %d", total, len(agents)+len(prompt))
+					}
+				}
+			})
+		}
+	})
+}
+
+// Git returns physical paths even when a configured workdir uses a symlink
+// (for example macOS /var -> /private/var). Exercise real linked worktrees too.
+func TestDoctorInstructionAuditPathAliases(t *testing.T) {
+	for _, layout := range []string{"checkout", "worktree"} {
+		for _, alias := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/alias=%t", layout, alias), func(t *testing.T) {
+				repo, _ := initDoctorWorkflowSourceRepository(t)
+				root := repo
+				if layout == "worktree" {
+					root = filepath.Join(t.TempDir(), "worker")
+					runDoctorWorkflowSourceGit(t, repo, "worktree", "add", "--detach", root, "main")
+				}
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), "Run make check.\n")
+				sub := filepath.Join(root, "sub")
+				if err := os.Mkdir(sub, 0o755); err != nil {
 					t.Fatal(err)
 				}
-				source = filepath.Join(t.TempDir(), "WORKFLOW.md")
-			}
-			writeDoctorWorkflowSourceFile(t, source, prompt)
-			writeDoctorWorkflowSourceFile(t, filepath.Join(root, "AGENTS.md"), agents)
-			if tt.distinct {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "Do not run make check-fast.")
-			}
-			files, problems := doctorInstructionFiles(t.Context(), root, prompt, source)
-			if len(problems) != 0 {
-				t.Fatal(problems)
-			}
-			got := checkDoctorGateInstructionConflict("p", "make check-fast", files, problems)
-			if got.Status != tt.want {
-				t.Fatalf("got %+v; want %s", got, tt.want)
-			}
-			if !tt.distinct {
-				total := 0
-				for _, file := range files {
-					total += file.bytes
+				if alias {
+					link := filepath.Join(t.TempDir(), "alias")
+					if err := os.Symlink(root, link); err != nil {
+						t.Skipf("symlink unavailable: %v", err)
+					}
+					root = link
+					sub = filepath.Join(root, "sub")
 				}
-				if total != len(agents)+len(prompt) {
-					t.Fatalf("instruction bytes = %d; want %d", total, len(agents)+len(prompt))
+				workflow := filepath.Join(root, "WORKFLOW.md")
+				prompt := "Do not run make check.\nRead ../WORKFLOW.md."
+				files, problems := doctorInstructionFiles(t.Context(), sub, prompt, workflow)
+				if len(problems) != 0 {
+					t.Fatalf("problems: %v", problems)
 				}
+				if len(files) != 2 || filepath.Base(files[0].path) != "AGENTS.md" {
+					t.Fatalf("expected ancestor instructions and deduplicated prompt, got %+v", files)
+				}
+				if got := checkDoctorGateInstructionConflict("p", "make check", files, problems); got.Status != doctorWarn || !strings.Contains(got.Detail, "AGENTS.md") {
+					t.Fatalf("ancestor conflict missing: %+v", got)
+				}
+				cfg := workflowconfig.Config{}
+				cfg.Tracker.Kind = "github"
+				deps := doctorDeps{githubRepositoryInfo: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error) {
+					return ghconnector.RepositoryInfo{DefaultBranch: "main"}, nil
+				}}
+				for _, ref := range []string{"", "origin/main"} {
+					got := checkDoctorWorkflowSourceDrift(t.Context(), "p", globalconfig.Project{Workdir: root, Workflow: workflow, WorkflowRef: ref}, cfg, deps)
+					if strings.Contains(got.Detail, "unavailable") || !strings.Contains(got.Detail, "17 bytes") {
+						t.Fatalf("ref %q: %+v", ref, got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDoctorInstructionAuditRepositoryErrors(t *testing.T) {
+	for _, condition := range []string{"ceiling", "unsafe ownership", "missing workdir"} {
+		t.Run(condition, func(t *testing.T) {
+			root, _ := initDoctorWorkflowSourceRepository(t)
+			sub := filepath.Join(root, "sub")
+			if err := os.Mkdir(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			switch condition {
+			case "ceiling":
+				physical, err := filepath.EvalSymlinks(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("GIT_CEILING_DIRECTORIES", physical)
+			case "unsafe ownership":
+				t.Setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+			case "missing workdir":
+				sub = filepath.Join(root, "missing")
+			}
+			files, problems := doctorInstructionFiles(t.Context(), sub, "Run make check.", "")
+			if len(problems) == 0 {
+				t.Fatal("repository resolution failure was not reported")
+			}
+			if len(files) != 1 || files[0].text != "Run make check." {
+				t.Fatalf("lost effective prompt: %+v", files)
+			}
+			if got := checkDoctorInstructionBudget("p", files, problems); got.Status != doctorWarn {
+				t.Fatalf("budget failed to warn: %+v", got)
+			}
+			if got := checkDoctorGateInstructionConflict("p", "make check", files, problems); got.Status != doctorWarn {
+				t.Fatalf("gate failed to warn: %+v", got)
 			}
 		})
 	}

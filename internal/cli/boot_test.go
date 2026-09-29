@@ -52,6 +52,16 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
+	// Fixtures declare their own Git identities and policy; host config files
+	// must not inject signing, hooks, safe.directory, or path overrides.
+	for key, value := range map[string]string{
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_NOSYSTEM": "1",
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
+	}
 	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
 		if err := os.Unsetenv(name); err != nil {
 			panic("clear " + name + ": " + err.Error())
