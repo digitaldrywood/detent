@@ -1,7 +1,7 @@
 # Hub race test budget
 
 Run `make test-race` for the complete repository race gate, or
-`make test-race-hub` for the complete Hub package. Hub runs separately with
+`make test-race-hub` for the complete Hub package. Hub runs separately in three partitions with
 two parallel test slots, an uncached race detector run, and a 15-minute
 package timeout per partition. Other packages retain Go's default package
 concurrency and 10-minute timeout. No test name, assertion, fixture
@@ -15,26 +15,34 @@ runtime, not a deadlock. Raising the ceiling would hide a stuck test for
 longer, so the package is split by top-level test name instead and each
 partition keeps the 15-minute ceiling.
 
-`HUB_RACE_PARTITION` in the Makefile holds one pattern, `^Test[A-GI-O]`.
-`make test-race-hub-a` passes it to `go test -run`; `make test-race-hub-b`
-passes the same pattern to `go test -skip`. A pattern without `/` matches
-only top-level names, so every top-level test, example, and fuzz seed runs
-in exactly one partition by construction, including tests added later.
-Subtests always run with their parent. `make test-race-hub` runs both
-partitions in sequence. `TestHubRacePartitionsCoverEveryTestOnce` pins the
-shared pattern, the CI shard mapping, and that neither partition is empty.
+`HUB_RACE_PARTITION` in the Makefile holds `^Test[A-GI-O]` and
+`HUB_RACE_PARTITION_B` holds `^Test[HW]`. `make test-race-hub-a` passes the
+first to `go test -run`, `make test-race-hub-b` passes the second to
+`go test -run`, and `make test-race-hub-c` passes both, joined with `|`, to
+`go test -skip`. A pattern without `/` matches only top-level names, and the
+two `-run` patterns never match the same name, so every top-level test,
+example, and fuzz seed runs in exactly one partition by construction,
+including tests added later. Subtests always run with their parent.
+`make test-race-hub` runs all three partitions in sequence.
+`TestHubRacePartitionsCoverEveryTestOnce` pins both patterns, the CI shard
+mapping, that no test matches both `-run` patterns, and that no partition is
+empty.
 
-CI runs partition A as `Verify race (0)` and partition B as
-`Verify race (4)`; the other race shards are unchanged. The letter set was
-chosen by running both partitions side by side under the same load with
-`GOMAXPROCS=2 -parallel 2` (Go 1.26.6, darwin/arm64) and comparing wall and
-CPU time; neither summed test elapsed time nor fixture-open counts predicted
-wall time well. `^Test[A-G]` gave 244 s versus 348 s. `^Test[A-GI-O]`
-gave 225 top-level tests in 446 s wall / 495 s user CPU versus 199 tests in
-453 s / 505 s on a heavily loaded host, where the unsplit package took about
-458 s alone. Rebalance by changing the letter set when one partition
-approaches its ceiling; the complement guarantee does not depend on which
-letters are chosen.
+CI runs partition A as `Verify race (0)`, partition B as `Verify race (4)`
+and partition C as `Verify race (5)`; the other race shards are unchanged.
+The letter set was first chosen by running the two original partitions side
+by side under the same load with `GOMAXPROCS=2 -parallel 2` (Go 1.26.6,
+darwin/arm64) and comparing wall and CPU time; neither summed test elapsed
+time nor fixture-open counts predicted wall time well. `^Test[A-GI-O]`
+stayed near 545 s on CI through September 2026, while the complement
+(`H` and `P` onward) grew past the 900 s ceiling on `main` push runs once
+the Change Request landing, review and policy tests landed (`W` about 360 s,
+`P` about 250 s and `H` about 225 s of summed elapsed time). Splitting `H`
+into its own partition kept every partition under the ceiling; the first
+three-way run still put partition C at about 14 minutes of job time and B at
+about 5, so the `W` (workspace) tests moved to B. Rebalance by
+changing the letter sets when one partition approaches its ceiling; the
+complement guarantee does not depend on which letters are chosen.
 
 `make test-race-cover` (used by `make check`) still runs Hub once, whole,
 because coverage profiles from two runs of one package would overlap and

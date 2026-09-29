@@ -40,6 +40,7 @@ GO_TEST := env -u DETENT_API_TOKEN go test -count=1
 HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
 HUB_RACE_PARTITION := ^Test[A-GI-O]
+HUB_RACE_PARTITION_B := ^Test[HW]
 HUB_RACE_COVER_TIMEOUT ?= 30m
 # Persisted orchestrator fixtures serialize migrations; retain the full race suite.
 ORCHESTRATOR_RACE_TIMEOUT ?= 20m
@@ -59,7 +60,7 @@ GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 CHECK_LOCK_WAIT ?= 15m
 CHECK_LOCK_MAX_WAIT ?= 4h
 
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-race test-race-hub test-race-hub-a test-race-hub-b test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -176,13 +177,16 @@ test-race: test-race-hub test-race-orchestrator
 	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver" && $$0 != "github.com/digitaldrywood/detent/internal/orchestrator" && $$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
 	$(GO_TEST) -race $$packages
 
-test-race-hub: test-race-hub-a test-race-hub-b
+test-race-hub: test-race-hub-a test-race-hub-b test-race-hub-c
 
 test-race-hub-a:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -run '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-a ./internal/hubserver
 
 test-race-hub-b:
-	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -skip '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-b ./internal/hubserver
+	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -run '$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-b ./internal/hubserver
+
+test-race-hub-c:
+	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -skip '$(HUB_RACE_PARTITION)|$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-c ./internal/hubserver
 
 test-race-orchestrator:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(ORCHESTRATOR_RACE_PARALLEL) -timeout $(ORCHESTRATOR_RACE_TIMEOUT) -output tmp/orchestrator-race-evidence ./internal/orchestrator
@@ -313,9 +317,10 @@ help:
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"
-	@echo "  test-race-hub  Run both Hub race partitions with timing evidence"
+	@echo "  test-race-hub  Run all three Hub race partitions with timing evidence"
 	@echo "  test-race-hub-a  Run Hub race partition A (tests matching $(HUB_RACE_PARTITION))"
-	@echo "  test-race-hub-b  Run Hub race partition B (all other Hub tests)"
+	@echo "  test-race-hub-b  Run Hub race partition B (tests matching $(HUB_RACE_PARTITION_B))"
+	@echo "  test-race-hub-c  Run Hub race partition C (all other Hub tests)"
 	@echo "  test-race-cover  Run race and coverage gates with shared Hub execution"
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  test-cover-packages  Run per-package coverage floor checks"

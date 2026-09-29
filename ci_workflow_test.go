@@ -640,7 +640,7 @@ func TestCIDraftAndVerifyDependencies(t *testing.T) {
 		}
 	}
 	race := workflowBetween(t, workflow, "  verify-race:\n", "  test-cover:\n")
-	for _, want := range []string{"shard: [0, 1, 2, 3, 4]", "tmp/hub-race-evidence-*", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
+	for _, want := range []string{"shard: [0, 1, 2, 3, 4, 5]", "tmp/hub-race-evidence-*", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
 		if !strings.Contains(race, want) {
 			t.Errorf("race shards missing %q", want)
 		}
@@ -734,7 +734,8 @@ func TestCIRaceShardFailures(t *testing.T) {
 		{"hub partition a failure", "0", "0", "1", false, false, "test-race-hub-a"},
 		{"orchestrator", "1", "0", "0", true, false, "test-race-orchestrator"},
 		{"hub partition b", "4", "0", "0", true, false, "test-race-hub-b"},
-		{"invalid shard", "5", "0", "0", false, false, ""},
+		{"hub partition c", "5", "0", "0", true, false, "test-race-hub-c"},
+		{"invalid shard", "6", "0", "0", false, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -804,27 +805,31 @@ exit 98
 func TestHubRacePartitionsCoverEveryTestOnce(t *testing.T) {
 	t.Parallel()
 	makefile := readNormalizedFile(t, "Makefile")
-	const partitionPrefix = "HUB_RACE_PARTITION := "
-	var partition string
+	values := map[string]string{}
 	for line := range strings.SplitSeq(makefile, "\n") {
-		if value, ok := strings.CutPrefix(line, partitionPrefix); ok {
-			partition = strings.TrimSpace(value)
+		for _, name := range []string{"HUB_RACE_PARTITION", "HUB_RACE_PARTITION_B"} {
+			if value, ok := strings.CutPrefix(line, name+" := "); ok {
+				values[name] = strings.TrimSpace(value)
+			}
 		}
 	}
-	if partition == "" || strings.Contains(partition, "/") {
-		t.Fatalf("HUB_RACE_PARTITION = %q, want a nonempty top-level test pattern", partition)
+	for _, name := range []string{"HUB_RACE_PARTITION", "HUB_RACE_PARTITION_B"} {
+		if values[name] == "" || strings.Contains(values[name], "/") {
+			t.Fatalf("%s = %q, want a nonempty top-level test pattern", name, values[name])
+		}
 	}
 	for _, want := range []string{
-		"test-race-hub: test-race-hub-a test-race-hub-b\n",
+		"test-race-hub: test-race-hub-a test-race-hub-b test-race-hub-c\n",
 		"-run '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-a ./internal/hubserver\n",
-		"-skip '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-b ./internal/hubserver\n",
+		"-run '$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-b ./internal/hubserver\n",
+		"-skip '$(HUB_RACE_PARTITION)|$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-c ./internal/hubserver\n",
 	} {
 		if !strings.Contains(makefile, want) {
-			t.Errorf("Hub race partitions must run and skip one shared pattern: missing %q", want)
+			t.Errorf("Hub race partitions must run A, run B and skip both for C: missing %q", want)
 		}
 	}
 	shard := readNormalizedFile(t, "scripts/ci-race-shard.sh")
-	for _, want := range []string{"0) exec make test-race-hub-a ;;", "4) exec make test-race-hub-b ;;"} {
+	for _, want := range []string{"0) exec make test-race-hub-a ;;", "4) exec make test-race-hub-b ;;", "5) exec make test-race-hub-c ;;"} {
 		if !strings.Contains(shard, want) {
 			t.Errorf("CI race shards missing %q", want)
 		}
@@ -832,26 +837,36 @@ func TestHubRacePartitionsCoverEveryTestOnce(t *testing.T) {
 	if testing.Short() {
 		t.Skip("listing Hub tests builds the package")
 	}
-	pattern, err := regexp.Compile(partition)
+	a, err := regexp.Compile(values["HUB_RACE_PARTITION"])
 	if err != nil {
 		t.Fatalf("compile HUB_RACE_PARTITION: %v", err)
+	}
+	b, err := regexp.Compile(values["HUB_RACE_PARTITION_B"])
+	if err != nil {
+		t.Fatalf("compile HUB_RACE_PARTITION_B: %v", err)
 	}
 	out, err := exec.CommandContext(t.Context(), "go", "test", "-list", ".", "./internal/hubserver").Output()
 	if err != nil {
 		t.Fatalf("list Hub tests: %v", err)
 	}
-	counts := [2]int{}
+	counts := [3]int{}
 	for _, name := range strings.Fields(string(out)) {
 		if !strings.HasPrefix(name, "Test") && !strings.HasPrefix(name, "Example") && !strings.HasPrefix(name, "Fuzz") {
 			continue
 		}
-		if pattern.MatchString(name) {
+		inA, inB := a.MatchString(name), b.MatchString(name)
+		switch {
+		case inA && inB:
+			t.Fatalf("%s runs in both partition A and partition B", name)
+		case inA:
 			counts[0]++
-		} else {
+		case inB:
 			counts[1]++
+		default:
+			counts[2]++
 		}
 	}
-	if counts[0] == 0 || counts[1] == 0 {
-		t.Fatalf("partition sizes = %v, want both Hub race partitions nonempty", counts)
+	if counts[0] == 0 || counts[1] == 0 || counts[2] == 0 {
+		t.Fatalf("partition sizes = %v, want all three Hub race partitions nonempty", counts)
 	}
 }
