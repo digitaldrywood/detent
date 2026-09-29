@@ -98,6 +98,11 @@ describe("the Enroll dialog", () => {
     expect(screen.getByText("A whole number from 1 to 16")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Runs at once"), { target: { value: "1" } });
     expect(create.disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "é".repeat(101) } });
+    expect(create.disabled).toBe(true);
+    expect(screen.getByText("That name is too long; shorten it.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "é".repeat(100) } });
+    expect(create.disabled).toBe(false);
     for (const project of projects) fireEvent.click(projectBox(project.id));
     expect(create.disabled).toBe(true);
   });

@@ -26,7 +26,7 @@ import {
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
 import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
-import { hubUrlNamesOrganization, parseCapacity, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
+import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { noApprovedPolicy, saveMessage } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
@@ -435,5 +435,17 @@ describe("the enrollment inputs", () => {
     { value: "1e1", want: null },
   ])("parses capacity $value as $want", ({ value, want }) => {
     expect(parseCapacity(value)).toBe(want);
+  });
+});
+
+describe("the runner name limit", () => {
+  it.each([
+    { name: "a".repeat(200), fits: true },
+    { name: "a".repeat(201), fits: false },
+    { name: "é".repeat(100), fits: true },
+    { name: "é".repeat(101), fits: false },
+    { name: `  ${"a".repeat(200)}  `, fits: true },
+  ])("counts UTF-8 bytes: $fits", ({ name, fits }) => {
+    expect(runnerNameFits(name)).toBe(fits);
   });
 });

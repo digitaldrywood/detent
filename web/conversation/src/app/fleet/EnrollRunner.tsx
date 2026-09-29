@@ -106,6 +106,13 @@ export function registerCommand(input: RegisterCommandInput): string {
 
 export const MAX_RUNNER_CAPACITY = 16;
 
+/** The Hub limits a runner's display name to 200 bytes of UTF-8. */
+export const MAX_RUNNER_NAME_BYTES = 200;
+
+export function runnerNameFits(name: string): boolean {
+  return new TextEncoder().encode(name.trim()).length <= MAX_RUNNER_NAME_BYTES;
+}
+
 /** A monospace value with the copy affordance, sized for a command line. */
 export function CopyableCommand({
   value,
@@ -219,7 +226,8 @@ export function EnrollRunnerDialog({
     return created;
   });
 
-  const ready = selected.length > 0 && capacity !== null;
+  const nameFits = runnerNameFits(name);
+  const ready = selected.length > 0 && capacity !== null && nameFits;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -241,11 +249,14 @@ export function EnrollRunnerDialog({
                     id="enroll-runner-name"
                     autoComplete="off"
                     spellCheck={false}
-                    maxLength={200}
+                    aria-invalid={!nameFits}
                     placeholder="Build host"
                     value={name}
                     onChange={(event) => setName(event.currentTarget.value)}
                   />
+                  {nameFits ? null : (
+                    <p className="text-xs text-destructive-foreground">That name is too long; shorten it.</p>
+                  )}
                 </div>
                 <div className="flex flex-col gap-1.5 sm:w-32">
                   <Label htmlFor="enroll-runner-capacity">Runs at once</Label>
