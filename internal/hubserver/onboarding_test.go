@@ -305,3 +305,57 @@ func TestOnboardingBrowserPreview(t *testing.T) {
 	case <-t.Context().Done():
 	}
 }
+
+func TestOnboardingOffersThePolicyARunnerReported(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "observed policy")
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	runner.enroll(t)
+	reader := prepareRunner(t, f, runnerauth.Read)
+	reader.enroll(t)
+	onboardingFor := func(t *testing.T) onboarding.Project {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var setup onboarding.Project
+		decodeHubResponse(t, response, &setup)
+		return setup
+	}
+	first := hubTestPolicy()
+	changed := first
+	changed.Gates.AutoPromote = true
+	changed = changed.WithID()
+
+	if setup := onboardingFor(t); setup.ObservedPolicy != nil {
+		t.Fatalf("observed policy before any report = %+v", setup.ObservedPolicy)
+	}
+	for _, test := range []struct {
+		name   string
+		token  string
+		body   any
+		status int
+	}{
+		{name: "runner with heartbeat", token: runner.redemption.Credential, body: first, status: http.StatusNoContent},
+		{name: "runner without heartbeat", token: reader.redemption.Credential, body: first, status: http.StatusForbidden},
+		{name: "invalid descriptor", token: runner.redemption.Credential, body: policy.Descriptor{ID: "nope"}, status: http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", test.token, test.body), test.status)
+		})
+	}
+	setup := onboardingFor(t)
+	if setup.ObservedPolicy == nil || setup.ObservedPolicy.Policy.ID != first.ID || setup.ObservedPolicy.RunnerID != runner.binding.RunnerID || setup.Policy != nil {
+		t.Fatalf("unapproved project observed policy = %+v, approved %+v", setup.ObservedPolicy, setup.Policy)
+	}
+
+	approveHubTestPolicy(t, f.service, f.base+"/policy", first)
+	if setup := onboardingFor(t); setup.ObservedPolicy != nil {
+		t.Fatalf("observed policy still offered after approving it: %+v", setup.ObservedPolicy)
+	}
+
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", runner.redemption.Credential, changed), http.StatusNoContent)
+	setup = onboardingFor(t)
+	if setup.ObservedPolicy == nil || setup.ObservedPolicy.Policy.ID != changed.ID || setup.Policy == nil || setup.Policy.Policy.ID != first.ID {
+		t.Fatalf("changed policy: observed %+v, approved %+v", setup.ObservedPolicy, setup.Policy)
+	}
+}

@@ -77,6 +77,56 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 	return c.JSON(http.StatusOK, approval)
 }
 
+// observeProjectPolicy records the descriptor a runner resolved for a native
+// project when it could not run it. Only the latest report is kept; the
+// approved policy is untouched until an owner approves the observed one.
+func (s *Service) observeProjectPolicy(c echo.Context) error {
+	var descriptor policy.Descriptor
+	if err := decodeAPIJSON(c, &descriptor); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := descriptor.Validate(); err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	scope, err := s.policyScope(c)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok || credential.ID == "" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	reporter := credential.Runner.RunnerID
+	if reporter == "" {
+		reporter = credential.ID
+	}
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(scope) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, runner_id = excluded.runner_id, observed_at = excluded.observed_at`,
+		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now())); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// readObservedPolicy returns the descriptor a runner last reported for scope,
+// and false when none was reported.
+func readObservedPolicy(ctx context.Context, query nativeQueryer, scope string) (policy.ObservedPolicy, bool, error) {
+	var raw string
+	result := policy.ObservedPolicy{}
+	err := query.QueryRowContext(ctx, "SELECT descriptor_json, runner_id, observed_at FROM project_observed_policies WHERE scope = ?", scope).Scan(&raw, &result.RunnerID, &result.ObservedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return result, false, nil
+	}
+	if err != nil {
+		return result, false, err
+	}
+	return result, true, json.Unmarshal([]byte(raw), &result.Policy)
+}
+
 func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	var request struct {
 		ExpectedID string `json:"expected_policy_id"`

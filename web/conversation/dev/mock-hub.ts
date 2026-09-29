@@ -889,6 +889,8 @@ interface AccountState {
   usage: boolean;
   integrations: Map<string, IntegrationRow>;
   policies: Map<string, PolicyRow>;
+  /** What a runner last reported it resolved and could not run, per project. */
+  observedPolicies: Map<string, { policy: Record<string, unknown>; runner_id: string; observed_at: string }>;
   progress: Map<string, ProgressRow>;
   artifactServices: Map<string, ArtifactBindingRow[]>;
   runners: RunnerEligibilityRow[];
@@ -920,6 +922,7 @@ function initialAccountState(organization: OrganizationMode = "seeded"): Account
     usage: true,
     integrations: new Map(empty ? [] : Object.entries(clone(SEED_INTEGRATIONS))),
     policies: new Map(empty ? [] : [["proj_alpha", clone(SEED_POLICY)]]),
+    observedPolicies: new Map(),
     progress: new Map(empty ? [] : Object.entries(clone(SEED_PROGRESS))),
     artifactServices: new Map(),
     runners: empty ? [] : clone(SEED_RUNNERS),
@@ -2862,12 +2865,33 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    // A runner reporting the descriptor it resolved and could not run
+    // (`observeProjectPolicy`). The mock takes it from anyone.
+    if (tail === "policy/observed" && method === "POST") {
+      const body = await readBody(request);
+      if (typeof body.policy_id !== "string") {
+        invalidRequest(response, "A policy descriptor is required.");
+        return true;
+      }
+      account.observedPolicies.set(projectId, {
+        policy: body as Record<string, unknown>,
+        runner_id: "runner_mock",
+        observed_at: now(),
+      });
+      noContent(response);
+      return true;
+    }
+
     if (tail === "onboarding" && method === "GET") {
       const evaluated = evaluateOnboarding(projectId);
+      const approved = account.policies.get(projectId) ?? null;
+      const observed = account.observedPolicies.get(projectId) ?? null;
       json(response, 200, {
         latest_run: "succeeded",
         progress: account.progress.get(projectId),
-        policy: account.policies.get(projectId) ?? null,
+        policy: approved,
+        observed_policy:
+          observed !== null && observed.policy.policy_id !== approved?.policy.policy_id ? clone(observed) : null,
         runners: account.runners,
         artifact_services: account.artifactServices.get(projectId) ?? [],
         steps: evaluated.steps,

@@ -394,11 +394,23 @@ export const RunnerEligibility = Schema.Struct({
 });
 export type RunnerEligibility = typeof RunnerEligibility.Type;
 
+/**
+ * `policy.ObservedPolicy`: the descriptor a runner resolved for the project and
+ * could not run, present only while it differs from the approved policy.
+ */
+export const ObservedPolicy = Schema.Struct({
+  policy: PolicyDescriptor,
+  runner_id: Schema.String,
+  observed_at: Schema.String,
+});
+export type ObservedPolicy = typeof ObservedPolicy.Type;
+
 /** `GET {nativeBase}/onboarding` (`onboarding.Project`). */
 export const Onboarding = Schema.Struct({
   latest_run: Schema.optional(Schema.String),
   progress: OnboardingProgress,
   policy: Schema.optional(Schema.NullOr(PolicyApproval)),
+  observed_policy: Schema.optional(Schema.NullOr(ObservedPolicy)),
   runners: Schema.NullOr(Schema.Array(RunnerEligibility)),
   artifact_services: Schema.NullOr(Schema.Array(ArtifactBinding)),
   steps: Schema.Array(OnboardingStep),
