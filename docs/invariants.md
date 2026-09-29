@@ -74,8 +74,8 @@ appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
 
 A persisted successful completion with a complete Workpad and ready PR remains
-owned by the existing active-lane gate while current-head CI is pending. The
-gate promotes a green matching head to Merging. A replacement head or an ended
+owned by the existing active-lane gate until the matching head is eligible for
+Merging. A replacement head or an ended
 attempt without completion remains in In Progress for normal dispatch; elapsed
 time without a worker is diagnostic only. The stranded-active sweep no longer
 writes a Todo or Rework lane transition (#3238), removing its competing lane
