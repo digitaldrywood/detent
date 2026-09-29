@@ -20,10 +20,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const appShellTestBody = `<!doctype html><html><head><script type="module" crossorigin src="/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
+const appShellTestBody = `<!doctype html><html><head><link rel="icon" href="/static/app/conversation/favicon.svg"><script type="module" crossorigin src="/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
 
 func appShellWant(base, signIn string) string {
-	return `<!doctype html><html><head><meta name="detent-base-path" content="` + base + `"><meta name="detent-sign-in-path" content="` + signIn + `"><script type="module" crossorigin src="` + base + `/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="` + base + `/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
+	return `<!doctype html><html><head><meta name="detent-base-path" content="` + base + `"><meta name="detent-sign-in-path" content="` + signIn + `"><link rel="icon" href="` + base + `/static/app/conversation/favicon.svg"><script type="module" crossorigin src="` + base + `/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="` + base + `/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
 }
 
 func useAppClientFS(t *testing.T, fsys fs.FS) {
@@ -176,12 +176,13 @@ func TestAppSharedEntry(t *testing.T) {
 		return cloudassert.CSRFToken("shared-"+user.identity.Subject, "org_security")
 	}
 	for _, test := range []struct {
-		name     string
-		user     *hostedSecurityUser
-		target   string
-		status   int
-		location string
-		shell    bool
+		name        string
+		user        *hostedSecurityUser
+		target      string
+		status      int
+		location    string
+		shell       bool
+		contentType string
 	}{
 		{name: "revoked work", user: &revoked, target: prefix + "/work", status: http.StatusSeeOther, location: "/organizations?switch=1"},
 		{name: "revoked chat", user: &revoked, target: prefix + "/chat/c/conv_1", status: http.StatusSeeOther, location: "/organizations?switch=1"},
@@ -192,6 +193,9 @@ func TestAppSharedEntry(t *testing.T) {
 		{name: "unscoped bootstrap", user: &owner, target: "/app/bootstrap", status: http.StatusNotFound},
 		{name: "unscoped static", user: &owner, target: "/static/app/conversation/app.js", status: http.StatusNotFound},
 		{name: "scoped entry script", user: &owner, target: prefix + "/static/app/conversation/app.js", status: http.StatusOK},
+		{name: "scoped SVG favicon", user: &owner, target: prefix + "/static/app/conversation/favicon.svg", status: http.StatusOK, contentType: "image/svg+xml"},
+		{name: "scoped PNG favicon", user: &owner, target: prefix + "/static/app/conversation/favicon-32.png", status: http.StatusOK, contentType: "image/png"},
+		{name: "scoped touch icon", user: &owner, target: prefix + "/static/app/conversation/apple-touch-icon.png", status: http.StatusOK, contentType: "image/png"},
 		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -201,6 +205,9 @@ func TestAppSharedEntry(t *testing.T) {
 			}
 			if got := response.Header().Get("Location"); got != test.location {
 				t.Fatalf("location = %q, want %q", got, test.location)
+			}
+			if test.contentType != "" && !strings.HasPrefix(response.Header().Get("Content-Type"), test.contentType) {
+				t.Fatalf("content type = %q, want %q", response.Header().Get("Content-Type"), test.contentType)
 			}
 			if got := response.Body.String() == appShellWant(prefix, "/organizations?switch=1"); got != test.shell {
 				t.Fatalf("shell served = %t, want %t: %s", got, test.shell, response.Body.String())
