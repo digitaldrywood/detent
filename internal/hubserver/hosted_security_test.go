@@ -980,3 +980,40 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 		t.Fatal("hosted logs or errors exposed customer content")
 	}
 }
+
+func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		role    string
+		created bool
+	}{
+		{role: "owner", created: true},
+		{role: "admin", created: true},
+		{role: "member", created: false},
+	} {
+		t.Run(test.role, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			user := f.user(t, "creator-"+test.role, test.role, test.role+"-creator@example.test", "write", "")
+			f.grant(t, user, true, true)
+			// The request authenticated while the user was an owner; the
+			// provider's membership is what the transaction must trust.
+			var principal string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = ?", user.identity.Subject).Scan(&principal); err != nil {
+				t.Fatal(err)
+			}
+			credential := apiCredential{ID: principal, Scope: apiScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
+			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role)
+			if (err == nil) != test.created {
+				t.Fatalf("createHostedProjectRecord() = %q, %v; want created %v", project, err, test.created)
+			}
+			if !test.created {
+				return
+			}
+			var manageRunner bool
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT manage_runner FROM hosted_project_grants WHERE project_id = ? AND user_id = ?", project, user.identity.Subject).Scan(&manageRunner); err != nil || !manageRunner {
+				t.Fatalf("creator runner management = %v, %v", manageRunner, err)
+			}
+		})
+	}
+}
