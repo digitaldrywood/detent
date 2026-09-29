@@ -166,9 +166,13 @@ The assertion is an Ed25519 signature over the issuer, tenant audience
 path and query, request body digest, issue/expiry time (at most 30 seconds) and a
 one-use replay ID. Browser assertions also carry the provider subject, verified
 email, provider organization and session, and the per-organization authorization
-binding and CSRF value. The tenant materializes that binding as its local session,
-still validates the provider session and membership on every request, and applies
-its existing project grants, viewer limits and in-transaction mutation rechecks.
+binding and CSRF value, the organization role from the WorkOS access token and
+that token's expiry. The tenant materializes that binding as its local session and
+trusts the entry's verified role instead of calling the provider: it refuses an
+assertion whose access token has expired, so a long-lived event stream ends at
+most one access-token lifetime after its last verified request. It then applies its
+local member row, project grants, viewer limits and in-transaction mutation
+rechecks, and honors binding revocations the entry pushes to it.
 Machine assertions carry no browser identity and require the request's own bearer
 credential; runner, reporter and artifact-service tokens keep their independent
 bindings. List up to four public keys to rotate the entry signing key with overlap.
@@ -215,10 +219,39 @@ logout invalidates the shared session and all its tenant authorizations.
 The entry re-verifies the shared session with the provider on every mutation and
 at most once per 60 seconds for read-only `GET`/`HEAD` requests such as the
 provisioning status poll, so a provider-side revocation takes effect within that
-bound; logout and a failed verification take effect immediately. Requests routed
-to a tenant still verify the organization session and membership each time. Staff
-and support sessions, which reach across organizations, are verified on every
+bound; logout and a failed verification take effect immediately. Staff and support
+sessions, which reach across organizations, are verified on every entry-owned
 request.
+
+Requests routed to a tenant follow the WorkOS AuthKit session model. Each
+organization authorization keeps the WorkOS access token and refresh token from its
+sign-in, sealed with AES-GCM under a key derived from the entry signing key and
+bound to the authorization. A routed request verifies the access token locally
+against the client's cached JWKS and compares its subject, `sid`, `org_id`, `role`
+and support actor with the stored authorization: no WorkOS API call while the token
+is valid, for reads and mutations alike. When the token has expired the entry
+redeems the refresh token once (`grant_type=refresh_token`), stores the rotated
+pair and re-verifies; refreshes of one authorization are serialized because a
+WorkOS refresh token is single use, so concurrent requests on an expired token cost
+one refresh. A rejected refresh (revoked or ended session) drops the authorization
+and answers 401; a refreshed token without the organization's `org_id` or a known
+role (membership removed) drops it and answers 403; an unreachable provider answers
+503 without dropping it. Session revocation and membership removal made in WorkOS
+therefore take effect at the next refresh, at most one access-token lifetime (about
+five minutes) later, and a dropped authorization is revoked at the tenant at once.
+With one idle open board, the entry makes at most one WorkOS call per access-token
+lifetime per organization authorization. Membership listing is used only by the
+organization chooser, invitation, ownership and member-management flows.
+Authorizations stored before tokens were kept have none and must sign in again,
+as must every authorization after the entry signing key is rotated, because the
+sealing key derives from it. The tenant applies the less privileged of the
+asserted role and its own member row, so a role downgrade recorded at the tenant
+takes effect before the older access token expires. Refresh serialization assumes
+one entry process per `auth.db`; a rejected refresh first re-reads the stored pair
+so a refresh another request already stored is used rather than dropped.
+Every routed request logs `shared entry proxied request` with `duration_ms`,
+`auth_ms` and `verification` (`token`, `refreshed` or `machine`), and never a
+token, cookie, query string or email address.
 
 Each request derives its organization from the canonical route and revalidates
 membership plus project grants. Body/header IDs must agree with the route. Reject
@@ -235,7 +268,8 @@ callback, but cannot replace A's authorization. State/PKCE transactions are one-
 short-lived and bound to the initiating browser, requested organization and a
 validated return route; concurrent tab logins cannot overwrite each other's
 transaction. Provider identity, active session and current membership are verified
-on every protected request, and tenant mutations recheck local grants/revocation
+through the organization's access token on every protected request (see above for
+the refresh bound), and tenant mutations recheck local grants/revocation
 inside the transaction before replay. Provider failure fails closed. Removed
 membership invalidates only that organization's authority; account logout/expiry
 invalidates every organization. Support sessions remain separately scoped and
@@ -389,7 +423,10 @@ multiple projects. This conservative rule prevents partial-management views from
 revealing ungranted projects. Runner execution still requires a runner credential.
 
 Each request validates the provider's active session and current membership,
-then local membership and project grants. Provider unavailability fails closed.
+then local membership and project grants. Behind the shared entry that validation
+is the entry's access-token check, so a provider-side change lands within one
+access-token lifetime; a dedicated tenant asks the provider directly. Provider
+unavailability fails closed.
 Native mutations recheck authorization within the database transaction before
 idempotent replay; cursors and replay keys also bind to the provider session.
 Member removal revokes local sessions and removes project/runner grants before
@@ -457,8 +494,9 @@ session, actor and organization. The WorkOS impersonation callback must return i
 the same browser with the same actor, an allowed reason and the selected
 organization's provider ID; the resulting support authorization belongs only to
 that staff session and organization and never becomes an ordinary session. Every
-routed request rechecks the provider session, the support actor lists and the
-customer's active membership. The tenant, which must list the same actor in its
+routed request rechecks the support actor lists and the support access token,
+whose `act` claim must name the same actor, and the refresh bound above applies to
+the impersonation session. The tenant, which must list the same actor in its
 own `staff_emails` and `support_actors`, shows the actual/effective identity banner,
 audits `session_started` when it first sees the support session, audits each
 content action as before, and audits `session_ended` when sign-out revokes it.

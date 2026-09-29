@@ -13,6 +13,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func defaultDoctorWorkflowSources(ctx context.Context, cfg workflowconfig.Config, repository string) (_ map[string]string, resultErr error) {
@@ -44,6 +45,22 @@ func checkDoctorCITriggerShape(ctx context.Context, id string, cfg workflowconfi
 	}
 	if len(cfg.Gate.RequiredStatusChecks) == 0 {
 		check.Detail = "no required status checks configured or discovered"
+		if len(policyProblems) > 0 {
+			check.Status = doctorWarn
+			check.Detail = strings.Join(policyProblems, "; ")
+		}
+		return check
+	}
+	// local-gate is a commit status posted by the worker after its command gate.
+	// It has no GitHub Actions job, while all other required contexts still need
+	// the existing workflow-producer diagnostics.
+	if gate.Effective(cfg.Gate).Kind == gate.KindCommand {
+		cfg.Gate.RequiredStatusChecks = slices.DeleteFunc(append([]string(nil), cfg.Gate.RequiredStatusChecks...), func(name string) bool {
+			return name == "local-gate"
+		})
+	}
+	if len(cfg.Gate.RequiredStatusChecks) == 0 {
+		check.Detail = "local-gate is published as a commit status after the command gate; no Actions producer is required"
 		if len(policyProblems) > 0 {
 			check.Status = doctorWarn
 			check.Detail = strings.Join(policyProblems, "; ")

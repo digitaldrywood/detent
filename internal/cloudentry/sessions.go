@@ -2,7 +2,14 @@ package cloudentry
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -66,11 +73,126 @@ type authorization struct {
 	Identity       auth.HostedIdentity
 	Support        bool
 	EffectiveEmail string
+
+	sealedAccess  string
+	sealedRefresh string
 }
 
 type authStore struct {
 	store *store
 	now   func() time.Time
+	seal  cipher.AEAD
+}
+
+func newTokenSeal(signingKey ed25519.PrivateKey) (cipher.AEAD, error) {
+	mac := hmac.New(sha256.New, signingKey.Seed())
+	mac.Write([]byte("detent-entry-provider-token-seal"))
+	block, err := aes.NewCipher(mac.Sum(nil))
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func (a *authStore) sealToken(binding, token string) (string, error) {
+	if token == "" {
+		return "", nil
+	}
+	nonce := make([]byte, a.seal.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(a.seal.Seal(nonce, nonce, []byte(token), []byte(binding))), nil
+}
+
+func (a *authStore) openToken(binding, sealed string) (string, error) {
+	raw, err := base64.RawStdEncoding.DecodeString(sealed)
+	if err != nil || len(raw) <= a.seal.NonceSize() {
+		return "", errNoSession
+	}
+	plain, err := a.seal.Open(nil, raw[:a.seal.NonceSize()], raw[a.seal.NonceSize():], []byte(binding))
+	if err != nil {
+		return "", errNoSession
+	}
+	return string(plain), nil
+}
+
+// tokens opens an authorization's provider tokens. An authorization stored
+// before tokens were kept, or sealed under another key, has none.
+func (a *authStore) tokens(item authorization) (auth.HostedTokens, error) {
+	access, err := a.openToken(item.Binding, item.sealedAccess)
+	if err != nil {
+		return auth.HostedTokens{}, err
+	}
+	refresh, err := a.openToken(item.Binding, item.sealedRefresh)
+	if err != nil {
+		return auth.HostedTokens{}, err
+	}
+	return auth.HostedTokens{AccessToken: access, RefreshToken: refresh}, nil
+}
+
+func (a *authStore) storeTokens(ctx context.Context, binding string, tokens auth.HostedTokens) error {
+	access, err := a.sealToken(binding, tokens.AccessToken)
+	if err != nil {
+		return err
+	}
+	refresh, err := a.sealToken(binding, tokens.RefreshToken)
+	if err != nil {
+		return err
+	}
+	result, err := a.store.db.ExecContext(ctx, "UPDATE authorizations SET access_token = ?, refresh_token = ? WHERE binding = ? AND revoked_at IS NULL", access, refresh, binding)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return errNoSession
+	}
+	return nil
+}
+
+func (a *authStore) authorizationByBinding(ctx context.Context, binding string) (authorization, error) {
+	items, err := activeAuthorizations(ctx, a.store.db, "binding = ? AND revoked_at IS NULL", binding)
+	if err != nil || len(items) != 1 {
+		return authorization{}, errNoSession
+	}
+	return items[0], nil
+}
+
+// refreshLocks serializes provider token refreshes per authorization: a
+// WorkOS refresh token is single use, so two concurrent refreshes of the
+// same session would revoke it.
+type refreshLocks struct {
+	mu    sync.Mutex
+	locks map[string]*refreshLock
+}
+
+type refreshLock struct {
+	sync.Mutex
+	users int
+}
+
+func (r *refreshLocks) lock(key string) func() {
+	r.mu.Lock()
+	if r.locks == nil {
+		r.locks = make(map[string]*refreshLock)
+	}
+	entry := r.locks[key]
+	if entry == nil {
+		entry = &refreshLock{}
+		r.locks[key] = entry
+	}
+	entry.users++
+	r.mu.Unlock()
+	entry.Lock()
+	return func() {
+		entry.Unlock()
+		r.mu.Lock()
+		entry.users--
+		if entry.users == 0 {
+			delete(r.locks, key)
+		}
+		r.mu.Unlock()
+	}
 }
 
 func (a *authStore) createSession(ctx context.Context, hash, csrfSecret string, identity auth.Identity) error {
@@ -99,9 +221,16 @@ func (a *authStore) session(ctx context.Context, hash string) (accountSession, e
 	return session, nil
 }
 
-func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, effectiveEmail string) (authorization, []authorization, error) {
+func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, tokens auth.HostedTokens, effectiveEmail string) (authorization, []authorization, error) {
 	encoded, err := json.Marshal(identity)
 	if err != nil {
+		return authorization{}, nil, err
+	}
+	result := authorization{Binding: cloudassert.AuthorizationBinding(session.Hash, organization, identity.SessionID), Organization: organization, Identity: identity, Support: identity.SupportActor != "", EffectiveEmail: effectiveEmail}
+	if result.sealedAccess, err = a.sealToken(result.Binding, tokens.AccessToken); err != nil {
+		return authorization{}, nil, err
+	}
+	if result.sealedRefresh, err = a.sealToken(result.Binding, tokens.RefreshToken); err != nil {
 		return authorization{}, nil, err
 	}
 	tx, err := a.store.db.BeginTx(ctx, nil)
@@ -109,7 +238,7 @@ func (a *authStore) authorize(ctx context.Context, session accountSession, organ
 		return authorization{}, nil, err
 	}
 	defer tx.Rollback()
-	replaced, err := activeAuthorizations(ctx, tx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email FROM authorizations WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
+	replaced, err := activeAuthorizations(ctx, tx, "session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
 	if err != nil {
 		return authorization{}, nil, err
 	}
@@ -117,9 +246,8 @@ func (a *authStore) authorize(ctx context.Context, session accountSession, organ
 	if _, err := tx.ExecContext(ctx, "UPDATE authorizations SET revoked_at = ? WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", now, session.Hash, organization); err != nil {
 		return authorization{}, nil, err
 	}
-	result := authorization{Binding: cloudassert.AuthorizationBinding(session.Hash, organization, identity.SessionID), Organization: organization, Identity: identity, Support: identity.SupportActor != "", EffectiveEmail: effectiveEmail}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO authorizations(binding,session_hash,organization_id,identity_json,created_at,expires_at,support,effective_email) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(binding) DO UPDATE SET identity_json = excluded.identity_json, expires_at = excluded.expires_at, support = excluded.support, effective_email = excluded.effective_email, revoked_at = NULL",
-		result.Binding, session.Hash, organization, string(encoded), now, formatTime(identity.ExpiresAt), result.Support, effectiveEmail); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO authorizations(binding,session_hash,organization_id,identity_json,created_at,expires_at,support,effective_email,access_token,refresh_token) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(binding) DO UPDATE SET identity_json = excluded.identity_json, expires_at = excluded.expires_at, support = excluded.support, effective_email = excluded.effective_email, access_token = excluded.access_token, refresh_token = excluded.refresh_token, revoked_at = NULL",
+		result.Binding, session.Hash, organization, string(encoded), now, formatTime(identity.ExpiresAt), result.Support, effectiveEmail, result.sealedAccess, result.sealedRefresh); err != nil {
 		return authorization{}, nil, err
 	}
 	var stale []authorization
@@ -135,8 +263,8 @@ type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-func activeAuthorizations(ctx context.Context, query queryer, statement string, args ...any) ([]authorization, error) {
-	rows, err := query.QueryContext(ctx, statement, args...)
+func activeAuthorizations(ctx context.Context, query queryer, where string, args ...any) ([]authorization, error) {
+	rows, err := query.QueryContext(ctx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email,access_token,refresh_token FROM authorizations WHERE "+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +273,7 @@ func activeAuthorizations(ctx context.Context, query queryer, statement string, 
 	for rows.Next() {
 		var item authorization
 		var encoded, expires string
-		if err := rows.Scan(&item.Binding, &item.Organization, &encoded, &expires, &item.Support, &item.EffectiveEmail); err != nil {
+		if err := rows.Scan(&item.Binding, &item.Organization, &encoded, &expires, &item.Support, &item.EffectiveEmail, &item.sealedAccess, &item.sealedRefresh); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(encoded), &item.Identity); err != nil {
@@ -157,7 +285,7 @@ func activeAuthorizations(ctx context.Context, query queryer, statement string, 
 }
 
 func (a *authStore) authorization(ctx context.Context, session accountSession, organization string) (authorization, error) {
-	items, err := activeAuthorizations(ctx, a.store.db, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email FROM authorizations WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
+	items, err := activeAuthorizations(ctx, a.store.db, "session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
 	if err != nil || len(items) != 1 || !items[0].Identity.ExpiresAt.After(a.now()) {
 		return authorization{}, errNoSession
 	}
@@ -179,7 +307,7 @@ func (a *authStore) revokeSession(ctx context.Context, hash string) ([]authoriza
 		return nil, err
 	}
 	defer tx.Rollback()
-	items, err := activeAuthorizations(ctx, tx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email FROM authorizations WHERE session_hash = ? AND revoked_at IS NULL", hash)
+	items, err := activeAuthorizations(ctx, tx, "session_hash = ? AND revoked_at IS NULL", hash)
 	if err != nil {
 		return nil, err
 	}

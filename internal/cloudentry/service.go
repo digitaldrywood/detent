@@ -94,6 +94,7 @@ type Service struct {
 	transports sync.Map
 	mutationMu sync.Mutex
 	verified   sessionVerifications
+	refreshes  refreshLocks
 
 	stopAllocator context.CancelFunc
 	allocatorDone chan struct{}
@@ -127,7 +128,11 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, errors.Join(err, registry.Close())
 	}
-	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
+	seal, err := newTokenSeal(cfg.SigningKey)
+	if err != nil {
+		return nil, errors.Join(err, authStorage.Close(), registry.Close())
+	}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
 	if cfg.transport == nil {
 		service.config.transport = service.tenantTransport
 	}
@@ -258,12 +263,19 @@ func (s *Service) setCookie(c echo.Context, name, value string, expires time.Tim
 	c.SetCookie(cookie)
 }
 
-func (s *Service) session(c echo.Context) (accountSession, error) {
+// storedSession reads the account session from the entry's own store without
+// asking the provider; proxied requests verify the organization's access
+// token instead.
+func (s *Service) storedSession(c echo.Context) (accountSession, error) {
 	cookie, err := c.Cookie(s.cookieName("session"))
 	if err != nil || cookie.Value == "" || len(cookie.Value) > 256 {
 		return accountSession{}, errNoSession
 	}
-	session, err := s.auth.session(c.Request().Context(), apikey.HashToken(cookie.Value))
+	return s.auth.session(c.Request().Context(), apikey.HashToken(cookie.Value))
+}
+
+func (s *Service) session(c echo.Context) (accountSession, error) {
+	session, err := s.storedSession(c)
 	if err != nil {
 		return accountSession{}, err
 	}

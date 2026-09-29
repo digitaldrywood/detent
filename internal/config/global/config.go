@@ -86,6 +86,7 @@ type Config struct {
 	Ops                   Ops             `yaml:"ops,omitempty"`
 	Port                  *int            `yaml:"port,omitempty"`
 	InstanceName          string          `yaml:"instance_name,omitempty"`
+	ServiceName           string          `yaml:"service_name,omitempty"`
 	Notifications         Notifications   `yaml:"notifications,omitempty"`
 	Update                Update          `yaml:"update,omitempty"`
 	Auth                  Auth            `yaml:"auth,omitempty"`
@@ -752,6 +753,9 @@ func (c Config) Validate(opts ...Option) error {
 	if strings.ContainsAny(c.InstanceName, "\r\n") {
 		problems = append(problems, "instance_name: must be a single line")
 	}
+	if c.ServiceName != "" && !ValidServiceName(c.ServiceName) {
+		problems = append(problems, "service_name: must be lowercase letters, digits, dots and hyphens, at most 64 characters")
+	}
 	if strings.ContainsAny(c.APIToken, "\r\n") {
 		problems = append(problems, "api_token: must be a single line")
 	}
@@ -1095,6 +1099,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, opsRawErrors(attrs["ops"])...)
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
+	problems = append(problems, optionalStringTypeError(attrs, "service_name")...)
 	problems = append(problems, notificationsRawErrors(attrs["notifications"])...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
 	problems = append(problems, updateErrors(attrs["update"])...)
@@ -2008,6 +2013,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	serviceName, err := optionalString(attrs["service_name"], "service_name")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	notifications, err := buildNotifications(attrs["notifications"])
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -2054,6 +2063,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		Ops:                   ops,
 		Port:                  port,
 		InstanceName:          instanceName,
+		ServiceName:           serviceName,
 		Notifications:         notifications,
 		Update:                update,
 		Auth:                  auth,
@@ -2706,4 +2716,18 @@ func normalizeYAML(value any) any {
 	default:
 		return value
 	}
+}
+
+// ValidServiceName reports whether name can label a launchd job
+// (com.digitaldrywood.NAME) and a systemd unit (NAME.service).
+func ValidServiceName(name string) bool {
+	if name == "" || len(name) > 64 || strings.Contains(name, "..") || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") || strings.HasSuffix(name, ".") {
+		return false
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '.' && r != '-' {
+			return false
+		}
+	}
+	return true
 }

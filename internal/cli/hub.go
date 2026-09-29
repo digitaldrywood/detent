@@ -13,6 +13,7 @@ import (
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
 
 type hubRunFunc func(context.Context, hubserver.Config) error
@@ -41,7 +42,25 @@ func newHubCommand(opts options) *cobra.Command {
 		cfg.GitHubRequestCounts = transport.Counts
 		return hubserver.Run(ctx, cfg)
 	}
-	return newHubCommandWithRun(opts.version, opts.lookupEnv, run)
+	cmd := newHubCommandWithRun(opts.version, opts.lookupEnv, run)
+	for _, child := range cmd.Commands() {
+		if child.Name() == "runner" {
+			child.AddCommand(newHubRunnerRegisterCommand(opts.version, opts.lookupEnv, runnerServiceStarterFor(opts)))
+		}
+	}
+	return cmd
+}
+
+func runnerServiceStarterFor(opts options) runnerServiceStarter {
+	return func(cmd *cobra.Command, configPath string) error {
+		host, port := "", -1
+		runner, err := serviceRunnerForCommand(cmd, &configPath, &host, &port, opts)
+		if err != nil {
+			return err
+		}
+		_, err = runner.Start(cmd.Context(), servicepkg.StartOptions{Install: true})
+		return err
+	}
 }
 
 func newHubCommandWithRun(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {

@@ -163,10 +163,10 @@ test("creating the first project lands on its board and the checklist advances",
   await expect(page.getByTestId("first-run-step-project")).toHaveAttribute("data-done", "true");
   await expect(page.getByTestId("first-run-progress")).toContainText("of 3 done");
   await expect(page.getByTestId("work-board")).toHaveCount(0);
-  // A new project carries no runner grant, so the owner is sent to grant it
-  // rather than shown a button the hub would refuse.
+  // Creating a project grants its owner runner management, so the runner step
+  // offers enrollment directly.
   await expect(
-    page.getByTestId("first-run-step-runner").getByRole("button", { name: "Grant runner access" }),
+    page.getByTestId("first-run-step-runner").getByRole("button", { name: "Enroll a runner" }),
   ).toBeEnabled();
 
   await page.getByTestId("first-run-step-issue").getByRole("button", { name: "New issue" }).click();

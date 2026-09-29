@@ -5207,6 +5207,36 @@ func TestCheckDoctorDashboardAddress(t *testing.T) {
 			wantDetail: "config resolves the dashboard to 127.0.0.1:4000, but the running Detent service uses 100.111.222.33:4000 (from worker environment)",
 		},
 	}
+	ephemeralPort := 0
+	ephemeralTests := []struct {
+		name       string
+		running    dashboardAddress
+		wantStatus doctorStatus
+		wantDetail string
+	}{
+		{
+			name:       "port 0 accepts the running listener's port",
+			running:    dashboardAddress{Value: "127.0.0.1:50036", HostSource: dashboardAddressSourceListener, PortSource: dashboardAddressSourceListener},
+			wantStatus: doctorOK,
+			wantDetail: "matches the running Detent service",
+		},
+		{
+			name:       "port 0 still requires the configured host",
+			running:    dashboardAddress{Value: "100.111.222.33:50036", HostSource: dashboardAddressSourceListener, PortSource: dashboardAddressSourceListener},
+			wantStatus: doctorFail,
+			wantDetail: "config resolves the dashboard to 127.0.0.1:0",
+		},
+	}
+	for _, tt := range ephemeralTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := checkDoctorDashboardAddress(BootConfig{Port: &ephemeralPort}, tt.running)
+			if got.Status != tt.wantStatus || !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("checkDoctorDashboardAddress() = %#v, want status %s detail containing %q", got, tt.wantStatus, tt.wantDetail)
+			}
+		})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -6301,7 +6331,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 	}{
 		{name: "GitHub readiness", current: "GitHub readiness", lastCompleted: "Project alpha skills"},
 		{name: "local workflow overlay", current: "local workflow overlay", lastCompleted: "Project alpha capabilities", blockOverlay: true},
-		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha INV-5 CI once per ready head", blockDependency: true},
+		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha INV-5 local PR gate and hourly integration build", blockDependency: true},
 	}
 
 	for _, tt := range tests {
@@ -6941,6 +6971,32 @@ func TestDoctorWorkerGitHubCredentialResolution(t *testing.T) {
 				if strings.Contains(check.Detail+check.Hint, secret) {
 					t.Fatal("doctor disclosed a secret")
 				}
+			}
+		})
+	}
+}
+
+func TestDoctorTimedOutChecksUsesJobTimeoutStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		job        doctorCheckJob
+		err        error
+		wantStatus doctorStatus
+		wantPrefix string
+	}{
+		{name: "default fails", job: doctorCheckJob{Name: "Project detent checks"}, err: context.DeadlineExceeded, wantStatus: doctorFail, wantPrefix: "timed out after 30s"},
+		{name: "cache scan warns", job: doctorCheckJob{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn}, err: context.DeadlineExceeded, wantStatus: doctorWarn, wantPrefix: "inconclusive: timed out after 30s"},
+		{name: "cancelled cache scan still fails", job: doctorCheckJob{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn}, err: context.Canceled, wantStatus: doctorFail, wantPrefix: "timed out after 30s: context canceled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checks := doctorTimedOutChecks(tt.job, doctorCheckSnapshot{}, 30*time.Second, tt.err)
+			if len(checks) != 1 || checks[0].Status != tt.wantStatus || !strings.HasPrefix(checks[0].Detail, tt.wantPrefix) || checks[0].Name != tt.job.Name {
+				t.Fatalf("doctorTimedOutChecks() = %#v, want one %s check with detail prefix %q", checks, tt.wantStatus, tt.wantPrefix)
 			}
 		})
 	}

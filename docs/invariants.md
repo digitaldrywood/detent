@@ -1185,8 +1185,8 @@ and `TestCommandGateQueueEligibleCI` cover the handoff to the merge group.
 contributed to the measured rebase and CI loop.
 
 **Enforcement:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`
-exercises native queue delegation. `TestRepositoryWorkflow` requires
-`merge_group: checks_requested` in this repository. Other repositories retain
+exercises native queue delegation. `TestRepositoryWorkflow` allows the
+`merge_group` trigger only for pull requests into `main`. Other repositories retain
 their chosen settings; Detent detects the queue and uses its serialized merge
 worker where no queue exists. These tests do not inspect live GitHub settings.
 
@@ -1219,47 +1219,51 @@ cover this consolidation of the Rework detour into existing queue admission.
 **Change:** Edit INV-4 and the queue delegation tests in the same PR before
 changing the ownership or fallback behavior.
 
-## INV-5 — CI once per ready head
+## INV-5 — Local PR gate and hourly integration build
 
-**Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main and develop run the integration jobs after merge.
+**Statement:** Pull requests to `develop` run no GitHub Actions workflows. Each pushed PR head requires a successful `local-gate` commit status after `make check-fast` passes locally. An hourly operator-host build runs `make check` on `develop`; a green build promotes `develop` to `main` by merge commit and cuts a release, while a red build files one hotfix issue. Pull requests into `main` (promotions and hotfixes) keep the `main` merge queue: CI reports its required jobs as skipped on the pull request and runs them on the merge-group commit. CI on `main` pushes remains release evidence during the transition.
 
-The implementation handoff records passing local validation and expected skipped
-current-head PR checks separately. Skipped PR jobs are not evidence that the
-suite passed. Queue-eligible skipped checks allow promotion only when the native
-queue is available for that head. The full suite must pass on the merge-group
-commit before merge.
+The implementation handoff records the local gate on the exact pushed head and
+records current-head PR checks as absent or skipped, never as test evidence.
+The hourly build owns full-suite integration evidence. Its `local-gate` status
+on the promoted commit can serve as signed release provenance, provided it is
+the newest authenticated status for that commit and context.
 
-**Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
-Verify job; draft iteration avoids paying this cost before local review ends.
+**Why:** Repeated PR and merge-group runs consumed time and CI capacity for work
+already checked by the local gate. The hourly full build validates the shared
+integration branch before promotion.
 
-**Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
-requires the PR activity allowlist and excludes every real job from PR execution (including
-the Invariant Gate and every Browser Visual shard). It allows `always()` only on the Verify and Browser Visual aggregates, and only as `always() && github.event_name != 'pull_request'`. It rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
-snapshot jobs to main or develop push or explicit manual dispatch; integration
-failure reporting stays main-only. The manual dispatch is
-a deliberate operator exception, not an automatic PR/merge-group trigger.
-The worker convention is to finish local validation/review before marking ready;
-Rework can produce a new ready head. The promotion tick leaves drafts unchanged,
-even when their other gates pass (#2922). `TestReworkLiveDraftPromotion`
-covers draft exclusion and rechecking live evidence. Workflow assertions cannot deduplicate
-manual reruns or repeated ready/reopened events. Other projects may opt into
-label gating or their own CI convention.
+**Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML and
+requires exactly four triggers: `main` push, `pull_request` limited to `main`,
+`merge_group` limited to `main`, and `workflow_dispatch`, plus all real jobs. It rejects develop
+pull requests, develop pushes, schedule, and tag triggers. Every real job
+reports skipped on pull requests (`github.event_name != 'pull_request'`) so the
+`main` ruleset's required contexts exist for the queue, and only the
+merge-group run is test evidence. Verify and Browser Visual aggregate their
+dependencies with `always()` outside pull requests; portability,
+Windows core, installer, and snapshot jobs run on main push or manual dispatch,
+and integration failure reporting stays main-only. `TestRepositoryPullRequestActionsOnlyForMain`
+checks that no workflow uses `pull_request_target` and that only `ci.yml`
+triggers on pull requests or merge groups, and `TestPortabilityStressIsManualOnly` rejects scheduled
+stress runs. The manual dispatch is an
+operator exception. `TestCoordinatorTagToSigningProvenance` covers newest
+check-run evidence, and `TestCoordinatorLocalGateStatusToSigningProvenance`
+covers newest `local-gate` commit-status evidence. The worker
+posts `local-gate` only after its final pushed head passes `make check-fast`.
 
-CI push triggers are restricted to main and develop (see
-[Branching](branching.md)): release tags run the release workflow
-without creating newer mandatory check IDs that invalidate their own provenance
-(#2419). `TestCoordinatorTagToSigningProvenance` exercises coordinator annotation,
-the repository's workflow triggers, and the signing input gate, including retries
-and rejection of missing, stale, cancelled, skipped, or failed evidence.
+CI push triggers are restricted to main (see [Branching](branching.md)): release
+tags run the release workflow without creating newer mandatory check IDs that
+invalidate their own provenance (#2419).
 
-`detent doctor` also reads every workflow under the project's source root and
-warns when a job runs on pull_request events: a job is exempt only when its
-`if` contains `github.event_name != 'pull_request'`, is exactly the placeholder
-equality, or is made of `||` alternatives that each require some other
-`github.event_name`. Projects may keep per-push CI; the verdict is a warning.
+`detent doctor` reads every workflow under the project's source root and warns
+when a workflow has a `pull_request` or `merge_group` trigger. This is
+diagnostic evidence for the zero-PR-CI convention; other projects may choose
+different workflows. Its required-check producer diagnostics still inspect
+GitHub Actions contexts for other projects. They recognize `local-gate` as a
+worker-published commit status when the project uses a command gate.
 
-**Change:** Edit INV-5 and workflow assertions in the same PR when changing these
-triggers, draft handling, or the documented manual-run exception.
+**Change:** Edit INV-5 and workflow assertions in the same PR when changing
+these triggers or release-evidence requirements.
 
 ## INV-6 — Isolated Codex home
 
@@ -1305,11 +1309,10 @@ changing identity format or duplicate handling.
 **Why:** Strict freshness invalidated already-tested heads after other merges
 and fed the measured repeated rebase/CI loop.
 
-**Enforcement:** The existing merge-queue doctor recommendation reads protection
-and measured history (`TestDoctorMergeQueueRecordedHistory`). Repository tests
-cannot guarantee live branch settings, and this PR does not change them or add
-a live doctor check per ID. The operator must inspect configured merged-into
-branches; do not claim this rule is universally enforced by local CI.
+**Enforcement:** The repository-policy doctor check reads live branch protection
+and fails strict freshness (`TestDoctorInvariantEvidence`). Repository tests
+cannot guarantee live branch settings. The operator must inspect configured
+merged-into branches; do not claim this rule is universally enforced by local CI.
 
 **Change:** Edit INV-8 in the same PR with the intended protection semantics and
 live verification plan; code changes never imply permission to edit settings.

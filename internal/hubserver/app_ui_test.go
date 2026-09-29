@@ -452,12 +452,12 @@ func TestAppUpdates(t *testing.T) {
 		{account: "wrong-organization", status: http.StatusForbidden},
 		{account: "invitee", status: http.StatusForbidden},
 		{account: "viewer", status: http.StatusNotFound},
-		{account: "owner", status: http.StatusNotFound},
 	} {
 		t.Run("denied "+test.account, func(t *testing.T) {
 			browserHostedStatus(t, f.appRequest(t, test.account, http.MethodGet, "/app/updates"), test.status)
 		})
 	}
+	browserHostedStatus(t, f.appRequest(t, "owner", http.MethodGet, "/app/updates"), http.StatusOK)
 	grantAppRunners(t, f)
 	browserHostedStatus(t, f.appRequest(t, "viewer", http.MethodGet, "/app/updates"), http.StatusNotFound)
 	payload := read(t, "owner")
@@ -624,5 +624,24 @@ func TestConversationChoiceLabel(t *testing.T) {
 		if got := conversationChoiceLabel(test.value); got != test.want {
 			t.Fatalf("conversationChoiceLabel(%q) = %q, want %q", test.value, got, test.want)
 		}
+	}
+}
+
+func TestAppBootstrapFeatureReportsConversations(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		service *Service
+		want    bool
+	}{
+		{name: "conversations served", service: &Service{conversations: &conversationService{}}, want: true},
+		{name: "conversations off", service: &Service{}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.service.appBootstrapFeature().Conversation; got != test.want {
+				t.Fatalf("feature.conversation = %t, want %t", got, test.want)
+			}
+		})
 	}
 }

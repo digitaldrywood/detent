@@ -167,15 +167,11 @@ func TestDoctorInvariantWorkflowVerdict(t *testing.T) {
 		want    doctorStatus
 		detail  string
 	}{
-		{"no pull_request trigger", map[string][]byte{"ci.yml": []byte("on:\n  merge_group:\n    types: [checks_requested]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request trigger"},
-		{"placeholders only", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\n    types: [opened]\njobs:\n  placeholders:\n    if: github.event_name == 'pull_request'\n  verify:\n    if: github.event_name != 'pull_request'\n")}, doctorOK, "placeholder"},
-		{"real jobs on every push", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  lint:\n    runs-on: ubuntu-latest\n  verify:\n    if: github.event.pull_request.draft == false\n")}, doctorWarn, "ci.yml:lint, ci.yml:verify"},
-		{"push-only integration jobs", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\n  push:\njobs:\n  placeholders:\n    if: github.event_name == 'pull_request'\n  portability:\n    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'\n  verify:\n    if: github.event_name != 'pull_request'\n")}, doctorOK, "placeholder"},
-		{"second workflow file runs on pull requests", map[string][]byte{
-			"ci.yml":     []byte("on:\n  merge_group:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"),
-			"extra.yaml": []byte("on:\n  pull_request:\njobs:\n  smoke:\n    runs-on: ubuntu-latest\n"),
-		}, doctorWarn, "extra.yaml:smoke"},
-		{"other-event alternative does not exempt", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  smoke:\n    if: github.event_name == 'push' || github.event.action == 'opened'\n")}, doctorWarn, "ci.yml:smoke"},
+		{"main push only", map[string][]byte{"ci.yml": []byte("on:\n  push:\n    branches: [main]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request or merge_group trigger"},
+		{"PR placeholder still triggers", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n")}, doctorWarn, "ci.yml:pull_request"},
+		{"merge group still triggers", map[string][]byte{"ci.yml": []byte("on:\n  merge_group:\n    types: [checks_requested]\n")}, doctorWarn, "ci.yml:merge_group"},
+		{"target still triggers", map[string][]byte{"ci.yml": []byte("on:\n  pull_request_target:\n")}, doctorWarn, "ci.yml:pull_request_target"},
+		{"second workflow triggers", map[string][]byte{"ci.yml": []byte("on:\n  push:\n"), "extra.yaml": []byte("on:\n  pull_request:\n")}, doctorWarn, "extra.yaml:pull_request"},
 		{"malformed", map[string][]byte{"ci.yml": []byte("on: [\n")}, doctorWarn, "could not be parsed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -195,13 +191,13 @@ func TestDoctorInvariantWorkflowCheckReadsEverySourceRootWorkflow(t *testing.T) 
 	if err := os.MkdirAll(workflows, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workflows, "ci.yml"), []byte("on:\n  merge_group:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workflows, "ci.yml"), []byte("on:\n  push:\n    branches: [main]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workflows, "preview.yaml"), []byte("on:\n  pull_request:\njobs:\n  preview:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := doctorInvariantWorkflowCheck("alpha", root); got.Status != doctorWarn || !strings.Contains(got.Detail, "preview.yaml:preview") {
+	if got := doctorInvariantWorkflowCheck("alpha", root); got.Status != doctorWarn || !strings.Contains(got.Detail, "preview.yaml:pull_request") {
 		t.Fatalf("check = %#v", got)
 	}
 	if got := doctorInvariantWorkflowCheck("alpha", filepath.Join(root, "missing")); got.Status != doctorOK {

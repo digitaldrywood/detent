@@ -2,26 +2,22 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+    branches: [main]
     types: [checks_requested]
-  schedule:
-    - cron: '27 9 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  # Real jobs report skipped on pull requests. GitHub accepts skipped required
-  # checks for enqueueing; only merge-group runs provide test evidence.
+  # Pull requests into main report these jobs as skipped (INV-5); the merge
+  # group runs them. Pull requests into develop run no workflows.
   invariants:
     if: github.event_name != 'pull_request'
     name: Invariant Gate
@@ -131,7 +127,6 @@ jobs:
           retention-days: 14
 
       - name: Repeat subprocess lifecycle readiness
-        if: github.event_name != 'pull_request'
         run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
 
   verify-race:
@@ -309,7 +304,7 @@ jobs:
           retention-days: 14
 
   portability-verify:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
@@ -378,7 +373,7 @@ jobs:
           retention-days: 14
 
   windows-core:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Windows Core
     runs-on: windows-latest
     steps:
@@ -396,7 +391,7 @@ jobs:
         run: .\tmp\detent.exe --help
 
   installer-smoke:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Installer Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -486,7 +481,7 @@ jobs:
           & $binary version
 
   goreleaser-snapshot:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'))
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 35

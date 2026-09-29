@@ -309,6 +309,10 @@ type appBootstrapFeature struct {
 	Conversation bool `json:"conversation"`
 }
 
+func (s *Service) appBootstrapFeature() appBootstrapFeature {
+	return appBootstrapFeature{Conversation: s.conversations != nil}
+}
+
 // appBootstrapChoice is one option of a turn preference picker. Default
 // marks what "auto" resolves to for the project; when the hub does not know
 // that, "auto" carries the flag itself (decisions section 14).
@@ -432,6 +436,7 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 		}
 	}
 	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator.Available()
+	payload.Feature = s.appBootstrapFeature()
 	payload.Preferences, err = s.appBootstrapPreferences(ctx, organization, payload.Projects)
 	if err != nil {
 		return s.nativeAPIError(c, err)

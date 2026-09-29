@@ -288,6 +288,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | tmux window status | | `$TMUX` detection | `ops.tmux_window_status` | enabled inside tmux |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
+| Service name | | | `service_name` | `detent` |
 | Health webhook | | | `notifications.health.webhook.url` | disabled |
 | Health notification debounce | | | `notifications.health.debounce_seconds` | `300` |
 | Health webhook timeout | | | `notifications.health.webhook.timeout_ms` | `5000` |
@@ -411,6 +412,19 @@ single-project fallback mode without `global.yaml`, workflow top-level
 `identity.name` is used before the short hostname. Names are trimmed, must be a
 single line, and are capped at 40 characters in the web UI.
 
+`service_name` names the background service `detent start` installs: the
+launchd job `com.digitaldrywood.NAME` and the systemd user unit `NAME.service`.
+It defaults to `detent`. Give each configuration on one host its own name, for
+example a local board and a Detent Cloud runner; `detent hub runner register`
+writes `service_name: detent.runner`. Names use lowercase letters, digits, dots
+and hyphens.
+
+A project listed under `client.native_projects` whose committed `detent.yaml`
+uses the GitHub tracker (`github` or `github_local`) uses the Hub instead
+(`tracker.kind: hub_native`), so a runner host can use a repository checkout
+as it is. Any other tracker kind is treated as a deliberate local choice and
+kept.
+
 Configure `client.hub_url` to move candidate discovery and claiming to a Detent
 Hub. The machine registers its identity, project and pool capabilities,
 capacity, operating system, architecture, and binary version. It then
@@ -471,6 +485,22 @@ networking. Native startup requires the mapping and negotiated capabilities;
 there is no fallback scheduler. The [Hub API](hub-api.md#native-collaboration-protocol)
 documents project provisioning, workflow states and the typed operations.
 Repository workflow files and machine-local overrides keep their existing paths.
+
+A native project reuses the repository `WORKFLOW.md` as its prompt. Detent
+appends a native completion contract to every native run prompt that overrides
+tracker-specific steps in that file: the agent commits on the attempt branch,
+never pushes or opens pull requests on the forge, never runs `gh` or calls the
+GitHub API, and does not post Workpad or issue comments or change issue state.
+The runner records the Change Request from those commits. Native projects make
+no GitHub REST or GraphQL calls by default: workers do not receive the instance
+GitHub credential, and checkpoints do not look up or open pull requests. No
+separate key turns this on; an explicit `worker.github_token` is the only opt-in
+for worker GitHub access. The
+contract is added at render time, so it does not change the approved policy
+digest. `detent doctor` (check `Project <id> native workflow instructions`) and
+`detent hub policy inspect` warn when a native project's `WORKFLOW.md` still
+mentions GitHub-only steps such as `Codex Workpad`, a `gh` command,
+`pull request`, `detent-status` or the GitHub API.
 
 Health notifications deliver fleet and project needs-attention transitions to
 one generic webhook. They are disabled when
@@ -596,8 +626,10 @@ hosts; per-state and global concurrency limits remain under `agent`.
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
 enterprise variants, or the host's GitHub CLI configuration. When omitted or
 empty, `worker.github_token` defaults to the resolved top-level `github_token`
-(including `github_token: gh`). An explicit project worker credential overrides
-that default; with neither credential configured, the worker policy is disabled.
+(including `github_token: gh`), except for `tracker.kind: hub_native`
+projects, which never inherit the instance credential. An explicit project worker
+credential overrides that default; with neither credential configured, the worker
+policy is disabled.
 Set the worker override to `gh` to resolve `gh auth token` in the Detent process
 and copy only the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
 reference remains available when permission or revocation isolation is useful:

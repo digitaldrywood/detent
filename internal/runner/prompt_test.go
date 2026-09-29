@@ -43,6 +43,51 @@ func TestNativeIssuePromptOwnership(t *testing.T) {
 	}
 }
 
+func TestBuildPromptNativeCompletionContract(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		kind  string
+		state string
+		want  bool
+	}{
+		{name: "native code", kind: config.TrackerHubNative, state: "In Progress", want: true},
+		{name: "native rework", kind: config.TrackerHubNative, state: "Rework", want: true},
+		{name: "github", kind: config.TrackerGitHub, state: "In Progress"},
+		{name: "linear", kind: config.TrackerLinear, state: "Rework"},
+		{name: "memory", kind: config.TrackerMemory, state: "In Progress"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow := config.Workflow{
+				Prompt: "Keep the `## Codex Workpad` comment current and open a pull request.",
+				Config: config.Config{Tracker: config.Tracker{Kind: tt.kind}},
+			}
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#7", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Native completion contract")
+			if got := index >= 0; got != tt.want {
+				t.Fatalf("native completion contract present = %t, want %t", got, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			contract := prompt[index:]
+			for _, want := range []string{"override any tracker, Workpad, or pull request instructions", "Commit your work on the current attempt branch", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from your commits", "final message"} {
+				if !strings.Contains(contract, want) {
+					t.Errorf("contract missing %q", want)
+				}
+			}
+			if strings.Contains(contract[len("## Native completion contract"):], "\n## ") {
+				t.Error("native completion contract must be the final prompt section")
+			}
+		})
+	}
+}
+
 func TestMergePromptHandsOffPushedHeadBeforeCI(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {

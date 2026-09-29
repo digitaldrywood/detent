@@ -60,6 +60,18 @@ func newHostedSharedFixture(t *testing.T) hostedSharedFixture {
 	return hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}, key: key}
 }
 
+// accessRole is the role the entry would read from the user's access token.
+func (f hostedSharedFixture) accessRole(subject string) string {
+	f.provider.mu.Lock()
+	defer f.provider.mu.Unlock()
+	for _, member := range f.provider.members {
+		if member.UserID == subject && member.Status == "active" {
+			return member.Role.Slug
+		}
+	}
+	return "member"
+}
+
 func (f hostedSharedFixture) claims(user *hostedSecurityUser, kind, method, target string, body []byte) cloudassert.Claims {
 	now := time.Now()
 	id, _ := cloudassert.NewID()
@@ -69,6 +81,7 @@ func (f hostedSharedFixture) claims(user *hostedSecurityUser, kind, method, targ
 		claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = hosted.Subject, user.identity.Email, hosted.OrganizationID, hosted.SessionID
 		claims.SessionCreatedAt, claims.SessionExpiresAt = hosted.CreatedAt, hosted.ExpiresAt
 		claims.SupportActor, claims.SupportReason = hosted.SupportActor, hosted.SupportReason
+		claims.Role, claims.AccessExpiresAt = f.accessRole(hosted.Subject), now.Add(5*time.Minute)
 		claims.Binding = cloudassert.AuthorizationBinding("shared-"+hosted.Subject, "org_security", hosted.SessionID)
 		claims.CSRF = cloudassert.CSRFToken("shared-"+hosted.Subject, "org_security")
 	}
@@ -176,6 +189,7 @@ func TestHostedSharedEntryRejectsBypass(t *testing.T) {
 		{"other tenant audience", hostedSharedRequest{user: &owner, target: "/organizations/org_security/organization", mutate: func(c *cloudassert.Claims) { c.Audience = "org_other" }}, http.StatusUnauthorized},
 		{"stale allocation generation", hostedSharedRequest{user: &owner, target: "/organizations/org_security/organization", mutate: func(c *cloudassert.Claims) { c.Generation = 2 }}, http.StatusUnauthorized},
 		{"path substitution", hostedSharedRequest{user: &owner, target: "/organizations/org_security/organization", mutate: func(c *cloudassert.Claims) { c.Path = "/organizations/org_security/projects/prj_security" }}, http.StatusUnauthorized},
+		{"expired access token", hostedSharedRequest{user: &owner, target: f.base + "/work-items", mutate: func(c *cloudassert.Claims) { c.AccessExpiresAt = time.Now().Add(-time.Second) }}, http.StatusUnauthorized},
 		{"browser assertion with bearer", hostedSharedRequest{user: &owner, target: f.base + "/work-items", bearer: "detent_token"}, http.StatusUnauthorized},
 		{"machine assertion without bearer", hostedSharedRequest{kind: cloudassert.KindMachine, target: f.base + "/work-items"}, http.StatusUnauthorized},
 		{"other organization prefix", hostedSharedRequest{user: &owner, target: "/organizations/org_other/organization"}, http.StatusNotFound},

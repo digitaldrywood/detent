@@ -3903,7 +3903,9 @@ func (w *Workspace) validateCacheKeys(node *yaml.Node, path string, visiting map
 }
 
 // WithRuntimeGitHubToken applies the resolved instance credential to GitHub
-// consumers. An explicit worker credential always takes precedence.
+// consumers. An explicit worker credential always takes precedence. Native
+// projects receive no instance credential; an explicit worker.github_token
+// is their only way to give workers GitHub access.
 func (c Config) WithRuntimeGitHubToken(token string) Config {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -3912,7 +3914,7 @@ func (c Config) WithRuntimeGitHubToken(token string) Config {
 	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal || c.ScheduleOwnership.Enabled {
 		c.Tracker.APIKey = token
 	}
-	if strings.TrimSpace(c.Worker.GitHubToken) == "" {
+	if strings.TrimSpace(c.Worker.GitHubToken) == "" && c.Tracker.Kind != TrackerHubNative {
 		c.Worker.GitHubToken = token
 	}
 	return c

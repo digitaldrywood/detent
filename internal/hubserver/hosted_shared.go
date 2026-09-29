@@ -143,7 +143,11 @@ func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, err
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	ctx := c.Request().Context()
-	if identity.SupportActor != "" && (!hostedEmailListed(s.config.Hosted.StaffEmails, identity.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, identity.SupportActor)) {
+	now := s.config.now()
+	if !claims.AccessExpiresAt.After(now) || !auth.ValidOrganizationRole(claims.Role) {
+		return auth.Session{}, "", auth.ErrInvalidSession
+	}
+	if identity.SupportActor != "" && (!hostedEmailListed(s.config.Hosted.StaffEmails, identity.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, identity.SupportActor) || !auth.ValidSupportReason(identity.SupportReason)) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -161,8 +165,8 @@ func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, err
 	if err := tx.Commit(); err != nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	session, err := s.WebSession(ctx, claims.Binding, s.config.now())
-	if err != nil || session.Identity == nil || session.Identity.Subject != identity.Subject || session.Identity.SessionID != identity.SessionID || session.Identity.OrganizationID != identity.OrganizationID || !strings.EqualFold(session.Email, claims.Email) {
+	session, err := s.storedWebSession(ctx, claims.Binding, now)
+	if err != nil || session.Identity == nil || session.Identity.Subject != identity.Subject || session.Identity.SessionID != identity.SessionID || session.Identity.OrganizationID != identity.OrganizationID || session.Identity.SupportActor != identity.SupportActor || session.Identity.SupportReason != identity.SupportReason || !strings.EqualFold(session.Email, claims.Email) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	c.Set("hosted_session", session)

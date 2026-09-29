@@ -137,7 +137,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 	callback.Err = err
 	switch {
 	case err != nil:
-	case identity.Hosted == nil:
+	case identity.Hosted == nil || identity.Tokens.AccessToken == "" || identity.Tokens.RefreshToken == "":
 		callback.Reason = "identity_incomplete"
 	case !identity.EmailVerified:
 		callback.Reason = auth.HostedReasonEmailUnverified
@@ -173,7 +173,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", callback)
 	}
 	if transaction.Organization != "" {
-		authorized, stale, err := s.auth.authorize(ctx, session, organization.ID, *identity.Hosted, identity.Email)
+		authorized, stale, err := s.auth.authorize(ctx, session, organization.ID, *identity.Hosted, identity.Tokens, identity.Email)
 		if err != nil {
 			callback.Reason = "authorization_failed"
 			return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", callback)
@@ -258,7 +258,11 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	session := accountSession{Hash: hash, CSRFSecret: csrfSecret, Subject: identity.Subject, Email: identity.Email, Identity: hosted}
 	for _, previous := range carried {
 		if !previous.Support && previous.Identity.ExpiresAt.After(s.config.now()) {
-			if _, _, err := s.auth.authorize(ctx, session, previous.Organization, previous.Identity, previous.EffectiveEmail); err != nil {
+			tokens, err := s.auth.tokens(previous)
+			if err != nil {
+				continue
+			}
+			if _, _, err := s.auth.authorize(ctx, session, previous.Organization, previous.Identity, tokens, previous.EffectiveEmail); err != nil {
 				return accountSession{}, err
 			}
 		}
