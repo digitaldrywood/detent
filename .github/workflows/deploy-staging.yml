@@ -73,14 +73,24 @@ jobs:
             echo "::notice::develop moved to ${head}; skipping stale deploy of ${GITHUB_SHA}"
             exit 0
           fi
-          ssh -i "$RUNNER_TEMP/ssh/id" \
-              -o IdentitiesOnly=yes \
-              -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
-              -o StrictHostKeyChecking=yes \
-              -o BatchMode=yes \
-              -o ConnectTimeout=20 \
-              apprunner@staging.hub.detent.build \
-              "deploy ${GITHUB_SHA}" < "$RUNNER_TEMP/detent"
+          for attempt in 1 2 3 4; do
+            status=0
+            ssh -i "$RUNNER_TEMP/ssh/id" \
+                -o IdentitiesOnly=yes \
+                -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+                -o StrictHostKeyChecking=yes \
+                -o BatchMode=yes \
+                -o ConnectTimeout=20 \
+                apprunner@staging.hub.detent.build \
+                "deploy ${GITHUB_SHA}" < "$RUNNER_TEMP/detent" 2> "$RUNNER_TEMP/ssh/stderr" || status=$?
+            cat "$RUNNER_TEMP/ssh/stderr" >&2
+            if [ "$status" -ne 255 ] || ! grep -qE '^(kex_exchange_identification:|ssh: connect to host )' "$RUNNER_TEMP/ssh/stderr"; then
+              exit "$status"
+            fi
+            echo "::warning::ssh connection refused before key exchange (attempt ${attempt}/4)"
+            sleep $((attempt * 15))
+          done
+          exit 255
 
       - name: Clean up SSH material
         if: always()
