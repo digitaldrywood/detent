@@ -28,7 +28,9 @@ import { useClient } from "../client.ts";
 import { AttemptDiffBody } from "../components/surfaces/DiffSurface.tsx";
 import { Pill, type PillTone } from "./components/IssueCard.tsx";
 import { WorkTopBar } from "./components/WorkTopBar.tsx";
+import { actorLabel } from "./lib/activity.ts";
 import { ageLabel, issueNumber } from "./lib/format.ts";
+import { NO_RUNNER_NAMES, useRunnerNames, type RunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 
@@ -178,6 +180,7 @@ export interface ChangeRequestViewProps {
   readonly busy: boolean;
   readonly now: number;
   readonly viewerPrincipalId: string;
+  readonly runnerNames?: RunnerNames;
   readonly theme?: "light" | "dark";
   readonly onSelectVersion: (versionId: string) => void;
   readonly onReview: (decision: ReviewDecision, body: string) => Promise<void>;
@@ -412,9 +415,12 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
                   <p className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                     <Pill tone={decisionTone(review.decision)}>{decisionLabel(review.decision)}</Pill>
                     <span>
-                      {review.actor.principal_id === props.viewerPrincipalId
-                        ? "You"
-                        : review.actor.principal_id}
+                      {actorLabel(
+                        review.actor,
+                        props.viewerPrincipalId,
+                        null,
+                        props.runnerNames ?? NO_RUNNER_NAMES,
+                      )}
                     </span>
                     <span className="ml-auto">{ageLabel(review.created_at, props.now)}</span>
                   </p>
@@ -434,9 +440,12 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
                 <li key={comment.comment_id} className="rounded-md border border-border p-2">
                   <p className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                     <span>
-                      {comment.actor.principal_id === props.viewerPrincipalId
-                        ? "You"
-                        : comment.actor.principal_id}
+                      {actorLabel(
+                        comment.actor,
+                        props.viewerPrincipalId,
+                        null,
+                        props.runnerNames ?? NO_RUNNER_NAMES,
+                      )}
                     </span>
                     {comment.version_id === undefined ? null : <span>{round(comment.version_id)}</span>}
                     <span className="ml-auto">{ageLabel(comment.created_at, props.now)}</span>
@@ -569,6 +578,7 @@ export function ChangeRequestPage(): React.ReactElement {
   const http = useWorkHttp();
   const now = useNow();
   const { resolvedTheme } = useTheme();
+  const runnerNames = useRunnerNames();
 
   // The project comes from the link when the row that opened this page knew
   // it (the all-projects Pull requests list), else from the linked
@@ -716,6 +726,7 @@ export function ChangeRequestPage(): React.ReactElement {
         busy={busy}
         now={now}
         viewerPrincipalId={client.bootstrap.actor.principal_id}
+        runnerNames={runnerNames}
         theme={resolvedTheme}
         onSelectVersion={setRequestedVersion}
         onReview={review}

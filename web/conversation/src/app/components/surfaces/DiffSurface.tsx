@@ -26,7 +26,9 @@ import {
   resolveFileDiffPath,
 } from "../../../lib/diffRendering.ts";
 import { PREFERRED_HIGHLIGHTER } from "../../../lib/syntaxHighlighting.ts";
+import { actorLabel } from "../../work/lib/activity.ts";
 import { ageLabel } from "../../work/lib/format.ts";
+import { runnerDisplay, useRunnerNames } from "../../work/lib/runnerNames.ts";
 import { Pill, type PillTone } from "../../work/components/IssueCard.tsx";
 import type { DiffSource } from "../../adapters/surfaces.ts";
 
@@ -467,6 +469,7 @@ function DiffContext({
   history: readonly CollaborationEvent[];
   now: number;
 }): React.ReactElement {
+  const runnerNames = useRunnerNames();
   return (
     <>
       {checkpoint === null ? null : (
@@ -492,7 +495,7 @@ function DiffContext({
                 <Mono>{attempt.attempt_id}</Mono>
               </Row>
               <Row label="runner">
-                {[attempt.identity?.model, attempt.identity?.backend, attempt.runner_id]
+                {[attempt.identity?.model, attempt.identity?.backend, runnerDisplay(runnerNames, attempt.runner_id)]
                   .filter((part) => part !== undefined && part !== null)
                   .join(" · ") || "—"}
               </Row>
@@ -553,7 +556,7 @@ function DiffContext({
                   <Pill tone={review.decision === "approved" ? "ok" : "warn"}>
                     {review.decision}
                   </Pill>
-                  {review.actor.principal_id} · {ageLabel(review.created_at, now)}
+                  {actorLabel(review.actor, null, null, runnerNames)} · {ageLabel(review.created_at, now)}
                 </p>
                 {review.body.length === 0 ? null : <p className="mt-1 text-xs">{review.body}</p>}
               </li>
@@ -576,7 +579,9 @@ function DiffContext({
                   data-testid="diff-activity-row"
                 >
                   <Mono>{event.type}</Mono>
-                  <span className="text-muted-foreground">{event.actor.principal_id}</span>
+                  <span className="text-muted-foreground">
+                    {actorLabel(event.actor, null, null, runnerNames)}
+                  </span>
                   <span className="ml-auto shrink-0 text-muted-foreground tabular-nums">
                     {ageLabel(event.recorded_at, now)}
                   </span>
