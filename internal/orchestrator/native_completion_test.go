@@ -40,8 +40,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
+	landing := []connector.WorkflowState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "In Review", "Merging", "Done"}},
+		{Name: "In Review", Transitions: []string{"Done", "In Progress", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Review", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
+	undispatched := append([]connector.WorkflowState(nil), landing...)
+	undispatched[3].Dispatchable = false
 	head := strings.Repeat("c", 40)
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
+	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
 	for _, test := range []struct {
 		name         string
 		change       *runpkg.NativeChange
@@ -55,6 +65,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantContinue bool
 	}{
 		{name: "commits move to the configured review lane", change: opened, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
+		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "a version waiting for a reviewer goes to review", change: opened, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
+		{name: "an accepted version without a landing move goes to review", change: accepted, states: workflow, wantState: "In Review", wantComment: "so it waits in In Review"},
+		{name: "an accepted version never goes to a landing lane that does not dispatch", change: accepted, states: undispatched, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
 		{name: "a workflow without the review lane is handed off, never ended", change: opened, states: hosted, wantDeferred: true},
@@ -136,12 +150,18 @@ func TestNativeCompletionComment(t *testing.T) {
 		want   []string
 	}{
 		{name: "opened", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "3 files", "head 0123456789ab)", "In Progress to In Review"}},
-		{name: "opened without a version", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: policy_mismatch", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "No version was published for review: publish version: policy_mismatch", "next successful run publishes one"}},
+		{name: "opened without a version", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: hub unavailable", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "No version was published for review: publish version: hub unavailable", "next successful run publishes one"}},
+		{name: "opened without a review policy", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: policy_mismatch", VersionCode: "policy_mismatch", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"owner or admin", "approving the repository policy again in Project settings", "back to In Progress"}},
+		{name: "opened and needing no reviewer", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"needs no reviewer", "runner lands it next"}},
 		{name: "unchanged", change: runpkg.NativeChange{BaseSHA: "abc"}, want: []string{"against abc", "nothing to review"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := nativeCompletionComment(&test.change, "In Progress", "In Review")
+			to := "In Review"
+			if test.change.Reviewed {
+				to = "Merging"
+			}
+			got := nativeCompletionComment(&test.change, "In Progress", to)
 			for _, want := range test.want {
 				if !strings.Contains(got, want) {
 					t.Fatalf("comment %q does not contain %q", got, want)

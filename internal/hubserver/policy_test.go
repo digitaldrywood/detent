@@ -248,9 +248,10 @@ func TestPolicyClaimChecksUseDatabaseTime(t *testing.T) {
 
 // TestProjectPolicyApprovalSeedsChangeReviewPolicy checks what approving a
 // repository policy means for a native project's review expectation: a project
-// with none gets the default, the default follows the descriptor when it is
-// approved again, an administrator's own review policy is left to go stale, and
-// a descriptor the default cannot satisfy seeds nothing.
+// with none gets the default, which asks for a person only under a
+// human-review gate; the default follows the descriptor when it is approved
+// again; an administrator's policy that pins checks is left to go stale; and a
+// descriptor the default cannot satisfy seeds nothing.
 func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "seeded")
@@ -269,7 +270,10 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	first := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", first)
 	seeded := read(t, http.StatusOK)
-	if seeded.PolicyID != first.ID || !seeded.RequireReview || len(seeded.RequiredChecks) != 0 || seeded.ID != changerequest.PolicyID(seeded) {
+	if first.Gates.Kind == "human_review" {
+		t.Fatal("the fixture descriptor must not ask for human review")
+	}
+	if seeded.PolicyID != first.ID || seeded.RequireReview || len(seeded.RequiredChecks) != 0 || seeded.ID != changerequest.PolicyID(seeded) {
 		t.Fatalf("seeded review policy = %#v", seeded)
 	}
 	second := first
@@ -277,7 +281,7 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	second = second.WithID()
 	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: first.ID, Policy: second})
 	requireNativeStatus(t, response, http.StatusOK)
-	if followed := read(t, http.StatusOK); followed.PolicyID != second.ID || !followed.RequireReview || len(followed.RequiredChecks) != 0 {
+	if followed := read(t, http.StatusOK); followed.PolicyID != second.ID || followed.RequireReview || len(followed.RequiredChecks) != 0 {
 		t.Fatalf("default review policy did not follow the descriptor: %#v", followed)
 	}
 	var principal string
@@ -302,4 +306,17 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	descriptor = descriptor.WithID()
 	approveHubTestPolicy(t, checked.service, checked.base+"/policy", descriptor)
 	requireNativeStatus(t, performHubAPIRequest(t, checked.service, http.MethodGet, checked.base+"/change-review-policy", checked.token, nil), http.StatusNotFound)
+
+	reviewed := newNativeFixture(t, nil, "", "reviewed")
+	gated := hubTestPolicy()
+	gated.Gates.Kind, gated.Gates.AutomatedReview = "human_review", ""
+	gated = gated.WithID()
+	approveHubTestPolicy(t, reviewed.service, reviewed.base+"/policy", gated)
+	response = performHubAPIRequest(t, reviewed.service, http.MethodGet, reviewed.base+"/change-review-policy", reviewed.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var asked tracker.ChangeReviewPolicy
+	decodeHubResponse(t, response, &asked)
+	if asked.PolicyID != gated.ID || !asked.RequireReview {
+		t.Fatalf("a human-review gate seeded %#v, want a review requirement", asked)
+	}
 }

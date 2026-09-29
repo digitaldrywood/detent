@@ -113,7 +113,11 @@ export function statusSentence(change: ChangeDetail, version: ChangeVersion | nu
   }
   switch (summary.status) {
     case "reviewed":
-      return "Approved. Ready to land on the base branch.";
+      return summary.native_review === "not_required"
+        ? "No review needed. The runner lands it on the base branch."
+        : "Approved. Ready to land on the base branch.";
+    case "landed":
+      return "Landed on the base branch.";
     case "stale_policy":
       return "The project's policy changed after this round was published. A new round is needed.";
     case "needs_evidence":

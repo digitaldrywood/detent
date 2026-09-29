@@ -17,21 +17,33 @@ page to resume setup; infrastructure errors do not require another organization
 or host identity.
 
 A new hosted project starts with the workflow `Todo` → `In Progress` →
-`Human Review` → `Merging` → `Done`. `Todo`, `In Progress` and `Merging`
-dispatch work; `Human Review` neither dispatches nor ends it and is where a
-completed run's Change Request waits. The runner's orchestrator moves a run
-that committed a change there (`Human Review` is the default
-`auto_promote.source_state`), and moves a run that committed nothing to `Done`.
-A person approves the change in the client, which moves it to `Merging`; the
-runner that holds the project lands the reviewed head on the base branch with
-plain git and the Hub finishes the issue in `Done`. Or the person requests
-changes, which sends it back to `In Progress`. Hub migrations 36 and 38 move
-projects whose workflow is exactly an earlier template onto this one. A
-customized workflow is left unchanged; it needs a lane matching the runner's
-`auto_promote.source_state` that `In Progress` can move to, or a completed
-run's Change Request has no review lane and its completion waits, and it needs
-a dispatchable `Merging` lane that lane can move to, or approved changes stay
-in review for a person to land by hand.
+`Merging` → `Done`, with `Human Review` beside it. `Todo`, `In Progress` and
+`Merging` dispatch work; `Human Review` neither dispatches nor ends it. By
+default nobody has to review a run: the project's review policy follows its
+repository gate and asks for a person only under a `human_review` gate. A run
+that committed a change publishes a version the policy already accepts, and the
+runner's orchestrator moves it straight to `Merging`, where the runner that
+holds the project lands the head on the base branch with plain git and the Hub
+finishes the issue in `Done`. A run that committed nothing moves to `Done`.
+
+`Human Review` is where a Change Request waits for a person: in a project whose
+repository gate is `human_review` (opt in by setting that gate in the project's
+`detent.yaml` and approving the policy), and when a landing was refused, for
+example because the base branch requires pull requests. A person approves the
+change in the client, which moves it to `Merging`, or requests changes, which
+sends it back to `In Progress`. `Human Review` is the default
+`auto_promote.source_state`.
+
+Hub migrations 36, 38 and 39 move projects whose workflow is exactly an earlier
+template onto this one. A customized workflow is left unchanged; it needs a
+lane matching the runner's `auto_promote.source_state` that `In Progress` can
+move to, or a completed run's Change Request has no review lane and its
+completion waits, and it needs a dispatchable `Merging` lane reachable from
+`In Progress` and from the review lane, or accepted changes stay in review for a
+person to land by hand. Hub migration 40 gives every project with an approved
+repository policy the default review policy: projects approved before the Hub
+seeded one could not publish versions, and projects seeded while the default
+required review now follow their repository gate.
 
 ## Organization provisioning and recovery
 

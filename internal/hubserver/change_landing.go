@@ -60,8 +60,10 @@ func terminalTarget(project tracker.NativeProject, current string) string {
 // promoteReviewedChange moves the change's primary issue to the landing lane
 // once its current version is reviewed. It runs after every write that can
 // complete the evidence: an approval, a check result, and a version publish
-// under a policy that requires no review. An issue the workflow cannot move
-// stays where it is; the evidence is recorded either way.
+// under a policy that requires no review. An issue in a dispatchable lane
+// belongs to the run working it, whose completion moves it, so it is left
+// for that run; so is an issue the workflow cannot move. The evidence is
+// recorded either way.
 func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
 	detail, err := readChangeDetail(ctx, tx, scope, string(change.WorkItemID), change.ID, now)
 	if err != nil {
@@ -77,6 +79,11 @@ func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
 		return err
+	}
+	for _, state := range project.States {
+		if state.Name == issue.State && state.Dispatchable {
+			return nil
+		}
 	}
 	target := landingTarget(project, issue.State)
 	if target == "" || target == issue.State {
