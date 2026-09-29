@@ -32,6 +32,7 @@ import { OrganizationRoute } from "../account/Organization.tsx";
 import { ProjectSettingsRoute } from "../account/ProjectSettings.tsx";
 import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
+import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
 import { useNewProject } from "../projects/NewProject.tsx";
 import { NEW_CHAT_KEYSHORTCUTS, SEARCH_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { keybindingCatalogue } from "../adapters/keybindings.ts";
@@ -203,7 +204,7 @@ export function ProjectsSettings({
               status={
                 project.onboarding.ready
                   ? "Set up"
-                  : `${project.onboarding.steps.filter((step) => step.state !== "ready").length} setup steps left`
+                  : setupStepsLeftLabel(project.onboarding.steps.filter((step) => step.state !== "ready").length)
               }
               control={
                 <div className="flex gap-2">

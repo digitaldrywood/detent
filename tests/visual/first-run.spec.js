@@ -161,7 +161,7 @@ test("creating the first project lands on its board and the checklist advances",
   await expect(page).toHaveURL(/\/work\/p\/[^/]+$/);
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Example Studio");
   await expect(page.getByTestId("first-run-step-project")).toHaveAttribute("data-done", "true");
-  await expect(page.getByTestId("first-run-progress")).toContainText("of 3 done");
+  await expect(page.getByTestId("first-run-progress")).toContainText("of 4 done");
   await expect(page.getByTestId("work-board")).toHaveCount(0);
   // Creating a project grants its owner runner management, so the runner step
   // offers enrollment directly.
