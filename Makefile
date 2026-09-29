@@ -192,7 +192,7 @@ test-race-orchestrator:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(ORCHESTRATOR_RACE_PARALLEL) -timeout $(ORCHESTRATOR_RACE_TIMEOUT) -output tmp/orchestrator-race-evidence ./internal/orchestrator
 
 test-race-cover:
-	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)"
+	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)" '$(HUB_RACE_PARTITION)' '$(HUB_RACE_PARTITION_B)'
 	@$(MAKE) coverage-check
 	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
 
