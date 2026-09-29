@@ -10,6 +10,7 @@ import React from "react";
 import type { BootstrapProject } from "../../../contracts/index.ts";
 import type { NativeAttempt, NativeIssue, NativeProject } from "../../../contracts/work.ts";
 import { useClient } from "../../client.ts";
+import { useRunnerNames } from "./runnerNames.ts";
 import { toChangeView, toProjectView, toWorkItemView } from "./fromWire.ts";
 import type { Lane, ProjectView, WorkItemView } from "./model.ts";
 import { makeWorkHttp, newWorkKey, serverFilter, type WorkHttp, WorkApiError } from "./workHttp.ts";
@@ -143,6 +144,7 @@ export function useBoard(
 } {
   const client = useClient();
   const http = useWorkHttp();
+  const runnerNames = useRunnerNames();
   const projects: readonly BootstrapProject[] = client.bootstrap.projects;
   const [state, setState] = React.useState<BoardState>({
     loading: true,
@@ -252,6 +254,7 @@ export function useBoard(
           const extra = extras.get(issue.work_item_id);
           return toWorkItemView(issue, names.get(issue.project_id) ?? issue.project_id, {
             ...(extra === undefined ? {} : { attempts: extra.attempts, change: extra.change }),
+            runnerNames,
           });
         });
         const facets = toProjectView(
@@ -294,7 +297,7 @@ export function useBoard(
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, projects, nonce, serverState, serverLabel, serverAssignee]);
+  }, [http, projectId, projects, nonce, serverState, serverLabel, serverAssignee, runnerNames]);
 
   // The hosted activity stream. It carries one integer for the whole project
   // and no event id, so it cannot say what changed and cannot be resumed: the

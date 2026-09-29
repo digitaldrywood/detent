@@ -1,6 +1,7 @@
 import React from "react";
 
 import type { AttemptDiff, ChangeDetail, NativeAttempt } from "../../contracts/work.ts";
+import { runnerDisplay, useRunnerNames, type RunnerNames } from "../work/lib/runnerNames.ts";
 import type { PullRequestState } from "../../contracts/ui.ts";
 import {
   agentPanelModelFromAttempts,
@@ -99,12 +100,13 @@ const NO_ATTEMPTS: readonly NativeAttempt[] = [];
 /** The hub's attempt record as the Agents surface reads it. */
 export function toAttemptActivity(
   attempts: readonly NativeAttempt[],
+  runnerNames?: RunnerNames,
 ): readonly AttemptActivity[] {
   return attempts.map((attempt, index) => ({
     id: attempt.attempt_id,
     status: attempt.status,
     running: attempt.status === "running",
-    runner: attempt.runner_id ?? attempt.machine_id ?? null,
+    runner: runnerDisplay(runnerNames, attempt.runner_id ?? attempt.machine_id ?? null),
     backend: attempt.identity?.backend ?? null,
     model: attempt.identity?.model ?? null,
     effort: null,
@@ -148,6 +150,7 @@ async function read(
   http: WorkHttp,
   projectId: string,
   workItemId: string,
+  runnerNames: RunnerNames,
 ): Promise<Omit<IssueSurfaces, "loading" | "error" | "reload">> {
   const [attempts, changes] = await Promise.all([
     http
@@ -197,7 +200,7 @@ async function read(
             isDraft: change?.summary.status === "draft",
             title: change?.change.title ?? "",
           },
-    agents: agentPanelModelFromAttempts(toAttemptActivity(attempts)),
+    agents: agentPanelModelFromAttempts(toAttemptActivity(attempts, runnerNames)),
   };
 }
 
@@ -241,6 +244,7 @@ export function useIssueSurfaces(
   workItemId: string | null,
 ): IssueSurfaces {
   const http = useWorkHttp();
+  const runnerNames = useRunnerNames();
   const [state, setState] = React.useState(EMPTY);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -280,7 +284,7 @@ export function useIssueSurfaces(
     }
     let cancelled = false;
     setLoading(true);
-    void read(http, projectId, workItemId)
+    void read(http, projectId, workItemId, runnerNames)
       .then((next) => {
         if (cancelled) return;
         setState(next);
@@ -296,7 +300,7 @@ export function useIssueSurfaces(
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, nonce]);
+  }, [http, projectId, workItemId, nonce, runnerNames]);
 
   return React.useMemo(
     () => ({ ...state, loading, error, reload: () => setNonce((value) => value + 1) }),

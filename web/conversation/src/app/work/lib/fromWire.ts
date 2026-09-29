@@ -3,6 +3,7 @@
 // Everything the components read is built here, so a field that moves on the
 // wire is a change to this file and nothing else. It is pure and synchronous:
 // no fetching, no clock, no randomness.
+import { runnerDisplay, type RunnerNames } from "./runnerNames.ts";
 import type {
   ChangeDetail,
   ChangeRequest,
@@ -84,14 +85,17 @@ export function toProjectView(
  * path rewrites a `running` row to `interrupted` when its lease is gone. A
  * card that pulses is therefore claiming a live lease, not merely a row.
  */
-export function toAttemptView(attempts: readonly NativeAttempt[]): AttemptView | null {
+export function toAttemptView(
+  attempts: readonly NativeAttempt[],
+  runnerNames?: RunnerNames,
+): AttemptView | null {
   const attempt = attempts.at(-1);
   if (attempt === undefined) return null;
   return {
     id: attempt.attempt_id,
     status: attempt.status,
     running: attempt.status === "running",
-    runner: attempt.runner_id ?? attempt.machine_id ?? null,
+    runner: runnerDisplay(runnerNames, attempt.runner_id ?? attempt.machine_id ?? null),
     backend: attempt.identity?.backend ?? null,
     model: attempt.identity?.model ?? null,
     // The hub serves no effort or access on an attempt; the artifact's worker
@@ -150,6 +154,7 @@ export interface ItemExtras {
   readonly attempts?: readonly NativeAttempt[];
   readonly change?: ChangeView | null;
   readonly conversationId?: string | null;
+  readonly runnerNames?: RunnerNames;
 }
 
 /**
@@ -192,7 +197,8 @@ export function toWorkItemView(
     blockedBy: issue.blockers
       .filter((blocker) => !blocker.terminal)
       .map((blocker) => blocker.work_item_id),
-    attempt: extras.attempts === undefined ? null : toAttemptView(extras.attempts),
+    attempt:
+      extras.attempts === undefined ? null : toAttemptView(extras.attempts, extras.runnerNames),
     change: extras.change ?? null,
     conversationId: extras.conversationId ?? null,
   };
