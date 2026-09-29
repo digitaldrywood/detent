@@ -225,6 +225,27 @@ func (h *nativeChangeHub) changes(t *testing.T, issueID string) []tracker.Change
 	return changes
 }
 
+const nativeChangeRepository = "https://github.com/example/native-change"
+
+// publish puts a version at the given head on the change as an operator
+// would, so a rework run finds a current version to compare its head with.
+func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, changeID, head string) tracker.ChangeVersion {
+	t.Helper()
+	digest := policy.Digest([]byte(head))
+	version, err := h.admin.PublishChangeVersion(t.Context(), item, changeID, tracker.PublishChangeVersion{
+		Mutation: nativeMutationKey(),
+		ChangeVersionInput: tracker.ChangeVersionInput{
+			BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository,
+			Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: digest, Availability: "unverified"},
+			Artifacts: []tracker.ChangeArtifact{}, PolicyID: h.descriptor.ID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return version
+}
+
 func nativeChangeDiff(head string, files ...string) runner.AttemptDiffSource {
 	return func(context.Context) (tracker.AttemptDiffRequest, bool) {
 		request := tracker.AttemptDiffRequest{BaseSHA: strings.Repeat("a", 40), HeadSHA: head, Files: []tracker.AttemptDiffFile{}}
@@ -253,13 +274,24 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		failCreate  bool
 		failDiff    bool
 		existing    bool
+		published   string
+		noRemote    bool
 		wantChange  *runner.NativeChange
 		wantError   bool
 		wantChanges int
+		// wantVersions is the versions the item's change carries after the
+		// finish; the last one is current and carries the run's head.
+		wantVersions int
 	}{
 		{name: "commits open a change", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"),
-			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1},
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "rework reuses the item's change", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "rework publishes a new head as the next version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40),
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
+		{name: "rework keeps the version that already carries its head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "a remote no https URL names opens the change without a version", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), noRemote: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1},
 		{name: "a clean worktree with no commits opens nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base),
 			wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
@@ -281,8 +313,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			issue := h.createInProgress(t, "Native change")
 			item := tracker.NativeWorkItemID(issue.ID)
 			if test.existing {
-				if _, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Earlier change"}); err != nil {
+				earlier, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Earlier change"})
+				if err != nil {
 					t.Fatal(err)
+				}
+				if test.published != "" {
+					h.publish(t, item, earlier.ID, test.published)
 				}
 			}
 			h.claim(t, issue.ID)
@@ -294,6 +330,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			defer stop()
 			if test.source != nil {
 				execution.(runner.DiffExecution).SetDiffSource(test.source)
+			}
+			if !test.noRemote {
+				execution.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
 			}
 			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: test.role, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
@@ -314,7 +353,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatalf("finish error = %v, lease lost = %t", finishErr, test.loseLease)
 			}
 			changes := execution.(runner.ChangeExecution)
-			checkChange := func(wantError bool, wantChanges int) {
+			checkChange := func(wantError bool, wantChanges, wantVersions int) {
 				t.Helper()
 				got := changes.NativeChange()
 				if test.wantChange == nil {
@@ -329,7 +368,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						t.Fatalf("native change = %#v, want error = %t", got, wantError)
 					}
 					want := *test.wantChange
-					want.ChangeID, want.Error = got.ChangeID, got.Error
+					want.ChangeID, want.Error, want.VersionID, want.VersionError = got.ChangeID, got.Error, got.VersionID, got.VersionError
 					if *got != want {
 						t.Fatalf("native change = %#v, want %#v", *got, want)
 					}
@@ -338,23 +377,41 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						if stored[len(stored)-1].ID != got.ChangeID {
 							t.Fatalf("reported change %s is not the item's change %#v", got.ChangeID, stored)
 						}
+						detail, err := h.admin.Change(t.Context(), item, got.ChangeID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if len(detail.Versions) != wantVersions {
+							t.Fatalf("versions = %#v, want %d", detail.Versions, wantVersions)
+						}
+						if wantVersions == 0 {
+							if got.VersionID != "" || !strings.Contains(got.VersionError, "https") {
+								t.Fatalf("native change without a version = %#v", got)
+							}
+						} else {
+							current := detail.Versions[len(detail.Versions)-1]
+							runPublished := test.published != got.HeadSHA
+							if got.VersionID != current.ID || got.VersionError != "" || detail.Change.CurrentVersion != current.ID || current.HeadSHA != got.HeadSHA || current.BaseSHA != got.BaseSHA || runPublished && (current.RunID == "" || current.AttemptID == "") || current.Repository != nativeChangeRepository || current.Code.Kind != "code" || detail.Summary.Status != "needs_evidence" {
+								t.Fatalf("version = %#v for native change %#v (summary %#v)", current, got, detail.Summary)
+							}
+						}
 					}
 				}
 				if stored := h.changes(t, issue.ID); len(stored) != wantChanges {
 					t.Fatalf("changes = %#v, want %d", stored, wantChanges)
 				}
 			}
-			checkChange(test.wantError, test.wantChanges)
+			checkChange(test.wantError, test.wantChanges, test.wantVersions)
 			if again := execution.Finish(guarded, test.outcome); test.loseLease == (again == nil) {
 				t.Fatalf("repeated finish error = %v", again)
 			}
-			checkChange(test.wantError, test.wantChanges)
+			checkChange(test.wantError, test.wantChanges, test.wantVersions)
 			if test.failCreate {
 				h.failChanges.fail.Store(false)
 				if err := execution.Finish(guarded, test.outcome); err != nil {
 					t.Fatal(err)
 				}
-				checkChange(false, 1)
+				checkChange(false, 1, 1)
 			}
 			if state := h.state(t, issue.ID); state != "In Progress" {
 				t.Fatalf("the execution moved the item to %s; only the orchestrator moves lanes", state)

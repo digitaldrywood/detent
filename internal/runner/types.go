@@ -785,10 +785,16 @@ type NativeChange struct {
 	// the run changed nothing or the Change Request could not be opened.
 	ChangeID string
 	// Error says why a changed run has no Change Request.
-	Error   string
-	BaseSHA string
-	HeadSHA string
-	Files   int
+	Error string
+	// VersionID is the immutable version that carries this run's head on
+	// the Change Request, published under the run's lease so a reviewer has
+	// something to decide on. It is empty when the version could not be
+	// published; VersionError then says why.
+	VersionID    string
+	VersionError string
+	BaseSHA      string
+	HeadSHA      string
+	Files        int
 }
 
 type ArtifactProgressEvidence struct {

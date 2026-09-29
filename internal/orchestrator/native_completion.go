@@ -116,14 +116,21 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	if change.HeadSHA != "" {
 		metadata["native_head_sha"] = change.HeadSHA
 	}
+	if change.VersionID != "" {
+		metadata["native_version_id"] = change.VersionID
+	}
 	return metadata
 }
 
 func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
 	if change.Changed {
-		return fmt.Sprintf("The run succeeded and opened Change Request %s (%d files, head %s). Moved from %s to %s.",
+		comment := fmt.Sprintf("The run succeeded and opened Change Request %s (%d files, head %s). Moved from %s to %s.",
 			change.ChangeID, change.Files, shortCommit(change.HeadSHA), from, to)
+		if change.VersionID == "" {
+			comment += fmt.Sprintf(" No version was published for review: %s. The next successful run publishes one.", change.VersionError)
+		}
+		return comment
 	}
 	return fmt.Sprintf("The run succeeded without committing a change against %s, so there is nothing to review. Moved from %s to %s so it is not run again.",
 		shortCommit(change.BaseSHA), from, to)

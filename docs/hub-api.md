@@ -644,6 +644,17 @@ title/discussion, and an ordered set of immutable `version_...` records. These
 records work in native and GitHub-compatible projects without changing issue-field
 ownership. Creating a Change Request does not create a PR or authorize a merge.
 
+A runner opens a native item's Change Request when a work run finishes with
+commits, under the run's lease, and then publishes the run's head as the
+change's version: `base_sha` and `merge_base_sha` are the attempt diff's base,
+`repository` is the https form of the checkout's origin remote, and `code`
+names the head commit under that repository with `availability` `unverified`.
+A rework run whose head is already the current version publishes nothing; any
+other head becomes the next version, so every reviewed head is an immutable
+record. A version the Hub refuses (no https remote, a stale review policy) is
+reported on the run's completion comment and the Change Request stays a draft
+until the next successful run publishes one.
+
 All paths below follow `/api/v2/organizations/{organization}/projects/{project}`.
 Mutations require the existing `idempotency_key`; workers publishing versions
 also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id`.
@@ -667,7 +678,15 @@ The server rechecks the session, membership role and project grant inside the
 mutation transaction, including before returning a cached approval response.
 
 Before publishing, an administrator approves a review policy tied to the current
-repository `policy_id`. Its `require_review` setting cannot weaken a repository
+repository `policy_id`. Approving a native project's repository policy seeds the
+default review policy when the project has none: a person reviews every version
+and no CI check is pinned. The default follows the repository policy when that is
+approved again, and an approval that expects no review policy may replace it. A
+review policy an administrator shaped, by pinning checks or lifting the review
+requirement, is never rewritten; it goes stale when the repository policy changes
+and must be approved again. A repository policy whose gates the default cannot
+satisfy (a required check count or validator) seeds nothing.
+Its `require_review` setting cannot weaken a repository
 human-review gate. `required_checks` cannot fall below the repository check count,
 and a repository validator requires an independent check. Every check pins `name`,
 `principal_id` (an existing token with a project grant), `workflow_id`,

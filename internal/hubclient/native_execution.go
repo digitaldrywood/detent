@@ -45,6 +45,9 @@ type nativeExecution struct {
 	conversation bool
 	settled      bool
 	change       *runner.NativeChange
+	// repository is the https URL of the checkout's origin, which a published
+	// version names; empty when the remote cannot be named that way.
+	repository string
 }
 
 type nativeMutationAuthorityKey struct{}

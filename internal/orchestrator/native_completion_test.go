@@ -135,7 +135,8 @@ func TestNativeCompletionComment(t *testing.T) {
 		change runpkg.NativeChange
 		want   []string
 	}{
-		{name: "opened", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "3 files", "head 0123456789ab)", "In Progress to In Review"}},
+		{name: "opened", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "3 files", "head 0123456789ab)", "In Progress to In Review"}},
+		{name: "opened without a version", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: policy_mismatch", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "No version was published for review: publish version: policy_mismatch", "next successful run publishes one"}},
 		{name: "unchanged", change: runpkg.NativeChange{BaseSHA: "abc"}, want: []string{"against abc", "nothing to review"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
