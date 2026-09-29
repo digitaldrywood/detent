@@ -1,5 +1,6 @@
 -- +goose Up
--- Hosted projects gain a landing lane.
+-- Hosted projects gain a landing lane. (Numbered 38: 37 is the observed-policies
+-- migration that landed on develop first.)
 --
 -- An approved Change Request moves to Merging, where the runner that holds
 -- the project lands it on the base branch with its own git credentials and
