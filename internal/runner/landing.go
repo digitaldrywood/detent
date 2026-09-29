@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -44,12 +45,45 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		return RunResult{}, err
 	}
 	landed := NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method}
-	if err := landing.RecordLanding(ctx, landed); err != nil {
+	// The base branch already carries the commit. Keep the landing beside the
+	// worktree before reporting it, so a report the hub cannot take right now
+	// is delivered by the next landing run instead of being lost.
+	if err := workspace.RecordLanding(ctx, info, target.HeadSHA, result); err != nil {
+		r.logWorkerEvent(req.Issue, "worker_native_landing_record_failed", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "error", err.Error())
+	}
+	if err := r.reportLanding(ctx, landing, landed); err != nil {
 		return RunResult{}, fmt.Errorf("record landing %s on %s: %w", result.MergeSHA, result.BaseRef, err)
+	}
+	if err := workspace.ForgetLanding(ctx, info); err != nil {
+		r.logWorkerEvent(req.Issue, "worker_native_landing_record_failed", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "error", err.Error())
 	}
 	r.logWorkerEvent(req.Issue, "worker_native_landed",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "base_ref", result.BaseRef, "method", result.Method)
 	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed}, nil
+}
+
+const (
+	landingReportTries   = 3
+	landingReportBackoff = 500 * time.Millisecond
+)
+
+// reportLanding delivers the landing to the hub, retrying a refusal that a
+// moment later may accept, such as a hub that is briefly unreachable.
+func (r *Runner) reportLanding(ctx context.Context, landing LandingExecution, landed NativeLanding) error {
+	var err error
+	for try := range landingReportTries {
+		if try > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(landingReportBackoff):
+			}
+		}
+		if err = landing.RecordLanding(ctx, landed); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 func (r *Runner) refusedLanding(_ RunRequest, target NativeLandingTarget, kind, reason string) RunResult {

@@ -440,7 +440,8 @@ terminal, and not `operator_only`, so the orchestrator can move a completed run'
 Change Request there), `Merging` (dispatchable: an approved Change Request waits
 there for the runner that lands it) and `Done` (terminal). `In Progress` may move
 to `Todo`, `Human Review` or `Done`; `Human Review` may move to `Done`, `Merging`
-or back to `In Progress`; `Merging` may move to `Done` or back to `Human Review`.
+or back to `In Progress`; `Merging` may move to `Done`, back to `Human Review`,
+or back to `In Progress`.
 Hub migrations 36 and 37 move projects whose workflow is exactly an earlier
 template onto it and leave customized workflows unchanged. A native project's Change Requests wait in the lane named by the
 runner's `auto_promote.source_state` (default `Human Review`), so a customized

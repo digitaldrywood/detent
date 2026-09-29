@@ -487,3 +487,88 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 		})
 	}
 }
+
+// TestReviewedChangePromotesOnAnyEvidence checks that the move to the landing
+// lane follows whichever write completes the evidence: an approval given
+// before the check, a check reported after the approval, and a publish under
+// a policy that requires no review.
+func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		require bool
+		order   []string
+	}{
+		{name: "check after approval", require: true, order: []string{"approve", "check"}},
+		{name: "approval after check", require: true, order: []string{"check", "approve"}},
+		{name: "no review required", require: false, order: []string{"check"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "promote")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			states := HostedProjectStates()
+			raw, err := marshalNative(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			var principal string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-promote'").Scan(&principal); err != nil {
+				t.Fatal(err)
+			}
+			rules := tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: test.require, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Promote me", State: "Human Review"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			state := func() string {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var current tracker.NativeIssue
+				decodeHubResponse(t, response, &current)
+				return current.State
+			}
+			if got := state(); got != "Human Review" {
+				t.Fatalf("before evidence the item is in %s", got)
+			}
+			for i, step := range test.order {
+				switch step {
+				case "approve":
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
+				case "check":
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
+				}
+				want := "Human Review"
+				if i == len(test.order)-1 {
+					want = "Merging"
+				}
+				if got := state(); got != want {
+					t.Fatalf("after %s the item is in %s, want %s", step, got, want)
+				}
+			}
+		})
+	}
+}

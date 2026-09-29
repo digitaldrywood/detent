@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -120,6 +121,9 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 		return LandResult{}, fmt.Errorf("inspect fetched base: %w", err)
 	}
 	targetHead = strings.TrimSpace(targetHead)
+	if kept, ok := keptLanding(ctx, normalized.Path, head, targetRef); ok {
+		return kept, nil
+	}
 
 	staging := filepath.Join(l.root, "landing-"+normalized.Key)
 	_, _ = runGitAt(ctx, normalized.Path, "worktree", "remove", "--force", staging)
@@ -238,4 +242,80 @@ func classifyLandingPush(err error, target string) error {
 		return refuse(LandRefusalBaseMoved, "the base branch "+target+" moved while the change was being landed: "+strings.TrimSpace(commandErrorOutput(err)))
 	}
 	return fmt.Errorf("git push %s: %w", target, err)
+}
+
+// A landing that reached the base branch but whose report to the hub failed
+// is kept beside the attempt worktree's git metadata, so the next landing
+// run for the same head reports it instead of finding "nothing to land" and
+// sending a landed change back to review. The record is the LandResult plus
+// the head it landed; it is read only when that head is asked for again and
+// its merge commit is still on the base branch.
+const landingRecordFile = "detent-landing.json"
+
+type landingRecord struct {
+	HeadSHA string     `json:"head_sha"`
+	Result  LandResult `json:"result"`
+}
+
+func landingRecordPath(ctx context.Context, workspacePath string) (string, error) {
+	dir, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-dir")
+	if err != nil {
+		return "", err
+	}
+	dir = strings.TrimSpace(dir)
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(workspacePath, dir)
+	}
+	return filepath.Join(dir, landingRecordFile), nil
+}
+
+// RecordLanding keeps a landing that reached the base branch, for a report
+// that could not be delivered yet.
+func RecordLanding(ctx context.Context, info Info, head string, result LandResult) error {
+	path, err := landingRecordPath(ctx, info.Path)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(landingRecord{HeadSHA: head, Result: result})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o600)
+}
+
+// ForgetLanding removes a kept landing once the hub has it.
+func ForgetLanding(ctx context.Context, info Info) error {
+	path, err := landingRecordPath(ctx, info.Path)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// keptLanding returns the kept landing for head when its merge commit is
+// still reachable from the fetched base; otherwise nothing, and a stale
+// record is forgotten.
+func keptLanding(ctx context.Context, workspacePath, head, targetRef string) (LandResult, bool) {
+	path, err := landingRecordPath(ctx, workspacePath)
+	if err != nil {
+		return LandResult{}, false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return LandResult{}, false
+	}
+	var record landingRecord
+	if err := json.Unmarshal(raw, &record); err != nil || !strings.EqualFold(record.HeadSHA, head) || record.Result.MergeSHA == "" {
+		_ = os.Remove(path)
+		return LandResult{}, false
+	}
+	if _, err := runGitAt(ctx, workspacePath, "merge-base", "--is-ancestor", record.Result.MergeSHA, targetRef); err != nil {
+		_ = os.Remove(path)
+		return LandResult{}, false
+	}
+	return record.Result, true
 }

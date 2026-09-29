@@ -56,11 +56,12 @@ func terminalTarget(project tracker.NativeProject, current string) string {
 	return ""
 }
 
-// moveIssueAfterReview moves the change's primary issue along the workflow a
-// review decision implies: to the landing lane once the current version is
-// reviewed. An issue the workflow cannot move stays where it is; the review
-// itself is recorded either way.
-func moveIssueAfterReview(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
+// promoteReviewedChange moves the change's primary issue to the landing lane
+// once its current version is reviewed. It runs after every write that can
+// complete the evidence: an approval, a check result, and a version publish
+// under a policy that requires no review. An issue the workflow cannot move
+// stays where it is; the evidence is recorded either way.
+func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
 	detail, err := readChangeDetail(ctx, tx, scope, string(change.WorkItemID), change.ID, now)
 	if err != nil {
 		return err

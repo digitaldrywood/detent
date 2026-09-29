@@ -3,6 +3,9 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,8 +64,8 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalNothing},
 		{name: "a git failure fails the run", stub: landingStub{target: target}, backend: landingBackend{err: errors.New("git fetch origin: network down")},
 			wantErr: "network down"},
-		{name: "an unrecorded landing fails the run", stub: landingStub{target: target, recordErr: errors.New("hub unavailable")}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
-			wantErr: "record landing", wantRecorded: 1},
+		{name: "an unrecorded landing fails the run after retrying the report", stub: landingStub{target: target, recordErr: errors.New("hub unavailable")}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
+			wantErr: "record landing", wantRecorded: landingReportTries},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -100,4 +103,50 @@ func TestLandNativeChange(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("c", 40)
+	merge := strings.Repeat("e", 40)
+	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash"}
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.email", "t@example.test"}, {"config", "user.name", "t"}, {"commit", "-q", "--allow-empty", "-m", "init"}} {
+		if out, err := gitCommand(dir, args...); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	info := workspace.Info{Path: dir, Branch: "detent/land"}
+	stub := landingStub{target: target, recordErr: errors.New("hub unavailable")}
+	backend := landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "squash"}}
+	r := &Runner{}
+	_, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"})
+	if err == nil || !strings.Contains(err.Error(), "record landing") {
+		t.Fatalf("error = %v, want the report failure", err)
+	}
+	if len(stub.recorded) != landingReportTries {
+		t.Fatalf("report attempts = %d, want %d", len(stub.recorded), landingReportTries)
+	}
+	kept, err := os.ReadFile(filepath.Join(dir, ".git", "detent-landing.json"))
+	if err != nil {
+		t.Fatalf("the pushed landing was not kept: %v", err)
+	}
+	if !strings.Contains(string(kept), merge) || !strings.Contains(string(kept), head) {
+		t.Fatalf("kept landing = %s", kept)
+	}
+	// The next run reports it and forgets it.
+	stub.recordErr = nil
+	if _, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "detent-landing.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the reported landing was kept: %v", err)
+	}
+}
+
+func gitCommand(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }

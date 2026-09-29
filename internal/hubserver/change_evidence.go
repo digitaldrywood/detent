@@ -57,7 +57,7 @@ func (s *Service) reviewChange(c echo.Context) error {
 			return nil, err
 		}
 		if request.Decision == "approved" {
-			if err := moveIssueAfterReview(ctx, tx, scope, change, now); err != nil {
+			if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
 				return nil, err
 			}
 		}
@@ -112,7 +112,15 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 			return nil, err
 		}
 		check := tracker.ChangeCheck{ChangeCheckResult: request.ChangeCheckResult, VersionID: version.ID, Actor: scope.actor(), ReceivedAt: now}
-		return check, insertChangeEvidence(ctx, tx, change.ID, version.ID, "check", check.CheckRunID, check)
+		if err := insertChangeEvidence(ctx, tx, change.ID, version.ID, "check", check.CheckRunID, check); err != nil {
+			return nil, err
+		}
+		if version.ID == change.CurrentVersion {
+			if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
+				return nil, err
+			}
+		}
+		return check, nil
 	})
 }
 

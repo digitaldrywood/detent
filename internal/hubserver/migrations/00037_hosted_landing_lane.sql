@@ -17,7 +17,7 @@ WHERE p.profile = 'native'
   AND NOT EXISTS (SELECT 1 FROM workflow_states w WHERE w.project_id = p.id AND w.source_name = 'Merging');
 
 UPDATE projects
-SET states_json = '[{"name":"Todo","terminal":false,"dispatchable":true,"transitions":["In Progress","Done"]},{"name":"In Progress","terminal":false,"dispatchable":true,"transitions":["Todo","Human Review","Done"]},{"name":"Human Review","terminal":false,"dispatchable":false,"transitions":["Done","In Progress","Merging"]},{"name":"Merging","terminal":false,"dispatchable":true,"transitions":["Done","Human Review"]},{"name":"Done","terminal":true,"dispatchable":false,"transitions":["Todo"]}]'
+SET states_json = '[{"name":"Todo","terminal":false,"dispatchable":true,"transitions":["In Progress","Done"]},{"name":"In Progress","terminal":false,"dispatchable":true,"transitions":["Todo","Human Review","Done"]},{"name":"Human Review","terminal":false,"dispatchable":false,"transitions":["Done","In Progress","Merging"]},{"name":"Merging","terminal":false,"dispatchable":true,"transitions":["Done","Human Review","In Progress"]},{"name":"Done","terminal":true,"dispatchable":false,"transitions":["Todo"]}]'
 WHERE profile = 'native'
   AND json_valid(states_json)
   AND json(states_json) = json('[{"name":"Todo","terminal":false,"dispatchable":true,"transitions":["In Progress","Done"]},{"name":"In Progress","terminal":false,"dispatchable":true,"transitions":["Todo","Human Review","Done"]},{"name":"Human Review","terminal":false,"dispatchable":false,"transitions":["Done","In Progress"]},{"name":"Done","terminal":true,"dispatchable":false,"transitions":["Todo"]}]');

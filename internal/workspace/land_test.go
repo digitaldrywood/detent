@@ -203,3 +203,38 @@ func TestClassifyLandingPush(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
+	t.Parallel()
+	f := newLandingFixture(t)
+	first, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature"})
+	if err != nil {
+		t.Fatalf("LandChange() error = %v", err)
+	}
+	// The report to the hub failed after the push: the landing is kept.
+	if err := RecordLanding(context.Background(), f.info, f.head, first); err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature"})
+	if err != nil {
+		t.Fatalf("a kept landing was not reported: %v", err)
+	}
+	if again.MergeSHA != first.MergeSHA || again.BaseRef != first.BaseRef || f.remoteMain(t) != first.MergeSHA {
+		t.Fatalf("kept landing = %#v, first = %#v, remote = %s", again, first, f.remoteMain(t))
+	}
+	if err := ForgetLanding(context.Background(), f.info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"}); err == nil {
+		t.Fatal("after the hub has the landing, landing the same head again was not refused")
+	}
+	// A kept landing whose commit is no longer on the base is forgotten.
+	if err := RecordLanding(context.Background(), f.info, f.head, LandResult{MergeSHA: strings.Repeat("d", 40), BaseRef: "main", Method: "squash"}); err != nil {
+		t.Fatal(err)
+	}
+	var refusal *LandRefusal
+	_, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"})
+	if !errors.As(err, &refusal) || refusal.Kind != LandRefusalNothing {
+		t.Fatalf("a stale kept landing was reported: %v", err)
+	}
+}
