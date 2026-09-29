@@ -710,7 +710,7 @@ func (a *authStore) revokeOrganization(ctx context.Context, organization string)
 		return nil, err
 	}
 	defer tx.Rollback()
-	items, err := activeAuthorizations(ctx, tx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email FROM authorizations WHERE organization_id = ? AND revoked_at IS NULL", organization)
+	items, err := activeAuthorizations(ctx, tx, "organization_id = ? AND revoked_at IS NULL", organization)
 	if err != nil {
 		return nil, err
 	}

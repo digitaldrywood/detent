@@ -33,7 +33,7 @@ func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecor
 	return err
 }
 
-func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
 	var session auth.Session
 	var encoded, expiry string
 	err := s.database.db.QueryRowContext(ctx, "SELECT email,identity_json,expires_at FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&session.Email, &encoded, &expiry)
@@ -43,6 +43,14 @@ func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (a
 	session.ExpiresAt, err = parseTimeValue(expiry)
 	if err != nil || !session.ExpiresAt.After(now) {
 		return auth.Session{}, auth.ErrInvalidSession
+	}
+	return session, nil
+}
+
+func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+	session, err := s.storedWebSession(ctx, hash, now)
+	if err != nil {
+		return auth.Session{}, err
 	}
 	current, err := s.config.Hosted.Provider.CurrentSession(ctx, *session.Identity)
 	if err != nil || !current.ExpiresAt.After(now) || current.Subject != session.Identity.Subject || current.SessionID != session.Identity.SessionID || current.OrganizationID != session.Identity.OrganizationID || current.SupportActor != session.Identity.SupportActor || current.SupportReason != session.Identity.SupportReason {
@@ -94,10 +102,50 @@ func (s *Service) hostedCredential(c echo.Context) (apiCredential, int, error) {
 	if err != nil {
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
 	}
+	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
+		return s.hostedSharedCredential(c.Request().Context(), session, hash, claims.Role)
+	}
 	return s.hostedSessionCredential(c.Request().Context(), session, hash)
 }
 
+// hostedSharedCredential builds a browser credential from the shared entry's
+// assertion. The entry verified the WorkOS access token and carries its role,
+// so the tenant does not call the provider on the request path; membership
+// removal reaches the tenant through the entry's revocation of the binding.
+func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Session, hash, role string) (apiCredential, int, error) {
+	if !auth.ValidOrganizationRole(role) {
+		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	var membership auth.Membership
+	var local string
+	err := s.database.db.QueryRowContext(ctx, "SELECT membership_id, role FROM hosted_members WHERE user_id = ? AND active = 1", session.Identity.Subject).Scan(&membership.ID, &local)
+	if err != nil || !auth.ValidOrganizationRole(local) {
+		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	membership.Role.Slug = lesserHostedRole(role, local)
+	return s.hostedMemberCredential(ctx, session, hash, membership)
+}
+
+// lesserHostedRole returns the less privileged of two organization roles, so
+// a downgrade recorded by the tenant applies before the entry's access token
+// carrying the older role expires.
+func lesserHostedRole(a, b string) string {
+	rank := map[string]int{"viewer": 0, "member": 1, "admin": 2, "owner": 3}
+	if rank[a] <= rank[b] {
+		return a
+	}
+	return b
+}
+
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {
+	membership, err := s.hostedMembership(ctx, session.Identity)
+	if err != nil {
+		return apiCredential{}, http.StatusForbidden, err
+	}
+	return s.hostedMemberCredential(ctx, session, hash, membership)
+}
+
+func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
 	if hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -105,11 +153,7 @@ func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Sess
 	if err != nil || providerID == "" || session.Identity.OrganizationID != providerID {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
-	membership, err := s.hostedMembership(ctx, session.Identity)
-	if err != nil {
-		return apiCredential{}, http.StatusForbidden, err
-	}
-	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug}
+	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug, HostedMembership: membership.ID}
 	err = s.database.db.QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash)
 	if err != nil {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
@@ -191,15 +235,35 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ? AND g.project_id 
 	return nil
 }
 
+// hostedMutationIdentity returns the identity and membership a mutation is
+// rechecked against. Behind the shared entry the credential already comes
+// from this request's entry assertion, whose access token the entry verified,
+// so it is used as is; a dedicated tenant asks the provider.
+func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCredential) (auth.HostedIdentity, auth.Membership, error) {
+	if s.hostedShared() {
+		var membership auth.Membership
+		membership.ID, membership.Role.Slug = credential.HostedMembership, credential.HostedRole
+		if membership.ID == "" || !auth.ValidOrganizationRole(membership.Role.Slug) || !credential.Hosted.ExpiresAt.After(s.config.now()) {
+			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
+		}
+		return *credential.Hosted, membership, nil
+	}
+	identity, err := s.config.Hosted.Provider.CurrentSession(ctx, *credential.Hosted)
+	if err != nil || !identity.ExpiresAt.After(s.config.now()) || identity.Subject != credential.Hosted.Subject || identity.SessionID != credential.Hosted.SessionID || identity.SupportActor != credential.Hosted.SupportActor || identity.SupportReason != credential.Hosted.SupportReason || identity.OrganizationID != credential.Hosted.OrganizationID {
+		return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
+	}
+	membership, err := s.hostedMembership(ctx, credential.Hosted)
+	if err != nil {
+		return auth.HostedIdentity{}, auth.Membership{}, err
+	}
+	return identity, membership, nil
+}
+
 func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
 	if scope.credential.Hosted == nil {
 		return nil
 	}
-	identity, err := s.config.Hosted.Provider.CurrentSession(ctx, *scope.credential.Hosted)
-	if err != nil || !identity.ExpiresAt.After(s.config.now()) || identity.Subject != scope.credential.Hosted.Subject || identity.SessionID != scope.credential.Hosted.SessionID || identity.SupportActor != scope.credential.Hosted.SupportActor || identity.SupportReason != scope.credential.Hosted.SupportReason || identity.OrganizationID != scope.credential.Hosted.OrganizationID {
-		return auth.ErrHostedIdentity
-	}
-	membership, err := s.hostedMembership(ctx, scope.credential.Hosted)
+	identity, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
 	if err != nil || membership.Role.Slug == "viewer" {
 		return auth.ErrHostedIdentity
 	}

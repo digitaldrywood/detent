@@ -241,7 +241,9 @@ export function makeClient(options: ClientOptions) {
 
   const runtime = Atom.runtime(registered);
   const handles = new ConversationHandles();
-  const list = createConversationListAtoms(runtime);
+  const list = createConversationListAtoms(runtime, {
+    enabled: options.bootstrap.feature.conversation,
+  });
   const conversations = createConversationDetailAtoms(runtime, handles);
 
   const keyOf = (projectId: string, conversationId: string) =>

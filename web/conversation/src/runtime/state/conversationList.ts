@@ -70,7 +70,18 @@ export function mergeConversation(
   return sortByActivity(next);
 }
 
-export const makeConversationListState = Effect.fn("ConversationList.make")(function* () {
+export interface ConversationListOptions {
+  /**
+   * The bootstrap's `feature.conversation`. When the hub has conversations
+   * off, the organization list route answers 404, so the list is never asked
+   * for and stays live and empty.
+   */
+  readonly enabled: boolean;
+}
+
+export const makeConversationListState = Effect.fn("ConversationList.make")(function* (
+  options: ConversationListOptions = { enabled: true },
+) {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
   const environmentId = supervisor.target.environmentId;
@@ -86,6 +97,10 @@ export const makeConversationListState = Effect.fn("ConversationList.make")(func
   });
 
   const refresh = Effect.gen(function* () {
+    if (!options.enabled) {
+      yield* SubscriptionRef.set(state, { ...EMPTY_CONVERSATION_LIST_STATE, status: "live" as const });
+      return;
+    }
     const session = yield* SubscriptionRef.get(supervisor.session);
     if (Option.isNone(session)) return;
     yield* SubscriptionRef.update(state, (current) => ({
@@ -175,6 +190,7 @@ export const refreshConversationList: Effect.Effect<void> = Effect.suspend(
 
 export function createConversationListAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | EnvironmentCacheStore | R, E>,
+  options: ConversationListOptions = { enabled: true },
 ) {
   // One atom per environment, memoised like the detail family. Building a new
   // atom on every call would make every render of the shell subscribe to a new
@@ -186,7 +202,7 @@ export function createConversationListAtoms<R, E>(
         followStreamInEnvironment(
           environmentId,
           Stream.unwrap(
-            makeConversationListState().pipe(
+            makeConversationListState(options).pipe(
               Effect.map((handle) => SubscriptionRef.changes(handle.state)),
             ),
           ),

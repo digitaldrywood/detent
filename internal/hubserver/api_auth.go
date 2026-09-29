@@ -29,16 +29,19 @@ const (
 )
 
 type apiCredential struct {
-	Hosted        *auth.HostedIdentity
-	HostedRole    string
-	ManageRunners bool
-	SessionHash   string
-	Hash          string
-	ID            string
-	Name          string
-	Scope         apiScope
-	NativeOnly    bool
-	Runner        runnerauth.Identity
+	Hosted     *auth.HostedIdentity
+	HostedRole string
+	// HostedMembership is the provider membership the credential was
+	// resolved from; mutation rechecks compare it against the member row.
+	HostedMembership string
+	ManageRunners    bool
+	SessionHash      string
+	Hash             string
+	ID               string
+	Name             string
+	Scope            apiScope
+	NativeOnly       bool
+	Runner           runnerauth.Identity
 }
 
 type apiErrorResponse struct {

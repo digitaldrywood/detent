@@ -144,7 +144,7 @@ func (s *Service) completeSupport(c echo.Context) error {
 	denial.Err = err
 	switch {
 	case err != nil:
-	case identity.Hosted == nil || !identity.EmailVerified || identity.Hosted.Subject != identity.Subject:
+	case identity.Hosted == nil || identity.Tokens.AccessToken == "" || identity.Tokens.RefreshToken == "" || !identity.EmailVerified || identity.Hosted.Subject != identity.Subject:
 		denial.Reason = "identity_incomplete"
 	case !strings.EqualFold(identity.Hosted.SupportActor, transaction.SupportActor) || !auth.ValidSupportReason(identity.Hosted.SupportReason) || identity.Hosted.SupportReason != transaction.SupportReason:
 		denial.Reason = auth.HostedReasonSupportActorInvalid
@@ -160,7 +160,7 @@ func (s *Service) completeSupport(c echo.Context) error {
 		denial.Reason = "audit_failed"
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
-	_, stale, err := s.auth.authorize(ctx, staff, organization.ID, *identity.Hosted, identity.Email)
+	_, stale, err := s.auth.authorize(ctx, staff, organization.ID, *identity.Hosted, identity.Tokens, identity.Email)
 	if err != nil {
 		denial.Reason = "authorization_failed"
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)

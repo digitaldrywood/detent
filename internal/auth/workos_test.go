@@ -698,6 +698,10 @@ func (f *workosFixture) writeJSON(w http.ResponseWriter, value any) {
 func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := f.mode.Load().(string)
 	if r.URL.Path == "/sso/jwks/client_detent" {
+		if mode == "jwks-down" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		f.writeJSON(w, map[string]any{"keys": []any{rsaJWK(&f.key.PublicKey, "primary")}})
 		return
 	}
@@ -788,6 +792,10 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		f.t.Error(err)
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if request["grant_type"] == "refresh_token" {
+		f.refresh(w, r, request, mode)
 		return
 	}
 	if r.Method != http.MethodPost || request["grant_type"] != "authorization_code" || request["client_id"] != "client_detent" || request["client_secret"] != "fixture-secret" {
@@ -882,6 +890,7 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 	f.mu.Unlock()
 	if mode != "missing-token" {
 		response["access_token"] = signTestJWT(f.t, key, claims)
+		response["refresh_token"] = "refresh_customer"
 	}
 	f.writeJSON(w, response)
 }

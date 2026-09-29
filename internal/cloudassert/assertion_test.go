@@ -29,6 +29,7 @@ func browserClaims(now time.Time, id string) cloudassert.Claims {
 		Issuer: "entry", Audience: "org_a", Generation: 2, Kind: cloudassert.KindBrowser,
 		Subject: "user_a", Email: "a@example.test", ProviderOrganization: "org_provider_a", ProviderSession: "session_a",
 		SessionCreatedAt: now.Add(-time.Minute), SessionExpiresAt: now.Add(time.Hour),
+		Role: "member", AccessExpiresAt: now.Add(5 * time.Minute),
 		Binding: strings.Repeat("b", 64), CSRF: strings.Repeat("c", 64),
 		Method: "POST", Path: "/organizations/org_a/projects", BodyDigest: cloudassert.BodyDigest([]byte("name=x")),
 		IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), ID: id,
@@ -64,6 +65,12 @@ func TestVerify(t *testing.T) {
 			c.IssuedAt, c.ExpiresAt = now.Add(time.Minute), now.Add(70*time.Second)
 		}},
 		{name: "browser missing binding", key: key, mutate: func(c *cloudassert.Claims) { c.Binding = "" }},
+		{name: "browser missing role", key: key, mutate: func(c *cloudassert.Claims) { c.Role = "" }},
+		{name: "browser unknown role", key: key, mutate: func(c *cloudassert.Claims) { c.Role = "superuser" }},
+		{name: "browser missing access expiry", key: key, mutate: func(c *cloudassert.Claims) { c.AccessExpiresAt = time.Time{} }},
+		{name: "machine with role", key: key, mutate: func(c *cloudassert.Claims) {
+			*c = cloudassert.Claims{Issuer: c.Issuer, Audience: c.Audience, Generation: c.Generation, Kind: cloudassert.KindMachine, Role: "owner", Method: c.Method, Path: c.Path, BodyDigest: c.BodyDigest, IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt, ID: c.ID}
+		}},
 		{name: "machine with identity", key: key, mutate: func(c *cloudassert.Claims) { c.Kind = cloudassert.KindMachine }},
 		{name: "machine without identity", key: key, ok: true, mutate: func(c *cloudassert.Claims) {
 			*c = cloudassert.Claims{Issuer: c.Issuer, Audience: c.Audience, Generation: c.Generation, Kind: cloudassert.KindMachine, Method: c.Method, Path: c.Path, BodyDigest: c.BodyDigest, IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt, ID: c.ID}
