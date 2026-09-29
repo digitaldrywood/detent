@@ -27,6 +27,9 @@ import {
   RUNNER_ENROLLMENT_UNAVAILABLE,
   RUNNERS_LOADING,
   RUNNERS_UNAVAILABLE,
+  SETUP_LOADING,
+  SETUP_UNAVAILABLE,
+  setupStepsLeftLabel,
   firstIssueState,
   firstRunSteps,
   type FirstRunFacts,
@@ -101,55 +104,79 @@ const FACTS: FirstRunFacts = {
   projects: 0,
   runners: 0,
   issues: 0,
+  setupStepsLeft: 4,
   canManageProjects: true,
   canEnrollRunners: true,
   canWriteIssues: false,
 };
+
+const LEFT = setupStepsLeftLabel(4);
 
 describe("firstRunSteps", () => {
   it.each([
     {
       name: "a new organization",
       facts: FACTS,
-      done: [false, false, false],
-      blocked: [null, NEEDS_PROJECT, NEEDS_PROJECT],
+      done: [false, false, false, false],
+      blocked: [null, NEEDS_PROJECT, NEEDS_PROJECT, NEEDS_PROJECT],
+      notes: [null, null, null, null],
     },
     {
       name: "a project and nothing else",
       facts: { ...FACTS, projects: 1, canWriteIssues: true },
-      done: [true, false, false],
-      blocked: [null, null, null],
+      done: [true, false, false, false],
+      blocked: [null, null, null, null],
+      notes: [null, null, LEFT, null],
     },
     {
       name: "a project and a runner",
       facts: { ...FACTS, projects: 1, runners: 1, canWriteIssues: true },
-      done: [true, true, false],
-      blocked: [null, null, null],
+      done: [true, true, false, false],
+      blocked: [null, null, null, null],
+      notes: [null, null, LEFT, null],
     },
     {
       name: "everything done",
-      facts: { ...FACTS, projects: 2, runners: 1, issues: 3, canWriteIssues: true },
-      done: [true, true, true],
-      blocked: [null, null, null],
+      facts: { ...FACTS, projects: 2, runners: 1, issues: 3, setupStepsLeft: 0, canWriteIssues: true },
+      done: [true, true, true, true],
+      blocked: [null, null, null, null],
+      notes: [null, null, null, null],
     },
     {
       name: "a reader who manages nothing, before any project",
       facts: { ...FACTS, canManageProjects: false, canEnrollRunners: false },
-      done: [false, false, false],
-      blocked: [PROJECT_CREATION_UNAVAILABLE, NEEDS_PROJECT, NEEDS_PROJECT],
+      done: [false, false, false, false],
+      blocked: [PROJECT_CREATION_UNAVAILABLE, NEEDS_PROJECT, NEEDS_PROJECT, NEEDS_PROJECT],
+      notes: [null, null, null, null],
     },
     {
       name: "a reader who manages nothing, on a read-only project",
       facts: { ...FACTS, projects: 1, canManageProjects: false, canEnrollRunners: false },
-      done: [true, false, false],
-      blocked: [PROJECT_CREATION_UNAVAILABLE, RUNNER_ENROLLMENT_UNAVAILABLE, ISSUE_CREATION_UNAVAILABLE],
+      done: [true, false, false, false],
+      blocked: [PROJECT_CREATION_UNAVAILABLE, RUNNER_ENROLLMENT_UNAVAILABLE, null, ISSUE_CREATION_UNAVAILABLE],
+      notes: [null, null, LEFT, null],
     },
-  ])("reports $name", ({ facts, done, blocked }) => {
+  ])("reports $name", ({ facts, done, blocked, notes }) => {
     const steps = firstRunSteps(facts);
-    expect(steps.map((entry) => entry.id)).toEqual(["project", "runner", "issue"]);
+    expect(steps.map((entry) => entry.id)).toEqual(["project", "runner", "setup", "issue"]);
     expect(steps.map((entry) => entry.done)).toEqual(done);
     expect(steps.map((entry) => entry.blockedReason)).toEqual(blocked);
-    expect(steps.map((entry) => entry.note)).toEqual([null, null, null]);
+    expect(steps.map((entry) => entry.note)).toEqual(notes);
+  });
+
+  it.each([
+    { setupStepsLeft: "loading" as const, reason: SETUP_LOADING },
+    { setupStepsLeft: "unavailable" as const, reason: SETUP_UNAVAILABLE },
+  ])("holds the setup step while onboarding is $setupStepsLeft", ({ setupStepsLeft, reason }) => {
+    const setup = firstRunSteps({ ...FACTS, projects: 1, setupStepsLeft })[2];
+    expect(setup?.done).toBe(false);
+    expect(setup?.blockedReason).toBe(reason);
+    expect(setup?.note).toBeNull();
+  });
+
+  it("uses the wording Settings → Projects uses for the count", () => {
+    expect(setupStepsLeftLabel(1)).toBe("1 setup step left");
+    expect(setupStepsLeftLabel(3)).toBe("3 setup steps left");
   });
 
   it.each([
@@ -177,12 +204,12 @@ describe("firstRunSteps", () => {
 
 describe("FirstRunChecklist", () => {
   it.each([
-    { facts: FACTS, progress: "0 of 3 done", doneCount: 0 },
-    { facts: { ...FACTS, projects: 1, canWriteIssues: true }, progress: "1 of 3 done", doneCount: 1 },
+    { facts: FACTS, progress: "0 of 4 done", doneCount: 0 },
+    { facts: { ...FACTS, projects: 1, canWriteIssues: true }, progress: "1 of 4 done", doneCount: 1 },
     {
-      facts: { ...FACTS, projects: 1, runners: 1, issues: 1, canWriteIssues: true },
-      progress: "3 of 3 done",
-      doneCount: 3,
+      facts: { ...FACTS, projects: 1, runners: 1, issues: 1, setupStepsLeft: 0, canWriteIssues: true },
+      progress: "4 of 4 done",
+      doneCount: 4,
     },
   ])("shows $progress and checks off the finished steps", ({ facts, progress, doneCount }) => {
     const onAction = vi.fn();
@@ -236,7 +263,7 @@ describe("the new project entry points", () => {
   it("replaces the empty board with the first-run checklist", async () => {
     await mountShell("/work");
     const panel = await screen.findByTestId("first-run", undefined, { timeout: 5_000 });
-    expect(within(panel).getByTestId("first-run-progress").textContent).toBe("0 of 3 done");
+    expect(within(panel).getByTestId("first-run-progress").textContent).toBe("0 of 4 done");
     expect(step("project").getAttribute("data-done")).toBe("false");
     expect(screen.queryByTestId("work-board")).toBeNull();
     expect(screen.queryByText(/Every lane is hidden/)).toBeNull();

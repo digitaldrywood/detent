@@ -32,12 +32,17 @@ import { useMutation, useResource } from "../../account/useResource.ts";
 import { EnrollRunnerDialog } from "../../fleet/EnrollRunner.tsx";
 import { PROJECT_CREATION_UNAVAILABLE, useNewProject } from "../../projects/NewProject.tsx";
 
-export type FirstRunStepId = "project" | "runner" | "issue";
+export type FirstRunStepId = "project" | "runner" | "setup" | "issue";
 
 export interface FirstRunFacts {
   readonly projects: number;
   readonly runners: number | "loading" | "unavailable";
   readonly issues: number;
+  /**
+   * The Hub's unready onboarding steps for the project this board is on, the
+   * same count the setup wizard and Settings → Projects show.
+   */
+  readonly setupStepsLeft: number | "loading" | "unavailable";
   readonly canManageProjects: boolean;
   readonly canEnrollRunners: boolean;
   readonly canWriteIssues: boolean;
@@ -60,6 +65,12 @@ export const RUNNER_ACCESS_NEEDED =
 export const RUNNERS_LOADING = "Checking this organization's runners";
 export const RUNNERS_UNAVAILABLE = "The runner list could not be read. Reload to try again";
 export const ISSUE_CREATION_UNAVAILABLE = "You have read-only access to this project";
+export const SETUP_LOADING = "Checking this project's setup";
+export const SETUP_UNAVAILABLE = "The project's setup could not be read. Reload to try again";
+
+export function setupStepsLeftLabel(count: number): string {
+  return `${count} setup step${count === 1 ? "" : "s"} left`;
+}
 
 export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
   const hasProject = facts.projects > 0;
@@ -91,6 +102,25 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
               ? null
               : RUNNER_ENROLLMENT_UNAVAILABLE,
       note: needsRunnerAccess && typeof facts.runners === "number" ? RUNNER_ACCESS_NEEDED : null,
+    },
+    {
+      id: "setup",
+      title: "Finish project setup",
+      description:
+        "Approve the repository policy, check the runner host, and choose where artifact history lives.",
+      actionLabel: "Finish setup",
+      done: facts.setupStepsLeft === 0,
+      blockedReason: !hasProject
+        ? NEEDS_PROJECT
+        : facts.setupStepsLeft === "loading"
+          ? SETUP_LOADING
+          : facts.setupStepsLeft === "unavailable"
+            ? SETUP_UNAVAILABLE
+            : null,
+      note:
+        hasProject && typeof facts.setupStepsLeft === "number" && facts.setupStepsLeft > 0
+          ? setupStepsLeftLabel(facts.setupStepsLeft)
+          : null,
     },
     {
       id: "issue",
@@ -126,7 +156,7 @@ export function FirstRunChecklist({
           Set up your organization
         </EmptyTitle>
         <EmptyDescription>
-          Three steps put the first issue on this board and a runner on it.
+          These steps put the first issue on this board and a runner on it.
         </EmptyDescription>
       </EmptyHeader>
       <div className="flex w-full max-w-xl flex-col gap-2">
@@ -345,6 +375,11 @@ export function FirstRunPanel({
       ? (projects.find((project) => project.can_write) ?? projects[0])
       : projects.find((project) => project.id === projectId);
   const canEnrollRunners = bootstrap?.actor.can_manage_runners ?? false;
+  const targetId = target?.id ?? null;
+  const setup = useResource(
+    () => (targetId === null ? Promise.resolve(null) : api.onboarding(targetId)),
+    [api, targetId],
+  );
 
   const steps = firstRunSteps({
     projects: projects.length,
@@ -355,6 +390,12 @@ export function FirstRunPanel({
           ? "unavailable"
           : "loading",
     issues,
+    setupStepsLeft:
+      setup.value != null
+        ? setup.value.steps.filter((step) => step.state !== "ready").length
+        : setup.error !== null
+          ? "unavailable"
+          : "loading",
     canManageProjects: newProject.canCreate,
     canEnrollRunners,
     canWriteIssues: target?.can_write ?? false,
@@ -364,7 +405,10 @@ export function FirstRunPanel({
   const onEnrollOpenChange = React.useCallback(
     (open: boolean) => {
       setEnrolling(open);
-      if (!open) void refreshFleet();
+      if (!open) {
+        void refreshFleet();
+        void setup.refresh();
+      }
     },
     [refreshFleet],
   );
@@ -378,6 +422,9 @@ export function FirstRunPanel({
           if (id === "runner" && canEnrollRunners) setEnrolling(true);
           if (id === "runner" && !canEnrollRunners) {
             void navigate({ to: "/settings/$section", params: { section: "organization" } });
+          }
+          if (id === "setup" && targetId !== null) {
+            void navigate({ to: "/projects/$project/setup", params: { project: targetId } } as never);
           }
           if (id === "issue") setCreatingIssue(true);
         }}

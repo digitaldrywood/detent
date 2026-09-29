@@ -267,6 +267,46 @@ test("the first-run wizard reports the hub's four onboarding steps", async ({ pa
   expect(errors, "console errors on the wizard").toEqual([]);
 });
 
+for (const viewport of [
+  { name: "desktop", width: 1440, height: 900 },
+  { name: "phone", width: 390, height: 844 },
+]) {
+  test(`the setup wizard fits a ${viewport.name} and its choices show what is selected`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const errors = watchConsole(page);
+    await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
+
+    const tabs = page.getByRole("list", { name: "Setup steps" }).getByRole("button");
+    await expect(tabs).toHaveCount(4);
+    await tabs.nth(3).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Artifact history" })).toBeVisible();
+
+    // Every tab and the whole step fit inside the viewport: nothing is
+    // clipped at either edge.
+    for (const locator of [page.getByRole("list", { name: "Setup steps" }), page.getByRole("heading", { level: 1 })]) {
+      const box = await locator.boundingBox();
+      expect(box, "wizard element has a box").not.toBeNull();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    }
+
+    // Clicking anywhere on a card chooses it, and the choice is visible.
+    const local = page.getByRole("radio", { name: "Keep artifact history on the execution host" });
+    await page.getByText("Local history", { exact: true }).click();
+    await expect(local).toBeChecked();
+    await expect(page.locator("label[data-checked]")).toContainText("Local history");
+    await page.getByText("Customer service", { exact: true }).click();
+    await expect(page.getByRole("radio", { name: "Use a customer artifact service" })).toBeChecked();
+    await expect(local).not.toBeChecked();
+
+    // Every step stays reachable from the tabs.
+    await tabs.nth(0).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Repository configuration" })).toBeVisible();
+    await expectNoSeriousAxeViolations(page, `/projects/:project/setup (${viewport.name})`);
+    expect(errors, "console errors on the wizard").toEqual([]);
+  });
+}
+
 test("the fleet page redirects into settings and renders the hosts and providers", async ({
   page,
 }) => {
