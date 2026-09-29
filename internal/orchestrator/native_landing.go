@@ -85,7 +85,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if !ok {
 			return handoff(fmt.Errorf("native workflow allows no move from %s back to the review lane %s", strings.TrimSpace(issue.State), review))
 		}
-		if err := o.updateIssueStateByID(ctx, state, issueID, issue, lane, event.CompletedAt, "native_landing_refused"); err != nil {
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, lane, event.CompletedAt, "completed_active_review_transition"); err != nil {
 			return handoff(fmt.Errorf("move native item to %s: %w", lane, err))
 		}
 		target = lane
