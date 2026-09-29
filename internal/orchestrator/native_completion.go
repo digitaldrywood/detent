@@ -62,7 +62,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed)
-	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && direct {
+	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && direct && dispatchableState(states, landing) {
 		target, ok = landing, true
 	}
 	if !ok {
@@ -103,6 +103,17 @@ func (o *Orchestrator) completeNativeChangeRun(
 			"changed", change.Changed, "change_id", change.ChangeID)
 	}
 	return true
+}
+
+// dispatchableState reports a lane a runner claims work from. A landing lane
+// that does not dispatch would hold an accepted change where nothing lands it.
+func dispatchableState(states []connector.WorkflowState, name string) bool {
+	for _, state := range states {
+		if normalizeState(state.Name) == normalizeState(name) {
+			return state.Dispatchable
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) warnNativeCompletion(issue connector.Issue, err error) {

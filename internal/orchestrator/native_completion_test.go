@@ -47,6 +47,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Review", "In Progress"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
+	undispatched := append([]connector.WorkflowState(nil), landing...)
+	undispatched[3].Dispatchable = false
 	head := strings.Repeat("c", 40)
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
@@ -66,6 +68,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "a version waiting for a reviewer goes to review", change: opened, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version without a landing move goes to review", change: accepted, states: workflow, wantState: "In Review", wantComment: "so it waits in In Review"},
+		{name: "an accepted version never goes to a landing lane that does not dispatch", change: accepted, states: undispatched, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
 		{name: "a workflow without the review lane is handed off, never ended", change: opened, states: hosted, wantDeferred: true},

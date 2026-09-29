@@ -120,8 +120,7 @@ func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.Attem
 
 // publishChangeVersion reports the version that carries the head and whether
 // the project's review policy already accepts it, which is what lets the
-// run's completion send the item straight to landing. A version whose
-// acceptance cannot be read back is treated as waiting for review.
+// run's completion send the item straight to landing.
 func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID string, diff tracker.AttemptDiffRequest) (string, bool, error) {
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
 	detail, err := client.Change(ctx, item, changeID)
@@ -154,11 +153,15 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err != nil {
 		return "", false, fmt.Errorf("publish version: %w", err)
 	}
-	published, err := client.Change(ctx, item, changeID)
-	if err != nil || published.Change.CurrentVersion != version.ID {
-		return version.ID, false, nil
-	}
-	return version.ID, published.Summary.Status == "reviewed", nil
+	return version.ID, acceptedOnPublish(version), nil
+}
+
+// acceptedOnPublish reports a freshly published version that its review
+// policy accepts as it stands: nobody has to review it and no check has to
+// report on it. It reads the policy the version was published under, so the
+// answer does not depend on a second request succeeding.
+func acceptedOnPublish(version tracker.ChangeVersion) bool {
+	return version.ReviewPolicy.ID != "" && !version.ReviewPolicy.RequireReview && len(version.ReviewPolicy.RequiredChecks) == 0
 }
 
 // SetRepository names the repository a published version refers to.
