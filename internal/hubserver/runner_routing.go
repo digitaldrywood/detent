@@ -182,11 +182,17 @@ func (s *Service) getRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) updateRunnerRouting(c echo.Context) error {
-	var change runnerauth.RoutingChange
-	if err := decodeAPIJSON(c, &change); err != nil {
+	var request struct {
+		runnerauth.RoutingChange
+		IsolationTier *string                  `json:"isolation_tier"`
+		HostServices  *[]string                `json:"host_services"`
+		Availability  *runnerauth.Availability `json:"availability"`
+		Spillover     *runnerauth.Spillover    `json:"spillover"`
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	legacySettings := change.IsolationTier == "" && change.HostServices == nil && change.Availability.Timezone == "" && change.Availability.Windows == nil && change.Availability.HardDeadline == "" && change.Spillover.Mode == "" && change.Spillover.AfterMinutes == 0
+	change := request.RoutingChange
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		organization := tracker.OrganizationID(c.Param("organization"))
 		r, err := readRunner(ctx, tx, organization, c.Param("runner"), now)
@@ -196,11 +202,25 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 		if r.Revision != change.ExpectedRevision {
 			return nil, nativeConflict(tracker.Revision(r.Revision))
 		}
-		if legacySettings {
+		if request.IsolationTier == nil || *request.IsolationTier == "" {
 			change.IsolationTier = r.IsolationTier
+		} else {
+			change.IsolationTier = *request.IsolationTier
+		}
+		if request.HostServices == nil || *request.HostServices == nil {
 			change.HostServices = r.HostServices
+		} else {
+			change.HostServices = *request.HostServices
+		}
+		if request.Availability == nil || request.Availability.Timezone == "" && request.Availability.Windows == nil && request.Availability.HardDeadline == "" {
 			change.Availability = r.Availability
+		} else {
+			change.Availability = *request.Availability
+		}
+		if request.Spillover == nil || request.Spillover.Mode == "" && request.Spillover.AfterMinutes == 0 {
 			change.Spillover = r.Spillover
+		} else {
+			change.Spillover = *request.Spillover
 		}
 		change.Routing = change.Normalized()
 		if err := change.Validate(); err != nil {

@@ -93,6 +93,31 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	if stored.DisplayName != "Renamed" || stored.IsolationTier != "native-trusted" || stored.Spillover.Mode != "after" {
 		t.Fatalf("legacy routing update lost settings: %#v", stored.Routing)
 	}
+	partial := map[string]any{"expected_revision": stored.Revision, "display_name": "Renamed", "tags": stored.Tags, "state": stored.State,
+		"capacity_limit": stored.CapacityLimit, "project_ids": stored.ProjectIDs, "isolation_tier": "sandbox"}
+	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &stored)
+	if stored.IsolationTier != "sandbox" || len(stored.HostServices) != 1 || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" {
+		t.Fatalf("partial routing update lost settings: %#v", stored.Routing)
+	}
+	partial["expected_revision"] = stored.Revision
+	partial["host_services"] = []string{}
+	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &stored)
+	if len(stored.HostServices) != 0 || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" {
+		t.Fatalf("explicit host service clear lost settings: %#v", stored.Routing)
+	}
+	partial["expected_revision"] = stored.Revision
+	partial["availability"] = runnerauth.Availability{Windows: []string{}}
+	partial["spillover"] = runnerauth.Spillover{Mode: "never"}
+	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &stored)
+	if stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" || stored.Spillover.Mode != "never" {
+		t.Fatalf("explicit availability and spillover clear lost settings: %#v", stored.Routing)
+	}
 }
 
 func sharedRunner(t *testing.T, first runnerFixture) runnerFixture {
