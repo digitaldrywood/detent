@@ -23,6 +23,7 @@ import { SetupRoute } from "./account/Setup.tsx";
 import { SettingsRoute } from "./settings/Settings.tsx";
 import { DEFAULT_SECTION, isSettingsSectionId } from "./settings/sections.tsx";
 import { UsageRoute } from "./usage/UsagePage.tsx";
+import { usePageTitle } from "./pageTitle.ts";
 
 /**
  * The navigation the screens take. It is passed in rather than imported so the
@@ -58,8 +59,14 @@ function SettingsScreen(): React.ReactElement {
   return <SettingsRoute section={id} project={search.project ?? null} onNavigate={useGo()} />;
 }
 
+function LoginScreen(): React.ReactElement {
+  usePageTitle("Sign in");
+  return <LoginRoute />;
+}
+
 function SetupScreen(): React.ReactElement {
   const { project } = useParams({ strict: false }) as { project?: string };
+  usePageTitle("Project setup");
   return <SetupRoute projectId={project ?? ""} onNavigate={useGo()} />;
 }
 
@@ -82,7 +89,7 @@ export const ACCOUNT_ROUTE_PATHS = [
 export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
   const getParentRoute = () => rootRoute;
   return [
-    createRoute({ getParentRoute, path: "/login", component: LoginRoute }),
+    createRoute({ getParentRoute, path: "/login", component: LoginScreen }),
     createRoute({
       getParentRoute,
       path: "/organization",
