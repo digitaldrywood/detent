@@ -157,7 +157,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if c.Path() == "/webhooks/stripe" && c.Request().Method == http.MethodPost {
 			return next(c)
 		}
-		bearerAPI := strings.HasPrefix(c.Path(), "/api/v2/") && c.Request().Header.Get(echo.HeaderAuthorization) != ""
+		bearerAPI := strings.HasPrefix(c.Request().URL.Path, "/api/v2/") && c.Request().Header.Get(echo.HeaderAuthorization) != ""
 		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindService {
 			return next(c)
 		}
