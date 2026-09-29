@@ -56,8 +56,13 @@ func (s *Service) reviewChange(c echo.Context) error {
 		if err := insertChangeEvidence(ctx, tx, change.ID, review.VersionID, "review", "", review); err != nil {
 			return nil, err
 		}
-		if request.Decision == "approved" {
+		switch request.Decision {
+		case "approved":
 			if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
+				return nil, err
+			}
+		case "changes_requested":
+			if err := returnChangeForRework(ctx, tx, scope, change, review, now); err != nil {
 				return nil, err
 			}
 		}
