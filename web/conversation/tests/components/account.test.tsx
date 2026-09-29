@@ -26,7 +26,7 @@ import {
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
 import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
-import { initCommand, runnerHubUrl } from "../../src/app/fleet/EnrollRunner.tsx";
+import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { noApprovedPolicy, saveMessage } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
@@ -377,6 +377,75 @@ describe("the runner hub URL", () => {
     { name: "a public URL that already names the tenant", url: "https://cloud.example.com/organizations/org_1", base: "/organizations/org_1", want: "https://cloud.example.com/organizations/org_1" },
   ])("addresses $name", ({ url, base, want }) => {
     expect(runnerHubUrl(url, base)).toBe(want);
-    expect(initCommand(runnerHubUrl(url, base))).toBe(`detent hub runner init --hub-url ${want}`);
+  });
+});
+
+describe("the register command", () => {
+  const input = {
+    hubUrl: "https://cloud.example.com/organizations/org_1",
+    organizationId: "org_1",
+    token: "det_enroll_abc",
+    name: "",
+    capacity: 1,
+    service: false,
+  };
+  it.each([
+    { name: "the minimum", change: {}, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc" },
+    { name: "a plain name", change: { name: "mac-studio" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name mac-studio" },
+    { name: "a name with spaces", change: { name: " Build host " }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --name 'Build host'" },
+    { name: "capacity and service", change: { capacity: 3, service: true }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1 --token det_enroll_abc --capacity 3 --service" },
+    { name: "a standalone hub", change: { hubUrl: "https://hub.example.com" }, want: "detent hub runner register --url https://hub.example.com --organization org_1 --token det_enroll_abc" },
+    { name: "a URL naming a longer organization ID", change: { hubUrl: "https://cloud.example.com/organizations/org_1-extra" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1-extra --organization org_1 --token det_enroll_abc" },
+  ])("builds it for $name", ({ change, want }) => {
+    expect(registerCommand({ ...input, ...change })).toBe(want);
+  });
+
+  it.each([
+    { value: "plain", want: "plain" },
+    { value: "two words", want: "'two words'" },
+    { value: "Cory's Mac", want: "'Cory'\\''s Mac'" },
+    { value: "$(rm -rf /)", want: "'$(rm -rf /)'" },
+    { value: "", want: "''" },
+  ])("quotes $value for the shell", ({ value, want }) => {
+    expect(shellArgument(value)).toBe(want);
+  });
+});
+
+describe("the enrollment inputs", () => {
+  it.each([
+    { url: "https://cloud.example.com/organizations/org_1", want: true },
+    { url: "https://cloud.example.com/organizations/org_1/", want: true },
+    { url: "https://cloud.example.com/organizations/org_1-extra", want: false },
+    { url: "https://cloud.example.com/x/organizations/org_10", want: false },
+    { url: "https://cloud.example.com", want: false },
+    { url: "not a url", want: false },
+  ])("reads $url as naming org_1: $want", ({ url, want }) => {
+    expect(hubUrlNamesOrganization(url, "org_1")).toBe(want);
+  });
+
+  it.each([
+    { value: "1", want: 1 },
+    { value: " 4 ", want: 4 },
+    { value: "16", want: 16 },
+    { value: "0", want: null },
+    { value: "17", want: null },
+    { value: "2.9", want: null },
+    { value: "", want: null },
+    { value: "-1", want: null },
+    { value: "1e1", want: null },
+  ])("parses capacity $value as $want", ({ value, want }) => {
+    expect(parseCapacity(value)).toBe(want);
+  });
+});
+
+describe("the runner name limit", () => {
+  it.each([
+    { name: "a".repeat(200), fits: true },
+    { name: "a".repeat(201), fits: false },
+    { name: "é".repeat(100), fits: true },
+    { name: "é".repeat(101), fits: false },
+    { name: `  ${"a".repeat(200)}  `, fits: true },
+  ])("counts UTF-8 bytes: $fits", ({ name, fits }) => {
+    expect(runnerNameFits(name)).toBe(fits);
   });
 });

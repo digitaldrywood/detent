@@ -29,14 +29,11 @@ import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type {
-  Onboarding,
-  OnboardingStep,
-  RunnerEnrollment,
-} from "../../contracts/account.ts";
+import type { Onboarding, OnboardingStep } from "../../contracts/account.ts";
 import { ONBOARDING_STEPS } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
+import { EnrollRunnerDialog } from "../fleet/EnrollRunner.tsx";
 import { ControlError, NativeSelect, StatusDot } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
@@ -272,9 +269,7 @@ export function SetupRoute({
 
   const [repositoryName, setRepositoryName] = React.useState("");
   const [pastedPolicy, setPastedPolicy] = React.useState("");
-  const [runnerId, setRunnerId] = React.useState("");
-  const [machineId, setMachineId] = React.useState("");
-  const [enrollment, setEnrollment] = React.useState<RunnerEnrollment | null>(null);
+  const [enrolling, setEnrolling] = React.useState(false);
   const [serviceId, setServiceId] = React.useState("");
   const [serviceOrigin, setServiceOrigin] = React.useState("");
   const [servicePublisher, setServicePublisher] = React.useState("");
@@ -361,12 +356,6 @@ export function SetupRoute({
     return bound;
   });
 
-  const enroll = useMutation(async () => {
-    const created = await api.enrollRunner({ projectIds: [projectId], runnerId, machineId });
-    setEnrollment(created);
-    await onboarding.refresh();
-    return created;
-  });
 
   /**
    * Routing is read-modify-write against the runner the reader picked. The
@@ -606,46 +595,20 @@ export function SetupRoute({
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
           <div className="text-[14.5px]">Enroll a host</div>
           <p className="text-[13px] text-muted-foreground">
-            Generate the two ids on the host itself, then paste them here. The token below is shown
-            once and is only usable on the machine that generated these ids.
+            Name the host and copy one command to run on it. The command creates the host's
+            identity there, connects it to this project and writes its configuration.
           </p>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="setup-runner-id">Runner id</Label>
-              <Input
-                id="setup-runner-id"
-                value={runnerId}
-                onChange={(event) => setRunnerId(event.currentTarget.value)}
-              />
-            </div>
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="setup-machine-id">Machine id</Label>
-              <Input
-                id="setup-machine-id"
-                value={machineId}
-                onChange={(event) => setMachineId(event.currentTarget.value)}
-              />
-            </div>
-          </div>
           <div>
-            <Button
-              variant="outline"
-              disabled={
-                enroll.pending || runnerId.trim().length === 0 || machineId.trim().length === 0
-              }
-              onClick={() => void enroll.call()}
-            >
-              {enroll.pending ? "Enrolling…" : "Create enrollment token"}
+            <Button variant="outline" onClick={() => setEnrolling(true)}>
+              Enroll a runner
             </Button>
           </div>
-          <ControlError message={enroll.error?.message ?? null} />
-          {enrollment === null ? null : (
-            <p role="status" className="rounded-lg bg-background p-3 font-mono text-xs break-all">
-              One-time token: {enrollment.token} — expires {enrollment.expires_at}. Use it only on
-              the host that generated these ids. If interrupted, create a fresh token for the same
-              ids.
-            </p>
-          )}
+          <EnrollRunnerDialog
+            open={enrolling}
+            onOpenChange={setEnrolling}
+            projectIds={[projectId]}
+            onEnrolled={() => void onboarding.refresh()}
+          />
         </div>
       </>
     ),

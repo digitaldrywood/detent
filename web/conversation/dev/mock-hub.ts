@@ -2678,8 +2678,13 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         operations,
         ttl_seconds: Number(body.ttl_seconds ?? 0),
       };
-      if (runnerId.length === 0) {
-        invalidRequest(response, "runner_id is required.");
+      // Both IDs or neither: without them the token is token-first and binds
+      // to the IDs the host presents when it redeems it.
+      if ((runnerId.length === 0) !== (lastEnrollment.machine_id.length === 0)) {
+        invalidRequest(
+          response,
+          "Enrollment requires valid or omitted host IDs, explicit projects and operations, and a TTL of 1 to 900 seconds",
+        );
         return true;
       }
       // The hub refuses an enrollment that names no project, a project outside
@@ -2698,7 +2703,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         );
         return true;
       }
-      if (account.enrolled.has(runnerId)) {
+      if (runnerId.length > 0 && account.enrolled.has(runnerId)) {
         json(response, 409, {
           code: "identity_collision",
           message:
@@ -2706,7 +2711,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         });
         return true;
       }
-      account.enrolled.add(runnerId);
+      if (runnerId.length > 0) account.enrolled.add(runnerId);
       const ttl = Number(body.ttl_seconds ?? 900);
       json(response, 201, {
         id: `enr_${randomUUID().replace(/-/g, "").slice(0, 8)}`,

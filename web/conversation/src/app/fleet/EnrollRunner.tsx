@@ -16,7 +16,6 @@ import {
 import { Input } from "../../components/ui/input.tsx";
 import { Kbd } from "../../components/ui/kbd.tsx";
 import { Label } from "../../components/ui/label.tsx";
-import type { RunnerEnrollment } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation } from "../account/useResource.ts";
@@ -33,14 +32,15 @@ export interface PendingEnrollment {
   readonly id: string;
   readonly token: string;
   readonly expiresAt: string;
-  readonly runnerId: string;
+  readonly name: string;
+  readonly command: string;
   readonly projectNames: readonly string[];
 }
 
 /**
- * `detent hub runner init` on the host. The URL is the organization's own
- * public URL, because that is the address the runner has to reach, not
- * whatever the reader happens to have in the address bar.
+ * The organization's Hub URL as a runner reaches it. The URL is the
+ * organization's own public URL, because that is the address the runner has to
+ * reach, not whatever the reader happens to have in the address bar.
  */
 export function runnerHubUrl(publicUrl: string, basePath: string): string {
   const origin = publicUrl.replace(/\/+$/, "");
@@ -48,17 +48,69 @@ export function runnerHubUrl(publicUrl: string, basePath: string): string {
   return path.length > 0 && !origin.endsWith(path) ? `${origin}${path}` : origin;
 }
 
-export function initCommand(hubUrl: string): string {
-  return `detent hub runner init --hub-url ${hubUrl}`;
+/** Quotes a value for a POSIX shell only when it needs it. */
+export function shellArgument(value: string): string {
+  return /^[A-Za-z0-9._/:@%+=-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 /**
- * The redemption command. The token travels in the environment variable the
- * CLI reads (`--enrollment-token-env`, default `DETENT_RUNNER_ENROLLMENT_TOKEN`)
- * rather than in an argument, so it stays out of the host's process list.
+ * True when the URL's path carries `/organizations/ORG` for exactly this
+ * organization, which is how the CLI derives the organization from it.
  */
-export function enrollCommand(token: string, organizationId: string): string {
-  return `DETENT_RUNNER_ENROLLMENT_TOKEN=${token} detent hub runner enroll --organization ${organizationId}`;
+export function hubUrlNamesOrganization(hubUrl: string, organizationId: string): boolean {
+  let path: string;
+  try {
+    path = new URL(hubUrl).pathname;
+  } catch {
+    return false;
+  }
+  const segments = path.split("/").filter((segment) => segment !== "");
+  return segments.some(
+    (segment, index) => segment === "organizations" && segments[index + 1] === organizationId,
+  );
+}
+
+/** The capacity field's value as the CLI's integer, or null when it is not one. */
+export function parseCapacity(value: string): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const capacity = Number(value.trim());
+  return capacity >= 1 && capacity <= MAX_RUNNER_CAPACITY ? capacity : null;
+}
+
+export interface RegisterCommandInput {
+  readonly hubUrl: string;
+  readonly organizationId: string;
+  readonly token: string;
+  readonly name: string;
+  readonly capacity: number;
+  readonly service: boolean;
+}
+
+/**
+ * The one command a host runs to become a runner. It generates the host's
+ * identity locally, redeems the token, writes the runner configuration and,
+ * with --service, installs the background service. The token is single-use and
+ * short-lived, so carrying it in the command is as safe as the token itself.
+ */
+export function registerCommand(input: RegisterCommandInput): string {
+  const parts = ["detent hub runner register", "--url", shellArgument(input.hubUrl)];
+  if (!hubUrlNamesOrganization(input.hubUrl, input.organizationId)) {
+    parts.push("--organization", shellArgument(input.organizationId));
+  }
+  parts.push("--token", shellArgument(input.token));
+  if (input.name.trim() !== "") parts.push("--name", shellArgument(input.name.trim()));
+  if (input.capacity !== 1) parts.push("--capacity", String(input.capacity));
+  if (input.service) parts.push("--service");
+  return parts.join(" ");
+}
+
+export const MAX_RUNNER_CAPACITY = 16;
+
+/** The Hub limits a runner's display name to 200 bytes of UTF-8. */
+export const MAX_RUNNER_NAME_BYTES = 200;
+
+export function runnerNameFits(name: string): boolean {
+  return new TextEncoder().encode(name.trim()).length <= MAX_RUNNER_NAME_BYTES;
 }
 
 /** A monospace value with the copy affordance, sized for a command line. */
@@ -98,10 +150,13 @@ export function EnrollRunnerDialog({
   open,
   onOpenChange,
   onEnrolled,
+  projectIds,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onEnrolled: (enrollment: PendingEnrollment) => void;
+  /** Preselects these projects instead of every readable one. */
+  readonly projectIds?: readonly string[];
 }): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
@@ -119,50 +174,60 @@ export function EnrollRunnerDialog({
     bootstrap?.base_path ?? "",
   );
   const projects = React.useMemo(() => bootstrap?.projects ?? [], [bootstrap]);
-
-  const [runnerId, setRunnerId] = React.useState("");
-  const [machineId, setMachineId] = React.useState("");
   // Every readable project by default: a host the reader is enrolling is
   // normally the host for their whole organization, and narrowing it is the
   // deliberate act, not widening it.
-  const [selected, setSelected] = React.useState<readonly string[]>(() =>
-    projects.map((project) => project.id),
+  const initialSelection = React.useCallback(
+    () => projectIds ?? projects.map((project) => project.id),
+    [projectIds, projects],
   );
-  const [enrollment, setEnrollment] = React.useState<RunnerEnrollment | null>(null);
+
+  const [name, setName] = React.useState("");
+  const [capacityText, setCapacityText] = React.useState("1");
+  const capacity = parseCapacity(capacityText);
+  // A response for a dialog the reader already closed must not come back as
+  // the next opening's command.
+  const generation = React.useRef(0);
+  const [service, setService] = React.useState(true);
+  const [selected, setSelected] = React.useState<readonly string[]>(initialSelection);
+  const [enrollment, setEnrollment] = React.useState<PendingEnrollment | null>(null);
 
   // Reopening starts a fresh enrollment: the previous token was shown once and
   // leaving it on screen invites redeeming a token that has already expired.
   React.useEffect(() => {
     if (open) return;
-    setRunnerId("");
-    setMachineId("");
+    generation.current += 1;
+    setName("");
+    setCapacityText("1");
+    setService(true);
     setEnrollment(null);
-    setSelected(projects.map((project) => project.id));
-  }, [open, projects]);
+    setSelected(initialSelection());
+  }, [open, initialSelection]);
 
   const create = useMutation(async () => {
+    const mine = generation.current;
     const created = await api.enrollRunner({
       projectIds: selected,
-      runnerId: runnerId.trim(),
-      machineId: machineId.trim(),
       operations: [...ENROLLMENT_OPERATIONS],
       ttlSeconds: ENROLLMENT_TTL_SECONDS,
     });
-    setEnrollment(created);
-    onEnrolled({
+    const entry: PendingEnrollment = {
       id: created.id,
       token: created.token,
       expiresAt: created.expires_at,
-      runnerId: runnerId.trim(),
+      name: name.trim(),
+      command: registerCommand({ hubUrl, organizationId, token: created.token, name, capacity: capacity ?? 1, service }),
       projectNames: projects
         .filter((project) => selected.includes(project.id))
         .map((project) => project.name),
-    });
+    };
+    if (generation.current === mine) setEnrollment(entry);
+    onEnrolled(entry);
     return created;
   });
 
-  const ready =
-    runnerId.trim().length > 0 && machineId.trim().length > 0 && selected.length > 0;
+  const nameFits = runnerNameFits(name);
+  const ready = selected.length > 0 && capacity !== null && nameFits;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -175,108 +240,121 @@ export function EnrollRunnerDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="flex flex-col gap-4">
-          <section className="flex flex-col gap-2" aria-labelledby="enroll-step-one">
-            <h3 id="enroll-step-one" className="text-[13px] font-medium">
-              1. Generate the host identity
-            </h3>
-            <p className="text-[13px] text-muted-foreground">
-              Run this on the machine that will take the work, then paste the two identifiers it
-              prints. They are generated on the host and the hub never sees the credential behind
-              them.
-            </p>
-            <CopyableCommand value={initCommand(hubUrl)} label="the init command" />
-          </section>
-
-          <section className="flex flex-col gap-2" aria-labelledby="enroll-step-two">
-            <h3 id="enroll-step-two" className="text-[13px] font-medium">
-              2. Name the host and its projects
-            </h3>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <div className="flex flex-1 flex-col gap-1.5">
-                <Label htmlFor="enroll-runner-id">Runner id</Label>
-                <Input
-                  id="enroll-runner-id"
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="runner_…"
-                  value={runnerId}
-                  onChange={(event) => setRunnerId(event.currentTarget.value)}
-                />
-              </div>
-              <div className="flex flex-1 flex-col gap-1.5">
-                <Label htmlFor="enroll-machine-id">Machine id</Label>
-                <Input
-                  id="enroll-machine-id"
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="machine_…"
-                  value={machineId}
-                  onChange={(event) => setMachineId(event.currentTarget.value)}
-                />
-              </div>
-            </div>
-            <fieldset className="flex flex-col gap-2">
-              <legend className="pb-1 text-[13px] font-medium">Projects</legend>
-              {projects.length === 0 ? (
-                <p className="text-[13px] text-muted-foreground">
-                  You can read no projects on this organization, so there is nothing to enroll a
-                  runner for.
-                </p>
-              ) : (
-                projects.map((project) => (
-                  <label
-                    key={project.id}
-                    className="flex items-center gap-2 text-[13px]"
-                    htmlFor={`enroll-project-${project.id}`}
+          {enrollment === null ? (
+            <>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="flex flex-1 flex-col gap-1.5">
+                  <Label htmlFor="enroll-runner-name">Name</Label>
+                  <Input
+                    id="enroll-runner-name"
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-invalid={!nameFits}
+                    placeholder="Build host"
+                    value={name}
+                    onChange={(event) => setName(event.currentTarget.value)}
+                  />
+                  {nameFits ? null : (
+                    <p className="text-xs text-destructive-foreground">That name is too long; shorten it.</p>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5 sm:w-32">
+                  <Label htmlFor="enroll-runner-capacity">Runs at once</Label>
+                  <Input
+                    id="enroll-runner-capacity"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={MAX_RUNNER_CAPACITY}
+                    step={1}
+                    aria-invalid={capacity === null}
+                    aria-describedby="enroll-runner-capacity-hint"
+                    value={capacityText}
+                    onChange={(event) => setCapacityText(event.currentTarget.value)}
+                  />
+                  <p
+                    id="enroll-runner-capacity-hint"
+                    className={
+                      capacity === null
+                        ? "text-xs text-destructive-foreground"
+                        : "text-xs text-muted-foreground"
+                    }
                   >
-                    <Checkbox
-                      id={`enroll-project-${project.id}`}
-                      checked={selected.includes(project.id)}
-                      onCheckedChange={(checked) =>
-                        setSelected((current) =>
-                          checked === true
-                            ? current.includes(project.id)
-                              ? current
-                              : [...current, project.id]
-                            : current.filter((id) => id !== project.id),
-                        )
-                      }
-                    />
-                    <span className="truncate">{project.name}</span>
-                  </label>
-                ))
-              )}
-            </fieldset>
-          </section>
-
-          {enrollment === null ? null : (
-            <section className="flex flex-col gap-2" aria-labelledby="enroll-step-three">
-              <h3 id="enroll-step-three" className="text-[13px] font-medium">
-                3. Redeem it on the host
+                    {capacity === null ? `A whole number from 1 to ${MAX_RUNNER_CAPACITY}` : `1 to ${MAX_RUNNER_CAPACITY}`}
+                  </p>
+                </div>
+              </div>
+              <fieldset className="flex flex-col gap-2">
+                <legend className="pb-1 text-[13px] font-medium">Projects</legend>
+                {projects.length === 0 ? (
+                  <p className="text-[13px] text-muted-foreground">
+                    You can read no projects on this organization, so there is nothing to enroll a
+                    runner for.
+                  </p>
+                ) : (
+                  projects.map((project) => (
+                    <label
+                      key={project.id}
+                      className="flex items-center gap-2 text-[13px]"
+                      htmlFor={`enroll-project-${project.id}`}
+                    >
+                      <Checkbox
+                        id={`enroll-project-${project.id}`}
+                        checked={selected.includes(project.id)}
+                        onCheckedChange={(checked) =>
+                          setSelected((current) =>
+                            checked === true
+                              ? current.includes(project.id)
+                                ? current
+                                : [...current, project.id]
+                              : current.filter((id) => id !== project.id),
+                          )
+                        }
+                      />
+                      <span className="truncate">{project.name}</span>
+                    </label>
+                  ))
+                )}
+              </fieldset>
+              <label className="flex items-start gap-2 text-[13px]" htmlFor="enroll-runner-service">
+                <Checkbox
+                  id="enroll-runner-service"
+                  checked={service}
+                  onCheckedChange={(checked) => setService(checked === true)}
+                />
+                <span>
+                  Install it as a background service
+                  <span className="block text-muted-foreground">
+                    Starts at login and keeps running, separate from any local Detent board on the
+                    same machine. It starts once each project's repository is cloned there; until
+                    then the command prints what to clone and how to start it.
+                  </span>
+                </span>
+              </label>
+            </>
+          ) : (
+            <section className="flex flex-col gap-2" aria-labelledby="enroll-run-command">
+              <h3 id="enroll-run-command" className="text-[13px] font-medium">
+                Run this on the machine that will take the work
               </h3>
+              <CopyableCommand value={enrollment.command} label="the register command" />
               <p role="status" className="text-[13px] text-muted-foreground">
-                This token is shown once, expires {new Date(enrollment.expires_at).toLocaleString()}
-                , and works only for the identifiers above. Copy it now; closing this dialog with{" "}
-                <Kbd>Esc</Kbd> throws it away.
+                It creates the runner's identity on that machine, connects it to this organization
+                and writes its configuration. The token in it works once and expires{" "}
+                {new Date(enrollment.expiresAt).toLocaleTimeString()}. Copy it now; closing this
+                dialog with <Kbd>Esc</Kbd> throws it away.
               </p>
-              <CopyableCommand value={enrollment.token} label="the enrollment token" />
-              <CopyableCommand
-                value={enrollCommand(enrollment.token, organizationId)}
-                label="the enroll command"
-              />
             </section>
           )}
           <ControlError message={create.error?.message ?? null} />
         </DialogPanel>
         <DialogFooter>
-          <DialogClose render={<Button variant="outline">Close</Button>} />
-          <Button disabled={!ready || create.pending} onClick={() => void create.call()}>
-            {create.pending
-              ? "Creating…"
-              : enrollment === null
-                ? "Create enrollment token"
-                : "Create another"}
-          </Button>
+          <DialogClose render={<Button variant="outline">{enrollment === null ? "Cancel" : "Done"}</Button>} />
+          {enrollment === null ? (
+            <Button disabled={!ready || create.pending} onClick={() => void create.call()}>
+              {create.pending ? "Creating…" : "Create command"}
+            </Button>
+          ) : null}
         </DialogFooter>
       </DialogPopup>
     </Dialog>
@@ -286,10 +364,8 @@ export function EnrollRunnerDialog({
 /** The rows under the Runners section: what this screen has handed out. */
 export function PendingEnrollments({
   enrollments,
-  organizationId,
 }: {
   readonly enrollments: readonly PendingEnrollment[];
-  readonly organizationId: string;
 }): React.ReactElement | null {
   if (enrollments.length === 0) return null;
   return (
@@ -300,16 +376,16 @@ export function PendingEnrollments({
           title={
             <span className="flex min-w-0 items-center gap-2">
               <KeyRoundIcon aria-hidden="true" className="size-3.5 shrink-0" />
-              <span className="truncate font-mono text-xs">{entry.runnerId}</span>
+              <span className="truncate">{entry.name === "" ? "Unnamed runner" : entry.name}</span>
             </span>
           }
-          description={`Waiting to be redeemed · ${
+          description={`Waiting to be registered · ${
             entry.projectNames.length === 0 ? "no projects" : entry.projectNames.join(", ")
           } · expires ${new Date(entry.expiresAt).toLocaleTimeString()}`}
           control={
             <CopyableCommand
-              value={enrollCommand(entry.token, organizationId)}
-              label={`the enroll command for ${entry.runnerId}`}
+              value={entry.command}
+              label={`the register command for ${entry.name === "" ? "the unnamed runner" : entry.name}`}
             />
           }
         />
