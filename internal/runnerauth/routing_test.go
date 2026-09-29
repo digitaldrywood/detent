@@ -52,6 +52,7 @@ func TestRoutingSettingsValidation(t *testing.T) {
 		{"trusted", func(r *Routing) { r.IsolationTier = "native-trusted" }, true},
 		{"unknown tier", func(r *Routing) { r.IsolationTier = "root" }, false},
 		{"loopback service", func(r *Routing) { r.HostServices = []string{"tcp:127.0.0.1:8080"} }, true},
+		{"unix service", func(r *Routing) { r.HostServices = []string{"unix:/var/run/service.sock"} }, true},
 		{"non-loopback service", func(r *Routing) { r.HostServices = []string{"tcp:0.0.0.0:8080"} }, false},
 		{"docker socket", func(r *Routing) { r.HostServices = []string{"unix:/var/run/docker.sock"} }, false},
 		{"valid window", func(r *Routing) {

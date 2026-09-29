@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"path/filepath"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -198,11 +198,11 @@ func validateHostService(service string) error {
 		}
 		return nil
 	}
-	path, ok := strings.CutPrefix(service, "unix:")
-	if !ok || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+	socketPath, ok := strings.CutPrefix(service, "unix:")
+	if !ok || !path.IsAbs(socketPath) || path.Clean(socketPath) != socketPath {
 		return errors.New("host services require an absolute unix socket path")
 	}
-	name := strings.ToLower(filepath.Base(path))
+	name := strings.ToLower(path.Base(socketPath))
 	for _, privileged := range []string{"docker", "podman", "containerd", "crio", "buildkit", "libvirt", "kubelet"} {
 		if strings.Contains(name, privileged) {
 			return fmt.Errorf("host service %q grants host administration", service)
