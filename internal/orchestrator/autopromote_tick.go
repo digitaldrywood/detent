@@ -1277,6 +1277,12 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	// A hub-native project's Merging lane holds reviewed Change Requests the
+	// runner lands; there is no pull request whose state could make them
+	// stale, so this reconciliation, which reads PR state, does not apply.
+	if o.nativeWorkflow() {
+		return nil
+	}
 	transitioned := map[string]struct{}{}
 	o.recordMergeQueueEntries(state, issues, now, "tracker")
 	consumedRepositories := activeMergeWorkerRepositories(state)

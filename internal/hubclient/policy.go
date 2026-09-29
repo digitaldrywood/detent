@@ -53,21 +53,64 @@ func (c *NativeClient) ApproveProjectPolicy(ctx context.Context, change policy.C
 	return approval, err
 }
 
+// ReportObservedPolicy tells the Hub which descriptor this runner resolved and
+// could not run, so an owner can approve it without pasting it.
+func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor policy.Descriptor) error {
+	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", descriptor, nil)
+}
+
 func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository string, descriptor policy.Descriptor) error {
 	if err := descriptor.Validate(); err != nil {
 		return err
 	}
-	var approval policy.Approval
-	var err error
-	if source := s.nativeProjects[project]; source != nil {
-		approval, err = source.client.ProjectPolicy(ctx)
-	} else {
-		approval, err = s.client.ProjectPolicy(ctx, repository)
+	source := s.nativeProjects[project]
+	if source == nil {
+		approval, err := s.client.ProjectPolicy(ctx, repository)
+		if err != nil {
+			return fmt.Errorf("check approved repository policy: %w", err)
+		}
+		return descriptor.Match(approval.Policy)
 	}
-	if err != nil {
+	approval, err := source.client.ProjectPolicy(ctx)
+	var apiErr *APIError
+	switch {
+	case err == nil:
+		err = descriptor.Match(approval.Policy)
+		if err == nil {
+			return nil
+		}
+	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
+		err = fmt.Errorf("check approved repository policy: %w", err)
+	default:
 		return fmt.Errorf("check approved repository policy: %w", err)
 	}
-	return descriptor.Match(approval.Policy)
+	return errors.Join(err, s.reportObservedPolicy(ctx, project, source, descriptor))
+}
+
+// reportObservedPolicy sends each new unapproved descriptor once per project,
+// not on every candidate poll. The descriptor is claimed before the request
+// so concurrent checks send it once, and released if the request fails.
+func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, descriptor policy.Descriptor) error {
+	s.mu.Lock()
+	if s.reportedPolicies[project] == descriptor.ID {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.reportedPolicies == nil {
+		s.reportedPolicies = map[string]string{}
+	}
+	previous := s.reportedPolicies[project]
+	s.reportedPolicies[project] = descriptor.ID
+	s.mu.Unlock()
+	if err := source.client.ReportObservedPolicy(ctx, descriptor); err != nil {
+		s.mu.Lock()
+		if s.reportedPolicies[project] == descriptor.ID {
+			s.reportedPolicies[project] = previous
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("report the resolved repository policy to the Hub: %w", err)
+	}
+	return nil
 }
 
 type claimPolicy struct {

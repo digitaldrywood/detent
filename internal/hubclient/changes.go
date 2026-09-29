@@ -156,3 +156,16 @@ func (c *NativeConnector) FetchNativeAttempts(ctx context.Context, item tracker.
 		cursor = page.NextCursor
 	}
 }
+
+// LandChangeVersion reports the merge commit a reviewed version landed as.
+// The mutation is fenced by the lease the landing run holds.
+func (c *NativeClient) LandChangeVersion(ctx context.Context, item tracker.NativeWorkItemID, id, version string, request tracker.LandChangeVersion) (tracker.ChangeRequest, error) {
+	var result tracker.ChangeRequest
+	path, err := changePath(item, id, version)
+	if err != nil || id == "" || version == "" {
+		return result, errors.New("valid Change Request and version identities are required")
+	}
+	request.Mutation = c.fencedMutation(ctx, item, request.Mutation)
+	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/landing", request, &result)
+	return result, err
+}

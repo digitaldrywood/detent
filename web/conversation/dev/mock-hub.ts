@@ -889,6 +889,8 @@ interface AccountState {
   usage: boolean;
   integrations: Map<string, IntegrationRow>;
   policies: Map<string, PolicyRow>;
+  /** What runners last reported they resolved and could not run, per project, newest first. */
+  observedPolicies: Map<string, Array<{ policy: Record<string, unknown>; runner_id: string; observed_at: string }>>;
   progress: Map<string, ProgressRow>;
   artifactServices: Map<string, ArtifactBindingRow[]>;
   runners: RunnerEligibilityRow[];
@@ -920,6 +922,7 @@ function initialAccountState(organization: OrganizationMode = "seeded"): Account
     usage: true,
     integrations: new Map(empty ? [] : Object.entries(clone(SEED_INTEGRATIONS))),
     policies: new Map(empty ? [] : [["proj_alpha", clone(SEED_POLICY)]]),
+    observedPolicies: new Map(),
     progress: new Map(empty ? [] : Object.entries(clone(SEED_PROGRESS))),
     artifactServices: new Map(),
     runners: empty ? [] : clone(SEED_RUNNERS),
@@ -2678,8 +2681,13 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         operations,
         ttl_seconds: Number(body.ttl_seconds ?? 0),
       };
-      if (runnerId.length === 0) {
-        invalidRequest(response, "runner_id is required.");
+      // Both IDs or neither: without them the token is token-first and binds
+      // to the IDs the host presents when it redeems it.
+      if ((runnerId.length === 0) !== (lastEnrollment.machine_id.length === 0)) {
+        invalidRequest(
+          response,
+          "Enrollment requires valid or omitted host IDs, explicit projects and operations, and a TTL of 1 to 900 seconds",
+        );
         return true;
       }
       // The hub refuses an enrollment that names no project, a project outside
@@ -2698,7 +2706,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         );
         return true;
       }
-      if (account.enrolled.has(runnerId)) {
+      if (runnerId.length > 0 && account.enrolled.has(runnerId)) {
         json(response, 409, {
           code: "identity_collision",
           message:
@@ -2706,7 +2714,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         });
         return true;
       }
-      account.enrolled.add(runnerId);
+      if (runnerId.length > 0) account.enrolled.add(runnerId);
       const ttl = Number(body.ttl_seconds ?? 900);
       json(response, 201, {
         id: `enr_${randomUUID().replace(/-/g, "").slice(0, 8)}`,
@@ -2857,12 +2865,38 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    // A runner reporting the descriptor it resolved and could not run
+    // (`observeProjectPolicy`). The mock takes it from anyone.
+    if (tail === "policy/observed" && method === "POST") {
+      const body = await readBody(request);
+      if (typeof body.policy_id !== "string") {
+        invalidRequest(response, "A policy descriptor is required.");
+        return true;
+      }
+      const runnerId = new URL(request.url ?? "/", "http://mock.local").searchParams.get("runner") ?? "runner_mock";
+      const others = (account.observedPolicies.get(projectId) ?? []).filter((entry) => entry.runner_id !== runnerId);
+      account.observedPolicies.set(projectId, [
+        { policy: body as Record<string, unknown>, runner_id: runnerId, observed_at: now() },
+        ...others,
+      ]);
+      noContent(response);
+      return true;
+    }
+
     if (tail === "onboarding" && method === "GET") {
       const evaluated = evaluateOnboarding(projectId);
+      const approved = account.policies.get(projectId) ?? null;
+      const seen = new Set<unknown>();
+      const observed = (account.observedPolicies.get(projectId) ?? []).filter((entry) => {
+        if (entry.policy.policy_id === approved?.policy.policy_id || seen.has(entry.policy.policy_id)) return false;
+        seen.add(entry.policy.policy_id);
+        return true;
+      });
       json(response, 200, {
         latest_run: "succeeded",
         progress: account.progress.get(projectId),
-        policy: account.policies.get(projectId) ?? null,
+        policy: approved,
+        observed_policies: clone(observed),
         runners: account.runners,
         artifact_services: account.artifactServices.get(projectId) ?? [],
         steps: evaluated.steps,

@@ -1502,6 +1502,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	mergePrecheck := MergePrecheck{}
 	mergeFallback := false
+	if landing, ok := req.Execution.(LandingExecution); ok && mode == RunModeMerge {
+		// A hub-native landing has no pull request to prepare and no agent to
+		// run: the runner lands the reviewed version itself.
+		afterRunPending = false
+		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue)
+		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); afterErr != nil && err == nil {
+			err = afterErr
+		}
+		return result, err
+	}
 	if mode == RunModeMerge {
 		if req.MergePrecheck != nil {
 			mergePrecheck = *req.MergePrecheck

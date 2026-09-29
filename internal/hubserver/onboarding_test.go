@@ -305,3 +305,58 @@ func TestOnboardingBrowserPreview(t *testing.T) {
 	case <-t.Context().Done():
 	}
 }
+
+func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "observed policy")
+	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	first.enroll(t)
+	second := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	second.enroll(t)
+	reader := prepareRunner(t, f, runnerauth.Read)
+	reader.enroll(t)
+	observedIDs := func(t *testing.T) ([]string, *policy.Approval) {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var setup onboarding.Project
+		decodeHubResponse(t, response, &setup)
+		ids := []string{}
+		for _, observed := range setup.ObservedPolicies {
+			ids = append(ids, observed.Policy.ID+"@"+observed.RunnerID)
+		}
+		return ids, setup.Policy
+	}
+	report := func(t *testing.T, token string, body any, status int) {
+		t.Helper()
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, body), status)
+	}
+	original := hubTestPolicy()
+	changed := original
+	changed.Gates.AutoPromote = true
+	changed = changed.WithID()
+
+	if ids, _ := observedIDs(t); len(ids) != 0 {
+		t.Fatalf("observed policies before any report = %v", ids)
+	}
+	report(t, reader.redemption.Credential, original, http.StatusForbidden)
+	report(t, first.redemption.Credential, policy.Descriptor{ID: "nope"}, http.StatusUnprocessableEntity)
+	report(t, first.redemption.Credential, original, http.StatusNoContent)
+	report(t, second.redemption.Credential, changed, http.StatusNoContent)
+	ids, approved := observedIDs(t)
+	want := []string{changed.ID + "@" + second.binding.RunnerID, original.ID + "@" + first.binding.RunnerID}
+	if approved != nil || !slices.Equal(ids, want) {
+		t.Fatalf("observed policies = %v, want %v (approved %+v)", ids, want, approved)
+	}
+
+	approveHubTestPolicy(t, f.service, f.base+"/policy", original)
+	ids, approved = observedIDs(t)
+	if approved == nil || approved.Policy.ID != original.ID || !slices.Equal(ids, want[:1]) {
+		t.Fatalf("after approving the first runner's policy: observed %v, approved %+v", ids, approved)
+	}
+
+	report(t, first.redemption.Credential, changed, http.StatusNoContent)
+	if ids, _ = observedIDs(t); len(ids) != 1 || !strings.HasPrefix(ids[0], changed.ID+"@") {
+		t.Fatalf("two runners reporting the same descriptor = %v, want it once", ids)
+	}
+}

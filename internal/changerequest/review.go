@@ -112,6 +112,11 @@ func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 		summary.Messages = append(summary.Messages, "No immutable version has been published.")
 		return summary
 	}
+	if landed := detail.Change.Landed; landed != nil {
+		summary.NativeReview, summary.Checks, summary.Status = "approved", "not_required", "landed"
+		summary.Messages = append(summary.Messages, "Landed on "+landed.BaseRef+" as "+landed.MergeSHA+".")
+		return summary
+	}
 	summary.Status = "needs_evidence"
 	if current.External != nil {
 		summary.ExternalReview = "external_gate"

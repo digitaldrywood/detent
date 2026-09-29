@@ -53,6 +53,19 @@ type ChangeExecution interface {
 	NativeChange() *NativeChange
 }
 
+// ErrLandingNotReviewed says the Change Request a landing run was dispatched
+// for is not a reviewed current version: nothing may be landed, and the
+// item goes back to review with that reason.
+var ErrLandingNotReviewed = errors.New("the Change Request is not reviewed")
+
+// LandingExecution is an Execution for a hub-native landing run: it names
+// the reviewed version the run lands, and records the landing with the hub
+// under the run's lease once the base branch carries it.
+type LandingExecution interface {
+	LandingTarget(context.Context) (NativeLandingTarget, error)
+	RecordLanding(context.Context, NativeLanding) error
+}
+
 // RepositoryExecution is an Execution that publishes the finished run's
 // commits as an immutable Change Request version, which names the repository
 // the commits live in. The runner installs the checkout's https remote once

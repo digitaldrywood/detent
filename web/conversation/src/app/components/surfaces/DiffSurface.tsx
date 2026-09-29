@@ -189,7 +189,7 @@ function DiffFileSection({
   );
 }
 
-function AttemptDiffBody({
+export function AttemptDiffBody({
   diff,
   theme,
 }: {

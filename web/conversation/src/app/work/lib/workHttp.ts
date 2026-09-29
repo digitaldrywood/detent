@@ -20,9 +20,12 @@ import {
   ActionRun,
   ActionRunAccepted,
   ActionRunList,
+  AttemptDiff,
   AttemptPage,
   ChangeDetail,
+  ChangeDiscussion,
   ChangeRequestList,
+  ChangeReview,
   CommentPage,
   HistoryPage,
   NativeComment,
@@ -232,6 +235,40 @@ export interface WorkHttp {
     itemId: string,
     changeId: string,
   ) => Promise<ChangeDetail>;
+  /**
+   * One attempt's stored diff (decisions.md §18.5), attempt-addressed. A
+   * change version names the attempt that published it, so this is how the
+   * review page shows the patch behind a round rather than whatever the
+   * latest attempt on the issue posted. A 404 means that attempt never
+   * checkpointed a diff.
+   */
+  readonly getAttemptDiff: (projectId: string, attemptId: string) => Promise<AttemptDiff>;
+  /**
+   * Records a review decision on one version. `approved` binds to the
+   * current version: the hub refuses it with a 409 when a newer version was
+   * published since the reviewer read this one, and `expectedVersionId` makes
+   * the same pin explicit for the other decisions. The body is the review
+   * text a `changes_requested` hands the next run.
+   */
+  readonly reviewChange: (input: {
+    projectId: string;
+    itemId: string;
+    changeId: string;
+    versionId: string;
+    key: string;
+    decision: "approved" | "changes_requested" | "commented";
+    body: string;
+    expectedVersionId?: string;
+  }) => Promise<ChangeReview>;
+  /** Appends change-level discussion, optionally attached to a version. */
+  readonly discussChange: (input: {
+    projectId: string;
+    itemId: string;
+    changeId: string;
+    key: string;
+    body: string;
+    versionId?: string;
+  }) => Promise<ChangeDiscussion>;
   /**
    * The issue's pull requests (decisions.md §18.6). A bare array like
    * `listChanges`, and served from a 60-second cache, so a caller that wants
@@ -555,6 +592,41 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         ChangeDetail,
         "GET",
         url(`${itemBase(projectId, itemId)}/changes/${encodeURIComponent(changeId)}`),
+      ),
+    getAttemptDiff: (projectId, attemptId) =>
+      send(
+        AttemptDiff,
+        "GET",
+        url(`${projectBase(projectId)}/attempts/${encodeURIComponent(attemptId)}/diff`),
+      ),
+    reviewChange: (input) =>
+      send(
+        ChangeReview,
+        "POST",
+        url(
+          `${itemBase(input.projectId, input.itemId)}/changes/${encodeURIComponent(input.changeId)}/versions/${encodeURIComponent(input.versionId)}/reviews`,
+        ),
+        {
+          idempotency_key: input.key,
+          decision: input.decision,
+          body: input.body,
+          ...(input.expectedVersionId === undefined
+            ? {}
+            : { expected_version_id: input.expectedVersionId }),
+        },
+      ),
+    discussChange: (input) =>
+      send(
+        ChangeDiscussion,
+        "POST",
+        url(
+          `${itemBase(input.projectId, input.itemId)}/changes/${encodeURIComponent(input.changeId)}/discussion`,
+        ),
+        {
+          idempotency_key: input.key,
+          body: input.body,
+          ...(input.versionId === undefined ? {} : { version_id: input.versionId }),
+        },
       ),
     listPullRequests: (projectId, itemId) =>
       send(WorkItemPullRequestList, "GET", url(`${itemBase(projectId, itemId)}/pull-requests`)),

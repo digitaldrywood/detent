@@ -306,15 +306,18 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 // HostedProjectStates is the workflow a new hosted project starts with. Human
 // Review is where a completed run's Change Request waits: it neither ends nor
 // dispatches the work, and it is not operator-only, so the orchestrator can
-// move a finished run there. A person accepts the change to Done or sends it
-// back to In Progress. It is the default auto_promote.source_state, which is
-// how the orchestrator names its review lane. Migration 36 moves projects
-// created from the earlier template onto this one.
+// move a finished run there. A person approves the change, which moves it to
+// Merging, where the runner that holds the project lands it and the Hub
+// finishes it in Done; or sends it back to In Progress. Human Review is the
+// default auto_promote.source_state, which is how the orchestrator names its
+// review lane. Migrations 36 and 38 move projects created from the earlier
+// templates onto this one.
 func HostedProjectStates() []tracker.NativeState {
 	return []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
-		{Name: "Human Review", Transitions: []string{"Done", "In Progress"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
 }

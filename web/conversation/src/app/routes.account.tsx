@@ -30,11 +30,22 @@ import { UsageRoute } from "./usage/UsagePage.tsx";
  * that is not a route yet (the Work board, which another route file owns) is a
  * plain string rather than a typed reference this file cannot make.
  */
+/**
+ * Splits `/path?key=value` into the router's path and search. The router
+ * matches `to` against route paths only, so a query left inside `to` matches
+ * no route and the navigation silently does nothing.
+ */
+export function navigationTarget(to: string): { readonly to: string; readonly search?: Record<string, string> } {
+  const at = to.indexOf("?");
+  if (at < 0) return { to };
+  return { to: to.slice(0, at), search: Object.fromEntries(new URLSearchParams(to.slice(at + 1))) };
+}
+
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
   return React.useCallback(
     (to: string) => {
-      void navigate({ to } as never);
+      void navigate(navigationTarget(to) as never);
     },
     [navigate],
   );

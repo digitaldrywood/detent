@@ -17,16 +17,21 @@ page to resume setup; infrastructure errors do not require another organization
 or host identity.
 
 A new hosted project starts with the workflow `Todo` → `In Progress` →
-`Human Review` → `Done`. `Todo` and `In Progress` dispatch work; `Human Review`
-neither dispatches nor ends it and is where a completed run's Change Request
-waits. The runner's orchestrator moves a run that committed a change there
-(`Human Review` is the default `auto_promote.source_state`), and moves a run
-that committed nothing to `Done`. A person accepts the change to `Done` or
-sends it back to `In Progress`. Hub migration 36 moves projects whose workflow
-is exactly the earlier `Todo`/`In Progress`/`Done` template onto this one. A
+`Human Review` → `Merging` → `Done`. `Todo`, `In Progress` and `Merging`
+dispatch work; `Human Review` neither dispatches nor ends it and is where a
+completed run's Change Request waits. The runner's orchestrator moves a run
+that committed a change there (`Human Review` is the default
+`auto_promote.source_state`), and moves a run that committed nothing to `Done`.
+A person approves the change in the client, which moves it to `Merging`; the
+runner that holds the project lands the reviewed head on the base branch with
+plain git and the Hub finishes the issue in `Done`. Or the person requests
+changes, which sends it back to `In Progress`. Hub migrations 36 and 38 move
+projects whose workflow is exactly an earlier template onto this one. A
 customized workflow is left unchanged; it needs a lane matching the runner's
 `auto_promote.source_state` that `In Progress` can move to, or a completed
-run's Change Request has no review lane and its completion waits.
+run's Change Request has no review lane and its completion waits, and it needs
+a dispatchable `Merging` lane that lane can move to, or approved changes stay
+in review for a person to land by hand.
 
 ## Organization provisioning and recovery
 
@@ -102,7 +107,11 @@ accepts validated, bounded policy metadata, including source revision and digest
 never arbitrary workflow fields. An organization owner/admin with project write
 access approves it explicitly. Approval retains the existing compare-and-swap
 and active-lease guards. Edit gate, review, auto-promotion, merge and runner
-requirements in the repository, then inspect and approve the new descriptor.
+requirements in the repository, then approve the new descriptor. A running
+runner reports the policy it resolved: Settings, Projects, then the project's
+Settings shows "A runner is waiting for a new policy" with an "Approve reported
+policy" button, so pasting the inspect output is only needed before any runner
+has started.
 
 A native project (`tracker.kind: hub_native`) makes no GitHub REST or GraphQL
 calls by default. The runner does not give the agent the instance GitHub

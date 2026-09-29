@@ -29,14 +29,11 @@ import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type {
-  Onboarding,
-  OnboardingStep,
-  RunnerEnrollment,
-} from "../../contracts/account.ts";
+import type { Onboarding, OnboardingStep } from "../../contracts/account.ts";
 import { ONBOARDING_STEPS } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
+import { EnrollRunnerDialog } from "../fleet/EnrollRunner.tsx";
 import { ControlError, NativeSelect, StatusDot } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
@@ -79,13 +76,15 @@ export function Stepper({
       {steps.map((step, index) => {
         const active = index === activeIndex;
         return (
-          <li key={step.name} className="flex-1">
+          // `min-w-0` lets the tabs shrink to the card: without it each keeps
+          // its full label's width and the row runs past the card's edge.
+          <li key={step.name} className={cn("min-w-0", active ? "flex-[2_1_0%]" : "flex-1")}>
             <button
               type="button"
               aria-current={active ? "step" : undefined}
               onClick={() => onSelect(index)}
               className={cn(
-                "flex h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex h-10 w-full min-w-0 items-center justify-center gap-2.5 rounded-lg px-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring sm:justify-start sm:px-3",
                 active
                   ? "bg-background text-foreground shadow-[0_0_0_1px_var(--contrast-border)]"
                   : "text-muted-foreground hover:text-foreground",
@@ -103,7 +102,7 @@ export function Stepper({
               >
                 {step.state === "ready" ? "✓" : index + 1}
               </span>
-              <span className="min-w-0 flex-1 truncate">{step.name}</span>
+              <span className={cn("min-w-0 flex-1 truncate", active ? null : "max-sm:sr-only")}>{step.name}</span>
               <span className="sr-only">
                 {step.state === "ready" ? "ready" : "action required"}
               </span>
@@ -158,16 +157,9 @@ export function OptionRow({
   readonly disabled?: boolean;
 }): React.ReactElement {
   const selectable = checked !== undefined && onCheckedChange !== undefined;
-  return (
-    <div className="mb-2.5 flex items-center gap-3 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-      {selectable ? (
-        <Checkbox
-          aria-label={label}
-          checked={checked}
-          disabled={disabled}
-          onCheckedChange={(next) => onCheckedChange(next === true)}
-        />
-      ) : null}
+  const id = React.useId();
+  const body = (
+    <>
       <div className="min-w-0 flex-1">
         <div className="text-[14.5px] text-foreground">{name}</div>
         {detail === undefined ? null : (
@@ -179,7 +171,102 @@ export function OptionRow({
           {right}
         </div>
       )}
-    </div>
+    </>
+  );
+  if (!selectable) {
+    return (
+      <div className="mb-2.5 flex items-center gap-3 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
+        {body}
+      </div>
+    );
+  }
+  // The whole card is the control, so the selected state is where the reader
+  // is looking rather than only in a box at its edge.
+  return (
+    <label
+      htmlFor={id}
+      data-checked={checked ? "" : undefined}
+      className={cn(
+        "mb-2.5 flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition-colors",
+        checked ? "border-primary bg-primary/8" : "border-border/60 bg-muted hover:border-border",
+        disabled && "cursor-not-allowed opacity-64",
+      )}
+    >
+      <Checkbox
+        id={id}
+        aria-label={label}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(next) => onCheckedChange(next === true)}
+      />
+      {body}
+    </label>
+  );
+}
+
+export interface Choice {
+  readonly value: string;
+  readonly name: React.ReactNode;
+  readonly detail?: React.ReactNode;
+}
+
+/**
+ * One of several options, as cards. Native radios give the group its keyboard
+ * behaviour (arrow keys move the selection) and its accessible role; the card
+ * around each shows which one is chosen.
+ */
+export function ChoiceGroup({
+  name,
+  legend,
+  value,
+  onValueChange,
+  choices,
+}: {
+  readonly name: string;
+  readonly legend: string;
+  readonly value: string;
+  readonly onValueChange: (value: string) => void;
+  readonly choices: readonly Choice[];
+}): React.ReactElement {
+  return (
+    <fieldset className="mb-2.5 flex min-w-0 flex-col gap-2.5">
+      <legend className="sr-only">{legend}</legend>
+      {choices.map((choice) => {
+        const selected = choice.value === value;
+        const id = `${name}-${choice.value}`;
+        return (
+          <label
+            key={choice.value}
+            data-checked={selected ? "" : undefined}
+            className={cn(
+              "flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
+              selected ? "border-primary bg-primary/8" : "border-border/60 bg-muted hover:border-border",
+            )}
+          >
+            <input
+              type="radio"
+              name={name}
+              value={choice.value}
+              aria-labelledby={`${id}-name`}
+              aria-describedby={choice.detail === undefined ? undefined : `${id}-detail`}
+              checked={selected}
+              onChange={() => onValueChange(choice.value)}
+              className="size-4 shrink-0 accent-primary outline-none"
+            />
+            <span className="min-w-0 flex-1">
+              <span id={`${id}-name`} className="block text-[14.5px] text-foreground">
+                {choice.name}
+              </span>
+              {choice.detail === undefined ? null : (
+                <span id={`${id}-detail`} className="mt-px block font-mono text-[12.5px] text-muted-foreground">
+                  {choice.detail}
+                </span>
+              )}
+            </span>
+          </label>
+        );
+      })}
+    </fieldset>
   );
 }
 
@@ -201,13 +288,16 @@ export function WizardCard({
   readonly footer: React.ReactNode;
 }): React.ReactElement {
   return (
-    <div className="grid flex-1 place-items-center overflow-y-auto p-10">
-      <div className="w-full max-w-[640px] overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_80px_rgb(0_0_0/45%)]">
-        <div className="border-b border-border/60 px-7 pt-[26px] pb-[18px]">
+    // Not `place-items-center`: centring a card taller or wider than the
+    // viewport pushes its start past the scroll origin, where it cannot be
+    // scrolled to. `my-auto` centres it only while it fits.
+    <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 py-6 sm:p-10">
+      <div className="my-auto w-full min-w-0 max-w-[640px] rounded-2xl border border-border bg-card shadow-[0_30px_80px_rgb(0_0_0/45%)]">
+        <div className="border-b border-border/60 px-5 pt-[26px] pb-[18px] sm:px-7">
           <DetentCloudLogo />
           <Stepper steps={steps} activeIndex={activeIndex} onSelect={onSelectStep} />
         </div>
-        <div className="px-7 pt-6 pb-[26px]">
+        <div className="px-5 pt-6 pb-[26px] sm:px-7">
           <h1 className="mb-2 text-2xl font-semibold tracking-[-0.02em] text-balance">{title}</h1>
           <p className="mb-[18px] text-sm text-muted-foreground">{lede}</p>
           {children}
@@ -272,9 +362,7 @@ export function SetupRoute({
 
   const [repositoryName, setRepositoryName] = React.useState("");
   const [pastedPolicy, setPastedPolicy] = React.useState("");
-  const [runnerId, setRunnerId] = React.useState("");
-  const [machineId, setMachineId] = React.useState("");
-  const [enrollment, setEnrollment] = React.useState<RunnerEnrollment | null>(null);
+  const [enrolling, setEnrolling] = React.useState(false);
   const [serviceId, setServiceId] = React.useState("");
   const [serviceOrigin, setServiceOrigin] = React.useState("");
   const [servicePublisher, setServicePublisher] = React.useState("");
@@ -361,12 +449,6 @@ export function SetupRoute({
     return bound;
   });
 
-  const enroll = useMutation(async () => {
-    const created = await api.enrollRunner({ projectIds: [projectId], runnerId, machineId });
-    setEnrollment(created);
-    await onboarding.refresh();
-    return created;
-  });
 
   /**
    * Routing is read-modify-write against the runner the reader picked. The
@@ -481,19 +563,23 @@ export function SetupRoute({
   const bodies: Record<string, React.ReactNode> = {
     "Repository configuration": (
       <>
-        <OptionRow
-          label="This project already has a repository"
-          checked={repository === "existing"}
-          onCheckedChange={(checked) => setRepository(checked ? "existing" : "")}
-          name="Use an existing repository"
-          detail="Detent reads detent.yaml and WORKFLOW.md from it"
-        />
-        <OptionRow
-          label="Generate a repository configuration"
-          checked={repository === "generate"}
-          onCheckedChange={(checked) => setRepository(checked ? "generate" : "")}
-          name="Generate the configuration"
-          detail="Detent writes a starting detent.yaml and WORKFLOW.md"
+        <ChoiceGroup
+          name="setup-repository"
+          legend="Repository configuration"
+          value={repository}
+          onValueChange={setRepository}
+          choices={[
+            {
+              value: "existing",
+              name: "Use an existing repository",
+              detail: "Detent reads detent.yaml and WORKFLOW.md from it",
+            },
+            {
+              value: "generate",
+              name: "Generate the configuration",
+              detail: "Detent writes a starting detent.yaml and WORKFLOW.md",
+            },
+          ]}
         />
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
           <div className="flex flex-1 flex-col gap-1.5">
@@ -606,64 +692,42 @@ export function SetupRoute({
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
           <div className="text-[14.5px]">Enroll a host</div>
           <p className="text-[13px] text-muted-foreground">
-            Generate the two ids on the host itself, then paste them here. The token below is shown
-            once and is only usable on the machine that generated these ids.
+            Name the host and copy one command to run on it. The command creates the host's
+            identity there, connects it to this project and writes its configuration.
           </p>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="setup-runner-id">Runner id</Label>
-              <Input
-                id="setup-runner-id"
-                value={runnerId}
-                onChange={(event) => setRunnerId(event.currentTarget.value)}
-              />
-            </div>
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="setup-machine-id">Machine id</Label>
-              <Input
-                id="setup-machine-id"
-                value={machineId}
-                onChange={(event) => setMachineId(event.currentTarget.value)}
-              />
-            </div>
-          </div>
           <div>
-            <Button
-              variant="outline"
-              disabled={
-                enroll.pending || runnerId.trim().length === 0 || machineId.trim().length === 0
-              }
-              onClick={() => void enroll.call()}
-            >
-              {enroll.pending ? "Enrolling…" : "Create enrollment token"}
+            <Button variant="outline" onClick={() => setEnrolling(true)}>
+              Enroll a runner
             </Button>
           </div>
-          <ControlError message={enroll.error?.message ?? null} />
-          {enrollment === null ? null : (
-            <p role="status" className="rounded-lg bg-background p-3 font-mono text-xs break-all">
-              One-time token: {enrollment.token} — expires {enrollment.expires_at}. Use it only on
-              the host that generated these ids. If interrupted, create a fresh token for the same
-              ids.
-            </p>
-          )}
+          <EnrollRunnerDialog
+            open={enrolling}
+            onOpenChange={setEnrolling}
+            projectIds={[projectId]}
+            onEnrolled={() => void onboarding.refresh()}
+          />
         </div>
       </>
     ),
     "Artifact history": (
       <>
-        <OptionRow
-          label="Keep artifact history on the execution host"
-          checked={artifacts === "local"}
-          onCheckedChange={(checked) => setArtifacts(checked ? "local" : "")}
-          name="Local history"
-          detail="Artifacts stay on the machine that produced them"
-        />
-        <OptionRow
-          label="Use a customer artifact service"
-          checked={artifacts === "customer"}
-          onCheckedChange={(checked) => setArtifacts(checked ? "customer" : "")}
-          name="Customer service"
-          detail="An S3-compatible service and an independent gateway you run"
+        <ChoiceGroup
+          name="setup-artifacts"
+          legend="Artifact history"
+          value={artifacts}
+          onValueChange={setArtifacts}
+          choices={[
+            {
+              value: "local",
+              name: "Local history",
+              detail: "Artifacts stay on the machine that produced them",
+            },
+            {
+              value: "customer",
+              name: "Customer service",
+              detail: "An S3-compatible service and an independent gateway you run",
+            },
+          ]}
         />
         {artifacts === "customer" ? (
           <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">

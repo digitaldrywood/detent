@@ -115,6 +115,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"policy_revisions",
 		"project_action_runs",
 		"project_actions",
+		"project_observed_policies",
 		"project_onboarding",
 		"project_policies",
 		"provider_reservations",

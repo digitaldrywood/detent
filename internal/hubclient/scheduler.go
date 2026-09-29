@@ -37,6 +37,7 @@ type Scheduler struct {
 	nativeProjects    map[string]*NativeConnector
 	nativeClaims      map[string]nativeClaim
 	nativeHeartbeats  map[tracker.ProjectID]time.Time
+	reportedPolicies  map[string]string
 	client            *Client
 	machine           Machine
 	heartbeatInterval time.Duration

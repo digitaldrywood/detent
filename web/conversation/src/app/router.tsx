@@ -19,6 +19,7 @@ import {
 import { ConversationRoute, NewChat, ProjectNewChat, Shell } from "./App.tsx";
 import { accountRoutes } from "./routes.account.tsx";
 import { SupportRoute } from "./account/Support.tsx";
+import { ChangeRequestPage } from "./work/ChangeRequestPage.tsx";
 import { ChangesPage } from "./work/ChangesPage.tsx";
 import { IssuePage } from "./work/IssuePage.tsx";
 import { WorkBoard } from "./work/WorkBoard.tsx";
@@ -113,6 +114,14 @@ const workItemRoute = createRoute({
   component: IssuePage,
 });
 
+// One Change Request, under the issue it belongs to: the hub addresses a
+// change through its primary work item, so the URL does too.
+const workChangeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/work/i/$workItemId/changes/$changeId",
+  component: ChangeRequestPage,
+});
+
 // --- Support ----------------------------------------------------------------
 //
 // `/support` is the one screen a Detent staff account reaches before it has
@@ -141,6 +150,7 @@ const routeTree = rootRoute.addChildren([
   workChangesRoute,
   workProjectRoute,
   workItemRoute,
+  workChangeRoute,
   supportRoute,
   supportOrganizationRoute,
   ...accountRoutes(rootRoute),

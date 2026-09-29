@@ -77,6 +77,69 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 	return c.JSON(http.StatusOK, approval)
 }
 
+// observeProjectPolicy records the descriptor a runner resolved for a native
+// project when it could not run it. Each runner's latest report is kept; the
+// approved policy is untouched until an owner approves one of them.
+func (s *Service) observeProjectPolicy(c echo.Context) error {
+	var descriptor policy.Descriptor
+	if err := decodeAPIJSON(c, &descriptor); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := descriptor.Validate(); err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	scope, err := s.policyScope(c)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok || credential.ID == "" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	reporter := credential.Runner.RunnerID
+	if reporter == "" {
+		reporter = credential.ID
+	}
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at`,
+		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now())); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// readObservedPolicies returns the distinct descriptors runners reported for
+// scope and could not run, newest first, leaving out approvedID.
+func readObservedPolicies(ctx context.Context, query nativeQueryer, scope, approvedID string) ([]policy.ObservedPolicy, error) {
+	rows, err := query.QueryContext(ctx, "SELECT descriptor_json, runner_id, observed_at, policy_id FROM project_observed_policies WHERE scope = ? AND policy_id <> ? ORDER BY observed_at DESC, runner_id", scope, approvedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []policy.ObservedPolicy{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var raw, id string
+		var observed policy.ObservedPolicy
+		if err := rows.Scan(&raw, &observed.RunnerID, &observed.ObservedAt, &id); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		result = append(result, observed)
+	}
+	return result, errors.Join(rows.Err(), rows.Close())
+}
+
 func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	var request struct {
 		ExpectedID string `json:"expected_policy_id"`

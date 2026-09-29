@@ -107,6 +107,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/policy", s.getProjectPolicy, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
 	e.PUT(nativeBase+"/policy", s.approveProjectPolicy, admin)
 	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, admin)
+	e.POST(nativeBase+"/policy/observed", s.observeProjectPolicy, worker)
 	e.GET("/api/v2/capabilities", s.nativeCapabilities, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
 	e.GET("/api/v2/organizations", s.nativeOrganizations, admin)
 	e.POST("/api/v2/organizations", s.createNativeOrganization, admin)

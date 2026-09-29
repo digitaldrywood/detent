@@ -51,6 +51,15 @@ type Approval struct {
 	ApprovedAt string     `json:"approved_at"`
 }
 
+// ObservedPolicy is the descriptor a runner resolved for a project and reported
+// because it could not run it: nothing was approved, or the approved policy
+// differs.
+type ObservedPolicy struct {
+	Policy     Descriptor `json:"policy"`
+	RunnerID   string     `json:"runner_id"`
+	ObservedAt string     `json:"observed_at"`
+}
+
 type Change struct {
 	ExpectedID string     `json:"expected_policy_id"`
 	Policy     Descriptor `json:"policy"`

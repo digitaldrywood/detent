@@ -267,6 +267,46 @@ test("the first-run wizard reports the hub's four onboarding steps", async ({ pa
   expect(errors, "console errors on the wizard").toEqual([]);
 });
 
+for (const viewport of [
+  { name: "desktop", width: 1440, height: 900 },
+  { name: "phone", width: 390, height: 844 },
+]) {
+  test(`the setup wizard fits a ${viewport.name} and its choices show what is selected`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const errors = watchConsole(page);
+    await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
+
+    const tabs = page.getByRole("list", { name: "Setup steps" }).getByRole("button");
+    await expect(tabs).toHaveCount(4);
+    await tabs.nth(3).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Artifact history" })).toBeVisible();
+
+    // Every tab and the whole step fit inside the viewport: nothing is
+    // clipped at either edge.
+    for (const locator of [page.getByRole("list", { name: "Setup steps" }), page.getByRole("heading", { level: 1 })]) {
+      const box = await locator.boundingBox();
+      expect(box, "wizard element has a box").not.toBeNull();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    }
+
+    // Clicking anywhere on a card chooses it, and the choice is visible.
+    const local = page.getByRole("radio", { name: "Local history" });
+    await page.getByText("Local history", { exact: true }).click();
+    await expect(local).toBeChecked();
+    await expect(page.locator("label[data-checked]")).toContainText("Local history");
+    await page.getByText("Customer service", { exact: true }).click();
+    await expect(page.getByRole("radio", { name: "Customer service" })).toBeChecked();
+    await expect(local).not.toBeChecked();
+
+    // Every step stays reachable from the tabs.
+    await tabs.nth(0).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Repository configuration" })).toBeVisible();
+    await expectNoSeriousAxeViolations(page, `/projects/:project/setup (${viewport.name})`);
+    expect(errors, "console errors on the wizard").toEqual([]);
+  });
+}
+
 test("the fleet page redirects into settings and renders the hosts and providers", async ({
   page,
 }) => {
@@ -341,35 +381,28 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
 
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "Enroll a runner" })).toBeVisible();
-  // Step one is the command the host runs; it is shown, not described.
-  await expect(dialog.getByText("detent hub runner init --hub-url")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Copy the init command" })).toBeVisible();
+  // Nothing to copy from the host first: the dialog asks for a name, a
+  // capacity and projects, never for runner or machine IDs.
+  await expect(dialog.getByLabel("Runner id")).toHaveCount(0);
+  await dialog.getByLabel("Name").fill("Build host");
+  await dialog.getByLabel("Runs at once").fill("2");
   await expectNoSeriousAxeViolations(page, "the enrollment dialog");
 
-  // The two host-generated identifiers. They have to be well formed: the hub
-  // refuses anything that is not `runner_`/`machine_` plus 32 hex characters.
-  const runnerId = `runner_${"a1b2c3d4".repeat(4)}`;
-  const machineId = `machine_${"9f8e7d6c".repeat(4)}`;
-  await dialog.getByLabel("Runner id").fill(runnerId);
-  await dialog.getByLabel("Machine id").fill(machineId);
+  await dialog.getByRole("button", { name: "Create command" }).click();
 
-  await dialog.getByRole("button", { name: "Create enrollment token" }).click();
-
-  // The token itself, and the exact command that redeems it.
-  const command = dialog.getByRole("button", { name: "Copy the enroll command" });
-  await expect(command).toBeVisible({ timeout: 15_000 });
-  await expect(dialog.getByRole("button", { name: "Copy the enrollment token" })).toBeVisible();
+  // One command carries everything the host needs.
+  const copy = dialog.getByRole("button", { name: "Copy the register command" });
+  await expect(copy).toBeVisible({ timeout: 15_000 });
   await expect(
-    dialog.getByText(/DETENT_RUNNER_ENROLLMENT_TOKEN=\S+ detent hub runner enroll --organization /),
+    dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --capacity 2 --service$/),
   ).toBeVisible();
-  await expectNoSeriousAxeViolations(page, "the enrollment dialog with a token");
+  await expectNoSeriousAxeViolations(page, "the enrollment dialog with its command");
 
-  // Closing it lists the enrollment as pending, and does not re-show the token
-  // as a fresh one.
+  // Closing it lists the enrollment as pending, with the same command.
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "Pending enrollments" })).toBeVisible();
-  await expect(page.getByText(runnerId)).toBeVisible();
-
+  await expect(page.getByText("Build host", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy the register command for Build host" })).toBeVisible();
   expect(errors, "console errors while enrolling a runner").toEqual([]);
 });
 
