@@ -16,6 +16,16 @@ type nativeWorkflowConnector struct {
 	*autoPromoteTickConnector
 	states    []connector.WorkflowState
 	statesErr error
+	// reviewed is the change's review state when the completion is applied;
+	// nil answers as a failed read.
+	reviewed *bool
+}
+
+func (c *nativeWorkflowConnector) ChangeReviewed(context.Context, string, string, string) (bool, error) {
+	if c.reviewed == nil {
+		return false, errors.New("hub unavailable")
+	}
+	return *c.reviewed, nil
 }
 
 func (c *nativeWorkflowConnector) WorkflowStates(context.Context) ([]connector.WorkflowState, error) {
@@ -49,14 +59,17 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	}
 	undispatched := append([]connector.WorkflowState(nil), landing...)
 	undispatched[3].Dispatchable = false
+	yes, no := true, false
 	head := strings.Repeat("c", 40)
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
+	waiting := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2}
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
 	for _, test := range []struct {
 		name         string
 		change       *runpkg.NativeChange
 		states       []connector.WorkflowState
 		statesErr    error
+		reviewed     *bool
 		updateErr    error
 		plain        bool
 		wantState    string
@@ -68,6 +81,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "a version waiting for a reviewer goes to review", change: opened, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version without a landing move goes to review", change: accepted, states: workflow, wantState: "In Review", wantComment: "so it waits in In Review"},
+		{name: "an approval that arrived after the publish lands", change: waiting, states: landing, reviewed: &yes, wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "a run that published no version never lands an earlier reviewed one", change: opened, states: landing, reviewed: &yes, wantState: "In Review", wantComment: "No version was published for review"},
+		{name: "a version that lost its acceptance goes to review", change: accepted, states: landing, reviewed: &no, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version never goes to a landing lane that does not dispatch", change: accepted, states: undispatched, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
@@ -82,7 +98,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			t.Parallel()
 			issue := completionTransitionIssue("In Progress", "")
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}, updateErr: test.updateErr}
-			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr}
+			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr, reviewed: test.reviewed}
 			if test.plain {
 				tracker = tick
 			}
@@ -152,7 +168,7 @@ func TestNativeCompletionComment(t *testing.T) {
 		{name: "opened", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "3 files", "head 0123456789ab)", "In Progress to In Review"}},
 		{name: "opened without a version", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: hub unavailable", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "No version was published for review: publish version: hub unavailable", "next successful run publishes one"}},
 		{name: "opened without a review policy", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: policy_mismatch", VersionCode: "policy_mismatch", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"owner or admin", "approving the repository policy again in Project settings", "back to In Progress"}},
-		{name: "opened and needing no reviewer", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"needs no reviewer", "runner lands it next"}},
+		{name: "opened and needing no reviewer", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"needs no further review", "runner lands it next"}},
 		{name: "unchanged", change: runpkg.NativeChange{BaseSHA: "abc"}, want: []string{"against abc", "nothing to review"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

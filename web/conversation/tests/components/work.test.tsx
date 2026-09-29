@@ -3,7 +3,6 @@
 // The work surfaces' components: the board card, the lane, the list row, the
 // issue card's pills and the review dock's tabs.
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -191,34 +190,19 @@ describe("the board card", () => {
         onMove={onMove}
       />,
     );
-    await userEvent.click(screen.getByTestId("lane-menu-trigger"));
+    // Base UI menus are driven with synchronous events: `findBy` polling
+    // against the positioner's continuous updates takes seconds per query.
+    fireEvent.click(screen.getByTestId("lane-menu-trigger"));
+    expect(screen.getByRole("menu", { name: "Move to" })).not.toBeNull();
     expect(screen.getByTestId("lane-menu-item-In Review")).not.toBeNull();
     expect(screen.queryByTestId("lane-menu-item-Done")).toBeNull();
-    await userEvent.click(screen.getByTestId("lane-menu-item-In Review"));
+    fireEvent.click(screen.getByTestId("lane-menu-item-In Review"));
     expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: item().id }), "In Review");
   });
 
-  it("closes the move menu on Escape and gives the trigger its focus back", async () => {
-    render(
-      <IssueCard
-        item={item({ state: "In Progress" })}
-        showProject={false}
-        now={NOW}
-        onOpen={vi.fn()}
-        moves={transitionsFrom(PROJECT, "In Progress")}
-        onMove={vi.fn()}
-      />,
-    );
-    const trigger = screen.getByTestId("lane-menu-trigger");
-    await userEvent.click(trigger);
-    // Focus lands on the first item, so the keyboard is already inside. The
-    // first item is the workflow's own first reachable lane, not the first
-    // entry of the state's `transitions` array.
-    expect(document.activeElement).toBe(screen.getByTestId("lane-menu-item-Todo"));
-    await userEvent.keyboard("{Escape}");
-    expect(screen.queryByTestId("lane-menu-item-Todo")).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-  });
+  // Escape and focus return are asserted in a real browser
+  // (tests/visual/work.spec.js): while a Base UI menu is open, jsdom spends
+  // seconds per frame on its positioner, so a wait inside it times out.
 
   it("has no move menu at all when the workflow allows none", () => {
     render(

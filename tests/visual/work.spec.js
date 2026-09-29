@@ -266,6 +266,43 @@ test.describe("the work board", () => {
     await expect(trigger).toBeFocused();
   });
 
+  test("renders the move menu above the board, never clipped by its lane", async ({ page }) => {
+    await openWork(page, `/work/p/${hub.fixture.project_id}`);
+    // The last card's menu opens below the lane body's bottom edge, which is
+    // where a menu rendered inside the lane was clipped.
+    const lane = page
+      .locator('[data-testid="board-lane"]')
+      .filter({ has: page.locator('[data-testid="lane-menu-trigger"]') })
+      .first();
+    await expect(lane).toBeVisible();
+    const body = lane.locator('[data-testid^="lane-body-"]');
+    const scrollBefore = await body.evaluate((element) => element.scrollTop);
+
+    await lane.getByTestId("lane-menu-trigger").last().click();
+    const menu = page.getByRole("menu", { name: "Move to" });
+    await expect(menu).toBeVisible();
+    await expect(lane.getByRole("menu")).toHaveCount(0);
+
+    const items = menu.getByRole("menuitem");
+    const count = await items.count();
+    expect(count).toBeGreaterThan(0);
+    for (let index = 0; index < count; index += 1) {
+      const item = items.nth(index);
+      await expect(item).toBeInViewport({ ratio: 1 });
+      // Nothing (the lane's edge, the next lane) covers the item's centre.
+      const onTop = await item.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return hit !== null && element.contains(hit);
+      });
+      expect(onTop, `menu item ${index} is covered`).toBe(true);
+    }
+    expect(await body.evaluate((element) => element.scrollTop)).toBe(scrollBefore);
+
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+  });
+
   test("reaches Work and the Browse group from the sidebar", async ({ page }) => {
     await openWork(page, "/work");
     const sidebar = page.locator("aside.dc-side");

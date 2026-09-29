@@ -675,3 +675,51 @@ func isolateNativeChangeGit(t *testing.T) {
 	t.Setenv("GIT_COMMITTER_NAME", "Test User")
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
 }
+
+// TestNativeConnectorChangeReviewed reads the change's review state the way a
+// run's completion does: reviewed under a policy that accepts the current
+// version, not once the policy asks for more, and an error for a change the
+// item does not have.
+func TestNativeConnectorChangeReviewed(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t)
+	issue := h.createInProgress(t, "Native change")
+	item := tracker.NativeWorkItemID(issue.ID)
+	change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Change"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := h.publish(t, item, change.ID, strings.Repeat("b", 40))
+	head := strings.Repeat("c", 40)
+	second, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
+		Mutation:          nativeMutationKey(),
+		ExpectedVersionID: first.ID,
+		ChangeVersionInput: tracker.ChangeVersionInput{
+			BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository,
+			Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"},
+			Artifacts: []tracker.ChangeArtifact{}, PolicyID: h.descriptor.ID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, first.ID); err != nil || reviewed {
+		t.Fatalf("for a version that is no longer current ChangeReviewed = %t, %v; want not reviewed", reviewed, err)
+	}
+	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, ""); err != nil || reviewed {
+		t.Fatalf("for no version ChangeReviewed = %t, %v; want not reviewed", reviewed, err)
+	}
+	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, second.ID); err != nil || !reviewed {
+		t.Fatalf("under the default policy ChangeReviewed = %t, %v; want reviewed", reviewed, err)
+	}
+	rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
+		t.Fatal(err)
+	}
+	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, second.ID); err != nil || reviewed {
+		t.Fatalf("after the policy asks for review ChangeReviewed = %t, %v; want not reviewed", reviewed, err)
+	}
+	if _, err := h.connector.ChangeReviewed(t.Context(), issue.ID, "change_"+strings.Repeat("0", 32), second.ID); err == nil {
+		t.Fatal("an unknown change read as a review state")
+	}
+}
