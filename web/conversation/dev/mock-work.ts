@@ -413,13 +413,13 @@ export function createWorkMock(options: {
           deletions: 0,
           binary: false,
           patch:
-            "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,2 +1,3 @@\n # Fixture\n \n+Recorded by the stub agent.\n",
+            "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -40,6 +40,7 @@ ## Usage\n Run the fixture:\n \n     make run\n+Recorded by the stub agent.\n \n ## License\n \n",
           truncated: false,
           denied: false,
         },
       ],
       file_count: 1,
-      patch_bytes: 96,
+      patch_bytes: 173,
       truncated: false,
       created_at: issue.updated_at,
     };
