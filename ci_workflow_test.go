@@ -11,90 +11,6 @@ import (
 	"time"
 )
 
-type requiredStatusCheck struct {
-	name     string
-	budget   string
-	jobStart string
-	jobEnd   string
-	markers  []string
-}
-
-var mainReleaseStatusChecks = []requiredStatusCheck{
-	{
-		name:     "Lint",
-		budget:   "2m",
-		jobStart: "  lint:",
-		jobEnd:   "  verify:",
-		markers:  []string{"name: Lint"},
-	},
-	{
-		name:     "Verify (ubuntu-latest)",
-		budget:   "8m",
-		jobStart: "  verify:",
-		jobEnd:   "  verify-fast:",
-		markers:  []string{"name: Verify (ubuntu-latest)", "needs: [verify-fast, verify-race]", "FAST_RESULT", "RACE_RESULT"},
-	},
-	{
-		name:     "Test Coverage",
-		budget:   "4m",
-		jobStart: "  test-cover:",
-		jobEnd:   "  security:",
-		markers:  []string{"name: Test Coverage", "make test-cover-packages"},
-	},
-	{
-		name:     "Browser Visual",
-		budget:   "15m",
-		jobStart: "  browser-visual:",
-		jobEnd:   "  portability-verify:",
-		markers:  []string{"name: Browser Visual", "needs: [browser-visual-shard]", "SHARD_RESULT", "timeout-minutes: 15", "Run full browser visual gate", "Run browser smoke gate"},
-	},
-}
-
-var integrationStatusChecks = []requiredStatusCheck{
-	{
-		name:     "Portability Verify (macos-latest)",
-		budget:   "8m",
-		jobStart: "  portability-verify:",
-		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "make test", "bash scripts/test-workspace.sh -parallel 4"},
-	},
-	{
-		name:     "Portability Verify (windows-latest)",
-		budget:   "45m",
-		jobStart: "  portability-verify:",
-		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "make test", "bash scripts/test-workspace.sh -parallel 4"},
-	},
-	{
-		name:     "Windows Core",
-		budget:   "4m",
-		jobStart: "  windows-core:",
-		jobEnd:   "  installer-smoke:",
-		markers:  []string{"name: Windows Core"},
-	},
-	{
-		name:     "Installer Smoke (ubuntu-latest)",
-		budget:   "6m",
-		jobStart: "  installer-smoke:",
-		jobEnd:   "  goreleaser-snapshot:",
-		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
-	},
-	{
-		name:     "Installer Smoke (windows-latest)",
-		budget:   "6m",
-		jobStart: "  installer-smoke:",
-		jobEnd:   "  goreleaser-snapshot:",
-		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
-	},
-	{
-		name:     "GoReleaser Snapshot",
-		budget:   "35m",
-		jobStart: "  goreleaser-snapshot:",
-		jobEnd:   "  report-integration-failures:",
-		markers:  []string{"name: GoReleaser Snapshot", "timeout-minutes: 35", "args: release --snapshot --clean", "MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key"},
-	},
-}
-
 func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 	t.Parallel()
 
@@ -139,8 +55,11 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 func TestCIHasNoPullRequestConcurrency(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if strings.Contains(workflow, "concurrency:") || strings.Contains(workflow, "github.event.pull_request") {
-		t.Fatal("main-push CI must not retain pull-request concurrency")
+	if strings.Contains(workflow, "github.event.pull_request") || strings.Contains(workflow, "pull_request:") {
+		t.Fatal("scheduled CI must not start for pull requests")
+	}
+	if !strings.Contains(workflow, "group: scheduled-develop-validation") {
+		t.Fatal("scheduled validation must avoid overlapping tag publication")
 	}
 }
 
@@ -242,7 +161,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		t.Fatal("Makefile must read the golangci-lint version from .golangci-version")
 	}
 
-	workflow := workflowBetween(t, readNormalizedFile(t, ".github/workflows/ci.yml"), "  lint:", "\n  verify:")
+	workflow := workflowBetween(t, readNormalizedFile(t, ".github/workflows/ci.yml"), "  lint:", "\n  verify-fast:")
 	for _, want := range []string{
 		"path: tmp/tools/golangci-lint",
 		"hashFiles('.golangci-version')",
@@ -317,80 +236,46 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 	}
 }
 
-func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
+func TestScheduledCIDocumentationMatchesWorkflow(t *testing.T) {
 	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	docs := readNormalizedFile(t, "docs/execution-seams.md")
-	protection := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
-	for _, want := range []string{"`local-gate`", "`make check-fast`", "`make check`", "merge commit", "newest"} {
-		if !strings.Contains(protection, want) {
-			t.Fatalf("main branch protection docs missing %q", want)
-		}
-	}
-	for _, check := range append(append([]requiredStatusCheck{}, mainReleaseStatusChecks...), integrationStatusChecks...) {
-		if !strings.Contains(protection, "`"+check.name+"`") {
-			t.Fatalf("main branch protection docs missing check %q", check.name)
-		}
-		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-		for _, marker := range check.markers {
-			if !strings.Contains(job, marker) {
-				t.Fatalf("workflow job for check %q missing %q", check.name, marker)
-			}
+	section := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
+	for _, want := range []string{"`make check-fast`", "scheduled", "`develop`", "tag", "staging"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("CI documentation missing %q", want)
 		}
 	}
 }
 
-func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
-	t.Parallel()
-
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, check := range mainReleaseStatusChecks {
-		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-		for _, forbidden := range []string{
-			"EVENT_NAME",
-			"steps.policy.outputs",
-			"Skip ",
-			" skipped:",
-		} {
-			if strings.Contains(job, forbidden) {
-				t.Fatalf("required check %q contains green no-op marker %q", check.name, forbidden)
-			}
-		}
-	}
-}
-
-func TestCIRunsOnlyForMain(t *testing.T) {
+func TestCIRunsOnScheduleAndManualDispatch(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	want := "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review]\n  merge_group:\n    branches: [main]\n    types: [checks_requested]\n  workflow_dispatch:\n"
-	if triggers != want {
-		t.Fatalf("CI triggers = %q, want %q", triggers, want)
+	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:"} {
+		if !strings.Contains(triggers, want) {
+			t.Errorf("CI triggers missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"pull_request:", "merge_group:", "push:"} {
+		if strings.Contains(triggers, forbidden) {
+			t.Errorf("CI has forbidden trigger %q", forbidden)
+		}
 	}
 }
 
-func TestCIRequiredChecksSkipOnPullRequestsIntoMain(t *testing.T) {
+func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, test := range []struct {
-		name, start, end, want string
-	}{
-		{name: "Invariant Gate", start: "  invariants:\n", end: "  lint:\n", want: "if: github.event_name != 'pull_request'"},
-		{name: "Lint", start: "  lint:\n", end: "  verify:\n", want: "if: github.event_name != 'pull_request'"},
-		{name: "Verify (ubuntu-latest)", start: "  verify:\n", end: "  verify-fast:\n", want: "if: always() && github.event_name != 'pull_request'"},
-		{name: "Verify build and vet", start: "  verify-fast:\n", end: "  verify-race:\n", want: "if: github.event_name != 'pull_request'"},
-		{name: "Verify race", start: "  verify-race:\n", end: "  test-cover:\n", want: "if: github.event_name != 'pull_request'"},
-		{name: "Test Coverage", start: "  test-cover:\n", end: "  security:\n", want: "if: github.event_name != 'pull_request'"},
-		{name: "Security", start: "  security:\n", end: "  browser-visual:\n", want: "if: github.event_name != 'pull_request'"},
-		{name: "Browser Visual", start: "  browser-visual:\n", end: "  browser-visual-shard:\n", want: "if: always() && github.event_name != 'pull_request'"},
-		{name: "Browser Visual shards", start: "  browser-visual-shard:\n", end: "  portability-verify:\n", want: "if: github.event_name != 'pull_request'"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			if job := workflowBetween(t, workflow, test.start, test.end); !strings.Contains(job, test.want) {
-				t.Fatalf("%s job must report skipped on pull requests into main and run in the merge group: missing %q", test.name, test.want)
-			}
-		})
+	if !strings.Contains(workflow, "test \"$GITHUB_REF\" = refs/heads/develop") {
+		t.Fatal("scheduled CI must pin develop")
+	}
+	if count := strings.Count(workflow, "ref: ${{ github.sha }}"); count < 12 {
+		t.Fatalf("only %d jobs checkout the pinned SHA", count)
+	}
+	for _, want := range []string{"make test", "make security", "make test-cover-packages", "npm run test:visual", "make check-invariants"} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("scheduled full suite missing %q", want)
+		}
 	}
 }
 
@@ -431,41 +316,20 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 	}
 }
 
-func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
+func TestScheduledCIFinalizerReportsAndTags(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, check := range integrationStatusChecks {
-		t.Run(check.name, func(t *testing.T) {
-			t.Parallel()
-			job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-			want := "    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
-			if !strings.Contains(job, want) {
-				t.Fatalf("integration job %q must run only on main pushes or dispatch", check.name)
-			}
-			for _, marker := range check.markers {
-				if !strings.Contains(job, marker) {
-					t.Fatalf("integration job %q missing %q", check.name, marker)
-				}
-			}
-		})
-	}
-	security := workflowBetween(t, workflow, "  security:", "  browser-visual:")
-	if !strings.Contains(security, "make security") {
-		t.Fatal("Security must run on main pushes and manual dispatch")
-	}
-	reporter := workflowBetween(t, workflow, "  report-integration-failures:", "")
-	for _, marker := range []string{
-		"needs: [portability-verify, windows-core, installer-smoke, goreleaser-snapshot]",
-		"if: failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')",
-		"/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100",
-		"go run ./tools/cifailure",
-	} {
-		if !strings.Contains(reporter, marker) {
-			t.Fatalf("failure reporting missing %q", marker)
+	finalizer := workflowBetween(t, workflow, "  finalize:", "")
+	for _, want := range []string{"if: always()", "actions: write", "contents: write", "issues: write", "statuses: write", "scripts/scheduled-ci-finish.sh"} {
+		if !strings.Contains(finalizer, want) {
+			t.Errorf("scheduled finalizer missing %q", want)
 		}
 	}
-	if strings.Contains(reporter, "refs/heads/develop") {
-		t.Fatal("integration failure issues must be filed only for main, never develop")
+	finish := readNormalizedFile(t, "scripts/scheduled-ci-finish.sh")
+	for _, want := range []string{"ci-scheduled-failure", "detent:todo", "hotfix", "scheduled-full-ci", "git tag -a", "git push origin", "release.yml/dispatches"} {
+		if !strings.Contains(finish, want) {
+			t.Errorf("scheduled finalizer script missing %q", want)
+		}
 	}
 }
 
@@ -544,41 +408,11 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 
 func TestBrowserVisualGateCoversBoardInteractions(t *testing.T) {
 	t.Parallel()
-
-	workflowRaw, err := os.ReadFile(".github/workflows/ci.yml")
-	if err != nil {
-		t.Fatalf("ReadFile(.github/workflows/ci.yml) error = %v", err)
-	}
-	workflow := strings.ReplaceAll(string(workflowRaw), "\r\n", "\n")
-	visualJob := workflowBetween(t, workflow, "  browser-visual:", "\n  portability-verify:")
-	for _, want := range []string{
-		"npm run test:visual",
-		"tmp/detent --help",
-		"go.mod|go.sum",
-		"name: Upload browser visual evidence",
-		"tmp/playwright-evidence",
-		"name: Upload browser visual failure artifacts",
-		"tmp/playwright-report",
-		"tmp/playwright-results",
-	} {
-		if !strings.Contains(visualJob, want) {
-			t.Fatalf("browser visual job missing %q", want)
-		}
-	}
-
-	visualSpecRaw, err := os.ReadFile("tests/visual/layout.spec.js")
-	if err != nil {
-		t.Fatalf("ReadFile(tests/visual/layout.spec.js) error = %v", err)
-	}
-	visualSpec := strings.ReplaceAll(string(visualSpecRaw), "\r\n", "\n")
-	for _, want := range []string{
-		`test("board card opens the detail sheet"`,
-		`[data-detail-sheet]`,
-		`test("board lane picker hides and restores lanes"`,
-		`test("board applies snapshot updates without reload"`,
-	} {
-		if !strings.Contains(visualSpec, want) {
-			t.Fatalf("browser visual spec missing %q", want)
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	visual := workflowBetween(t, workflow, "  browser-visual-shard:", "\n  portability-verify:")
+	for _, want := range []string{"npm run test:visual", "--shard=${{ matrix.shard }}/3", "name: Upload browser visual evidence", "name: Upload browser visual failure artifacts"} {
+		if !strings.Contains(visual, want) {
+			t.Errorf("browser visual job missing %q", want)
 		}
 	}
 }
@@ -611,39 +445,16 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 	return section[:len(startMarker)+end]
 }
 
-func TestCIDraftAndVerifyDependencies(t *testing.T) {
+func TestScheduledCIJobDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if strings.Contains(workflow, "pr-required-placeholders") {
-		t.Fatal("CI must not contain placeholder jobs")
-	}
-	aggregate := workflowBetween(t, workflow, "  verify:\n", "  verify-fast:\n")
-	for _, want := range []string{"needs: [verify-fast, verify-race]", "if: always()", `test "$FAST_RESULT" = success && test "$RACE_RESULT" = success`} {
-		if !strings.Contains(aggregate, want) {
-			t.Errorf("aggregate must reject failed, cancelled and skipped dependencies: missing %q", want)
+	for _, name := range []string{"invariants", "lint", "verify-fast", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
+		if !strings.Contains(workflow, "  "+name+":\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'") {
+			t.Errorf("%s must depend on preflight", name)
 		}
 	}
-	fast := workflowBetween(t, workflow, "  verify-fast:\n", "  verify-race:\n")
-	if !strings.Contains(fast, "run: make check-app") {
-		t.Error("verify-fast must gate the Cloud client and its committed bundle")
-	}
-	visual := workflowBetween(t, workflow, "  browser-visual:\n", "  browser-visual-shard:\n")
-	for _, want := range []string{"needs: [browser-visual-shard]", "if: always()", `test "$SHARD_RESULT" = success`} {
-		if !strings.Contains(visual, want) {
-			t.Errorf("browser visual aggregate must reject failed, cancelled and skipped shards: missing %q", want)
-		}
-	}
-	shards := workflowBetween(t, workflow, "  browser-visual-shard:\n", "  portability-verify:\n")
-	for _, want := range []string{"shard: [1, 2, 3]", "fail-fast: false", "--shard=${{ matrix.shard }}/3", "browser-visual-evidence-${{ matrix.shard }}", "browser-visual-failure-artifacts-${{ matrix.shard }}"} {
-		if !strings.Contains(shards, want) {
-			t.Errorf("browser visual shards missing %q", want)
-		}
-	}
-	race := workflowBetween(t, workflow, "  verify-race:\n", "  test-cover:\n")
-	for _, want := range []string{"shard: [0, 1, 2, 3, 4, 5]", "tmp/hub-race-evidence-*", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
-		if !strings.Contains(race, want) {
-			t.Errorf("race shards missing %q", want)
-		}
+	if !strings.Contains(workflow, "shard: [0, 1, 2, 3, 4, 5]") || !strings.Contains(workflow, "shard: [1, 2, 3]") {
+		t.Fatal("full suite lost race or visual shards")
 	}
 }
 

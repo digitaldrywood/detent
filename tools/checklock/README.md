@@ -1,7 +1,9 @@
 # Validation queue
 
-`make check` and `make check-fast` pass the repository's Git common-directory lock to checklock,
-so all worktrees share one validation gate. Checklock registers a FIFO ticket
+`make check` and `make check-fast` run directly in each worktree. They do not
+use this shared lock. This tool remains for explicit legacy invocations.
+
+Checklock registers a FIFO ticket
 before attempting that existing lock. Once registered, a live waiter cannot be
 overtaken by later registrations, including when the head waiter is descheduled.
 Concurrent registrations are ordered by acquisition of a short queue mutex.
@@ -24,7 +26,7 @@ closing. Partial receipts left by a crash are also recoverable. Numeric tickets
 avoid wall-clock ordering assumptions. The queue admits up to 1024 live waiters;
 excess invocations fail explicitly instead of growing it without a bound.
 
-`-wait-timeout` (`CHECK_LOCK_WAIT` in Make, 15 minutes by default) bounds
+`-wait-timeout` bounds
 registration and waiting without progress. An observed change in valid owner
 identity (PID, hostname, acquisition time), or acquisition after an observed
 clear lock, renews that budget. Forward queue movement also renews it, including
@@ -34,7 +36,7 @@ unchanged holder, phase hints alone, unreadable metadata, periodic reports, and
 new arrivals do not renew it. Progress must be observed before the current
 budget expires; neither liveness nor output alone proves validation is healthy.
 
-`-max-wait-timeout` (`CHECK_LOCK_MAX_WAIT` in Make, 4 hours by default) bounds
+`-max-wait-timeout` bounds
 total registration and queue waiting even with repeated handoffs, output, or
 queue advancement. This also
 bounds contention with older clients that do not honor FIFO. Both durations
@@ -78,8 +80,8 @@ make check
 
 ## Durable timing history
 
-Make appends events to `detent-validation-events.jsonl` in the Git common
-directory, beside the existing shared lock. This is telemetry, not scratch or
+Explicit checklock invocations can append events to `detent-validation-events.jsonl`
+in the Git common directory. This is telemetry, not scratch or
 build output: it survives worker scratch and worktree removal. Direct checklock
 invocations still select their event destination with `-events`. Records are
 appended in one write and synced after each event; write/sync failures are
