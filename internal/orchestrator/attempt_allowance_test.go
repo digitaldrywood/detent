@@ -240,6 +240,42 @@ func TestAttemptAllowanceNoteFormat(t *testing.T) {
 	}
 }
 
+func TestAttemptAllowanceTriageQuotesFinalAssistantMessages(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "In Progress"}
+	tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue}}
+	cfg := laneMutationTestConfig()
+	db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
+	orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: id, Mode: runpkg.RunModeTriage}
+	longMessage := strings.Repeat("waiting for an audit verdict ", 40)
+	prior := []store.WorkAttempt{
+		{ID: 11, WorkerType: "agent", TerminalState: store.WorkAttemptTerminalNoProgress, WorkerMetadataJSON: marshalWorkAttemptJSON(orch.finalAssistantMessageMetadata(runpkg.RunResult{FinalMessage: "No audit verdict; there is no PR."}))},
+		{ID: 12, WorkerType: "agent", TerminalState: store.WorkAttemptTerminalNoProgress, WorkerMetadataJSON: marshalWorkAttemptJSON(orch.finalAssistantMessageMetadata(runpkg.RunResult{FinalMessage: longMessage}))},
+		{ID: 13, WorkerType: "agent", TerminalState: store.WorkAttemptTerminalNoProgress, WorkerMetadataJSON: marshalWorkAttemptJSON(orch.finalAssistantMessageMetadata(runpkg.RunResult{FinalMessage: "The issue remains incomplete."}))},
+	}
+	contextJSON, err := attemptTriageContext(issue, attemptAllowance{Sessions: 3, Attempts: prior})
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := "## Why this stalled\nWorkers stopped before opening a PR.\n\n## What is blocking\n- [Issue](https://github.com/owner/repo/issues/1) needs implementation.\n\n## Options\n- Resume implementation manually.\n- Narrow the scope."
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{TriageContext: contextJSON}, CompletedAt: now, Result: runpkg.RunResult{TurnStarted: true, Output: note}})
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v", tracker.comments)
+	}
+	comment := tracker.comments[0].body
+	for _, want := range []string{"Session 1 (attempt 11)", "No audit verdict; there is no PR.", "Session 2 (attempt 12)", "Session 3 (attempt 13)", "The issue remains incomplete.", "[truncated]"} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("triage comment missing %q: %s", want, comment)
+		}
+	}
+	if strings.Contains(comment, longMessage) {
+		t.Fatal("triage comment included untruncated assistant message")
+	}
+}
+
 type attemptTriageRunner struct{}
 
 func (attemptTriageRunner) Run(_ context.Context, req runpkg.RunRequest) (runpkg.RunResult, error) {
@@ -527,7 +563,7 @@ func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
 				t.Fatalf("mode = %s", completion.Request.Mode)
 			}
 			restarted.handleRunResult(t.Context(), &recovered, completion)
-			if len(tracker.comments) != 1 || !validAttemptTriageNote(strings.Split(tracker.comments[0].body, "<!--")[0]) {
+			if len(tracker.comments) != 1 || !validAttemptTriageNote(strings.Split(tracker.comments[0].body, "## Final assistant messages")[0]) {
 				t.Fatalf("comments = %+v", tracker.comments)
 			}
 		})

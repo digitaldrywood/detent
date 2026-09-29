@@ -721,6 +721,11 @@ publication pending. A merge discovered during hydration uses the existing merge
 lifecycle; missing or running audit and validator stages leave publication pending
 while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
+Session-brake completions preserve the worker's bounded final assistant message
+in existing work-attempt metadata for allowance triage (#2993). The reviewed
+`handleSessionBrake` fingerprint changes only for that evidence write; its lane
+target and reason remain unchanged. `TestSessionBrakeReleasesSlotRecordsCauseAndParks`
+covers the stored message alongside the existing transition evidence.
 Idle Rework PRs enter the existing promotion evaluation without a worker completion
 record (#2688). Promotion reuses the merge worker readiness predicate and live PR
 hydration; unresolved threads and known audit failures still prevent promotion.
