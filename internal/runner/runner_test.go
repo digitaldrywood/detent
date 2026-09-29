@@ -8052,6 +8052,46 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 	}
 }
 
+func TestRunnerReapSquashLandedNativeWorkspace(t *testing.T) {
+	t.Parallel()
+	source := initRunnerSourceRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runRunnerGit(t, source, "init", "--bare", remote)
+	runRunnerGit(t, source, "remote", "add", "origin", remote)
+	runRunnerGit(t, source, "push", "-u", "origin", "main")
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := connector.Issue{ID: "wi_1", Identifier: "native#1", State: "Done", Closed: true}
+	info, err := backend.Create(t.Context(), workspaceIssue("native", issue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "native.txt"), []byte("delivered work\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runRunnerGit(t, info.Path, "add", "native.txt")
+	runRunnerGit(t, info.Path, "commit", "-m", "native work")
+	landedHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+	runRunnerGit(t, source, "merge", "--squash", info.Branch)
+	runRunnerGit(t, source, "commit", "-m", "squash native work")
+	runRunnerGit(t, source, "push", "origin", "main")
+	issue.Metadata = map[string]string{
+		"hub_landed_head_sha":  landedHead,
+		"hub_landed_merge_sha": strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD")),
+	}
+	runner := &Runner{projectID: "native", workspace: backend}
+	result, err := runner.ReapWorkspace(t.Context(), issue)
+	if err != nil || result.Worktrees != 1 || result.Branches != 1 {
+		t.Fatalf("ReapWorkspace() = %+v, %v", result, err)
+	}
+	reconciled, err := runner.ReconcileWorkspaces(t.Context(), nil)
+	if err != nil || reconciled.Removed != 0 || len(reconciled.Failures) != 0 {
+		t.Fatalf("ReconcileWorkspaces() = %+v, %v; want no cleanup failures", reconciled, err)
+	}
+}
+
 func TestRunnerMergeFastPathValidatesTheHeadForALocalStatus(t *testing.T) {
 	t.Parallel()
 

@@ -111,6 +111,24 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	if detail.Change.Landed == nil || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
 		t.Fatalf("landed change = %#v, summary %#v", detail.Change.Landed, detail.Summary)
 	}
+	for _, fetch := range []struct {
+		name string
+		run  func() ([]connector.Issue, error)
+	}{
+		{name: "by ID", run: func() ([]connector.Issue, error) {
+			return h.connector.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+		}},
+		{name: "by state", run: func() ([]connector.Issue, error) {
+			return h.connector.FetchIssuesByStates(t.Context(), []string{"Done"})
+		}},
+	} {
+		t.Run(fetch.name, func(t *testing.T) {
+			issues, err := fetch.run()
+			if err != nil || len(issues) != 1 || !issues[0].Closed || issues[0].Metadata["hub_landed_head_sha"] != head || issues[0].Metadata["hub_landed_merge_sha"] != landed.MergeSHA {
+				t.Fatalf("cleanup issue = %#v, error = %v", issues, err)
+			}
+		})
+	}
 	if _, err := execution.LandingTarget(guarded); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("landing target after landing = %v, want %v", err, runner.ErrLandingNotReviewed)
 	}

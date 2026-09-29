@@ -811,6 +811,15 @@ residual, direct, and branch cleanup;
 `TestResidualCleanupProtectsFinalizingTerminalWorkers` covers terminal worker
 ownership until its completion event.
 
+For a terminal native issue whose Change Request has a recorded landing,
+cleanup also accepts a clean worktree and branch still at that landing's head.
+This covers squash commits, which cannot prove delivery through branch ancestry.
+Later commits, uncommitted files, nonterminal issues, and issues without a
+recorded landing retain the existing protection. The normal reaper removes the
+landed workspace and clears its cleanup failure; no new sweep or retention
+state is introduced (#3234). `TestLocalGitCleanupRecordedLanding` and
+`TestRunnerReapSquashLandedNativeWorkspace` cover this narrower decision.
+
 The operator-approved September 14 retention scope (#2681, INV-11 approval
 recorded in the issue) extends this same reaper sweep: completed workspaces
 expire after seven days in a configured terminal lane or after issue closure,

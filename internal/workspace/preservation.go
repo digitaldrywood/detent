@@ -82,7 +82,7 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 	if err == nil && record.WorkspaceSession {
 		session = true
 	}
-	if err := l.checkCleanupBranch(ctx, info.Branch, session); err != nil {
+	if err := l.checkCleanupBranch(ctx, info.Branch, session, issue); err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
 	exists, isDir, err := pathExists(info.Path)
@@ -112,6 +112,18 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 			return fmt.Errorf("%w at %s: uncommitted files remain in the workspace session", ErrWorkspacePreserved, info.Path)
 		}
 		return l.checkWorkspaceSessionCommits(ctx, info.Path, issue.PullRequestHeadSHA)
+	}
+	if changed {
+		return fmt.Errorf("%w at %s: uncommitted files remain", ErrWorkspacePreserved, info.Path)
+	}
+	if issueLandedAtHead(issue) {
+		head, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("%w at %s: inspect landed workspace head: %w", ErrWorkspacePreserved, info.Path, err)
+		}
+		if strings.TrimSpace(head) == issue.LandedHeadSHA {
+			return nil
+		}
 	}
 	unpushed, err := retainedGitCommitCount(ctx, info.Path, "HEAD")
 	if err != nil {
@@ -151,7 +163,11 @@ func (l *LocalGit) checkWorkspaceSessionCommits(ctx context.Context, path string
 	return nil
 }
 
-func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, session bool) error {
+func issueLandedAtHead(issue Issue) bool {
+	return issue.Terminal && strings.TrimSpace(issue.LandedHeadSHA) != "" && strings.TrimSpace(issue.LandedMergeSHA) != ""
+}
+
+func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, session bool, issue Issue) error {
 	if !l.autoBranch || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return nil
 	}
@@ -173,6 +189,15 @@ func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, sessio
 			return fmt.Errorf("%w: workspace session branch %s contains commits held by no other ref", ErrWorkspacePreserved, branch)
 		}
 		return nil
+	}
+	if issueLandedAtHead(issue) {
+		head, err := l.runGit(ctx, "rev-parse", "refs/heads/"+branch)
+		if err != nil {
+			return fmt.Errorf("inspect landed cleanup branch: %w", err)
+		}
+		if strings.TrimSpace(head) == issue.LandedHeadSHA {
+			return nil
+		}
 	}
 	count, err := retainedGitCommitCount(ctx, l.sourceRoot, "refs/heads/"+branch)
 	if err != nil {
