@@ -657,7 +657,7 @@ func TestConnectorFetchLabelIssuesByStatesAttachesPreExistingLinkedPullRequest(t
 		t.Fatalf("request count = %d, want label list, relationship lookup, and linked PR hydration", len(requests))
 	}
 	query, _ := requests[1]["query"].(string)
-	if !strings.Contains(query, "closedByPullRequestsReferences(first: 100)") || !strings.Contains(query, "pageInfo { hasNextPage endCursor }") {
+	if !strings.Contains(query, "closedByPullRequestsReferences(first: 5)") || !strings.Contains(query, "pageInfo { hasNextPage endCursor }") {
 		t.Fatalf("relationship query does not request bounded closing PR references:\n%s", query)
 	}
 	for _, request := range requests {
@@ -671,47 +671,92 @@ func TestConnectorFetchLabelIssuesByStatesAttachesPreExistingLinkedPullRequest(t
 func TestConnectorAttachLabelIssuePullRequestReferencesPaginates(t *testing.T) {
 	t.Parallel()
 
-	firstPage := make([]string, 100)
-	for index := range firstPage {
-		firstPage[index] = fmt.Sprintf(
-			`{"number":%d,"state":"CLOSED","updatedAt":"2025-12-27T12:00:00Z","repository":{"nameWithOwner":"gopherguides/corp"}}`,
-			index+1,
-		)
+	tests := []struct {
+		name       string
+		secondPage string
+		wantNumber int
+	}{
+		{"six references", `{"number":186,"url":"https://github.com/gopherguides/corp/pull/186","state":"OPEN","headRefOid":"head-186","repository":{"nameWithOwner":"gopherguides/corp"}}`, 186},
+		{"seven references", `{"number":186,"state":"CLOSED","repository":{"nameWithOwner":"gopherguides/corp"}},{"number":187,"url":"https://github.com/gopherguides/corp/pull/187","state":"OPEN","headRefOid":"head-187","repository":{"nameWithOwner":"gopherguides/corp"}}`, 187},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			firstPage := make([]string, 5)
+			for index := range firstPage {
+				firstPage[index] = fmt.Sprintf(`{"number":%d,"state":"CLOSED","repository":{"nameWithOwner":"gopherguides/corp"}}`, index+1)
+			}
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{body: fmt.Sprintf(`{"data":{"nodes":[{"__typename":"Issue","id":"I_74","timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2025-12-27T12:00:00Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"corylanou"}}]},"closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[%s]}}]}}`, strings.Join(firstPage, ","))},
+				{body: fmt.Sprintf(`{"data":{"node":{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false,"endCursor":"cursor-2"},"nodes":[%s]}}}}`, tt.secondPage)},
+			})
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "gopherguides/corp"})
+			issues := []connector.Issue{{ID: "I_74", State: "Human Review"}}
+			if err := c.attachLabelIssuePullRequestReferences(context.Background(), issues); err != nil {
+				t.Fatalf("attachLabelIssuePullRequestReferences() error = %v", err)
+			}
+			if issues[0].PRNumber == nil || *issues[0].PRNumber != tt.wantNumber || issues[0].PRRepository != "gopherguides/corp" || issues[0].PRHeadSHA != fmt.Sprintf("head-%d", tt.wantNumber) {
+				t.Fatalf("PR identity = number %v, repo %q, head %q; want PR %d from overflow page", issues[0].PRNumber, issues[0].PRRepository, issues[0].PRHeadSHA, tt.wantNumber)
+			}
+			if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(time.Date(2025, 12, 27, 12, 0, 0, 0, time.UTC)) || issues[0].StageUpdatedActor.Login != "corylanou" {
+				t.Fatalf("lane transition = %v, %#v; want timestamp and actor from first page", issues[0].StageUpdatedAt, issues[0].StageUpdatedActor)
+			}
+			requests := server.requests()
+			if len(requests) != 2 {
+				t.Fatalf("request count = %d, want two relationship pages", len(requests))
+			}
+			query, _ := requests[0]["query"].(string)
+			if !strings.Contains(query, "closedByPullRequestsReferences(first: 5)") {
+				t.Fatalf("first relationship page query = %q, want five references", query)
+			}
+			variables, _ := requests[1]["variables"].(map[string]any)
+			if variables["issueId"] != "I_74" || variables["after"] != "cursor-1" {
+				t.Fatalf("second page variables = %#v, want issue I_74 after cursor-1", variables)
+			}
+		})
+	}
+}
+
+func TestConnectorLabelIssuePullRequestReferencesPreservesEveryOverflowReference(t *testing.T) {
+	t.Parallel()
+
+	connection := nodeConnection[pullRequest]{
+		PageInfo: pageInfo{HasNextPage: true, EndCursor: "cursor-1"},
+	}
+	for number := 1; number <= 5; number++ {
+		connection.Nodes = append(connection.Nodes, pullRequest{Number: number})
+	}
+	secondPage := make([]string, 100)
+	for index := range secondPage {
+		secondPage[index] = fmt.Sprintf(`{"number":%d}`, index+6)
 	}
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: fmt.Sprintf(
-				`{"data":{"nodes":[{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[%s]}}]}}`,
-				strings.Join(firstPage, ","),
-			),
-		},
-		{
-			body: `{"data":{"node":{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false,"endCursor":"cursor-2"},"nodes":[{"number":186,"state":"OPEN","updatedAt":"2025-12-28T12:00:00Z","repository":{"nameWithOwner":"gopherguides/corp"}}]}}}}`,
-		},
+		{body: fmt.Sprintf(`{"data":{"node":{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-2"},"nodes":[%s]}}}}`, strings.Join(secondPage, ","))},
+		{body: `{"data":{"node":{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false,"endCursor":"cursor-3"},"nodes":[{"number":106}]}}}}`},
 	})
-	c := newGitHubTestConnector(t, server, Config{
-		GitHubStatusSource: GitHubStatusSourceLabel,
-		Repository:         "gopherguides/corp",
-	})
-	issues := []connector.Issue{{ID: "I_74"}}
-
-	if err := c.attachLabelIssuePullRequestReferences(context.Background(), issues); err != nil {
-		t.Fatalf("attachLabelIssuePullRequestReferences() error = %v", err)
+	c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "gopherguides/corp"})
+	got, state, err := c.fetchRemainingLabelIssuePullRequestReferences(context.Background(), "I_74", connection)
+	if err != nil || state.Reason != "" {
+		t.Fatalf("fetchRemainingLabelIssuePullRequestReferences() = %#v, %v", state, err)
 	}
-	if issues[0].PRNumber == nil || *issues[0].PRNumber != 186 {
-		t.Fatalf("PRNumber = %v, want open PR 186 from the second relationship page", issues[0].PRNumber)
+	if len(got.Nodes) != 106 || got.PageInfo.HasNextPage {
+		t.Fatalf("references = %d, hasNextPage = %v; want all 106 references", len(got.Nodes), got.PageInfo.HasNextPage)
 	}
-	if issues[0].PRRepository != "gopherguides/corp" {
-		t.Fatalf("PRRepository = %q, want gopherguides/corp", issues[0].PRRepository)
+	for index, ref := range got.Nodes {
+		if ref.Number != index+1 {
+			t.Fatalf("reference %d = PR %d, want PR %d", index, ref.Number, index+1)
+		}
 	}
-
 	requests := server.requests()
 	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want two relationship pages", len(requests))
+		t.Fatalf("request count = %d, want two overflow pages", len(requests))
 	}
-	variables, _ := requests[1]["variables"].(map[string]any)
-	if variables["issueId"] != "I_74" || variables["after"] != "cursor-1" {
-		t.Fatalf("second page variables = %#v, want issue I_74 after cursor-1", variables)
+	for index, request := range requests {
+		query, _ := request["query"].(string)
+		variables, _ := request["variables"].(map[string]any)
+		if !strings.Contains(query, "closedByPullRequestsReferences(first: 100, after: $after)") || variables["issueId"] != "I_74" || variables["after"] != fmt.Sprintf("cursor-%d", index+1) {
+			t.Fatalf("overflow request %d = %#v, want 100 references after cursor-%d", index, request, index+1)
+		}
 	}
 }
 
