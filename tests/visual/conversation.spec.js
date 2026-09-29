@@ -921,8 +921,9 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
-  test("offers Luna with low and medium reasoning", async ({ page }) => {
-    const surface = await openLinkedConversation(page);
+  test("offers Luna with low and medium reasoning in general chat", async ({ page }) => {
+    await openChat(page);
+    const surface = page;
     await surface.getByTestId("composer-model").click();
     const model = page.getByTestId("composer-model-option-gpt-6-luna");
     await expect(model).toBeVisible();
@@ -935,6 +936,9 @@ test.describe("decisions.md §10 corrections", () => {
     await page.keyboard.press("Escape");
     await surface.getByTestId("composer-model").click();
     await page.getByTestId("composer-model-option-auto").click();
+    const linked = await openLinkedConversation(page);
+    await linked.getByTestId("composer-model").click();
+    await expect(page.getByTestId("composer-model-option-gpt-6-luna")).toHaveCount(0);
   });
 
   test("limits a new general chat to Luna", async ({ page }) => {

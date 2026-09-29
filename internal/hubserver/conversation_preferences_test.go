@@ -152,6 +152,19 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 	record := f.create(t, f.token, map[string]any{"title": "General chat"}).Conversation
 	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"model": "gpt-6-astra"}})
 	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"reasoning_effort": "high"}})
+	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
+		"key": "link-luna-choices", "share_history": true,
+		"issue": map[string]any{"title": "Linked runner work", "description": "Keep runner choices"},
+	})
+	requireNativeStatus(t, response, http.StatusOK)
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"model": genkitbackend.Model}})
+	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	updated := conversationPatch(t, f, f.token, record.ID, map[string]any{"preferences": map[string]any{"model": "gpt-6-astra"}})
+	if updated.Preferences.Model != "gpt-6-astra" {
+		t.Fatalf("linked preferences = %#v", updated.Preferences)
+	}
 }
 
 // TestConversationPreferencesReachTheIssue proves the handoff writes the

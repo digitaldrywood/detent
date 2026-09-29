@@ -82,15 +82,32 @@ import { shouldSearchServer } from "./lib/sidebarLogic.ts";
 import { hubPath } from "../runtime/basePath.ts";
 import { usePageTitle } from "./pageTitle.ts";
 
+function hasLunaCoordinator(choices: PreferenceChoices | undefined): boolean {
+  return choices?.models.some((choice) => choice.id === "gpt-6-luna" && choice.provider === "openai") ?? false;
+}
+
 function generalChatChoices(choices: PreferenceChoices | undefined): PreferenceChoices | undefined {
-  if (choices === undefined) return undefined;
-  if (!choices.models.some((choice) => choice.id === "gpt-6-luna" && choice.provider === "openai")) {
-    return choices;
-  }
+  if (choices === undefined || !hasLunaCoordinator(choices)) return choices;
   return {
     ...choices,
     models: choices.models.filter((choice) => choice.id === AUTO_PREFERENCE || choice.id === "gpt-6-luna"),
     efforts: choices.efforts.filter((choice) => [AUTO_PREFERENCE, "low", "medium"].includes(choice.id)),
+  };
+}
+
+function linkedChatChoices(choices: PreferenceChoices | undefined): PreferenceChoices | undefined {
+  if (choices === undefined || !hasLunaCoordinator(choices)) return choices;
+  return { ...choices, models: choices.models.filter((choice) => choice.id !== "gpt-6-luna") };
+}
+
+function generalChatPreferences(preferences: TurnPreferences, choices: PreferenceChoices | undefined): TurnPreferences {
+  if (!hasLunaCoordinator(choices)) return preferences;
+  return {
+    ...preferences,
+    model: [AUTO_PREFERENCE, "gpt-6-luna"].includes(preferences.model) ? preferences.model : AUTO_PREFERENCE,
+    reasoning_effort: [AUTO_PREFERENCE, "low", "medium"].includes(preferences.reasoning_effort)
+      ? preferences.reasoning_effort
+      : AUTO_PREFERENCE,
   };
 }
 
@@ -1230,8 +1247,8 @@ export function ConversationView({
               label="Message"
               blockedReason={composerBlockedReason}
               disabled={closed}
-              preferences={turnPreferences(detail.conversation)}
-              preferenceChoices={linked ? client.bootstrap.preferences : generalChatChoices(client.bootstrap.preferences)}
+              preferences={linked ? turnPreferences(detail.conversation) : generalChatPreferences(turnPreferences(detail.conversation), client.bootstrap.preferences)}
+              preferenceChoices={linked ? linkedChatChoices(client.bootstrap.preferences) : generalChatChoices(client.bootstrap.preferences)}
               onPreferencesChange={(next) =>
                 void setPreferences({ projectId, conversationId, preferences: next })
               }

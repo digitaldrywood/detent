@@ -1303,8 +1303,15 @@ func (s *Service) patchConversation(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		if record.WorkItemID == "" && s.hasLunaCoordinator() {
-			models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID != s.conversationDefaultModel() })
+		if s.hasLunaCoordinator() {
+			if record.WorkItemID == "" {
+				models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID != s.conversationDefaultModel() })
+				if effort := preferences.EffortValue(); effort != "" && effort != "low" && effort != "medium" {
+					return nativeInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
+				}
+			} else {
+				models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID == s.conversationDefaultModel() })
+			}
 		}
 		if err := conversation.ValidatePreferences(preferences, conversationModelValidationChoices(models)); err != nil {
 			return nativeInvalid(err.Error())

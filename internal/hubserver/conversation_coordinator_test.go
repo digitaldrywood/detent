@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -986,6 +987,32 @@ func TestConversationCoordinatorHonoursPreferences(t *testing.T) {
 	waitUntil(t, "second turn", func() bool { return f.backend.turns() == 2 })
 	if request := f.backend.request(t, 1); request.Model != "chosen-model" || request.ReasoningEffort != conversation.EffortHigh || !request.ReadOnly {
 		t.Fatalf("explicit turn = model %q effort %q read-only %t", request.Model, request.ReasoningEffort, request.ReadOnly)
+	}
+	f.coordinator().Stop()
+}
+
+func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
+	t.Parallel()
+	f := newCoordinatorFixture(t, "luna-legacy")
+	f.conversations.config.Model = genkitbackend.Model
+	f.conversations.config.ReasoningEffort = "low"
+
+	legacy := f.seed(t, "legacy", func(record *conversationRecord) {
+		record.Preferences = conversation.Preferences{Model: "gpt-6-astra", ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessFull}
+	})
+	f.say(t, &legacy, "What changed?")
+	f.waitAssistant(t, legacy.ID, conversation.DeliveryCompleted)
+	if request := f.backend.request(t, 0); request.Model != genkitbackend.Model || request.ReasoningEffort != "low" {
+		t.Fatalf("legacy turn = model %q effort %q", request.Model, request.ReasoningEffort)
+	}
+
+	medium := f.seed(t, "medium", func(record *conversationRecord) {
+		record.Preferences = conversation.Preferences{Model: genkitbackend.Model, ReasoningEffort: "medium", Access: conversation.AccessFull}
+	})
+	f.say(t, &medium, "And now?")
+	f.waitAssistant(t, medium.ID, conversation.DeliveryCompleted)
+	if request := f.backend.request(t, 1); request.Model != genkitbackend.Model || request.ReasoningEffort != "medium" {
+		t.Fatalf("medium turn = model %q effort %q", request.Model, request.ReasoningEffort)
 	}
 	f.coordinator().Stop()
 }

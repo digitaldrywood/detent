@@ -520,11 +520,20 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	// An explicit turn preference overrides the hub's configured default;
 	// "auto" leaves it alone. ReadOnly stays true whatever access says: a
 	// coordinator turn never changes anything (decisions section 14).
-	if model := state.preferences.ModelValue(); model != "" {
-		request.Model = model
-	}
-	if effort := state.preferences.EffortValue(); effort != "" {
-		request.ReasoningEffort = effort
+	if c.service.server.hasLunaCoordinator() {
+		if state.preferences.ModelValue() == genkitbackend.Model {
+			request.Model = genkitbackend.Model
+		}
+		if effort := state.preferences.EffortValue(); effort == "low" || effort == "medium" {
+			request.ReasoningEffort = effort
+		}
+	} else {
+		if model := state.preferences.ModelValue(); model != "" {
+			request.Model = model
+		}
+		if effort := state.preferences.EffortValue(); effort != "" {
+			request.ReasoningEffort = effort
+		}
 	}
 	state.model = request.Model
 	var result runner.AgentTurnResult
