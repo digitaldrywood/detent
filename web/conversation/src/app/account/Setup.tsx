@@ -206,7 +206,6 @@ export function OptionRow({
 
 export interface Choice {
   readonly value: string;
-  readonly label: string;
   readonly name: React.ReactNode;
   readonly detail?: React.ReactNode;
 }
@@ -234,6 +233,7 @@ export function ChoiceGroup({
       <legend className="sr-only">{legend}</legend>
       {choices.map((choice) => {
         const selected = choice.value === value;
+        const id = `${name}-${choice.value}`;
         return (
           <label
             key={choice.value}
@@ -247,15 +247,20 @@ export function ChoiceGroup({
               type="radio"
               name={name}
               value={choice.value}
-              aria-label={choice.label}
+              aria-labelledby={`${id}-name`}
+              aria-describedby={choice.detail === undefined ? undefined : `${id}-detail`}
               checked={selected}
               onChange={() => onValueChange(choice.value)}
               className="size-4 shrink-0 accent-primary outline-none"
             />
             <span className="min-w-0 flex-1">
-              <span className="block text-[14.5px] text-foreground">{choice.name}</span>
+              <span id={`${id}-name`} className="block text-[14.5px] text-foreground">
+                {choice.name}
+              </span>
               {choice.detail === undefined ? null : (
-                <span className="mt-px block font-mono text-[12.5px] text-muted-foreground">{choice.detail}</span>
+                <span id={`${id}-detail`} className="mt-px block font-mono text-[12.5px] text-muted-foreground">
+                  {choice.detail}
+                </span>
               )}
             </span>
           </label>
@@ -566,13 +571,11 @@ export function SetupRoute({
           choices={[
             {
               value: "existing",
-              label: "This project already has a repository",
               name: "Use an existing repository",
               detail: "Detent reads detent.yaml and WORKFLOW.md from it",
             },
             {
               value: "generate",
-              label: "Generate a repository configuration",
               name: "Generate the configuration",
               detail: "Detent writes a starting detent.yaml and WORKFLOW.md",
             },
@@ -716,13 +719,11 @@ export function SetupRoute({
           choices={[
             {
               value: "local",
-              label: "Keep artifact history on the execution host",
               name: "Local history",
               detail: "Artifacts stay on the machine that produced them",
             },
             {
               value: "customer",
-              label: "Use a customer artifact service",
               name: "Customer service",
               detail: "An S3-compatible service and an independent gateway you run",
             },

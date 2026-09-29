@@ -67,6 +67,7 @@ export const RUNNERS_UNAVAILABLE = "The runner list could not be read. Reload to
 export const ISSUE_CREATION_UNAVAILABLE = "You have read-only access to this project";
 export const SETUP_LOADING = "Checking this project's setup";
 export const SETUP_UNAVAILABLE = "The project's setup could not be read. Reload to try again";
+export const SETUP_NEEDS_ADMIN = "An organization owner or admin finishes project setup";
 
 export function setupStepsLeftLabel(count: number): string {
   return `${count} setup step${count === 1 ? "" : "s"} left`;
@@ -116,7 +117,9 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
           ? SETUP_LOADING
           : facts.setupStepsLeft === "unavailable"
             ? SETUP_UNAVAILABLE
-            : null,
+            : facts.setupStepsLeft > 0 && !facts.canManageProjects
+              ? SETUP_NEEDS_ADMIN
+              : null,
       note:
         hasProject && typeof facts.setupStepsLeft === "number" && facts.setupStepsLeft > 0
           ? setupStepsLeftLabel(facts.setupStepsLeft)
@@ -376,10 +379,14 @@ export function FirstRunPanel({
       : projects.find((project) => project.id === projectId);
   const canEnrollRunners = bootstrap?.actor.can_manage_runners ?? false;
   const targetId = target?.id ?? null;
+  // Tagged with the project it was read for: while the board moves to another
+  // project, or if that read fails, the previous project's count must not be
+  // shown as this one's.
   const setup = useResource(
-    () => (targetId === null ? Promise.resolve(null) : api.onboarding(targetId)),
+    async () => (targetId === null ? null : { projectId: targetId, onboarding: await api.onboarding(targetId) }),
     [api, targetId],
   );
+  const onboarding = setup.value?.projectId === targetId ? setup.value.onboarding : undefined;
 
   const steps = firstRunSteps({
     projects: projects.length,
@@ -391,9 +398,9 @@ export function FirstRunPanel({
           : "loading",
     issues,
     setupStepsLeft:
-      setup.value != null
-        ? setup.value.steps.filter((step) => step.state !== "ready").length
-        : setup.error !== null
+      onboarding !== undefined
+        ? onboarding.steps.filter((step) => step.state !== "ready").length
+        : setup.error !== null && !setup.loading
           ? "unavailable"
           : "loading",
     canManageProjects: newProject.canCreate,

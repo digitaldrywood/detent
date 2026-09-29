@@ -28,6 +28,7 @@ import {
   RUNNERS_LOADING,
   RUNNERS_UNAVAILABLE,
   SETUP_LOADING,
+  SETUP_NEEDS_ADMIN,
   SETUP_UNAVAILABLE,
   setupStepsLeftLabel,
   firstIssueState,
@@ -153,7 +154,7 @@ describe("firstRunSteps", () => {
       name: "a reader who manages nothing, on a read-only project",
       facts: { ...FACTS, projects: 1, canManageProjects: false, canEnrollRunners: false },
       done: [true, false, false, false],
-      blocked: [PROJECT_CREATION_UNAVAILABLE, RUNNER_ENROLLMENT_UNAVAILABLE, null, ISSUE_CREATION_UNAVAILABLE],
+      blocked: [PROJECT_CREATION_UNAVAILABLE, RUNNER_ENROLLMENT_UNAVAILABLE, SETUP_NEEDS_ADMIN, ISSUE_CREATION_UNAVAILABLE],
       notes: [null, null, LEFT, null],
     },
   ])("reports $name", ({ facts, done, blocked, notes }) => {

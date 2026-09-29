@@ -291,12 +291,12 @@ for (const viewport of [
     }
 
     // Clicking anywhere on a card chooses it, and the choice is visible.
-    const local = page.getByRole("radio", { name: "Keep artifact history on the execution host" });
+    const local = page.getByRole("radio", { name: "Local history" });
     await page.getByText("Local history", { exact: true }).click();
     await expect(local).toBeChecked();
     await expect(page.locator("label[data-checked]")).toContainText("Local history");
     await page.getByText("Customer service", { exact: true }).click();
-    await expect(page.getByRole("radio", { name: "Use a customer artifact service" })).toBeChecked();
+    await expect(page.getByRole("radio", { name: "Customer service" })).toBeChecked();
     await expect(local).not.toBeChecked();
 
     // Every step stays reachable from the tabs.
