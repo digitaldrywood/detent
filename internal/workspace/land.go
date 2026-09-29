@@ -1,0 +1,241 @@
+package workspace
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Lander lands a reviewed head on the repository's base branch with plain
+// git: fetch the base, verify the head, combine the two per the merge
+// method, push. Nothing here talks to a forge API; a base branch a forge
+// protects refuses the push, and that refusal is reported, never worked
+// around.
+type Lander interface {
+	LandChange(context.Context, Info, Issue, LandOptions) (LandResult, error)
+}
+
+type LandOptions struct {
+	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
+	// a branch that moved past its review is not landed.
+	HeadSHA string
+	// Method is squash, merge or rebase, from the approved policy.
+	Method string
+	// Message is the squash or merge commit's message.
+	Message string
+	// TargetBranch is the base branch; empty means the remote's default.
+	TargetBranch string
+	Remote       string
+	// PushAttemptBranch also publishes the reviewed head under the worktree
+	// branch's name, so the landed history stays reachable by that name. It
+	// is best effort: a remote that refuses it does not fail the landing.
+	PushAttemptBranch bool
+}
+
+type LandResult struct {
+	MergeSHA            string
+	BaseRef             string
+	BaseBefore          string
+	Method              string
+	AttemptBranchPushed bool
+}
+
+// Landing refusal kinds, each a reason a person acts on.
+const (
+	LandRefusalHeadMoved   = "head_moved"
+	LandRefusalMissingHead = "missing_head"
+	LandRefusalConflict    = "conflict"
+	LandRefusalNothing     = "nothing_to_land"
+	LandRefusalProtected   = "base_protected"
+	LandRefusalBaseMoved   = "base_moved"
+)
+
+// LandRefusal is a landing the repository or its history did not allow. It is
+// not an infrastructure failure: retrying the same landing gives the same
+// answer until something changes, so the reason is reported on the change.
+type LandRefusal struct {
+	Kind   string
+	Reason string
+}
+
+func (r *LandRefusal) Error() string {
+	return r.Kind + ": " + r.Reason
+}
+
+func refuse(kind, reason string) error {
+	return &LandRefusal{Kind: kind, Reason: reason}
+}
+
+func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts LandOptions) (LandResult, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return LandResult{}, err
+	}
+	head := strings.TrimSpace(opts.HeadSHA)
+	if head == "" {
+		return LandResult{}, errors.New("landing requires the reviewed head")
+	}
+	method := strings.TrimSpace(opts.Method)
+	if method == "" {
+		method = "squash"
+	}
+	if method != "squash" && method != "merge" && method != "rebase" {
+		return LandResult{}, fmt.Errorf("unsupported merge method %q", method)
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return LandResult{}, fmt.Errorf("wait for source repository operation: %w", err)
+	}
+	defer release()
+
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		remote = defaultGitRemote
+	}
+	target := strings.TrimSpace(opts.TargetBranch)
+	if target == "" {
+		if target, err = remoteDefaultBranch(ctx, normalized.Path, remote); err != nil {
+			return LandResult{}, fmt.Errorf("resolve remote default branch: %w", err)
+		}
+	}
+	localHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return LandResult{}, fmt.Errorf("inspect worktree head: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(localHead), head) {
+		if _, err := runGitAt(ctx, normalized.Path, "cat-file", "-e", head+"^{commit}"); err != nil {
+			return LandResult{}, refuse(LandRefusalMissingHead, "the reviewed head "+head+" is not in the runner's checkout; the run that produced it is gone")
+		}
+		return LandResult{}, refuse(LandRefusalHeadMoved, "the worktree moved to "+strings.TrimSpace(localHead)+" after "+head+" was reviewed; review the current head")
+	}
+	targetRef := "refs/remotes/" + remote + "/" + target
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+target+":"+targetRef); err != nil {
+		return LandResult{}, fmt.Errorf("git fetch %s %s: %w", remote, target, err)
+	}
+	targetHead, err := runGitAt(ctx, normalized.Path, "rev-parse", targetRef)
+	if err != nil {
+		return LandResult{}, fmt.Errorf("inspect fetched base: %w", err)
+	}
+	targetHead = strings.TrimSpace(targetHead)
+
+	staging := filepath.Join(l.root, "landing-"+normalized.Key)
+	_, _ = runGitAt(ctx, normalized.Path, "worktree", "remove", "--force", staging)
+	if err := os.RemoveAll(staging); err != nil {
+		return LandResult{}, fmt.Errorf("clear landing worktree: %w", err)
+	}
+	if _, err := runGitAt(ctx, normalized.Path, "worktree", "add", "--detach", staging, targetHead); err != nil {
+		return LandResult{}, fmt.Errorf("add landing worktree: %w", err)
+	}
+	defer func() {
+		_, _ = runGitAt(context.WithoutCancel(ctx), normalized.Path, "worktree", "remove", "--force", staging)
+		_ = os.RemoveAll(staging)
+	}()
+
+	mergeSHA, err := combine(ctx, staging, method, head, targetHead, opts.Message)
+	if err != nil {
+		return LandResult{}, err
+	}
+	result := LandResult{MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method}
+	pushArgs := []string{"push", "--force-with-lease=refs/heads/" + target + ":" + targetHead, remote, mergeSHA + ":refs/heads/" + target}
+	if _, err := runGitAt(ctx, staging, pushArgs...); err != nil {
+		return LandResult{}, classifyLandingPush(err, target)
+	}
+	if opts.PushAttemptBranch && strings.TrimSpace(normalized.Branch) != "" {
+		if _, err := runGitAt(ctx, normalized.Path, "push", remote, head+":refs/heads/"+normalized.Branch); err == nil {
+			result.AttemptBranchPushed = true
+		} else if l.logger != nil {
+			l.logger.Warn("landed head not published under its branch name", "branch", normalized.Branch, "error", err)
+		}
+	}
+	return result, nil
+}
+
+// combine produces the commit the base branch advances to: a squash commit,
+// a merge commit, or the head's commits replayed onto the base. It runs in
+// the detached landing worktree, so a conflict leaves the source and the
+// attempt worktree untouched.
+func combine(ctx context.Context, staging, method, head, targetHead, message string) (string, error) {
+	if strings.TrimSpace(message) == "" {
+		message = "Land " + head
+	}
+	switch method {
+	case "squash":
+		if _, err := runGitAt(ctx, staging, "merge", "--squash", head); err != nil {
+			_, _ = runGitAt(ctx, staging, "reset", "--merge")
+			return "", refuse(LandRefusalConflict, "squashing "+head+" onto the base conflicts: "+commandErrorOutput(err))
+		}
+		status, err := runGitAt(ctx, staging, "status", "--porcelain")
+		if err != nil {
+			return "", fmt.Errorf("inspect squash result: %w", err)
+		}
+		if strings.TrimSpace(status) == "" {
+			return "", refuse(LandRefusalNothing, "the base branch already contains everything in "+head)
+		}
+		if _, err := runGitAt(ctx, staging, "commit", "--no-verify", "-m", message); err != nil {
+			return "", fmt.Errorf("commit squash: %w", err)
+		}
+	case "merge":
+		if strings.TrimSpace(mustOutput(runGitAt(ctx, staging, "merge-base", "--is-ancestor", head, targetHead))) == "ancestor" {
+			return "", refuse(LandRefusalNothing, "the base branch already contains "+head)
+		}
+		if _, err := runGitAt(ctx, staging, "merge", "--no-ff", "--no-verify", "-m", message, head); err != nil {
+			_, _ = runGitAt(ctx, staging, "merge", "--abort")
+			return "", refuse(LandRefusalConflict, "merging "+head+" into the base conflicts: "+commandErrorOutput(err))
+		}
+	case "rebase":
+		mergeBase, err := runGitAt(ctx, staging, "merge-base", targetHead, head)
+		if err != nil {
+			return "", fmt.Errorf("inspect merge base: %w", err)
+		}
+		if strings.TrimSpace(mergeBase) == head {
+			return "", refuse(LandRefusalNothing, "the base branch already contains "+head)
+		}
+		if _, err := runGitAt(ctx, staging, "cherry-pick", strings.TrimSpace(mergeBase)+".."+head); err != nil {
+			_, _ = runGitAt(ctx, staging, "cherry-pick", "--abort")
+			return "", refuse(LandRefusalConflict, "replaying "+head+" onto the base conflicts: "+commandErrorOutput(err))
+		}
+	}
+	sha, err := runGitAt(ctx, staging, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("inspect landed commit: %w", err)
+	}
+	return strings.TrimSpace(sha), nil
+}
+
+// mustOutput folds git's ancestor check into a word: "ancestor" when the
+// command succeeded, "" for exit 1 (not an ancestor) or any failure.
+func mustOutput(_ string, err error) string {
+	if err == nil {
+		return "ancestor"
+	}
+	return ""
+}
+
+// classifyLandingPush turns a refused push into the reason a person acts
+// on. A forge that requires pull requests, a protected branch, or a hook
+// that declines is a policy the operator changes; a base that moved is
+// retried by the next landing run.
+func classifyLandingPush(err error, target string) error {
+	output := strings.ToLower(commandErrorOutput(err))
+	switch {
+	case strings.Contains(output, "protected branch"),
+		strings.Contains(output, "gh006"),
+		strings.Contains(output, "gh013"),
+		strings.Contains(output, "pre-receive hook declined"),
+		strings.Contains(output, "pull request"),
+		strings.Contains(output, "required status check"),
+		strings.Contains(output, "not allowed to push"),
+		strings.Contains(output, "permission denied"),
+		strings.Contains(output, "refusing to allow"):
+		return refuse(LandRefusalProtected, "the base branch "+target+" refused the push: "+strings.TrimSpace(commandErrorOutput(err))+". Allow the runner to push to "+target+", or enable GitHub pull request mode for this project.")
+	case strings.Contains(output, "fetch first"),
+		strings.Contains(output, "non-fast-forward"),
+		strings.Contains(output, "stale info"),
+		strings.Contains(output, "rejected"):
+		return refuse(LandRefusalBaseMoved, "the base branch "+target+" moved while the change was being landed: "+strings.TrimSpace(commandErrorOutput(err)))
+	}
+	return fmt.Errorf("git push %s: %w", target, err)
+}

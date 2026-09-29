@@ -773,6 +773,12 @@ func (o *Orchestrator) reconcileOpenTerminalIssueDrift(
 
 func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
 	states := append([]string(nil), o.cfg.ActiveStates...)
+	// A hub-native project's landing lane dispatches whether or not the
+	// configuration lists it: the hub names the lane, and a reviewed Change
+	// Request waits there for the runner that lands it.
+	if o.nativeWorkflow() && !stateIn(autoPromoteMergingState, states) {
+		states = append(states, normalizeState(autoPromoteMergingState))
+	}
 	if o.mergeWorkerLocalSlotsAvailable(state) {
 		return states
 	}

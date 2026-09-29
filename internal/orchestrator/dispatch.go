@@ -1108,7 +1108,9 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 }
 
 func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
-	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && o.cfg.MergeFastPathEnabled {
+	// A hub-native item in the landing lane is a reviewed Change Request the
+	// runner lands with plain git; there is no fast path to enable.
+	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && (o.cfg.MergeFastPathEnabled || o.nativeWorkflow()) {
 		return runpkg.RunModeMerge
 	}
 	// Conflict repair uses the merge precheck and verified fallback even before

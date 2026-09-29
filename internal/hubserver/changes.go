@@ -82,6 +82,7 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 	e.GET(changeBase+"/:change/versions/:version/viewed-files", s.changeViewedFiles, operator)
 	e.POST(changeBase+"/:change/versions/:version/viewed-files", s.viewChangeFile, operator)
 	e.POST(changeBase+"/:change/versions/:version/checks", s.submitChangeCheck, write)
+	e.POST(changeBase+"/:change/versions/:version/landing", s.landChange, write)
 }
 
 func (s *Service) requireChangeReviewPolicyAdmin() echo.MiddlewareFunc {

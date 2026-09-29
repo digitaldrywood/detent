@@ -15,11 +15,56 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+// hostedReviewLaneStates is the hosted template migration 36 produces: the
+// review lane, before migration 37 added the landing lane.
+func hostedReviewLaneStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
+}
+
 // TestHostedReviewLaneMigration moves projects created from the old hosted
 // template onto the template with Human Review, and leaves every other
 // workflow as it was. Applying it again changes nothing.
 func TestHostedReviewLaneMigration(t *testing.T) {
 	t.Parallel()
+	hostedLaneMigrationTest(t, hostedLaneMigration{
+		from: 35, to: 36, file: "migrations/00036_hosted_review_lane.sql", lane: "Human Review", dispatchable: false,
+		before: []tracker.NativeState{
+			{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+			{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
+			{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+		},
+		after: hostedReviewLaneStates(),
+	})
+}
+
+// TestHostedLandingLaneMigration moves projects on the review-lane template
+// onto the template with Merging, where an approved Change Request waits for
+// the runner that lands it, and leaves every other workflow as it was.
+func TestHostedLandingLaneMigration(t *testing.T) {
+	t.Parallel()
+	hostedLaneMigrationTest(t, hostedLaneMigration{
+		from: 36, to: 37, file: "migrations/00037_hosted_landing_lane.sql", lane: "Merging", dispatchable: true,
+		before: hostedReviewLaneStates(),
+		after:  HostedProjectStates(),
+	})
+}
+
+type hostedLaneMigration struct {
+	from, to     int64
+	file         string
+	lane         string
+	dispatchable bool
+	before       []tracker.NativeState
+	after        []tracker.NativeState
+}
+
+func hostedLaneMigrationTest(t *testing.T, migration hostedLaneMigration) {
+	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hub.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -48,16 +93,12 @@ func TestHostedReviewLaneMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.UpTo(t.Context(), 35); err != nil {
+	if _, err := provider.UpTo(t.Context(), migration.from); err != nil {
 		t.Fatal(err)
 	}
-	oldTemplate := []tracker.NativeState{
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
-		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}
+	oldTemplate := migration.before
 	customized := append([]tracker.NativeState(nil), oldTemplate...)
-	customized[1].Transitions = []string{"Todo", "Done", "Todo"}
+	customized[1].Transitions = append(append([]string(nil), customized[1].Transitions...), "Todo")
 	encoded := func(states []tracker.NativeState) string {
 		raw, err := marshalNative(states)
 		if err != nil {
@@ -73,10 +114,10 @@ func TestHostedReviewLaneMigration(t *testing.T) {
 		states string
 		want   []tracker.NativeState
 	}{
-		{id: "prj_old_template", states: encoded(oldTemplate), want: HostedProjectStates()},
-		{id: "prj_old_template_spaced", states: strings.ReplaceAll(encoded(oldTemplate), ",", ", "), want: HostedProjectStates()},
+		{id: "prj_old_template", states: encoded(oldTemplate), want: migration.after},
+		{id: "prj_old_template_spaced", states: strings.ReplaceAll(encoded(oldTemplate), ",", ", "), want: migration.after},
 		{id: "prj_customized", states: encoded(customized), want: customized},
-		{id: "prj_current", states: encoded(HostedProjectStates()), want: HostedProjectStates()},
+		{id: "prj_current", states: encoded(migration.after), want: migration.after},
 	}
 	for _, project := range projects {
 		if _, err := db.ExecContext(t.Context(), "INSERT INTO projects (id, organization_id, name, profile, states_json, created_at, github_repository_enabled) VALUES (?, 'org_migrate', ?, 'native', ?, ?, 0)", project.id, project.id, project.states, testTimestamp); err != nil {
@@ -92,7 +133,7 @@ func TestHostedReviewLaneMigration(t *testing.T) {
 			}
 		}
 	}
-	if _, err := provider.UpTo(t.Context(), 36); err != nil {
+	if _, err := provider.UpTo(t.Context(), migration.to); err != nil {
 		t.Fatal(err)
 	}
 	check := func(t *testing.T) {
@@ -109,23 +150,23 @@ func TestHostedReviewLaneMigration(t *testing.T) {
 			if !reflect.DeepEqual(states, project.want) {
 				t.Fatalf("%s states = %#v, want %#v", project.id, states, project.want)
 			}
-			var lanes, review int
-			if err := db.QueryRowContext(t.Context(), "SELECT count(*), coalesce(sum(source_name = 'Human Review' AND terminal = 0 AND dispatchable = 0), 0) FROM workflow_states WHERE project_id = ?", project.id).Scan(&lanes, &review); err != nil {
+			var lanes, added int
+			if err := db.QueryRowContext(t.Context(), "SELECT count(*), coalesce(sum(source_name = ? AND terminal = 0 AND dispatchable = ?), 0) FROM workflow_states WHERE project_id = ?", migration.lane, migration.dispatchable, project.id).Scan(&lanes, &added); err != nil {
 				t.Fatal(err)
 			}
-			wantReview := 0
+			wantAdded := 0
 			for _, state := range project.want {
-				if state.Name == "Human Review" {
-					wantReview = 1
+				if state.Name == migration.lane {
+					wantAdded = 1
 				}
 			}
-			if lanes != len(project.want) || review != wantReview {
-				t.Fatalf("%s workflow lanes = %d (review %d), want %d (review %d)", project.id, lanes, review, len(project.want), wantReview)
+			if lanes != len(project.want) || added != wantAdded {
+				t.Fatalf("%s workflow lanes = %d (%s %d), want %d (%s %d)", project.id, lanes, migration.lane, added, len(project.want), migration.lane, wantAdded)
 			}
 		}
 	}
 	t.Run("migrated", check)
-	up, err := migrationFiles.ReadFile("migrations/00036_hosted_review_lane.sql")
+	up, err := migrationFiles.ReadFile(migration.file)
 	if err != nil {
 		t.Fatal(err)
 	}

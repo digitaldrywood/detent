@@ -538,6 +538,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
+	if o.completeNativeLandingRun(ctx, state, event, running) {
+		return
+	}
+
 	// Merge mode also repairs conflicts in active lanes; only Merging owns a merge.
 	repairRun := !mergeWorkerIssue(running.Issue) && (running.Mode == runpkg.RunModeMerge || event.Request.Mode == runpkg.RunModeMerge)
 	var dependencyProgress implementCompletionProgressDecision
