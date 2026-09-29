@@ -626,3 +626,22 @@ func TestConversationChoiceLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestAppBootstrapFeatureReportsConversations(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		service *Service
+		want    bool
+	}{
+		{name: "conversations served", service: &Service{conversations: &conversationService{}}, want: true},
+		{name: "conversations off", service: &Service{}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.service.appBootstrapFeature().Conversation; got != test.want {
+				t.Fatalf("feature.conversation = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
