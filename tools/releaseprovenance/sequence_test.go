@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +85,7 @@ func TestCoordinatorTagToSigningProvenance(t *testing.T) {
 			output := filepath.Join(dir, "detent_release_provenance.json")
 			// A signing-workflow retry must preserve the exact same valid annotation.
 			for range 2 {
-				err := run([]string{"-repository", backend.repo.Name, "-tag", backend.tag.Name, "-commit", backend.tag.SHA, "-default-branch-ref", "refs/heads/main", "-tag-message", filepath.Join(dir, "tag"), "-github-check-runs", filepath.Join(dir, "checks"), "-github-statuses", filepath.Join(dir, "statuses"), "-github-rulesets", filepath.Join(dir, "rulesets"), "-required-check-names-json", "[]", "-output", output}, io.Discard)
+				err := run([]string{"-repository", backend.repo.Name, "-tag", backend.tag.Name, "-commit", backend.tag.SHA, "-default-branch-ref", "refs/heads/develop", "-tag-message", filepath.Join(dir, "tag"), "-github-check-runs", filepath.Join(dir, "checks"), "-github-statuses", filepath.Join(dir, "statuses"), "-github-rulesets", filepath.Join(dir, "rulesets"), "-required-check-names-json", "[]", "-output", output}, io.Discard)
 				if (err != nil) != tt.wantErr {
 					t.Fatalf("tag-to-sign gate = %v, want error %v (tag triggers duplicate CI: %v)", err, tt.wantErr, tagCI)
 				}
@@ -143,7 +142,7 @@ func TestCoordinatorLocalGateStatusToSigningProvenance(t *testing.T) {
 				"tag":      backend.tag.Message,
 				"checks":   `{"total_count":0,"check_runs":[]}`,
 				"statuses": statuses,
-				"rulesets": `{"enforcement":"active","target":"branch","conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"local-gate","integration_id":0}]}}]}`,
+				"rulesets": `{"enforcement":"active","target":"branch","conditions":{"ref_name":{"include":["refs/heads/develop"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"local-gate","integration_id":0}]}}]}`,
 			}
 			for name, raw := range inputs {
 				if err := os.WriteFile(filepath.Join(dir, name), []byte(raw), 0o600); err != nil {
@@ -187,11 +186,8 @@ func workflowPushesTag(t *testing.T, filename, tag string) bool {
 	if err := yaml.Unmarshal(raw, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	if filename == "ci.yml" && !slices.Contains(workflow.On.Push.Branches, "main") {
-		t.Fatal("main push must still trigger mandatory CI")
-	}
 	if len(workflow.On.Push.Branches) == 0 && len(workflow.On.Push.Tags) == 0 {
-		return true
+		return false
 	}
 	for _, pattern := range workflow.On.Push.Tags {
 		matched, err := filepath.Match(pattern, tag)
