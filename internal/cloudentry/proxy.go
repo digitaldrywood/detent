@@ -166,16 +166,27 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	if access, err := s.config.Provider.VerifyAccess(ctx, tokens.AccessToken); err == nil {
 		return access, verificationRefreshed, http.StatusOK, nil
 	}
-	access, rotated, err := s.config.Provider.RefreshAccess(ctx, tokens.RefreshToken)
+	// The redeemed refresh token is spent, so the rotated pair is persisted
+	// even if the browser gives up on this request.
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken)
 	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
 	}
 	if err != nil {
+		if latest, lookupErr := s.auth.authorizationByBinding(detached, authorized.Binding); lookupErr == nil && latest.sealedRefresh != current.sealedRefresh {
+			if latestTokens, openErr := s.auth.tokens(latest); openErr == nil {
+				if access, verifyErr := s.config.Provider.VerifyAccess(detached, latestTokens.AccessToken); verifyErr == nil {
+					return access, verificationRefreshed, http.StatusOK, nil
+				}
+			}
+		}
 		s.config.Logger.InfoContext(ctx, "shared entry token refresh rejected", "organization", authorized.Organization, "reason", auth.HostedIdentityReason(err))
-		s.dropAuthorization(ctx, authorized)
+		s.dropAuthorization(detached, authorized)
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
 	}
-	if err := s.auth.storeTokens(ctx, authorized.Binding, rotated); err != nil {
+	if err := s.auth.storeTokens(detached, authorized.Binding, rotated); err != nil {
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
 	}
 	return access, verificationRefreshed, http.StatusOK, nil

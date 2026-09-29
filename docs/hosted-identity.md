@@ -242,7 +242,13 @@ five minutes) later, and a dropped authorization is revoked at the tenant at onc
 With one idle open board, the entry makes at most one WorkOS call per access-token
 lifetime per organization authorization. Membership listing is used only by the
 organization chooser, invitation, ownership and member-management flows.
-Authorizations stored before tokens were kept have none and must sign in again.
+Authorizations stored before tokens were kept have none and must sign in again,
+as must every authorization after the entry signing key is rotated, because the
+sealing key derives from it. The tenant applies the less privileged of the
+asserted role and its own member row, so a role downgrade recorded at the tenant
+takes effect before the older access token expires. Refresh serialization assumes
+one entry process per `auth.db`; a rejected refresh first re-reads the stored pair
+so a refresh another request already stored is used rather than dropped.
 Every routed request logs `shared entry proxied request` with `duration_ms`,
 `auth_ms` and `verification` (`token`, `refreshed` or `machine`), and never a
 token, cookie, query string or email address.

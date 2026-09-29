@@ -117,12 +117,24 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	var membership auth.Membership
-	err := s.database.db.QueryRowContext(ctx, "SELECT membership_id FROM hosted_members WHERE user_id = ? AND active = 1", session.Identity.Subject).Scan(&membership.ID)
-	if err != nil {
+	var local string
+	err := s.database.db.QueryRowContext(ctx, "SELECT membership_id, role FROM hosted_members WHERE user_id = ? AND active = 1", session.Identity.Subject).Scan(&membership.ID, &local)
+	if err != nil || !auth.ValidOrganizationRole(local) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
-	membership.Role.Slug = role
+	membership.Role.Slug = lesserHostedRole(role, local)
 	return s.hostedMemberCredential(ctx, session, hash, membership)
+}
+
+// lesserHostedRole returns the less privileged of two organization roles, so
+// a downgrade recorded by the tenant applies before the entry's access token
+// carrying the older role expires.
+func lesserHostedRole(a, b string) string {
+	rank := map[string]int{"viewer": 0, "member": 1, "admin": 2, "owner": 3}
+	if rank[a] <= rank[b] {
+		return a
+	}
+	return b
 }
 
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {
