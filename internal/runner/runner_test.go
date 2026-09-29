@@ -8051,3 +8051,45 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerMergeFastPathValidatesTheHeadForALocalStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		localStatus  string
+		result       workspace.MergePrepareResult
+		wantValidate bool
+		wantHead     string
+	}{
+		{name: "local status configured", localStatus: "local-gate", result: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: "validated-head", Validated: true}, wantValidate: true, wantHead: "validated-head"},
+		{name: "no local status", result: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: "rebased-head"}, wantValidate: false, wantHead: ""},
+		{name: "clean but not validated", localStatus: "local-gate", result: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: "rebased-head"}, wantValidate: true, wantHead: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeMergeWorkspaceBackend{prepareResult: tt.result}
+			cfg := config.Config{}
+			cfg.Gate = gate.Config{Kind: gate.KindCommand, Run: "make check-fast", LocalStatus: tt.localStatus}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pr := &connector.PullRequest{State: "open", MergeableState: "behind", CIStatus: "success", HeadSHA: "published-head", BaseRef: "develop"}
+			result, err := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "example/repo#1", PullRequest: pr}, Mode: RunModeMerge})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if backend.prepareOptions.ValidateHead != tt.wantValidate || backend.prepareOptions.ValidationCommand != "make check-fast" {
+				t.Fatalf("PrepareMerge options = %+v, want ValidateHead %v", backend.prepareOptions, tt.wantValidate)
+			}
+			if result.Output != RunOutputMergeFastPathClean || result.GateValidatedHead != tt.wantHead {
+				t.Fatalf("result = output %q validated head %q, want %q", result.Output, result.GateValidatedHead, tt.wantHead)
+			}
+			if wantRun := map[bool]string{true: "make check-fast"}[tt.wantHead != ""]; result.GateValidatedRun != wantRun {
+				t.Fatalf("GateValidatedRun = %q, want %q", result.GateValidatedRun, wantRun)
+			}
+		})
+	}
+}

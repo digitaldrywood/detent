@@ -7693,3 +7693,42 @@ func TestConnectorLookupBranchHead(t *testing.T) {
 		})
 	}
 }
+
+func TestConnectorPostCommitStatusPostsSuccessForTheExactHead(t *testing.T) {
+	t.Parallel()
+
+	sha := strings.Repeat("a1", 20)
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/statuses/" + sha,
+			body:   `{"context":"local-gate","state":"success","created_at":"2026-09-29T00:00:00Z"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	if err := c.PostCommitStatus(context.Background(), "example/repo", sha, "local-gate", "Detent ran the configured gate on this head"); err != nil {
+		t.Fatalf("PostCommitStatus() error = %v", err)
+	}
+	requests := server.requests()
+	if len(requests) != 1 || requests[0]["method"] != http.MethodPost {
+		t.Fatalf("requests = %#v, want one POST", requests)
+	}
+	body := requests[0]["body"].(map[string]any)
+	if body["state"] != "success" || body["context"] != "local-gate" {
+		t.Fatalf("status body = %#v, want success for local-gate", body)
+	}
+
+	for _, test := range []struct{ name, repository, sha, context string }{
+		{name: "short sha", repository: "example/repo", sha: "abc123", context: "local-gate"},
+		{name: "branch name", repository: "example/repo", sha: "main", context: "local-gate"},
+		{name: "no context", repository: "example/repo", sha: sha, context: " "},
+		{name: "no repository", repository: "repo", sha: sha, context: "local-gate"},
+	} {
+		if err := c.PostCommitStatus(context.Background(), test.repository, test.sha, test.context, ""); err == nil {
+			t.Errorf("%s: PostCommitStatus() accepted an invalid target", test.name)
+		}
+	}
+	if got := len(server.requests()); got != 1 {
+		t.Fatalf("invalid targets reached GitHub: %d requests", got)
+	}
+}
