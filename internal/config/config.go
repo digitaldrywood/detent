@@ -178,7 +178,8 @@ type Config struct {
 	Operator          Operator             `yaml:"operator,omitempty"`
 	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
 
-	configuredFields map[string]struct{}
+	configuredFields                    map[string]struct{}
+	scheduleOwnershipRepositoryExplicit bool
 }
 
 type Review struct {
@@ -1377,6 +1378,8 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
 		cfg.Budget.perIssueMaxUSDConfigured = perIssueMaxUSDConfigured
 		cfg.configuredFields = configuredFieldPaths(root)
+		// Capture the opt-in before normalization can fill a blank repository.
+		cfg.scheduleOwnershipRepositoryExplicit = strings.TrimSpace(cfg.ScheduleOwnership.Repository) != ""
 	}
 	cfg.normalize()
 	if err := cfg.validateEffectiveSandboxPolicies(); err != nil {
@@ -2014,10 +2017,8 @@ func (c Config) SchedulersEnabled() bool {
 // coordination repository from a committed GitHub workflow into native mode.
 func (c Config) ForNativeTracker() Config {
 	c.Tracker.Kind = TrackerHubNative
-	if c.configuredFields != nil {
-		if _, explicit := c.configuredFields["schedule_ownership.repository"]; !explicit {
-			c.ScheduleOwnership.Repository = ""
-		}
+	if c.configuredFields != nil && !c.scheduleOwnershipRepositoryExplicit {
+		c.ScheduleOwnership.Repository = ""
 	}
 	return c
 }

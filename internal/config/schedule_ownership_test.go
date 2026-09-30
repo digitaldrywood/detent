@@ -191,7 +191,11 @@ func TestMappedNativeScheduleOwnershipDoesNotInheritGitHubRepository(t *testing.
 		wantError  bool
 	}{
 		{name: "implicit GitHub repository", wantError: true},
+		{name: "empty repository", repository: "  repository: ''\n", wantError: true},
+		{name: "blank repository", repository: "  repository: '  '\n", wantError: true},
+		{name: "null repository", repository: "  repository: null\n", wantError: true},
 		{name: "explicit coordination repository", repository: "  repository: example/coordination\n"},
+		{name: "explicit tracker repository", repository: "  repository: example/project\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
