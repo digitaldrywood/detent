@@ -92,7 +92,15 @@ func TestBackendProbeReapsChildrenAfterParentExits(t *testing.T) {
 	if _, err := strconv.Atoi(pid); err != nil {
 		t.Fatalf("child PID = %q: %v", pid, err)
 	}
-	if err := exec.CommandContext(ctx, "sh", "-c", `kill -0 "$1"`, "probe", pid).Run(); err == nil {
-		t.Fatalf("probe left child %s alive", pid)
+	status, err := exec.CommandContext(ctx, "ps", "-o", "stat=", "-p", pid).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("inspect child %s: %v", pid, err)
+		}
+		return
+	}
+	if state := strings.TrimSpace(string(status)); state != "" && !strings.HasPrefix(state, "Z") {
+		t.Fatalf("probe left child %s running with state %s", pid, state)
 	}
 }
