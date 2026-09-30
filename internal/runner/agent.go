@@ -4314,9 +4314,15 @@ func effectiveModel(values ...string) string {
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
+	landedHeadSHA := strings.TrimSpace(issue.Metadata["hub_landed_head_sha"])
 	if issue.PullRequest != nil {
 		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
-		case "CLOSED", "MERGED":
+		case "MERGED":
+			if landedHeadSHA == "" {
+				landedHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+			}
+			issue.PullRequest = nil
+		case "CLOSED":
 			issue.PullRequest = nil
 		}
 	}
@@ -4331,8 +4337,7 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		ID:                    issue.ID,
 		Identifier:            issue.Identifier,
 		Terminal:              issue.Closed,
-		LandedHeadSHA:         issue.Metadata["hub_landed_head_sha"],
-		LandedMergeSHA:        issue.Metadata["hub_landed_merge_sha"],
+		LandedHeadSHA:         landedHeadSHA,
 		BranchName:            issue.BranchName,
 		BaseRef:               baseRef,
 		ProgressBaseRef:       progressBaseRef,

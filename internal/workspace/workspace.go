@@ -235,7 +235,6 @@ type Issue struct {
 	Identifier            string
 	Terminal              bool
 	LandedHeadSHA         string
-	LandedMergeSHA        string
 	BranchName            string
 	BaseRef               string
 	ProgressBaseRef       string

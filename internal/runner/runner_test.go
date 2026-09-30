@@ -8048,48 +8048,90 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 			} else if got.PullRequestHeadSHA != "" || got.BaseRef != "" || got.ProgressBaseRef != "" {
 				t.Fatalf("terminal PR must use default base only: %+v", got)
 			}
+			wantLanded := ""
+			if state == "MERGED" {
+				wantLanded = "old-head"
+			}
+			if got.LandedHeadSHA != wantLanded {
+				t.Fatalf("landed head = %q, want %q", got.LandedHeadSHA, wantLanded)
+			}
 		})
 	}
 }
 
-func TestRunnerReapSquashLandedNativeWorkspace(t *testing.T) {
+func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 	t.Parallel()
-	source := initRunnerSourceRepo(t)
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	runRunnerGit(t, source, "init", "--bare", remote)
-	runRunnerGit(t, source, "remote", "add", "origin", remote)
-	runRunnerGit(t, source, "push", "-u", "origin", "main")
-	runRunnerGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name          string
+		evidence      string
+		pullState     string
+		laterCommit   bool
+		wantPreserved bool
+	}{
+		{name: "hub landed metadata", evidence: "hub"},
+		{name: "merged pull request with deleted branch", evidence: "pull", pullState: "MERGED"},
+		{name: "closed unmerged pull request", evidence: "pull", pullState: "CLOSED", wantPreserved: true},
+		{name: "work after merged pull request", evidence: "pull", pullState: "MERGED", laterCommit: true, wantPreserved: true},
+		{name: "no landing evidence", wantPreserved: true},
 	}
-	issue := connector.Issue{ID: "wi_1", Identifier: "native#1", State: "Done", Closed: true}
-	info, err := backend.Create(t.Context(), workspaceIssue("native", issue))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(info.Path, "native.txt"), []byte("delivered work\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runRunnerGit(t, info.Path, "add", "native.txt")
-	runRunnerGit(t, info.Path, "commit", "-m", "native work")
-	landedHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
-	runRunnerGit(t, source, "merge", "--squash", info.Branch)
-	runRunnerGit(t, source, "commit", "-m", "squash native work")
-	runRunnerGit(t, source, "push", "origin", "main")
-	issue.Metadata = map[string]string{
-		"hub_landed_head_sha":  landedHead,
-		"hub_landed_merge_sha": strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD")),
-	}
-	runner := &Runner{projectID: "native", workspace: backend}
-	result, err := runner.ReapWorkspace(t.Context(), issue)
-	if err != nil || result.Worktrees != 1 || result.Branches != 1 {
-		t.Fatalf("ReapWorkspace() = %+v, %v", result, err)
-	}
-	reconciled, err := runner.ReconcileWorkspaces(t.Context(), nil)
-	if err != nil || reconciled.Removed != 0 || len(reconciled.Failures) != 0 {
-		t.Fatalf("ReconcileWorkspaces() = %+v, %v; want no cleanup failures", reconciled, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "remote.git")
+			runRunnerGit(t, source, "init", "--bare", remote)
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			runRunnerGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "wi_1", Identifier: "repo#1", State: "Done", Closed: true}
+			info, err := backend.Create(t.Context(), workspaceIssue("project", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "delivered.txt"), []byte("delivered work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runRunnerGit(t, info.Path, "add", "delivered.txt")
+			runRunnerGit(t, info.Path, "commit", "-m", "delivered work")
+			landedHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			runRunnerGit(t, info.Path, "push", "origin", "HEAD:refs/heads/"+info.Branch)
+			runRunnerGit(t, source, "fetch", "origin")
+			runRunnerGit(t, source, "merge", "--squash", info.Branch)
+			runRunnerGit(t, source, "commit", "-m", "squash delivered work")
+			runRunnerGit(t, source, "push", "origin", "main")
+			runRunnerGit(t, source, "push", "origin", "--delete", info.Branch)
+			switch tt.evidence {
+			case "hub":
+				issue.Metadata = map[string]string{"hub_landed_head_sha": landedHead}
+			case "pull":
+				issue.PullRequest = &connector.PullRequest{Number: 7, State: tt.pullState, HeadSHA: landedHead}
+			}
+			if tt.laterCommit {
+				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "later work")
+			}
+			runner := &Runner{projectID: "project", workspace: backend}
+			result, err := runner.ReapWorkspace(t.Context(), issue)
+			if got := errors.Is(err, workspace.ErrWorkspacePreserved); got != tt.wantPreserved {
+				t.Fatalf("ReapWorkspace() = %+v, %v; want preserved %t", result, err, tt.wantPreserved)
+			}
+			if tt.wantPreserved {
+				if _, statErr := os.Stat(info.Path); statErr != nil {
+					t.Fatalf("preserved workspace missing: %v", statErr)
+				}
+				return
+			}
+			if err != nil || result.Worktrees != 1 || result.Branches != 1 {
+				t.Fatalf("ReapWorkspace() = %+v, %v", result, err)
+			}
+			reconciled, err := runner.ReconcileWorkspaces(t.Context(), nil)
+			if err != nil || reconciled.Removed != 0 || len(reconciled.Failures) != 0 {
+				t.Fatalf("ReconcileWorkspaces() = %+v, %v; want no cleanup failures", reconciled, err)
+			}
+		})
 	}
 }
 
