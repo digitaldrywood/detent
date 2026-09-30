@@ -428,7 +428,9 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions, pol
 		return nil, fmt.Errorf("create codex transport factory: %w", err)
 	}
 
-	opts := []codex.AppServerOption{}
+	opts := []codex.AppServerOption{codex.WithThreadPreparation(func(ctx context.Context, threadID string) error {
+		return prepareLegacyCodexRollout(ctx, serviceCommand.Environment["CODEX_HOME"], threadID)
+	})}
 	if timeout := durationFromMillis(cfg.ReadTimeoutMS); timeout > 0 {
 		opts = append(opts, codex.WithReadTimeout(timeout))
 	}

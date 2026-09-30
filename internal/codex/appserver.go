@@ -160,6 +160,7 @@ func (e *TurnFailedError) BackendErrorStatus() string {
 }
 
 type AppServer struct {
+	prepareThread    func(context.Context, string) error
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
 	logger           *slog.Logger
@@ -431,10 +432,23 @@ func WithTurnTimeout(timeout time.Duration) AppServerOption {
 	}
 }
 
+// WithThreadPreparation makes persisted rollouts available before a thread is
+// read or resumed. Fresh threads do not need preparation.
+func WithThreadPreparation(prepare func(context.Context, string) error) AppServerOption {
+	return func(server *AppServer) {
+		server.prepareThread = prepare
+	}
+}
+
 func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate UpdateHandler) (result RunTurnResult, err error) {
 	ctx = contextOrBackground(ctx)
 	if req.ConversationControl != nil {
 		ctx = WithConversationTurn(ctx)
+	}
+	if threadID := strings.TrimSpace(req.ResumeThreadID); threadID != "" && s.prepareThread != nil {
+		if err := s.prepareThread(ctx, threadID); err != nil {
+			return RunTurnResult{}, fmt.Errorf("prepare Codex thread for resume: %w", err)
+		}
 	}
 
 	transport, err := s.transportFactory.NewTransport(ctx)
@@ -717,6 +731,11 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return errors.New("codex thread id is required")
+	}
+	if s.prepareThread != nil {
+		if err := s.prepareThread(ctx, threadID); err != nil {
+			return fmt.Errorf("prepare Codex thread for verification: %w", err)
+		}
 	}
 	transport, err := s.transportFactory.NewTransport(ctx)
 	if err != nil {
