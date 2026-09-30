@@ -30,7 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
-	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/publication"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
@@ -1805,15 +1804,6 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 		ActiveHoursOverrideUntil: overrideUntil,
 	}
 	cfg.SchedulingRepository = workflow.Tracker.Repository
-	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
-	if lessonPath == "" {
-		lessonPath = lessons.DefaultPath
-	}
-	cfg.Lessons.Path = projectRelativePath(project.Workdir, lessonPath)
-	cfg.Lessons.Enabled = true
-	if cfg.Lessons.MaxEntries <= 0 {
-		cfg.Lessons.MaxEntries = lessons.DefaultMaxEntries
-	}
 	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
 	return cfg
 }

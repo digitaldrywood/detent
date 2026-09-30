@@ -503,6 +503,19 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Session token ceilings record their existing typed outcome, usage, and agent
+session phase in the database without writing a repository lesson. Removing the
+automatic lesson append keeps runtime failure evidence out of committable files
+and prevents a filesystem error from changing the token ceiling failure.
+Rework transitions also use existing lane database events instead of automatic
+lesson captures in the primary project checkout. Project loading does not enable
+or resolve an orchestration lesson file. Configured agent lesson recall still
+reads project-authored knowledge when enabled.
+`TestRunnerRunKillsSessionAtTokenCeilingWithoutLessonWrites` covers absent and
+existing default/configured lesson paths with recall enabled or disabled.
+`TestReworkTransitionsKeepDatabaseOwnership` covers separate projects and issues
+recording their Rework exit/entry pairs and PR/provenance attribution.
+
 The pull-request hydration recovery ramp is removed (#3497). Request-family
 budget enforcement and each PR's existing hydration predicate own admission;
 a second project-wide ramp no longer limits healthy candidates after reads
