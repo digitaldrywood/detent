@@ -2552,7 +2552,8 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 		{name: "CI failing", mutate: func(issue *connector.Issue, _ time.Time) {
 			issue.PullRequest.CIStatus = "failure"
 		}},
-		{name: "audit not yet run", audit: "missing", wantMerging: true},
+		{name: "audit not yet run", audit: "missing"},
+		{name: "audit passed", audit: "passed", wantMerging: true},
 		{name: "audit findings", audit: "findings"},
 		{name: "human question", mutate: func(issue *connector.Issue, _ time.Time) {
 			issue.WorkpadSignal.Status = workpad.StatusBlocked
@@ -2577,10 +2578,12 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 			if tt.audit != "" {
 				memo := newSecurityAuditMemoryStore()
 				orch.securityAuditStore = memo
-				if tt.audit == "findings" {
+				if tt.audit == "findings" || tt.audit == "passed" {
 					run := securityAuditPassingRun(issue)
-					run.Verdict = securityaudit.VerdictFail
-					run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/auth.go", Line: 1, Body: "authorization bypass"}}
+					if tt.audit == "findings" {
+						run.Verdict = securityaudit.VerdictFail
+						run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/auth.go", Line: 1, Body: "authorization bypass"}}
+					}
 					if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
 						t.Fatal(err)
 					}
