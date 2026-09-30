@@ -23,6 +23,17 @@ describe("the board's view state", () => {
     expect(isDefaultViewState(DEFAULT_VIEW_STATE)).toBe(true);
   });
 
+  it("links archived lists and preserves their filter on reload", () => {
+    const state = parseViewState("view=list&archived=true&state=Done");
+    expect(state.archived).toBe(true);
+    expect(state.view).toBe("list");
+    expect(state.state).toEqual(["Done"]);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+    expect(isDefaultViewState(state)).toBe(false);
+    expect(parseViewState("archived=invalid").archived).toBeUndefined();
+    expect(serializeViewState({ ...DEFAULT_VIEW_STATE, archived: false })).toBe("");
+  });
+
   it("reads every control out of the query string", () => {
     const state = parseViewState(
       "view=list&q=lease&state=Todo,Review&label=bug&assignee=michael&priority=High&sort=updated&lanes=Todo,Done",

@@ -79,7 +79,7 @@ func TestIsolationMigrationPreservesRecordings(t *testing.T) {
  VALUES ('legacy', 'workspace', 'org', 'project', 'relay', 'stream', 'person', 'subject', 'container', 'start', 80, 24, 'recorded output', 15, 'created', 'updated')`); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := migrationFiles.ReadFile("migrations/00044_runner_isolation.sql")
+	migration, err := migrationFiles.ReadFile("migrations/00045_runner_isolation.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

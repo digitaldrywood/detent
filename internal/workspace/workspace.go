@@ -1717,46 +1717,23 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 	}
 	scratchRoot := WorkerScratchRoot(workspacePath)
 	scratchPath = filepath.Join(scratchRoot, "attempt-"+uuid.NewString())
-	// A concurrent cleanup may remove an empty scratch parent between creating
-	// it and creating the attempt, so recreate the parents a bounded number of
-	// times.
-	for range 3 {
-		err = ensurePrivateDirectories(workerScratchBase(), scratchRoot)
-		if err == nil {
-			err = os.Mkdir(scratchPath, 0o700)
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			break
-		}
+	if err := ensurePrivateDirectories(workerScratchBase(), scratchRoot); err != nil {
+		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
-	if err != nil {
+	if err := os.Mkdir(scratchPath, 0o700); err != nil {
 		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
 	return scratchPath, nil
 }
 
 // RemoveWorkerScratchRoot removes every attempt scratch of a workspace, for
-// callers that delete the workspace itself.
+// callers that delete the workspace itself. The group directory is shared
+// with sibling workspaces that may be creating scratch in it, so it stays.
 func RemoveWorkerScratchRoot(workspacePath string) error {
-	scratchRoot := WorkerScratchRoot(workspacePath)
-	if err := os.RemoveAll(scratchRoot); err != nil {
+	if err := os.RemoveAll(WorkerScratchRoot(workspacePath)); err != nil {
 		return fmt.Errorf("remove worker scratch root: %w", err)
 	}
-	removeEmptyWorkerScratchParents(scratchRoot)
 	return nil
-}
-
-// removeEmptyWorkerScratchParents removes the external scratch root of a
-// workspace and its group once they hold no attempts.
-func removeEmptyWorkerScratchParents(scratchRoot string) {
-	for _, dir := range []string{scratchRoot, filepath.Dir(scratchRoot)} {
-		if !pathWithin(workerScratchBase(), dir) || dir == workerScratchBase() {
-			return
-		}
-		if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return
-		}
-	}
 }
 
 // WorkerScratchRoot is the per-workspace parent of attempt scratch. It lives
@@ -1866,7 +1843,6 @@ func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
 	if err := removeWorkspacePath(scratchRoot, scratchPath); err != nil {
 		return fmt.Errorf("remove worker scratch: %w", err)
 	}
-	removeEmptyWorkerScratchParents(scratchRoot)
 	return nil
 }
 
@@ -1881,7 +1857,6 @@ func CleanupOwnedPath(root string, path string) error {
 		if err := removeWorkspacePath(scratchRoot, path); err != nil {
 			return fmt.Errorf("remove owned path: %w", err)
 		}
-		removeEmptyWorkerScratchParents(scratchRoot)
 		return nil
 	}
 	root, err := canonicalExistingPath(root)
