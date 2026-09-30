@@ -29,7 +29,7 @@ func sameMergeControlRevision(checked, current connector.Issue) bool {
 		pullRequestRepository(checked) == pullRequestRepository(current) &&
 		pullRequestNumber(checked) == pullRequestNumber(current) &&
 		checked.PullRequest.HeadSHA == current.PullRequest.HeadSHA &&
-		checked.PullRequest.BaseSHA == current.PullRequest.BaseSHA
+		!current.PullRequest.BaseBranchStrict
 }
 
 func (o *Orchestrator) reconcileMergeControlDemand(decisions []dispatchPlanDecision, outcomes map[string]dispatchIssueOutcome) {

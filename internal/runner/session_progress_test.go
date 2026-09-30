@@ -55,12 +55,13 @@ func TestSessionProgressResume(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
 			controller = &sessionBrakeController{
-				startedAt: at.Add(2 * time.Minute), lastProgressAt: at.Add(2 * time.Minute), noProgressTimeout: time.Minute,
+				startedAt: at.Add(2 * time.Minute), lastProgressAt: at.Add(2 * time.Minute),
 				journal: runner.sessionProgressJournal(sessionID, resumeID), cancelSession: cancel,
 				probe: func(context.Context) (sessionProgressSnapshot, error) { return snapshot, nil },
+				now:   func() time.Time { return at.Add(2 * time.Minute) },
 			}
-			controller.checkProgress(ctx, at.Add(2*time.Minute))
-			if controller.breach == nil || !controller.lastProgressAt.Equal(at.Add(time.Minute)) {
+			controller.refreshSnapshot(ctx)
+			if controller.breach != nil || !controller.lastProgressAt.Equal(at.Add(time.Minute)) {
 				t.Fatalf("restart recredited same head: last=%v breach=%v", controller.lastProgressAt, controller.breach)
 			}
 			got, err := db.(store.SessionProgressStore).SessionProgress(t.Context(), sessionID)
@@ -97,13 +98,14 @@ func TestSessionProgressObservationFailures(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
 			controller := &sessionBrakeController{
-				startedAt: at, lastProgressAt: at, noProgressTimeout: time.Minute, cancelSession: cancel,
+				startedAt: at, lastProgressAt: at, cancelSession: cancel,
 				journal: &sessionProgressJournal{store: memory, sessionID: 1},
 				probe:   func(context.Context) (sessionProgressSnapshot, error) { return changed, tt.probeErr },
+				now:     func() time.Time { return at.Add(time.Minute) },
 			}
-			controller.checkProgress(ctx, at.Add(time.Minute))
-			if controller.breach == nil || !controller.lastProgressAt.Equal(at) {
-				t.Fatalf("failed read/write extended clock: %+v", controller)
+			controller.refreshSnapshot(ctx)
+			if controller.breach != nil || !controller.lastProgressAt.Equal(at) {
+				t.Fatalf("failed read/write extended clock or canceled session: %+v", controller)
 			}
 		})
 	}

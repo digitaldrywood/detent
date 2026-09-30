@@ -84,10 +84,6 @@ func (o *Orchestrator) handleSessionBrake(
 		terminalState = store.WorkAttemptTerminalMemoryCeiling
 		phase = runpkg.FinalStateMemoryCeilingExceeded
 		statusMessage = "agent session stopped after exceeding its memory ceiling"
-	} else if errors.Is(brake, runpkg.ErrSessionNoProgress) {
-		terminalState = store.WorkAttemptTerminalNoProgress
-		phase = "no_progress"
-		statusMessage = "agent session stopped after no work-product progress"
 	}
 	o.recordProjectAttemptOutcome(
 		state,

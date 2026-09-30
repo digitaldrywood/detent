@@ -83,7 +83,7 @@ const (
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
 	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
-	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
+	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000 // Retained only to preserve existing policy IDs.
 
 	DefaultPollingIntervalMS               = 120000
 	DefaultRefreshFailureThreshold         = 3
@@ -340,7 +340,7 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
-	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"`
+	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"` // Legacy input; ignored since the session no-progress timer was removed.
 	CheckpointIntervalMS         int                          `yaml:"checkpoint_interval_ms"`
 	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`

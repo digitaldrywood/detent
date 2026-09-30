@@ -1709,7 +1709,31 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			},
 			available:  true,
 			wantStatus: doctorOK,
-			wantDetail: []string{"enabled=true", "path=.detent/skills", "max_skills_in_prompt=50", "loaded=1", "dropped=0"},
+			wantDetail: []string{"enabled=true", "path=.detent/skills", "max_skills_in_prompt=50", "files=1", "loaded=1", "dropped=0"},
+		},
+		{
+			name: "within limit reports all files",
+			configure: func(t *testing.T, root string, cfg *workflowconfig.Skills) {
+				cfg.MaxSkillsInPrompt = 2
+				writeDoctorSkill(t, root, "01-build.md", "build")
+				writeDoctorSkill(t, root, "02-test.md", "test")
+			},
+			available:  true,
+			wantStatus: doctorOK,
+			wantDetail: []string{"max_skills_in_prompt=2", "files=2", "loaded=2", "dropped=0"},
+		},
+		{
+			name: "over limit reports total and every dropped file",
+			configure: func(t *testing.T, root string, cfg *workflowconfig.Skills) {
+				cfg.MaxSkillsInPrompt = 2
+				writeDoctorSkill(t, root, "01-build.md", "build")
+				writeDoctorSkill(t, root, "02-test.md", "test")
+				writeDoctorSkill(t, root, "03-release.md", "release")
+				writeDoctorSkill(t, root, "04-diagnose.md", "diagnose")
+			},
+			available:  true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"max_skills_in_prompt=2", "files=4", "loaded=2", "dropped=2", ".detent/skills/03-release.md (max_skills_in_prompt:", ".detent/skills/04-diagnose.md (max_skills_in_prompt:"},
 		},
 		{
 			name: "invalid duplicate and over limit files warn with reasons",
@@ -1725,7 +1749,7 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			},
 			available:  true,
 			wantStatus: doctorWarn,
-			wantDetail: []string{"loaded=1", "dropped=3", "02-duplicate.md (duplicate:", "03-test.md (max_skills_in_prompt:", "04-invalid.md (invalid:"},
+			wantDetail: []string{"files=4", "loaded=1", "dropped=3", "02-duplicate.md (duplicate:", "03-test.md (max_skills_in_prompt:", "04-invalid.md (invalid:"},
 		},
 		{
 			name:       "missing source repository skips",
@@ -3283,7 +3307,7 @@ func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 		"WORKFLOW.md is valid",
 		"identity release-captain",
 		"worker-model=provider-default",
-		"session-guard=max_turns=20, max_turn_duration_ms=disabled, max_session_duration_ms=7200000, no_progress_timeout_ms=5400000, merge_worker_max_duration_ms=21600000, max_session_tokens=disabled, max_session_context_multiplier=disabled",
+		"session-guard=max_turns=20, max_turn_duration_ms=disabled, max_session_duration_ms=7200000, merge_worker_max_duration_ms=21600000, max_session_tokens=disabled, max_session_context_multiplier=disabled",
 		"billing-mode=metered",
 		"orphan-recovery=resume_orphaned_sessions=true, experimental_thread_resume=true",
 		"prioritize-unblockers=true",
@@ -3315,7 +3339,7 @@ func TestDoctorWorkflowDetailReportsPinnedModelAndSessionGuard(t *testing.T) {
 	got := doctorWorkflowDetail("WORKFLOW.md", globalconfig.Project{}, cfg)
 	for _, want := range []string{
 		"worker-model=pinned gpt-5.5 via agents.routes.model",
-		"session-guard=max_turns=20, max_turn_duration_ms=900000, max_session_duration_ms=3600000, no_progress_timeout_ms=1800000, merge_worker_max_duration_ms=7200000, max_session_tokens=2000000, max_session_context_multiplier=4",
+		"session-guard=max_turns=20, max_turn_duration_ms=900000, max_session_duration_ms=3600000, merge_worker_max_duration_ms=7200000, max_session_tokens=2000000, max_session_context_multiplier=4",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("doctorWorkflowDetail() = %q, want substring %q", got, want)

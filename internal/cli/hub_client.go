@@ -70,6 +70,12 @@ func newHubScheduling(cfg globalconfig.Config, version string, problems ...func(
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
+	checkoutRoots := make(map[string]string, len(nativeProjects))
+	for _, project := range cfg.Projects {
+		if _, ok := nativeProjects[project.ID]; ok {
+			checkoutRoots[project.ID] = project.Workdir
+		}
+	}
 	var providerReports func() ([]providercapacity.Report, error)
 	if clientConfig.ProviderCapacityFile != "" {
 		providerReports = func() ([]providercapacity.Report, error) {
@@ -85,6 +91,9 @@ func newHubScheduling(cfg globalconfig.Config, version string, problems ...func(
 		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		CheckoutRepository: func(project string) string {
+			return runnerCheckoutRepository(context.Background(), checkoutRoots[project])
+		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
@@ -100,6 +109,18 @@ func newHubScheduling(cfg globalconfig.Config, version string, problems ...func(
 		HeartbeatInterval: clientConfig.HeartbeatInterval(),
 		LeaseTTL:          clientConfig.LeaseTTL(),
 	})
+}
+
+func runnerCheckoutRepository(ctx context.Context, root string) string {
+	if root == "" || !runnerCheckoutReady(root) {
+		return ""
+	}
+	remote, err := defaultGitRemoteURL(ctx, root)
+	if err != nil {
+		return ""
+	}
+	repository, _ := doctorGitHubRepositoryFromRemoteURL(remote)
+	return repository
 }
 
 func newHubRunnerFleet(cfg globalconfig.Config) (*hubclient.FleetClient, error) {

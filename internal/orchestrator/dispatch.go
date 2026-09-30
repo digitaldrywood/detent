@@ -162,11 +162,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
 	rankingIssues := issues
-	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
-	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
-	o.enforceLifetimeLimits(ctx, state, issues, now)
-	o.observePullRequestHydrationRecovery(state, issues, now)
+	issues = o.prepareDispatchCandidates(ctx, state, issues, now)
 	planner := o.liveDispatchPlanner(ctx)
 	blockerCache := make(map[string]dependencyBlocker)
 	o.logOwnershipEligibilityStartup(planner, issues)
@@ -254,6 +250,51 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	o.reconcileMergeControlDemand(decisions, outcomes)
 	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
+}
+
+func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
+	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
+	o.enforceLifetimeLimits(ctx, state, issues, now)
+	o.observePullRequestHydrationRecovery(state, issues, now)
+	return issues
+}
+
+// refillProjectSlots runs on the event loop, using the same planner and
+// pre-dispatch checks as a tick.
+func (o *Orchestrator) refillProjectSlots(ctx context.Context, state *State, now time.Time) {
+	o.refillProjectSlotsExcluding(ctx, state, now, "")
+}
+
+func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *State, now time.Time, excludedIssueID string) {
+	if len(o.lastDispatchCandidates) == 0 || o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
+		state.Draining || o.dispatchQuiesced() {
+		return
+	}
+	fresh, err := o.fetchCandidateIssuesForTick(ctx, state)
+	if err != nil {
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		if o.logger != nil {
+			o.logger.Warn("refill candidate read failed", "error", err)
+		}
+		return
+	}
+	priorIDs := make(map[string]bool, len(o.lastDispatchCandidates))
+	for _, prior := range o.lastDispatchCandidates {
+		priorIDs[prior.ID] = true
+	}
+	candidates := make([]connector.Issue, 0, len(fresh))
+	for _, current := range fresh {
+		if current.ID == excludedIssueID {
+			o.releaseDeferredSchedulingClaims(ctx, state, []connector.Issue{current})
+			continue
+		}
+		if o.scheduling != nil || priorIDs[current.ID] {
+			candidates = append(candidates, current)
+		}
+	}
+	o.dispatchReadyIssues(ctx, state, candidates, now)
 }
 
 func (o *Orchestrator) releaseDeferredSchedulingClaims(ctx context.Context, state *State, issues []connector.Issue) {
@@ -672,9 +713,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
-	mergeControl := mergeControlEligible && (o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
-		o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) ||
-		o.dispatchPlanner().forgeReadAllowsMerge(state, issue))
+	mergeControl := mergeControlEligible
 	if !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
 	}
