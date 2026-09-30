@@ -2,10 +2,56 @@ package github
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
+
+func TestBranchPolicyProjectsApplicablePendingChecks(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		configured []string
+		required   []string
+		ci         string
+		wantCI     string
+		wantNames  []string
+	}{
+		{name: "optional cleanup on dirty Rework", configured: []string{}, ci: "pending", wantCI: "success"},
+		{name: "native pending", configured: []string{}, required: []string{"Verify"}, ci: "pending", wantCI: "pending", wantNames: []string{"Verify"}},
+		{name: "reported red remains red", configured: []string{}, ci: "failure", wantCI: "failure"},
+		{name: "omitted retains aggregate", ci: "pending", wantCI: "pending", wantNames: []string{"cleanup", "Verify"}},
+		{name: "named retains existing policy", configured: []string{"Verify"}, ci: "pending", wantCI: "pending", wantNames: []string{"cleanup", "Verify"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newGitHubTestConnector(t, newGraphQLTestServer(t, nil), Config{RequiredStatusChecks: tt.configured})
+			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main", RequiredStatusChecks: tt.required, Strict: true})
+			checks := []connector.PullRequestCheck{{Name: "cleanup", Status: "queued"}, {Name: "Verify", Status: "in_progress"}}
+			original := &connector.PullRequest{Number: 42, State: "open", BaseRef: "main", HeadSHA: "head", MergeableState: "dirty", CIStatus: tt.ci, Checks: checks, CheckRunCount: 2, RunningChecks: []string{"cleanup", "Verify"}, UnstartedChecks: checks}
+			issue := connector.Issue{Identifier: "example/repo#1", State: "Rework", PullRequest: original}
+			if err := c.attachRequiredBranchChecks(t.Context(), &issue); err != nil {
+				t.Fatal(err)
+			}
+			got := issue.PullRequest
+			if got.CIStatus != tt.wantCI || !slices.Equal(got.RunningChecks, tt.wantNames) {
+				t.Fatalf("CI=%q running=%v, want CI=%q running=%v", got.CIStatus, got.RunningChecks, tt.wantCI, tt.wantNames)
+			}
+			var pendingNames []string
+			for _, check := range got.UnstartedChecks {
+				pendingNames = append(pendingNames, check.Name)
+			}
+			if !slices.Equal(pendingNames, tt.wantNames) || !slices.Equal(got.Checks, checks) || got.CheckRunCount != 2 {
+				t.Fatalf("pending=%v raw checks=%v count=%d", pendingNames, got.Checks, got.CheckRunCount)
+			}
+			if tt.configured != nil && len(tt.configured) == 0 && !got.BaseBranchStrict {
+				t.Fatal("lost native strict branch policy")
+			}
+			if !slices.Equal(original.RunningChecks, []string{"cleanup", "Verify"}) || !slices.Equal(original.UnstartedChecks, checks) {
+				t.Fatal("mutated shared raw observation")
+			}
+		})
+	}
+}
 
 func TestHydrateMergingRulesetStatus(t *testing.T) {
 	for _, tt := range []struct {
