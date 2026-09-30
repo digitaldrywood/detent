@@ -1,6 +1,37 @@
-# Issue #3454 current merge fallback handoff — 2026-09-30
+# Issue #3454 Rework publication handoff — 2026-09-30
 
 ## Codex Workpad
+
+Plan: attempt 7304 / generation 13 resolves the recovered unpublished merge dfe16d6da2c16fb9a9d35294022c766301edf327 by retaining and publishing it with this refreshed handoff. Rework feedback reports target ancestry/merge conflicts; PR #3471 has no actionable human or bot findings and is already non-draft against develop with Fixes #3454. No source repair remains.
+
+Recovery and review: inspected all four recovered paths. The three internal/workspace test files exactly match fetched develop 3ce76fc185cf1d090eacaa27779ac77cfc84587c; the remaining path is the issue-owned notes conflict resolution. Both fetched develop and published PR head 08bcfa7d6ea302c2a3e740f11f5961e6def40c9a are verified ancestors. The full issue diff contains only these handoff notes and tests/visual/account.spec.js. Retain all recovered work; no stray artifacts, stash, generated-input changes or out-of-scope findings.
+
+Key file: tests/visual/account.spec.js locates exactly one selected card containing a radio before and after switching choices, and matches Runs at once exactly to exclude its help button. The test file and frontend/generated account assets match passing implementation 8d5843246bb94582fd284844171e662d602bb549. The recovered merge adds only develop's unrelated workspace tests.
+
+Validation: current JavaScript syntax check (node --check) and full issue whitespace inspection pass. Prior Linux Playwright account-file evidence is 11 passed and one intentional skip, with recorded pre-fix selector timeout and masked enrollment collision; this is historical evidence, not a new current-head browser run. No source changed during this retry. No full suite, coverage, race suite, Actions rerun or CI wait. make generate is not applicable. Run configured true on the final committed head immediately before an explicit-lease push; exact gate, push timing, head and post-publication feedback/check evidence belong in the canonical issue Workpad.
+
+Handoff: publish the retained merge and notes, then update the existing canonical issue Workpad for attempt 7304 / generation 13. At initial inspection the PR has no reviews or review threads; the review bot reports its usage limit, which does not require automated review. Current-head checks are absent and confer no test credit. No merge-group workflow or quiet window is configured. Detent owns lane transitions and squash merging; the next scheduled integrated-develop validation confirms the original job and closes the issue. Live port 4000 is untouched.
+
+Skill draft: no — existing commit and Linux browser guidance cover this recovery.
+
+```detent-status
+schema: 1
+status: in_progress
+fields:
+  completion_work_attempt_id: "7304"
+  completion_generation: "13"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+The records below describe earlier sessions. Current publication and completion evidence is in the canonical issue Workpad.
+
+# Issue #3454 current merge fallback handoff — 2026-09-30
+
+## Historical Workpad
 
 Plan and result: merge freshly fetched develop `3ce76fc185cf1d090eacaa27779ac77cfc84587c` into published PR #3471 head `08bcfa7d6ea302c2a3e740f11f5961e6def40c9a` without rebasing; commit the resolution and return immediately with a source-clean workspace. The fetched PR head matches the clean starting local head. PR #3471 is open against develop on the assigned isolated branch and includes Fixes #3454. No rebase or merge was in progress before this merge.
 
@@ -12,7 +43,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
