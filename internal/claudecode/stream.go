@@ -59,6 +59,7 @@ type contentBlock struct {
 	Text      string          `json:"text"`
 	Name      string          `json:"name"`
 	ToolUseID string          `json:"tool_use_id"`
+	IsError   bool            `json:"is_error"`
 	Input     json.RawMessage `json:"input"`
 	Content   json.RawMessage `json:"content"`
 }
@@ -351,6 +352,10 @@ func (s *turnState) emitContentBlock(block contentBlock, fallbackItemID string, 
 			Model:    s.model,
 		})
 	case "tool_result":
+		status := "completed"
+		if block.IsError {
+			status = "failed"
+		}
 		return emitUpdate(onUpdate, runner.AgentUpdate{
 			Type:     runner.AgentUpdateToolOutput,
 			ThreadID: s.sessionID,
@@ -358,7 +363,7 @@ func (s *turnState) emitContentBlock(block contentBlock, fallbackItemID string, 
 			ItemID:   firstNonBlankString(block.ToolUseID, itemID),
 			Tool:     "tool_result",
 			Delta:    claudeBlockContent(block.Content),
-			Status:   "completed",
+			Status:   status,
 			Model:    s.model,
 		})
 	default:

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type SSHRunRequest struct {
@@ -99,7 +100,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "store.") {
 			name := strings.TrimPrefix(method, "store.")
 			switch name {
-			case "StartSession", "FinishSession", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SessionProgress", "SaveSessionProgress", "SessionPolicy":
+			case "StartSession", "FinishSession", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy":
 				return invokeSSHMethod(ctx, sessions, name, arguments)
 			default:
 				return nil, errors.New("unsupported SSH store method")
@@ -248,6 +249,12 @@ func (s SSHSessionStore) UpdateSessionResumeState(ctx context.Context, id int64,
 func (s SSHSessionStore) RecordWorkflowPhaseEvent(ctx context.Context, input store.WorkflowPhaseEvent) (int64, error) {
 	var result int64
 	err := s.Peer.Call(ctx, "store.RecordWorkflowPhaseEvent", &result, input)
+	return result, err
+}
+
+func (s SSHSessionStore) SaveWorkflowActivityProfile(ctx context.Context, id int64, input store.WorkflowPhaseEvent, profile workflowmetrics.ActivityProfile) (int64, error) {
+	var result int64
+	err := s.Peer.Call(ctx, "store.SaveWorkflowActivityProfile", &result, id, input, profile)
 	return result, err
 }
 
