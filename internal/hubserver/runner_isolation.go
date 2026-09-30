@@ -21,10 +21,7 @@ func updateRunnerIsolationReport(ctx context.Context, tx *sql.Tx, scope nativeSc
 		return err
 	}
 	result, err := tx.ExecContext(ctx, "UPDATE runner_identities SET backend_isolation_json = ? WHERE id = ? AND organization_id = ? AND token_id = ?", string(encoded), scope.credential.Runner.RunnerID, scope.organization, scope.credential.ID)
-	if err != nil {
-		return err
-	}
-	return requireRunnerUpdate(result, nil)
+	return requireRunnerUpdate(result, err)
 }
 
 func validateRunnerIsolation(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {

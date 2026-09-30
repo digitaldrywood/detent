@@ -60,7 +60,7 @@ func TestHeartbeatProblemsClear(t *testing.T) {
 	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.NativeTrusted}}}
 	first, _ := source.heartbeatProblems(t.Context(), machine)
 	second, _ := source.heartbeatProblems(t.Context(), machine)
-	if len(first) != 1 || !first[0].FirstSeen.Equal(second[0].FirstSeen) {
+	if len(first) != 1 || len(second) != 1 || !first[0].FirstSeen.Equal(second[0].FirstSeen) {
 		t.Fatalf("problem timestamps changed: %+v %+v", first, second)
 	}
 	source.rejectSettings(true)

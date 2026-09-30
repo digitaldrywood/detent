@@ -199,6 +199,9 @@ func requireRunnerUpdate(result sql.Result, err error) error {
 	if err != nil {
 		return err
 	}
+	if result == nil {
+		return nativeNotFound()
+	}
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
