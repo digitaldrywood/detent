@@ -116,6 +116,15 @@ export const NativeDependency = Schema.Struct({
 export type NativeDependency = typeof NativeDependency.Type;
 
 export const NativeIssue = Schema.Struct({
+	linked_source: Schema.optional(Schema.Struct({
+		url: Schema.String,
+		status: Schema.String,
+		snapshot: Schema.optional(Schema.Struct({
+			title: Schema.String,
+			body: Schema.String,
+			provenance: Provenance,
+		})),
+	})),
   /** Present only when the project does not require dependencies. */
   ignore_dependencies: Schema.optional(Schema.Boolean),
   organization_id: OrganizationId,
@@ -224,6 +233,7 @@ export const MutationEnvelope = Schema.Struct({
 });
 
 export const CreateIssueRequest = Schema.Struct({
+	github_issue_url: Schema.optional(Schema.String),
   idempotency_key: Schema.String,
   title: Schema.String,
   body: Schema.String,
