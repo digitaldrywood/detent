@@ -247,6 +247,14 @@ SSH host loss uses the existing host-scoped instance-capacity retry without incr
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
+Pull-request hydration failures retain the existing per-PR readiness refusal and
+credential-scoped REST reserve/backoff (#3497). Fresh successful reads restore
+normal admission without a project-wide worker-progress canary; missing or
+unavailable PR evidence remains conservative. Backend recovery remains unchanged.
+`TestPullRequestHydrationRecoveryKeepsAdmissionWithFreshEvidence` reproduces a
+quota-refused PR followed by three fresh candidates without waiting for a worker
+turn to admit the remaining candidates.
+
 Linked native GitHub issues hydrate title, body and complete paginated discussion
 with runner credentials before agent dispatch (#3257). Missing credentials,
 inaccessible sources, throttling, partial reads and failed persistence release
@@ -494,6 +502,11 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+The pull-request hydration recovery ramp is removed (#3497). Request-family
+budget enforcement and each PR's existing hydration predicate own admission;
+a second project-wide ramp no longer limits healthy candidates after reads
+recover. No new recovery path, configuration, or reason is introduced.
 
 Workspace Git-read failures no longer apply a second admission brake to
 unrelated merge workers (#3487). The affected operation retains its existing

@@ -12,7 +12,6 @@ import (
 const (
 	dispatchRecoveryGitHubREST            = "github_rest"
 	dispatchRecoveryGitHubLookup          = "github_lookup"
-	dispatchRecoveryPullRequestHydration  = "pull_request_hydration"
 	dispatchRecoveryBackendCapacity       = "backend_capacity"
 	dispatchRecoveryTrackerUnavailable    = connector.TrackerUnavailableCondition
 	dispatchRecoveryForgeUnavailable      = "forge_unavailable"
@@ -165,41 +164,6 @@ func (o *Orchestrator) activateScopedDispatchRecovery(state *State, kind string,
 		Event:   "dispatch_recovery_ramp_started",
 		Message: "dispatch recovery ramp started after " + kind,
 	})
-}
-
-func (o *Orchestrator) observePullRequestHydrationRecovery(state *State, issues []connector.Issue, now time.Time) {
-	if state == nil || len(issues) == 0 {
-		return
-	}
-	blocked := false
-	resumeAt := time.Time{}
-	reason := "pull request hydration unavailable"
-	for _, issue := range issues {
-		if !pullRequestHydrationBlocksDispatch(issue) {
-			continue
-		}
-		blocked = true
-		if issue.PullRequest == nil {
-			continue
-		}
-		if value := strings.TrimSpace(issue.PullRequest.HydrationUnavailableReason); value != "" {
-			reason = value
-		} else if value := strings.TrimSpace(issue.PullRequest.HydrationDegradedReason); value != "" {
-			reason = value
-		}
-		if retryAt := issue.PullRequest.HydrationNextRetryAt; retryAt != nil && !retryAt.IsZero() && (resumeAt.IsZero() || retryAt.Before(resumeAt)) {
-			resumeAt = *retryAt
-		}
-	}
-	if blocked {
-		o.markDispatchRecoveryWait(state, dispatchRecoveryPullRequestHydration, reason, resumeAt, now)
-		return
-	}
-	recovery, ok := state.DispatchRecoveries[dispatchRecoveryPullRequestHydration]
-	if !ok || recovery.Status != dispatchRecoveryStatusWaiting {
-		return
-	}
-	o.activateDispatchRecovery(state, recovery.Kind, recovery.Reason, now, "")
 }
 
 func dispatchRecoveryBlockReason(state *State, now time.Time) string {
