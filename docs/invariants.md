@@ -503,6 +503,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Human Workpad recovery (#3504) derives the existing human-action park from its
+durable `workpad_blocker` lane entry when older entries have no recovery metadata.
+The current Blocked entry already supplies the reason, prior active lane, and
+entry time; requiring duplicate metadata made an authorized clearance unreachable.
+The same clearance evaluator and recorded-blocker recovery restore the prior
+In Progress or Rework lane. Unauthorized, stale, uncleared actions and unresolved
+dependencies keep their existing holds. No new reason, loop, or configuration is
+introduced. `TestWorkpadHumanActionClearanceRecoversBlockedIssue` includes real
+SQLite legacy entries and both active lanes.
+
 Session token ceilings record their existing typed outcome, usage, and agent
 session phase in the database without writing a repository lesson. Removing the
 automatic lesson append keeps runtime failure evidence out of committable files
@@ -1563,6 +1573,14 @@ and modification time), unchanged real indexes, preserved human ignore behavior,
 and worktree-specific source changes. `TestPrepareWorkerScratchPreservesGitExclude`
 covers scratch preparation without installing exclusions.
 
+Workflow timeline reads consolidate identity matching through the existing
+issue ID, project/identifier, and project/URL indexes. The indexed identity
+union retains every matching durable event once, in timestamp/ID order, without
+adding a cache, table, index, or history limit. This prevents repeated project
+history scans during dispatch and lane observation.
+`TestIssueWorkflowTimelineIndexedIdentityUnion` covers aliases, overlap,
+complete history, ordering, and project isolation.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
@@ -1780,7 +1798,11 @@ Project dispatch evaluates candidates in the existing priority order, with at
 most the initial free project slots plus eight candidates of lookahead per pass
 (#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
 consume that same evaluation allowance; they cannot trigger a full-queue tracker
-scan. Local label rejections and project-capacity skips need no evaluation.
+scan. Existing native dependency waits are ordered behind candidates without
+known waits before bounded hydration, preserving priority within each group.
+Due retries retain their polling order, and every admitted candidate still uses
+fresh dispatch hydration. Local label rejections and project-capacity skips need
+no evaluation.
 The existing merge-control path remains available when project slots are full.
 This bounds readiness discovery; it does not reserve or hold global capacity,
 and discovered ready work still uses the existing global acquisition lifecycle.

@@ -636,7 +636,18 @@ func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (i
 		return 0, errors.New("outcome is required")
 	}
 
+	var cpu, memory, wall, computeUSD sql.NullFloat64
+	if c := attrs.Compute; c != nil {
+		cpu = sql.NullFloat64{Float64: c.CPUSeconds, Valid: true}
+		memory = sql.NullFloat64{Float64: c.AvgMemoryBytes, Valid: true}
+		wall = sql.NullFloat64{Float64: c.WallSeconds, Valid: true}
+		computeUSD = sql.NullFloat64{Float64: c.ComputeUSD, Valid: true}
+	}
 	event, err := s.queries.CreateUsageEvent(ctx, sqlc.CreateUsageEventParams{
+		CpuSeconds:             cpu,
+		AvgMemoryBytes:         memory,
+		WallSeconds:            wall,
+		ComputeUsd:             computeUSD,
 		ProjectID:              projectID,
 		RunID:                  nullPositiveInt64(attrs.RunID),
 		SessionID:              nullPositiveInt64(attrs.SessionID),
@@ -719,6 +730,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		}
 
 		model := UsageReportModel{
+			ComputeUSD:            row.ComputeUsd,
+			ComputeEvents:         row.ComputeEvents,
 			Model:                 row.Model,
 			InputTokens:           row.InputTokens,
 			CachedInputTokens:     row.CachedInputTokens,
@@ -733,6 +746,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 			model.Model = "unassigned"
 		}
 
+		report.Rows[index].ComputeUSD += model.ComputeUSD
+		report.Rows[index].ComputeEvents += model.ComputeEvents
 		report.Rows[index].InputTokens += model.InputTokens
 		report.Rows[index].CachedInputTokens += model.CachedInputTokens
 		report.Rows[index].OutputTokens += model.OutputTokens
@@ -745,6 +760,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		report.Rows[index].Events += model.Events
 		report.Rows[index].Models = append(report.Rows[index].Models, model)
 
+		report.Totals.ComputeUSD += model.ComputeUSD
+		report.Totals.ComputeEvents += model.ComputeEvents
 		report.Totals.InputTokens += model.InputTokens
 		report.Totals.CachedInputTokens += model.CachedInputTokens
 		report.Totals.OutputTokens += model.OutputTokens
@@ -764,6 +781,8 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 			modelIndex = len(report.Totals.Models) - 1
 			modelTotals[model.Model] = modelIndex
 		}
+		report.Totals.Models[modelIndex].ComputeUSD += model.ComputeUSD
+		report.Totals.Models[modelIndex].ComputeEvents += model.ComputeEvents
 		report.Totals.Models[modelIndex].InputTokens += model.InputTokens
 		report.Totals.Models[modelIndex].CachedInputTokens += model.CachedInputTokens
 		report.Totals.Models[modelIndex].OutputTokens += model.OutputTokens

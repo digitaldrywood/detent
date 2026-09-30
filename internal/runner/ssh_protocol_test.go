@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -132,7 +133,7 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 
 func TestSSHRunResponseRetainsResultOnFailure(t *testing.T) {
 	t.Parallel()
-	response := NewSSHRunResponse(RunResult{TurnStarted: true, TurnCount: 2, Tokens: TokenTotals{TotalTokens: 19}}, io.ErrUnexpectedEOF)
+	response := NewSSHRunResponse(RunResult{TurnStarted: true, TurnCount: 2, Tokens: TokenTotals{TotalTokens: 19}, Compute: &compute.Usage{CPUSeconds: 3, AvgMemoryBytes: 1e9, WallSeconds: 4, ComputeUSD: .001}}, io.ErrUnexpectedEOF)
 	data, err := json.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +142,7 @@ func TestSSHRunResponseRetainsResultOnFailure(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Result.TurnStarted || got.Result.Tokens.TotalTokens != 19 || got.Err() == nil {
+	if got.Result.Compute == nil || *got.Result.Compute != *response.Result.Compute || !got.Result.TurnStarted || got.Result.Tokens.TotalTokens != 19 || got.Err() == nil {
 		t.Fatalf("lost failure result: %+v", got)
 	}
 }

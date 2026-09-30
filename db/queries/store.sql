@@ -588,8 +588,12 @@ INSERT INTO usage_events (
   started_at,
   finished_at,
   event_day,
-  outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  outcome,
+  cpu_seconds,
+  avg_memory_bytes,
+  wall_seconds,
+  compute_usd
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetUsageEvent :one
@@ -615,7 +619,8 @@ WITH usage_report_rows AS (
     reasoning_output_tokens,
     total_tokens,
     model_context_window,
-    runtime_seconds
+    runtime_seconds,
+    compute_usd
   FROM usage_events
   WHERE (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
     AND (sqlc.narg(to_day) IS NULL OR event_day <= sqlc.narg(to_day))
@@ -630,6 +635,8 @@ SELECT
   CAST(COALESCE(SUM(usage_report_rows.total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(MAX(usage_report_rows.model_context_window), 0) AS INTEGER) AS model_context_window,
   CAST(COALESCE(SUM(usage_report_rows.runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
+  CAST(COALESCE(SUM(usage_report_rows.compute_usd), 0) AS REAL) AS compute_usd,
+  CAST(COUNT(usage_report_rows.compute_usd) AS INTEGER) AS compute_events,
   CAST(COUNT(*) AS INTEGER) AS events
 FROM usage_report_rows
 GROUP BY usage_report_rows.group_key, usage_report_rows.model
@@ -760,15 +767,22 @@ WHERE event.finished_at IS NOT NULL
 ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at, event.id;
 
 -- name: IssueWorkflowTimelineRows :many
-SELECT *
-FROM workflow_phase_events
-WHERE project_id = sqlc.arg(project_id)
-  AND (
-    issue_id = sqlc.arg(issue_id)
-    OR identifier = sqlc.arg(identifier)
-    OR issue_url = sqlc.arg(issue_url)
-  )
-ORDER BY started_at, id;
+SELECT event.*
+FROM workflow_phase_events AS event
+WHERE event.id IN (
+  SELECT by_id.id
+  FROM workflow_phase_events AS by_id INDEXED BY workflow_phase_events_issue_idx
+  WHERE by_id.project_id = sqlc.arg(project_id) AND by_id.issue_id = sqlc.arg(issue_id)
+  UNION ALL
+  SELECT by_identifier.id
+  FROM workflow_phase_events AS by_identifier
+  WHERE by_identifier.project_id = sqlc.arg(project_id) AND by_identifier.identifier = sqlc.arg(identifier)
+  UNION ALL
+  SELECT by_url.id
+  FROM workflow_phase_events AS by_url
+  WHERE by_url.project_id = sqlc.arg(project_id) AND by_url.issue_url = sqlc.arg(issue_url)
+)
+ORDER BY event.started_at, event.id;
 
 -- name: CreateWorkAttempt :one
 INSERT INTO work_attempts (

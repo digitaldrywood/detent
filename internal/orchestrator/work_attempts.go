@@ -1073,13 +1073,21 @@ func workAttemptCIState(issue connector.Issue) string {
 }
 
 func runningWorkAttemptMetricsJSON(running Running) string {
-	return marshalWorkAttemptJSON(map[string]any{
+	metrics := map[string]any{
+		"token_usd":       running.TokenUSD,
 		"turns":           running.TurnCount,
 		"input_tokens":    running.Tokens.InputTokens,
 		"output_tokens":   running.Tokens.OutputTokens,
 		"total_tokens":    running.Tokens.TotalTokens,
 		"runtime_seconds": running.Tokens.RuntimeSeconds,
-	})
+	}
+	if c := running.Compute; c != nil {
+		metrics["cpu_seconds"] = c.CPUSeconds
+		metrics["avg_memory_bytes"] = c.AvgMemoryBytes
+		metrics["wall_seconds"] = c.WallSeconds
+		metrics["compute_usd"] = c.ComputeUSD
+	}
+	return marshalWorkAttemptJSON(metrics)
 }
 
 func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) string {

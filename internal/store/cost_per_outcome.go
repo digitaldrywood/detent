@@ -16,6 +16,7 @@ type costPerOutcomeUsage struct {
 	projectID   string
 	totalTokens int64
 	spendUSD    float64
+	computeUSD  sql.NullFloat64
 	at          time.Time
 }
 
@@ -26,13 +27,13 @@ type costPerOutcomeCompletion struct {
 }
 
 const costPerOutcomeUsageSQL = `
-SELECT project_id, total_tokens, cost_usd, finished_at
+SELECT project_id, total_tokens, cost_usd, compute_usd, finished_at
 FROM usage_events
 WHERE finished_at >= ? AND finished_at < ?
 ORDER BY finished_at, id`
 
 const costPerOutcomeProjectUsageSQL = `
-SELECT project_id, total_tokens, cost_usd, finished_at
+SELECT project_id, total_tokens, cost_usd, compute_usd, finished_at
 FROM usage_events
 WHERE project_id = ? AND finished_at >= ? AND finished_at < ?
 ORDER BY finished_at, id`
@@ -83,7 +84,7 @@ func (s *sqliteStore) costPerOutcomeUsage(ctx context.Context, query efficiency.
 	for rows.Next() {
 		var sample costPerOutcomeUsage
 		var at string
-		if err := rows.Scan(&sample.projectID, &sample.totalTokens, &sample.spendUSD, &at); err != nil {
+		if err := rows.Scan(&sample.projectID, &sample.totalTokens, &sample.spendUSD, &sample.computeUSD, &at); err != nil {
 			return nil, fmt.Errorf("scanning cost-per-outcome usage: %w", err)
 		}
 		sample.at, err = parseStoredTime(at)
@@ -185,6 +186,12 @@ func aggregateCostPerOutcome(query efficiency.CostPerOutcomeQuery, usage []costP
 		point := &value.trend[bucketIndex(sample.at)].Metrics
 		point.TotalTokens += tokens
 		point.SpendUSD += spend
+		if sample.computeUSD.Valid {
+			value.current.ComputeEvents++
+			value.current.ComputeUSD += sample.computeUSD.Float64
+			point.ComputeEvents++
+			point.ComputeUSD += sample.computeUSD.Float64
+		}
 	}
 	for _, completion := range completions {
 		if !withinWindow(completion.at) || (projectID != "" && strings.TrimSpace(completion.projectID) != projectID) {
@@ -239,10 +246,12 @@ func costPerOutcomeScanBounds(query efficiency.CostPerOutcomeQuery) (string, str
 func finalizeCostPerOutcomeMetrics(metrics *efficiency.CostPerOutcomeMetrics) {
 	if metrics.MergedPRs > 0 {
 		metrics.TokensPerMergedPR = float64(metrics.TotalTokens) / float64(metrics.MergedPRs)
+		metrics.ComputePerMergedPRUSD = metrics.ComputeUSD / float64(metrics.MergedPRs)
 		metrics.SpendPerMergedPRUSD = metrics.SpendUSD / float64(metrics.MergedPRs)
 	}
 	if metrics.ClosedIssues > 0 {
 		metrics.TokensPerClosedIssue = float64(metrics.TotalTokens) / float64(metrics.ClosedIssues)
+		metrics.ComputePerClosedIssueUSD = metrics.ComputeUSD / float64(metrics.ClosedIssues)
 		metrics.SpendPerClosedIssueUSD = metrics.SpendUSD / float64(metrics.ClosedIssues)
 	}
 }

@@ -66,6 +66,7 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 				} else {
 					@BoardEfficiencyReceiptPending(boardCardReceiptPath(projectID, issueIdentity, scope, boardActions))
 				}
+				@BoardAttemptCosts(data.AttemptCosts, data.AttemptCostsError)
 				@BoardActivityTabs(activity, sessionData)
 				if len(card.Labels) > 0 {
 					@sheetTagRow("Labels", card.Labels)

@@ -1358,6 +1358,8 @@ func usageBucketResponses(group store.UsageReportGroup, rows []store.UsageReport
 
 func usageBucketResponse(group store.UsageReportGroup, row store.UsageReportRow, pricing budget.PricingTable) usageBucketAPIResponse {
 	return usageBucketAPIResponse{
+		ComputeUSD:            row.ComputeUSD,
+		ComputeEvents:         row.ComputeEvents,
 		Bucket:                row.Key,
 		Label:                 row.Key,
 		Date:                  usageBucketDate(group, row.Key),
@@ -1377,6 +1379,8 @@ func usageBucketResponse(group store.UsageReportGroup, row store.UsageReportRow,
 
 func usageTotalsResponse(totals store.UsageReportTotals, pricing budget.PricingTable) usageTotalsAPIResponse {
 	return usageTotalsAPIResponse{
+		ComputeUSD:            totals.ComputeUSD,
+		ComputeEvents:         totals.ComputeEvents,
 		InputTokens:           totals.InputTokens,
 		CachedInputTokens:     totals.CachedInputTokens,
 		OutputTokens:          totals.OutputTokens,
@@ -1395,6 +1399,8 @@ func usageModelResponses(models []store.UsageReportModel, pricing budget.Pricing
 	payload := make([]usageModelAPIResponse, 0, len(models))
 	for _, model := range models {
 		payload = append(payload, usageModelAPIResponse{
+			ComputeUSD:            model.ComputeUSD,
+			ComputeEvents:         model.ComputeEvents,
 			Model:                 model.Model,
 			InputTokens:           model.InputTokens,
 			CachedInputTokens:     model.CachedInputTokens,
@@ -1942,6 +1948,8 @@ type usageReportAPIResponse struct {
 }
 
 type usageTotalsAPIResponse struct {
+	ComputeUSD            float64                 `json:"compute_usd"`
+	ComputeEvents         int64                   `json:"compute_events"`
 	InputTokens           int64                   `json:"input_tokens"`
 	CachedInputTokens     int64                   `json:"cached_input_tokens"`
 	OutputTokens          int64                   `json:"output_tokens"`
@@ -1956,6 +1964,8 @@ type usageTotalsAPIResponse struct {
 }
 
 type usageBucketAPIResponse struct {
+	ComputeUSD            float64                 `json:"compute_usd"`
+	ComputeEvents         int64                   `json:"compute_events"`
 	Bucket                string                  `json:"bucket"`
 	Label                 string                  `json:"label"`
 	Date                  *string                 `json:"date"`
@@ -1973,6 +1983,8 @@ type usageBucketAPIResponse struct {
 }
 
 type usageModelAPIResponse struct {
+	ComputeUSD            float64 `json:"compute_usd"`
+	ComputeEvents         int64   `json:"compute_events"`
 	Model                 string  `json:"model"`
 	InputTokens           int64   `json:"input_tokens"`
 	CachedInputTokens     int64   `json:"cached_input_tokens"`
