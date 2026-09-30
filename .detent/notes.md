@@ -1,15 +1,15 @@
 # Issue #2976 merge fallback handoff
 
-- PR: https://github.com/digitaldrywood/detent/pull/3052; verified open against `develop` on the expected branch. Local starting head and fetched published PR head both match `139792ad36b0c63b58c6bc58c92363ffb2163d8b`. Prior publication and diagnostic notes below are historical.
-- Merged fetched `origin/develop` at `9826088a821ba72ecfd033bc60b9ed3138762507` into the published PR history without rebasing. Both heads are retained as merge parents.
-- Only conflict: `.detent/notes.md`. Preserved both historical handoffs and consolidated the current Workpad below. All source files merged automatically; no manual source changes were required.
+- PR: https://github.com/digitaldrywood/detent/pull/3052; verified open against `develop` on the expected isolated branch. Fetched published PR head remains `139792ad36b0c63b58c6bc58c92363ffb2163d8b`.
+- Verified prior notes against source-clean starting head `cf5a63430178a9e66db8c9381089b8b15d59f839`: its parents are the published PR head and prior target `9826088a821ba72ecfd033bc60b9ed3138762507`. That unpublished merge is preserved.
+- Merged freshly fetched develop `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into the existing local merge without rebasing. All files merged automatically; no conflicts or manual source edits were required. Retained incoming historical #3001 notes.
 - Key issue files: `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`.
-- Validation: no tests, builds, local gate, CI checks, or waits run in this fallback. Prior diagnostics do not validate this merged head.
+- Validation: no tests, builds, local gate, CI checks, or waits run. Historical diagnostics do not validate this merged head.
 - Open items: Detent independently verifies ownership, cleanliness, and target ancestry, then performs bounded validation, lease-protected publishing, and current-head CI waiting. No new out-of-scope finding; no push, PR merge, issue-state change, or tracker lane write performed.
 
 ## Codex Workpad
 
-Plan: merge fetched develop into PR #3052 while preserving published history; resolve the notes-only conflict and commit the merge for Detent handoff.
+Plan: preserve the prior unpublished merge and published PR #3052 history; merge freshly fetched develop, refresh handoff notes, and commit the automatic resolution for Detent handoff.
 
 Validation: deferred to Detent under the merge-fallback protocol. No current-head test or CI credit claimed. Historical instructions below to run a gate or publish are superseded for this session; no gate/CI or post-merge timings measured.
 
@@ -17,12 +17,24 @@ Open items: Detent verification, validation, publication, and current-head CI pr
 
 ```detent-status
 schema: 1
-status: in_progress
+status: complete
+fields:
+  completion_work_attempt_id: "7146"
+  completion_generation: "17"
 blockers: []
 human_action: null
 ```
 
 ## Historical handoffs
+
+# Issue #2976 previous merge fallback (historical)
+
+- PR: https://github.com/digitaldrywood/detent/pull/3052; verified open against `develop` on the expected branch. Local starting head and fetched published PR head both match `139792ad36b0c63b58c6bc58c92363ffb2163d8b`. Prior publication and diagnostic notes below are historical.
+- Merged fetched `origin/develop` at `9826088a821ba72ecfd033bc60b9ed3138762507` into the published PR history without rebasing. Both heads are retained as merge parents.
+- Only conflict: `.detent/notes.md`. Preserved both historical handoffs and consolidated the current Workpad below. All source files merged automatically; no manual source changes were required.
+- Key issue files: `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`.
+- Validation: no tests, builds, local gate, CI checks, or waits run in this fallback. Prior diagnostics do not validate this merged head.
+- Open items: Detent independently verifies ownership, cleanliness, and target ancestry, then performs bounded validation, lease-protected publishing, and current-head CI waiting. No new out-of-scope finding; no push, PR merge, issue-state change, or tracker lane write performed.
 
 # Issue #2976 prior handoff (historical)
 
@@ -211,3 +223,18 @@ Historical status: complete; blockers: []; human_action: null.
 - Passed existing runner protocol diagnostics: `go test ./internal/runner -run '^(TestSSHErrorRoundTrip|TestSSHPeerConcurrentCallbacksAndDisconnect|TestSSHCallbackDoesNotPublishRemotePID|TestSSHRunResponseRetainsResultOnFailure)$' -count=1 -p 4` (0.406s package time). Existing tests cover sentinel identity, wrappers, structured errors, callbacks, disconnects, and failure results; no duplicate test added.
 - No generated inputs changed. Configured gate is `true`; no full gates, coverage, race suite, or CI wait. No out-of-scope discovery or reusable skill draft.
 - Source repair and focused diagnostics are complete. PR publication, current-head review, and completion for attempt 7112 / generation 42 are tracked in the canonical issue Workpad.
+
+# Issue #3001
+
+PR: https://github.com/digitaldrywood/detent/pull/3004 (ready, target develop).
+Validated code head: d36c44c837dfbea11c1ee3d229c791638a4b1a67; rebased onto develop bccee4c50f86019fd961a4c457a59a2c91e9eb31 without conflict edits.
+
+Key files: internal/cli/runner.go classifies identified unusable configured paths with project.ErrProjectDefinition; internal/workspace/workspace.go preserves canonicalization PathError identity; internal/project/manager.go retries terminal pending definitions on explicit reconciliation. Regression tests live in internal/cli/runner_test.go and startup_workflow_test.go; INV-3 is updated in docs/invariants.md.
+
+Human review finding is fixed and resolved. ENOSPC, EIO, permission, backend and state-store failures remain fatal. No mechanism or configuration key added.
+
+Dependencies #2975 (PR #2986) and #3009 (PR #3018) are closed/merged to main; their main merge SHAs are not ancestors of develop. Historical full PR CI is no longer a blocker under current operator policy. Focused doctor and workspace portability cases pass on macOS; no Windows test credit claimed.
+
+Diagnostics: focused startup, classification, manager, doctor and workspace tests passed; go vet ./internal/cli/... ./internal/project/... ./internal/workspace/... passed. First rebased attempt could not compile because of retired SSH sentinel ErrSessionNoProgress; already fixed by merged #3431, incorporated in second clean rebase. Configured gate true is next immediately before push. No full checks or CI polling performed.
+
+Handoff: publish the rebased ready PR with an exact lease and a complete canonical issue Workpad; the configured true gate runs immediately before that push. Orchestrator owns lane transitions and merge dispatch. Skill draft: no — routine rebase and diagnostics added no reusable procedure.
