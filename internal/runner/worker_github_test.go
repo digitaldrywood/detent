@@ -1105,7 +1105,6 @@ func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
 }
 
 func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
-	t.Parallel()
 	if _, err := exec.LookPath("gh"); err != nil {
 		t.Skip("gh is not installed")
 	}

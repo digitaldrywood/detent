@@ -347,7 +347,7 @@ func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
 	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
 	for _, want := range []string{
 		"workflow_dispatch:",
-		"timeout-minutes: 120",
+		"timeout-minutes: 180",
 		"os: [macos-latest, windows-latest]",
 		"go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20",
 		"go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=90m",
