@@ -284,6 +284,23 @@ For a think-heavy agent turn the compute is one two-thousandth of the provider
 charge. Gate runs are where the compute goes, and even a cold full build is half
 a cent.
 
+Implementation (#3409) meters the worker's unified cgroup around each agent
+turn, samples memory every second, and integrates sampled bytes over elapsed
+time (including the final partial interval). Memory prices use decimal GB.
+`worker.compute_rates` overrides `cpu_hour_usd` and `memory_gb_hour_usd` per
+host (`local` or the configured SSH destination); omitted prices inherit
+[Sprites public prices](https://fly.io/sprites/). Explicit zero is accepted.
+No counters, malformed counters, or a reset during a turn leave compute
+unavailable. Historical and macOS attempts are not backfilled with estimates.
+
+Counters measure the whole worker cgroup, including agent tools. For attributable
+per-attempt values the host must dedicate that cgroup to the worker; overlapping
+attempts in a shared cgroup include each other's consumption. This change does
+not create cgroups or alter concurrency/dispatch. Report totals include measured
+sessions only and display their count; token budgets remain token-only. Compute
+is a rate-based resource estimate, excluding storage, allowances and invoice
+adjustments, not an invoice reconciliation.
+
 Storage is not per attempt; charge the pool's written blocks to the project at
 month end. Monthly reconciliation against the Fly invoice catches drift in the
 published rates. A per-sprite usage endpoint from Fly would make that

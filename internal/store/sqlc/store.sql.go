@@ -938,9 +938,13 @@ INSERT INTO usage_events (
   started_at,
   finished_at,
   event_day,
-  outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window, projected_cost_usd, projection_overshoot_usd
+  outcome,
+  cpu_seconds,
+  avg_memory_bytes,
+  wall_seconds,
+  compute_usd
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window, projected_cost_usd, projection_overshoot_usd, cpu_seconds, avg_memory_bytes, wall_seconds, compute_usd
 `
 
 type CreateUsageEventParams struct {
@@ -965,6 +969,10 @@ type CreateUsageEventParams struct {
 	FinishedAt             string          `json:"finished_at"`
 	EventDay               string          `json:"event_day"`
 	Outcome                string          `json:"outcome"`
+	CpuSeconds             sql.NullFloat64 `json:"cpu_seconds"`
+	AvgMemoryBytes         sql.NullFloat64 `json:"avg_memory_bytes"`
+	WallSeconds            sql.NullFloat64 `json:"wall_seconds"`
+	ComputeUsd             sql.NullFloat64 `json:"compute_usd"`
 }
 
 func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventParams) (UsageEvent, error) {
@@ -990,6 +998,10 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		arg.FinishedAt,
 		arg.EventDay,
 		arg.Outcome,
+		arg.CpuSeconds,
+		arg.AvgMemoryBytes,
+		arg.WallSeconds,
+		arg.ComputeUsd,
 	)
 	var i UsageEvent
 	err := row.Scan(
@@ -1015,6 +1027,10 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		&i.ModelContextWindow,
 		&i.ProjectedCostUsd,
 		&i.ProjectionOvershootUsd,
+		&i.CpuSeconds,
+		&i.AvgMemoryBytes,
+		&i.WallSeconds,
+		&i.ComputeUsd,
 	)
 	return i, err
 }
@@ -2066,7 +2082,7 @@ func (q *Queries) GetProjectDispatchStatus(ctx context.Context, projectID string
 }
 
 const getUsageEvent = `-- name: GetUsageEvent :one
-SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window, projected_cost_usd, projection_overshoot_usd
+SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window, projected_cost_usd, projection_overshoot_usd, cpu_seconds, avg_memory_bytes, wall_seconds, compute_usd
 FROM usage_events
 WHERE id = ?
 `
@@ -2097,6 +2113,10 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 		&i.ModelContextWindow,
 		&i.ProjectedCostUsd,
 		&i.ProjectionOvershootUsd,
+		&i.CpuSeconds,
+		&i.AvgMemoryBytes,
+		&i.WallSeconds,
+		&i.ComputeUsd,
 	)
 	return i, err
 }
@@ -5260,7 +5280,8 @@ WITH usage_report_rows AS (
     reasoning_output_tokens,
     total_tokens,
     model_context_window,
-    runtime_seconds
+    runtime_seconds,
+    compute_usd
   FROM usage_events
   WHERE (?2 IS NULL OR event_day >= ?2)
     AND (?3 IS NULL OR event_day <= ?3)
@@ -5275,6 +5296,8 @@ SELECT
   CAST(COALESCE(SUM(usage_report_rows.total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(MAX(usage_report_rows.model_context_window), 0) AS INTEGER) AS model_context_window,
   CAST(COALESCE(SUM(usage_report_rows.runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
+  CAST(COALESCE(SUM(usage_report_rows.compute_usd), 0) AS REAL) AS compute_usd,
+  CAST(COUNT(usage_report_rows.compute_usd) AS INTEGER) AS compute_events,
   CAST(COUNT(*) AS INTEGER) AS events
 FROM usage_report_rows
 GROUP BY usage_report_rows.group_key, usage_report_rows.model
@@ -5288,16 +5311,18 @@ type UsageReportRowsParams struct {
 }
 
 type UsageReportRowsRow struct {
-	GroupKey              string `json:"group_key"`
-	Model                 string `json:"model"`
-	InputTokens           int64  `json:"input_tokens"`
-	CachedInputTokens     int64  `json:"cached_input_tokens"`
-	OutputTokens          int64  `json:"output_tokens"`
-	ReasoningOutputTokens int64  `json:"reasoning_output_tokens"`
-	TotalTokens           int64  `json:"total_tokens"`
-	ModelContextWindow    int64  `json:"model_context_window"`
-	RuntimeSeconds        int64  `json:"runtime_seconds"`
-	Events                int64  `json:"events"`
+	GroupKey              string  `json:"group_key"`
+	Model                 string  `json:"model"`
+	InputTokens           int64   `json:"input_tokens"`
+	CachedInputTokens     int64   `json:"cached_input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	ReasoningOutputTokens int64   `json:"reasoning_output_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	ModelContextWindow    int64   `json:"model_context_window"`
+	RuntimeSeconds        int64   `json:"runtime_seconds"`
+	ComputeUsd            float64 `json:"compute_usd"`
+	ComputeEvents         int64   `json:"compute_events"`
+	Events                int64   `json:"events"`
 }
 
 func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams) ([]UsageReportRowsRow, error) {
@@ -5319,6 +5344,8 @@ func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams
 			&i.TotalTokens,
 			&i.ModelContextWindow,
 			&i.RuntimeSeconds,
+			&i.ComputeUsd,
+			&i.ComputeEvents,
 			&i.Events,
 		); err != nil {
 			return nil, err

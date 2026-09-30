@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -751,6 +752,8 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	Compute                 *compute.Usage
+	TokenUSD                float64
 	Checkpoint              *workspace.CheckpointRecord
 	FinalState              string
 	Output                  string

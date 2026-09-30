@@ -507,6 +507,10 @@ type UsageEvent struct {
 	ModelContextWindow     sql.NullInt64   `json:"model_context_window"`
 	ProjectedCostUsd       sql.NullFloat64 `json:"projected_cost_usd"`
 	ProjectionOvershootUsd float64         `json:"projection_overshoot_usd"`
+	CpuSeconds             sql.NullFloat64 `json:"cpu_seconds"`
+	AvgMemoryBytes         sql.NullFloat64 `json:"avg_memory_bytes"`
+	WallSeconds            sql.NullFloat64 `json:"wall_seconds"`
+	ComputeUsd             sql.NullFloat64 `json:"compute_usd"`
 }
 
 type ValidatorVerdict struct {

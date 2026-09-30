@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 )
 
@@ -109,7 +110,7 @@ func TestCostPerOutcomeReadsUsageAndReceipts(t *testing.T) {
 	backend := openTestStore(t, ctx)
 	from := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	prNumber := int64(1398)
-	if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue-1398", PRNumber: &prNumber, Model: "gpt-5", TotalTokens: 12_000, CostUSD: 3.75, StartedAt: from.Add(time.Hour), FinishedAt: from.Add(2 * time.Hour), Outcome: "completed"}); err != nil {
+	if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue-1398", PRNumber: &prNumber, Model: "gpt-5", TotalTokens: 12_000, CostUSD: 3.75, Compute: &compute.Usage{CPUSeconds: 3, AvgMemoryBytes: 2e9, WallSeconds: 5, ComputeUSD: .001}, StartedAt: from.Add(time.Hour), FinishedAt: from.Add(2 * time.Hour), Outcome: "completed"}); err != nil {
 		t.Fatalf("RecordUsageEvent() error = %v", err)
 	}
 	seedEfficiencyIssue(t, ctx, backend, efficiencySeed{issueID: "issue-1398", identifier: "digitaldrywood/detent#1398", prNumber: &prNumber, startedAt: from.Add(time.Hour), completedAt: from.Add(3 * time.Hour), attempts: 1, sessionTokens: []int64{100}, cachedTokens: []int64{80}, costUSD: 0})
@@ -124,6 +125,35 @@ func TestCostPerOutcomeReadsUsageAndReceipts(t *testing.T) {
 	got := report.Projects[0].Current
 	if got.TotalTokens != 12_000 || got.MergedPRs != 1 || got.ClosedIssues != 1 || math.Abs(got.SpendUSD-3.75) > 0.000001 {
 		t.Fatalf("current = %#v, want persisted usage and receipt outcome", got)
+	}
+
+	if got.ComputeUSD != .001 || got.ComputeEvents != 1 || got.ComputePerMergedPRUSD != .001 {
+		t.Fatalf("compute outcome = %+v", got)
+	}
+	sqlite := backend.(*sqliteStore)
+	event, err := sqlite.queries.GetUsageEvent(ctx, 1)
+	if err != nil || !event.ComputeUsd.Valid || event.CpuSeconds.Float64 != 3 || event.AvgMemoryBytes.Float64 != 2e9 || event.WallSeconds.Float64 != 5 {
+		t.Fatalf("persisted compute = %+v / %v", event, err)
+	}
+	for _, name := range []string{"unmeasured", "free"} {
+		var measured *compute.Usage
+		if name == "free" {
+			measured = &compute.Usage{CPUSeconds: 1, AvgMemoryBytes: 1e9, WallSeconds: 1}
+		}
+		id, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", Compute: measured, StartedAt: from, FinishedAt: from.Add(time.Hour), Outcome: "failed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := sqlite.queries.GetUsageEvent(ctx, id)
+		if err != nil || event.ComputeUsd.Valid != (measured != nil) {
+			t.Fatalf("%s event = %+v / %v", name, event, err)
+		}
+	}
+	for _, group := range []UsageReportGroup{UsageReportByDay, UsageReportByProject, UsageReportByIssue, UsageReportByPR, UsageReportByModel} {
+		usage, err := backend.UsageReport(ctx, UsageReportQuery{By: group})
+		if err != nil || usage.Totals.ComputeUSD != .001 || usage.Totals.ComputeEvents != 2 {
+			t.Fatalf("%s rollup = %+v / %v", group, usage, err)
+		}
 	}
 }
 

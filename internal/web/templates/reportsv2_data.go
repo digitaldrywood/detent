@@ -45,12 +45,13 @@ type reportsSpendChart struct {
 }
 
 type reportsTopRow struct {
-	ID     string
-	Ref    string
-	URL    string
-	Title  string
-	Tokens string
-	Cost   string
+	Compute string
+	ID      string
+	Ref     string
+	URL     string
+	Title   string
+	Tokens  string
+	Cost    string
 }
 
 type reportsBudget struct {
@@ -203,6 +204,8 @@ func reportsCostPerOutcomeView(data ReportsData) reportsCostPerOutcome {
 			MergedPRs: formatInt(current.MergedPRs),
 			Closed:    formatInt(current.ClosedIssues),
 			Metrics: []reportsOutcomeMetric{
+				{ID: "compute-total", Label: "Compute USD", Value: computeCostValue(current.ComputeUSD, current.ComputeEvents), Detail: formatInt(current.ComputeEvents) + " measured sessions"},
+				{ID: "compute-merged-pr", Label: "Compute USD / merged PR", Value: computeOutcomeValue(current.ComputePerMergedPRUSD, current.ComputeEvents, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
 				{ID: "tokens-merged-pr", Label: "Tokens / merged PR", Value: reportsOutcomeTokenValue(current.TokensPerMergedPR, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
 				{ID: "spend-merged-pr", Label: "Notional USD / merged PR", Value: reportsOutcomeSpendValue(current.SpendPerMergedPRUSD, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
 				{ID: "tokens-closed-issue", Label: "Tokens / closed issue", Value: reportsOutcomeTokenValue(current.TokensPerClosedIssue, current.ClosedIssues), Detail: reportsOutcomeCount(current.ClosedIssues, "closed issue", "closed issues")},
@@ -526,6 +529,7 @@ func reportsKPIs(data ReportsData) []reportsKPI {
 	totals := data.Day.Totals
 	return []reportsKPI{
 		{ID: "kpi-spend", Value: formatUSD(totals.SpendUSD), Label: "Total notional USD"},
+		{ID: "kpi-compute", Value: computeCostValue(totals.ComputeUSD, totals.ComputeEvents), Label: "Compute USD", Full: formatInt(totals.ComputeEvents) + " measured sessions"},
 		{ID: "kpi-tokens", Value: fleetCompactTokens(totals.TotalTokens), Label: "Tokens", Full: formatInt(totals.TotalTokens)},
 		{ID: "kpi-cache", Value: reportCacheReadFraction(totals.CacheReadFraction), Label: "Cache hit"},
 		{ID: "kpi-sessions", Value: formatInt(totals.Events), Label: "Sessions"},
@@ -640,12 +644,13 @@ func reportsTopRows(prefix string, buckets []UsageBucketData, snapshot telemetry
 	rows := make([]reportsTopRow, 0, len(sorted))
 	for i, bucket := range sorted {
 		rows = append(rows, reportsTopRow{
-			ID:     "top-" + prefix + "-" + strconv.Itoa(i),
-			Ref:    analyticsRef(bucket.Bucket),
-			URL:    reportsBucketURL(prefix, bucket.Bucket, snapshot),
-			Title:  reportBucketLabel(bucket),
-			Tokens: fleetCompactTokens(bucket.TotalTokens),
-			Cost:   formatUSD(bucket.SpendUSD),
+			ID:      "top-" + prefix + "-" + strconv.Itoa(i),
+			Ref:     analyticsRef(bucket.Bucket),
+			URL:     reportsBucketURL(prefix, bucket.Bucket, snapshot),
+			Title:   reportBucketLabel(bucket),
+			Tokens:  fleetCompactTokens(bucket.TotalTokens),
+			Cost:    formatUSD(bucket.SpendUSD),
+			Compute: computeCostValue(bucket.ComputeUSD, bucket.ComputeEvents),
 		})
 	}
 	return rows
@@ -777,7 +782,7 @@ func reportsCycleTimeView(data ReportsData) reportsCycleTime {
 }
 
 func reportsTopRowClass(last bool) string {
-	base := "grid grid-cols-[90px_minmax(0,1fr)_110px_90px] items-center gap-3.5 px-4 py-2"
+	base := "grid grid-cols-[70px_minmax(0,1fr)_70px_80px_100px] items-center gap-3.5 px-4 py-2"
 	if !last {
 		return base + " border-b border-line"
 	}
