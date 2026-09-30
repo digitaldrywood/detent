@@ -259,7 +259,7 @@ export function EnrollRunnerDialog({
                   )}
                 </div>
                 <div className="flex flex-col gap-1.5 sm:w-32">
-                  <Label htmlFor="enroll-runner-capacity">Runs at once</Label>
+                  <Label htmlFor="enroll-runner-capacity">Concurrent work items</Label>
                   <Input
                     id="enroll-runner-capacity"
                     type="number"
@@ -284,6 +284,9 @@ export function EnrollRunnerDialog({
                   </p>
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Default: 1 independent work item at a time. Higher capacity lets this host run that many independent work items concurrently, each with its own workspace and agent, subject to host resources and provider limits.
+              </p>
               <fieldset className="flex flex-col gap-2">
                 <legend className="pb-1 text-[13px] font-medium">Projects</legend>
                 {projects.length === 0 ? (

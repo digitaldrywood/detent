@@ -49,6 +49,10 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 }
 
 func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithReporter(version, lookupEnv, startService, privateLocation, reportRunnerSetup)
+}
+
+func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot string
 	var capacity int
 	var service bool
@@ -112,6 +116,13 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 					return err
 				}
 			}
+			loaded, err := readRunnerSetupConfig(paths.config)
+			if err == nil {
+				err = report(cmd.Context(), loaded, version)
+			}
+			if err != nil {
+				return fmt.Errorf("runner enrolled; report local setup: %w", err)
+			}
 			missing := false
 			for _, project := range result.Projects {
 				if !project.Checkout {
@@ -139,7 +150,7 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 	cmd.Flags().StringVar(&token, "token", "", "one-time enrollment token (or set DETENT_RUNNER_ENROLLMENT_TOKEN)")
 	cmd.Flags().StringVar(&organization, "organization", "", "organization ID, when the URL does not name one")
 	cmd.Flags().StringVar(&name, "name", "", "display name shown in the Hub (default: host name)")
-	cmd.Flags().IntVar(&capacity, "capacity", 1, "how many work items this runner takes at once")
+	cmd.Flags().IntVar(&capacity, "capacity", 1, "independent work items this host may run concurrently, each with its own workspace and agent")
 	cmd.Flags().StringVar(&configPath, "config", "", "runner configuration path (default: ~/.config/detent-runner/global.yaml)")
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
 	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service ("+runnerServiceName+")")

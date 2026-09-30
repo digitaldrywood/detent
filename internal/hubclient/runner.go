@@ -211,6 +211,7 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
 	capabilities, isolation := machine.workspaceReport()
 	request := struct {
+		LocalChecks     *runnerauth.LocalChecks   `json:"local_checks,omitempty"`
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
 		DisplayName     string                    `json:"display_name"`
 		Capacity        int                       `json:"capacity"`
@@ -221,7 +222,7 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 		// requires set and checks the heartbeat that carried them is fresh.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
+	}{machine.LocalChecks, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}

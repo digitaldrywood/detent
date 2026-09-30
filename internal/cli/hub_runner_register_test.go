@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -138,13 +139,13 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 
 func runRegister(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommand("test", func(name string) string { return env[name] }, starter), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, runnerPrivateLocation, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
 }
 
 // Registration fixtures stay under t.TempDir even when worker TMPDIR is inside this repository.
 func runRegisterInTestWorkspace(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommandWithPrivateLocation("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
 }
 
 func executeRegister(t *testing.T, command *cobra.Command, args ...string) (string, error) {
@@ -344,4 +345,41 @@ func mustRead(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
+	t.Parallel()
+	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "orders"})
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "global.yaml")
+	workspaces := filepath.Join(root, "work")
+	checkout(t, filepath.Join(workspaces, "orders"))
+	reported := false
+	reporter := func(_ context.Context, cfg globalconfig.Config, version string) error {
+		if _, err := os.Stat(cfg.Path); err != nil {
+			t.Fatal("diagnostics ran before config was written", err)
+		}
+		if version != "test" || cfg.Client.NativeProjects["orders"] != "prj_orders" {
+			t.Fatalf("wrong diagnostic context: %+v", cfg)
+		}
+		reported = true
+		return nil
+	}
+	starter := func(_ *cobra.Command, path string) error {
+		if !reported {
+			t.Fatal("service started before diagnostics")
+		}
+		return nil
+	}
+	cmd := newHubRunnerRegisterCommandWithReporter("test", func(string) string { return "" }, starter, func(string) error { return nil }, reporter)
+	_, err := executeRegister(t, cmd, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaces, "--service")
+	if err != nil || !reported {
+		t.Fatalf("reported=%v err=%v", reported, err)
+	}
+	if got, err := cmd.Flags().GetInt("capacity"); err != nil || cmd.Flags().Lookup("capacity").DefValue != "1" || got != 2 {
+		t.Fatalf("capacity=%d %v", got, err)
+	}
 }

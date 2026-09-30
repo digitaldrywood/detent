@@ -18,7 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.SchedulingSource, error) {
+func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -74,6 +74,9 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 		providerReports = func() ([]providercapacity.Report, error) {
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
+	}
+	if err := reportRunnerSetup(ctx, cfg, version); err != nil {
+		return nil, err
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
 		ProviderReports: providerReports,

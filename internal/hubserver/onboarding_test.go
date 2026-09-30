@@ -360,3 +360,50 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 		t.Fatalf("two runners reporting the same descriptor = %v, want it once", ids)
 	}
 }
+
+func TestOnboardingRunnerLocalChecks(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "runner checks")
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other checks")
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	r.enroll(t)
+	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
+	for _, tt := range []struct {
+		name, checkout, doctor, provider string
+		valid                            bool
+	}{
+		{"missing checkout", "failed", "pending", "pending", true},
+		{"failed doctor", "passed", "failed", "passed", true},
+		{"missing auth", "passed", "passed", "failed", true},
+		{"success", "passed", "passed", "passed", true},
+		{"reject command output", "passed", "secret-token", "passed", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			checks := runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider, ProviderKinds: []string{"codex"}}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 1, "version": "test", "local_checks": checks})
+			expected := http.StatusOK
+			if !tt.valid {
+				expected = http.StatusUnprocessableEntity
+			}
+			requireNativeStatus(t, response, expected)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var setup onboarding.Project
+			decodeHubResponse(t, response, &setup)
+			if setup.Policy != nil || setup.Steps[0].State != "ready" {
+				t.Fatalf("enrollment depends on policy: %+v", setup)
+			}
+			if tt.valid && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
+				t.Fatalf("report=%+v", setup)
+			}
+			if strings.Contains(response.Body.String(), r.redemption.Credential) || strings.Contains(response.Body.String(), "secret-token") {
+				t.Fatal("sensitive report exposed")
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", other.token, nil)
+			decodeHubResponse(t, response, &setup)
+			if len(setup.Runners) != 0 {
+				t.Fatal("runner checks leaked to another project")
+			}
+		})
+	}
+}

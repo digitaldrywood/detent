@@ -47,6 +47,7 @@ type Client struct {
 }
 
 type Machine struct {
+	LocalChecks     *runnerauth.LocalChecks   `json:"local_checks,omitempty"`
 	ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
 	ID              tracker.MachineID         `json:"id"`
 	Hostname        string                    `json:"hostname"`
