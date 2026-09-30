@@ -35,6 +35,18 @@ failures even when the validator turn also fails, and cannot yield a verdict.
 and `TestLocalGitVerifyReviewTreeAfterSeeding`
 cover these boundaries (#3031).
 
+Validator verdict identity also binds the current task title/body, referenced
+authoritative qualification evidence, and effective review instructions to the
+repository/PR/base/head provenance (#3087). Fresh tracker input is read before
+reuse and again before publication. Legacy rows without a context digest cannot
+approve or reject current code. Unrelated comments, timestamps and Workpad
+progress prose do not change identity; referenced qualification evidence does.
+`TestValidatorAcceptanceContextIdentity`, `TestValidatorContextMemoReuse`,
+`TestValidatorContextSchedulesOnceAndRejectsHeldResult`,
+`TestValidatorLegacyContextNotReusable`, and `TestValidatorContextStorageRestart`
+cover these boundaries. This extends the existing validator lifecycle without
+adding a recovery mechanism or granting a gate waiver.
+
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; current unfinished work cannot promote on completion or
 the Rework tick. Completion and promotion use the same forge-over-assertion

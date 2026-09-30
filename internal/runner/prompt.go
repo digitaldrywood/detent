@@ -353,6 +353,14 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString("\n\n")
 	}
 
+	task := ValidationContext(issue, workflow.Config.Gate)
+	fmt.Fprintf(&b, "Task context SHA-256: %s\n\n", ValidationContextDigest(issue, workflow.Config.Gate))
+	if len(task.Evidence) > 0 {
+		b.WriteString("Authoritative task evidence (inspect references; these are not gate approvals):\n")
+		b.WriteString(strings.Join(task.Evidence, "\n\n"))
+		b.WriteString("\n\n")
+	}
+
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	b.WriteString("Review instructions:\n")
 	b.WriteString("- Review only the PR diff identified above. If the inline patch is omitted, use the named GitHub PR diff at the stated head; do not use workspace git diff.\n")

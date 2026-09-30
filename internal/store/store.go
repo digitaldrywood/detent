@@ -609,9 +609,13 @@ type UsageEvent struct {
 type WorkflowPhaseEvent = workflowmetrics.PhaseEvent
 
 type ValidatorVerdictKey struct {
-	ProjectID string
-	IssueID   string
-	HeadSHA   string
+	ContextDigest string
+	Repository    string
+	BaseSHA       string
+	PRNumber      int64
+	ProjectID     string
+	IssueID       string
+	HeadSHA       string
 }
 
 type ValidatorVerdictQuery struct {
@@ -629,6 +633,7 @@ type ValidatorFinding struct {
 }
 
 type ValidatorVerdict struct {
+	ContextDigest   string
 	ProjectID       string
 	IssueID         string
 	HeadSHA         string

@@ -387,3 +387,9 @@ type StatusDrift struct {
 	ClosedActive         []Issue `json:"closed_active,omitempty" yaml:"closed_active,omitempty"`
 	LaneSignalCandidates []Issue `json:"-" yaml:"-"`
 }
+
+// ValidationIssueReader bypasses board snapshots for authoritative review input.
+// It preserves the supplied PR provenance and refreshes the task body/comments.
+type ValidationIssueReader interface {
+	FetchValidationIssue(context.Context, Issue) (Issue, error)
+}

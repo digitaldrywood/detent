@@ -3163,7 +3163,7 @@ func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
 			memo := openValidatorMemoStore(t)
 			at := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
-				ProjectID: "detent", IssueID: issue.ID, HeadSHA: tt.head, Repository: tt.repo,
+				ProjectID: "detent", IssueID: issue.ID, HeadSHA: tt.head, Repository: tt.repo, ContextDigest: identity.ContextDigest,
 				PRNumber: &tt.pr, BaseSHA: tt.base, DiffDigest: tt.digest, DiffFiles: []string{"AGENTS.md", "README.md"},
 				Submitted: true, Verdict: gate.ValidatorVerdictRework, RecordedAt: at,
 			}); err != nil {
@@ -3199,7 +3199,7 @@ func TestValidatorFailedMemoRejectsDifferentPRProvenance(t *testing.T) {
 			memo := openValidatorMemoStore(t)
 			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
 				ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA,
-				Repository: tt.repo, PRNumber: &tt.pr, BaseSHA: tt.base,
+				Repository: tt.repo, PRNumber: &tt.pr, BaseSHA: tt.base, ContextDigest: identity.ContextDigest,
 				Verdict: gate.ValidatorVerdictError, FailureAttempts: gate.DefaultValidatorMaxAttempts,
 				RecordedAt: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC),
 			}); err != nil {
@@ -7078,20 +7078,21 @@ func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T)
 		Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #2529\n\n### Validation\n- make check-fast passed.",
 	}}
 	if err := memo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
-		ProjectID:  "detent",
-		IssueID:    issue.ID,
-		HeadSHA:    issue.PullRequest.HeadSHA,
-		Repository: "digitaldrywood/detent",
-		PRNumber:   new(int64(2530)),
-		BaseSHA:    issue.PullRequest.BaseSHA,
-		DiffDigest: "digest-after-workpad",
-		DiffFiles:  []string{"README.md"},
-		Submitted:  true,
-		Verdict:    gate.ValidatorVerdictPass,
-		Score:      0.96,
-		Summary:    "acceptance satisfied",
-		Commented:  true,
-		RecordedAt: now.Add(-time.Hour),
+		ProjectID:     "detent",
+		IssueID:       issue.ID,
+		HeadSHA:       issue.PullRequest.HeadSHA,
+		Repository:    "digitaldrywood/detent",
+		PRNumber:      new(int64(2530)),
+		BaseSHA:       issue.PullRequest.BaseSHA,
+		DiffDigest:    "digest-after-workpad",
+		ContextDigest: validatorStageIdentityForIssue(issue, cfg.AutoPromote.Gate).ContextDigest,
+		DiffFiles:     []string{"README.md"},
+		Submitted:     true,
+		Verdict:       gate.ValidatorVerdictPass,
+		Score:         0.96,
+		Summary:       "acceptance satisfied",
+		Commented:     true,
+		RecordedAt:    now.Add(-time.Hour),
 	}); err != nil {
 		t.Fatalf("RecordValidatorVerdict() error = %v", err)
 	}
