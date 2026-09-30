@@ -10,25 +10,35 @@
 
 ## Codex Workpad
 
-Plan: retained recovered local merge `20cd171f4` and merged freshly fetched develop `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into PR #3061. Verified published PR head `ab76c0799ab4079c1210c4df774a36fa772cc27d` is an ancestor of the starting local head; no published history was rebased.
+Plan: merged fetched develop `8c7b5bfb3685eac99854cefa52d4af02763f7aec` into published PR #3061 head `ac3f91893bf2330b008f6a580f451ad0565a7665`, which matched the clean starting local head. The starting merge parents confirm the prior #3060 fallback recorded above; published history is preserved without rebasing.
 
-Resolution: only `.detent/notes.md` conflicted. Preserved issue #3060 recovery evidence and incoming historical #3001 notes. Source files merged automatically; no manual source edits or out-of-scope findings.
+Resolution: only `.detent/notes.md` conflicted. Preserved #3060 recovery evidence and incoming historical #3019 and #3076 handoffs. Source files merged automatically; no manual source edits or out-of-scope findings. Key issue files remain `internal/orchestrator/autopromote.go`, `internal/orchestrator/rework_live_promotion_test.go`, and `internal/orchestrator/attempt_allowance_test.go`.
 
-Validation: no local gate, tests, builds, or CI checks run in this fallback. Prior diagnostics are historical, not evidence for this head. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting. Timings for those phases are unmeasured here.
+Validation: no tests, builds, local gate, CI checks, or waits run in this fallback. Prior diagnostics are historical and do not validate this head. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting; timings are unmeasured here.
 
 Open items: Detent verification, validation, and publication. No push, PR merge, issue-state change, or tracker lane mutation performed.
+
+## Historical workpad for #3019
+
+- Plan: merge fetched `origin/develop` at `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into PR #3026's published head `bb60dc4e827b413fffa8562ec135b402761e83ff`, preserving both as ancestors without rebasing.
+- Prior notes verified against the clean starting head and fetched PR ref. The historical #3019 notes name an earlier rebased head; the published head for this fallback is `bb60dc4e827b413fffa8562ec135b402761e83ff`. Prior diagnostics are historical only.
+- Resolution: only `.detent/notes.md` conflicted. Preserved historical handoffs from both sides, including #3019 and #3001, and consolidated this current Workpad/status block. All source files merged automatically; no manual source edits or out-of-scope findings.
+- Key issue files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`; both remain unchanged from the published PR head.
+- Validation: no tests, builds, local gate, CI checks, or waits run in this merge-fallback session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns resolved-head ownership, cleanliness, target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
 
 ```detent-status
 schema: 1
 status: complete
 fields:
-  completion_work_attempt_id: "7145"
-  completion_generation: "16"
+  completion_work_attempt_id: "7150"
+  completion_generation: "21"
 blockers: []
 human_action: null
 ```
 
 ## Historical target-branch notes
+
 
 # Issue #3400 merge fallback handoff (attempt 7121, generation 51)
 
@@ -74,7 +84,7 @@ Open items: next scheduled native Windows validation confirms the portability re
 
 Timings: focused diagnostic command 20.5s; CLI Windows cross-compilation 10.1s. No quiet window is configured. The no-op gate takes under 1s; PR CI wait, slow checks, and post-merge main-CI are not applicable to this Rework handoff. Final publication verification belongs in the issue Workpad.
 
-Historical status record:
+Historical status record for #3400:
 
 ```yaml
 schema: 1
@@ -212,6 +222,18 @@ Historical status: complete; blockers: []; human_action: null.
 - Skill draft: no — recovery and focused validation add no reusable procedure.
 - Resolved-source diagnostics passed: focused current-head audit, Rework audit evaluation, allowance live-head, and completed-Rework dispatch regressions; `go vet ./internal/orchestrator/...` passed. Configured `true` gate runs before publication; no status or full-suite pass is claimed.
 
+# Issue #3019 (historical implementation handoff)
+
+- Key files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`.
+- Existing fix publishes the dashboard address immediately after binding, before runtime store and board snapshot initialization. The blocked snapshot-load regression covers fixture and screenshots modes and checks `/health` after releasing the load.
+- Rework was an old CI failure, with no actionable human or bot review. #2975 and #3009 are closed; their fixes are merged into `origin/main`. Current `develop` has independent platform fixes; prior full-CI failures are historical under the operator's disabled blocking-gate policy.
+- Rebased the single issue commit cleanly onto `origin/develop` at `bccee4c50f86019fd961a4c457a59a2c91e9eb31`. Rebased head: `1cae634d21b925d2ef4570a6061d0888414342ae`.
+- Current-head diagnostics: affected startup tests passed three repetitions (27.313s); four concurrent GOMAXPROCS=1 runs passed (10.056–11.679s); `go test ./internal/cli/... -count=1 -timeout=15m` passed (54.533s); `go vet ./internal/cli/...` passed. DETENT_API_TOKEN was cleared for tests.
+- Prior deterministic regression failed on the old boot order after the unchanged 10-second empty-banner wait. Prior ambient host stress did not reproduce the observed host slowdown; no blanket timeout increase was made.
+- Configured `true` gate passed exactly once immediately before pushing. Rebased head is pushed, ready PR #3026 targets `develop`, and the issue Workpad reports `complete` with no blockers. GitHub recheck confirmed exact head, no review threads/findings, and no current-head check rollup; no skipped checks are credited as tests.
+- Open items: none for implementation/Rework. The orchestrator owns promotion and merging; do not merge during Rework or change tracker lane labels.
+- Skill draft: no; the deterministic startup-order regression needs no new reusable procedure.
+
 # Issue #3001
 
 PR: https://github.com/digitaldrywood/detent/pull/3004 (ready, target develop).
@@ -226,3 +248,10 @@ Dependencies #2975 (PR #2986) and #3009 (PR #3018) are closed/merged to main; th
 Diagnostics: focused startup, classification, manager, doctor and workspace tests passed; go vet ./internal/cli/... ./internal/project/... ./internal/workspace/... passed. First rebased attempt could not compile because of retired SSH sentinel ErrSessionNoProgress; already fixed by merged #3431, incorporated in second clean rebase. Configured gate true is next immediately before push. No full checks or CI polling performed.
 
 Handoff: publish the rebased ready PR with an exact lease and a complete canonical issue Workpad; the configured true gate runs immediately before that push. Orchestrator owns lane transitions and merge dispatch. Skill draft: no — routine rebase and diagnostics added no reusable procedure.
+
+## Issue #3076 merge fallback — 2026-09-30
+
+- Verified remote PR #3296 head `717af073f247280b76bd5e645c8f9d5bd353af38` matches the retained local head; historical publication notes refer to an older head.
+- Merged current `origin/develop` without rebasing; retained both independent additions in `docs/invariants.md` and both regressions in `internal/runner/prompt_test.go`. `internal/runner/prompt.go` merged automatically.
+- No local validation or CI run in this fallback session. Prior test results are historical, not evidence for the resolved head.
+- Open items: Detent verifies the clean head and ancestry, validates, publishes with lease protection, and waits for current-head CI. No unrelated work identified.
