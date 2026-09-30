@@ -1,13 +1,13 @@
 # Issue #3211 merge fallback handoff, 2026-09-30
 
-- Verified published PR #3281 head `2cbb7131b37b6e5b8d1554b36615aa11879d4816` has parents `27951a8e9f2950be91cd2a5830d3e161f93deda9` and previous target `d80e68213d2768b5ebf7e95313bf35f40042411f`. The earlier merge `27951a8e9` has the prior published head `d97be0deadf64576efb6da220c16b47be8b9ba50` and target `73d1c330b04253600438c12e0f774d3fe16b26d8` as parents, confirming the prior notes.
-- Started source-clean without an in-progress merge or rebase. Fetched `origin/develop` at `d14138a37c7597542c30e19616271a971b62fc8f` and merged it into the assigned PR branch without rebasing; the published PR head remains the first parent.
+- Verified published PR #3281 head `74d20e4a358b95a6a05bd055aae8238140cdb4c1` has parents `2cbb7131b37b6e5b8d1554b36615aa11879d4816` and previous target `d14138a37c7597542c30e19616271a971b62fc8f`. Verified the prior published head's parents `27951a8e9f2950be91cd2a5830d3e161f93deda9` and `d80e68213d2768b5ebf7e95313bf35f40042411f`, and the earlier merge's parents `d97be0deadf64576efb6da220c16b47be8b9ba50` and `73d1c330b04253600438c12e0f774d3fe16b26d8`, confirming prior notes.
+- Started source-clean without an in-progress merge or rebase. Fetched `origin/develop` at `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c` and merged it into the assigned PR branch without rebasing; the published PR head remains the first parent.
 - Only `.detent/notes.md` conflicted. Resolved it by keeping the current #3211 handoff and preserving other issues' historical notes below. Source files merged automatically; no manual source changes were needed.
 - Prior resolution key files: `docs/invariants.md`, `internal/runner/prompt.go`, `internal/hubserver/migrations/00048_hosted_blocked_lane.sql`, `internal/hubserver/migrate.go`, and `internal/hubserver/hosted_review_lane_migration_test.go`. Prior schema 48 and 47→48 migration notes and validation claims apply to earlier heads only.
 
 ## Codex Workpad
 
-Plan: commit the target merge and notes resolution, preserving the published PR head and fetched target as ancestors, then return immediately to Detent.
+Plan: finish the target merge with only the notes conflict resolved, preserving the published PR head and fetched target as parents, then return immediately to Detent.
 
 Validation: no tests, vet, local gate, or CI checks run or awaited in this merge fallback. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI. No validation success is claimed for this head.
 
@@ -53,3 +53,14 @@ These handoffs concern other issues and earlier heads; their validation claims a
 - Prior notes above concern #3252; they are historical and do not establish validation for this resolved head. PR #3423 already includes `Fixes #3403`.
 - Validation: no local gate, tests, or CI checks run during this fallback, as instructed. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting.
 - Open items: Detent's verification and validation; no out-of-scope findings identified. No push, PR merge, or issue-state changes performed.
+
+Historical #3403 completion metadata: work attempt `7091`, generation `22`.
+
+# Issue #3273 handoff
+
+- Historical-source probe using v0.117.1 config/gate files found exactly three JSON differences versus develop: absent Worker.HostSelection -> "least_loaded", absent Worker.HostCaps -> null, and Gate.RequiredStatusChecks [] -> null. The live definition is not attached; its exact reported digest pair was not independently reproduced.
+- `internal/config/runner_policy.go` normalizes a copy for the digest, collapsing least_loaded/absent host selection and preserving historical [] for empty required checks. Worker JSON omits empty host selection/caps, matching the existing LocalStatus omission. Runtime defaults, source matching, explicit policy inputs, approval, and runner grants are preserved.
+- `TestRunnerPolicyUpgradeKeepsApprovedID` now pins an approval captured with historical sources and an explicit workspace root, reproducing the unchanged-source upgrade mismatch before the fix. Cases preserve absent/default equivalence and reject preference, caps, local status, required checks, command, workspace root, and prompt changes. It also passes with a second nested worker TMPDIR.
+- Passed: `go test -p 4 ./internal/config/... ./internal/policy -count=1`; `go vet -p 4 ./internal/config/... ./internal/policy`; `git diff --check`. Configured gate is `true`; no full gates or CI were run. No generated inputs changed.
+- Downstream approval/authorization diagnostics could not compile: `internal/runner/ssh_protocol.go:210:85: undefined: ErrSessionNoProgress`, already tracked by #3427. Added evidence under its existing fingerprint, without expanding this fix.
+- INV-3 documents the policy normalization consolidation. Do not claim live Mac Cloud recovery before a repaired release is deployed and verified.
