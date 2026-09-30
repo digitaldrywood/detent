@@ -32,11 +32,14 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 	remaining := workspaceCleanupBatchSize
 	worker.workspaceCleanupRemaining = &remaining
 	cleanupCtx, cancel := context.WithCancel(ctx)
+	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "async_workspace_cleanup"}
+	cleanupCtx = connector.WithRESTScope(cleanupCtx, restScope)
 	cleanupCtx = workspace.WithCleanupBatch(cleanupCtx, workspaceCleanupBatchSize)
 	o.workspaceCleanupCancel = cancel
 	o.workspaceCleanupWG.Add(1)
 	go func() {
 		defer o.workspaceCleanupWG.Done()
+		defer connector.LogRESTScope(o.logger, restScope)
 		worker.reapWorkspacesIfDue(cleanupCtx, &after, now)
 		if cleanupCtx.Err() == nil {
 			worker.reapDueWorkspacesAfterRefresh(cleanupCtx, &after, now)

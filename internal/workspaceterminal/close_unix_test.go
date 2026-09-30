@@ -5,7 +5,9 @@ package workspaceterminal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -60,7 +62,9 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 					return err == nil && childPID > 0
 				})
 			} else {
-				if err := terminal.Write([]byte("echo ready\n")); err != nil {
+				// Split the marker so echoed input cannot report readiness before
+				// the shell has executed the command.
+				if err := terminal.Write([]byte("printf '%s%s\\n' rea dy\n")); err != nil {
 					t.Fatalf("Write() error = %v", err)
 				}
 				waitFor(t, "the shell", func() bool { return strings.Contains(sink.text(), "ready") })
@@ -95,5 +99,85 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestTerminalCloseReleasesInputAfterHangup models a shell that receives SIGHUP
+// but cannot complete its exit until a terminal read returns.
+func TestTerminalCloseReleasesInputAfterHangup(t *testing.T) {
+	t.Parallel()
+	requirePTY(t)
+	tests := []struct {
+		name   string
+		cancel bool
+	}{
+		{name: "explicit close"},
+		{name: "context cancellation", cancel: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			worktree := t.TempDir()
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A script accepts the service's interactive flag as a positional
+			// argument, then exec replaces it with the helper: no child remains.
+			helper := filepath.Join(worktree, "shell")
+			quoted := "'" + strings.ReplaceAll(executable, "'", "'\\''") + "'"
+			script := "#!/bin/sh\nexec " + quoted + " -test.run='^TestTerminalCloseInputHelper$' -- detent-terminal-input-helper\n"
+			if err := os.WriteFile(helper, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			service := newTestService(t, worktree)
+			service.shell = helper
+			sink := &collector{}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			terminal, err := service.Open(ctx, workspacesession.TerminalOpen{Cols: 80, Rows: 24}, sink.emit)
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			t.Cleanup(terminal.Close)
+			waitFor(t, "the helper's hangup handler", func() bool {
+				return strings.Contains(sink.text(), "helper-ready")
+			})
+
+			started := time.Now()
+			if test.cancel {
+				cancel()
+			} else {
+				terminal.Close()
+			}
+			select {
+			case <-terminal.Done():
+			case <-time.After(KillGrace + 20*time.Second):
+				t.Fatal("the helper did not exit")
+			}
+			if result := terminal.Wait(); result.ExitCode != 0 || result.Signal != "" {
+				t.Fatalf("Wait() = %+v, want the helper to finish after its terminal read", result)
+			}
+			if elapsed := time.Since(started); elapsed >= KillGrace {
+				t.Fatalf("terminal took %v to release input with no child", elapsed)
+			}
+		})
+	}
+}
+
+func TestTerminalCloseInputHelper(t *testing.T) {
+	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "detent-terminal-input-helper" {
+		return
+	}
+	hangups := make(chan os.Signal, 2)
+	signal.Notify(hangups, syscall.SIGHUP)
+	defer signal.Stop(hangups)
+	if _, err := fmt.Fprintln(os.Stdout, "helper-ready"); err != nil {
+		t.Fatal(err)
+	}
+	<-hangups
+	var input [1]byte
+	if _, err := os.Stdin.Read(input[:]); err == nil {
+		t.Fatal("terminal input stayed open after the hangup")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -237,4 +238,43 @@ func (r *hubSchedulingRunner) Run(ctx context.Context, _ RunRequest) (RunResult,
 
 func schedulerProjectCandidate(id string) scheduler.ProjectCandidate {
 	return scheduler.ProjectCandidate{ID: id, Weight: 1}
+}
+
+func TestHubRefillRetainsNewClaims(t *testing.T) {
+	for _, tt := range []struct {
+		name                     string
+		excluded                 bool
+		state                    string
+		wantRunning, wantRelease int
+	}{
+		{name: "new claim", state: "Todo", wantRunning: 1},
+		{name: "excluded claim", state: "Todo", excluded: true, wantRelease: 1},
+		{name: "ineligible claim", state: "Done", wantRelease: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
+			issue := dispatchTestIssue("new-claim", tt.state)
+			issue.Fields["detent_hub_work_item_id"] = "42"
+			source := &hubSchedulingSource{issue: issue}
+			tracker := &hubSchedulingConnector{}
+			o := Orchestrator{cfg: cfg, connector: tracker, scheduling: source, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1), lastDispatchCandidates: []connector.Issue{dispatchTestIssue("previous-claim", "Todo")}}
+			state := newState(cfg)
+			defer o.releaseRunningSlots(&state)
+			excluded := ""
+			if tt.excluded {
+				excluded = issue.ID
+			}
+			o.refillProjectSlotsExcluding(t.Context(), &state, now, excluded)
+			if len(state.Running) != tt.wantRunning || source.releases != tt.wantRelease {
+				t.Fatalf("running=%d released=%d, want %d/%d", len(state.Running), source.releases, tt.wantRunning, tt.wantRelease)
+			}
+			if source.adoptions != tt.wantRunning {
+				t.Fatalf("adoptions=%d, want %d", source.adoptions, tt.wantRunning)
+			}
+			if tracker.candidateReads.Load() != 0 {
+				t.Fatal("Hub refill read tracker candidates")
+			}
+		})
+	}
 }
