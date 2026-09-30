@@ -535,6 +535,14 @@ existing native reference lookup and the existing merged-PR owner. Completion
 classification uses that same decision instead of a separate post-merge CI wait;
 no recovery loop, exception marker, reason, configuration, or lane writer is added.
 
+The hourly source-invariant failure (#3532) refreshes the reviewed digests for
+`handleSessionBrake`, `reworkMergeWorkerResult`, and
+`updateIssueStateByIDWithMetadataMode`. The reviewed changes remove automatic
+repository lesson evidence/writes (#3501) and attribute verified delivery time
+to existing merge evidence (#3485). Their lane-reason sources and forwarding
+remain unchanged; no mechanism or reason is added. `TestRepositorySources`
+continues to reject edits to these functions until reviewed.
+
 Human Workpad recovery (#3504) derives the existing human-action park from its
 durable `workpad_blocker` lane entry when older entries have no recovery metadata.
 The current Blocked entry already supplies the reason, prior active lane, and
