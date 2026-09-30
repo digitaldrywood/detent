@@ -865,6 +865,18 @@ func TestCapacityCatalog(t *testing.T) {
 	if entitlement.EffectiveBase.ID != "free" {
 		t.Fatalf("new organization plan = %#v", entitlement.EffectiveBase)
 	}
+	fleetUsage, err := f.service.hostedFleetUsage(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
+		if _, limited := fleetUsage.Allowances[name]; limited {
+			t.Fatalf("unrestricted fleet allowance %s reported a limit", name)
+		}
+	}
+	if fleetUsage.Allowances["projects"].Limit != 1 || fleetUsage.Allowances["unarchived_issues"].Limit != 200 {
+		t.Fatalf("fleet capacity = %#v", fleetUsage.Allowances)
+	}
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	response := f.request(t, owner, http.MethodGet, "/organization/billing", nil)
 	requireNativeStatus(t, response, http.StatusOK)
