@@ -183,7 +183,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	unlock := o.lockLaneWrites()
 	defer unlock()
 	if reason != string(AutoPromoteReasonOperationalCompletion) &&
-		!(reason == string(AutoPromoteReasonReady) && gate.Effective(o.cfg.AutoPromote.Gate).Kind == gate.KindArtifact) &&
+		(reason != string(AutoPromoteReasonReady) || gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindArtifact) &&
 		normalizeState(targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
 		at = mergedDeliveryAt(issue, at)
 		if issue.PullRequest.MergedAt != nil && !issue.PullRequest.MergedAt.IsZero() {

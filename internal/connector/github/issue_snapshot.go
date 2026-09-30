@@ -58,7 +58,7 @@ func (c *Client) FetchIssueSnapshot(ctx context.Context, rawURL string) (tracker
 	seenCursors := map[string]bool{}
 	seenComments := map[string]bool{}
 	var total int
-	for page := 0; page < 20; page++ {
+	for range 20 {
 		var response struct {
 			Repository *struct {
 				Name  string `json:"nameWithOwner"`

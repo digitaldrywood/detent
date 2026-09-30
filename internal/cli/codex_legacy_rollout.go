@@ -17,7 +17,7 @@ import (
 
 // A persisted Detent thread may still live in the host's pre-isolation history.
 // Copy it on demand so Codex resumes and appends only inside its own profile.
-func prepareLegacyCodexRollout(ctx context.Context, profile, threadID string) error {
+func prepareLegacyCodexRollout(ctx context.Context, profile, threadID string) (resultErr error) {
 	launchdCodexProfileMu.Lock()
 	defer launchdCodexProfileMu.Unlock()
 
@@ -25,7 +25,7 @@ func prepareLegacyCodexRollout(ctx context.Context, profile, threadID string) er
 	if err != nil {
 		return err
 	}
-	defer local.Close()
+	defer func() { resultErr = errors.Join(resultErr, local.Close()) }()
 	path, err := findCodexRollout(ctx, local, threadID, "sessions")
 	if err != nil || path != "" {
 		return err
@@ -40,21 +40,21 @@ func prepareLegacyCodexRollout(ctx context.Context, profile, threadID string) er
 		if err != nil {
 			return err
 		}
-		defer host.Close()
+		defer func() { resultErr = errors.Join(resultErr, host.Close()) }()
 		sourceRoot = host
 		path, err = findCodexRollout(ctx, host, threadID, "sessions", "archived_sessions")
 		if err != nil {
 			return err
 		}
 	}
-	if err != nil || path == "" {
-		return err // Let Codex report a genuinely missing thread as before.
+	if path == "" {
+		return nil // Let Codex report a genuinely missing thread as before.
 	}
 	source, err := sourceRoot.Open(path)
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer func() { resultErr = errors.Join(resultErr, source.Close()) }()
 	info, err := source.Stat()
 	if err != nil {
 		return err
@@ -75,7 +75,7 @@ func prepareLegacyCodexRollout(ctx context.Context, profile, threadID string) er
 	if err != nil {
 		return err
 	}
-	defer local.Remove(temporary)
+	defer func() { resultErr = errors.Join(resultErr, local.Remove(temporary)) }()
 	_, copyErr := io.Copy(file, source)
 	if err := errors.Join(copyErr, file.Close()); err != nil {
 		return fmt.Errorf("copy legacy Codex rollout: %w", err)

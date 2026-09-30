@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 )
@@ -98,7 +99,7 @@ func TestFetchIssueSnapshotBoundsCompleteDiscussion(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call := calls.Add(1)
-		page := snapshotPage(fmt.Sprint(call), 21, true)
+		page := snapshotPage(strconv.FormatInt(call, 10), 21, true)
 		issue := page["data"].(map[string]any)["repository"].(map[string]any)["issue"].(map[string]any)
 		issue["comments"].(map[string]any)["pageInfo"].(map[string]any)["endCursor"] = fmt.Sprint("page-", call)
 		if err := json.NewEncoder(w).Encode(page); err != nil {

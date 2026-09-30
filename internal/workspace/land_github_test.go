@@ -181,7 +181,7 @@ func landingGitHubCLIHelper() int {
 	}
 	head := os.Getenv("TEST_REVIEWED_HEAD")
 	updateBase := func() error {
-		cmd := exec.Command("git", "--git-dir", os.Getenv("TEST_BARE_REPOSITORY"), "update-ref", "refs/heads/main", head)
+		cmd := exec.CommandContext(context.Background(), "git", "--git-dir", os.Getenv("TEST_BARE_REPOSITORY"), "update-ref", "refs/heads/main", head)
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}

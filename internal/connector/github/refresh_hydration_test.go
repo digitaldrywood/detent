@@ -330,9 +330,10 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 					case r.URL.Path == "/repos/fixture/labels/issues":
 						label := r.URL.Query().Get("labels")
 						start, end := 1, 30
-						if label == "detent:blocked" {
+						switch label {
+						case "detent:blocked":
 							start, end = 31, 31
-						} else if label == "detent:backlog" {
+						case "detent:backlog":
 							start, end = 32, 51
 						}
 						rows := []any{}
@@ -421,7 +422,7 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 			if !c.CombinedRefreshEnabled() {
 				t.Fatal("label refresh is not combined")
 			}
-			for phase = 0; phase < 2; phase++ {
+			for phase = range 2 {
 				result := c.FetchRefreshIssues(t.Context(), []string{"Todo", "Blocked"}, []string{"Todo", "Blocked", "Backlog"}, connector.IssueFilterHint{SchedulerStates: []string{"Blocked"}})
 				if result.CandidateError != nil || result.StatusError != nil || len(result.Candidates) != 31 || len(result.Statuses) != 51 {
 					t.Fatalf("refresh: %+v", result)

@@ -5,14 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type githubBatchView struct {
@@ -24,7 +24,7 @@ func readGitHubBatch(ctx context.Context, query nativeQueryer, scope nativeScope
 	var raw string
 	err := query.QueryRowContext(ctx, "SELECT request_json FROM onboarding_issue_intake WHERE project_id=?", scope.project).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // No stored batch is a valid optional result.
 	}
 	if err != nil {
 		return nil, err
@@ -266,7 +266,7 @@ func readGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) (*t
 		return nil, err
 	}
 	if batch.RunnerID != scope.credential.Runner.RunnerID {
-		return nil, nil
+		return nil, nil //nolint:nilnil // This runner has no assigned task.
 	}
 	if batch.Status == "discovering" {
 		return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Discovery: &batch.Discovery}, nil
@@ -288,7 +288,7 @@ func readGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) (*t
 			}
 			index := slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })
 			if index < 0 {
-				return nil, fmt.Errorf("intake item missing preview")
+				return nil, errors.New("intake item missing preview")
 			}
 			preview = &batch.Page.Issues[index]
 			break
@@ -303,7 +303,7 @@ func readGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) (*t
 		}
 	}
 	if preview == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // No pending preview means this batch has no task.
 	}
 	return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Item: preview}, nil
 }
@@ -332,7 +332,8 @@ func (s *Service) reportGitHubBatch(c echo.Context) error {
 				return nil, nativeInvalid("Invalid source retry deadline")
 			}
 		}
-		if batch.Status == "discovering" {
+		switch batch.Status {
+		case "discovering":
 			if request.Error != "" {
 				batch.Status = "discovery_failed"
 				batch.Error = request.Error
@@ -363,7 +364,7 @@ func (s *Service) reportGitHubBatch(c echo.Context) error {
 				batch.Page.NextCursor = request.Page.NextCursor
 				batch.Status = "preview"
 			}
-		} else if batch.Status == "importing" {
+		case "importing":
 			index := slices.IndexFunc(batch.Items, func(item tracker.GitHubBatchItem) bool {
 				return item.Number == request.Number && item.Status == "pending"
 			})
@@ -399,7 +400,7 @@ func (s *Service) reportGitHubBatch(c echo.Context) error {
 			if !batchHasPending(batch) {
 				batch.Status = "finished"
 			}
-		} else {
+		default:
 			return nil, nativeInvalid("Intake has no outstanding source request")
 		}
 		if err := saveGitHubBatch(ctx, tx, scope, batch); err != nil {

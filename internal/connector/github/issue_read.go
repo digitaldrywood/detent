@@ -533,7 +533,7 @@ func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates
 	var indexes, fallbackIndexes []int
 	var nodes []githubIssueNode
 	for i, issue := range issues {
-		if !matches(issue) || stateInList(issue.State, c.terminalStates) || !(stateInList(issue.State, candidateStates) || stateInList(issue.State, c.activeStates) || stateInList(issue.State, hint.SchedulerStates)) {
+		if !matches(issue) || stateInList(issue.State, c.terminalStates) || (!stateInList(issue.State, candidateStates) && !stateInList(issue.State, c.activeStates) && !stateInList(issue.State, hint.SchedulerStates)) {
 			continue
 		}
 		selected = append(selected, issue)

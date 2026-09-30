@@ -3,13 +3,13 @@ package web
 import (
 	"context"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/coordination"
-	"github.com/digitaldrywood/detent/internal/efficiency"
-	"github.com/digitaldrywood/detent/internal/store"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/coordination"
+	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -147,7 +147,7 @@ func TestDailyDigestDurableShippedCohort(t *testing.T) {
 				}
 			}
 			snapshot := telemetry.Snapshot{}
-			for i := 0; i < 42; i++ {
+			for i := range 42 {
 				id := fmt.Sprintf("issue-%d", i)
 				completed := from.Add(time.Duration(i) * time.Minute)
 				reason := "merge_worker_programmatic_merge"

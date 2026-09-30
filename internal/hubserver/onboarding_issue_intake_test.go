@@ -47,7 +47,7 @@ func newBatchFixture(t *testing.T) *batchFixture {
 }
 func (f *batchFixture) heartbeat(t *testing.T) *tracker.GitHubBatchTask {
 	t.Helper()
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "acme/orders", "local_checks": runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}})
+	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "acme/orders", "local_checks": runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}})
 	requireNativeStatus(t, r, http.StatusOK)
 	var response runnerauth.RoutingSnapshot
 	decodeHubResponse(t, r, &response)
@@ -63,7 +63,7 @@ func (f *batchFixture) command(t *testing.T, request tracker.GitHubBatchCommand,
 	if request.RunnerID == "" {
 		request.RunnerID = f.runner.binding.RunnerID
 	}
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/onboarding/issue-intake", testHubAdminToken, request)
+	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake", testHubAdminToken, request)
 	requireNativeStatus(t, r, status)
 	if status == http.StatusOK {
 		var view githubBatchView
@@ -77,11 +77,11 @@ func (f *batchFixture) report(t *testing.T, request tracker.GitHubBatchResult, s
 	request.IdempotencyKey = fmt.Sprint("result-", f.sequence)
 	request.BatchID = f.batch.ID
 	request.Revision = f.batch.Revision
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, request)
+	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", f.runner.redemption.Credential, request)
 	requireNativeStatus(t, r, status)
 	if status == http.StatusOK {
 		var view githubBatchView
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.nativeFixture.base+"/onboarding/issue-intake", testHubAdminToken, nil)
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding/issue-intake", testHubAdminToken, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &view)
 		f.batch = view.Batch
@@ -96,7 +96,7 @@ func (f *batchFixture) preview(t *testing.T, closed bool) {
 	if task := f.heartbeat(t); task == nil || task.Discovery == nil || task.Discovery.IncludeClosed != closed {
 		t.Fatalf("discovery task = %#v", task)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.nativeFixture.base+"/onboarding", f.token, nil)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var setup onboarding.Project
 	decodeHubResponse(t, response, &setup)
@@ -152,7 +152,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			}
 			f.service = openTestService(t, Config{DatabasePath: f.service.config.DatabasePath})
 			f.runner.service = f.service
-			responseAfterRestart := performHubAPIRequest(t, f.service, http.MethodGet, f.nativeFixture.base+"/onboarding/issue-intake", testHubAdminToken, nil)
+			responseAfterRestart := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding/issue-intake", testHubAdminToken, nil)
 			requireNativeStatus(t, responseAfterRestart, http.StatusOK)
 			var durable githubBatchView
 			decodeHubResponse(t, responseAfterRestart, &durable)
@@ -161,13 +161,13 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			}
 			f.batch = durable.Batch
 			id := f.batch.Items[1].WorkItemID
-			response := performHubAPIRequest(t, f.service, http.MethodGet, f.nativeFixture.base+"/work-items/"+string(id), f.token, nil)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var native tracker.NativeIssue
 			decodeHubResponse(t, response, &native)
 			title, body := "Native task title", "Native body during retry"
 			edit := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-edit"}, ExpectedRevision: native.Revision, Title: &title, Body: &body}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.nativeFixture.base+"/work-items/"+string(id), f.token, edit), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(id), f.token, edit), http.StatusOK)
 			if test.rateLimit {
 				f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusUnprocessableEntity)
 				// Move the recorded source deadline into the past without sleeping.
@@ -194,7 +194,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 					t.Fatalf("completed intake still requesting GitHub: %#v", task)
 				}
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodGet, f.nativeFixture.base+"/work-items/"+string(id), f.token, nil)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
 			decodeHubResponse(t, response, &native)
 			if native.Title != title || native.Body != body || native.State != "Backlog" || native.LinkedSource.Status != "complete" {
 				t.Fatalf("native ownership = %#v", native)
@@ -240,7 +240,7 @@ func TestGitHubBatchDiscoveryFailureAndSourceValidation(t *testing.T) {
 	other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
 	other.enroll(t)
 	request := tracker.GitHubBatchResult{Mutation: tracker.Mutation{IdempotencyKey: "wrong-runner"}, BatchID: f.batch.ID, Revision: f.batch.Revision, Number: 12, Snapshot: &snapshot}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/onboarding/issue-intake/result", other.redemption.Credential, request), http.StatusNotFound)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", other.redemption.Credential, request), http.StatusNotFound)
 }
 
 func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
@@ -254,7 +254,7 @@ func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
 				existing = f.link(t, "prior-linked")
 			} else {
 				snapshot := batchSnapshot(12)
-				r := performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-import"}, Title: "Native edits on old import", Body: "Preserved", State: "Backlog", Provenance: &snapshot.Provenance})
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-import"}, Title: "Native edits on old import", Body: "Preserved", State: "Backlog", Provenance: &snapshot.Provenance})
 				requireNativeStatus(t, r, http.StatusOK)
 				decodeHubResponse(t, r, &existing)
 				if mode == "stable provenance identity" {
@@ -285,12 +285,12 @@ func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
 	item := f.batch.Items[0]
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/work-items/"+string(item.WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
+	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
 	requireNativeStatus(t, r, http.StatusOK)
 	if task := f.heartbeat(t); task != nil {
 		t.Fatalf("one-time hydration already complete; task=%#v", task)
 	}
-	r = performHubAPIRequest(t, f.service, http.MethodGet, f.nativeFixture.base+"/onboarding/issue-intake", testHubAdminToken, nil)
+	r = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding/issue-intake", testHubAdminToken, nil)
 	var view githubBatchView
 	decodeHubResponse(t, r, &view)
 	if view.Batch.Status != "finished" || view.Batch.Items[0].Status != "completed" {

@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
 
-var errSpritesValidation = errors.New("Sprites rejected the token or could not validate its organization")
+var errSpritesValidation = errors.New("sprites rejected the token or could not validate its organization")
 
 // validateSpritesToken uses only the fixed Sprites origin. Redirects are refused
 // and neither provider bodies nor transport errors are returned or logged.
