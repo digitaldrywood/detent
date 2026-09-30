@@ -42,6 +42,9 @@ type apiCredential struct {
 	Scope            apiScope
 	NativeOnly       bool
 	Runner           runnerauth.Identity
+	// runnerRenewal is set only for POST renewal of this bound identity.
+	// Expiry limits ordinary API use, but must not strand a stopped host.
+	runnerRenewal bool
 }
 
 type apiErrorResponse struct {
@@ -154,10 +157,12 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 	if err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
+	credential.runnerRenewal = credential.Runner.Binding.Valid() && c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" &&
+		credential.Runner.RunnerID == c.Param("runner") && string(credential.Runner.OrganizationID) == c.Param("organization")
+	if !credential.timeValid(now, createdAt, expiresAt) {
+		return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")
+	}
 	if expiresAt.Valid {
-		if !runnerTimeValid(now, createdAt, expiresAt.String) {
-			return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")
-		}
 		credential.Runner.ExpiresAt, err = parseTimeValue(expiresAt.String)
 		if err != nil {
 			return apiCredential{}, http.StatusServiceUnavailable, err
@@ -171,6 +176,21 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("record hub API token use: %w", err)
 	}
 	return credential, http.StatusOK, nil
+}
+
+func (credential apiCredential) timeValid(now time.Time, created string, expires sql.NullString) bool {
+	if !expires.Valid {
+		return !credential.runnerRenewal
+	}
+	if !credential.runnerRenewal {
+		return runnerTimeValid(now, created, expires.String)
+	}
+	start, err := parseTimeValue(created)
+	if err != nil {
+		return false
+	}
+	end, err := parseTimeValue(expires.String)
+	return err == nil && start.Before(end) && !now.Before(start)
 }
 
 func apiBearerToken(c echo.Context) (string, error) {
