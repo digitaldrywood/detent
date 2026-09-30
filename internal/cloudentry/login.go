@@ -274,12 +274,13 @@ func (s *Service) logout(c echo.Context) error {
 	ctx := c.Request().Context()
 	cookie, err := c.Cookie(s.cookieName("session"))
 	if err != nil || len(cookie.Value) > 256 {
-		return c.Redirect(http.StatusSeeOther, "/")
+		return c.Redirect(http.StatusSeeOther, "https://detent.build")
 	}
-	session, err := s.auth.session(ctx, apikey.HashToken(cookie.Value))
+	// Logout revokes stored sessions even after their local expiry.
+	session, _, err := s.auth.storedSession(ctx, apikey.HashToken(cookie.Value))
 	if err != nil {
 		s.setCookie(c, "session", "", time.Unix(1, 0))
-		return c.Redirect(http.StatusSeeOther, "/")
+		return c.Redirect(http.StatusSeeOther, "https://detent.build")
 	}
 	if !s.csrfValid(c, session, c.Param("organization")) {
 		return s.loginDenied(c, http.StatusForbidden, "Reload the page and try again", auth.HostedDenial{Flow: "logout", Reason: "csrf_invalid", Email: session.Email})
@@ -311,7 +312,7 @@ func (s *Service) logout(c echo.Context) error {
 		auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), auth.HostedDenial{Flow: "logout", Reason: reason, Status: http.StatusServiceUnavailable, Err: errors.Join(providerErr, auditErr), Email: session.Email})
 		return s.render(c, http.StatusServiceUnavailable, templates.HostedPageData{Mode: "denied", Title: "Signed out", Error: "You are signed out of Detent. Provider sign-out could not be confirmed; retry sign-out from your identity provider."})
 	}
-	return c.Redirect(http.StatusSeeOther, "/")
+	return c.Redirect(http.StatusSeeOther, "https://detent.build")
 }
 
 type organizationChoice struct {
