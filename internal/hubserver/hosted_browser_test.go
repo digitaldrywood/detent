@@ -37,6 +37,7 @@ type browserHostedProvider struct {
 	inviteRoles    map[string]string
 	authorizations map[string]string
 	codes          map[string]auth.Identity
+	emails         map[string]bool
 	sequence       int
 }
 
@@ -258,6 +259,12 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 		}
 		identity := provider.identity(account.user, account.email, organization, account.support)
 		accounts[account.name] = identity
+		if provider.emails == nil {
+			provider.emails = map[string]bool{}
+		}
+		if account.name != "invitee" {
+			provider.emails[account.email] = true
+		}
 		if allocated && account.role != "" {
 			membership, err := provider.CreateMembership(t.Context(), account.user, organization, account.role)
 			if err != nil {
@@ -330,6 +337,35 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 		defer provider.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(provider.invitations); err != nil {
+			t.Error(err)
+		}
+	})
+	mux.HandleFunc("POST /__preview/invite/{state}", func(w http.ResponseWriter, r *http.Request) {
+		state := r.PathValue("state")
+		invited := accounts["invitee"]
+		invitation, err := provider.Invite(r.Context(), provider.organization.ID, invited.Email, "member", accounts["owner"].Subject)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		provider.mu.Lock()
+		provider.emails[invited.Email] = state != "new"
+		switch state {
+		case "expired":
+			invitation.ExpiresAt = time.Now().Add(-time.Hour)
+		case "used":
+			invitation.State, invitation.AcceptedUserID = "accepted", invited.Subject
+		}
+		provider.invitations[invitation.ID] = invitation
+		provider.mu.Unlock()
+		if _, err := service.database.db.ExecContext(r.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", invitation.ID, invited.Email, service.config.Hosted.OrganizationID, "member", formatHubTime(time.Now())); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": base + "/invite?invitation_token=" + invitation.ID}); err != nil {
 			t.Error(err)
 		}
 	})
@@ -470,24 +506,6 @@ func TestHostedBrowserHTTPForms(t *testing.T) {
 			browserHostedStatus(t, response, tt.status)
 		})
 	}
-	var invitation string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM hosted_invitations WHERE email = 'invitee@example.test'").Scan(&invitation); err != nil {
-		t.Fatal(err)
-	}
-	for _, tt := range []struct {
-		name    string
-		account string
-		status  int
-	}{
-		{name: "wrong invited account", account: "viewer", status: http.StatusForbidden},
-		{name: "invitation accepted", account: "invitee", status: http.StatusSeeOther},
-		{name: "invitation replay", account: "invitee", status: http.StatusForbidden},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			response := f.form(t, tt.account, "/organization/join", url.Values{"token": {invitation}})
-			browserHostedStatus(t, response, tt.status)
-		})
-	}
 }
 
 func TestHostedBrowserFirstOrganization(t *testing.T) {
@@ -495,7 +513,7 @@ func TestHostedBrowserFirstOrganization(t *testing.T) {
 	f := newBrowserHostedFixture(t, false)
 	response := f.page(t, "owner", "/organization")
 	browserHostedStatus(t, response, http.StatusOK)
-	for _, expected := range []string{`action="/organization/create"`, `action="/organization/join"`} {
+	for _, expected := range []string{`action="/organization/create"`, `Ask an owner to send you an invitation.`} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("onboarding missing %q", expected)
 		}
@@ -806,4 +824,10 @@ func TestHostedBrowserPreview(t *testing.T) {
 	case <-timer.C:
 	case <-t.Context().Done():
 	}
+}
+
+func (p *browserHostedProvider) HasUser(_ context.Context, email string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.emails[email], nil
 }

@@ -539,6 +539,26 @@ func TestWorkOSCreationRecoversCommittedProviderWrites(t *testing.T) {
 	}
 }
 
+func TestWorkOSInvitationAccountLookup(t *testing.T) {
+	t.Parallel()
+	f := newWorkOSFixture(t)
+	p := f.provider(t)
+	for _, tt := range []struct {
+		name            string
+		exists, wantErr bool
+	}{
+		{name: "existing", exists: true}, {name: "new"}, {name: "wrong email", wantErr: true}, {name: "invalid id", wantErr: true}, {name: "unavailable", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f.mode.Store("user-lookup-" + tt.name)
+			exists, err := p.HasUser(t.Context(), "Customer@Example.com")
+			if exists != tt.exists || (err != nil) != tt.wantErr {
+				t.Fatalf("HasUser = %v,%v", exists, err)
+			}
+		})
+	}
+}
+
 func TestWorkOSInvitationSecurity(t *testing.T) {
 	t.Parallel()
 	f := newWorkOSFixture(t)
@@ -582,10 +602,11 @@ func TestWorkOSInvitationLookupSupportsAcceptanceRecovery(t *testing.T) {
 	}{
 		{name: "valid", state: "pending"},
 		{name: "invitation-reused", state: "accepted"},
-		{name: "invitation-accepted-expired", wantErr: true},
+		{name: "invitation-accepted-expired", state: "accepted"},
 		{name: "invitation-accepted-missing-user", wantErr: true},
 		{name: "invitation-accepted-invalid-user", wantErr: true},
-		{name: "invitation-revoked", wantErr: true},
+		{name: "invitation-revoked", state: "revoked"},
+		{name: "invitation-expired", state: "pending"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f.mode.Store(tt.name)
@@ -759,6 +780,26 @@ func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		f.writeJSON(w, organization)
 	case "/user_management/invitations", "/user_management/invitations/by_token/invitation_token", "/user_management/invitations/invitation_customer/accept":
 		f.invitation(w, r, mode)
+	case "/user_management/users":
+		if r.Method != http.MethodGet || r.URL.Query().Get("email") != "customer@example.com" || r.URL.Query().Get("limit") != "1" {
+			f.t.Error("incorrect account lookup filter")
+		}
+		if mode == "user-lookup-unavailable" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		users := []map[string]string{}
+		if mode != "user-lookup-new" {
+			user := map[string]string{"id": "user_customer", "email": "customer@example.com"}
+			if mode == "user-lookup-wrong email" {
+				user["email"] = "other@example.com"
+			}
+			if mode == "user-lookup-invalid id" {
+				user["id"] = "../other"
+			}
+			users = append(users, user)
+		}
+		f.writeJSON(w, map[string]any{"data": users})
 	case "/user_management/users/user_customer":
 		user := map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true}
 		switch mode {

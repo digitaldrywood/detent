@@ -17,7 +17,6 @@ import React from "react";
 import {
   CreateOrganization,
   EntrySignIn,
-  JoinInvitation,
   OrganizationChooser,
   ProvisioningProgress,
 } from "./EntryScreens.tsx";
@@ -47,7 +46,6 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations",
   "/organizations/new",
   "/organizations/$organization/provisioning",
-  "/invitations/join",
   "/platform",
 ] as const;
 
@@ -98,14 +96,6 @@ const routeTree = rootRoute.addChildren([
     component: function Platform() {
       usePageTitle("Platform");
       return <PlatformConsole />;
-    },
-  }),
-  createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/invitations/join",
-    component: function Join() {
-      usePageTitle("Join invitation");
-      return <JoinInvitation onNavigate={useGo()} />;
     },
   }),
 ]);

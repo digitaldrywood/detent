@@ -30,7 +30,7 @@ func validReturnPath(path, organization string) bool {
 		return false
 	}
 	if organization == "" {
-		return path == "/organizations" || path == "/invitations/join" || path == platformPath
+		return path == "/organizations" || path == platformPath
 	}
 	prefix := "/organizations/" + organization
 	return (path == prefix || strings.HasPrefix(path, prefix+"/")) && !strings.HasSuffix(path, "/logout")
@@ -69,6 +69,17 @@ func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, provi
 		return err
 	}
 	s.setCookie(c, "login_"+id, token, s.config.now().Add(10*time.Minute))
+	if transaction.InvitationToken != "" {
+		invitation, err := s.config.Provider.Invitation(c.Request().Context(), transaction.InvitationToken)
+		if err != nil {
+			return err
+		}
+		invitationURL, err := auth.InvitationAuthorizationURL(c.Request().Context(), s.config.Provider, invitation, transaction.InvitationToken, transaction.State, transaction.Verifier)
+		if err != nil {
+			return err
+		}
+		return c.Redirect(http.StatusSeeOther, invitationURL)
+	}
 	target, err := url.Parse(s.config.Provider.AuthorizationURL(transaction.State, transaction.State, transaction.Verifier))
 	if err != nil {
 		return err
@@ -134,6 +145,16 @@ func (s *Service) completeLogin(c echo.Context) error {
 		callback.Reason = "state_mismatch"
 	}
 	if callback.Reason != "" {
+		if callback.Reason == "provider_error" && transaction.InvitationToken != "" {
+			invitation, err := s.config.Provider.Invitation(ctx, transaction.InvitationToken)
+			message := auth.InvitationUnavailable
+			if err == nil {
+				if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+					message = problem
+				}
+			}
+			return s.invitationDenied(c, message, callback)
+		}
 		return s.loginDenied(c, http.StatusUnauthorized, invalidLink, callback)
 	}
 	identity, err := s.config.Provider.Exchange(ctx, c.QueryParam("code"), transaction.Verifier, transaction.State)
@@ -192,13 +213,22 @@ func (s *Service) completeLogin(c echo.Context) error {
 			callback.Reason = "staff_session"
 			return s.loginDenied(c, http.StatusForbidden, "Staff accounts cannot join customer organizations", callback)
 		}
+		invitation, invitationErr := s.config.Provider.Invitation(ctx, transaction.InvitationToken)
+		message := auth.InvitationUnavailable
+		if invitationErr == nil {
+			message = auth.InvitationProblem(invitation, identity.Subject, identity.Email, s.config.now())
+		}
+		if invitationErr != nil || message != "" {
+			callback.Reason, callback.Err = "invitation_invalid", invitationErr
+			return s.invitationDenied(c, message, callback)
+		}
 		invited, err := s.readyOrganization(ctx, transaction.InvitationOrganization)
 		if err == nil {
 			err = s.acceptInvitation(ctx, invited, identity.Subject, identity.Email, identity.Hosted.SessionID, transaction.InvitationToken)
 		}
 		if err != nil {
 			callback.Reason, callback.Err = "invitation_invalid", err
-			return s.loginDenied(c, http.StatusForbidden, "This invitation is unavailable or was sent to a different account", callback)
+			return s.invitationDenied(c, auth.InvitationUnavailable, callback)
 		}
 		if err := s.auth.audit(ctx, identity.Subject, invited.ID, "invitation_accepted"); err != nil {
 			callback.Reason = "audit_failed"
@@ -428,72 +458,38 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) invitationOrganization(ctx context.Context, token string) (Organization, error) {
-	if token == "" || len(token) > 512 {
-		return Organization{}, auth.ErrHostedIdentity
-	}
-	invitation, err := s.config.Provider.Invitation(ctx, token)
-	if err != nil {
-		return Organization{}, err
-	}
-	if !invitation.ExpiresAt.After(s.config.now()) {
-		return Organization{}, auth.ErrHostedIdentity
-	}
-	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)
-	if err != nil || organization.State != "ready" {
-		return Organization{}, auth.ErrHostedIdentity
-	}
-	return organization, nil
+func (s *Service) invitationDenied(c echo.Context, message string, denial auth.HostedDenial) error {
+	denial.Status = http.StatusForbidden
+	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
+	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+	c.Response().WriteHeader(http.StatusForbidden)
+	return templates.InvitationPage(message).Render(c.Request().Context(), c.Response())
 }
 
 func (s *Service) startInvitation(c echo.Context) error {
 	token := c.QueryParam("invitation_token")
-	organization, err := s.invitationOrganization(c.Request().Context(), token)
+	if token == "" {
+		token = c.QueryParam("token")
+	}
+	denial := auth.HostedDenial{Flow: "invitation_start", Reason: "invitation_invalid"}
+	if token == "" || len(token) > 512 {
+		return s.invitationDenied(c, auth.InvitationUnavailable, denial)
+	}
+	ctx := c.Request().Context()
+	invitation, err := s.config.Provider.Invitation(ctx, token)
 	if err != nil {
-		return s.loginDenied(c, http.StatusForbidden, "This invitation is unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "invitation_invalid", Err: err})
+		denial.Err = err
+		return s.invitationDenied(c, auth.InvitationUnavailable, denial)
+	}
+	if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+		return s.invitationDenied(c, problem, denial)
+	}
+	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)
+	if err != nil || organization.State != "ready" {
+		return s.invitationDenied(c, auth.InvitationUnavailable, denial)
 	}
 	if err := s.beginLogin(c, loginTransaction{InvitationToken: token, InvitationOrganization: organization.ID}, "", ""); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
 	return nil
-}
-
-func (s *Service) joinPage(c echo.Context) error {
-	session, err := s.session(c)
-	if err != nil {
-		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Finvitations%2Fjoin")
-	}
-	if s.platformStaff(session) {
-		return c.Redirect(http.StatusSeeOther, platformPath)
-	}
-	if served, err := s.clientShell(c); served || err != nil {
-		return err
-	}
-	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "join", Title: "Join organization", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, "")})
-}
-
-func (s *Service) joinInvitation(c echo.Context) error {
-	session, err := s.session(c)
-	if err != nil {
-		return s.loginRefused(c, http.StatusUnauthorized, "unauthenticated", "Sign in with the invited account to join this organization", auth.HostedDenial{Flow: "invitation_join", Reason: auth.HostedReasonSessionNotFound})
-	}
-	if !s.csrfValid(c, session, "") {
-		return s.loginRefused(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again", auth.HostedDenial{Flow: "invitation_join", Reason: "csrf_invalid", Email: session.Email})
-	}
-	if s.staff(session.Email) || session.Identity.SupportActor != "" {
-		return s.loginRefused(c, http.StatusForbidden, "staff_session", "Staff and support sessions cannot join customer organizations", auth.HostedDenial{Flow: "invitation_join", Reason: "staff_session", Email: session.Email})
-	}
-	ctx := c.Request().Context()
-	token := c.FormValue("token")
-	organization, err := s.invitationOrganization(ctx, token)
-	if err == nil {
-		err = s.acceptInvitation(ctx, organization, session.Subject, session.Email, session.Identity.SessionID, token)
-	}
-	if err != nil {
-		return s.loginRefused(c, http.StatusForbidden, "invitation_unavailable", "This invitation is expired, already used, or intended for another account or organization", auth.HostedDenial{Flow: "invitation_join", Reason: "invitation_invalid", Err: err, Email: session.Email})
-	}
-	if err := s.auth.audit(ctx, session.Subject, organization.ID, "invitation_accepted"); err != nil {
-		return s.loginRefused(c, http.StatusServiceUnavailable, "unavailable", "Invitation acceptance is temporarily unavailable", auth.HostedDenial{Flow: "invitation_join", Reason: "audit_failed", Email: session.Email})
-	}
-	return s.next(c, http.StatusOK, "/auth/oidc/start?"+url.Values{"organization": {organization.ID}, "return": {s.organizationHome(organization.ID)}}.Encode(), nil)
 }

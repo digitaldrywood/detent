@@ -792,35 +792,114 @@ func stateOf(t *testing.T, response page) string {
 
 func TestSharedEntryInvitation(t *testing.T) {
 	t.Parallel()
-	f := newEntryFixture(t)
-	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, page := alice.get("/organizations/org_alpha/organization")
-	invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
-	if invite.StatusCode != http.StatusSeeOther {
-		t.Fatalf("invite status = %d: %s", invite.StatusCode, invite.Body)
-	}
-	bob := newBrowser(t, f.service.Handler())
-	start, _ := bob.get("/invite?invitation_token=inv_carol")
-	if response, _ := bob.get("/auth/oidc/callback?" + url.Values{"code": {"user_bob:"}, "state": {stateOf(t, start)}}.Encode()); response.StatusCode != http.StatusForbidden {
-		t.Fatalf("wrong recipient status = %d", response.StatusCode)
-	}
-	carol := newBrowser(t, f.service.Handler())
-	start, _ = carol.get("/invite?invitation_token=inv_carol")
-	accepted, _ := carol.get("/auth/oidc/callback?" + url.Values{"code": {"user_carol:"}, "state": {stateOf(t, start)}}.Encode())
-	if accepted.StatusCode != http.StatusSeeOther || !strings.HasPrefix(accepted.Header.Get("Location"), "/auth/oidc/start?organization=org_alpha") {
-		t.Fatalf("accepted invitation = %d %q", accepted.StatusCode, accepted.Header.Get("Location"))
-	}
-	carol.login(accepted.Header.Get("Location"), "user_carol:porg_alpha")
-	response, body := carol.get("/organizations/org_alpha/organization")
-	if response.StatusCode != http.StatusOK || strings.Contains(body, "Alpha secret project") {
-		t.Fatalf("invited member page = %d (project content must need an explicit grant)", response.StatusCode)
-	}
-	if response, _ := carol.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusSeeOther {
-		t.Fatalf("invited member reached another organization: %d", response.StatusCode)
-	}
-	if response, _ := bob.get("/invite?invitation_token=inv_unknown"); response.StatusCode != http.StatusForbidden {
-		t.Fatalf("unknown invitation = %d", response.StatusCode)
+	for _, tt := range []struct {
+		name, message           string
+		entryCode, callbackCode int
+	}{
+		{name: "new user sign-up", entryCode: 303, callbackCode: 303},
+		{name: "existing user sign-in", entryCode: 303, callbackCode: 303},
+		{name: "legacy token alias", entryCode: 303, callbackCode: 303},
+		{name: "wrong account", entryCode: 303, callbackCode: 403, message: "different account at example.test"},
+		{name: "expired", entryCode: 403, message: "has expired"},
+		{name: "used", entryCode: 403, message: "already been used"},
+		{name: "provider rejected expired invitation", entryCode: 303, callbackCode: 403, message: "has expired"},
+		{name: "expired during login", entryCode: 303, callbackCode: 403, message: "has expired"},
+		{name: "unknown", entryCode: 403, message: "unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, page := alice.get("/organizations/org_alpha/organization")
+			invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
+			if invite.StatusCode != http.StatusSeeOther {
+				t.Fatalf("invite = %d: %s", invite.StatusCode, invite.Body)
+			}
+			invitation := f.provider.invitations["inv_carol"]
+			switch tt.name {
+			case "new user sign-up":
+				delete(f.provider.users, "user_carol")
+			case "expired":
+				invitation.ExpiresAt = time.Now().Add(-time.Hour)
+			case "used":
+				invitation.State, invitation.AcceptedUserID = "accepted", "user_carol"
+			}
+			f.provider.invitations["inv_carol"] = invitation
+			browser := newBrowser(t, f.service.Handler())
+			path := "/invite?invitation_token=inv_carol"
+			if tt.name == "legacy token alias" {
+				path = "/invite?token=inv_carol"
+			}
+			if tt.name == "unknown" {
+				path = "/invite?invitation_token=inv_unknown"
+			}
+			start, body := browser.get(path)
+			if start.StatusCode != tt.entryCode {
+				t.Fatalf("entry = %d, want %d: %s", start.StatusCode, tt.entryCode, body)
+			}
+			assertExplanation := func(body string) {
+				t.Helper()
+				for _, want := range []string{tt.message, "Ask the person who invited you for a new invitation", `href="https://detent.build"`} {
+					if !strings.Contains(body, want) {
+						t.Errorf("explanation missing %q", want)
+					}
+				}
+				if strings.Contains(body, "carol@example.test") || strings.Contains(body, "inv_carol") {
+					t.Fatal("explanation leaked recipient or token")
+				}
+			}
+			if start.StatusCode != http.StatusSeeOther {
+				assertExplanation(body)
+				return
+			}
+			authorization, _ := url.Parse(start.Header.Get("Location"))
+			wantHint := ""
+			if tt.name == "new user sign-up" {
+				wantHint = "sign-up"
+				f.provider.users["user_carol"] = "carol@example.test"
+			}
+			if authorization.Query().Get("invitation_token") != "inv_carol" || authorization.Query().Get("screen_hint") != wantHint {
+				t.Fatalf("AuthKit invitation URL = %s", authorization)
+			}
+			if tt.name == "expired during login" || tt.name == "provider rejected expired invitation" {
+				invitation.ExpiresAt = time.Now().Add(-time.Hour)
+				f.provider.invitations["inv_carol"] = invitation
+			}
+			code := "user_carol:"
+			if tt.name == "wrong account" {
+				code = "user_bob:"
+			}
+			query := url.Values{"code": {code}, "state": {stateOf(t, start)}, "invitation_token": {"attacker_token"}}
+			if tt.name == "provider rejected expired invitation" {
+				query.Set("error", "access_denied")
+			}
+			accepted, body := browser.get("/auth/oidc/callback?" + query.Encode())
+			if accepted.StatusCode != tt.callbackCode {
+				t.Fatalf("callback = %d, want %d: %s", accepted.StatusCode, tt.callbackCode, body)
+			}
+			if accepted.StatusCode != http.StatusSeeOther {
+				assertExplanation(body)
+				memberships, _ := f.provider.Memberships(t.Context(), "user_carol", "porg_alpha")
+				if len(memberships) != 0 {
+					t.Fatal("failed invitation granted membership")
+				}
+				return
+			}
+			if !strings.HasPrefix(accepted.Header.Get("Location"), "/auth/oidc/start?organization=org_alpha") {
+				t.Fatalf("next = %s", accepted.Header.Get("Location"))
+			}
+			browser.login(accepted.Header.Get("Location"), "user_carol:porg_alpha")
+			response, body := browser.get("/organizations/org_alpha/organization")
+			if response.StatusCode != http.StatusOK || strings.Contains(body, "Alpha secret project") {
+				t.Fatalf("member page = %d (project access must require explicit grant)", response.StatusCode)
+			}
+			if response, _ := browser.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusSeeOther {
+				t.Fatalf("member reached other organization = %d", response.StatusCode)
+			}
+			if response, body := browser.get(path); response.StatusCode != http.StatusForbidden || !strings.Contains(body, "already been used") {
+				t.Fatalf("used link = %d: %s", response.StatusCode, body)
+			}
+		})
 	}
 }
 
@@ -1016,4 +1095,15 @@ func pilotPlans() *hubserver.HostedPlansConfig {
 			{PlanReference: hubserver.PlanReference{ID: "pilot_plus", Version: 1}, Features: features, Allowances: plus},
 		},
 	}
+}
+
+func (p *fakeProvider) HasUser(_ context.Context, email string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, existing := range p.users {
+		if strings.EqualFold(existing, email) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

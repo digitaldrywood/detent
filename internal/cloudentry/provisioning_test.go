@@ -650,7 +650,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	}
 	dana := newBrowser(t, f.service.Handler())
 	dana.login("/auth/oidc/start", "user_dana:")
-	for _, path := range []string{"/organizations", "/organizations/new", "/invitations/join"} {
+	for _, path := range []string{"/organizations", "/organizations/new"} {
 		if response, body := dana.get(path); response.StatusCode != http.StatusOK || !strings.Contains(body, "detent-surface") {
 			t.Fatalf("%s shell = %d", path, response.StatusCode)
 		}

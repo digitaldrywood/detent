@@ -55,8 +55,8 @@ func TestHostedPagesExcludeInstanceSurfaces(t *testing.T) {
 					t.Errorf("hosted page contains forbidden instance or support surface %q", forbidden)
 				}
 			}
-			if tt.mode == "login" && (!strings.Contains(html, `href="/auth/oidc/start?unscoped=1"`) || !strings.Contains(html, "Join with invitation")) {
-				t.Error("login page has no invitation sign-in path")
+			if strings.Contains(html, `name="token"`) || strings.Contains(html, "Join with invitation") {
+				t.Error("hosted page exposes an invitation paste flow")
 			}
 			if tt.mode != "organization" && strings.Contains(html, "Private project") {
 				t.Error("page outside organization scope exposed project metadata")
@@ -115,7 +115,7 @@ func TestHostedFormsCarryCSRF(t *testing.T) {
 				}
 			}
 			if mode == "onboarding" {
-				for _, want := range []string{`action="/organization/create"`, `action="/organization/join"`, `name="token" type="password"`} {
+				for _, want := range []string{`action="/organization/create"`} {
 					if !strings.Contains(html, want) {
 						t.Errorf("onboarding form missing %q", want)
 					}

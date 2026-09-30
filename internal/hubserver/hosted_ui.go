@@ -39,7 +39,6 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
 	e.GET("/api/cloud/billing/subscription", s.hostedBillingExport)
 	e.POST("/organization/create", s.createHostedOrganization)
-	e.POST("/organization/join", s.acceptHostedInvitation)
 	e.POST("/organization/switch", s.switchHostedOrganization)
 	e.POST("/organization/invite", s.inviteHostedMember)
 	e.POST("/organization/members/:member/revoke", s.revokeHostedMember)
@@ -103,7 +102,7 @@ func (s *Service) hostedDenied(c echo.Context, status int, message string, denia
 // hostedLanding serves the root. A member, or a support session acting as
 // one, gets the client application; a session with no organization access
 // still gets the organization page, which carries the chooser, create and
-// join forms and the staff notice.
+// invitation guidance and the staff notice.
 func (s *Service) hostedLanding(c echo.Context) error {
 	if _, _, err := s.hostedCredential(c); err == nil {
 		return s.appShell(c)
