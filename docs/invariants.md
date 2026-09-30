@@ -1563,14 +1563,18 @@ reading, creating or changing repository notes.
 Workspace diagnostics never rewrite shared Git metadata, including human-authored
 `info/exclude` (#3503). Diff statistics, fingerprints, patches, per-file diffs,
 and recovery path evidence apply the existing runtime exclusions through
-command-local pathspecs; tracked and untracked runtime artifacts stay excluded.
+command-local pathspecs; tracked and untracked temporary artifacts stay excluded.
+Human-authored `.detent/notes.md` and `.detent/lessons.md` remain ordinary project
+files visible to diagnostics and recovery; removed automatic writers do not
+justify suppressing intentional documentation changes. Existing operator ignore
+rules remain untouched.
 Workspace creation and worker scratch preparation no longer install repository
 ignore rules. Diagnostic index copies live in worker-provided scratch and leave
 the real worktree indexes intact.
 `TestWorkspaceDiagnosticsPreserveSharedGitMetadata` runs diagnostics concurrently
 in two linked worktrees and checks unchanged shared exclusions (contents, inode,
 and modification time), unchanged real indexes, preserved human ignore behavior,
-and worktree-specific source changes. `TestPrepareWorkerScratchPreservesGitExclude`
+and worktree-specific source and human documentation changes. `TestPrepareWorkerScratchPreservesGitExclude`
 covers scratch preparation without installing exclusions.
 
 Workflow timeline reads consolidate identity matching through the existing
