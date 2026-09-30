@@ -26,6 +26,12 @@ func TestIsolationSettings(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			policy := isolation.Policy{Tier: test.tier, WritableRoots: []string{"/worktree", "/runtime"}, HostServices: []string{"unix:/var/run/example.sock"}}
 			options, settings, err := IsolationSettings(policy)
+			if test.tier == isolation.Sandbox && !isolation.SandboxAvailable() {
+				if !errors.Is(err, isolation.ErrSandboxUnavailable) {
+					t.Fatalf("error = %v, want sandbox unavailable", err)
+				}
+				return
+			}
 			if (err == nil) != test.valid {
 				t.Fatalf("error = %v", err)
 			}
@@ -69,6 +75,12 @@ func TestBackendAppliesRunnerIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = backend.RunTurn(isolation.WithPolicy(t.Context(), isolation.Policy{Tier: tier}), runner.AgentTurnRequest{ReadOnly: test.restricted, Workspace: "/worktree", TempDir: "/runtime", Model: "test-model", ExtraWritableRoots: []string{"/detent-state"}}, nil)
+			if test.tier == isolation.Sandbox && !isolation.SandboxAvailable() {
+				if !errors.Is(err, isolation.ErrSandboxUnavailable) {
+					t.Fatalf("error = %v, want sandbox unavailable", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
