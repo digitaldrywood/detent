@@ -1245,6 +1245,8 @@ The lint command disables golangci-lint's shared runner lock with
 `--allow-parallel-runners`; analyzers and the existing timeout remain unchanged.
 The client check stops on dependency installation, typecheck, test, or build
 failure before checking bundle drift and attribution, preserving failure status.
+Each client test command uses at most two workers while retaining file isolation
+and all tests, so concurrent worktrees do not each allocate a machine-sized pool.
 
 GitHub Actions schedules the full suite hourly from the default `main` branch.
 Preflight pins the current `develop` SHA and skips when that commit already has

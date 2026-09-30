@@ -58,69 +58,6 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
   });
 }
 
-/**
- * jsdom implements `requestAnimationFrame` with a 60 Hz `setInterval`, and the
- * interval outlives the frame it was scheduled for.
- *
- * That is a real problem here rather than a curiosity. Base UI's popups ask
- * their transition scheduler for a frame when they mount
- * (`@base-ui/react/internals/useTransitionStatus` →
- * `@base-ui/utils/useAnimationFrame`), so every menu, popover and tooltip that
- * opens in a test leaves one 16.7 ms interval running in the worker — React's
- * unmount cancels the frame, but jsdom's `cancelAnimationFrame` does not stop
- * the interval behind it. They accumulate for the lifetime of the file: with a
- * dozen popups opened, a test that renders a bare `<div>` was taking over
- * twenty seconds, and the worker eventually missed vitest's `onTaskUpdate`
- * heartbeat and failed the run with an unhandled RPC timeout while every test
- * passed.
- *
- * A one-shot timer cannot do that: it fires once and is finished whether or not
- * anybody cancels it. The contract callers depend on is "call me back
- * asynchronously, once, with a timestamp", which this keeps.
- *
- * The delay stays at a frame's length rather than dropping to zero, and that
- * matters more than it looks. Base UI's scheduler re-requests a frame while it
- * waits for a transition to settle, so a zero-delay timer turns a 60 Hz poll
- * into a hot loop: measured, it made this file's twenty tests slower than the
- * leak did (243 s against 175 s). Keeping the cadence and dropping only the
- * *repeat* is what fixes the leak without paying for it elsewhere.
- *
- * The shim lives here, with the other jsdom gaps, rather than in the copied
- * components: it is the environment that is wrong, and the components are
- * byte-identical upstream files (decisions.md §16).
- */
-const FRAME_MS = 16;
-if (typeof globalThis.requestAnimationFrame === "function") {
-  const frames = new Map<number, ReturnType<typeof setTimeout>>();
-  let nextHandle = 1;
-  Object.defineProperty(globalThis, "requestAnimationFrame", {
-    configurable: true,
-    writable: true,
-    value: (callback: FrameRequestCallback): number => {
-      const handle = nextHandle;
-      nextHandle += 1;
-      frames.set(
-        handle,
-        setTimeout(() => {
-          frames.delete(handle);
-          callback(performance.now());
-        }, FRAME_MS),
-      );
-      return handle;
-    },
-  });
-  Object.defineProperty(globalThis, "cancelAnimationFrame", {
-    configurable: true,
-    writable: true,
-    value: (handle: number): void => {
-      const timer = frames.get(handle);
-      if (timer === undefined) return;
-      clearTimeout(timer);
-      frames.delete(handle);
-    },
-  });
-}
-
 if (typeof globalThis.ResizeObserver !== "function") {
   Object.defineProperty(globalThis, "ResizeObserver", {
     configurable: true,
