@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -315,10 +316,20 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 		commentAt      time.Time
 		parkCause      string
 		legacyBlocker  bool
+		legacyLane     string
+		metadataAbsent bool
 		started        bool
 		wantState      string
 		wantTransition bool
 	}{
+		{name: "unknown project-status hold remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, metadataAbsent: true, started: true},
+		{name: "legacy Todo does not start fresh work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Todo", started: true},
+		{name: "legacy clearance restores In Progress", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, wantState: "In Progress", wantTransition: true},
+		{name: "legacy clearance restores Rework", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Rework", started: true, wantState: "Rework", wantTransition: true},
+		{name: "legacy unauthorized answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", commentAt: now, legacyLane: "In Progress", started: true},
+		{name: "legacy stale answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), legacyLane: "In Progress", started: true},
+		{name: "legacy uncleared action holds", body: "status: blocked\nblockers: []\nhuman_action: approve rehearsal", authorized: true, commentAt: now, legacyLane: "In Progress", started: true},
+		{name: "legacy unresolved dependency holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, legacyBlocker: true},
 		{name: "authorized clearance resumes existing work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, started: true, wantState: "Rework", wantTransition: true},
 		{name: "authorized clearance queues new work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
 		{name: "same-second clearance", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Truncate(time.Second), parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
@@ -348,6 +359,30 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: parkedAt, Source: BlockedSourceProjectStatus,
 				Recovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: tt.parkCause, TargetState: "Rework"}}
+			if tt.metadataAbsent {
+				blocked := state.Blocked[issue.ID]
+				blocked.Recovery = nil
+				state.Blocked[issue.ID] = blocked
+			}
+			if tt.legacyLane != "" {
+				blocked := state.Blocked[issue.ID]
+				blocked.Recovery = nil
+				state.Blocked[issue.ID] = blocked
+				backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = backend.Close() })
+				orch.workflowMetrics = backend
+				_, err = backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID: orch.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier,
+					PhaseType: store.WorkflowPhaseTypeLane, PhaseName: blockedStatusState, PreviousPhaseName: tt.legacyLane,
+					Reason: string(AutoPromoteReasonWorkpadBlocker), Status: "entered", StartedAt: parkedAt, MetadataJSON: `{"tracker_mutation_at":"` + parkedAt.Format(time.RFC3339Nano) + `"}`,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
 			_, ok := transitioned[issue.ID]
