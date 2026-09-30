@@ -690,6 +690,15 @@ func TestHostedBrowserPreview(t *testing.T) {
 		t.Skip("set DETENT_HOSTED_BROWSER_PREVIEW=1 to run the isolated browser preview")
 	}
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	if os.Getenv("DETENT_HOSTED_BROWSER_SPRITES") != "" {
+		f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
+		f.service.config.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+			if request.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
+				return spritesTestResponse("", http.StatusUnauthorized), nil
+			}
+			return spritesTestResponse(`{"sprites":[]}`, http.StatusOK), nil
+		})}
+	}
 	f.seedPreview(t)
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
 		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
