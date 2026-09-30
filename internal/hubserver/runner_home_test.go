@@ -177,7 +177,7 @@ func TestRunnerHomeReturnAndOrdering(t *testing.T) {
 
 func TestRunnerHomeRoutingCompatibility(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "home-routing")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Home runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, HomeProjectIDs: []tracker.ProjectID{f.project.ID}}}
@@ -252,7 +252,7 @@ func TestRunnerHomeFleetVisibility(t *testing.T) {
 
 func TestRunnerHomeWorkflowFilter(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "home-workflow")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Home runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, HomeProjectIDs: []tracker.ProjectID{f.project.ID}}}

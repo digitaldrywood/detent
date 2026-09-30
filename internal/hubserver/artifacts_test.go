@@ -249,7 +249,7 @@ func TestHostedArtifactPublisherBoundary(t *testing.T) {
 
 func TestArtifactAuthorityReceiptsAndRevocation(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "artifacts")
+	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	worker := f.worker(t, "worker")
