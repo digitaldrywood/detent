@@ -27,6 +27,8 @@ func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
 	state := newState(orch.cfg)
 	state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID}
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-10 * time.Minute)}
+	completion := completionDeferralEvent(issue, attemptID, now)
+	orch.deferTrackerUnavailableCompletion(ctx, &state, completion, state.Running[issue.ID], errors.New("stale native completion lease"))
 
 	response, err := orch.handleWorkAttemptRecovery(ctx, &state, WorkAttemptRecoveryRequest{
 		ProjectID: "detent",
@@ -48,6 +50,10 @@ func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("state.Claimed still contains %q after abandon", issue.ID)
 	}
+	if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 {
+		t.Fatalf("abandon retained deferred completion: deferred=%v retries=%v", state.deferredCompletions, state.Retry)
+	}
+	orch.retryDeferredCompletions(ctx, &state, now.Add(time.Hour))
 	if tracker.fieldIssueID != issue.ID || tracker.fieldName != "Detent Lease" || tracker.fieldValue != "" {
 		t.Fatalf("SetField call = %q %q %q, want lease release", tracker.fieldIssueID, tracker.fieldName, tracker.fieldValue)
 	}

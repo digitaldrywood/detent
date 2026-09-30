@@ -1,0 +1,234 @@
+package hubclient
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+// Replay Cloud retiring a lease on run.finished. The real runner must leave
+// publication and the lane handoff to the orchestrator before that retirement.
+func TestNativePlannerAutomaticHandoff(t *testing.T) {
+	isolateNativeChangeGit(t)
+	for _, abandon := range []bool{false, true} {
+		name := "automatic handoff"
+		if abandon {
+			name = "abandon deferred planner and recover"
+		}
+		t.Run(name, func(t *testing.T) { testNativePlannerHandoff(t, abandon) })
+	}
+}
+
+func testNativePlannerHandoff(t *testing.T, abandon bool) {
+	t.Helper()
+	h := newNativeChangeHubWithStates(t, "Human Review", hubserverPlanStates())
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Plan then implement", Body: "Update the README."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := nativeChangeSourceRepo(t)
+	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+	nativeChangeGit(t, source, "config", "url."+source+".insteadOf", nativeChangeRepository)
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}
+	agent, err := runner.NewRunner(runner.Dependencies{
+		Workflow:  config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: plan, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
+		Workspace: backend, AgentBackend: &nativePlanningAgent{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtimeStore.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	finished := make(chan nativePlanFinish, 4)
+	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, blocked: make(chan struct{}, 1)}
+	transport.failWorkflow.Store(abandon)
+	h.native.client.httpClient.Transport = transport
+	orchCfg := orchestrator.Config{
+		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, Plan: plan,
+		PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1,
+		ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Human Review"}, TerminalStates: []string{"Done"},
+	}
+	if abandon {
+		orchCfg.PollInterval = time.Hour
+	}
+	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	wantStates := []string{"In Progress", "Human Review"}
+	if abandon {
+		select {
+		case <-transport.blocked:
+		case <-time.After(10 * time.Second):
+			t.Fatal("planner did not reach the completion lane write")
+		}
+		attempts, err := runtimeStore.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{ProjectID: "local"})
+		if err != nil || len(attempts) != 1 {
+			t.Fatalf("active planner = %v, %v", attempts, err)
+		}
+		receipt, err := orch.WorkAttemptReceipt(t.Context(), "local", attempts[0].ID)
+		if err != nil || receipt.Attempt.Phase != "completion_deferred" {
+			t.Fatalf("planner deferral = %v, %v", receipt.Attempt.Phase, err)
+		}
+		// Replay Cloud's missing lease followed by supported local abandon.
+		h.scheduler.mu.Lock()
+		lease := h.scheduler.nativeClaims[issue.ID].lease
+		h.scheduler.mu.Unlock()
+		if err := h.native.Release(t.Context(), lease, "completed"); err != nil {
+			t.Fatal(err)
+		}
+		response, err := orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryAbandon, Confirm: true, Reason: "native planner succeeded but its lease ended", Operator: "ops"})
+		if err != nil || response.Attempt.TerminalState != string(store.WorkAttemptTerminalAbandoned) {
+			t.Fatalf("abandon = %v, %v", response.Status, err)
+		}
+		current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+			t.Fatal(err)
+		}
+		transport.failWorkflow.Store(false)
+		orchCfg.PollInterval = 20 * time.Millisecond
+		if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{Config: orchCfg}); err != nil {
+			t.Fatal(err)
+		}
+		wantStates = []string{"Human Review"}
+	}
+	for _, want := range wantStates {
+		select {
+		case got := <-finished:
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.state != want {
+				t.Fatalf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
+			}
+		case <-time.After(10 * time.Second):
+			state, _ := orch.State(t.Context())
+			t.Fatalf("native handoff did not finish: running=%v retry=%v", len(state.Running), state.Retry)
+		}
+	}
+	changes := h.changes(t, issue.ID)
+	if len(changes) != 1 || changes[0].CurrentVersion == "" {
+		t.Fatalf("implementation did not publish Change Request: %+v", changes)
+	}
+	comments, err := h.connector.FetchIssueComments(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans := 0
+	for _, comment := range comments {
+		if strings.HasPrefix(comment.Body, "## Detent Plan\n") {
+			plans++
+		}
+	}
+	if plans != 1 {
+		t.Fatalf("plan publications = %d, want one", plans)
+	}
+}
+
+func hubserverPlanStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Human Review", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
+		{Name: "Human Review", Transitions: []string{"In Progress", "Merging", "Done"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Human Review", "Done"}},
+		{Name: "Done", Terminal: true},
+	}
+}
+
+type nativePlanningAgent struct{}
+
+func (*nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	plan := strings.Contains(req.Prompt, "This dispatch is plan-only.")
+	if plan {
+		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Implement README changes and verify them.\n\n## Detent Plan Review\n\n- state: approved\n\nThe plan covers acceptance, tests and risks."}); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+	}
+	return (&committingAgent{commit: !plan}).RunTurn(ctx, req, update)
+}
+
+type nativePlanFinish struct {
+	state string
+	err   error
+}
+type nativePlanTransport struct {
+	next         http.RoundTripper
+	native       *NativeClient
+	finished     chan<- nativePlanFinish
+	blocked      chan struct{}
+	failWorkflow atomic.Bool
+}
+
+func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/workflow") && t.failWorkflow.Load() {
+		select {
+		case t.blocked <- struct{}{}:
+		default:
+		}
+		return nil, errors.New("native workflow publication unavailable")
+	}
+	response, err := t.next.RoundTrip(req)
+	if err != nil || response.StatusCode >= 300 || req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/events") {
+		return response, err
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return response, err
+	}
+	defer body.Close()
+	var event tracker.NativeRunEvent
+	if err := json.NewDecoder(body).Decode(&event); err != nil {
+		return response, err
+	}
+	if event.Type != "run.finished" {
+		return response, nil
+	}
+	item := tracker.NativeWorkItemID(strings.Split(strings.TrimSuffix(req.URL.Path, "/events"), "/work-items/")[1])
+	issue, err := t.native.Issue(req.Context(), item)
+	if err == nil {
+		err = t.native.Release(req.Context(), tracker.NativeLease{ID: event.Data.LeaseID, WorkItemID: item, FencingToken: event.Data.FencingToken}, "completed")
+	}
+	t.finished <- nativePlanFinish{state: issue.State, err: err}
+	return response, nil
+}

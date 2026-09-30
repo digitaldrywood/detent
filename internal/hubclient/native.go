@@ -12,6 +12,7 @@ import (
 
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -136,7 +137,7 @@ func (c *NativeClient) Transition(ctx context.Context, id tracker.NativeWorkItem
 		return result, err
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/workflow", request, &result)
-	return result, err
+	return result, nativeMutationError(err)
 }
 
 func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItemID, request tracker.DependencyMutation) (tracker.NativeIssue, error) {
@@ -168,7 +169,14 @@ func (c *NativeClient) CreateComment(ctx context.Context, id tracker.NativeWorkI
 		return result, err
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/comments", request, &result)
-	return result, err
+	return result, nativeMutationError(err)
+}
+
+func nativeMutationError(err error) error {
+	if claimLost(err) {
+		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	}
+	return err
 }
 
 func (c *NativeClient) UpdateComment(ctx context.Context, id tracker.NativeWorkItemID, commentID string, request tracker.UpdateComment) (tracker.NativeComment, error) {

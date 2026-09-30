@@ -232,6 +232,11 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	}
 	var err error
 	if isNative {
+		if native.execution != nil {
+			if err := native.execution.finishPrepared(ctx); err != nil && !claimLost(err) && !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+				return err
+			}
+		}
 		err = native.source.client.Release(ctx, native.lease, "released")
 	} else {
 		err = s.client.Release(ctx, lease, reason)

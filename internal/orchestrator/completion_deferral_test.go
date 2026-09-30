@@ -24,6 +24,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 	tests := []struct {
 		name     string
 		fenceErr error
+		retired  bool
 	}{
 		{name: "503", fenceErr: completionDeferralAvailabilityError()},
 		{name: "403", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrAuthenticationFailed}},
@@ -34,6 +35,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		{name: "timeout", fenceErr: context.DeadlineExceeded},
 		{name: "canceled read", fenceErr: context.Canceled},
 		{name: "transport", fenceErr: errors.New("connection reset by peer")},
+		{name: "retired native fencing token", fenceErr: fmt.Errorf("%w: stale_fencing_token", runpkg.ErrExecutionAuthorityUnavailable), retired: true},
 	}
 
 	for _, tt := range tests {
@@ -54,6 +56,20 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
 			orch.handleRunResult(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
+			if tt.retired {
+				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
+					t.Fatal("obsolete native completion retained live state")
+				}
+				receipt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil || receipt.TerminalState != store.WorkAttemptTerminalAbandoned {
+					t.Fatalf("obsolete native completion receipt = %+v, %v", receipt, err)
+				}
+				orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+				if tracker.fetchCount() != 1 {
+					t.Fatal("retired token was retried")
+				}
+				return
+			}
 
 			record, deferred := state.deferredCompletions[issue.ID]
 			if !deferred {

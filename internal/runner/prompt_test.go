@@ -1566,4 +1566,12 @@ func TestPlanOnlyPromptOmitsCIImplementationHandoff(t *testing.T) {
 			}
 		})
 	}
+	workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Plan: gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}}}
+	prompt, err := BuildPrompt(workflow, connector.Issue{State: "Todo"}, PromptOptions{PlanOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "automated plan review should be posted") || !strings.Contains(prompt, "include a `## Detent Plan Review` section") {
+		t.Fatal("native plan prompt did not return review evidence to the orchestrator")
+	}
 }

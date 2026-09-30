@@ -167,6 +167,17 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	running Running,
 	fenceErr error,
 ) {
+	// A retired native lease is an obsolete completion, not a tracker outage.
+	// Reuse completion rejection rather than enqueueing the same dead token.
+	if errors.Is(fenceErr, runpkg.ErrExecutionAuthorityUnavailable) {
+		o.rejectWorkerCompletion(ctx, state, event, running, "worker lease is no longer active", fenceErr)
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalAbandoned, workAttemptErrorInterrupted, fenceErr.Error(), "interrupted", "native execution authority ended")
+		o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("release obsolete completion claim failed", "issue_id", event.IssueID, "error", err)
+		}
+		return
+	}
 	deferredAt := o.clockNow().UTC()
 	if deferredAt.IsZero() {
 		deferredAt = event.CompletedAt.UTC()

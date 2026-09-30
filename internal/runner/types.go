@@ -596,7 +596,10 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	TriageContext string
+	// DeferExecutionFinish leaves terminal publication with the claim owner so
+	// native collaboration and lane writes finish under the execution lease.
+	DeferExecutionFinish bool
+	TriageContext        string
 
 	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
 	ProviderReports           []providercapacity.Report

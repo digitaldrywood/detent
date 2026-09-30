@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -916,14 +917,28 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 	now := time.Date(2026, 7, 18, 13, 0, 0, 0, time.UTC)
 	empty := terminalRetryTestIssue("service-restart-empty")
 	pushed := terminalRetryTestIssue("service-restart-pushed")
+	planned := terminalRetryTestIssue("operator-recovered-plan")
+	successfulPlan := terminalRetryTestIssue("successful-plan")
 	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{
-		empty.ID:  cloneIssue(empty),
-		pushed.ID: cloneIssue(pushed),
+		empty.ID:          cloneIssue(empty),
+		pushed.ID:         cloneIssue(pushed),
+		planned.ID:        cloneIssue(planned),
+		successfulPlan.ID: cloneIssue(successfulPlan),
 	}}
 	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
 	o := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 	state.WorkAttempts = []telemetry.WorkAttempt{
+		{
+			AttemptID: 4, IssueID: planned.ID, Status: string(store.WorkAttemptStatusTerminal),
+			TerminalState: string(store.WorkAttemptTerminalAbandoned), ErrorClass: "operator_abandoned",
+			CompletedAt: timePointer(now.Add(-time.Minute)), WorkerMetadataJSON: `{"run_mode":"plan"}`,
+		},
+		{
+			AttemptID: 3, IssueID: successfulPlan.ID, Status: string(store.WorkAttemptStatusTerminal),
+			TerminalState: string(store.WorkAttemptTerminalSuccess), CompletedAt: timePointer(now.Add(-time.Minute)),
+			WorkerMetadataJSON: `{"run_mode":"plan"}`,
+		},
 		{
 			AttemptID:          2,
 			IssueID:            pushed.ID,
@@ -945,13 +960,19 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 		},
 	}
 
-	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{pushed, empty}, now)
+	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{pushed, empty, planned, successfulPlan}, now)
 
 	if len(transitions) != 1 || transitions[0].ID != empty.ID || transitions[0].State != "Todo" {
 		t.Fatalf("transitions = %#v, want empty attempt moved to Todo", transitions)
 	}
 	if got := tracker.transitionStates(); !slices.Equal(got, []string{"Todo"}) {
 		t.Fatalf("state transitions = %v, want [Todo]", got)
+	}
+	o.cfg.Plan = gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}
+	for _, issue := range []connector.Issue{planned, successfulPlan} {
+		if mode := o.dispatchMode(t.Context(), &state, tracker.issues[issue.ID]); mode != RunModeImplement {
+			t.Fatalf("recovered plan dispatched mode %s, want implementation", mode)
+		}
 	}
 }
 

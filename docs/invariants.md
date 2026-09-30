@@ -21,6 +21,21 @@ SSH worker callbacks keep session persistence, Workpad tools, lane decisions, an
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
+Native worker finish prepares the result and Change Request while retaining the
+existing claim. The orchestrator publishes plan and review evidence, writes the
+lane through its ledger, and records `run.finished` when surrendering that claim
+(#3437). Automated native plans return their review section in the worker result;
+workers never publish approval comments or move lanes. Native workflows are
+resolved before planner dispatch: approved plans enter In Progress, while holds
+use the configured plan stop or review destination, including the existing
+In Progress intermediate transition when required. Incompatible destinations
+prevent planner dispatch. P1 plan rework retains planner provenance. Abandoned
+plan attempts cannot undo an operator's implementation handoff just because
+they have no PR. `TestNativePlannerAutomaticHandoff`,
+`TestNativePlanWorkflowHandoff`, and
+`TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt` cover these
+boundaries, including actual subsequent Change Request version publication.
+
 Merging promotion reads only the trusted audit verdict for the tick's hydrated
 PR head and base (#3436). Passing and running audits do not repeat PR, check,
 review, or thread hydration; merge preparation remains the owner of live merge
@@ -415,6 +430,15 @@ SQLite restart, two-host coordination, artifact counts, and attempt attribution.
 `TestPlanCompletionPublicationRecovery` covers uncertain writes and the
 publication checkpoint. Both run through the invariant manifest. Lane writes
 remain in the existing orchestrator ledger (INV-1).
+
+A permanently retired native fencing token uses the existing obsolete-completion
+rejection, rather than tracker-outage retries (#3437). Operator abandon clears
+the matching deferred completion as well as retry, running, and claimed state;
+it cannot resurrect an abandoned completion without a restart.
+`TestCompletionFenceDeferralOutcomes` and
+`TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits` cover rejection and
+cleanup. The native finish and lane handoff share the existing claim lifecycle
+instead of adding a retry or recovery mechanism (INV-3).
 
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when
 changing the first-turn boundary, in-turn infrastructure classification, or attribution.
