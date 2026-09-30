@@ -18,7 +18,7 @@ func TestRetainedRefreshObservesCompletedCheckOnSameHead(t *testing.T) {
 	snapshot["mergeStateStatus"] = "UNSTABLE"
 	check := candidateFixtureCheck(snapshot)
 	check["status"], check["conclusion"] = "IN_PROGRESS", ""
-	completed := false
+	restStatus, restConclusion := "in_progress", ""
 	statusReads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -30,12 +30,10 @@ func TestRetainedRefreshObservesCompletedCheckOnSameHead(t *testing.T) {
 		if r.Method != http.MethodPost {
 			switch {
 			case strings.HasSuffix(r.URL.Path, "/check-runs"):
-				status, conclusion := "in_progress", ""
-				if completed {
-					status, conclusion = "completed", "success"
-				}
-				write(map[string]any{"check_runs": []any{map[string]any{"id": 1, "name": "unit", "status": status, "conclusion": conclusion, "started_at": "2026-09-25T12:00:00Z"}}})
+				write(map[string]any{"check_runs": []any{map[string]any{"id": 1, "name": "unit", "status": restStatus, "conclusion": restConclusion, "started_at": "2026-09-25T12:00:00Z"}}})
 			case strings.HasSuffix(r.URL.Path, "/statuses"):
+				write([]any{})
+			case strings.HasSuffix(r.URL.Path, "/annotations"):
 				write([]any{})
 			default:
 				t.Errorf("unexpected REST %s", r.URL)
@@ -82,15 +80,26 @@ func TestRetainedRefreshObservesCompletedCheckOnSameHead(t *testing.T) {
 	if first.HeadSHA != "head1" || first.BaseSHA != "base" || first.MergeableState != "UNSTABLE" || !strings.EqualFold(first.CI.State, "pending") {
 		t.Fatalf("running PR = %+v", first)
 	}
-	completed = true
-	snapshot["mergeStateStatus"] = "CLEAN"
-	check["status"], check["conclusion"] = "COMPLETED", "SUCCESS"
-	second := refresh()
-	if second.HeadSHA != first.HeadSHA || second.BaseSHA != first.BaseSHA || second.MergeableState != "CLEAN" || !strings.EqualFold(second.CI.State, "success") || statusReads != 2 {
-		t.Fatalf("completed PR = %+v; reads = %d", second, statusReads)
-	}
-	decision := gate.Evaluate(gate.Config{Kind: gate.KindCommand, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}}, nil, gate.Summary{PullRequestPresent: true, CIStatus: "pass"}, time.Now(), gate.EvaluationOptions{})
-	if decision.Reason != gate.ReasonSecurityAuditMissing {
-		t.Fatalf("gate decision = %+v, want trusted audit stage", decision)
+	for i, tt := range []struct {
+		name, status, conclusion, mergeability, ciState string
+		reason                                          gate.Reason
+	}{
+		{"still running", "IN_PROGRESS", "", "UNSTABLE", "pending", gate.ReasonCINotGreen},
+		{"completed successfully", "COMPLETED", "SUCCESS", "CLEAN", "success", gate.ReasonSecurityAuditMissing},
+		{"completed with failure", "COMPLETED", "FAILURE", "UNSTABLE", "failure", gate.ReasonCINotGreen},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot["mergeStateStatus"] = tt.mergeability
+			check["status"], check["conclusion"] = tt.status, tt.conclusion
+			restStatus, restConclusion = strings.ToLower(tt.status), strings.ToLower(tt.conclusion)
+			observed := refresh()
+			if observed.HeadSHA != first.HeadSHA || observed.BaseSHA != first.BaseSHA || observed.MergeableState != tt.mergeability || !strings.EqualFold(observed.CI.State, tt.ciState) || statusReads != i+2 {
+				t.Fatalf("refreshed PR = %+v; reads = %d", observed, statusReads)
+			}
+			decision := gate.Evaluate(gate.Config{Kind: gate.KindCommand, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}}, nil, gate.Summary{PullRequestPresent: true, CIStatus: observed.CI.State}, time.Now(), gate.EvaluationOptions{})
+			if decision.Reason != tt.reason {
+				t.Fatalf("gate decision = %+v, want %s", decision, tt.reason)
+			}
+		})
 	}
 }
