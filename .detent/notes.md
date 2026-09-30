@@ -1,3 +1,34 @@
+# Issue #2976 merge fallback handoff (attempt 7212, generation 80)
+
+- PR #3052 is open against `develop` on the assigned isolated branch; its body includes `Fixes #2976`. Fetched published head: `99f99e34cea4fea794c0ddc7a8cea973c24e2957`.
+- Source-clean starting local HEAD: `363438eab844ff57de1f9b1b71d90856920e77a5`, the retained unpublished merge with parents `99f99e34cea4fea794c0ddc7a8cea973c24e2957` and prior target `bb537faaff5f86411d65d165726ba1386fa60aad`. Verified the preceding handoff and retained source resolution against Git history; the remote PR head remains an ancestor. No merge or rebase was in progress at session start.
+- Merged freshly fetched develop `a80b710099516938a38c8cadb785f7fa61a56386` into the retained local history without rebasing. No conflicts occurred; incoming `internal/gate/gate.go` and `internal/gate/gate_test.go` merged automatically. No manual source changes or out-of-scope findings.
+- Key issue files remain `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`. Prior resolution retains develop's audit-only Merging path and the PR's In Progress repair-only filter in the non-Merging decision path.
+- Updated handoff notes with one current Workpad/status fence; prior handoffs are historical.
+
+## Codex Workpad
+
+Plan and result: retain the unpublished resolution, finish and commit the current develop merge while preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. Historical evidence does not validate this head. Gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7212"
+  completion_generation: "80"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+## Historical handoffs
+
+The following records apply to earlier heads or other issues and do not authorize validation or publication in this session.
+
 # Issue #2976 merge fallback handoff (attempt 7206, generation 77)
 
 - PR: https://github.com/digitaldrywood/detent/pull/3052; verified open against `develop` on the assigned isolated branch. Source-clean starting local HEAD and fetched published PR head both match `99f99e34cea4fea794c0ddc7a8cea973c24e2957`. No merge or rebase was in progress at session start.
@@ -6,7 +37,7 @@
 - Source resolution retains develop's audit-only Merging decision path and confines the PR's In Progress repair-only filter to the full promotion decision in the non-Merging path. Other source files and `docs/invariants.md` merged automatically. No unrelated changes or out-of-scope findings.
 - Notes resolution preserves both sides' historical handoffs with one current Workpad/status fence. Key issue files: `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`; incoming INV-1 ownership documentation is retained.
 
-## Codex Workpad
+## Historical Workpad
 
 Plan and result: finish and commit the resolved develop merge, preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
 
@@ -14,7 +45,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
