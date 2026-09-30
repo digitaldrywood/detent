@@ -22,6 +22,7 @@ import {
 } from "../../components/WorkspacePageContainer.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip.tsx";
+import { SettingsHelp } from "./SettingsHelp.tsx";
 
 declare module "@tanstack/react-router" {
   interface HistoryState {
@@ -253,6 +254,7 @@ export function SettingsUnavailableGroup({
  */
 export function SettingsRow({
   title,
+  help,
   description,
   status,
   resetAction,
@@ -263,6 +265,7 @@ export function SettingsRow({
   ...rowProps
 }: Omit<ComponentPropsWithoutRef<"div">, "title"> & {
   title: ReactNode;
+  help?: { readonly label: string; readonly text: string };
   description?: ReactNode;
   status?: ReactNode;
   resetAction?: ReactNode;
@@ -314,6 +317,7 @@ export function SettingsRow({
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
             <h3 className="text-sm font-medium tracking-[-0.005em] text-foreground">{title}</h3>
+            {help ? <SettingsHelp label={help.label}>{help.text}</SettingsHelp> : null}
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               {renderedReset}
             </span>
