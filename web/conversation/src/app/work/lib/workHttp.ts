@@ -150,6 +150,7 @@ export interface ListWorkItemsInput {
   readonly limit?: number | undefined;
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
+  readonly archived?: boolean;
 }
 
 export interface WorkHttp {
@@ -189,6 +190,13 @@ export interface WorkHttp {
     expectedRevision: string;
     state: string;
     reason?: TransitionReason;
+  }) => Promise<NativeIssue>;
+  readonly setArchived: (input: {
+    projectId: string;
+    itemId: string;
+    key: string;
+    expectedRevision: string;
+    archived: boolean;
   }) => Promise<NativeIssue>;
   readonly setDependency: (input: {
     projectId: string;
@@ -531,6 +539,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         "GET",
         url(`${projectBase(input.projectId)}/work-items`, {
           state: input.state,
+          archived: input.archived === true ? "true" : undefined,
           label: input.label,
           assignee: input.assignee,
           priority: input.priority,
@@ -562,6 +571,11 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         // other two reasons belong to the scheduler and claiming one here
         // would put a lie in the history.
         reason: input.reason ?? "user_requested",
+      }),
+    setArchived: (input) =>
+      send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/${input.archived ? "archive" : "restore"}`), {
+        idempotency_key: input.key,
+        expected_revision: input.expectedRevision,
       }),
     setDependency: (input) =>
       send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/dependencies`), {

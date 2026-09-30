@@ -401,7 +401,6 @@ func TestTrimCandidateLayout(t *testing.T) {
 	}
 }
 
-// Sparse files reproduce the reported 47 GiB growth without consuming that disk space.
 func TestTrimExplicitReportedGrowth(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -409,9 +408,9 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 		age     time.Duration
 		removed bool
 	}{
-		{"reported recent growth", 47 << 30, 5 * time.Hour, true},
-		{"below budget", 19 << 30, 5 * time.Hour, false},
-		{"expired below budget", 1 << 20, 49 * time.Hour, true},
+		{"reported recent growth", 47 << 10, 5 * time.Hour, true},
+		{"below budget", 19 << 10, 5 * time.Hour, false},
+		{"expired below budget", 1 << 10, 49 * time.Hour, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -439,7 +438,7 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 			if err := os.Chtimes(path, at, at); err != nil {
 				t.Fatal(err)
 			}
-			reclaimed, err := Trim(t.Context(), root, Policy{MaxBytes: 20 << 30}, now)
+			reclaimed, err := Trim(t.Context(), root, Policy{MaxBytes: 20 << 10}, now)
 			if err != nil {
 				t.Fatal(err)
 			}
