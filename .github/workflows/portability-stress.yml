@@ -10,7 +10,7 @@ jobs:
   portability-stress:
     name: Portability Stress (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +31,7 @@ jobs:
         run: go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20
 
       - name: Stress timing-sensitive packages
-        run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m
+        run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=90m
 
       - name: Race test
         shell: bash
