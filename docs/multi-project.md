@@ -508,9 +508,8 @@ ids. Supported backend kinds are `codex` with `protocol: app-server` and
 runtime fields as the top-level `codex` block, including `shell`,
 `approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, `turn_timeout_ms`,
 `read_timeout_ms`, and `stall_timeout_ms`. `agent.max_turns`,
-`agent.max_turn_duration_ms`, `agent.max_session_duration_ms`, and
-`agent.no_progress_timeout_ms` apply across backends rather than belonging to
-an individual backend profile. Claude Code backend `options`
+`agent.max_turn_duration_ms`, and `agent.max_session_duration_ms` apply
+across backends rather than belonging to an individual backend profile. Claude Code backend `options`
 include `permission_mode`, `allowed_tools`, `disallowed_tools`,
 `include_partial_messages`, `turn_timeout_ms`, `stall_timeout_ms`, `shell`, and
 `extra_args`. When a Codex backend needs different configuration, launch

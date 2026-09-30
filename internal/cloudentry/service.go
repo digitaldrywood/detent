@@ -240,6 +240,9 @@ func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if !cloudassert.CanonicalPath(c.Request().URL) {
 			return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 		}
+		if s.redirectLegacyNavigation(c) {
+			return c.Redirect(http.StatusTemporaryRedirect, s.config.PublicURL+c.Request().URL.RequestURI())
+		}
 		return next(c)
 	}
 }
@@ -369,7 +372,8 @@ func (s *Service) sameOrigin(c echo.Context) bool {
 	if origin == "null" {
 		return header.Get("Sec-Fetch-Site") == "same-origin"
 	}
-	return origin != "" && origin == strings.TrimRight(s.config.PublicURL, "/")
+	return origin != "" && (origin == strings.TrimRight(s.config.PublicURL, "/") ||
+		s.legacyHostedRequest(c.Request()) && origin == "https://"+c.Request().Host)
 }
 
 func (s *Service) csrfValid(c echo.Context, session accountSession, organization string) bool {

@@ -31,6 +31,8 @@ type Scenario struct {
 }
 
 type DispatchConfig struct {
+	WorkerHostSelection          string         `json:"worker_host_selection,omitempty"`
+	WorkerHostCaps               map[string]int `json:"worker_host_caps,omitempty"`
 	MaxConcurrentAgents          int            `json:"max_concurrent_agents"`
 	MaxConcurrentAgentsByState   map[string]int `json:"max_concurrent_agents_by_state,omitempty"`
 	DispatchPriorityByState      []string       `json:"dispatch_priority_by_state,omitempty"`
@@ -249,6 +251,8 @@ func (c DispatchConfig) orchestratorConfig() orchestrator.Config {
 		ActiveStates:               append([]string(nil), c.ActiveStates...),
 		TerminalStates:             append([]string(nil), c.TerminalStates...),
 		WorkerHosts:                append([]string(nil), c.WorkerHosts...),
+		WorkerHostSelection:        c.WorkerHostSelection,
+		WorkerHostCaps:             cloneIntMap(c.WorkerHostCaps),
 		MaxConcurrentAgentsPerHost: c.MaxConcurrentAgentsPerHost,
 		BudgetRefusalCooldown:      time.Duration(c.BudgetRefusalCooldownSeconds) * time.Second,
 	}

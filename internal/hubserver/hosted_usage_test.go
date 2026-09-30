@@ -297,7 +297,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 
 func TestNativeRunEventRejectsInvalidUsage(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "usage-invalid")
+	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	worker := f.worker(t, "worker")
@@ -478,6 +478,7 @@ func usageFixtureValue(t *testing.T, raw []byte) usageReport {
 	}
 	from := time.Date(2026, 9, 9, 13, 0, 0, 0, time.UTC)
 	report := usageReport{
+		Chat:      chatUsageSummary{Range: usageWindow{From: from, To: from.Add(24 * time.Hour)}},
 		Range:     usageWindow{From: from, To: from.Add(24 * time.Hour)},
 		Total:     usageTotal{Cost: 2.14, Tokens: 4141159, Sessions: 5},
 		Providers: []usageProvider{},

@@ -9,9 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -22,6 +24,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/observability"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -175,15 +178,15 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
 	if run == nil {
 		t.Fatal("buildRunner() = nil, want non-nil runner")
 	}
-	if _, ok := run.(*runnerpkg.Runner); !ok {
-		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	if _, ok := run.(*sshRunner); !ok {
+		t.Fatalf("buildRunner() = %T, want SSH-capable runner", run)
 	}
 }
 
@@ -397,7 +400,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
-	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err == nil {
 		t.Fatal("buildRunner() error = nil, want pricing load error")
 	}
@@ -638,6 +641,38 @@ func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 	}
 }
 
+func TestClassifyWorkspaceBackendError(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name           string
+		err            error
+		wantDefinition bool
+	}{
+		{name: "missing source root", err: &os.PathError{Op: "lstat", Path: "/missing/source", Err: syscall.ENOENT}, wantDefinition: true},
+		{name: "non-directory workspace ancestor", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOTDIR}, wantDefinition: true},
+		{name: "unsupported workspace path", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOTSUP}, wantDefinition: true},
+		{name: "symlink loop", err: &os.PathError{Op: "lstat", Path: "/loop/source", Err: syscall.ELOOP}, wantDefinition: true},
+		{name: "path too long", err: &os.PathError{Op: "mkdir", Path: "/long/workspace", Err: syscall.ENAMETOOLONG}, wantDefinition: true},
+		{name: "storage exhausted", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.ENOSPC}},
+		{name: "storage I/O failure", err: &os.PathError{Op: "lstat", Path: "/home/user", Err: syscall.EIO}},
+		{name: "host permission failure", err: &os.PathError{Op: "mkdir", Path: "/home/user", Err: syscall.EACCES}},
+		{name: "backend failure", err: workspace.ErrUnsupportedBackend},
+		{name: "unscoped path errno", err: syscall.ENOTDIR},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyWorkspaceBackendError("create workspace backend", tt.err)
+			if gotDefinition := errors.Is(got, projectpkg.ErrProjectDefinition); gotDefinition != tt.wantDefinition {
+				t.Fatalf("classified as project definition = %v, want %v: %v", gotDefinition, tt.wantDefinition, got)
+			}
+			if !errors.Is(got, tt.err) {
+				t.Fatalf("error %v does not wrap original error %v", got, tt.err)
+			}
+		})
+	}
+}
+
 func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	t.Parallel()
 
@@ -661,8 +696,12 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	if captured.Runner == nil {
 		t.Fatal("project dependencies Runner = nil, want non-nil injected runner")
 	}
-	if _, ok := captured.Runner.(*runnerpkg.Runner); !ok {
-		t.Fatalf("injected Runner = %T, want *runner.Runner", captured.Runner)
+	run, ok := captured.Runner.(*sshRunner)
+	if !ok {
+		t.Fatalf("injected Runner = %T, want *sshRunner", captured.Runner)
+	}
+	if run.Runner == nil {
+		t.Fatal("SSH runner has no local runner")
 	}
 }
 
@@ -768,6 +807,7 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 				nil,
 				5*time.Millisecond,
 				func() time.Time { return now },
+				nil,
 			)
 		}()
 
@@ -2561,4 +2601,58 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHostGoBudgetUsesSharedHostLocation(t *testing.T) {
+	tests := []struct {
+		slots int
+		want  int
+	}{
+		{slots: 0, want: runtime.NumCPU()},
+		{slots: 6, want: 6},
+	}
+	for _, tt := range tests {
+		budget := hostGoBudget(tt.slots)
+		if budget.Slots != tt.want || budget.Dir != gobudget.HostDir() || budget.Executable == "" {
+			t.Fatalf("hostGoBudget(%d) = %+v, want %d slots in %s with an executable", tt.slots, budget, tt.want, gobudget.HostDir())
+		}
+	}
+}
+
+type runnerHeartbeatFunc func(context.Context) error
+
+func (f runnerHeartbeatFunc) Heartbeat(ctx context.Context) error {
+	return f(ctx)
+}
+
+func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		if err := registry.SetPending(globalconfig.Project{ID: "broken"}, projectpkg.RuntimeError{Message: "invalid workflow"}); err != nil {
+			t.Fatal(err)
+		}
+		snapshots := hub.New[telemetry.Snapshot]()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var calls atomic.Int32
+		reporter := runnerHeartbeatFunc(func(ctx context.Context) error {
+			calls.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			publishSnapshots(ctx, registry, nil, snapshots, nil, nil, nil, "", nil, time.Second, time.Now, reporter)
+		}()
+		synctest.Wait()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		snapshot, ok := snapshots.Latest()
+		if !ok || snapshot.Seq < 3 || calls.Load() != 1 {
+			t.Fatalf("pending runner telemetry: snapshot=%#v calls=%d", snapshot, calls.Load())
+		}
+		cancel()
+		<-done
+	})
 }

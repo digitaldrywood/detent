@@ -68,7 +68,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	selectionIssue := req.Issue
 	selectionIssue.Description = ""
-	baseEnvironment := workerEnvironment(map[string]string{
+	baseEnvironment := r.withGoBudget(auditWorkspace, workerEnvironment(map[string]string{
 		"OPENAI_API_KEY":                       "",
 		"AZURE_OPENAI_API_KEY":                 "",
 		"GH_TOKEN":                             "",
@@ -76,7 +76,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		serviceapi.AddressEnvironment:          "",
 		serviceapi.TokenEnvironment:            "",
 		serviceapi.DispositionTokenEnvironment: "",
-	}, workspace.Info{Path: auditWorkspace}, workspaceIssue(r.projectID, req.Issue))
+	}, workspace.Info{Path: auditWorkspace}, workspaceIssue(r.projectID, req.Issue)))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   auditWorkspace,
 		Environment: baseEnvironment,

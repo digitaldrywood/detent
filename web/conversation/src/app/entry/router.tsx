@@ -22,6 +22,7 @@ import {
   ProvisioningProgress,
 } from "./EntryScreens.tsx";
 import { PlatformConsole } from "./PlatformConsole.tsx";
+import { usePageTitle } from "../pageTitle.ts";
 
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
@@ -58,11 +59,19 @@ const routeTree = rootRoute.addChildren([
       throw redirect({ to: "/organizations" } as never);
     },
   }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/", component: EntrySignIn }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/",
+    component: function SignIn() {
+      usePageTitle("Sign in");
+      return <EntrySignIn />;
+    },
+  }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: "/organizations",
     component: function Chooser() {
+      usePageTitle("Organizations");
       return <OrganizationChooser onNavigate={useGo()} />;
     },
   }),
@@ -70,6 +79,7 @@ const routeTree = rootRoute.addChildren([
     getParentRoute: () => rootRoute,
     path: "/organizations/new",
     component: function Create() {
+      usePageTitle("New organization");
       return <CreateOrganization onNavigate={useGo()} />;
     },
   }),
@@ -78,14 +88,23 @@ const routeTree = rootRoute.addChildren([
     path: "/organizations/$organization/provisioning",
     component: function Progress() {
       const { organization } = useParams({ strict: false }) as { organization?: string };
+      usePageTitle("Provisioning", organization);
       return <ProvisioningProgress organization={organization ?? ""} onNavigate={useGo()} />;
     },
   }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/platform", component: PlatformConsole }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/platform",
+    component: function Platform() {
+      usePageTitle("Platform");
+      return <PlatformConsole />;
+    },
+  }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: "/invitations/join",
     component: function Join() {
+      usePageTitle("Join invitation");
       return <JoinInvitation onNavigate={useGo()} />;
     },
   }),

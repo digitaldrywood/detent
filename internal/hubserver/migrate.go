@@ -13,7 +13,7 @@ import (
 
 const (
 	hubSchemaTable         = "hub_schema_version"
-	supportedSchemaVersion = int64(41)
+	supportedSchemaVersion = int64(47)
 )
 
 //go:embed migrations/*.sql

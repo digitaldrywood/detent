@@ -25,7 +25,7 @@ type conversationFixture struct {
 
 func newConversationFixture(t *testing.T) conversationFixture {
 	t.Helper()
-	f := newNativeFixture(t, nil, "", "conversation")
+	f := newDefaultNativeFixture(t, Config{})
 	organization := f.project.OrganizationID
 	principal := func(name string) string {
 		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "principal-" + name, "scope": "operator"})

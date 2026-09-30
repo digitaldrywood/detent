@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1301,6 +1302,16 @@ func (s *Service) patchConversation(c echo.Context) error {
 		models, err := s.conversationModelChoices(ctx, tx, record.OrganizationID, []string{string(record.ProjectID)}, now)
 		if err != nil {
 			return err
+		}
+		if s.hasLunaCoordinator() {
+			if record.WorkItemID == "" {
+				models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID != s.conversationDefaultModel() })
+				if effort := preferences.EffortValue(); effort != "" && effort != "low" && effort != "medium" {
+					return nativeInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
+				}
+			} else {
+				models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID == s.conversationDefaultModel() })
+			}
 		}
 		if err := conversation.ValidatePreferences(preferences, conversationModelValidationChoices(models)); err != nil {
 			return nativeInvalid(err.Error())

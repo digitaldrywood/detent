@@ -11,6 +11,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestINV12DoctorNativeCaches(t *testing.T) {
@@ -24,12 +25,23 @@ func TestINV12DoctorNativeCaches(t *testing.T) {
 		{"legacy attempt", "attempt/.detent/cache", "", doctorWarn},
 		{"legacy isolated", "workdir/.detent/worker-tmp/attempt-old/go-build", "", doctorWarn},
 		{"legacy isolated modules", "workdir/.detent/worker-tmp/attempt-old/go-mod", "", doctorWarn},
+		{"external isolated", "external:attempt-old/go-build", "", doctorWarn},
 		{"discovery failure", "", "Go unavailable", doctorWarn},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
+			legacyPath := filepath.Join(root, tt.legacy)
+			if external, ok := strings.CutPrefix(tt.legacy, "external:"); ok {
+				workdir := filepath.Join(root, "workdir")
+				if err := os.MkdirAll(workdir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				scratchRoot := workspace.WorkerScratchRoot(workdir)
+				t.Cleanup(func() { _ = os.RemoveAll(scratchRoot) })
+				legacyPath = filepath.Join(scratchRoot, filepath.FromSlash(external))
+			}
 			if tt.legacy != "" {
-				if err := os.MkdirAll(filepath.Join(root, tt.legacy), 0o700); err != nil {
+				if err := os.MkdirAll(legacyPath, 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -58,10 +70,10 @@ func TestINV12DoctorNativeCaches(t *testing.T) {
 				if strings.Contains(got.Detail, "no Detent-owned cache roots") {
 					t.Fatalf("contradictory detail: %+v", got)
 				}
-				if !strings.Contains(got.Detail, filepath.Join(root, tt.legacy)) {
+				if !strings.Contains(got.Detail, legacyPath) {
 					t.Errorf("legacy path missing: %+v", got)
 				}
-				if _, err := os.Stat(filepath.Join(root, tt.legacy)); err != nil {
+				if _, err := os.Stat(legacyPath); err != nil {
 					t.Fatalf("doctor modified legacy cache: %v", err)
 				}
 			}

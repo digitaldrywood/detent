@@ -77,7 +77,6 @@ agent:
   #   merge: high
   max_turns: 20
   max_session_duration_ms: 7200000
-  no_progress_timeout_ms: 5400000
   merge_worker_max_duration_ms: 21600000
   max_retry_backoff_ms: 300000
   overload_retry_delay_ms: 45000

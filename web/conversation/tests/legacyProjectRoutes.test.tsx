@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import changeFixture from "../src/contracts/fixtures/work-change-detail.json";
+import type { ChangeDetail } from "../src/contracts/work.ts";
 import { readLastProject } from "../src/app/client.ts";
 import { makeRouter } from "../src/app/router.tsx";
-import { selectChangeId } from "../src/app/work/IssuePage.tsx";
+import { changeResourceRows, selectChangeId } from "../src/app/work/IssuePage.tsx";
 import { routerBasePath } from "../src/runtime/basePath.ts";
 
 afterEach(() => {
@@ -53,6 +55,24 @@ describe("legacy project pages", () => {
     ["nothing for an issue without changes", [], "c1", null],
   ])("selectChangeId opens %s", (_name, changes, requested, want) => {
     expect(selectChangeId(changes, requested)).toBe(want);
+  });
+
+  it("links every Change Request with its current state", () => {
+    const open = vi.fn();
+    const detail = changeFixture as unknown as ChangeDetail;
+    const rows = changeResourceRows([
+      { record: { change_id: "change_1", title: "First" }, detail: { ...detail, summary: { ...detail.summary, status: "landed" } } },
+      { record: { change_id: "change_2", title: "Second" }, detail: { ...detail, summary: { ...detail.summary, status: "needs_evidence" } } },
+      { record: { change_id: "change_3", title: "Third" }, detail: null },
+    ], open);
+    expect(rows.map(({ key, label, detail }) => [key, label, detail])).toEqual([
+      ["change_1", "First", "landed"],
+      ["change_2", "Second", "needs evidence"],
+      ["change_3", "Third", "unavailable"],
+    ]);
+    rows[0]!.onOpen();
+    rows[2]!.onOpen();
+    expect(open.mock.calls).toEqual([["change_1"], ["change_3"]]);
   });
 
   it("keeps the project setup route", async () => {

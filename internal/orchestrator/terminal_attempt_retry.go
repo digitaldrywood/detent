@@ -574,7 +574,7 @@ func workAttemptCompletedAfter(left telemetry.WorkAttempt, right telemetry.WorkA
 
 func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
 	errorClass := strings.TrimSpace(attempt.ErrorClass)
-	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == workerGitHubMonitorErrorClass || errorClass == workerGitHubTokenResolutionErrorClass {
+	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == "worker_github_budget_monitor_unavailable" || errorClass == workerGitHubTokenResolutionErrorClass {
 		return false
 	}
 	if errorClass == githubRESTCapacityError {

@@ -35,11 +35,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestMain(m *testing.M) {
+	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "gh" && os.Getenv("DETENT_SSH_TEST_HELPER") != "" {
+		sshGitHubCLIHelper()
+	}
 	// Boot and reaper tests use disposable provider state as well as a test
 	// runtime store. They must never pair an empty store with host rollouts.
 	codexHome, err := os.MkdirTemp("", "detent-cli-codex-")
@@ -57,6 +61,7 @@ func TestMain(m *testing.M) {
 			panic("clear " + name + ": " + err.Error())
 		}
 	}
+	defaultInspectCaches = func(context.Context) toolcache.Report { return toolcache.Report{} }
 	exitCode := m.Run()
 	if err := os.RemoveAll(codexHome); err != nil {
 		fmt.Fprintln(os.Stderr, "clean test Codex home:", err)

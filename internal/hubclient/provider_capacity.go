@@ -38,7 +38,7 @@ func (s *Scheduler) claimProviderCandidate(ctx context.Context, request orchestr
 			}
 			claim.ProviderCandidates = append(claim.ProviderCandidates, tracker.NativeCapacityCandidate{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement})
 		}
-		if len(claim.ProviderCandidates) != 0 {
+		if len(claim.ProviderCandidates) != 0 || page.Next == 0 {
 			lease, err := source.client.Claim(ctx, claim)
 			if err == nil {
 				if lease.ProviderReservation == nil {

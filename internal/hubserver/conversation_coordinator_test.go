@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -307,6 +308,44 @@ func TestConversationCoordinatorAvailability(t *testing.T) {
 	without := &conversationService{config: ConversationConfig{}, logger: discardLogger()}
 	if newConversationCoordinator(without).Available() {
 		t.Fatal("Available() = true without a backend")
+	}
+}
+
+type recordingConversationUsageSink struct {
+	usage chan ConversationUsage
+}
+
+func (s recordingConversationUsageSink) RecordConversationUsage(_ context.Context, usage ConversationUsage) error {
+	s.usage <- usage
+	return nil
+}
+
+func TestConversationCoordinatorReportsUsage(t *testing.T) {
+	t.Parallel()
+	f := newCoordinatorFixture(t, "usage")
+	sink := recordingConversationUsageSink{usage: make(chan ConversationUsage, 1)}
+	f.conversations.config.UsageSink = sink
+	f.conversations.config.Model = "gpt-6-luna"
+	f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{
+			InputTokens: 20, CachedInputTokens: 5, OutputTokens: 10, ReasoningOutputTokens: 3, TotalTokens: 30,
+		}}); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Done."})
+	})
+	record := f.seed(t, "Usage", nil)
+	f.say(t, &record, "Hello")
+	assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+	select {
+	case usage := <-sink.usage:
+		if usage.TurnID != assistant.ID || usage.ConversationID != record.ID || usage.OrganizationID != f.organization || usage.ProjectID != f.project.ID ||
+			usage.Model != "gpt-6-luna" || usage.Tokens.InputTokens != 20 || usage.Tokens.CachedInputTokens != 5 ||
+			usage.Tokens.OutputTokens != 10 || usage.Tokens.ReasoningOutputTokens != 3 || usage.Outcome != conversation.DeliveryCompleted {
+			t.Fatalf("usage = %+v", usage)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage was not reported")
 	}
 }
 
@@ -952,6 +991,32 @@ func TestConversationCoordinatorHonoursPreferences(t *testing.T) {
 	f.coordinator().Stop()
 }
 
+func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
+	t.Parallel()
+	f := newCoordinatorFixture(t, "luna-legacy")
+	f.conversations.config.Model = genkitbackend.Model
+	f.conversations.config.ReasoningEffort = "low"
+
+	legacy := f.seed(t, "legacy", func(record *conversationRecord) {
+		record.Preferences = conversation.Preferences{Model: "gpt-6-astra", ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessFull}
+	})
+	f.say(t, &legacy, "What changed?")
+	f.waitAssistant(t, legacy.ID, conversation.DeliveryCompleted)
+	if request := f.backend.request(t, 0); request.Model != genkitbackend.Model || request.ReasoningEffort != "low" {
+		t.Fatalf("legacy turn = model %q effort %q", request.Model, request.ReasoningEffort)
+	}
+
+	medium := f.seed(t, "medium", func(record *conversationRecord) {
+		record.Preferences = conversation.Preferences{Model: genkitbackend.Model, ReasoningEffort: "medium", Access: conversation.AccessFull}
+	})
+	f.say(t, &medium, "And now?")
+	f.waitAssistant(t, medium.ID, conversation.DeliveryCompleted)
+	if request := f.backend.request(t, 1); request.Model != genkitbackend.Model || request.ReasoningEffort != "medium" {
+		t.Fatalf("medium turn = model %q effort %q", request.Model, request.ReasoningEffort)
+	}
+	f.coordinator().Stop()
+}
+
 func TestCoordinatorAttachmentBlock(t *testing.T) {
 	t.Parallel()
 	large := strings.Repeat("é", coordinatorAttachmentBlockBytes)
@@ -1375,5 +1440,27 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 				t.Fatalf("write() error = %v, called = %t; want %v, called = %t", err, called, test.wantErr, !test.linked)
 			}
 		})
+	}
+}
+
+func TestCoordinatorFreeRefusesLuna(t *testing.T) {
+	f := newCoordinatorFixture(t, "free-chat")
+	f.service.database.hostedOrganization = f.organization
+	if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	f.conversations.config.Model = "gpt-6-luna"
+	record := f.seed(t, "Free chat", nil)
+	f.say(t, &record, "Can you explain this project?")
+	waitUntil(t, "Free refusal", func() bool {
+		reply, ok := lastReply(f.messages(t, record.ID))
+		return ok && reply.Delivery != conversation.DeliveryResponding
+	})
+	if f.backend.turns() != 0 {
+		t.Fatalf("Free invoked Luna %d times", f.backend.turns())
+	}
+	reply, _ := lastReply(f.messages(t, record.ID))
+	if !strings.Contains(reply.Text, "Free") || !strings.Contains(reply.Text, "Upgrade") {
+		t.Fatalf("refusal = %#v", reply)
 	}
 }

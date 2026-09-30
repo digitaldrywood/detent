@@ -124,6 +124,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendBlockedHandoffBlock(rendered, opts)
 	rendered = appendGateBlock(rendered, workflow.Config)
+	rendered = appendGoTestScopeBlock(rendered, opts.WorkspacePath)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	rendered = appendNativeIssueInstructions(rendered, issue)
 	if workflow.Config.Tracker.Kind == config.TrackerHubNative {
@@ -642,7 +643,11 @@ func AvailableSkillsBlock(skillList []skills.Skill) string {
 
 	lines := make([]string, 0, len(skillList))
 	for _, skill := range skillList {
-		lines = append(lines, "- "+skill.Name)
+		line := "- " + skill.Name
+		if len(skill.Aliases) > 0 {
+			line += " (includes: " + strings.Join(skill.Aliases, ", ") + ")"
+		}
+		lines = append(lines, line)
 	}
 
 	return "## Available skills\n\n" + strings.Join(lines, "\n")
@@ -701,6 +706,18 @@ func appendGateBlock(prompt string, cfg config.Config) string {
 		heading = "Human approval"
 	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## " + heading + "\n\n" + instructions
+}
+
+const goTestScopeBlock = "## Go test scope\n\n" +
+	"Go builds and tests on this host share one CPU budget with every other concurrent worker. " +
+	"While iterating, run `go test` on the packages you changed and the packages that import them (for example `go test ./internal/foo/...`) instead of `go test ./...` sweeps. " +
+	"Run a repository-wide sweep only when the required validation command does, and only once before handing off.\n"
+
+func appendGoTestScopeBlock(prompt string, workspacePath string) string {
+	if !isGoModule(workspacePath) {
+		return prompt
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + goTestScopeBlock
 }
 
 func appendNativeIssueInstructions(prompt string, issue connector.Issue) string {
