@@ -10,9 +10,9 @@
 
 ## Codex Workpad
 
-Plan: merged fetched develop `9826088a821ba72ecfd033bc60b9ed3138762507` into published PR #3061 head `ab76c0799ab4079c1210c4df774a36fa772cc27d`, preserving published history without rebasing.
+Plan: retained recovered local merge `20cd171f4` and merged freshly fetched develop `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into PR #3061. Verified published PR head `ab76c0799ab4079c1210c4df774a36fa772cc27d` is an ancestor of the starting local head; no published history was rebased.
 
-Resolution: only `.detent/notes.md` conflicted. Preserved issue #3060 handoff and target historical notes. Source files merged automatically; no manual source edits or out-of-scope findings.
+Resolution: only `.detent/notes.md` conflicted. Preserved issue #3060 recovery evidence and incoming historical #3001 notes. Source files merged automatically; no manual source edits or out-of-scope findings.
 
 Validation: no local gate, tests, builds, or CI checks run in this fallback. Prior diagnostics are historical, not evidence for this head. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting. Timings for those phases are unmeasured here.
 
@@ -22,8 +22,8 @@ Open items: Detent verification, validation, and publication. No push, PR merge,
 schema: 1
 status: complete
 fields:
-  completion_work_attempt_id: "7139"
-  completion_generation: "10"
+  completion_work_attempt_id: "7145"
+  completion_generation: "16"
 blockers: []
 human_action: null
 ```
@@ -211,3 +211,18 @@ Historical status: complete; blockers: []; human_action: null.
 - Initial focused test and vet diagnostics exited 1: `internal/runner/ssh_protocol.go:210:85: undefined: ErrSessionNoProgress`. Recorded follow-up #3432; current develop already fixes this in #3431, so no runner edit was made here.
 - Skill draft: no — recovery and focused validation add no reusable procedure.
 - Resolved-source diagnostics passed: focused current-head audit, Rework audit evaluation, allowance live-head, and completed-Rework dispatch regressions; `go vet ./internal/orchestrator/...` passed. Configured `true` gate runs before publication; no status or full-suite pass is claimed.
+
+# Issue #3001
+
+PR: https://github.com/digitaldrywood/detent/pull/3004 (ready, target develop).
+Validated code head: d36c44c837dfbea11c1ee3d229c791638a4b1a67; rebased onto develop bccee4c50f86019fd961a4c457a59a2c91e9eb31 without conflict edits.
+
+Key files: internal/cli/runner.go classifies identified unusable configured paths with project.ErrProjectDefinition; internal/workspace/workspace.go preserves canonicalization PathError identity; internal/project/manager.go retries terminal pending definitions on explicit reconciliation. Regression tests live in internal/cli/runner_test.go and startup_workflow_test.go; INV-3 is updated in docs/invariants.md.
+
+Human review finding is fixed and resolved. ENOSPC, EIO, permission, backend and state-store failures remain fatal. No mechanism or configuration key added.
+
+Dependencies #2975 (PR #2986) and #3009 (PR #3018) are closed/merged to main; their main merge SHAs are not ancestors of develop. Historical full PR CI is no longer a blocker under current operator policy. Focused doctor and workspace portability cases pass on macOS; no Windows test credit claimed.
+
+Diagnostics: focused startup, classification, manager, doctor and workspace tests passed; go vet ./internal/cli/... ./internal/project/... ./internal/workspace/... passed. First rebased attempt could not compile because of retired SSH sentinel ErrSessionNoProgress; already fixed by merged #3431, incorporated in second clean rebase. Configured gate true is next immediately before push. No full checks or CI polling performed.
+
+Handoff: publish the rebased ready PR with an exact lease and a complete canonical issue Workpad; the configured true gate runs immediately before that push. Orchestrator owns lane transitions and merge dispatch. Skill draft: no — routine rebase and diagnostics added no reusable procedure.
