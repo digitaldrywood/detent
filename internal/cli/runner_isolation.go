@@ -109,6 +109,11 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		command = prefix
 		shell = backend.CodexOptions().Shell
 		minimum = [3]int{0, 159, 2}
+	case workflowconfig.AgentBackendPiAgent:
+		if policy.Tier != isolation.NativeTrusted {
+			return isolation.ErrSandboxUnavailable
+		}
+		shell = backend.PiAgentOptions().Shell
 	case workflowconfig.AgentBackendClaudeCode:
 		shell = backend.ClaudeCodeOptions().Shell
 		minimum = [3]int{2, 1, 285}

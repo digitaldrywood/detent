@@ -751,13 +751,20 @@ current body declarations. Remove a body declaration to remove its blocker
 `agent` is the orchestration policy: concurrency, turn and session limits,
 retry brakes, spend limits, shutdown, dispatch priority, automatic promotion,
 state-specific instructions, learned context, skill drafts, and follow-up
-work. `agents.backends` defines pluggable Codex or Claude Code processes, while
+work. `agents.backends` defines pluggable Codex, Claude Code, or Pi processes, while
 `agents.routes` selects a backend and model by role or issue selector.
 
 `codex` is the legacy/default Codex backend configuration and remains the
 fallback when `agents.backends` is empty. A Codex backend inherits omitted
 values from it. Claude Code backend options are interpreted only when the
 backend `kind` is `claude_code`.
+
+Pi uses `kind: pi_agent`, `protocol: rpc`, and `command: pi` by default. The
+backend provider and existing routes select its provider and exact model ID.
+Pi requires native-trusted isolation; sandboxed/read-only turns, resume,
+Detent dynamic tools and persisted history hydration are unsupported in this
+initial integration. See [Pi backend configuration and limitations](pi-agent.md)
+for a complete route example, authentication and an opt-in smoke test.
 
 Implementation workers on automatically owned Git branches request a bounded
 recovery checkpoint when a duration, turn, or no-progress limit stops them.
@@ -1152,12 +1159,15 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agents.backends[].options.permission_mode` | `string` | `"bypassPermissions" for Claude Code` | No | must be one of default, acceptEdits, bypassPermissions<br>must not be plan for unattended workers |
 | `agents.backends[].options.read_timeout_ms` | `integer` | `5000 for Codex` | No | must be greater than or equal to 0 |
 | `agents.backends[].options.service_tier` | `string` | `none for Codex` | No | None |
-| `agents.backends[].options.shell` | `string` | `Codex: platform default shell; Claude Code: none` | No | None |
-| `agents.backends[].options.stall_timeout_ms` | `integer` | `Codex: 300000; Claude Code: 0` | No | must be greater than or equal to 0 |
+| `agents.backends[].options.session_dir` | `string` | `none for Pi` | No | None |
+| `agents.backends[].options.shell` | `string` | `platform default shell` | No | None |
+| `agents.backends[].options.stall_timeout_ms` | `integer` | `Codex: 300000; Claude Code: 0; Pi: 0` | No | must be greater than or equal to 0 |
+| `agents.backends[].options.thinking_level` | `string` | `none for Pi` | No | must be one of off, minimal, low, medium, high, xhigh, max |
 | `agents.backends[].options.thread_sandbox` | `string` | `"workspace-write" for Codex` | No | None |
+| `agents.backends[].options.tools` | `list<string>` | `["read","bash","edit","write","grep","find","ls"] for Pi` | No | must contain only Pi built-in tools: read, bash, edit, write, grep, find, ls |
 | `agents.backends[].options.turn_sandbox_policy` | `mapping<string, value>` | `{} for Codex` | No | None |
-| `agents.backends[].options.turn_timeout_ms` | `integer` | `Codex: 3600000; Claude Code: 0` | No | must be greater than or equal to 0 |
-| `agents.backends[].protocol` | `string` | `none` | No | must be app-server for codex<br>must be headless for claude_code |
+| `agents.backends[].options.turn_timeout_ms` | `integer` | `Codex: 3600000; Claude Code: 0; Pi: 0` | No | must be greater than or equal to 0 |
+| `agents.backends[].protocol` | `string` | `none` | No | must be app-server for codex<br>must be headless for claude_code<br>must be rpc for pi_agent |
 | `agents.backends[].provider` | `string` | `none` | No | must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens |
 | `agents.model_selection` | `object` | `see child fields` | No | None |
 | `agents.model_selection.backend_kinds` | `list<string>` | `none` | No | None |

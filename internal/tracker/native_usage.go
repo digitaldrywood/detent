@@ -65,6 +65,8 @@ func UsageProviderLabel(provider string) string {
 		return "Codex"
 	case UsageProviderClaude:
 		return "Claude Code"
+	case "pi_agent":
+		return "Pi"
 	default:
 		return provider
 	}

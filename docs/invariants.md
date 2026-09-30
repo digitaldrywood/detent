@@ -247,6 +247,13 @@ SSH host loss uses the existing host-scoped instance-capacity retry without incr
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
+Pi RPC launch, framing, correlation, and transport failures (#2469) reuse the
+existing instance backend-capacity outcome, including local providers. No Pi
+reason code or recovery mechanism is introduced. Restricted requests fail before
+process launch because Pi cannot enforce sandbox/read-only policies.
+`TestInfrastructureClassification`, `TestRestrictedRequestsNeverLaunchPi`, and
+`TestRunTurnReapsProcessGroup` cover attribution and subprocess ownership.
+
 Pull-request hydration failures retain the existing per-PR readiness refusal and
 credential-scoped REST reserve/backoff (#3497). Fresh successful reads restore
 normal admission without a project-wide worker-progress canary; missing or

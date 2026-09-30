@@ -51,6 +51,14 @@ func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name
 		if !slices.Contains(checks.ProviderKinds, backend.Kind) {
 			checks.ProviderKinds = append(checks.ProviderKinds, backend.Kind)
 		}
+		if backend.Kind == workflowconfig.AgentBackendPiAgent {
+			// Pi RPC has no authentication-status contract. Keep this unknown
+			// instead of reporting credentials as failed or authenticated.
+			if checks.Provider == "passed" {
+				checks.Provider = "pending"
+			}
+			continue
+		}
 		probeCtx, cancel := context.WithTimeout(ctx, doctorCheckTimeout)
 		signedIn := auth(probeCtx, backend)
 		cancel()

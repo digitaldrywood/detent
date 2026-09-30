@@ -490,6 +490,12 @@ func TestRunDoctorAgentBinaryChecksFollowWorkflowBackends(t *testing.T) {
 			wantCommands: []string{"claude --version"},
 		},
 		{
+			name:       "pi only checks pi",
+			projects:   []string{"alpha"},
+			workflows:  map[string]workflowconfig.Config{"alpha/WORKFLOW.md": validDoctorWorkflowWithBackends("/alpha", workflowconfig.AgentBackend{ID: "pi", Kind: workflowconfig.AgentBackendPiAgent, Protocol: "rpc", Command: "pi"})},
+			wantChecks: []string{"pi binary"}, wantMissing: []string{"codex binary", "claude binary"}, wantCommands: []string{"pi --version"},
+		},
+		{
 			name:     "mixed backends are deduplicated",
 			projects: []string{"alpha", "beta"},
 			workflows: map[string]workflowconfig.Config{
@@ -533,7 +539,7 @@ func TestRunDoctorAgentBinaryChecksFollowWorkflowBackends(t *testing.T) {
 			commands := []string{}
 			deps.runCommandInDir = func(_ context.Context, _ string, _ []string, path string, args ...string) error {
 				binary := filepath.Base(path)
-				if binary == "codex" || binary == "claude" {
+				if binary == "codex" || binary == "claude" || binary == "pi" {
 					commandsMu.Lock()
 					commands = append(commands, binary+" "+strings.Join(args, " "))
 					commandsMu.Unlock()

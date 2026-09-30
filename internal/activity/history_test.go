@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,6 +26,11 @@ func TestRolloutHistoryReaderPagesCodexEvents(t *testing.T) {
 	}
 
 	reader := NewRolloutHistoryReader(codexRoot, t.TempDir())
+	// An unsupported Pi session must not hydrate a coincidentally matching Codex file.
+	if _, err := reader.Page(t.Context(), HistoryQuery{BackendKind: "pi_agent", ProviderSessionID: "thread-1156"}); !errors.Is(err, ErrHistoryNotFound) {
+		t.Fatalf("Pi history = %v", err)
+	}
+
 	page, err := reader.Page(context.Background(), HistoryQuery{ProviderThreadID: "thread-1156", Limit: 2})
 	if err != nil {
 		t.Fatalf("Page() error = %v", err)

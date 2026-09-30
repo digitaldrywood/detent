@@ -61,6 +61,7 @@ func TestUsageProvider(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ name, kind, id, label string }{
 		{name: "codex", kind: "codex", id: "codex", label: "Codex"},
+		{name: "Pi", kind: "pi_agent", id: "pi_agent", label: "Pi"},
 		{name: "claude code", kind: "claude_code", id: "claude", label: "Claude Code"},
 		{name: "claude code hyphenated", kind: "Claude-Code", id: "claude", label: "Claude Code"},
 		{name: "unknown backend", kind: "gemini", id: "gemini", label: "gemini"},

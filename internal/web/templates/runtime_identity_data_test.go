@@ -27,6 +27,7 @@ func TestRuntimeIdentitySummary(t *testing.T) {
 				Merge(agentidentity.RuntimeUpdate("qwen3-coder", "", "", "", time.Time{})),
 			want: "Claude Code · ollama · qwen3-coder",
 		},
+		{name: "Pi runtime identity", identity: agentidentity.Configured("pi", "pi_agent", "implementation", "code", "fixture-model", "fixture", "high", "", time.Time{}), want: "Pi · fixture · fixture-model · high"},
 		{name: "empty identity", identity: agentidentity.Identity{}, want: ""},
 	}
 
@@ -68,6 +69,7 @@ func TestRuntimeIdentityBadgeSummary(t *testing.T) {
 			identity: agentidentity.Configured("codex-high", "codex", "high", "code", "abcdefghij0123456789ABCDEFGHIJ", "", "xhigh", "", time.Time{}),
 			want:     "abcdefghij…BCDEFGHIJ · xhigh",
 		},
+		{name: "Pi runtime identity", identity: agentidentity.Configured("pi", "pi_agent", "implementation", "code", "fixture-model", "fixture", "high", "", time.Time{}), want: "fixture-model · high"},
 		{name: "empty identity", identity: agentidentity.Identity{}, want: ""},
 	}
 

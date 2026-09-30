@@ -814,6 +814,11 @@ func (b *AgentBackend) decodeOptions() {
 		}
 		b.codexOptions = options
 		b.codexOptionsSet = true
+	case AgentBackendPiAgent:
+		_, err := b.decodedPiAgentOptions()
+		if err != nil {
+			b.optionsProblem = err.Error()
+		}
 	case AgentBackendClaudeCode:
 		options, err := b.decodedClaudeCodeOptions()
 		if err != nil {
@@ -2426,6 +2431,14 @@ func (a *Agents) normalize() {
 		if backend.Command == "" && backend.Kind == AgentBackendClaudeCode {
 			backend.Command = defaultClaudeCodeCommand
 		}
+		if backend.Kind == AgentBackendPiAgent {
+			if backend.Protocol == "" {
+				backend.Protocol = "rpc"
+			}
+			if backend.Command == "" {
+				backend.Command = "pi"
+			}
+		}
 		backend.decodeOptions()
 	}
 	for index := range a.Routes {
@@ -2473,14 +2486,18 @@ func (a *Agents) validate(problems *[]string) {
 		switch backend.Kind {
 		case "":
 			*problems = append(*problems, "agents.backends.kind is required")
-		case AgentBackendCodex, AgentBackendClaudeCode:
+		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent:
 		default:
-			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code")
+			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent")
 		}
 		switch backend.Kind {
 		case AgentBackendCodex:
 			if backend.Protocol != defaultCodexProtocol {
 				*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+			}
+		case AgentBackendPiAgent:
+			if backend.Protocol != "rpc" {
+				*problems = append(*problems, "agents.backends.protocol must be rpc for pi_agent")
 			}
 		case AgentBackendClaudeCode:
 			if backend.Protocol != defaultClaudeCodeProtocol {
@@ -2527,6 +2544,13 @@ func normalizeAgentRouteRole(role string) string {
 
 func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 	switch b.Kind {
+	case AgentBackendPiAgent:
+		options, err := b.decodedPiAgentOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for pi_agent: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
 	case AgentBackendCodex:
 		options, err := b.decodedCodexOptions()
 		if err != nil {

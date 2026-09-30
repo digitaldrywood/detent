@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/codex"
+	"github.com/digitaldrywood/detent/internal/piagent"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -21,7 +22,7 @@ var nativeCacheVariables = []string{"GOCACHE", "GOMODCACHE", "GOBIN", "GOLANGCI_
 // Exercise real backend process construction; the helper exits before speaking
 // either provider protocol, after recording only the invariant's environment.
 func TestINV12BackendToolchainEnvironment(t *testing.T) {
-	for _, backendKind := range []string{"codex", "claude_code"} {
+	for _, backendKind := range []string{"codex", "claude_code", "pi_agent"} {
 		for _, mode := range []string{"absent", "host", "explicit"} {
 			t.Run(backendKind+"/"+mode, func(t *testing.T) {
 				root := t.TempDir()
@@ -59,6 +60,12 @@ func TestINV12BackendToolchainEnvironment(t *testing.T) {
 						t.Fatal(err)
 					}
 					backend, err = codex.NewAgentBackend(server, codex.Options{ThreadSandbox: "danger-full-access"})
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if backendKind == "pi_agent" {
+					var err error
+					backend, err = piagent.NewAgentBackend(piagent.Options{CommandFactory: func(ctx context.Context, _ []string) *exec.Cmd { return factory(ctx) }})
 					if err != nil {
 						t.Fatal(err)
 					}
