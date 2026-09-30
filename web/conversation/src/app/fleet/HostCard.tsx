@@ -79,7 +79,7 @@ export function HostCard({
         <Monitor aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">{runner.display_name}</div>
-          <div className="text-xs text-muted-foreground">{runner.health}</div>
+          <div className="text-xs text-muted-foreground">{runner.health === "outside_hours" ? "Outside hours" : runner.health}</div>
         </div>
         <div className="text-right text-xs text-muted-foreground">
           {runner.state} · {runner.hostname} · {runner.os}/{runner.architecture}
@@ -101,7 +101,7 @@ export function HostCard({
 
       {runner.isolation_tier === undefined ? null : (
         <div className="text-xs text-muted-foreground">
-          {`Configured (not yet enforced): ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
+          {`Isolation setting (not yet enforced): ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
           {runner.availability?.windows.length
             ? ` · ${runner.availability.windows.join(", ")} (${runner.availability.timezone})`
             : " · Always available"}
