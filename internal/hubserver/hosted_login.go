@@ -272,7 +272,7 @@ func (s *Service) logoutHosted(c echo.Context) error {
 			return s.hostedDenied(c, http.StatusServiceUnavailable, "You are signed out of this Hub. Provider sign-out could not be confirmed; close the support dashboard and retry provider sign-out.", auth.HostedDenial{Flow: "logout", Reason: reason, Err: providerErr, Email: session.Email})
 		}
 	}
-	return c.Redirect(http.StatusSeeOther, "/login")
+	return c.Redirect(http.StatusSeeOther, "https://detent.build")
 }
 
 func (s *Service) createHostedOrganization(c echo.Context) error {

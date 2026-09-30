@@ -206,19 +206,27 @@ func (a *authStore) createSession(ctx context.Context, hash, csrfSecret string, 
 }
 
 func (a *authStore) session(ctx context.Context, hash string) (accountSession, error) {
+	session, expiry, err := a.storedSession(ctx, hash)
+	if err != nil || !expiry.After(a.now()) {
+		return accountSession{}, errNoSession
+	}
+	return session, nil
+}
+
+func (a *authStore) storedSession(ctx context.Context, hash string) (accountSession, time.Time, error) {
 	var session accountSession
 	var encoded, expires string
 	var revoked sql.NullString
 	err := a.store.db.QueryRowContext(ctx, "SELECT token_hash,subject,email,csrf_secret,identity_json,expires_at,revoked_at FROM sessions WHERE token_hash = ?", hash).
 		Scan(&session.Hash, &session.Subject, &session.Email, &session.CSRFSecret, &encoded, &expires, &revoked)
 	if err != nil || revoked.Valid {
-		return accountSession{}, errNoSession
+		return accountSession{}, time.Time{}, errNoSession
 	}
 	expiry, err := parseTime(expires)
-	if err != nil || !expiry.After(a.now()) || json.Unmarshal([]byte(encoded), &session.Identity) != nil || session.Identity.Subject != session.Subject {
-		return accountSession{}, errNoSession
+	if err != nil || json.Unmarshal([]byte(encoded), &session.Identity) != nil || session.Identity.Subject != session.Subject {
+		return accountSession{}, time.Time{}, errNoSession
 	}
-	return session, nil
+	return session, expiry, nil
 }
 
 func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, tokens auth.HostedTokens, effectiveEmail string) (authorization, []authorization, error) {
