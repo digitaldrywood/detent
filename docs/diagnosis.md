@@ -697,8 +697,8 @@ needed to discard a registry that is never persisted.
 
 ## Validation lock cost
 
-Use `scripts/validation-report.sql` alongside the work-attempt throughput queries
-above. `make check` and `make check-fast` retain a synced event stream at
+For historical lock investigations, use `scripts/validation-report.sql` alongside the work-attempt throughput queries
+above. Before the lock was removed from the Make targets, `make check` and `make check-fast` retained a synced event stream at
 `$(git rev-parse --path-format=absolute --git-common-dir)/detent-validation-events.jsonl`.
 This survives worktree removal. The stream includes host, unique run ID,
 issue/workspace attribution, wait and hold seconds, command runtime, and queue

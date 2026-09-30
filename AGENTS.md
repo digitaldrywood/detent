@@ -55,11 +55,12 @@ in the PR template.
 
 ## Validation
 
-For this repository, real pull-request CI jobs are intentionally skipped under
-INV-5. After `make check-fast` passes, report the skipped current-head PR checks
-as skipped in the Workpad; they are not passing test evidence and do not block
-the completion handoff. The merge queue must pass the full suite on its
-merge-group commit before merge.
+No GitHub Actions workflow starts on a pull request, and no branch ruleset
+requires a status check. Before merging, run `make check-fast` in the worktree
+for the exact pushed head. The command has no shared validation lock and must
+be safe alongside other worktrees. The scheduled full suite validates pinned
+`develop` commits and tags only green commits; every `develop` push still
+deploys to staging.
 
 Do not re-read AGENTS.md, CLAUDE.md, or an injected skill when its contents are already in the prompt.
 

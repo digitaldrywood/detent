@@ -8059,6 +8059,7 @@ func TestRunnerReapSquashLandedNativeWorkspace(t *testing.T) {
 	runRunnerGit(t, source, "init", "--bare", remote)
 	runRunnerGit(t, source, "remote", "add", "origin", remote)
 	runRunnerGit(t, source, "push", "-u", "origin", "main")
+	runRunnerGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
 	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)

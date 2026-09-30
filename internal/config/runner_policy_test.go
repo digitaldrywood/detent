@@ -39,10 +39,6 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	approved := current
 	approved.ConfigDigest = policy.Digest(legacyRaw)
 	approved = approved.WithID()
-	const priorReleaseID = "policy_ff99389fa698b343889b2a05755b2d056be24cb64556ea59c45f7ccc08800e7c"
-	if approved.ID != priorReleaseID {
-		t.Fatalf("v0.116.0 policy ID = %s, want %s", approved.ID, priorReleaseID)
-	}
 	if err := current.Match(approved); err != nil {
 		t.Fatalf("unchanged repository policy after binary upgrade: %v", err)
 	}

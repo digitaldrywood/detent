@@ -2,93 +2,52 @@
 
 [Back to README](../README.md#documentation)
 
-The release coordinator cuts releases from `main`, even when the repository
-default branch is `develop` (see [Branching](branching.md)), after every configured
-mandatory check succeeds for the exact candidate commit. It creates an
-annotated semver tag containing that check evidence. Plain manually-created
-tags do not carry this provenance and the release workflow rejects them.
+GitHub Actions runs the complete suite hourly on a pinned `develop` commit
+when there are new commits since the last validated tag. The scheduled workflow
+uses the default branch's cron. It does not run on pull requests. A manual
+dispatch can force exactly one job to fail to verify issue filing and recovery.
 
-Runner upgrades preserve policy approval when the repository and permitted local
-configuration are unchanged. If a release intentionally changes the resolved
-policy, its release notes must say that an organization owner needs to select
-**Approve updated policy** in the project's Settings. The runner reports the
-new descriptor and retries while approval is pending.
+A green run posts a `scheduled-full-ci` commit status, cuts an annotated patch
+version tag on the validated commit, and dispatches the release workflow. The
+annotation records the exact authenticated status ID. The release workflow
+verifies that provenance and publishes the GitHub Release archives, checksums,
+Homebrew formula, and Windows package-manager manifests. The tag is the
+release candidate; unvalidated `develop` commits are not production releases.
+The scheduled run does not merge `develop` into `main` or deploy production.
 
-General CI runs on the main push, not the release tag. Tag pushes run only the
-release workflow, so creating the tag does not supersede its recorded mandatory
-check IDs. An independent check rerun still invalidates older evidence even if
-the rerun succeeds; retrying the release workflow does not waive that check.
+Every push to `develop` still deploys to staging, whether the scheduled full
+suite passes or fails. Staging is an integration environment, not a production
+release. Production installations and releases use validated version tags.
 
-Tags matching `v*` trigger the release workflow, which validates the annotated
-tag against the tagged full commit, runs GoReleaser, and
-publishes the GitHub Release archives, checksums, Homebrew formula, and Windows
-package-manager manifests. Scoop publishing targets
-`digitaldrywood/scoop-bucket`; Winget publishing pushes to the
-`digitaldrywood/winget-pkgs` fork and opens a pull request against
-`microsoft/winget-pkgs`. GoReleaser generates the manifests during snapshots and
-skips publishing when `SCOOP_BUCKET_GITHUB_TOKEN` or `WINGET_GITHUB_TOKEN` is
-not configured.
+A failed scheduled job opens or updates one fingerprinted Todo hotfix issue.
+The next green run closes the open scheduled-failure issues. The workflow skips
+its full suite when the current development commit already has a validated
+tag. The full suite includes the checks that previously ran on pull requests,
+including generated sources, migrations, frontend verification, race shards,
+security, browser visual tests, portability, and packaging snapshots.
 
-CI runs `GoReleaser Snapshot` on pushes to `main` and manual workflow
-dispatch to validate packaging after promotion. It does not run on PRs,
-`develop` pushes, tags, or a nightly schedule. The hourly operator-host build
-runs `make check` on `develop` and can post `local-gate` status on a green head.
+The release workflow checks the annotated tag against the tagged full commit
+and requires authenticated successful `scheduled-full-ci` evidence. Configure
+the GitHub Actions repository variable
+`DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON` to `["scheduled-full-ci"]`.
+Repository branch rulesets require no status checks. The provenance verifier
+also inspects active rulesets so any unexpected required check remains binding.
+A missing or malformed variable, missing status, stale status ID, or fabricated
+tag annotation prevents signing and publication.
 
-## Automatic coordination
+GoReleaser generates the package manifests during snapshots and skips
+publishing when the corresponding package-manager token is unavailable. The
+Scoop bucket uses `SCOOP_BUCKET_GITHUB_TOKEN`; Winget uses
+`WINGET_GITHUB_TOKEN`. The release workflow is explicitly dispatched after tag
+publication because tags pushed by `GITHUB_TOKEN` do not start another workflow
+automatically.
 
-The coordinator enforces `gate.required_status_checks` together with any
-additional `release.required_check_names`. Configure the complete list of mandatory
-check-run and status-context names for release candidates. Names are exact and
-case-sensitive. An empty combined manifest pauses automatic tagging. Every mandatory check must be present
-for the exact candidate SHA, completed, and successful. Missing or truncated
-responses, stale evidence, and cancelled, neutral, or skipped checks keep tagging
-closed. The coordinator continues to reject failing optional checks as well.
-
-When `release.rerun_flaky_once` is enabled, a durable intent comment on the
-originating issue reserves the existing single rerun before the request is sent.
-A restart or lost acknowledgment never grants another automatic rerun. If the
-process stops between reservation and dispatch, the reservation remains consumed;
-the issue report records the uncertainty for operator investigation. Current
-candidate checks are inspected again on every evaluation.
-
-The coordinator's annotation is materialized as
-`detent_release_provenance.json`. GoReleaser includes that manifest and every
-platform archive in the same signed checksum file, and embeds the full commit
-in each binary. Before the signing key is available, the release workflow
-re-reads active `main` ruleset requirements (a `~DEFAULT_BRANCH` condition counts
-only while `main` is the default branch) plus authenticated check-run
-and status evidence from GitHub. The annotation must include every repository
-requirement, and every declared ruleset or release-only check must identify
-successful evidence for the tagged commit; policy drift, fabricated names, stale
-runs, or incomplete API results fail the release.
-
-Configure the GitHub Actions repository variable
-`DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON` as a JSON array containing the same
-release-only names as `release.required_check_names`; configure it explicitly as
-`[]` when there are none. The release workflow treats a missing or malformed
-variable as a signing failure. This independently authenticated policy input keeps
-a manually constructed tag from omitting checks that are required only by the
-release coordinator's host configuration.
-
-The updater fails closed if the signature, provenance checksum,
-repository, tag, full commit, or successful mandatory-check evidence is absent
-or inconsistent. Before replacement it executes the staged binary and requires
+The updater fails closed if the signature, provenance checksum, repository,
+tag, full commit, or successful mandatory-check evidence is absent or
+inconsistent. Before replacement it executes the staged binary and requires
 its version and full commit to match the signed provenance. After restart,
 startup recovery requires both identities from the running instance before it
 marks the update healthy or removes rollback material.
-If the previous version starts instead, recovery verifies that the binary at the
-recorded installation path has that same version and full commit. This confirms
-an unapplied replacement or completed rollback; rollback intent alone is not
-enough. An unexpected version, an unavailable installed identity, or a mismatched
-commit leaves pending state, failure records, and rollback material intact.
-Unreadable, malformed, or unsupported recovery state aborts startup before work
-begins. Legacy recovery records remain readable by the previous binary through
-rollback completion, retaining failure counts, retry delays, and recovery history.
-Legacy pending updates without a tested target commit cannot be declared healthy,
-even when the running version matches. Rejection preserves the pending record and
-rollback binary; repeated startup failures use the existing rollback threshold.
-A target startup with verified commit identity or a new update carrying commit
-provenance migrates legacy state to the current schema.
 
 ## Host-admin update boundaries
 
@@ -122,7 +81,7 @@ owner are serialized.
 The Makefile pins sqlc in `SQLC_VERSION`; `make generate`, `make sqlc`, and
 `make setup` use that version. Commit regenerated SQL output with query changes.
 `make check-generated` checks SQL output with `sqlc diff` and checks the generated
-configuration reference without rewriting either. The Verify check runs this verification on main, before compilation. The
-local gate runs it on PR heads and the hourly build runs it on `develop`.
+configuration reference without rewriting either. The local `make check-fast` target runs it in each PR worktree, and the
+scheduled full suite runs it on the pinned `develop` commit.
 GoReleaser uses the same verification hook and builds committed sources
 instead of regenerating them during release.

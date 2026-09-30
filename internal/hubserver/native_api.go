@@ -203,12 +203,19 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
-			if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
-				return s.nativeAPIError(c, err)
+			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
+			if runnerHeartbeat {
+				if credential.Runner.OrganizationID != scope.organization {
+					return s.nativeAPIError(c, nativeNotFound())
+				}
+			} else {
+				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
+				if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+					return s.nativeAPIError(c, err)
+				}
 			}
 			c.Set("native_scope", scope)
 			c.Response().Header().Set("Cache-Control", "no-store")

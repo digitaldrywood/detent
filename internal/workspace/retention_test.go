@@ -226,7 +226,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			if got := runGit(t, restored, "show", ":unique.txt"); got != "staged version\n" {
 				t.Fatalf("index = %q", got)
 			}
-			if got, err := os.ReadFile(filepath.Join(restored, "unique.txt")); err != nil || string(got) != "working version\n" {
+			if got, err := os.ReadFile(filepath.Join(restored, "unique.txt")); err != nil || strings.ReplaceAll(string(got), "\r\n", "\n") != "working version\n" {
 				t.Fatalf("working file = %q, %v", got, err)
 			}
 			if _, err := os.Stat(filepath.Join(restored, "README.md")); !errors.Is(err, fs.ErrNotExist) {

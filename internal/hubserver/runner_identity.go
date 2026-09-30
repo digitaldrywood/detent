@@ -200,7 +200,11 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativeInvalid("Display name, version and nonnegative capacity are required"))
 	}
-	return s.runnerTransaction(c, http.StatusNoContent, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+	status := http.StatusNoContent
+	if scope.credential.Runner.RunnerID != "" {
+		status = http.StatusOK
+	}
+	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
@@ -211,7 +215,10 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
 				return nil, err
 			}
-			return struct{}{}, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
+			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
+				return nil, err
+			}
+			return readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
 		}
 		if len(request.ProviderReports) != 0 {
 			return nil, nativeInvalid("Provider reports require an enrolled runner")
@@ -232,9 +239,6 @@ func validRunnerPlatform(os, architecture string) bool {
 }
 
 func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, capacity int, version, os, architecture string, now time.Time) error {
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return err
-	}
 	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET reported_capacity = ?, os = ?, architecture = ?, last_heartbeat_at = ? WHERE id = ? AND token_id = ? AND organization_id = ?`, capacity, os, architecture, formatHubTime(now), scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
 	if err != nil {
 		return err

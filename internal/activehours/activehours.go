@@ -87,6 +87,40 @@ func (c Config) Validate(prefix string) []string {
 	return problems
 }
 
+func (c Config) ValidateNonOverlapping(prefix string) []string {
+	c = c.Normalize()
+	problems := c.Validate(prefix)
+	if len(problems) > 0 || c.IsZero() {
+		return problems
+	}
+	const minutesPerDay = 24 * 60
+	const minutesPerWeek = 7 * minutesPerDay
+	covered := make([]bool, minutesPerWeek)
+	for index, value := range c.Windows {
+		item, err := parseWindow(value)
+		if err != nil {
+			return []string{fmt.Sprintf("%s.windows[%d]: %v", prefix, index, err)}
+		}
+		for day, selected := range item.days {
+			if !selected {
+				continue
+			}
+			end := item.endMinute
+			if end <= item.startMinute {
+				end += minutesPerDay
+			}
+			for minute := item.startMinute; minute < end; minute++ {
+				position := (day*minutesPerDay + minute) % minutesPerWeek
+				if covered[position] {
+					return []string{fmt.Sprintf("%s.windows[%d]: overlaps another window", prefix, index)}
+				}
+				covered[position] = true
+			}
+		}
+	}
+	return nil
+}
+
 func ParsePersistedOverride(value string) time.Time {
 	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
 	if err != nil {

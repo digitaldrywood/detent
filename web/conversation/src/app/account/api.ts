@@ -347,6 +347,10 @@ export function makeAccountApi(options: AccountApiOptions) {
       state: string;
       capacityLimit: number;
       projectIds: readonly string[];
+      isolationTier?: string;
+      hostServices?: readonly string[];
+      availability?: { timezone: string; windows: readonly string[]; hard_deadline: string };
+      spillover?: { mode: string; after_minutes: number };
     }) =>
       send(Schema.Unknown, "PUT", `${base}/runners/${encodeURIComponent(input.runner)}/routing`, {
         expected_revision: input.revision,
@@ -355,6 +359,10 @@ export function makeAccountApi(options: AccountApiOptions) {
         state: input.state,
         capacity_limit: input.capacityLimit,
         project_ids: input.projectIds,
+        ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
+        ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
+        ...(input.availability !== undefined ? { availability: input.availability } : {}),
+        ...(input.spillover !== undefined ? { spillover: input.spillover } : {}),
       }),
     bindRepository: (input: {
       projectId: string;

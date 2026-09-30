@@ -136,7 +136,7 @@ func TestRun(t *testing.T) {
 				"-repository", manifest.Repository,
 				"-tag", manifest.Tag,
 				"-commit", tt.commit,
-				"-default-branch-ref", "refs/heads/main",
+				"-default-branch-ref", "refs/heads/develop",
 				"-tag-message", messagePath,
 				"-github-check-runs", checkRunsPath,
 				"-github-statuses", statusesPath,
@@ -219,7 +219,6 @@ func TestParseRequiredCheckNames(t *testing.T) {
 
 func TestRulesetAppliesToReleaseBranch(t *testing.T) {
 	t.Parallel()
-
 	tests := []struct {
 		name          string
 		defaultBranch string
@@ -227,15 +226,13 @@ func TestRulesetAppliesToReleaseBranch(t *testing.T) {
 		exclude       []string
 		wantApplies   bool
 	}{
-		{name: "default branch alias", defaultBranch: "refs/heads/main", include: []string{"~DEFAULT_BRANCH"}, wantApplies: true},
-		{name: "exact default branch", defaultBranch: "refs/heads/main", include: []string{"refs/heads/main"}, wantApplies: true},
-		{name: "other branch", defaultBranch: "refs/heads/main", include: []string{"refs/heads/release"}},
-		{name: "excluded default branch", defaultBranch: "refs/heads/main", include: []string{"~ALL"}, exclude: []string{"refs/heads/main"}},
-		{name: "develop default alias does not govern main", defaultBranch: "refs/heads/develop", include: []string{"~DEFAULT_BRANCH"}},
-		{name: "develop default keeps exact main ruleset", defaultBranch: "refs/heads/develop", include: []string{"refs/heads/main"}, wantApplies: true},
-		{name: "develop default keeps all-branch ruleset", defaultBranch: "refs/heads/develop", include: []string{"~ALL"}, wantApplies: true},
-		{name: "develop default ignores develop ruleset", defaultBranch: "refs/heads/develop", include: []string{"refs/heads/develop"}},
-		{name: "develop default excluding default still governs main", defaultBranch: "refs/heads/develop", include: []string{"~ALL"}, exclude: []string{"~DEFAULT_BRANCH"}, wantApplies: true},
+		{name: "default branch alias", defaultBranch: "refs/heads/develop", include: []string{"~DEFAULT_BRANCH"}, wantApplies: true},
+		{name: "exact development branch", defaultBranch: "refs/heads/develop", include: []string{"refs/heads/develop"}, wantApplies: true},
+		{name: "main branch", defaultBranch: "refs/heads/develop", include: []string{"refs/heads/main"}},
+		{name: "excluded development branch", defaultBranch: "refs/heads/develop", include: []string{"~ALL"}, exclude: []string{"refs/heads/develop"}},
+		{name: "all branches", defaultBranch: "refs/heads/develop", include: []string{"~ALL"}, wantApplies: true},
+		{name: "other default branch", defaultBranch: "refs/heads/main", include: []string{"~DEFAULT_BRANCH"}},
+		{name: "explicit development with other default", defaultBranch: "refs/heads/main", include: []string{"refs/heads/develop"}, wantApplies: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

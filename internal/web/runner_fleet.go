@@ -63,8 +63,18 @@ func (s *Server) updateFleetRunner(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusUnprocessableEntity, "Runner capacity is invalid")
 	}
+	afterMinutes := 0
+	if value := c.FormValue("after_minutes"); value != "" && c.FormValue("spillover_mode") != "never" {
+		afterMinutes, err = strconv.Atoi(value)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusUnprocessableEntity, "Spillover wait is invalid")
+		}
+	}
 	change := runnerauth.RoutingChange{ExpectedRevision: revision, Routing: runnerauth.Routing{
 		DisplayName: c.FormValue("display_name"), Tags: splitRunnerValues(c.FormValue("tags")), State: c.FormValue("state"), CapacityLimit: capacity,
+		IsolationTier: c.FormValue("isolation_tier"), HostServices: splitRunnerWindows(c.FormValue("host_services")),
+		Availability: runnerauth.Availability{Timezone: c.FormValue("timezone"), Windows: splitRunnerWindows(c.FormValue("windows")), HardDeadline: c.FormValue("hard_deadline")},
+		Spillover:    runnerauth.Spillover{Mode: c.FormValue("spillover_mode"), AfterMinutes: afterMinutes},
 	}}
 	for _, id := range splitRunnerValues(c.FormValue("project_ids")) {
 		change.ProjectIDs = append(change.ProjectIDs, tracker.ProjectID(id))
@@ -106,6 +116,16 @@ func runnerMutationError(c echo.Context, message string, cause error) error {
 
 func splitRunnerValues(value string) []string {
 	return strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' || r == '\r' })
+}
+
+func splitRunnerWindows(value string) []string {
+	var windows []string
+	for _, line := range strings.Split(value, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			windows = append(windows, line)
+		}
+	}
+	return windows
 }
 
 func redirectRunnerFleet(c echo.Context, runner string) error {
