@@ -262,8 +262,7 @@ func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *Sta
 }
 
 // refillProjectSlots runs on the event loop, using the same planner and
-// pre-dispatch checks as a tick. The previous refresh bounds the candidate set;
-// a fresh read prevents changed lanes, Workpads, and dependencies from claiming.
+// pre-dispatch checks as a tick.
 func (o *Orchestrator) refillProjectSlots(ctx context.Context, state *State, now time.Time) {
 	o.refillProjectSlotsExcluding(ctx, state, now, "")
 }
@@ -281,16 +280,17 @@ func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *S
 		}
 		return
 	}
-	byID := make(map[string]connector.Issue, len(fresh))
-	for _, issue := range fresh {
-		byID[issue.ID] = issue
-	}
-	candidates := make([]connector.Issue, 0, len(o.lastDispatchCandidates))
+	priorIDs := make(map[string]bool, len(o.lastDispatchCandidates))
 	for _, prior := range o.lastDispatchCandidates {
-		if prior.ID == excludedIssueID {
+		priorIDs[prior.ID] = true
+	}
+	candidates := make([]connector.Issue, 0, len(fresh))
+	for _, current := range fresh {
+		if current.ID == excludedIssueID {
+			o.releaseDeferredSchedulingClaims(ctx, state, []connector.Issue{current})
 			continue
 		}
-		if current, ok := byID[prior.ID]; ok {
+		if o.scheduling != nil || priorIDs[current.ID] {
 			candidates = append(candidates, current)
 		}
 	}
