@@ -241,7 +241,7 @@ func (o *Orchestrator) recordMergeCompleted(state *State, issue connector.Issue,
 		return MergeTiming{}
 	}
 	refreshPending := mergeBaseRefreshPending(state, issue)
-	timing := o.completeMergeTiming(state, issue, at, "", true)
+	timing := o.completeMergeTiming(state, issue, mergedDeliveryAt(issue, at), "", true)
 	if refreshPending {
 		o.logMergeTimingInfo("merge_base_refresh_finished", issue, timing, "final_state", strings.TrimSpace(finalState))
 	}
