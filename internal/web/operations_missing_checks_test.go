@@ -36,7 +36,7 @@ func TestOperationsMissingRequiredChecks(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := testDeps(t)
-			setOperationsTestProject(t, deps.Registry, "p", true, "", nil, "", "", "", "", []string{"Done"})
+			setOperationsTestProject(t, deps.Registry, "p", true, "", nil, "", "", "", "", []string{"Done"}, true)
 			if tt.label != "" {
 				cfg := workflowconfig.Default()
 				cfg.Tracker.Kind = workflowconfig.TrackerMemory

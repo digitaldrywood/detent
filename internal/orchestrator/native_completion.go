@@ -61,7 +61,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
 	change = o.refreshNativeChangeReview(ctx, issueID, change)
-	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
+	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed)
 	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && direct && dispatchableState(states, landing) {
 		target, ok = landing, true
