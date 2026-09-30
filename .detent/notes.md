@@ -1,5 +1,27 @@
 ## Codex Workpad
 
+- Plan and result: retain unpublished merge `5a6b32a097fc13037bac02e65fead5b2c3eb97dd`, merge freshly fetched develop `05725ad76853799c54c45db74deebcad0035b4f6` into the existing PR history without rebasing, commit the merge, and return immediately to Detent.
+- Verified PR #3455 is open against `develop` on the assigned isolated branch. Fetched published head is `0f3f6a6e720b487a609a4807fca6c5cb726e5b62`, an ancestor of the source-clean starting local head. The retained local merge's parents are that published head and prior target `69781ca9505d8356771e2e4d5c1552d5316cbac5`, matching the prior handoff. The preceding published merge's parent record also matches Git history. Prior diagnostics remain historical only.
+- Current target merged automatically with no conflicts or blockers. Retained the existing source and generated asset resolution, with no manual source edits, asset generation, or out-of-scope findings. Updated only these handoff notes beyond the automatic merge, preserving historical records below.
+- Key issue files remain `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, and `internal/cloudentry/login.go`. These files and `static/app/conversation/app.js` / `app.css` match the fetched published PR head.
+- Validation: no tests, lint, vet, typecheck, builds, local gate (including `true`), CI checks, or validation waits run in this session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+These records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+## Historical Workpad (#3440 retained unpublished merge)
+
 - Plan and result: merge freshly fetched develop `69781ca9505d8356771e2e4d5c1552d5316cbac5` into published PR #3455 head `0f3f6a6e720b487a609a4807fca6c5cb726e5b62`, preserving published history without rebasing, commit the resolution, and return immediately to Detent.
 - Verified PR #3455 is open against `develop` on the assigned isolated branch. Starting local HEAD and fetched published PR head match, with a source-clean workspace and no merge or rebase in progress. Verified the preceding merge's parents `6452077fd8df58d6680f7e726ee0bfb8e39691b7` and `09011d003ef74adb8a0fab414e7be80cbce6661a`; the earlier resolution's parents match its notes. Key issue source files and generated assets are unchanged between those two preceding resolutions. Historical diagnostics do not validate this head.
 - Only conflict: `.detent/notes.md`. Preserved both sides' historical handoffs, including prior #3440 and incoming #3448 records, with one current Workpad/status fence. All source files and generated assets merged automatically; no manual source edits, asset generation, or out-of-scope findings.
@@ -7,7 +29,7 @@
 - Validation: no tests, lint, vet, typecheck, builds, local gate (including `true`), CI checks, or validation waits run in this session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
 - Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
