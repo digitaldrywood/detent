@@ -44,8 +44,14 @@ func sshScratchRoot() string {
 
 func SSHWorkerReady() bool {
 	root := sshScratchRoot()
+	if root == "" {
+		return false
+	}
 	info, err := os.Stat(root)
-	return root != "" && err == nil && info.IsDir()
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
 
 type sshRunner struct {
@@ -84,6 +90,7 @@ type sshBootstrap struct {
 }
 
 func sshCommand(ctx context.Context, host, command string) *exec.Cmd {
+	// #nosec G204 -- host is a validated operator-configured SSH destination; callers supply only fixed Detent protocol commands.
 	return exec.CommandContext(ctx, "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "-o", "ForwardAgent=no", "--", host, command)
 }
 

@@ -36,7 +36,12 @@ func TestMakeCheckFastOverlapsWorktrees(t *testing.T) {
 		}
 	}
 	env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
-	root := t.TempDir()
+	// Force the logical/physical path difference seen on macOS runners.
+	physicalRoot := t.TempDir()
+	root := filepath.Join(physicalRoot, "linked")
+	if err := os.Symlink(physicalRoot, root); err != nil {
+		t.Fatal(err)
+	}
 	source := filepath.Join(root, "source")
 	if err := os.Mkdir(source, 0o700); err != nil {
 		t.Fatal(err)
@@ -166,7 +171,16 @@ esac
 	for _, name := range []string{"first", "second"} {
 		dir := filepath.Join(root, name)
 		artifact, err := os.ReadFile(filepath.Join(dir, "tmp", "build-evidence"))
-		if err != nil || string(artifact) != dir {
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// macOS may report /private/var for a worktree created under /var.
+		got, err := os.Stat(string(artifact))
+		if err != nil || !os.SameFile(got, want) {
 			t.Fatalf("%s artifact = %q, %v; want worktree-local evidence", name, artifact, err)
 		}
 	}
@@ -177,6 +191,10 @@ func TestMakeCheckFastBuildHelper(t *testing.T) {
 		return
 	}
 	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err = filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
