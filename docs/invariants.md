@@ -1581,6 +1581,15 @@ history scans during dispatch and lane observation.
 `TestIssueWorkflowTimelineIndexedIdentityUnion` covers aliases, overlap,
 complete history, ordering, and project isolation.
 
+Workspace cleanup probes issue IDs through the same fresh scalar state reader
+without loading discussion or dependency evidence. Dispatch and reconciliation
+retain complete evidence reads. The ID probe is an optional connector capability
+because the existing state-list probe cannot select exact workspace identities;
+connectors without it retain their current reader. Fresh scalar identity,
+current lane, closure, and update time remain necessary before cleanup, while
+existing association, merged PR, delivered head, and workspace usage checks own
+safe deletion. No cache, recovery loop, configuration, or CI bypass is added.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.

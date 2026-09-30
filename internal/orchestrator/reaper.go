@@ -164,7 +164,13 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 	timing.phase = "workspace_cleanup"
 	timing.step("fetch_cleanup_issue_ids")
 	defer func() { timing.finishStep(time.Now()) }()
-	issues, err := o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+	var issues []connector.Issue
+	var err error
+	if prober, ok := o.connector.(connector.IssueStateIDProber); ok {
+		issues, err = prober.FetchIssueStateProbeByIDs(ctx, issueIDs)
+	} else {
+		issues, err = o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+	}
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup issue IDs failed", slog.Any("error", err))
 		message := workspaceCleanupIssueIDsFetchFailedMessage(issueIDs, err)
