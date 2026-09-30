@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -225,7 +226,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
 		t.Fatalf("heartbeat with validated in-memory routing: %v", err)
 	}
-	if _, err := runnerauth.LoadRoutingCache(path); err == nil {
+	if _, err := runnerauth.LoadRoutingCache(path); runtime.GOOS != "windows" && err == nil {
 		t.Fatal("accepted an insecure routing cache")
 	}
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o600); err != nil {
