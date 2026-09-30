@@ -231,15 +231,48 @@ func TestHostedAccountClientRoutesMounted(t *testing.T) {
 				if mounted[key] {
 					return
 				}
-				pattern := regexp.MustCompile("^" + regexp.MustCompile(`:[^/]+`).ReplaceAllString(regexp.QuoteMeta(key), `:[^/]+`) + "$")
 				for route := range mounted {
-					if pattern.MatchString(route) {
+					if accountClientRouteMatches(route, key) {
 						return
 					}
 				}
 				t.Fatalf("the account client calls %s, which the hosted Hub does not mount", key)
 			})
 		}
+	}
+}
+
+// Route parameters match any nonempty path segment, including literal client
+// values such as fly_sprites_token. Static segments and methods stay exact.
+func accountClientRouteMatches(route, call string) bool {
+	pattern := regexp.MustCompile("^" + regexp.MustCompile(`:[^/]+`).ReplaceAllString(regexp.QuoteMeta(route), `[^/]+`) + "$")
+	return pattern.MatchString(call)
+}
+
+func TestAccountClientRouteMatches(t *testing.T) {
+	t.Parallel()
+	const route = "GET " + nativeBase + "/secrets/:kind"
+	const call = "GET " + nativeBase + "/secrets/fly_sprites_token"
+	for _, test := range []struct {
+		name, route, call string
+		want              bool
+	}{
+		{name: "exact route", route: call, call: call, want: true},
+		{name: "literal kind", route: route, call: call, want: true},
+		{name: "parameter names differ", route: route, call: strings.Replace(call, ":project", ":param", 1), want: true},
+		{name: "wrong method", route: route, call: strings.Replace(call, "GET ", "PUT ", 1)},
+		{name: "wrong resource", route: route, call: strings.Replace(call, "/secrets/", "/missing/", 1)},
+		{name: "missing segment", route: route, call: strings.TrimSuffix(call, "/fly_sprites_token")},
+		{name: "empty segment", route: route, call: strings.TrimSuffix(call, "fly_sprites_token")},
+		{name: "extra segment", route: route, call: call + "/extra"},
+		{name: "extra prefix", route: route, call: "prefix " + call},
+		{name: "static regexp characters", route: "GET /api/v2/plan.json", call: "GET /api/v2/planXjson"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := accountClientRouteMatches(test.route, test.call); got != test.want {
+				t.Fatalf("accountClientRouteMatches(%q, %q) = %t, want %t", test.route, test.call, got, test.want)
+			}
+		})
 	}
 }
 
