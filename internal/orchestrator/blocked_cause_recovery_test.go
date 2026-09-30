@@ -2553,6 +2553,9 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 			issue.PullRequest.CIStatus = "failure"
 		}},
 		{name: "audit not yet run", audit: "missing", wantMerging: true},
+		{name: "audit passed", audit: "passed", wantMerging: true},
+		{name: "audit running", audit: "running"},
+		{name: "audit failed", audit: "failed"},
 		{name: "audit findings", audit: "findings"},
 		{name: "human question", mutate: func(issue *connector.Issue, _ time.Time) {
 			issue.WorkpadSignal.Status = workpad.StatusBlocked
@@ -2577,10 +2580,18 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 			if tt.audit != "" {
 				memo := newSecurityAuditMemoryStore()
 				orch.securityAuditStore = memo
-				if tt.audit == "findings" {
+				if tt.audit == "running" {
+					orch.securityAuditRuns = map[string]struct{}{orch.securityAuditIdentity(issue).cacheKey: {}}
+				}
+				if tt.audit == "passed" || tt.audit == "failed" || tt.audit == "findings" {
 					run := securityAuditPassingRun(issue)
-					run.Verdict = securityaudit.VerdictFail
-					run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/auth.go", Line: 1, Body: "authorization bypass"}}
+					if tt.audit == "failed" {
+						run.ExitStatus = securityaudit.ExitStatusFailed
+					}
+					if tt.audit == "findings" {
+						run.Verdict = securityaudit.VerdictFail
+						run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/auth.go", Line: 1, Body: "authorization bypass"}}
+					}
 					if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
 						t.Fatal(err)
 					}
@@ -2596,6 +2607,9 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 			state := newState(cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: attemptAllowanceExhaustedReason, Source: BlockedSourceProjectStatus, BlockedAt: at}
 			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, at.Add(2*time.Minute))
+			if tt.audit != "" && !orch.cfg.AutoPromote.Gate.SecurityAudit.Enabled {
+				t.Fatal("recovery disabled the configured security audit")
+			}
 			if tt.wantMerging {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteMergingState {
 					t.Fatalf("updates = %#v, want Merging", tracker.updates)

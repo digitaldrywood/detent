@@ -926,7 +926,10 @@ stall note or park the issue for that Detent-owned wait. The existing Blocked
 sweep also reconciles historical `attempt_allowance_exhausted` parks from the
 recorded PR head through the same
 promotion gate: a clean, green unchanged or newer head returns to Merging for
-the exact-head audit. Human actions, failing checks, and known audit findings
+the exact-head audit. Recovery evaluates audit eligibility once through the
+shared Rework readiness predicate, then applies the remaining promotion gates.
+This local evaluation leaves the instance audit requirement enabled for Merging.
+Human actions, failing checks, running or failed audits, and known audit findings
 continue to hold. Historical parks cannot be removed from the tracker by the
 triage change alone, so this reuses the existing sweep and lane action rather
 than adding another recovery loop or reason code (#3064).

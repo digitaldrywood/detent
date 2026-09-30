@@ -1,3 +1,31 @@
+# Issue #3453 implementation handoff
+
+- Recorded failure: scheduled run 36758716559, job 110035613119, develop 3844f54e75edc8df931d7221c7f62dcb3d71b37e. Only failing case: TestAttemptTriageParkRecoversOnCleanGreenHead/audit_not_yet_run, blocked_cause_recovery_test.go:2601, nil lane updates instead of Merging. No race-detector report; package duration 700.360s.
+- Reproduced the exact assertion on fetched develop 6b4283ddfd6e4db65463450fdd28f998b9967d61 using Go 1.26.6, GOMAXPROCS=4 and an uncached focused test (exit 1, 10.3s command).
+- Key files: internal/orchestrator/blocked_cause_recovery.go and its existing table test; docs/invariants.md INV-3. Recovery permitted a missing audit, then the generic promotion gate vetoed that same state. The shared Rework audit readiness predicate now owns recovery audit eligibility once; a local config copy applies all remaining gates. The instance audit configuration stays enabled and Merging still requires the trusted exact-head pass before merge.
+- Existing table extends coverage to passing, running and failed audits, and asserts configuration preservation. The original missing-audit case retains its expected Merging transition. No new mechanism, config key, reason code, generated input, dependency, or out-of-scope finding.
+
+## Codex Workpad
+
+Plan and result: fix the reproduced scheduled assertion by consolidating recovery audit eligibility, preserve Merging audit enforcement, and publish a focused PR against develop with Fixes #3453. Canonical publication evidence belongs to the issue Workpad comment.
+
+Validation: seven focused recovery, allowance, Rework and Merging audit test functions passed five repetitions with Go 1.26.6 (3.918s package, 12.1s command); go vet -p 4 ./internal/orchestrator/... passed (6.3s). An initial compile failed due to a stale unused import left by the consolidation; removed it before the passing diagnostics. git diff --check passed. No full check, coverage gate, race suite, or Actions rerun/wait. Configured true gate runs on the committed head immediately before publication; expected absent current-head CI provides no test credit. No quiet window or merge-group CI configured; CI, slow-check and post-merge timing are not applicable to this implementation handoff.
+
+Rebased onto develop 0721153854edcd0bd1fecd81edc90edbfc1853ba after draft PR #3470 reported a conflict. Only these notes conflicted; preserved incoming historical handoffs. The recovery implementation and regression source are unchanged from the tested commit. The same seven focused tests passed on the rebased tree with -count=1 (1.224s package; 3.6s command).
+
+Open items: next scheduled validation confirms the integrated repair. Orchestrator owns lane transitions and merge dispatch; live port 4000 remains untouched. PR review and exact published-head evidence are recorded in the canonical issue Workpad.
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+Skill draft: no — the existing regression and shared gate predicate cover this routine consolidation.
+
+## Historical develop handoffs
+
 # Issue #3446 implementation handoff
 
 - Reproduced all five scheduled NilAway findings from job 110035612674 / run 36758716559 on starting develop 640b8abc10f0adb4ad580d1835b349796062130e. Build and Vet passed in that run; NilAway was the failing step. Local pinned audit exited 1, with the same primary findings and grouped native-landing dereferences.
