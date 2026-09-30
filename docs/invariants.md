@@ -1367,6 +1367,11 @@ from Merging, but withdrawal failure does not block the lane write (#2826). Its 
 without altering reason forwarding; operator destinations and reasons remain
 intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
 
+Planning-only prompts do not append source or merge implementation handoffs.
+The existing plan-only boundary owns those instructions; source workers continue
+to yield when current-head CI is the only unfinished work.
+`TestPlanOnlyPromptOmitsCIImplementationHandoff` covers this boundary (#3076).
+
 Slot refill reuses ordinary dispatch eligibility and releases deferred Hub claims
 through the existing claim writer. Fresh Hub scheduling results are already
 claimed and remain eligible even when absent from the previous refresh; excluded
