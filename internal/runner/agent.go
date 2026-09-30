@@ -141,6 +141,8 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	workerGitHubMu            sync.Mutex
+	workerGitHubIdentity      workerGitHubPolicy
 	sleepInhibitor            func(context.Context, func()) (func(), error)
 	sleepFailures             int
 	mu                        sync.RWMutex

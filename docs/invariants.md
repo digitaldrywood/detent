@@ -439,6 +439,20 @@ history without restoring a dispatch hold. `TestWorkerGitHubProbeFailureIsInstan
 `TestTimedOutWorkerProbeDoesNotHoldDispatch` cover the timeout and dispatch
 sequence.
 
+The project Runner retains the last successful principal classification only for
+an exact shared worker/orchestrator token and endpoint (#3473). Secret references
+are resolved on every policy request; changed tokens or endpoints, disabled
+credentials, different-token comparisons, and failed classification discard that
+snapshot. Reserve settings are validated on every request. Launch and recovery
+budget observations remain live. If a launch budget observation fails after
+identity reuse, the existing authenticated principal check still authorizes the
+launch; a revoked token cannot launch from retained identity. Transient budget
+failures otherwise retain the diagnostic behavior above. Different users and App
+installation credentials keep the existing principal reads and comparison.
+`TestRunnerWorkerGitHubIdentityReuse` reproduces the ten-issue restart sequence,
+counts identity and live budget reads separately, and covers concurrent launches,
+rotation, reserve reload, disabled credentials, and revoked-token rejection.
+
 Worker GitHub CLI preflight (#2741) checks that `gh auth token` can read the
 selected credential from its private per-attempt `hosts.yml`. Failures reuse
 `WorkerGitHubBudgetMonitorError` and its existing instance attribution; no issue

@@ -625,6 +625,190 @@ func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 	}
 }
 
+// Replay the ten issue identities classified with the same credential during the
+// September 30 restart. Also exercise the recovery prober that shares this runner;
+// identity reuse must not retain its budget observations.
+func TestRunnerWorkerGitHubIdentityReuse(t *testing.T) {
+	var identityReads, budgetReads atomic.Int64
+	var responseStatus atomic.Int64
+	var rejectIdentity atomic.Bool
+	var remaining atomic.Int64
+	remaining.Store(4900)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/graphql":
+			identityReads.Add(1)
+			if rejectIdentity.Load() {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			id, login := 42, "detent-worker[bot]"
+			if req.Header.Get("Authorization") == "Bearer rotated-token" {
+				id, login = 84, "other-worker[bot]"
+			}
+			_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":%d,"login":%q,"__typename":"Bot"}}}`, id, login)
+		case "/rate_limit":
+			budgetReads.Add(1)
+			if status := responseStatus.Load(); status != 0 {
+				w.WriteHeader(int(status))
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"resources":{"core":{"limit":5000,"used":100,"remaining":%d,"reset":2000000000}}}`, remaining.Load())
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+	cfg := config.Config{}
+	cfg.Tracker.Kind = config.TrackerGitHub
+	cfg.Tracker.Endpoint = server.URL + "/graphql"
+	cfg.Tracker.APIKey = "shared-token"
+	cfg.Tracker.GitHubRESTMinReserve = 300
+	cfg.Worker.GitHubToken = "shared-token"
+	cfg.Worker.GitHubRESTMinReserve = 500
+	cfg.Worker.GitHubRESTPollIntervalMS = 3600000
+	var logs bytes.Buffer
+	r := &Runner{workflow: config.Workflow{Config: cfg}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	for _, phase := range []string{"cold", "warm"} {
+		beforeIdentity, beforeBudget := identityReads.Load(), budgetReads.Load()
+		started := time.Now()
+		for _, number := range []int{3448, 3450, 3445, 3452, 3453, 3454, 3457, 3407, 3440, 3244} {
+			identifier := fmt.Sprintf("digitaldrywood/detent#%d", number)
+			observed, supported, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{Identifier: identifier})
+			if err != nil || !supported || observed.Remaining != 4900 {
+				t.Fatalf("dispatch budget = %+v, supported=%t, error=%v", observed, supported, err)
+			}
+			policy, err := r.workerGitHubPolicy(t.Context(), cfg, identifier)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if policy.Principal.Login != "detent-worker[bot]" || policy.CredentialMode != workerGitHubCredentialShared {
+				t.Fatalf("lost worker identity or shared-budget classification: %+v", policy.Principal)
+			}
+			_, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gotIdentity, gotBudget := identityReads.Load()-beforeIdentity, budgetReads.Load()-beforeBudget
+		t.Logf("%s ten-worker launch: identity_reads=%d live_budget_reads=%d duration=%s", phase, gotIdentity, gotBudget, time.Since(started))
+		wantIdentity := int64(0)
+		if phase == "cold" {
+			wantIdentity = 1
+		}
+		if gotIdentity != wantIdentity || gotBudget != 20 {
+			t.Errorf("%s requests: identity=%d budget=%d, want identity=%d budget=20", phase, gotIdentity, gotBudget, wantIdentity)
+		}
+	}
+	// Concurrent first launches share the same runner-owned identity read.
+	concurrent := &Runner{workflow: config.Workflow{Config: cfg}}
+	beforeConcurrent := identityReads.Load()
+	results := make(chan error, 10)
+	for range 10 {
+		go func() {
+			_, err := concurrent.workerGitHubPolicy(t.Context(), cfg, "#3473")
+			results <- err
+		}()
+	}
+	for range 10 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := identityReads.Load() - beforeConcurrent; got != 1 {
+		t.Errorf("concurrent identity reads=%d, want 1", got)
+	}
+	otherEndpoint := httptest.NewServer(server.Config.Handler)
+	t.Cleanup(otherEndpoint.Close)
+	if got := strings.Count(logs.String(), "worker github credential uses shared REST budget"); got != 1 {
+		t.Errorf("shared classification warnings=%d, want one per runtime credential", got)
+	}
+	// Each boundary below would otherwise reuse stale identity or policy from
+	// the prior call. Budget observations are never retained in that snapshot.
+	tests := []struct {
+		name          string
+		configure     func(*config.Config)
+		status        int
+		remaining     int64
+		reject        bool
+		wantReads     int64
+		wantMode      workerGitHubCredentialMode
+		wantLogin     string
+		wantPolicyErr bool
+		wantLaunchErr bool
+	}{
+		{name: "reserve reload revalidates shared floor", configure: func(c *config.Config) { c.Worker.GitHubRESTMinReserve = 300 }, wantPolicyErr: true},
+		{name: "restore valid reserve refreshes failed classification", wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]"},
+		{name: "worker token rotation", configure: func(c *config.Config) { c.Worker.GitHubToken = "rotated-token"; c.Tracker.APIKey = "rotated-token" }, wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "other-worker[bot]"},
+		{name: "orchestrator token rotation retains distinct principals", configure: func(c *config.Config) { c.Tracker.APIKey = "shared-token" }, wantReads: 2, wantMode: workerGitHubCredentialDistinct, wantLogin: "other-worker[bot]"},
+		{name: "distinct tokens for same principal still compare both", configure: func(c *config.Config) { c.Worker.GitHubToken = "other-token" }, wantReads: 2, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]"},
+		{name: "different-token classification remains fresh", wantReads: 2, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]"},
+		{name: "explicit worker token without orchestrator token", configure: func(c *config.Config) { c.Tracker.APIKey = "" }, wantReads: 1, wantMode: workerGitHubCredentialDistinct, wantLogin: "detent-worker[bot]"},
+		{name: "disable clears runtime identity", configure: func(c *config.Config) { c.Worker.GitHubToken = "" }, wantMode: workerGitHubCredentialDisabled},
+		{name: "native Hub excludes inherited runtime token", configure: func(c *config.Config) {
+			c.Tracker.Kind = config.TrackerHubNative
+			*c = c.WithRuntimeGitHubToken("shared-token")
+		}, wantMode: workerGitHubCredentialDisabled},
+		{name: "reenable rereads identity", configure: func(c *config.Config) {
+			c.Tracker.Kind = config.TrackerGitHub
+			c.Worker.GitHubToken = "shared-token"
+			c.Tracker.APIKey = "shared-token"
+		}, wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]"},
+		{name: "endpoint rotation cannot reuse prior identity", configure: func(c *config.Config) { c.Tracker.Endpoint = otherEndpoint.URL + "/graphql" }, wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]"},
+		{name: "environment reference resolves current token", configure: func(c *config.Config) {
+			c.Worker.GitHubToken = "$CURRENT_TOKEN"
+			c.Tracker.APIKey = "$CURRENT_TOKEN"
+			r.lookupEnv = func(string) string { return "rotated-token" }
+		}, wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "other-worker[bot]"},
+		{name: "environment token rotation rereads principal", configure: func(c *config.Config) { r.lookupEnv = func(string) string { return "shared-token" } }, wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]"},
+		{name: "live budget exhaustion still refuses launch", remaining: 499, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]", wantLaunchErr: true},
+		{name: "transient budget failure retains authenticated launch", status: http.StatusServiceUnavailable, wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]"},
+		{name: "revoked token cannot launch with retained identity", status: http.StatusUnauthorized, reject: true, wantReads: 1, wantMode: workerGitHubCredentialShared, wantLogin: "detent-worker[bot]", wantLaunchErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.configure != nil {
+				tt.configure(&cfg)
+			}
+			remaining.Store(4900)
+			if tt.remaining != 0 {
+				remaining.Store(tt.remaining)
+			}
+			responseStatus.Store(int64(tt.status))
+			rejectIdentity.Store(tt.reject)
+			before := identityReads.Load()
+			policy, err := r.workerGitHubPolicy(t.Context(), cfg, "#3473")
+			if (err != nil) != tt.wantPolicyErr {
+				t.Fatalf("policy error=%v, want error=%t", err, tt.wantPolicyErr)
+			}
+			if tt.wantPolicyErr {
+				if !errors.Is(err, ErrWorkerGitHubSharedReserve) {
+					t.Fatal(err)
+				}
+				cfg.Worker.GitHubRESTMinReserve = 500
+				return
+			}
+			if policy.CredentialMode != tt.wantMode || policy.Principal.Login != tt.wantLogin {
+				t.Fatalf("mode=%s actor=%+v, want %s %s", policy.CredentialMode, policy.Principal, tt.wantMode, tt.wantLogin)
+			}
+			_, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+			if (err != nil) != tt.wantLaunchErr {
+				t.Fatalf("launch error=%v, want error=%t", err, tt.wantLaunchErr)
+			}
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+			if got := identityReads.Load() - before; got != tt.wantReads {
+				t.Errorf("identity reads=%d, want %d", got, tt.wantReads)
+			}
+		})
+	}
+}
+
 func TestWorkerGitHubSharedReserveValidation(t *testing.T) {
 	t.Parallel()
 

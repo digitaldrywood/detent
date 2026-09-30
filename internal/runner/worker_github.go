@@ -123,6 +123,7 @@ type workerGitHubPolicy struct {
 	Logger               *slog.Logger
 	ProjectID            string
 	IssueIdentifier      string
+	identityReused       bool
 	classificationLogged bool
 }
 
@@ -181,7 +182,34 @@ func (r *Runner) workerGitHubPolicy(ctx context.Context, cfg config.Config, issu
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
-	return policy.classifyCredential(ctx)
+	// Only exact shared tokens can reuse identity without skipping validation of
+	// a second credential. Different users and App installations retain their
+	// existing principal comparison. Resolve secrets on every call so rotations
+	// and explicit worker overrides still select the current credential.
+	shared := policy.Enabled && policy.Token != "" && policy.Token == policy.OrchestratorToken
+	r.workerGitHubMu.Lock()
+	if !shared {
+		r.workerGitHubIdentity = workerGitHubPolicy{}
+		r.workerGitHubMu.Unlock()
+		return policy.classifyCredential(ctx)
+	}
+	defer r.workerGitHubMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return workerGitHubPolicy{}, err
+	}
+	previous := r.workerGitHubIdentity
+	r.workerGitHubIdentity = workerGitHubPolicy{}
+	if previous.Token == policy.Token && previous.OrchestratorToken == policy.OrchestratorToken && previous.GraphQLURL == policy.GraphQLURL {
+		policy.PrincipalID = previous.PrincipalID
+		policy.Principal = previous.Principal
+		policy.classificationLogged = previous.classificationLogged
+		policy.identityReused = true
+	}
+	classified, err := policy.classifyCredential(ctx)
+	if err == nil {
+		r.workerGitHubIdentity = classified
+	}
+	return classified, err
 }
 
 func (r *Runner) logWorkerGitHubPolicyError(issue connector.Issue, err error, attrs ...any) {
@@ -642,6 +670,16 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 	policy = classified
 	budget, err := policy.probe(ctx)
 	if err != nil {
+		// A successful live budget response validates the selected token. When
+		// that observation is unavailable, retain the existing authenticated
+		// identity check rather than authorizing launch from retained identity.
+		if policy.identityReused {
+			policy.PrincipalID = 0
+			policy.Principal = connector.IssueActor{}
+			if _, authErr := policy.classifyCredential(ctx); authErr != nil {
+				return ctx, func() error { return nil }, authErr
+			}
+		}
 		policy.logProbeFailure("launch_probe", err)
 	} else {
 		if err := policy.observe(budget, onUpdate); err != nil {

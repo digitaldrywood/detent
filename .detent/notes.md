@@ -1,6 +1,33 @@
-# Issue #3452 Rework handoff — 2026-09-30
+# Issue #3473 implementation handoff — 2026-09-30
 
 ## Codex Workpad
+
+Plan and result: consolidate the repeated exact shared-token principal read in the existing project Runner. The successful classification is retained only for the same resolved worker/orchestrator token and GraphQL endpoint. Different-token comparisons remain fresh and concurrent. Current reserves, explicit worker credentials, native Hub exclusion, and environment resolution are preserved. No cache service, operational mechanism, configuration, CLI, or UI surface is added. INV-2 documentation explains the authentication/budget ownership boundary.
+
+Key files: `internal/runner/agent.go`, `internal/runner/worker_github.go`, `internal/runner/worker_github_test.go`, `docs/invariants.md`. Ten cold/warm policies for the recorded issue identities and launches count principal reads separately from live recovery/launch REST probes. Concurrent cold calls, literal/environment token rotation, endpoint rotation, reserve reload/exhaustion, disabled/native credentials, distinct users and same-user different tokens, transient budget failure, and revoked-token refusal are covered. The existing CLI credential/App installation propagation tests remain unchanged.
+
+Evidence: read-only Mac log verification confirms dispatch started 19:28:09.054Z, finished 19:29:02.983Z (53.928864792s), with ten shared-budget warnings between 19:28:11.802Z and 19:29:03.653Z. The tenth warning follows dispatch completion. This proves overlap, not attribution of the whole delay to HTTP. The fixture adds a recovery budget probe per issue to exercise that shared owner as well; those probes are not inferred from historical warnings. The focused fixture fails against original production source with 20 principal reads for both cold and warm ten-issue dispatch/probe+launch batches, and ten concurrent identity reads. Changed source uses 1 cold / 0 warm / 1 concurrent read, retaining 20 live budget observations in each batch.
+
+Mac isolated live-GitHub profile (same selected credential, ten recovery policy/probes and ten subsequent launch policy/governors; no tracker writes or real agents launched): original cold identity 20 / 4.340144875s, budget 20 / 3.826209207s, batch 8.199639208s; original warm identity 20 / 3.998955249s, budget 20 / 3.447292625s, batch 7.468083s. Changed cold identity 1 / 0.368593917s, budget 20 / 3.478415665s, batch 3.849196333s; changed warm identity 0 / 0s, budget 20 / 3.558925044s, batch 3.561265333s. Initial `gh auth token` resolution took 33.371291ms original / 34.57875ms changed. Subsequent policies resolve the runtime literal locally (20 per batch), with no repeated gh subprocess. HTTP durations measure transport response-header delivery; batch time includes decoding and governor shutdown. Single samples, measured changed then original, establish counts and sampled cost, not a statistically quantified production speedup. The temporary diagnostic source is retained only under provided TMPDIR and is not shipped.
+
+Validation: focused runner credential diagnostics passed (1.285s package), focused CLI credential propagation/doctor/hot-reload cases passed (0.986s package), and runner vet passed. No full suite, coverage, race suite, CI gate, or Actions wait. Configured gate `true` must run on committed head immediately before push. Publication and exact-head review/check evidence belongs in the canonical issue Workpad.
+
+Open items: second-machine cold/warm profile and actual fresh worker startup/autonomous merge evidence after deployment. No live instance was stopped, restarted, signaled, replaced, or bound on port 4000. The human's explicit isolation contract forbids deployment/restart without current exact-action authorization; second-machine access was requested while independent source work continued. Do not claim implementation acceptance complete before runtime evidence is recorded. Orchestrator owns lane transitions and merge.
+
+Skill draft: no — existing profiling and runner ownership guidance covers this scoped consolidation.
+
+```detent-status
+schema: 1
+status: blocked
+blockers: []
+human_action: "Needs you: provide the second machine's SSH target/read-only profile location and deploy the reviewed #3473 change or explicitly authorize that exact live deployment/restart. Then record fresh worker startup and autonomous merge outcomes on the deployed head and post a newer in_progress Workpad to resume acceptance. The isolation contract forbids this worker from replacing the live process without exact current authorization."
+```
+
+# Historical handoffs retained from develop
+
+# Issue #3452 Rework handoff — 2026-09-30
+
+## Historical Workpad (#3452)
 
 Plan: attempt 7270 / generation 26 refreshes ready PR #3469 after merge_fast_path_head_not_ready. Verified clean starting local/published head 6d0197539304ed9162a089c05fbbfe2ed60aaa6f. Merged fetched develop f6c8aa5746b049b71fad5c7704fe74054a5630e6, preserving published history. Develop advanced during publication; merged second fetched target 69781ca9505d8356771e2e4d5c1552d5316cbac5 into published refresh bc1bb6f680d71a5dfa87f9ff67fb41489b046c8c. Both merges conflicted only in notes; retained historical handoffs. No manual source edits were needed.
 
@@ -12,7 +39,7 @@ Handoff: ready PR #3469 targets develop and includes Fixes #3452. At initial ins
 
 Skill draft: no — existing native-helper and portable-fixture guidance covers this repair.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
@@ -2315,3 +2342,4 @@ human_action: null
 - Chrome inspected the real rendered Reports page on an ephemeral isolated server: 42 shipped, receipt coverage, lifetime unknown dwell and unavailable releases; desktop 1440px and mobile 500px had no page overflow. Overlay and screenshots remain under the provided TMPDIR. Browser closed and the preview test exited successfully. The live port-4000 instance was not mutated.
 - Publication and exact-head true gate/check/review evidence belong to the canonical issue Workpad. No full gate, coverage, race suite or Actions polling. No out-of-scope findings or dependencies. Orchestrator owns lane transitions and merge.
 - Skill draft: no — existing Go debugging and isolated preview guidance covers this repair.
+
