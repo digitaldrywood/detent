@@ -285,6 +285,7 @@ jobs:
       - name: Run full browser visual gate
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
+          TMPDIR: ${{ runner.temp }}
         run: npm run test:visual -- --shard=${{ matrix.shard }}/3
 
       - name: Upload browser visual evidence
