@@ -116,31 +116,58 @@ func TestRetentionAttempts(t *testing.T) {
 		{name: "terminal", registered: true, terminal: true, remove: true}, {name: "live", terminal: true, live: true},
 		{name: "lookup failed", fail: true, age: 24 * time.Hour},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			backend := retentionBackend(t)
-			path := filepath.Join(backend.root, "workspace", workerScratchRelativePath, "attempt-test")
-			retentionFixture(t, filepath.Join(path, "file"), now)
-			if err := os.Chtimes(path, now.Add(-test.age), now.Add(-test.age)); err != nil {
-				t.Fatal(err)
-			}
-			if test.live {
-				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
-			}
-			request := RetentionRequest{Now: now, ScratchState: func(context.Context, string) (bool, bool, error) {
-				if test.fail {
-					return false, false, errors.New("unavailable")
+		for _, location := range []struct {
+			name              string
+			external, removed bool
+		}{{name: "legacy"}, {name: "external", external: true}, {name: "external removed workspace", external: true, removed: true}} {
+			t.Run(test.name+"/"+location.name, func(t *testing.T) {
+				backend := retentionBackend(t)
+				workspacePath := filepath.Join(backend.root, "workspace")
+				path := filepath.Join(workspacePath, workerScratchRelativePath, "attempt-test")
+				if location.external {
+					t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(backend.root)) })
+					if !location.removed {
+						if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := ensurePrivateDirectories(workerScratchBase(), WorkerScratchRoot(workspacePath)); err != nil {
+						t.Fatal(err)
+					}
+					path = filepath.Join(WorkerScratchRoot(workspacePath), "attempt-test")
 				}
-				return test.registered, test.terminal, nil
-			}}
-			total, err := backend.SweepRetention(t.Context(), request)
-			if (err != nil) != test.fail {
-				t.Fatalf("err=%v", err)
-			}
-			_, err = os.Stat(path)
-			if errors.Is(err, fs.ErrNotExist) != test.remove {
-				t.Fatalf("remove=%v stat=%v total=%+v", test.remove, err, total)
-			}
-		})
+				retentionFixture(t, filepath.Join(path, "file"), now)
+				if err := os.Chtimes(path, now.Add(-test.age), now.Add(-test.age)); err != nil {
+					t.Fatal(err)
+				}
+				if test.live {
+					backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
+				}
+				var queried []string
+				request := RetentionRequest{Now: now, ScratchState: func(_ context.Context, scratch string) (bool, bool, error) {
+					queried = append(queried, scratch)
+					if test.fail {
+						return false, false, errors.New("unavailable")
+					}
+					return test.registered, test.terminal, nil
+				}}
+				total, err := backend.SweepRetention(t.Context(), request)
+				if (err != nil) != test.fail {
+					t.Fatalf("err=%v", err)
+				}
+				if len(queried) != 1 || queried[0] != path {
+					t.Fatalf("scratch state queried for %q, want %q", queried, path)
+				}
+				_, err = os.Stat(path)
+				if errors.Is(err, fs.ErrNotExist) != test.remove {
+					t.Fatalf("remove=%v stat=%v total=%+v", test.remove, err, total)
+				}
+				_, err = os.Stat(filepath.Dir(path))
+				if wantParentRemoved := location.removed && test.remove; errors.Is(err, fs.ErrNotExist) != wantParentRemoved {
+					t.Fatalf("scratch parent removed=%v, want %v", err, wantParentRemoved)
+				}
+			})
+		}
 	}
 }
 

@@ -594,6 +594,20 @@ Linux is not advertised until its optional Unix socket filter can be proven;
 its version alone does not establish socket isolation. Unsupported hosts
 or configurations retain only the tiers they can deliver; there is no downgrade.
 
+Runner home projects are an administrator-selected subset of authorized project
+access, stored as `home_project_ids`; an empty list keeps ordinary selection.
+At claim time the Hub prefers the first dispatchable Todo/Rework home issue in
+normal queue order, preserving dependencies, approved policies, selectors,
+active leases, and provider eligibility. Planning and other open cards do not
+keep a runner waiting. One nullable `home_dry_since` timestamp starts when home
+work runs dry and clears when eligible home work returns. With spillover `after
+N`, ordinary authorized project work becomes eligible after N idle minutes;
+`never` keeps the runner waiting. Project-scoped claims cannot steal work from
+another project, and active general jobs finish without preemption. The fleet
+row shows home projects and the sampled claim-time status: preferring home work,
+waiting for home work, or spilled over. No background loop or home-work capacity
+reservation is introduced.
+
 Actual enrollment binds logical runners to a machine. Checked-in runner profiles
 declare requirements, not physical registrations. Self-reported capabilities and
 tags cannot grant access or privileged labels. Multiple runners on one machine

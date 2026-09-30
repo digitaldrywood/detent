@@ -187,7 +187,7 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 			if len(match) != 2 {
 				t.Fatal("missing management token")
 			}
-			form := url.Values{"revision": {"1"}, "display_name": {"Renamed runner"}, "tags": {"macos, build"}, "state": {"draining"}, "capacity_limit": {"1"}, "project_ids": {"prj_a"},
+			form := url.Values{"revision": {"1"}, "display_name": {"Renamed runner"}, "tags": {"macos, build"}, "state": {"draining"}, "capacity_limit": {"1"}, "project_ids": {"prj_a"}, "home_project_ids": {"prj_a"},
 				"isolation_tier": {"native-trusted"}, "host_services": {"tcp:127.0.0.1:8080"}, "timezone": {"UTC"}, "windows": {"Mon-Fri 09:00-17:00"}, "hard_deadline": {"30m"}, "spillover_mode": {"after"}, "after_minutes": {"0"}}
 			request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/fleet/runners/runner_a", strings.NewReader(form.Encode()))
 			request.RemoteAddr = "127.0.0.1:4444"
@@ -208,7 +208,7 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 			}
 			if test.updates == 1 {
 				routing := probe.fleet.Runners[0].Routing
-				if routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || routing.Spillover.Mode != "after" || len(routing.HostServices) != 1 {
+				if len(routing.HomeProjectIDs) != 1 || routing.HomeProjectIDs[0] != "prj_a" || routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || routing.Spillover.Mode != "after" || len(routing.HostServices) != 1 {
 					t.Fatalf("saved settings = %#v", routing)
 				}
 				form.Set("revision", "2")

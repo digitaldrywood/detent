@@ -46,6 +46,9 @@ type hostedFleetRunner struct {
 	ProviderCapacity []providercapacity.View `json:"provider_capacity"`
 	LastHeartbeatAt  time.Time               `json:"last_heartbeat_at"`
 	Leases           []hostedFleetLease      `json:"leases"`
+	HomeProjectIDs   []tracker.ProjectID     `json:"home_project_ids"`
+	HomeStatus       string                  `json:"home_status"`
+	HomeDrySince     *time.Time              `json:"home_dry_since"`
 	IsolationTier    string                  `json:"isolation_tier"`
 	Availability     runnerauth.Availability `json:"availability"`
 	Routing          *runnerauth.Routing     `json:"routing,omitempty"`
@@ -199,10 +202,20 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
-		IsolationTier: runner.IsolationTier, Availability: runner.Availability,
+		IsolationTier: runner.IsolationTier, Availability: runner.Availability, HomeProjectIDs: []tracker.ProjectID{},
+		HomeStatus: runner.HomeStatus, HomeDrySince: runner.HomeDrySince,
 	}
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}
+	}
+	for _, project := range runner.HomeProjectIDs {
+		if visible[project] {
+			view.HomeProjectIDs = append(view.HomeProjectIDs, project)
+		}
+	}
+	if len(view.HomeProjectIDs) != len(runner.HomeProjectIDs) {
+		view.HomeStatus = ""
+		view.HomeDrySince = nil
 	}
 	for _, lease := range runner.Leases {
 		if !visible[lease.ProjectID] {

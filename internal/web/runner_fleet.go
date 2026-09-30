@@ -79,6 +79,12 @@ func (s *Server) updateFleetRunner(c echo.Context) error {
 	for _, id := range splitRunnerValues(c.FormValue("project_ids")) {
 		change.ProjectIDs = append(change.ProjectIDs, tracker.ProjectID(id))
 	}
+	for _, id := range splitRunnerValues(c.FormValue("home_project_ids")) {
+		change.HomeProjectIDs = append(change.HomeProjectIDs, tracker.ProjectID(id))
+	}
+	if change.HomeProjectIDs == nil {
+		change.HomeProjectIDs = []tracker.ProjectID{}
+	}
 	change.Routing = change.Normalized()
 	if err := change.Validate(); err != nil {
 		return echo.NewHTTPError(http.StatusUnprocessableEntity, err.Error())
