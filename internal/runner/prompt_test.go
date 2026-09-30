@@ -393,6 +393,11 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
 		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
 			prompt := appendBlockedHandoffBlock("", opts)
+			for _, required := range []string{"existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve explicit pre-merge runtime evidence, human approvals, and project gates", "If no permitted post-integration owner exists, retain the original acceptance requirement"} {
+				if !strings.Contains(prompt, required) {
+					t.Fatalf("handoff lost acceptance ownership: %s", required)
+				}
+			}
 			blocks := strings.Split(prompt, "```detent-status\n")[1:]
 			if len(blocks) != 2 {
 				t.Fatalf("got %d examples, want 2", len(blocks))

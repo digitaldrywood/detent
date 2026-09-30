@@ -1563,6 +1563,17 @@ without rewriting immutable plan versions. Self-hosted databases have no quota.
 `TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
 exercise these boundaries without adding a brake, lease, or recovery mechanism.
 
+Post-integration acceptance uses the existing Workpad/final handoff and permitted
+Backlog follow-ups, rather than requiring a source worker to integrate or release
+its own unmerged change. The current prompt and orphan-resume contract record the
+pending criteria, exact source head, procedure, authorization, and existing owner.
+Pending acceptance is never claimed as passed; explicit pre-merge runtime
+requirements, human approvals, and project gates remain authoritative. Without a
+permitted post-integration owner, the original requirement remains. This is an
+instruction consolidation, not a new acceptance waiver, release owner, lane
+writer, or recovery mechanism. `TestBuildPromptDocumentsWorkpadStatusContract`
+and `TestRunnerRunCompletionLeaseOnOrphanResume` cover normal and resumed turns.
+
 Repository notes handoff (#3498) is removed from normal, planning and merge
 fallback prompts. Failed turns no longer append diagnostics to a repository
 file. The canonical handoff contract and orphan restart nudge explicitly revoke
