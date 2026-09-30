@@ -659,6 +659,9 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	}
 	signature := workpad.ContentHash(strings.TrimSpace(issue.Identifier) + "\n" + string(encoded))
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionRecordedBlockerRecovery, signature)
+	if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+		metadata.BlockedRecovery = &park
+	}
 	if err := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,

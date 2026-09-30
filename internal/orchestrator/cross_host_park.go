@@ -274,6 +274,10 @@ func (o *Orchestrator) recoveryParkAcknowledged(event store.WorkflowPhaseEvent, 
 		return false
 	}
 	switch event.Reason {
+	case workflowActionRecordedBlockerRecovery:
+		return park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason &&
+			metadata.BlockedRecovery != nil && sameBlockedRecoveryPark(*metadata.BlockedRecovery, park) &&
+			normalizeState(event.PreviousPhaseName) == normalizeState(blockedStatusState)
 	case workflowActionCauseBlockedRecovery:
 		return park.Owner == blockedRecoveryOwnerOrchestrator || deliverableRecoveryPark(park)
 	case string(AutoPromoteReasonCINotGreen):
