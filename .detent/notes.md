@@ -1,23 +1,25 @@
-# Issue #3449 merge fallback handoff — 2026-09-30
+# Issue #3449 Rework handoff — 2026-09-30
 
 ## Codex Workpad
 
-Plan and result: merge fetched develop `3ce76fc185cf1d090eacaa27779ac77cfc84587c` into source-clean published PR #3466 head `b99cde04a1029051c4b9dd2b534441d6f48b982c` without rebasing. The local branch and published PR head matched before the merge; PR #3466 is open against develop on the assigned isolated branch and includes Fixes #3449. Both histories are retained as merge parents.
+Plan and result: attempt 7302 / generation 11 retains recovered merge f12b4e1066386e639fc86f0e1aa3d102d16edaea and publishes it with this handoff update to ready PR #3466. The merge preserves published head b99cde04a1029051c4b9dd2b534441d6f48b982c and fetched develop 3ce76fc185cf1d090eacaa27779ac77cfc84587c. Reviewed all 71 recovered merge paths: 69 exactly match the target; only notes and the config assertion differ among those paths. No stray artifacts or additional source edits. Publication resolves the unpushed recovery commit.
 
-Prior notes verified against the published issue commit's six-file diff. Their diagnostics apply to the earlier source only. The former #3448 dependency repair is now included through develop commit `69781ca9505d8356771e2e4d5c1552d5316cbac5` (#3464); no dependency or tracker state was changed here.
+Dependency: #3448 is closed and PR #3464 is merged at 69781ca9505d8356771e2e4d5c1552d5316cbac5, verified as an ancestor of fetched origin/develop. The orchestrator already cleared its blocker. No worker dependency or lane writes.
 
-Resolution: five conflicts in `.detent/notes.md`, `docs/invariants.md`, `internal/config/config.go`, `internal/config/runner_policy_test.go`, and `internal/routine/manager_test.go`. Retained develop's equivalent empty/historical opt-out normalization, zero Review JSON omission, portable execution-shell fixture, human-review/custom-label rejection cases, runtime-label preservation assertion, and corresponding INV-3 documentation. Preserved the PR's direct config-digest assertion and custom routine opt-out label. The obsolete release-configuration text test removal in `ci_workflow_test.go` is retained. Historical handoffs from both sides remain below with one current status fence. No generated inputs changed manually and no out-of-scope finding occurred.
+Final issue diff: internal/config/runner_policy_test.go directly compares the effective config digest for every existing compatibility-table case, catching digest changes independently of Descriptor.Match. internal/routine/manager_test.go uses the custom routine-review opt-out label in the existing filing/auto-promotion regression. Develop already contains the equivalent zero Review omission, empty/historical label normalization, obsolete release text-test removal, INV-3 documentation, and invariant source-audit repair. Retained incoming portable shell defaults, enabled-human-review/custom-label rejection, and runtime-label preservation. No new mechanism, generated inputs, invariant enforcement change, or out-of-scope finding.
 
-Validation: no tests, lint, vet, builds, local gate (including true), CI checks, or waits run in this fallback. Historical results below do not validate the resolved head. Gate/CI and post-merge timings are unmeasured.
+Validation on the recovered source: env -u DETENT_API_TOKEN GOMAXPROCS=4 go test -p 4 . ./internal/config ./internal/policy ./internal/routine ./internal/invariants -run '^(TestRunnerPolicyUpgradeKeepsApprovedID|TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit|TestRunnerPolicyCompatibility|TestManagerRoutineOptoutLabelPreventsAutoPromote|TestReleaseWorkflowAuthenticatesExactCommitProvenance|TestReleaseHooksDoNotRegenerate|TestRepositorySources)$' -count=1 passed (22.0s command; invariant audit 15.026s). The policy package selected no tests and receives no test credit. Full remaining issue diff and merge-resolution source reviewed; whitespace inspection passed. Subsequent edits are notes only. Earlier reproduction evidence remains in the canonical issue Workpad. No full suite, coverage, race suite, or Actions rerun/wait.
 
-Open items: Detent independently verifies ownership, cleanliness and target ancestry, runs bounded validation, publishes with lease protection, and waits for current-head CI after return. No push, PR merge, issue-state change or tracker lane write performed here.
+Handoff: configured true must run on the final committed head immediately before publication; exact gate, push, current-head checks and feedback evidence are recorded in the canonical issue Workpad. PR #3466 is already non-draft against develop and references Fixes #3449. Initial reviews and threads were empty; automated review hit its usage limit without findings and is not required. Branch protection is absent and current-head checks were absent under repository policy, with no test credit. No merge-group workflow or quiet window applies. The next scheduled integrated develop validation confirms the shard repair. Orchestrator owns lane transitions, squash merge and scheduled closure; live port 4000 is untouched.
+
+Skill draft: no — existing debugging and policy-compatibility guidance covers this repair.
 
 ```detent-status
 schema: 1
 status: complete
 fields:
-  completion_work_attempt_id: "7292"
-  completion_generation: "1"
+  completion_work_attempt_id: "7302"
+  completion_generation: "11"
   completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
