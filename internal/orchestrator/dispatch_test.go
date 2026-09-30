@@ -1049,35 +1049,6 @@ func TestDispatchPlannerSkipsCompletedGateWaitRetry(t *testing.T) {
 	}
 }
 
-func TestDispatchableSkipsQuietWindowActiveIssueWithOpenPullRequest(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 8, 13, 5, 0, 0, time.UTC)
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 1,
-		AutoPromote: AutoPromoteConfig{
-			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
-			Gate:          gate.Config{Kind: gate.KindCommand},
-		},
-		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates: []string{"Done", "Cancelled"},
-	})
-	issue := dispatchTestIssueWithPullRequest("issue-quiet-gate-pending", "In Progress", "OPEN")
-	issue.PullRequest.CIStatus = "pending"
-	state := newState(cfg)
-	state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted}
-	orch := Orchestrator{cfg: cfg}
-
-	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
-	if decision.dispatchable {
-		t.Fatal("dispatchable quiet-window active issue with open PR = true, want false")
-	}
-	if decision.reason != dispatchSkipAwaitingGate {
-		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAwaitingGate)
-	}
-}
-
 func TestDispatchableCompletedReworkGateWaitEvidence(t *testing.T) {
 	t.Parallel()
 

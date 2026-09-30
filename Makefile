@@ -34,9 +34,16 @@ GOSEC_VERSION ?= v2.28.0
 GOSEC_BINARY ?= tmp/gosec-$(GOSEC_VERSION)-deterministic
 GOSEC_PATCH ?= scripts/gosec-v2.28.0-deterministic.patch
 GOSEC_DETERMINISM_RUNS ?= 8
+# Several worktrees run gates on the same host at once. TEST_PROCS bounds how
+# many packages build or test concurrently, the Go scheduler threads each test
+# binary uses, lint workers, and vitest workers, so one invocation cannot take
+# the whole machine. Raise it per invocation: TEST_PROCS=8 make test.
+TEST_PROCS ?= 4
+GOMAXPROCS ?= $(TEST_PROCS)
+export GOMAXPROCS
 # Filesystem diagnostics can record millions of cache inputs (#2735).
 # Run gate tests afresh; -count=1 preserves native build and module caches.
-GO_TEST := env -u DETENT_API_TOKEN go test -count=1
+GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS)
 HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
 HUB_RACE_PARTITION := ^Test[A-GI-O]
@@ -118,7 +125,7 @@ app-dev:
 check-app:
 	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run && npm run build); \
+		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
 		git diff --exit-code -- static/app/conversation || { \
 			echo "static/app/conversation is out of date; run make app and commit the result."; \
 			exit 1; \
@@ -233,7 +240,7 @@ visual-e2e-update: build
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
 
 lint: $(GOLANGCI_LINT)
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --timeout=15m
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
 
 $(GOLANGCI_LINT):
 	@mkdir -p "$(GOLANGCI_LINT_DIR)"
