@@ -381,7 +381,7 @@ func requireCredentialAuthority(ctx context.Context, tx *sql.Tx, credential apiC
 	if err != nil {
 		return err
 	}
-	if hash != credential.Hash || revoked.Valid || expires.Valid && !runnerTimeValid(now, created, expires.String) {
+	if hash != credential.Hash || revoked.Valid || !credential.timeValid(now, created, expires) {
 		return runnerUnauthorized()
 	}
 	return nil

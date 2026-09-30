@@ -116,22 +116,13 @@ func (s *Service) changeRunnerCredential(c echo.Context, replacement string) err
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	token, err := apiBearerToken(c)
-	if err != nil {
-		return s.nativeAPIError(c, runnerUnauthorized())
-	}
-	if replacement == token {
+	if apikey.HashToken(replacement) == credential.Hash {
 		return s.nativeAPIError(c, nativeInvalid("Rotation requires a different credential"))
 	}
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		var created, expires, hash string
-		var revoked sql.NullString
-		if err := tx.QueryRowContext(ctx, "SELECT created_at, expires_at, token_hash, revoked_at FROM api_tokens WHERE id = ?", credential.ID).Scan(&created, &expires, &hash, &revoked); err != nil {
-			return nil, err
-		}
-		if revoked.Valid || hash != apikey.HashToken(token) || !runnerTimeValid(now, created, expires) {
-			return nil, runnerUnauthorized()
-		}
+		// runnerTransaction rechecks the current hash, revocation and time
+		// policy before this mutation; renewal alone permits elapsed expiry.
+		hash := credential.Hash
 		kind := "renewed"
 		if replacement != "" {
 			kind = "rotated"

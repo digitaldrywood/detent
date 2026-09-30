@@ -26,93 +26,71 @@ These are operator-owned environment bindings, not product defaults. Preserve
 all existing state roots, assertion keys, WorkOS issuer/client/key bindings,
 Stripe signing secrets, account/mode/price bindings and tenant generations.
 
-## Provisioned state and remaining work
+## Deployed state
 
-The September 30, 2026 UTC issue run added both A records through Namecheap,
-verified the six pre-existing records were unchanged, issued separate ACME
-certificates, and installed `/etc/nginx/sites-enabled/detent-cloud-pending.conf`
-on Jarvis. Both new names serve valid TLS. The pending ingress sends browser
-navigation back to the matching old origin while proxying `/webhooks/`, `/api/`
-and organization API requests directly to the existing entry. It does not
-redirect signed webhook requests. Both entry `public_url` values are still old.
+The September 30, 2026 cutover added both A records through Namecheap, verified
+the six pre-existing records were unchanged, and issued separate ACME
+certificates. Both entries now use their Cloud `public_url`, and nginx serves the
+new names while retaining endpoint-aware routes for the old names. Browser
+navigation from an old host receives a temporary 307 to its matching Cloud host;
+signed webhooks, API and runner requests continue without redirect.
 
-Both new WorkOS callbacks are registered alongside their old callbacks. Both
-existing Stripe webhook endpoints now use Cloud URLs; their signing secrets,
-event subscriptions, live/test mode and accounts are unchanged. Signed synthetic
-`detent.smoke` events were accepted at all four URLs and recorded as ignored,
-with no customer or subscription changes. This is signature/routing evidence,
-not provider-originated delivery or an authenticated billing journey.
-
-Reviewed final ingress files are staged on Jarvis as
-`/etc/nginx/sites-available/detent-cloud-{production,staging,connection}.conf.next`.
-The standalone `/etc/nginx/detent-cloud-migration-check.conf` passed `nginx -t`.
-The domain-only operator script updates are prepared as
-`/opt/detent-hub-staging/deploy-from-ci-cloud.sh.next` and
-`/opt/detent-hub/hosted-smoke-cloud.sh.next`; both passed `bash -n` and are inactive.
-Compare them with the current operator files again before installation.
-
-**Browser cutover is pending.** An operator with a WorkOS dashboard session must
-verify each environment's settings before it:
+The operator reported the following WorkOS settings in production and staging.
+Both new callbacks are registered alongside the old callbacks. Real sign-in
+completed on each new hostname, and organization boards and existing
+conversations loaded. The default callback and Homepage URL settings were not
+independently read from the dashboard; the application supplies its callback
+explicitly during sign-in:
 
 | WorkOS setting | Production | Staging |
 | --- | --- | --- |
-| Default redirect/callback | `https://cloud.detent.build/auth/oidc/callback` | `https://staging.cloud.detent.build/auth/oidc/callback` |
+| Allowed redirect/callback | `https://cloud.detent.build/auth/oidc/callback` | `https://staging.cloud.detent.build/auth/oidc/callback` |
 | Initiate login | `https://cloud.detent.build/auth/oidc/start` | `https://staging.cloud.detent.build/auth/oidc/start` |
 | User invitation URL | `https://cloud.detent.build/invite` | `https://staging.cloud.detent.build/invite` |
-| Homepage | `https://cloud.detent.build` | `https://staging.cloud.detent.build` |
-| Logout destination, if configured | `https://cloud.detent.build` | `https://staging.cloud.detent.build` |
+| Homepage, unverified | `https://cloud.detent.build` | `https://staging.cloud.detent.build` |
+| Logout destination | `https://cloud.detent.build` | `https://staging.cloud.detent.build` |
 
 Retain both old callback allowlist entries for in-flight transactions. Audit
 any application/custom-domain/SSO redirect allowlists for the old host; change
 only settings belonging to that environment. The entry calls WorkOS server-side
-and does not need wildcard browser CORS. The available API keys registered the
-new callbacks, but no dashboard session or browser MCP was available to this
-worker to verify the remaining settings. WorkOS documents the distinction
+and does not need wildcard browser CORS.
+
+Both existing Stripe webhook endpoints use Cloud URLs; their signing secrets,
+event subscriptions, live/test mode and accounts are unchanged. Signed synthetic
+`detent.smoke` events were accepted at both new URLs and recorded as ignored,
+with no customer or subscription changes. Staging created and immediately
+expired a test Checkout session. Provider-originated delivery and a live billing
+journey were not generated during cutover. WorkOS documents the distinction
 between [API-key and dashboard configuration](https://workos.com/docs/cli).
 Stripe's [endpoint update API](https://docs.stripe.com/api/webhook_endpoints/update)
 changes an existing URL without replacing its endpoint or signing secret.
 
-## Cutover order
+## Cutover record
 
-1. Verify the WorkOS dashboard settings above and preserve the old callbacks.
-   Verify Stripe's configured URLs, account/mode and recent delivery history.
-2. Back up each environment through the existing operational backup procedure.
-   Save the current binary, entry YAML, ingress and deployment scripts for rollback.
-3. Install a binary containing this issue's compatibility behavior in staging
-   first. Stop its Cloud entry using the existing service procedure, change only
-   `public_url` in `/etc/detent-hub-staging/cloud.yaml` to
-   `https://staging.cloud.detent.build`, then install the final ingress in the next step before restarting the entry.
-   Its existing
-   launcher regenerates every managed `tenant.yaml` with that origin. Inspect
-   tenant startup before continuing. Shared database bindings recognize only the
-   environment's approved old/new pair; the stored origin remains immutable and
-   no allocation generation or organization identity changes.
-4. Install [connection.conf](examples/cloud/connection.conf) once in nginx's
-   `http` context and replace the old staging site with
-   [staging.conf](examples/cloud/staging.conf). Remove the staging blocks from
-   the pending site in the same reload, avoiding duplicate `server_name` routes.
-   Keep both TLS certificates. Test with `nginx -t` before reloading, then
-   start the entry and inspect all tenant startups.
-5. Change only `DOMAIN=staging.hub.detent.build` to
-   `DOMAIN=staging.cloud.detent.build` in the operator-owned
-   `/opt/detent-hub-staging/deploy-from-ci.sh`. The GitHub workflow uses the new
-   SSH hostname with `HostKeyAlias=staging.hub.detent.build`, retaining the
-   existing pinned host key. Do not regenerate it from an untrusted connection.
-6. Run `python3 scripts/cloud-origin-smoke.py --environment staging`, then the
-   authenticated acceptance trace below. Run the existing hosted smoke script
-   with its Cloud base override; review its actions first because staging smoke
-   may create and expire test Checkout sessions.
-7. After staging passes, repeat for production with `detent-cloud.service`,
-   `/etc/detent-hub/cloud.yaml`, and
-   [production.conf](examples/cloud/production.conf). Remove the remaining
-   pending site. Update the operator-owned `/opt/detent-hub/hosted-smoke.sh`
-   production/staging `DOMAIN` values to Cloud. Run the production origin smoke
-   and authenticated acceptance trace. Production uses live keys; do not create
-   a charge as a diagnostic.
-8. Record exact results in the PR and Workpad. Preserve the legacy routes and
-   callback entries while active sessions and clients still use them. Audit
-   current marketing links in the product-site repository; this repository's
-   README now links to Detent Cloud.
+1. Saved separate versioned backups of the stopped staging and production
+   state, entry YAML, previous binary, ingress, and operator scripts under each
+   environment's `/var/lib/detent-hub*/backups/cloud-cutover-*` directory.
+2. Installed the compatibility build and final
+   [staging](examples/cloud/staging.conf),
+   [production](examples/cloud/production.conf), and
+   [connection](examples/cloud/connection.conf) nginx configuration. Changed
+   only each entry's `public_url`; the existing launcher regenerated managed
+   tenant YAML. Stored tenant origin, allocation generation and organization
+   identities were not rewritten.
+3. Updated the staging deployment healthcheck and the hosted smoke script to
+   use Cloud. The GitHub staging workflow uses the new SSH hostname with
+   `HostKeyAlias=staging.hub.detent.build`, retaining the pinned host key.
+4. Ran `scripts/cloud-origin-smoke.py` in each environment and the hosted smoke
+   script against both Cloud hosts. Staging passed 18 checks and production 17.
+   The production live price was checked read-only; no live charge was created.
+5. Deployed the marketing site's new sign-in and footer links through
+   `detent.build` main. Dokploy rebuilt the site, and its post-deploy
+   `make smoke` passed. The final results are in the issue #3241 Codex Workpad
+   and PR #3350.
+
+Preserve the legacy routes and WorkOS callback entries while active sessions
+and clients still use them. The rollback procedure below uses the versioned
+backups and previous configuration if needed.
 
 ## Legacy request behavior after cutover
 
@@ -137,6 +115,11 @@ The entry makes endpoint-aware migration decisions:
 
 Run separately in production and staging with approved test accounts and an
 organization in that environment:
+
+The first step's sign-in, board and existing conversation checks passed in
+both environments on September 30. New invitation acceptance,
+provider-originated billing delivery, fresh runner enrollment, and in-flight
+legacy session mutation remain unexercised.
 
 1. Sign in from Cloud, finish WorkOS state/PKCE callback, and verify the selected
    organization, Work view and organization switcher stay at the new origin.
