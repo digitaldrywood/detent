@@ -599,6 +599,8 @@
 #   kind: "pull_request"
 #   # deliverable.merge_method | type: string | default: "squash" | required: No | validation: must be one of squash, merge, rebase
 #   merge_method: "squash"
+#   # deliverable.github_pull_request | type: boolean | default: false | required: No | validation: None
+#   github_pull_request: false
 #   # deliverable.output_root | type: string | default: none | required: No | validation: None
 #   output_root: null
 #   # deliverable.review_url | type: string | default: none | required: No | validation: None

@@ -61,6 +61,7 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 			AutoPromote: cfg.Agent.AutoPromote.Enabled, AutomatedReview: g.AutomatedReview,
 			RequiredChecks: len(g.RequiredStatusChecks), Validator: g.Validator.Enabled,
 			SecurityAudit: g.SecurityAudit.Enabled, MergeMethod: cfg.Deliverable.EffectiveMergeMethod(),
+			GitHubPullRequest: cfg.Deliverable.GitHubPullRequest,
 		},
 	}.WithID()
 	return descriptor, descriptor.Validate()

@@ -22,17 +22,18 @@ type Requirements struct {
 }
 
 type Gates struct {
-	Kind            string `json:"kind"`
-	HumanReview     bool   `json:"human_review,omitempty"`
-	PlanEnabled     bool   `json:"plan_enabled"`
-	PlanReview      string `json:"plan_review"`
-	PlanStopDigest  string `json:"plan_stop_digest"`
-	AutoPromote     bool   `json:"auto_promote"`
-	AutomatedReview string `json:"automated_review"`
-	RequiredChecks  int    `json:"required_checks"`
-	Validator       bool   `json:"validator"`
-	SecurityAudit   bool   `json:"security_audit"`
-	MergeMethod     string `json:"merge_method"`
+	Kind              string `json:"kind"`
+	HumanReview       bool   `json:"human_review,omitempty"`
+	PlanEnabled       bool   `json:"plan_enabled"`
+	PlanReview        string `json:"plan_review"`
+	PlanStopDigest    string `json:"plan_stop_digest"`
+	AutoPromote       bool   `json:"auto_promote"`
+	AutomatedReview   string `json:"automated_review"`
+	RequiredChecks    int    `json:"required_checks"`
+	Validator         bool   `json:"validator"`
+	SecurityAudit     bool   `json:"security_audit"`
+	MergeMethod       string `json:"merge_method"`
+	GitHubPullRequest bool   `json:"github_pull_request,omitempty"`
 }
 
 type Descriptor struct {
