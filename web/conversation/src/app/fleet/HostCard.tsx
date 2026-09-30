@@ -108,6 +108,13 @@ export function HostCard({
         </div>
       )}
 
+      {(runner.home_project_ids?.length ?? 0) > 0 ? (
+        <div className="text-xs text-muted-foreground" data-testid="home-status">
+          <span>Home projects: {runner.home_project_ids?.join(", ")}</span>
+          {runner.home_status ? <span className="block">{runner.home_status}</span> : null}
+        </div>
+      ) : null}
+
       {behind ? (
         // Where the footer's update pill sends a reader. Nothing here can
         // upgrade the host — it is somebody else's machine — so the row says
