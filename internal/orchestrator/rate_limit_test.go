@@ -2369,3 +2369,49 @@ func TestGitHubLookupBackoffSecondaryDeadline(t *testing.T) {
 		})
 	}
 }
+
+type cleanupIDProbeConnector struct {
+	*rateLimitConnector
+	probeCalls   int
+	requestedIDs []string
+}
+
+func (c *cleanupIDProbeConnector) FetchIssueStateProbeByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	c.probeCalls++
+	c.requestedIDs = append([]string(nil), ids...)
+	return cloneIssues(c.issuesByID), c.fetchByIDErr
+}
+
+func TestCleanupIDReadUsesProbeAndPreservesActiveOwnership(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"terminal", "routing", "running", "unknown", "error"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("cleanup-id", "Done")
+			tracker := &cleanupIDProbeConnector{rateLimitConnector: &rateLimitConnector{issuesByID: []connector.Issue{issue}}}
+			state := newState(cfg)
+			switch mode {
+			case "routing":
+				tracker.issuesByID[0].State = "Todo"
+			case "running":
+				state.Running[issue.ID] = Running{Issue: issue}
+			case "unknown":
+				tracker.issuesByID = nil
+			case "error":
+				tracker.fetchByIDErr = errors.New("fresh metadata unavailable")
+			}
+			reaper := &cleanupSweepReaper{}
+			o := newRateLimitTestOrchestrator(cfg, tracker)
+			o.reaper = reaper
+			fetched, cleaned := o.reapWorkspaceIssueIDs(t.Context(), &state, []string{issue.ID}, time.Now())
+			if tracker.probeCalls != 1 || tracker.fetchByIDCalls != 0 || len(tracker.requestedIDs) != 1 || tracker.requestedIDs[0] != issue.ID {
+				t.Fatalf("probe=%d full=%d ids=%v", tracker.probeCalls, tracker.fetchByIDCalls, tracker.requestedIDs)
+			}
+			wantCleaned := mode == "terminal"
+			if fetched != (mode != "error") || cleaned != wantCleaned || (len(reaper.issues) > 0) != wantCleaned {
+				t.Fatalf("fetched=%v cleaned=%v reaped=%+v", fetched, cleaned, reaper.issues)
+			}
+		})
+	}
+}
