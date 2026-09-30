@@ -3,6 +3,7 @@ package runnerauth
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,7 +33,7 @@ func TestRoutingCacheRoundTrip(t *testing.T) {
 		t.Fatalf("cache = %#v", got)
 	}
 	info, err := os.Stat(RoutingCachePath(path))
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("cache permissions = %v, %v", info, err)
 	}
 	if err := SaveRoutingCache(path, RoutingSnapshot{RunnerID: NewBinding().RunnerID, Revision: 4, Routing: snapshot.Routing}); err == nil {
