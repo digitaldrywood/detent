@@ -154,7 +154,7 @@ func parseWorkpadSignal(issue githubIssueNode) *workpad.Signal {
 		if !workpadCommentBody(body) {
 			continue
 		}
-		if signal, ok := workpad.SignalFromComment(body, comment.URL, repo); ok {
+		if signal, ok := workpad.SignalFromWorkpad(body, comment.URL, repo); ok {
 			signal.RecordedAt = parseWorkpadRecordedAt(comment.CreatedAt, comment.UpdatedAt)
 			return signal
 		}
@@ -167,6 +167,10 @@ func parseWorkpadSignal(issue githubIssueNode) *workpad.Signal {
 			}
 		}
 		return nil
+	}
+	if signal, ok := workpad.SignalFromWorkpad(issue.Body, issue.URL, repo); ok {
+		signal.RecordedAt = parseWorkpadRecordedAt(issue.CreatedAt, issue.UpdatedAt)
+		return signal
 	}
 	if reason := markdownSectionText(issue.Body, "Human Action Needed"); reason != "" {
 		return &workpad.Signal{

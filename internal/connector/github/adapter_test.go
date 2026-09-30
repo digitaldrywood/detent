@@ -3908,12 +3908,19 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
+		bodyOnly    bool
 		name        string
 		body        string
 		wantReason  string
 		wantSource  string
 		wantInvalid string
 	}{
+		{
+			name:       "canonical body operational receipt",
+			bodyOnly:   true,
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_kind: operational\n  completion_work_attempt_id: \"7018\"\n  completion_generation: \"25\"\n  completion_evidence: No PR required.\nblockers: []\nhuman_action: null\n```",
+			wantSource: "structured",
+		},
 		{
 			name:       "valid structured block suppresses prose",
 			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```\n\n### Human Action Needed\n- Blocked by: #999",
@@ -3952,6 +3959,12 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 					URL:  "https://github.test/comment/workpad",
 				}}},
 			}
+			wantURL := "https://github.test/comment/workpad"
+			if tt.bodyOnly {
+				issue.Body, issue.URL = tt.body, "https://github.test/issue/3058"
+				issue.Comments.Nodes = nil
+				wantURL = issue.URL
+			}
 			signal := parseWorkpadSignal(issue)
 			if signal == nil {
 				t.Fatal("parseWorkpadSignal() = nil, want signal")
@@ -3960,7 +3973,7 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 			if signal.Source != tt.wantSource {
 				t.Fatalf("Signal.Source = %q, want %q", signal.Source, tt.wantSource)
 			}
-			if signal.CommentURL != "https://github.test/comment/workpad" {
+			if signal.CommentURL != wantURL {
 				t.Fatalf("Signal.CommentURL = %q, want comment URL", signal.CommentURL)
 			}
 			if tt.wantInvalid != "" {
