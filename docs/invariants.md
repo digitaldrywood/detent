@@ -478,12 +478,16 @@ completed-run transition reason, merge-revocation destination, and the central
 lane writer. These changes consolidate Human Review routing under the project
 setting; they add no reason code or recovery mechanism.
 
-Scheduled validation repairs (#3447, #3451) refresh the completed-run transition
-fingerprint after reviewing #3429's operational-receipt freshness check and
-#3281's opted-out review routing. Its dynamic reason still selects an existing
+Scheduled validation repairs (#3447, #3448, #3451) refresh the completed-run
+transition fingerprint after reviewing #3429's operational-receipt freshness
+check and #3281's opted-out review routing. The receipt check rejects changed
+completion evidence before review routing; removing only that check recreates
+the prior approved fingerprint. Its dynamic reason still selects an existing
 auto-promotion decision reason or `completed_active_review_transition`; the
 scanner's review boundary is retained. The orchestrator remains the sole lane
 writer; no transition reason or runtime behavior changes in these repairs.
+`TestRepositorySources` and `TestOperationalBodyCompletionSurvivesRestart`
+cover the source fingerprint and refusal of changed receipts.
 
 Runner credential expiry (#3382) no longer rejects the existing renewal
 operation for the same enrolled runner and organization. The host keeps its
