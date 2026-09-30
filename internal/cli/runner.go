@@ -190,7 +190,7 @@ func buildRunner(
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
-	return run, nil
+	return &sshRunner{Runner: run, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}, nil
 }
 
 func hostGoBudget(slots int) gobudget.Budget {

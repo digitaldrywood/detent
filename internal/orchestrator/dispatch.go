@@ -30,6 +30,9 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
+	if o.workerHostChecker != nil {
+		planner.workerHostAvailable = func(host string) bool { return o.workerHostChecker.WorkerHostAvailable(ctx, host) }
+	}
 	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
 		return o.operatorRejectedHead(ctx, issue)
 	}
@@ -677,7 +680,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	projectStats := o.projectStateSlotStats(slotIssue, state)
 
-	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
+	workerHost, ok := o.liveDispatchPlanner(ctx).selectWorkerHost(state, preferredWorkerHost)
 	if !ok && !mergeControlEligible {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
@@ -1027,6 +1030,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode
 		request.ResumeState = queuedRetry.ResumeState
+		if queuedRetry.WorkerHost != workerHost {
+			request.RetryMode = runpkg.RetryModeFresh
+			request.ResumeState = store.AgentResumeState{}
+		}
 	}
 	if priorAttempt.ExplainBeforeRetry {
 		delete(state.PriorAttempts, issue.ID)
