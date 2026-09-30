@@ -1064,15 +1064,16 @@ func TestValidateDoctorModelCatalog(t *testing.T) {
 func TestCheckDoctorProjects(t *testing.T) {
 	t.Parallel()
 
+	sourceRoot := t.TempDir()
 	parsedDisabledBudget, err := workflowconfig.ParseWorkflow([]byte("---\nbudget:\n  per_day_max_usd: 50\n  per_issue_max_usd: 5\n---\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
-	disabledBudgetWorkflow := validDoctorWorkflow("/repo")
+	disabledBudgetWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledBudgetWorkflow.Budget = parsedDisabledBudget.Config.Budget
-	omittedBudgetWorkflow := validDoctorWorkflow("/repo")
+	omittedBudgetWorkflow := validDoctorWorkflow(sourceRoot)
 	omittedBudgetWorkflow.Budget = workflowconfig.Default().Budget
-	disabledProgressWorkflow := validDoctorWorkflow("/repo")
+	disabledProgressWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledProgressWorkflow.Budget.BillingMode = workflowconfig.BillingModeSubscription
 	disabledProgressWorkflow.Agent.NoProgressTokenLimit = 0
 	disabledProgressWorkflow.Agent.NoProgressSpendLimitUSD = 0
@@ -1132,7 +1133,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
-			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
+			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
 			gitErr:     errors.New("not a git worktree"),
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
 			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
@@ -1151,7 +1152,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
-			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
+			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
 			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},

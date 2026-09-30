@@ -18,6 +18,7 @@ import { PlusIcon } from "lucide-react";
 import { Button } from "../../components/ui/button.tsx";
 import { useAccountBootstrap } from "../account/context.ts";
 import { useClient } from "../client.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
 import { boardStats, searchItems, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
@@ -75,6 +76,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const navigate = useNavigate();
   const shell = useShell();
   const client = useClient();
+  const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
+  usePageTitle("Work", project?.name);
   const http = useWorkHttp();
   const now = useNow();
   const [view, setView] = useViewState(projectId);

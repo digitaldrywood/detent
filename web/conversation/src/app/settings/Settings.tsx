@@ -35,6 +35,7 @@ import { RunnersSettings } from "../fleet/RunnersSection.tsx";
 import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
 import { useNewProject } from "../projects/NewProject.tsx";
 import { NEW_CHAT_KEYSHORTCUTS, SEARCH_KEYSHORTCUTS } from "../lib/shortcuts.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import { keybindingCatalogue } from "../adapters/keybindings.ts";
 import {
   DEFAULT_SECTION,
@@ -611,6 +612,11 @@ export function SettingsRoute({
   const activeId = items.some((item) => item.id === section && item.disabled !== true)
     ? section
     : DEFAULT_SECTION;
+  const projectName = bootstrap?.projects.find((candidate) => candidate.id === project)?.name;
+  usePageTitle(
+    activeId === "general" ? "Settings" : activeId === "runners" ? "Runners" : SETTINGS_SECTION_LABELS[activeId],
+    projectName,
+  );
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">

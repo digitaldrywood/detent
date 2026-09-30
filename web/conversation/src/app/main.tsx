@@ -22,6 +22,7 @@ import { isLoginPath, LoginCard } from "./routes.account.tsx";
 import "./index.css";
 import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
 import { isEntrySurface, makeEntryRouter } from "./entry/router.tsx";
+import { formatPageTitle } from "./pageTitle.ts";
 
 const container = document.getElementById("root");
 if (container === null)
@@ -84,6 +85,7 @@ function startOrganizationClient(): void {
       // bootstrap on either is the expected state rather than a failure. Every
       // other path needs one and says so.
       if (isLoginPath(pathname)) {
+        document.title = formatPageTitle("Sign in");
         mount(
           <React.StrictMode>
             <div className="flex h-full flex-col">
@@ -94,6 +96,7 @@ function startOrganizationClient(): void {
         return;
       }
       if (isSupportPath(pathname)) {
+        document.title = formatPageTitle("Support");
         mount(
           <React.StrictMode>
             <div className="flex h-full flex-col">
