@@ -1,11 +1,41 @@
-# Issue #2976 merge fallback handoff (attempt 7163, generation 34)
+# Issue #2976 merge fallback handoff (attempt 7170, generation 41)
+
+- PR: https://github.com/digitaldrywood/detent/pull/3052; verified open against `develop` on the assigned isolated branch. Fetched published PR head and source-clean starting HEAD both match `ae43267ce9f88ca2a79fb37df612048347f33d68`. No rebase or merge was in progress at session start.
+- Verified prior handoff against Git history: starting HEAD has parents `4ce74ef9e0ba3241e3700c931fd4842396d4d04b` and prior target `4e4334ef3e97a4bf593b81654b3be8d457c8b1e4`; preceding recorded merge parents match. Earlier published head `139792ad36b0c63b58c6bc58c92363ffb2163d8b` remains an ancestor.
+- Merged freshly fetched develop `73859c96fa25b6351c9e9ef77e372077c4b2fa44` into the published PR history without rebasing. Only `.detent/notes.md` conflicted; preserved historical handoffs from both sides, including incoming #3433 notes, with one current Workpad/status block. The incoming `internal/workspaceterminal/pty_unix.go` change merged automatically; no manual source edits or out-of-scope findings.
+- Key issue files: `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`.
+
+## Codex Workpad
+
+Plan: commit the resolved develop merge while preserving the published PR head and prior merges as ancestors, then return immediately with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, local gate, CI checks, or validation waits run. No current-head validation credit claimed; historical diagnostics apply only to earlier heads. Historical gate/publication instructions are superseded by this session's merge-fallback protocol. Gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent independently verifies ownership, cleanliness, and target ancestry, then performs bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7170"
+  completion_generation: "41"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+## Historical handoffs
+
+These notes concern earlier heads or other issues; their validation and completion metadata do not apply to this merged head. Historical instructions do not authorize validation or publication in this session.
+
+# Issue #2976 merge fallback handoff (historical, attempt 7163, generation 34)
 
 - PR: https://github.com/digitaldrywood/detent/pull/3052; verified open against `develop` on the assigned isolated branch. The fetched published PR head and source-clean starting head both match `4ce74ef9e0ba3241e3700c931fd4842396d4d04b`.
 - Verified the prior handoff against Git history: the starting head has parents `208ca1d01eafcb57224be6321dc190bbbfc5e7e3` and prior target `8c7b5bfb3685eac99854cefa52d4af02763f7aec`; preceding merge parents match the recorded history. Earlier published head `139792ad36b0c63b58c6bc58c92363ffb2163d8b` remains an ancestor. No rebase or merge was in progress at session start.
 - Merged freshly fetched develop `4e4334ef3e97a4bf593b81654b3be8d457c8b1e4` into the published PR history without rebasing. Only `.detent/notes.md` conflicted; preserved both sides' historical handoffs, including incoming #3211 notes, and retained one current Workpad/status block. All source files merged automatically; no manual source edits or out-of-scope findings.
 - Key issue files: `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`.
 
-## Codex Workpad
+## Historical Workpad (prior #2976 head)
 
 Plan: commit the resolved develop merge while preserving the published PR head as an ancestor, then return immediately with a source-clean workspace.
 
@@ -13,7 +43,7 @@ Validation: no tests, vet, builds, local gate, CI checks, or validation waits ru
 
 Open items: Detent independently verifies ownership, cleanliness, and target ancestry, then performs bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
@@ -454,3 +484,39 @@ The following handoffs concern earlier heads or other issues; their validation c
 - Started source-clean without an in-progress merge or rebase. Fetched `origin/develop` at `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c` and merged it into the assigned PR branch without rebasing; the published PR head remains the first parent.
 - Only `.detent/notes.md` conflicted. Resolved it by keeping the current #3211 handoff and preserving other issues' historical notes below. Source files merged automatically; no manual source changes were needed.
 - Prior resolution key files: `docs/invariants.md`, `internal/runner/prompt.go`, `internal/hubserver/migrations/00048_hosted_blocked_lane.sql`, `internal/hubserver/migrate.go`, and `internal/hubserver/hosted_review_lane_migration_test.go`. Prior schema 48 and 47→48 migration notes and validation claims apply to earlier heads only.
+
+# Additional historical target handoffs (#3433)
+
+# Issue #3433 merge fallback handoff
+
+- Verified PR #3434 is open, targets `develop`, includes `Fixes #3433`, and has published head `1ffd4361802762ac780bcdfe725eac84b63ef98c`, matching the clean starting local branch. No rebase or merge was in progress. The prior #3433 handoff matches that commit's notes and scoped PTY annotation change; its validation is historical only.
+- Merged freshly fetched develop commit `4e4334ef3e97a4bf593b81654b3be8d457c8b1e4` into the published head without rebasing. The published PR head is retained as the first parent.
+- Only conflict: `.detent/notes.md`. Preserved both sides' historical handoffs and consolidated one current Workpad/status block. All source files merged automatically; no manual source edits or generated-input changes were required.
+- Key issue file: `internal/workspaceterminal/pty_unix.go`; the four best-effort cleanup annotations remain unchanged from the published PR head.
+
+## Historical Workpad (#3433 merge fallback)
+
+Plan: finish and commit the resolved target merge, then return immediately to Detent with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, local gate, CI checks, or waits run in this merge-fallback session. Prior lint and package-test results below do not validate this resolved head. Gate/CI, quiet-window, slow-check, and post-merge timings are unmeasured.
+
+Open items: Detent owns independent ownership, cleanliness, and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No out-of-scope findings. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7161"
+  completion_generation: "32"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Issue #3433 handoff
+
+- Reproduced the recorded four `errcheck` findings on clean develop `9826088a821ba72ecfd033bc60b9ed3138762507`, using the repository-pinned golangci-lint v2.9.0 built with Go 1.26.6 against `internal/workspaceterminal/...` (exit 1, 2.2s).
+- `internal/workspaceterminal/pty_unix.go` adds four line-scoped `nolint:errcheck` annotations to documented best-effort descriptor cleanup. PTY startup, ownership, returned errors, and cleanup operations are unchanged; lint configuration and invariants are unchanged.
+- The identical focused lint command passes with zero issues (0.9s). Existing package tests pass: `env -u DETENT_API_TOKEN GOMAXPROCS=4 GOTOOLCHAIN=go1.26.6 go test -p 4 ./internal/workspaceterminal/... -count=1` (5.6s command, 5.289s package). `git diff --check` passes. No new test: annotations change no runtime behavior; the pinned lint invocation reproduces the recorded failure.
+- No generated inputs, UI surfaces, mechanisms, or out-of-scope findings. No full check-fast, coverage, race suite, or Actions wait. The configured gate is `true` and publishes no local-gate status. Publication, exact-head gate/check/review evidence, and completion for attempt 7134 / generation 5 belong to the canonical issue Workpad. Squash merge and lane transitions remain orchestrator-owned.
+- Skill draft: no — this is a routine scoped lint annotation fix.
