@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -343,5 +344,84 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("probe exceeded aggregate deadline")
+	}
+}
+
+func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "private", "runner.json")
+	file, err := runnerauth.Initialize(path, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Identity.OrganizationID = "org_test"
+	file.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+	if err := runnerauth.Save(path, file); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	closed := runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun " + now.Add(time.Hour).Format("15:04") + "-" + now.Add(2*time.Hour).Format("15:04")}}
+	snapshot := runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 3, Availability: closed}.Normalized()}
+	var capacities []int
+	claims := 0
+	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		body := `{}`
+		if strings.HasSuffix(request.URL.Path, "/heartbeat") {
+			var report struct {
+				Capacity int `json:"capacity"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&report); err != nil {
+				return nil, err
+			}
+			capacities = append(capacities, report.Capacity)
+			encoded, err := json.Marshal(snapshot)
+			if err != nil {
+				return nil, err
+			}
+			body = string(encoded)
+		} else if strings.HasSuffix(request.URL.Path, "/claims") {
+			claims++
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := Machine{ID: file.Identity.MachineID, Capacity: 3, Version: "test"}
+	if err := native.RegisterMachine(t.Context(), machine); err != nil {
+		t.Fatal(err)
+	}
+	if len(capacities) == 0 || capacities[0] != 0 || capacities[len(capacities)-1] != 0 {
+		t.Fatalf("closed capacities = %v", capacities)
+	}
+	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+		t.Fatalf("closed claim = %v, calls = %d", err, claims)
+	}
+	restarted, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err = restarted.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+		t.Fatalf("cached claim = %v, calls = %d", err, claims)
+	}
+	snapshot.Revision++
+	snapshot.Routing.Availability = runnerauth.Availability{}
+	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatal(err)
+	}
+	if capacities[len(capacities)-1] != 3 {
+		t.Fatalf("reopened capacities = %v", capacities)
+	}
+	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 1 {
+		t.Fatalf("open claim = %v, calls = %d", err, claims)
 	}
 }

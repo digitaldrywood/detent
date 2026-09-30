@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -203,6 +204,9 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 }
 
 func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) error {
+	if c.client.runner != nil {
+		return c.HeartbeatMachine(ctx, machine)
+	}
 	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		BackendIsolation isolationpolicy.Report    `json:"backend_isolation"`
@@ -231,6 +235,19 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 
 func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (tracker.NativeLease, error) {
 	var result tracker.NativeLease
+	if c.client.runner != nil {
+		availability, err := c.client.runner.availability()
+		if err != nil {
+			return result, err
+		}
+		status, err := availability.Evaluate(time.Now())
+		if err != nil {
+			return result, err
+		}
+		if !status.Open {
+			return result, ErrNoClaimableWork
+		}
+	}
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
 	if err == nil && c.client.runner != nil && result.IsolationPolicy == nil {
 		return result, errors.Join(errors.New("runner claim isolation policy is unavailable"), c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
