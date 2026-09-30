@@ -207,7 +207,7 @@ func sshSentinels() []error {
 		ErrWorkspacePreparation, ErrWorkspaceBranchHeld, ErrAgentResumeUnsupported,
 		ErrWorkerGitHubTokenResolution, ErrWorkerGitHubBudgetMonitor, ErrWorkerGitHubRESTReserved,
 		ErrSessionTokenCeilingExceeded, ErrSessionBudgetProjectionExceeded, ErrSessionMemoryCeilingExceeded,
-		ErrSessionDurationExceeded, ErrTurnDurationExceeded, ErrSessionTurnLimitExceeded, ErrSessionNoProgress,
+		ErrSessionDurationExceeded, ErrTurnDurationExceeded, ErrSessionTurnLimitExceeded,
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
 		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap,
 		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired}

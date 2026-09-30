@@ -70,3 +70,12 @@ human_action: null
 - Passed: `go test -p 4 ./internal/config/... ./internal/policy -count=1`; `go vet -p 4 ./internal/config/... ./internal/policy`; `git diff --check`. Configured gate is `true`; no full gates or CI were run. No generated inputs changed.
 - Downstream approval/authorization diagnostics could not compile: `internal/runner/ssh_protocol.go:210:85: undefined: ErrSessionNoProgress`, already tracked by #3427. Added evidence under its existing fingerprint, without expanding this fix.
 - INV-3 documents the policy normalization consolidation. Do not claim live Mac Cloud recovery before a repaired release is deployed and verified.
+
+# Issue #3427 handoff
+
+- Removed the retired `ErrSessionNoProgress` entry from `internal/runner/ssh_protocol.go`; remaining SSH sentinel and structured-error encoding is unchanged. No invariant or enforcement change.
+- Reproduced the recorded command on baseline `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c`: `go test ./internal/orchestrator -run '^TestOperationalBodyCompletionSurvivesRestart$' -count=1 -p 4` exited 1 with the reported undefined symbol.
+- After the removal, the same command exits 0 and compiles the orchestrator, but reports `[no tests to run]`: that test belongs to separate work. This is compilation evidence only.
+- Passed existing runner protocol diagnostics: `go test ./internal/runner -run '^(TestSSHErrorRoundTrip|TestSSHPeerConcurrentCallbacksAndDisconnect|TestSSHCallbackDoesNotPublishRemotePID|TestSSHRunResponseRetainsResultOnFailure)$' -count=1 -p 4` (0.406s package time). Existing tests cover sentinel identity, wrappers, structured errors, callbacks, disconnects, and failure results; no duplicate test added.
+- No generated inputs changed. Configured gate is `true`; no full gates, coverage, race suite, or CI wait. No out-of-scope discovery or reusable skill draft.
+- Source repair and focused diagnostics are complete. PR publication, current-head review, and completion for attempt 7112 / generation 42 are tracked in the canonical issue Workpad.
