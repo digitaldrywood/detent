@@ -54,10 +54,10 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	}
 	startedAt := r.now().UTC()
 	model := effectiveModel("", selection.Model, runtime.defaultModelForRole(role))
-	environment := workerEnvironment(map[string]string{
+	environment := r.withGoBudget(path, workerEnvironment(map[string]string{
 		"GH_TOKEN": "", "GITHUB_TOKEN": "",
 		serviceapi.AddressEnvironment: "", serviceapi.TokenEnvironment: "", serviceapi.DispositionTokenEnvironment: "",
-	}, workspace.Info{Path: path}, workspaceIssue(r.projectID, req.Issue))
+	}, workspace.Info{Path: path}, workspaceIssue(r.projectID, req.Issue)))
 	process, cleanup, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{Workspace: path, Environment: environment}, workerGitHubPolicy{})
 	if err != nil {
 		return result, err

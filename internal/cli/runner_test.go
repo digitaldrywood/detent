@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/observability"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -175,7 +177,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
@@ -397,7 +399,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
-	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err == nil {
 		t.Fatal("buildRunner() error = nil, want pricing load error")
 	}
@@ -2560,5 +2562,21 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 				t.Fatalf("host cache = %+v", snapshot.HostCache)
 			}
 		})
+	}
+}
+
+func TestHostGoBudgetUsesSharedHostLocation(t *testing.T) {
+	tests := []struct {
+		slots int
+		want  int
+	}{
+		{slots: 0, want: runtime.NumCPU()},
+		{slots: 6, want: 6},
+	}
+	for _, tt := range tests {
+		budget := hostGoBudget(tt.slots)
+		if budget.Slots != tt.want || budget.Dir != gobudget.HostDir() || budget.Executable == "" {
+			t.Fatalf("hostGoBudget(%d) = %+v, want %d slots in %s with an executable", tt.slots, budget, tt.want, gobudget.HostDir())
+		}
 	}
 }
