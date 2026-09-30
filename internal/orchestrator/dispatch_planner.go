@@ -102,6 +102,19 @@ func (p dispatchPlanner) plan(
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 	dueRetries = dueRetriesByIssue(state, now)
+	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
+		_, retryA := dueRetries[a.ID]
+		_, retryB := dueRetries[b.ID]
+		waitingA := !retryA && a.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(a, p.cfg.TerminalStates)
+		waitingB := !retryB && b.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(b, p.cfg.TerminalStates)
+		if waitingA == waitingB {
+			return 0
+		}
+		if waitingA {
+			return 1
+		}
+		return -1
+	})
 	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
 	logDecision := func(decision dispatchPlanDecision) {
 		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
