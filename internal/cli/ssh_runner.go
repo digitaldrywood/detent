@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,8 +44,14 @@ func sshScratchRoot() string {
 
 func SSHWorkerReady() bool {
 	root := sshScratchRoot()
+	if root == "" {
+		return false
+	}
 	info, err := os.Stat(root)
-	return root != "" && err == nil && info.IsDir()
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
 
 type sshRunner struct {
@@ -100,7 +107,7 @@ func (r *sshRunner) WorkerHostAvailable(ctx context.Context, host string) bool {
 	cmd := r.command(probeCtx, host, "detent "+SSHProbeArgument)
 	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
-	available := err == nil && strings.TrimSpace(string(output)) == fmt.Sprint(runnerpkg.SSHProtocolVersion)
+	available := err == nil && strings.TrimSpace(string(output)) == strconv.Itoa(runnerpkg.SSHProtocolVersion)
 	if ctx.Err() != nil {
 		return false
 	}
@@ -174,15 +181,13 @@ func (r *sshRunner) callSSH(ctx context.Context, request runnerpkg.RunRequest, m
 	}
 	output, err := cmd.StdoutPipe()
 	if err != nil {
-		input.Close()
-		return err
+		return errors.Join(err, input.Close())
 	}
 	// Stderr may contain provider or hook output. It is never copied into a
 	// tracker error or transport diagnostic, which could expose credentials.
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		input.Close()
-		return r.hostFailure(request.WorkerHost, fmt.Errorf("SSH worker startup: %w", err))
+		return r.hostFailure(request.WorkerHost, fmt.Errorf("SSH worker startup: %w", errors.Join(err, input.Close())))
 	}
 	callbacks := r.SSHRunCallbacks(request)
 	defer func() {
@@ -197,7 +202,7 @@ func (r *sshRunner) callSSH(ctx context.Context, request runnerpkg.RunRequest, m
 		return callbacks.Handle(ctx, method, args)
 	})
 	err = peer.Call(ctx, method, response, bootstrap)
-	input.Close()
+	err = errors.Join(err, input.Close())
 	peer.Close()
 	waitErr := cmd.Wait()
 	if ctx.Err() != nil {
@@ -324,7 +329,7 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 	}
 	connection := boot.Connection
 	if connection.Address != "" {
-		address, closeProxy, err := serveSSHService(peer)
+		address, closeProxy, err := serveSSHService(ctx, peer)
 		if err != nil {
 			return nil, err
 		}
@@ -357,7 +362,7 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 	case "reconcile":
 		return run.ReconcileWorkspaces(ctx, boot.Issues)
 	default:
-		outcome, err := run.Run(ctx, boot.Run.Bind(peer))
+		outcome, err := run.Run(ctx, boot.Run.Bind(ctx, peer))
 		return runnerpkg.NewSSHRunResponse(outcome, err), nil
 	}
 }
@@ -430,8 +435,9 @@ func (r *sshRunner) forwardService(ctx context.Context, args []json.RawMessage) 
 	return sshServiceResponse{Status: response.StatusCode, Header: response.Header, Body: body}, err
 }
 
-func serveSSHService(peer *runnerpkg.SSHPeer) (string, func(), error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func serveSSHService(ctx context.Context, peer *runnerpkg.SSHPeer) (string, func(), error) {
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
 	}
@@ -457,5 +463,9 @@ func serveSSHService(peer *runnerpkg.SSHPeer) (string, func(), error) {
 			peer.Close()
 		}
 	}()
-	return listener.Addr().String(), func() { _ = server.Close() }, nil
+	return listener.Addr().String(), func() {
+		if err := server.Close(); err != nil {
+			slog.Warn("close SSH service proxy", "error", err)
+		}
+	}, nil
 }

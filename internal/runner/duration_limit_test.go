@@ -206,7 +206,6 @@ func TestWorkerSessionCanceled(t *testing.T) {
 		{name: "turn duration", err: ErrTurnDurationExceeded, want: true},
 		{name: "session duration", err: ErrSessionDurationExceeded, want: true},
 		{name: "session turn limit", err: ErrSessionTurnLimitExceeded, want: true},
-		{name: "session no progress", err: ErrSessionNoProgress, want: true},
 		{name: "session memory ceiling", err: ErrSessionMemoryCeilingExceeded, want: true},
 		{name: "ordinary failure", err: errors.New("provider failed")},
 		{name: "success"},
@@ -233,7 +232,6 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 		{name: "completed", wantReason: "turn_completed"},
 		{name: "failed", turnErr: errors.New("provider failed"), wantReason: "turn_failed"},
 		{name: "cancelled", turnErr: context.Canceled, wantReason: "context_cancelled:runner.agent_backend"},
-		{name: "no progress", turnErr: ErrSessionNoProgress, wantReason: SessionBrakeReasonNoProgress},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

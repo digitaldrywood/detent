@@ -791,8 +791,11 @@ existing model-selection level (#2597), inheriting omitted limits from the flat
 project values. This consolidates limit resolution into the existing selection
 and guard paths; it adds no guard or escalation mechanism. Running sessions keep
 the resolved limits across turns, checkpoints, and fallbacks; label/configuration
-changes do not reset attempts or lifetime usage. Turn inactivity and no-progress
-behavior remain unchanged. Covered by `TestModelSelectionSessionLimits`,
+changes do not reset attempts or lifetime usage. Turn inactivity remains
+unchanged. The separate session no-progress cancellation was removed (#3252):
+a live local gate wait relies on the gate lock deadline and absolute worker
+session bound, with no issue Rework transition for unchanged work product during
+the wait. Covered by `TestModelSelectionSessionLimits`,
 `TestRunnerSelectedSessionLimits`, and `TestResumedSelectionKeepsSessionLevel`.
 
 Issue-body effort is bounded by the selected complexity level's effective effort
@@ -946,8 +949,19 @@ This covers squash commits, which cannot prove delivery through branch ancestry.
 Later commits, uncommitted files, nonterminal issues, and issues without a
 recorded landing retain the existing protection. The normal reaper removes the
 landed workspace and clears its cleanup failure; no new sweep or retention
-state is introduced (#3234). `TestLocalGitCleanupRecordedLanding` and
-`TestRunnerReapSquashLandedNativeWorkspace` cover this narrower decision.
+state is introduced (#3234).
+GitHub terminal cleanup and the supported `cleanup_workspace` action refresh
+the issue-to-PR association and hydrate the PR again before accepting the exact
+merged head (#3093). A verified repository/PR identity, successful merge time,
+and available current head are required. This proof exists only for that cleanup
+call and shares the native landing checks; it is never persisted as tracker
+state. Deleted branches, cached merged snapshots, and issue closure alone do
+not establish delivery. Both branch and worktree must still match the delivered
+head, and the normal `before_remove` lifecycle rechecks local work.
+`TestVerifyCleanupDelivery` covers unavailable and mismatched verification;
+`TestLocalGitCleanupRecordedLanding` reproduces squash delivery after source
+branch deletion and checks later/dirty/mismatched work and directory absence.
+`TestRunnerReapSquashLandedWorkspace` covers proof propagation through the runner.
 
 The operator-approved September 14 retention scope (#2681, INV-11 approval
 recorded in the issue) extends this same reaper sweep: completed workspaces
@@ -962,6 +976,9 @@ archives a verified Git bundle, staged and working-tree diffs, and all working
 files. Active issues and live processes remain protected. Content-addressed
 archives prevent identical recovery copies from accumulating after removal
 failures while preserving earlier snapshots after partial deletion.
+Quarantine removal in this existing sweep makes read-only directories writable
+before deletion; persistent failures are warned once per path while later
+sweeps still retry (#3039). This does not add a sweep or recovery path.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See

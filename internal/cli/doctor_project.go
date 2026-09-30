@@ -1800,10 +1800,6 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 	if cfg.Agent.MaxSessionDurationMS > 0 {
 		sessionDuration = strconv.Itoa(cfg.Agent.MaxSessionDurationMS)
 	}
-	noProgressTimeout := "disabled"
-	if cfg.Agent.NoProgressTimeoutMS > 0 {
-		noProgressTimeout = strconv.Itoa(cfg.Agent.NoProgressTimeoutMS)
-	}
 	mergeDuration := "disabled"
 	if cfg.Agent.MergeWorkerMaxDurationMS > 0 {
 		mergeDuration = strconv.Itoa(cfg.Agent.MergeWorkerMaxDurationMS)
@@ -1817,11 +1813,10 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 		multiplier = strconv.FormatFloat(cfg.Agent.MaxSessionContextMultiplier, 'g', -1, 64)
 	}
 	return fmt.Sprintf(
-		"session-guard=max_turns=%s, max_turn_duration_ms=%s, max_session_duration_ms=%s, no_progress_timeout_ms=%s, merge_worker_max_duration_ms=%s, max_session_tokens=%s, max_session_context_multiplier=%s",
+		"session-guard=max_turns=%s, max_turn_duration_ms=%s, max_session_duration_ms=%s, merge_worker_max_duration_ms=%s, max_session_tokens=%s, max_session_context_multiplier=%s",
 		maxTurns,
 		turnDuration,
 		sessionDuration,
-		noProgressTimeout,
 		mergeDuration,
 		tokens,
 		multiplier,

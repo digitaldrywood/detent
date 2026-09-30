@@ -3313,7 +3313,7 @@ func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 		"WORKFLOW.md is valid",
 		"identity release-captain",
 		"worker-model=provider-default",
-		"session-guard=max_turns=20, max_turn_duration_ms=disabled, max_session_duration_ms=7200000, no_progress_timeout_ms=5400000, merge_worker_max_duration_ms=21600000, max_session_tokens=disabled, max_session_context_multiplier=disabled",
+		"session-guard=max_turns=20, max_turn_duration_ms=disabled, max_session_duration_ms=7200000, merge_worker_max_duration_ms=21600000, max_session_tokens=disabled, max_session_context_multiplier=disabled",
 		"billing-mode=metered",
 		"orphan-recovery=resume_orphaned_sessions=true, experimental_thread_resume=true",
 		"prioritize-unblockers=true",
@@ -3345,7 +3345,7 @@ func TestDoctorWorkflowDetailReportsPinnedModelAndSessionGuard(t *testing.T) {
 	got := doctorWorkflowDetail("WORKFLOW.md", globalconfig.Project{}, cfg)
 	for _, want := range []string{
 		"worker-model=pinned gpt-5.5 via agents.routes.model",
-		"session-guard=max_turns=20, max_turn_duration_ms=900000, max_session_duration_ms=3600000, no_progress_timeout_ms=1800000, merge_worker_max_duration_ms=7200000, max_session_tokens=2000000, max_session_context_multiplier=4",
+		"session-guard=max_turns=20, max_turn_duration_ms=900000, max_session_duration_ms=3600000, merge_worker_max_duration_ms=7200000, max_session_tokens=2000000, max_session_context_multiplier=4",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("doctorWorkflowDetail() = %q, want substring %q", got, want)

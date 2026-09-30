@@ -38,7 +38,7 @@ func (d *database) bindHostedDatabase(ctx context.Context, cfg *HostedConfig) er
 		}
 		// Cloud's hostname change retains the same shared allocation. Preserve the
 		// immutable stored origin as deployment history, including on rollback.
-		if publicURL != cfg.PublicURL && !(deployment == "shared" && cfg.SharedEntry != nil && cloudorigin.Aliases(publicURL, cfg.PublicURL)) {
+		if publicURL != cfg.PublicURL && (deployment != "shared" || cfg.SharedEntry == nil || !cloudorigin.Aliases(publicURL, cfg.PublicURL)) {
 			return ErrHostedDatabaseBinding
 		}
 		wantDeployment, wantGeneration := cfg.deployment()
