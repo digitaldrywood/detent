@@ -16,6 +16,7 @@ import {
 import { Input } from "../../components/ui/input.tsx";
 import { Kbd } from "../../components/ui/kbd.tsx";
 import { Label } from "../../components/ui/label.tsx";
+import { ContextHelp } from "../components/ContextHelp.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation } from "../account/useResource.ts";
@@ -259,7 +260,12 @@ export function EnrollRunnerDialog({
                   )}
                 </div>
                 <div className="flex flex-col gap-1.5 sm:w-32">
-                  <Label htmlFor="enroll-runner-capacity">Runs at once</Label>
+                  <div className="flex items-center gap-1">
+                    <Label htmlFor="enroll-runner-capacity">Runs at once</Label>
+                    <ContextHelp label="Runs at once">
+                      One runner identity and process can execute up to this many distinct jobs concurrently. 6 means up to six jobs on this runner; it does not enroll six runners. Start with 1, then increase as CPU, memory, and provider capacity allow. Shared host, project, provider, and other dispatch limits can lower effective concurrency.
+                    </ContextHelp>
+                  </div>
                   <Input
                     id="enroll-runner-capacity"
                     type="number"
@@ -285,7 +291,16 @@ export function EnrollRunnerDialog({
                 </div>
               </div>
               <fieldset className="flex flex-col gap-2">
-                <legend className="pb-1 text-[13px] font-medium">Projects</legend>
+                <legend className="pb-1 text-[13px] font-medium">
+                  <span className="flex items-center gap-1">
+                    Projects
+                    <ContextHelp label="Projects">
+                      Selected projects define this runner’s access and routing scope. One runner
+                      can serve several projects; selecting three projects does not create three
+                      runners. Work still needs matching policy, a fresh heartbeat, and available capacity.
+                    </ContextHelp>
+                  </span>
+                </legend>
                 {projects.length === 0 ? (
                   <p className="text-[13px] text-muted-foreground">
                     You can read no projects on this organization, so there is nothing to enroll a
