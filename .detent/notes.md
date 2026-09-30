@@ -117,3 +117,4 @@ human_action: null
 - Recovered merge commit belongs to #3060 and is retained for publication. Fetched develop advanced to `bccee4c50f86019fd961a4c457a59a2c91e9eb31`; merged it, preserving both historical note sections.
 - Initial focused test and vet diagnostics exited 1: `internal/runner/ssh_protocol.go:210:85: undefined: ErrSessionNoProgress`. Recorded follow-up #3432; current develop already fixes this in #3431, so no runner edit was made here.
 - Skill draft: no — recovery and focused validation add no reusable procedure.
+- Resolved-source diagnostics passed: focused current-head audit, Rework audit evaluation, allowance live-head, and completed-Rework dispatch regressions; `go vet ./internal/orchestrator/...` passed. Configured `true` gate runs before publication; no status or full-suite pass is claimed.
