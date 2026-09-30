@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -999,6 +1000,37 @@ func TestRefreshCurrentLaneEntriesPreservesCacheOnFailure(t *testing.T) {
 			orch.refreshCurrentLaneEntries(t.Context(), &state, at.Add(2*time.Minute))
 			if len(state.laneEntries) != 1 || state.laneEntries[workflowLaneEntryKey(issue)].IsZero() {
 				t.Fatalf("entries after recovery = %v, want current board lane", state.laneEntries)
+			}
+		})
+	}
+}
+
+// Catches treating an intermediate ready promotion as a shipped artifact, and
+// losing configured terminal artifact evidence when a receipt is refreshed.
+func TestRecordLaneTransitionArtifactOutcome(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, target, reason string
+		kind                 string
+		want                 string
+	}{
+		{"accepted artifact", "Published", "ready", gate.KindArtifact, "artifact"},
+		{"intermediate promotion", "Merging", "ready", gate.KindArtifact, ""},
+		{"abandoned", "Cancelled", "ready", gate.KindArtifact, ""},
+		{"code gate", "Published", "ready", gate.KindCommand, ""},
+		{"observed import", "Published", "operator_move", gate.KindArtifact, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := &autoPromoteWorkflowMetricsRecorder{}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{TerminalStates: []string{"Published", "Cancelled"}, AutoPromote: AutoPromoteConfig{Gate: gate.Config{Kind: tt.kind}}}), workflowMetrics: recorder}
+			orch.recordLaneTransition(t.Context(), connector.Issue{ID: "artifact", State: "In Progress"}, tt.target, time.Now(), tt.reason, workflowLaneMetadata{})
+			events := recorder.snapshot()
+			if len(events) != 2 {
+				t.Fatalf("events=%#v, want exit and entry", events)
+			}
+			metadata, ok := workflowLaneMetadataFromJSON(events[1].MetadataJSON)
+			if !ok || metadata.TerminalOutcome != tt.want {
+				t.Fatalf("outcome=%q, want %q", metadata.TerminalOutcome, tt.want)
 			}
 		})
 	}
