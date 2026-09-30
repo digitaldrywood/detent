@@ -26,10 +26,14 @@ func TestStartupRefreshKeepsStateAndWorkerProgressObservable(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					issue := testIssue("startup-worker", "digitaldrywood/detent#2270", "Todo")
 					issues := []connector.Issue{issue, testIssue("startup-worker-2", "digitaldrywood/detent#2271", "Todo")}
+					var terminalIssues []connector.Issue
 					for i := range candidates {
-						issues = append(issues, testIssue(fmt.Sprintf("done-%d", i), fmt.Sprintf("repo#%d", i), "Done"))
+						terminalIssues = append(terminalIssues, testIssue(fmt.Sprintf("done-%d", i), fmt.Sprintf("repo#%d", i), "Done"))
 					}
 					tracker := &pendingDispatchConnector{fakeConnector: newFakeConnector(issues...), started: make(chan struct{}), release: make(chan struct{})}
+					// Terminal issues belong to the status/cleanup feed, not the
+					// bounded active-candidate queue.
+					tracker.stateIssues = terminalIssues
 					reaper := &startupStalledReaper{started: make(chan struct{}), release: make(chan struct{})}
 					runner := newBlockingRunner()
 					orch, err := orchestrator.New(orchestrator.Config{
