@@ -64,7 +64,7 @@ func TestIsolationMigrationPreservesRecordings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.ExecContext(t.Context(), "CREATE TABLE runner_identities (id TEXT PRIMARY KEY)"); err != nil {
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE runner_identities (id TEXT PRIMARY KEY); CREATE TABLE lease_runners (lease_id INTEGER PRIMARY KEY)"); err != nil {
 		t.Fatal(err)
 	}
 	legacy, err := migrationFiles.ReadFile("migrations/00033_workspace_terminal_recordings.sql")
@@ -113,5 +113,39 @@ func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
 	}
 	if report != "{}" {
 		t.Fatalf("stale report retained: %s", report)
+	}
+}
+
+func TestRunnerIsolationPolicyPinnedToClaim(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "isolation-pinned")
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
+	r.enroll(t)
+	issue := f.create(t, "queued")
+	descriptor := hubTestPolicy()
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "pinned", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if lease.IsolationPolicy == nil || lease.IsolationPolicy.Tier != isolation.Sandbox {
+		t.Fatalf("claim isolation = %#v", lease.IsolationPolicy)
+	}
+	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, IsolationTier: isolation.NativeTrusted}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
+	for _, request := range []struct {
+		path string
+		body any
+	}{
+		{f.base + "/claims", claim},
+		{f.base + "/leases/" + string(lease.ID) + "/renew", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}},
+	} {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, request.path, r.redemption.Credential, request.body)
+		requireNativeStatus(t, response, http.StatusOK)
+		var renewed tracker.NativeLease
+		decodeHubResponse(t, response, &renewed)
+		if renewed.IsolationPolicy == nil || renewed.IsolationPolicy.Tier != isolation.Sandbox {
+			t.Fatalf("claim downgraded: %#v", renewed.IsolationPolicy)
+		}
 	}
 }

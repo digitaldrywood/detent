@@ -424,6 +424,9 @@ with `sandbox` and extends existing claim compatibility to backend-probed tiers.
 Missing or withdrawn tier reports use the existing no-compatible-work result;
 no new reason code, recovery path, lane writer, or configuration key is introduced.
 Backend policy mapping fails closed instead of retrying as a native process.
+The existing lease owns execution isolation; the mutable routing cache is removed
+from backend enforcement rather than adding another cache revision guard.
+Claude verifies effective policy on its worker before sending a model prompt.
 `TestRunnerIsolationClaims`, `TestRunnerIsolationHeartbeatWithdrawsTier`,
 `TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
 withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
@@ -1562,6 +1565,12 @@ toolchain caches. Detent may house-keep a native cache (age or size trim that th
 toolchain tolerates) but never relocates it, never keys it per project or per
 attempt, and never introduces a configuration key that does either. Per-attempt
 isolation is limited to `TMPDIR`/`TMP`/`TEMP`.
+
+Sandbox isolation (#3168) grants normal backend turns access to the existing
+native Go build and module caches without relocating them. Restricted Codex turns
+keep cache writes and network access disabled. Claude resolves its subprocess
+temporary directory inside the existing worker scratch directory.
+`TestBackendAppliesRunnerIsolation` covers normal and restricted cache grants.
 
 Detent's former per-attempt and per-project Go caches duplicated a content-addressed,
 concurrency-safe host cache. Two Detent-owned caches of about 750 GB on one host,

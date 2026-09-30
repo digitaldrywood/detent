@@ -230,16 +230,10 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 }
 
 func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (tracker.NativeLease, error) {
-	var response struct {
-		tracker.NativeLease
-		RunnerRouting runnerauth.RoutingSnapshot `json:"runner_routing"`
-	}
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &response)
-	result := response.NativeLease
-	if err == nil && c.client.runner != nil {
-		if cacheErr := runnerauth.SaveRoutingCache(c.client.runner.path, response.RunnerRouting); cacheErr != nil {
-			return result, errors.Join(cacheErr, c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
-		}
+	var result tracker.NativeLease
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
+	if err == nil && c.client.runner != nil && result.IsolationPolicy == nil {
+		return result, errors.Join(errors.New("runner claim isolation policy is unavailable"), c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "no_claimable_work" {

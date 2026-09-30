@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,6 +35,18 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
 		return nil
 	}
+	s.mu.Unlock()
+	var report isolation.Report
+	if s.isolationReport != nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		report = s.isolationReport(probeCtx)
+		cancel()
+	}
+	s.mu.Lock()
+	last = s.nativeHeartbeats[source.client.project]
+	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
+		return nil
+	}
 	if last.IsZero() {
 		var required []string
 		if s.providerReports != nil {
@@ -54,7 +67,7 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		s.machine.ProviderReports = reports
 	}
 	if s.isolationReport != nil {
-		s.machine.BackendIsolation = s.isolationReport(ctx)
+		s.machine.BackendIsolation = report
 	}
 	if s.client.runner != nil && !last.IsZero() {
 		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
@@ -102,6 +115,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	}
 	issue := issueFromNative(recovery.Issue)
 	issue.AssignedToWorker = true
+	issue.IsolationPolicy = lease.IsolationPolicy
 	s.mu.Lock()
 	s.claims[issue.ID] = nativeTrackerLease(lease)
 	s.nativeClaims[issue.ID] = nativeClaim{source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)}

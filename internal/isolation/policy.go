@@ -1,6 +1,7 @@
 package isolation
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -13,9 +14,9 @@ const (
 )
 
 type Policy struct {
-	Tier          string
-	WritableRoots []string
-	HostServices  []string
+	Tier          string   `json:"tier"`
+	WritableRoots []string `json:"writable_roots,omitempty"`
+	HostServices  []string `json:"host_services,omitempty"`
 }
 
 type Report map[string][]string
@@ -75,4 +76,25 @@ func (p Policy) Validate() error {
 
 func Domains() []string {
 	return []string{"api.openai.com", "chatgpt.com", "api.anthropic.com", "github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "crates.io", "index.crates.io", "static.crates.io"}
+}
+
+type policyContextKey struct{}
+
+func WithPolicy(ctx context.Context, policy Policy) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	policy.HostServices = slices.Clone(policy.HostServices)
+	policy.WritableRoots = slices.Clone(policy.WritableRoots)
+	return context.WithValue(ctx, policyContextKey{}, policy)
+}
+
+func FromContext(ctx context.Context) (Policy, bool) {
+	if ctx == nil {
+		return Policy{}, false
+	}
+	policy, ok := ctx.Value(policyContextKey{}).(Policy)
+	policy.HostServices = slices.Clone(policy.HostServices)
+	policy.WritableRoots = slices.Clone(policy.WritableRoots)
+	return policy, ok
 }

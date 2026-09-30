@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
@@ -37,11 +37,7 @@ func runnerIsolationPolicy(identityPath string) func() (isolation.Policy, error)
 		return nil
 	}
 	return func() (isolation.Policy, error) {
-		snapshot, err := runnerauth.LoadRoutingCache(identityPath)
-		if err != nil {
-			return isolation.Policy{}, fmt.Errorf("load runner isolation policy: %w", err)
-		}
-		return isolation.Policy{Tier: snapshot.Routing.IsolationTier, HostServices: slices.Clone(snapshot.Routing.HostServices)}, nil
+		return isolation.Policy{}, errors.New("runner claim isolation policy is unavailable")
 	}
 }
 
@@ -54,7 +50,7 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) isolatio
 		}
 	}
 	for _, configured := range cfg.Projects {
-		workflow, err := project.LoadWorkflow(configured)
+		workflow, err := project.LoadWorkflowContext(ctx, configured)
 		if err != nil {
 			report[configured.ID+"/workflow"] = []string{}
 			continue
@@ -124,7 +120,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	if command == "" {
 		return errors.New("backend command is empty")
 	}
-	output, err := commandshell.CommandWithArgs(ctx, command, shell, []string{"--version"}).Output()
+	output, err := backendProbeCommand(ctx, command, shell, []string{"--version"}).Output()
 	if err != nil {
 		return errors.New("backend version probe failed")
 	}
@@ -157,7 +153,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		}
 		profile := settings["permissions"].(map[string]any)[options.PermissionProfile]
 		args := []string{"-c", "permissions." + options.PermissionProfile + "=" + tomlInline(profile), "-c", "features.network_proxy=true", "sandbox", "-P", options.PermissionProfile, "-C", inside, "/bin/sh", "-c", `touch allowed && ! touch "$1/denied" && test -n "${HTTPS_PROXY:-${https_proxy:-}}"`, "probe", base}
-		if err := commandshell.CommandWithArgs(ctx, command, shell, args).Run(); err != nil {
+		if err := backendProbeCommand(ctx, command, shell, args).Run(); err != nil {
 			return errors.New("Codex sandbox enforcement probe failed")
 		}
 		return nil
@@ -170,15 +166,18 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	if err != nil {
 		return err
 	}
-	if err := commandshell.CommandWithArgs(ctx, command, shell, []string{"--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--setting-sources", "", "--settings", string(encoded), "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`}).Run(); err != nil {
-		return errors.New("Claude sandbox settings probe failed")
-	}
-	var host *exec.Cmd
-	if runtime.GOOS == "darwin" {
-		host = exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny file-write*)", "/usr/bin/true")
-	} else {
+	if runtime.GOOS != "darwin" {
 		return errors.New("Claude Linux Unix socket enforcement is not proven")
 	}
+	args := []string{"--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--setting-sources", "", "--settings", string(encoded), "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`}
+	cmd := backendProbeCommand(ctx, command, shell, args)
+	cmd.Dir = inside
+	procgroup.SetTempDir(cmd, inside)
+	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"CLAUDE_CODE_TMPDIR": inside}})
+	if err := claudecode.VerifySandboxCommand(ctx, cmd, settings); err != nil {
+		return errors.New("Claude effective sandbox settings probe failed")
+	}
+	host := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny file-write*)", "/usr/bin/true")
 	if err := host.Run(); err != nil {
 		return errors.New("Claude host sandbox probe failed")
 	}
@@ -211,4 +210,12 @@ func tomlInline(value any) string {
 	default:
 		panic("unsupported isolation configuration value")
 	}
+}
+
+func backendProbeCommand(ctx context.Context, command, shell string, args []string) *exec.Cmd {
+	cmd := commandshell.CommandWithArgs(ctx, command, shell, args)
+	procgroup.Configure(ctx, cmd)
+	cmd.Cancel = func() error { return procgroup.TerminateTree(cmd, procgroup.GroupID(cmd)) }
+	cmd.WaitDelay = time.Second
+	return cmd
 }

@@ -572,14 +572,17 @@ shell capabilities remain separate: a native PTY reports `user`, never `sandbox`
 
 Codex maps sandbox work to a named permission profile equivalent to
 `workspace-write`, with explicit worktree and Detent
-runtime writable roots, no implicit system temporary-directory grant, and its
+runtime and existing native Go-cache writable roots, no implicit system temporary-directory grant, and its
 limited network proxy. Claude enables its sandbox, fails if unavailable, disables
 unsandboxed retries and excluded commands, limits network destinations, and denies
 reads of SSH, AWS, and macOS keychain directories. Sandbox runs expose only
 Bash, Read, Glob, and Grep, with MCP disabled, so file writes and network access
 pass through the shell sandbox. Backend launches apply the
-administrator's routing snapshot, refreshed on each claim; a missing private
-snapshot or failed cache update fails execution.
+isolation policy stored on the existing lease within the claim transaction.
+Heartbeats and routing-cache updates cannot change an active claim's policy.
+Missing claim policy fails execution. Claude verifies effective settings on the
+actual worker through its control protocol before sending a task prompt; managed
+settings that weaken the policy prevent startup.
 `native-trusted` explicitly disables the backend sandbox. Neither tier is a
 container or microVM guarantee. The workspace terminal default is `sandbox`;
 explicit legacy `container` and `user` settings remain readable.
@@ -591,7 +594,8 @@ localhost access to an exact port; such runners must not advertise sandbox suppo
 for that configuration. Probes conservatively require Codex 0.159.2 or newer and
 Claude Code 2.1.285 or newer on macOS, plus working OS sandbox support. Claude
 Linux is not advertised until its optional Unix socket filter can be proven;
-its version alone does not establish socket isolation. Unsupported hosts
+its version alone does not establish socket isolation. Heartbeat probes share a
+bounded aggregate budget and run outside the scheduler mutex. Unsupported hosts
 or configurations retain only the tiers they can deliver; there is no downgrade.
 
 Runner home projects are an administrator-selected subset of authorized project

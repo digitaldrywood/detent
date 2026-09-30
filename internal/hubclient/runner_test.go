@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -159,8 +160,13 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if cacheErr != nil || cachedClaim.Revision != 2 || cachedClaim.Routing.IsolationTier != "native-trusted" {
 		t.Fatalf("claim routing cache = %#v, %v", cachedClaim, cacheErr)
 	}
-	if _, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+	candidates[0].IsolationPolicy = nil
+	adopted, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+	if err != nil {
 		t.Fatalf("runner-side validation: %v", err)
+	}
+	if adopted.Issue.IsolationPolicy == nil || adopted.Issue.IsolationPolicy.Tier != isolation.NativeTrusted {
+		t.Fatalf("adopted isolation policy = %#v", adopted.Issue.IsolationPolicy)
 	}
 	eligibility, err := fleetAdmin.ProjectEligibility(t.Context(), "native")
 	if err != nil || len(eligibility.Exclusions) != 1 || len(eligibility.Runners) != 1 {
@@ -291,5 +297,51 @@ func TestRunnerRequestsDoNotFollowCredentialRedirects(t *testing.T) {
 	_, err = client.CreateRunnerEnrollment(t.Context(), "org_example", runnerauth.EnrollmentRequest{})
 	if err == nil || forwarded.Load() != 0 {
 		t.Fatalf("credential redirect followed: requests=%d err=%v", forwarded.Load(), err)
+	}
+}
+
+func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	scheduler := &Scheduler{client: client, now: time.Now, heartbeatInterval: time.Second, machine: Machine{ID: "machine", Capacity: 1}, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": time.Now().Add(-time.Minute)}, isolationReport: func(ctx context.Context) isolation.Report {
+		close(entered)
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 5*time.Second {
+			t.Error("probe has no bounded aggregate deadline")
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return isolation.Report{}
+	}}
+	done := make(chan error, 1)
+	go func() { done <- scheduler.ensureNativeMachine(t.Context(), &NativeConnector{client: native}) }()
+	<-entered
+	acquired := make(chan struct{})
+	go func() { scheduler.mu.Lock(); scheduler.mu.Unlock(); close(acquired) }()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("probe blocked scheduler mutex")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("probe exceeded aggregate deadline")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -89,15 +90,27 @@ func (b *AgentBackend) runTurn(
 	ctx = withAgentProcess(ctx, runner.AgentProcessRequest{Workspace: req.Workspace, Environment: req.Environment})
 	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
 	options := b.options
+	runtimeRoots := isolationRuntimeRoots(options.PermissionProfile, req)
 	var settings map[string]any
 	var err error
 	if options.IsolationPolicy != nil {
-		policy, policyErr := options.IsolationPolicy()
+		policy, pinned := isolation.FromContext(ctx)
+		var policyErr error
+		if !pinned {
+			policy, policyErr = options.IsolationPolicy()
+		}
 		if policyErr != nil {
 			return runner.AgentTurnResult{}, policyErr
 		}
 		policy.WritableRoots = append([]string{req.Workspace, req.TempDir}, req.ExtraWritableRoots...)
 		policy.WritableRoots = appendUniqueStrings(nil, policy.WritableRoots...)
+		cacheOptions := Options{ThreadSandbox: "workspace-write", TurnSandboxPolicy: map[string]any{"type": "workspaceWrite"}}
+		if policy.Tier == isolation.Sandbox {
+			policy.WritableRoots, err = hostCacheWritableRoots(ctx, cacheOptions, policy.WritableRoots, restricted)
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+		}
 		mapped, config, mapErr := IsolationSettings(policy)
 		if mapErr != nil {
 			return runner.AgentTurnResult{}, mapErr
@@ -107,9 +120,12 @@ func (b *AgentBackend) runTurn(
 		options.PermissionProfile = mapped.PermissionProfile
 		settings = config
 		if options.PermissionProfile != "" {
+			runtimeRoots = policy.WritableRoots
 			if restricted {
 				profile := settings["permissions"].(map[string]any)[options.PermissionProfile].(map[string]any)
 				profile["filesystem"] = map[string]any{"/": "read", ":workspace_roots": "read"}
+				profile["network"] = map[string]any{"enabled": false}
+				settings["features.network_proxy"] = false
 			}
 			options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
 		}
@@ -139,7 +155,7 @@ func (b *AgentBackend) runTurn(
 		DeveloperInstructions:   toolTurnInstructions(instructionTools, req.ToolInstructions),
 		Config:                  settings,
 		Permissions:             options.PermissionProfile,
-		RuntimeWorkspaceRoots:   isolationRuntimeRoots(options.PermissionProfile, req),
+		RuntimeWorkspaceRoots:   runtimeRoots,
 		ApprovalPolicy:          approvalPolicy(options.ApprovalPolicy, restricted),
 		MCPElicitationPolicy:    mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
 		ThreadSandbox:           threadSandbox(options.ThreadSandbox, restricted),

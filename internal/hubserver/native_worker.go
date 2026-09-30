@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -121,18 +121,18 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 	if reserved {
 		providerReservation = &reservation
 	}
-	var routing *runnerauth.RoutingSnapshot
+	var policy *isolation.Policy
 	if scope.credential.Runner.RunnerID != "" {
-		snapshot, err := readRunnerRoutingSnapshot(c.Request().Context(), s.database.db, scope.organization, scope.credential.Runner.RunnerID)
-		if err != nil {
+		var encoded string
+		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		routing = &snapshot
+		policy = &isolation.Policy{}
+		if err := json.Unmarshal([]byte(encoded), policy); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
-	return c.JSON(http.StatusOK, struct {
-		tracker.NativeLease
-		RunnerRouting *runnerauth.RoutingSnapshot `json:"runner_routing,omitempty"`
-	}{tracker.NativeLease{ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}, routing})
+	return c.JSON(http.StatusOK, tracker.NativeLease{IsolationPolicy: policy, ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
 }
 
 func (s *Service) requireNativeLease(c echo.Context) error {

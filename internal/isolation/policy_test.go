@@ -47,3 +47,18 @@ func TestPolicyValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyContextIsImmutable(t *testing.T) {
+	policy := Policy{Tier: Sandbox, HostServices: []string{"unix:/example.sock"}}
+	ctx := WithPolicy(t.Context(), policy)
+	policy.HostServices[0] = "unix:/changed.sock"
+	first, ok := FromContext(ctx)
+	if !ok || first.HostServices[0] != "unix:/example.sock" {
+		t.Fatalf("pinned policy = %#v", first)
+	}
+	first.HostServices[0] = "unix:/changed.sock"
+	second, _ := FromContext(ctx)
+	if second.HostServices[0] != "unix:/example.sock" {
+		t.Fatal("caller changed pinned policy")
+	}
+}

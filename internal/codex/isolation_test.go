@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func TestIsolationSettings(t *testing.T) {
@@ -52,18 +53,22 @@ func TestIsolationSettings(t *testing.T) {
 }
 
 func TestBackendAppliesRunnerIsolation(t *testing.T) {
-	for _, tier := range []string{isolation.Sandbox, isolation.NativeTrusted} {
-		t.Run(tier, func(t *testing.T) {
+	for _, test := range []struct {
+		name, tier string
+		restricted bool
+	}{{"sandbox", isolation.Sandbox, false}, {"trusted", isolation.NativeTrusted, false}, {"restricted", isolation.Sandbox, true}} {
+		t.Run(test.name, func(t *testing.T) {
+			tier := test.tier
 			transport := newFakeAppServerTransport([]Message{responseMessage(t, 1, `{"userAgent":"codex-cli/0.159.2"}`), responseMessage(t, 2, `{"thread":{"id":"thread"}}`), responseMessage(t, 3, `{"turn":{"id":"turn"}}`), notificationMessage(t, "turn/completed", `{"threadId":"thread","turn":{"id":"turn","status":"completed"}}`)})
 			server, err := NewAppServer(&workerTempCapturingTransportFactory{transport: transport}, WithReadTimeout(time.Second))
 			if err != nil {
 				t.Fatal(err)
 			}
-			backend, err := NewAgentBackend(server, Options{ThreadSandbox: "danger-full-access", IsolationPolicy: func() (isolation.Policy, error) { return isolation.Policy{Tier: tier}, nil }})
+			backend, err := NewAgentBackend(server, Options{ThreadSandbox: "danger-full-access", IsolationPolicy: func() (isolation.Policy, error) { return isolation.Policy{Tier: isolation.NativeTrusted}, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = backend.RunTurn(t.Context(), runner.AgentTurnRequest{Workspace: "/worktree", TempDir: "/runtime", Model: "test-model", ExtraWritableRoots: []string{"/detent-state"}}, nil)
+			_, err = backend.RunTurn(isolation.WithPolicy(t.Context(), isolation.Policy{Tier: tier}), runner.AgentTurnRequest{ReadOnly: test.restricted, Workspace: "/worktree", TempDir: "/runtime", Model: "test-model", ExtraWritableRoots: []string{"/detent-state"}}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -77,10 +82,26 @@ func TestBackendAppliesRunnerIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tier == isolation.Sandbox {
-				if params.Permissions != "detent-runner" || params.Sandbox != "" || params.Config["features.network_proxy"] != true {
+				if params.Permissions != "detent-runner" || params.Sandbox != "" || params.Config["features.network_proxy"] != !test.restricted {
 					t.Fatalf("thread = %#v", params)
 				}
-				assertJSONContains(t, sent[3].Params, "runtimeWorkspaceRoots", []any{"/worktree", "/runtime", "/detent-state"})
+				paths, err := toolcache.Resolve(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				roots := []any{"/worktree", "/runtime", "/detent-state"}
+				if !test.restricted {
+					roots = append(roots, paths.Build, paths.Modules)
+				}
+				assertJSONContains(t, sent[3].Params, "runtimeWorkspaceRoots", roots)
+				profile := params.Config["permissions"].(map[string]any)["detent-runner"].(map[string]any)
+				network := profile["network"].(map[string]any)
+				if network["enabled"] != !test.restricted {
+					t.Fatalf("network = %#v", network)
+				}
+				if test.restricted && profile["filesystem"].(map[string]any)[":workspace_roots"] != "read" {
+					t.Fatal("restricted turn can write")
+				}
 				assertJSONContains(t, sent[3].Params, "permissions", "detent-runner")
 				assertJSONOmits(t, sent[3].Params, "sandboxPolicy")
 			} else if params.Sandbox != "danger-full-access" {

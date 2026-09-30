@@ -149,6 +149,9 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
 	lease, ok := s.claims[strings.TrimSpace(issue.ID)]
+	if native, exists := s.nativeClaims[strings.TrimSpace(issue.ID)]; exists {
+		issue.IsolationPolicy = native.lease.IsolationPolicy
+	}
 	s.mu.Unlock()
 	if !ok {
 		return orchestrator.Claimed{}, errors.New("hub claim was not found for candidate")

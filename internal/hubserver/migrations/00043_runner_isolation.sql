@@ -1,4 +1,5 @@
 -- +goose Up
+ALTER TABLE lease_runners ADD COLUMN isolation_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(isolation_policy_json));
 ALTER TABLE runner_identities ADD COLUMN backend_isolation_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(backend_isolation_json));
 
 CREATE TABLE workspace_terminal_recordings_new (
@@ -33,6 +34,7 @@ CREATE INDEX workspace_terminal_recordings_session_idx
   ON workspace_terminal_recordings(relay_session_id, started_at DESC);
 
 -- +goose Down
+ALTER TABLE lease_runners DROP COLUMN isolation_policy_json;
 CREATE TABLE workspace_terminal_recordings_new (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspace_sessions(id) ON DELETE CASCADE,
