@@ -38,6 +38,7 @@ type WorkflowMetricsMetadataUpdater interface {
 }
 
 type workflowLaneMetadata struct {
+	DeliveryTimeSource    string                                     `json:"delivery_time_source,omitempty"`
 	TerminalOutcome       string                                     `json:"terminal_outcome,omitempty"`
 	StateFieldID          int                                        `json:"-"`
 	StateFieldValue       string                                     `json:"-"`
@@ -55,14 +56,15 @@ type workflowLaneMetadata struct {
 }
 
 type workflowLanePullRequestMetadata struct {
-	CIDurationSeconds    int64     `json:"ci_duration_seconds,omitempty"`
-	BaseRef              string    `json:"base_ref,omitempty"`
-	Repository           string    `json:"repository,omitempty"`
-	AssociationSource    string    `json:"association_source,omitempty"`
-	AssociationCheckedAt time.Time `json:"association_checked_at,omitzero"`
-	Number               int64     `json:"number,omitempty"`
-	HeadSHA              string    `json:"head_sha,omitempty"`
-	FailedChecks         []string  `json:"failed_checks,omitempty"`
+	MergedAt             *time.Time `json:"merged_at,omitempty"`
+	CIDurationSeconds    int64      `json:"ci_duration_seconds,omitempty"`
+	BaseRef              string     `json:"base_ref,omitempty"`
+	Repository           string     `json:"repository,omitempty"`
+	AssociationSource    string     `json:"association_source,omitempty"`
+	AssociationCheckedAt time.Time  `json:"association_checked_at,omitzero"`
+	Number               int64      `json:"number,omitempty"`
+	HeadSHA              string     `json:"head_sha,omitempty"`
+	FailedChecks         []string   `json:"failed_checks,omitempty"`
 }
 
 type workflowLaneDependencyAutoUnblockMetadata struct {
@@ -181,6 +183,18 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 ) error {
 	unlock := o.lockLaneWrites()
 	defer unlock()
+	if reason != string(AutoPromoteReasonOperationalCompletion) &&
+		!(reason == string(AutoPromoteReasonReady) && gate.Effective(o.cfg.AutoPromote.Gate).Kind == gate.KindArtifact) &&
+		normalizeState(targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
+		at = mergedDeliveryAt(issue, at)
+		if issue.PullRequest.MergedAt != nil && !issue.PullRequest.MergedAt.IsZero() {
+			metadata.DeliveryTimeSource = "forge_merged_at"
+		} else if reason == "merge_worker_programmatic_merge" {
+			metadata.DeliveryTimeSource = "post_api_observation"
+		} else {
+			metadata.DeliveryTimeSource = "completion_observation"
+		}
+	}
 	if !o.cfg.AutoPromote.humanReviewEnabled() &&
 		normalizeState(targetState) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState) {
 		targetState = blockedStatusState
@@ -919,6 +933,7 @@ func workflowLanePullRequestMetadataFromIssue(issue connector.Issue) *workflowLa
 		metadata.Number = *number
 	}
 	if issue.PullRequest != nil {
+		metadata.MergedAt = timePointerFromPtr(issue.PullRequest.MergedAt)
 		metadata.CIDurationSeconds = issue.PullRequest.CIDurationSeconds
 		metadata.BaseRef = issue.PullRequest.BaseRef
 		metadata.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)

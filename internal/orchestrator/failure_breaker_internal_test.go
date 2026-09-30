@@ -94,9 +94,8 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			want:          backendcapacity.StartupFailureErrorClass,
 		},
 		{
-			name:          "no progress has stable class",
+			name:          "generic no progress stays issue scoped",
 			terminalState: store.WorkAttemptTerminalNoProgress,
-			want:          projectFailureClassNoProgress,
 		},
 		{
 			name:          "final state is hashed",
@@ -113,6 +112,26 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 				t.Fatalf("projectAttemptFailureClass() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGenericNoProgressDoesNotPauseProject(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 30, 20, 12, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 5, Window: time.Hour, Cooldown: time.Hour}})
+	orch := &Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	for _, issueID := range []string{"workpad-blocked", "unpushed-1", "unpushed-2", "unpushed-3", "external-wait-1", "external-wait-2"} {
+		orch.recordProjectAttemptOutcome(&state, issueID, now, store.WorkAttemptTerminalNoProgress, nil, "", "")
+	}
+	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || !projectFailureBreakerAllowsDispatch(&state, now) {
+		t.Fatalf("unrelated issue outcomes paused project: %+v", state.FailureBreaker)
+	}
+	for _, issueID := range []string{"backend-1", "backend-2", "backend-3", "backend-4", "backend-5"} {
+		orch.recordProjectAttemptOutcome(&state, issueID, now, store.WorkAttemptTerminalFailure, nil, backendcapacity.StartupFailureErrorClass, "startup failed")
+	}
+	if !state.FailureBreaker.Active() || state.FailureBreaker.Class != backendcapacity.StartupFailureErrorClass || projectFailureBreakerAllowsDispatch(&state, now) {
+		t.Fatalf("concrete backend failure did not retain configured pause: %+v", state.FailureBreaker)
 	}
 }
 
