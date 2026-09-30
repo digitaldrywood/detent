@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1037,6 +1038,9 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 		return AgentTurnResult{}, nil, fmt.Errorf("prepare worker scratch: %w", err)
 	}
 	request.TempDir = tempDir
+	if !request.ReadOnly {
+		request.ExtraWritableRoots = append(slices.Clone(request.ExtraWritableRoots), tempDir)
+	}
 	cleanupScratch := func() error {
 		if cleanupErr := workspace.CleanupWorkerScratch(workspacePath, tempDir); cleanupErr != nil {
 			return fmt.Errorf("cleanup worker scratch: %w", cleanupErr)

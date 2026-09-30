@@ -84,7 +84,7 @@ func windowsScratchProcessMatches(ctx context.Context, pid int, root string, own
 	if err != nil {
 		return false, scratchProcessInspectionError(ctx, pid, "scratch ownership", err, alive)
 	}
-	if workerScratchEnvironmentMatches(root, environment) {
+	if workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), environment) {
 		return true, nil
 	}
 	cwd, err := p.CwdWithContext(ctx)
