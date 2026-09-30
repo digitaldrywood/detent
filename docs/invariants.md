@@ -257,6 +257,17 @@ retry and zero source calls after successful intake. Atomic intake retains the
 source snapshot and imported comment provenance while native edit history
 preserves field ownership (`TestLinkedIssueIntakeAtomicAndNativeEdits`).
 
+Onboarding batch intake (#3258) reuses the same atomic source hydration and
+native field ownership. Explicit source requests ride the enrolled runner's
+existing heartbeat response; Hub never fetches GitHub issues or stores the
+source credential. Failed or throttled items remain incomplete until an
+operator retries, and completed intake delivers no further source tasks.
+`TestGitHubBatchIntakeRetryAndNativeOwnership` and
+`TestGitHubBatchDiscoveryFailureAndSourceValidation` cover these boundaries.
+Selection defaults to a configured non-dispatchable lane; dispatchable intake
+requires explicit operator approval and uses existing native scheduling,
+without an additional hold or lane writer (INV-1 and INV-3).
+
 Validator PR-diff provenance failures are production failures, not code findings (#3066).
 The validator uses a repository/PR/base/head snapshot whose file list and patch
 agree, records its digest and identity with the verdict, and reuses only a
@@ -986,7 +997,10 @@ stall note or park the issue for that Detent-owned wait. The existing Blocked
 sweep also reconciles historical `attempt_allowance_exhausted` parks from the
 recorded PR head through the same
 promotion gate: a clean, green unchanged or newer head returns to Merging for
-the exact-head audit. Human actions, failing checks, and known audit findings
+the exact-head audit. Recovery evaluates audit eligibility once through the
+shared Rework readiness predicate, then applies the remaining promotion gates.
+This local evaluation leaves the instance audit requirement enabled for Merging.
+Human actions, failing checks, running or failed audits, and known audit findings
 continue to hold. Historical parks cannot be removed from the tracker by the
 triage change alone, so this reuses the existing sweep and lane action rather
 than adding another recovery loop or reason code (#3064).
