@@ -1009,6 +1009,9 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 		return
 	}
 	state.syncWorkerProgress()
+	// Publish recovered and updated runtime ownership before tracker reads can
+	// block the actor. Existing progress pointers keep heartbeats observable.
+	o.publishRuntimeState(state)
 	o.refreshInProgress.Store(true)
 	o.signalSnapshotAvailable()
 	if o.tickWatchdog == nil || state == nil {
