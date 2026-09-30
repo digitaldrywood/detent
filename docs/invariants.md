@@ -19,6 +19,14 @@ A passing test does not authorize weakening a rule.
 
 SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
 
+Hub-native SSH runs capture Git artifacts and attempt diffs on the selected
+host while the central execution owns upload journals, credentials, producer
+lease/fencing identity, Change Request publication, landing reports and provider
+reservations (#3358). SSH protocol version 2 prevents older workers from silently
+omitting native callbacks. `TestSSHNativePublication`, `TestSSHWorkerLifecycle`,
+`TestNativeExecutionLandsReviewedVersion` and `TestLocalProviderRevalidation`
+cover exact remote publication, retained journals and native capabilities.
+
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
 Merging promotion reads only the trusted audit verdict for the tick's hydrated

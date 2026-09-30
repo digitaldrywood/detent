@@ -688,10 +688,11 @@ the encrypted channel and use the same private temporary `GH_CONFIG_DIR` as
 local workers; they are removed when the worker exits and never written to the
 source checkout or persistent Git configuration.
 
-Remote workers currently support GitHub and Linear trackers. `hub_native`
-projects reject remote hosts because native artifact and diff publication need
-additional transport support; that work is tracked in
-[#3358](https://github.com/digitaldrywood/detent/issues/3358).
+Remote workers support GitHub, Linear, and `hub_native` trackers. Native runs
+capture artifacts and attempt diffs on the selected host through SSH; upload
+journals, credentials, lease fencing, Change Request publication, landing reports,
+and provider reservations remain central. Interrupted transfers retain their
+journals for existing recovery. Both endpoints must support SSH protocol version 2.
 
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
 enterprise variants, or the host's GitHub CLI configuration. When omitted or

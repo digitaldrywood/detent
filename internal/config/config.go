@@ -1678,9 +1678,6 @@ func (c *Config) Validate() error {
 	}
 	seenHosts := make(map[string]bool)
 	for _, host := range c.Worker.SSHHosts {
-		if c.Tracker.Kind == TrackerHubNative && host != "local" {
-			problems = append(problems, "worker.ssh_hosts remote execution does not yet support hub_native artifact and diff publication")
-		}
 		if host == "" || strings.TrimSpace(host) != host || strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t\r\n/\\;\"'`$") || seenHosts[host] {
 			problems = append(problems, "worker.ssh_hosts must contain unique SSH destinations or local")
 		}

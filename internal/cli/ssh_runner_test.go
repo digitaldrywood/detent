@@ -211,7 +211,11 @@ func sshTestProvider(ctx context.Context) error {
 	}
 }
 
-func TestSSHWorkerLifecycle(t *testing.T) { testSSHWorkerLifecycle(t, false) }
+func TestSSHWorkerLifecycle(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) { testSSHWorkerLifecycle(t, false, native) })
+	}
+}
 
 func TestSSHLocalTargetIntegration(t *testing.T) {
 	if testing.Short() {
@@ -220,10 +224,10 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("local SSH daemon fixture requires POSIX sshd configuration; TestSSHWorkerLifecycle covers the worker protocol")
 	}
-	testSSHWorkerLifecycle(t, true)
+	testSSHWorkerLifecycle(t, true, true)
 }
 
-func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
+func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
@@ -375,12 +379,25 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
 		updatesMu.Unlock()
 		return nil
 	}}
+	var probe *sshNativeProbe
+	if native {
+		probe = &sshNativeProbe{}
+		request.Execution = probe
+	}
 	result, err := run.Run(ctx, request)
 	if err != nil {
 		t.Fatalf("remote lifecycle: %v", err)
 	}
 	if result.FinalState != runnerpkg.FinalStateCompleted || result.Tokens.TotalTokens != 15 {
 		t.Fatalf("remote result = %+v", result)
+	}
+	if probe != nil {
+		probe.mu.Lock()
+		if probe.guarded != 1 || probe.finished != 1 || probe.journalRoot != cfg.Workspace.Root || probe.bundle.Capture.Head == probe.base || len(probe.bundle.Parts) < 2 || !strings.Contains(string(probe.bundle.Parts[0].Data), "remote worker") || len(probe.lastDiff.Files) != 1 || probe.lastDiff.Files[0].Path != "feature.txt" || !strings.Contains(probe.log, "Finished remote work.") || result.NativeChange == nil || result.NativeChange.ChangeID != "central-change" {
+			t.Errorf("lost central native lifecycle: guards=%d finishes=%d diff=%+v bundle=%+v log=%q result=%+v", probe.guarded, probe.finished, probe.lastDiff, probe.bundle, probe.log, result.NativeChange)
+		}
+		probe.mu.Unlock()
+		request.Execution = nil
 	}
 	for _, marker := range []string{"after-create", "before-run", "after-run", "gate"} {
 		if _, err := os.Stat(filepath.Join(remoteHome, marker)); err != nil {

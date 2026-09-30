@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -43,6 +44,13 @@ type ArtifactExecution interface {
 	PrepareArtifacts(context.Context, string) error
 	ArtifactLog(context.Context, string) error
 	FinalizeArtifacts(context.Context, string) error
+}
+
+// ArtifactSourceExecution keeps the upload journal on the execution owner while
+// capturing Git data on the host that owns the checkout. A nil source restores
+// local capture. The journal root is supplied by the central runner, never SSH.
+type ArtifactSourceExecution interface {
+	SetArtifactSource(journalRoot string, source func(context.Context, string, string) (artifact.GitCapture, error))
 }
 
 // AttemptDiffSource computes the worktree's diff for the stored attempt diff

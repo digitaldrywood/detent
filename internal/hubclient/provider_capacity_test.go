@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -260,6 +261,10 @@ func TestLocalProviderRevalidation(t *testing.T) {
 			current := report
 			test.change(&current)
 			e := &nativeExecution{scheduler: &Scheduler{now: func() time.Time { return now }, providerReports: func() ([]providercapacity.Report, error) { return []providercapacity.Report{current}, nil }}, claim: nativeClaim{lease: tracker.NativeLease{ProviderReservation: &providercapacity.Reservation{Requirement: requirement, Report: report}}}}
+			remote, _ := nativeSSHExecution(t, t.Context(), e, t.TempDir())
+			if got := remote.(runner.ProviderCapacityExecution).ProviderCapacity(); !reflect.DeepEqual(got, e.ProviderCapacity()) {
+				t.Fatalf("SSH changed the central reservation: %#v", got)
+			}
 			err := e.validateProviderStart(tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: test.model})
 			if (err == nil) != test.want || err != nil && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				t.Fatal(err)

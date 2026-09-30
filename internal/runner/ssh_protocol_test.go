@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -29,6 +30,9 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 		}},
 		{"not found", store.ErrNotFound, store.ErrNotFound, nil},
 		{"cancelled", context.Canceled, context.Canceled, nil},
+		{"artifact quota", artifact.ErrQuota, artifact.ErrQuota, nil},
+		{"artifact storage", artifact.ErrStorage, artifact.ErrStorage, nil},
+		{"landing refusal", ErrLandingNotReviewed, ErrLandingNotReviewed, nil},
 		{"joined", errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), context.DeadlineExceeded, nil},
 		{"capacity", backendcapacity.NewError(backendcapacity.Scope{BackendID: "code"}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("busy")), nil, func(err error) bool {
 			e, ok := backendcapacity.As(err)
