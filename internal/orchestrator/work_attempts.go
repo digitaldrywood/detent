@@ -1013,15 +1013,18 @@ func runningWorkAttemptPhase(running Running, state *State) string {
 		return "reviewing"
 	}
 	text := strings.ToLower(strings.TrimSpace(running.LastEvent + " " + running.LastMessage))
+	message := strings.TrimRight(strings.ToLower(strings.TrimSpace(running.LastMessage)), ".:;") + " "
 	switch {
+	case strings.HasPrefix(message, "waiting for ci ") || strings.HasPrefix(message, "waiting on ci ") ||
+		strings.HasPrefix(message, "waiting for current-head ci ") || strings.HasPrefix(message, "waiting on current-head ci ") ||
+		strings.HasPrefix(message, "waiting for github checks ") || strings.HasPrefix(message, "waiting on github checks "):
+		return "waiting_ci"
 	case strings.Contains(text, "checkout"):
 		return "checkout"
 	case strings.Contains(text, "rebase"):
 		return "rebase"
 	case strings.Contains(text, "test"):
 		return "testing"
-	case strings.Contains(text, "ci") || strings.Contains(text, "check"):
-		return "waiting_ci"
 	default:
 		return "implementing"
 	}

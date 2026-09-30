@@ -1596,6 +1596,16 @@ without rewriting immutable plan versions. Self-hosted databases have no quota.
 `TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
 exercise these boundaries without adding a brake, lease, or recovery mechanism.
 
+Active worker phase attribution retains the existing explicit validation lifecycle
+owner and recognizes CI waits from leading, bounded wait statements. Ordinary
+implementation words such as decisions or checking must not become CI waits or
+trigger CI-outage cancellation. Typed merge/pushed-work handling and live
+unstarted-check evidence remain unchanged. This removes a competing broad text
+heuristic without a new classifier, reason, configuration, or control mechanism.
+`TestCIUnavailableRepairImplementParity` covers phase and cancellation eligibility;
+`TestParkCIUnavailableWaiters` preserves real wait cancellation while ordinary
+implementation continues during the same outage.
+
 Post-integration acceptance uses the existing Workpad/final handoff and permitted
 Backlog follow-ups, rather than requiring a source worker to integrate or release
 its own unmerged change. The current prompt and orphan-resume contract record the
