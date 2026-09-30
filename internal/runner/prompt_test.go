@@ -1579,3 +1579,21 @@ func TestGateBlockSeparatesHumanApproval(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanOnlyPromptOmitsCIImplementationHandoff(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"Todo", "Rework", "In Progress", "Merging"} {
+		t.Run(state, func(t *testing.T) {
+			workflow := config.Workflow{Prompt: "Prepare a plan.", Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}}}
+			prompt, err := BuildPrompt(workflow, connector.Issue{Identifier: "digitaldrywood/detent#3076", State: state}, PromptOptions{PlanOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"## Source CI handoff", "## Merge CI handoff", "Complete the source changes"} {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("plan-only prompt contains %q", forbidden)
+				}
+			}
+		})
+	}
+}
