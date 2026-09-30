@@ -105,6 +105,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
 		GitHubIntake:    github.FetchIssueSnapshot,
+		GitHubDiscovery: github.DiscoverIssues,
 		Problems:        reportProblems,
 		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
 		ProviderReports: providerReports,

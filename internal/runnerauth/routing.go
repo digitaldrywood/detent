@@ -43,9 +43,10 @@ type Spillover struct {
 }
 
 type RoutingSnapshot struct {
-	RunnerID string  `json:"runner_id"`
-	Revision int64   `json:"revision"`
-	Routing  Routing `json:"routing"`
+	GitHubIntake *tracker.GitHubBatchTask `json:"github_intake,omitempty"`
+	RunnerID     string                   `json:"runner_id"`
+	Revision     int64                    `json:"revision"`
+	Routing      Routing                  `json:"routing"`
 }
 
 type RoutingChange struct {

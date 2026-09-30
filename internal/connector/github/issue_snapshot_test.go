@@ -92,3 +92,26 @@ func TestFetchIssueSnapshot(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchIssueSnapshotBoundsCompleteDiscussion(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		page := snapshotPage(fmt.Sprint(call), 21, true)
+		issue := page["data"].(map[string]any)["repository"].(map[string]any)["issue"].(map[string]any)
+		issue["comments"].(map[string]any)["pageInfo"].(map[string]any)["endCursor"] = fmt.Sprint("page-", call)
+		if err := json.NewEncoder(w).Encode(page); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(ClientConfig{Endpoint: server.URL + "/graphql", TokenSource: StaticTokenSource("read-token"), HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := client.FetchIssueSnapshot(t.Context(), "https://github.com/acme/orders/issues/12")
+	if !errors.Is(err, ErrInvalidResponse) || snapshot.Title != "" || len(snapshot.Comments) != 0 || calls.Load() != 20 {
+		t.Fatalf("partial snapshot=%#v error=%v calls=%d", snapshot, err, calls.Load())
+	}
+}

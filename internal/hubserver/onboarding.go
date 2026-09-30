@@ -17,6 +17,9 @@ import (
 )
 
 func (s *Service) registerOnboardingRoutes(e *echo.Echo) {
+	e.GET(nativeBase+"/onboarding/issue-intake", s.getGitHubBatch, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	e.POST(nativeBase+"/onboarding/issue-intake", s.commandGitHubBatch, s.requireOnboardingAdmin())
+	e.POST(nativeBase+"/onboarding/issue-intake/result", s.reportGitHubBatch, s.requireNativeScope(apiScopeWorker))
 	read := s.requireNativeScope(apiScopeOperator, apiScopeWorker, apiScopeAdmin)
 	write := s.requireNativeScope(apiScopeOperator, apiScopeAdmin)
 	e.PUT(nativeBase+"/onboarding/integration", s.updateProjectIntegration, s.requireOnboardingAdmin())

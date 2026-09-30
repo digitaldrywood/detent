@@ -78,7 +78,11 @@ for (const width of [1280, 390]) {
     await steps.getByRole("button").nth(0).click();
     await help(page, "Runner eligibility", "runner-reported heartbeat and capacity", tap);
     await help(page, "Route here", "does not fix a stale heartbeat", tap);
-    await page.getByRole("button", { name: "Enroll a runner", exact: true }).click();
+    const enroll = page.getByRole("button", { name: "Enroll a runner", exact: true });
+    const intake = page.getByRole("region", { name: "Import GitHub issues", exact: true });
+    await expect(intake).toBeVisible();
+    expect(await enroll.evaluate(element => Boolean(element.compareDocumentPosition(document.querySelector('[aria-label="Import GitHub issues"]')) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+    await enroll.click();
     const capacity = page.getByLabel("Concurrent work items", { exact: true });
     await expect(capacity).toHaveValue("1");
     await capacity.fill("6");

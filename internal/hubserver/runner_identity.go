@@ -39,6 +39,8 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		// The diff is written by the runner holding the attempt's lease;
 		// postAttemptDiff re-checks that lease and its fencing token.
 		operation = runnerauth.Claim
+	case path == nativeBase+"/onboarding/issue-intake/result":
+		operation = runnerauth.Heartbeat
 	case path == nativeBase+"/work-items/:item/source-intake":
 		operation = runnerauth.Claim
 	case path == nativeBase+"/machines/register", path == nativeBase+"/machines/:machine/heartbeat", path == nativeBase+"/policy/observed":
@@ -238,7 +240,12 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					return nil, err
 				}
 			}
-			return readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
+			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
+			if err != nil {
+				return nil, err
+			}
+			snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
+			return snapshot, err
 		}
 		if request.LocalChecks != nil {
 			return nil, nativeInvalid("Local checks require an enrolled runner")

@@ -23,6 +23,7 @@
 // history) is a real decision with a real endpoint. The stepper follows the
 // hub.
 import React from "react";
+import { GitHubIssueIntake } from "./IssueIntake.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
@@ -760,6 +761,7 @@ export function SetupRoute({
             onEnrolled={() => void onboarding.refresh()}
           />
         </div>
+        {(integration.value?.checkout_repository || integration.value?.repository) ? <GitHubIssueIntake projectId={projectId} repository={integration.value.checkout_repository || integration.value.repository || ""} runners={(onboarding.value?.runners ?? []).map(entry => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}
       </>
     ),
     "Artifact history": (

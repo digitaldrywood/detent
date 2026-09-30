@@ -13,7 +13,7 @@ import (
 
 func TestRunnerLocalChecksMigrationPreservesArchive(t *testing.T) {
 	t.Parallel()
-	for _, version := range []int64{43, 44} {
+	for _, version := range []int64{43, 44, 51} {
 		t.Run(strconv.FormatInt(version, 10), func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "hub.db")
@@ -43,11 +43,16 @@ func TestRunnerLocalChecksMigrationPreservesArchive(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantArchived := "0"
-			if version == 44 {
+			if version >= 44 {
 				if _, err := db.ExecContext(t.Context(), "UPDATE issues SET archived = 1 WHERE id = ?", issue); err != nil {
 					t.Fatal(err)
 				}
 				wantArchived = "1"
+			}
+			if version == 51 {
+				if _, err := db.ExecContext(t.Context(), "INSERT INTO onboarding_issue_intake(project_id, request_json) SELECT project_id, '{\"status\":\"preview\"}' FROM issues WHERE id = ?", issue); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
@@ -58,8 +63,14 @@ func TestRunnerLocalChecksMigrationPreservesArchive(t *testing.T) {
 				t.Fatal(err)
 			}
 			service = openTestService(t, cfg)
+			if version == 51 {
+				var got string
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT request_json FROM onboarding_issue_intake WHERE project_id = (SELECT project_id FROM issues WHERE id = ?)", issue).Scan(&got); err != nil || got != `{"status":"preview"}` {
+					t.Fatalf("intake after upgrade/reopen = %q, %v", got, err)
+				}
+			}
 			for _, check := range []struct{ name, query, want string }{
-				{"schema", "SELECT max(version_id) FROM hub_schema_version WHERE is_applied = 1", "51"},
+				{"schema", "SELECT max(version_id) FROM hub_schema_version WHERE is_applied = 1", "52"},
 				{"archive state", fmt.Sprintf("SELECT archived FROM issues WHERE id = %d", issue), wantArchived},
 				{"archive index", "SELECT count(*) FROM sqlite_schema WHERE name = 'issues_unarchived_organization'", "1"},
 				{"local checks column", "SELECT count(*) FROM pragma_table_info('runner_identities') WHERE name = 'local_checks_json' AND dflt_value = '''{}'''", "1"},
