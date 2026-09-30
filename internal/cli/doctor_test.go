@@ -3101,6 +3101,7 @@ CREATE TABLE workflow_phase_events (
   issue_url TEXT,
   phase_type TEXT,
   phase_name TEXT,
+  reason TEXT,
   status TEXT,
   started_at TEXT,
   metadata_json TEXT
@@ -3111,24 +3112,30 @@ CREATE TABLE workflow_phase_events (
 	currentAt := time.Date(2026, 7, 29, 19, 0, 0, 0, time.UTC)
 	current := doctorDependencyIssue("issue-current-predicate", nil)
 	current.StageUpdatedAt = &currentAt
+	triage := doctorDependencyIssue("issue-triage-predicate", nil)
+	triage.StageUpdatedAt = &currentAt
 	stale := doctorDependencyIssue("issue-stale-predicate", nil)
 	staleAt := currentAt.Add(time.Hour)
 	stale.StageUpdatedAt = &staleAt
 	metadata := `{"blocked_recovery":{"owner":"orchestrator","cause":"no_progress_limit","predicate":"fingerprint_changed","cause_fingerprint":"fingerprint"}}`
 	for _, row := range []struct {
-		issue connector.Issue
-		at    time.Time
+		issue    connector.Issue
+		at       time.Time
+		reason   string
+		metadata string
 	}{
-		{issue: current, at: currentAt},
-		{issue: stale, at: currentAt},
+		{issue: current, at: currentAt, metadata: metadata},
+		{issue: triage, at: currentAt, reason: "attempt_allowance_exhausted", metadata: `{"pull_request":{"repository":"digitaldrywood/detent","number":123,"head_sha":"current-head"}}`},
+		{issue: stale, at: currentAt, metadata: metadata},
 	} {
 		if _, err := db.ExecContext(t.Context(),
-			`INSERT INTO workflow_phase_events (issue_id, identifier, issue_url, phase_type, phase_name, status, started_at, metadata_json) VALUES (?, ?, ?, 'lane', 'Blocked', 'entered', ?, ?)`,
+			`INSERT INTO workflow_phase_events (issue_id, identifier, issue_url, phase_type, phase_name, reason, status, started_at, metadata_json) VALUES (?, ?, ?, 'lane', 'Blocked', ?, 'entered', ?, ?)`,
 			row.issue.ID,
 			row.issue.Identifier,
 			row.issue.URL,
+			row.reason,
 			row.at.Format(time.RFC3339Nano),
-			metadata,
+			row.metadata,
 		); err != nil {
 			t.Fatalf("INSERT error = %v", err)
 		}
@@ -3139,7 +3146,7 @@ CREATE TABLE workflow_phase_events (
 	check := checkDoctorBlockedRecoveryLive(
 		t.Context(),
 		"Project alpha blocked recovery",
-		&fakeDoctorAutoPromoteConnector{issues: []connector.Issue{current, stale}},
+		&fakeDoctorAutoPromoteConnector{issues: []connector.Issue{current, triage, stale}},
 		cfg,
 		currentAt.Add(2*time.Hour),
 		db,

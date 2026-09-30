@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -2522,6 +2523,88 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 			}
 			if tt.wantReason == blockedReadyPullRequestLookupNoneReason && !strings.Contains(blocked.RecoveryRemedy, "No PR found") {
 				t.Fatalf("recovery remedy = %q, want accurate no-PR outcome", blocked.RecoveryRemedy)
+			}
+		})
+	}
+}
+
+func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		mutate      func(*connector.Issue, time.Time)
+		audit       string
+		wantMerging bool
+	}{
+		{name: "same head green", wantMerging: true},
+		{name: "newer head green", mutate: func(issue *connector.Issue, at time.Time) {
+			issue.PullRequest.HeadSHA = "new-head"
+			committed := at.Add(time.Minute)
+			issue.PullRequest.HeadCommittedAt = &committed
+		}, wantMerging: true},
+		{name: "changed head without newer commit evidence", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.PullRequest.HeadSHA = "unverified-head"
+		}},
+		{name: "CI running", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.PullRequest.CIStatus = "pending"
+			issue.PullRequest.RunningChecks = []string{"Test"}
+		}},
+		{name: "CI failing", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.PullRequest.CIStatus = "failure"
+		}},
+		{name: "audit not yet run", audit: "missing", wantMerging: true},
+		{name: "audit findings", audit: "findings"},
+		{name: "human question", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.WorkpadSignal.Status = workpad.StatusBlocked
+			issue.WorkpadSignal.HumanAction = "answer deployment question"
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			at := time.Date(2026, 9, 25, 8, 37, 0, 0, time.UTC)
+			issue := blockedReadyPullRequestIssue()
+			issue.State = "Rework"
+			issue.PullRequest.CIStatus = "pending"
+			issue.PullRequest.RunningChecks = []string{"Test"}
+			tracker := &blockedReadyPullRequestLookupConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{}}
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", autoPromoteMergingState}, TerminalStates: []string{"Done", "Cancelled"}, MergeFastPathEnabled: true, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff}}})
+			if tt.audit != "" {
+				cfg.Project.ID = "detent"
+				cfg.ServiceIdentity = "detent:detent"
+				cfg.AutoPromote.Gate.SecurityAudit = gate.SecurityAuditConfig{Enabled: true, MaxAttempts: 1}
+			}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+			if tt.audit != "" {
+				memo := newSecurityAuditMemoryStore()
+				orch.securityAuditStore = memo
+				if tt.audit == "findings" {
+					run := securityAuditPassingRun(issue)
+					run.Verdict = securityaudit.VerdictFail
+					run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/auth.go", Line: 1, Body: "authorization bypass"}}
+					if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			orch.recordLaneTransition(t.Context(), issue, blockedStatusState, at, attemptAllowanceExhaustedReason, workflowLaneMetadata{})
+			issue.State = blockedStatusState
+			issue.PullRequest.CIStatus = "success"
+			issue.PullRequest.RunningChecks = nil
+			if tt.mutate != nil {
+				tt.mutate(&issue, at)
+			}
+			state := newState(cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: attemptAllowanceExhaustedReason, Source: BlockedSourceProjectStatus, BlockedAt: at}
+			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, at.Add(2*time.Minute))
+			if tt.wantMerging {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteMergingState {
+					t.Fatalf("updates = %#v, want Merging", tracker.updates)
+				}
+				if tracker.hydrateCalls != 1 {
+					t.Fatalf("hydrate calls = %d, want 1", tracker.hydrateCalls)
+				}
+			} else if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want park held", tracker.updates)
 			}
 		})
 	}

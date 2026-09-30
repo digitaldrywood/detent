@@ -375,6 +375,11 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issue.ID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
 		issue, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		// CI that is still running belongs to the gate, not the exhausted
+		// source-worker allowance. Re-evaluate this durable triage on the next tick.
+		if decision.Reason == AutoPromoteReasonCINotGreen && attemptTriageCIPending(issue.PullRequest) {
+			return nil
+		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
 			return nil
@@ -411,6 +416,38 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		return nil
 	}
 	return o.updateIssueState(ctx, state, issue, targetState, now, attemptAllowanceExhaustedReason)
+}
+
+func attemptTriageCIPending(pr *connector.PullRequest) bool {
+	if pr == nil || !currentHeadCIStatusPending(pr.CIStatus) {
+		return false
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		if !attemptTriageCheckRunning(check) {
+			return false
+		}
+	}
+	if len(pr.RunningChecks) > 0 {
+		return true
+	}
+	for _, check := range pr.Checks {
+		if attemptTriageCheckRunning(check) {
+			return true
+		}
+	}
+	return false
+}
+
+func attemptTriageCheckRunning(check connector.PullRequestCheck) bool {
+	if strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(check.Status)) {
+	case "pending", "queued", "waiting", "in_progress", "in progress", "requested":
+		return true
+	default:
+		return false
+	}
 }
 
 // Observation timestamps qualify the historical worker explanation without

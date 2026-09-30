@@ -810,6 +810,19 @@ Missing audits run in Merging. `TestReworkLivePullRequestPromotion`,
 `TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
 consolidation; no new transition reason or recovery loop is introduced.
 
+Allowance triage retains its single durable result while current-head CI is
+queued or running and no required check is missing. It does not publish the
+stall note or park the issue for that Detent-owned wait. The existing Blocked
+sweep also reconciles historical `attempt_allowance_exhausted` parks from the
+recorded PR head through the same
+promotion gate: a clean, green unchanged or newer head returns to Merging for
+the exact-head audit. Human actions, failing checks, and known audit findings
+continue to hold. Historical parks cannot be removed from the tracker by the
+triage change alone, so this reuses the existing sweep and lane action rather
+than adding another recovery loop or reason code (#3064).
+`TestAttemptAllowanceLiveHead` and
+`TestAttemptTriageParkRecoversOnCleanGreenHead` cover the wait and recovery.
+
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
 Unknown constants, including concatenations, fail. Existing dynamic forwarding
