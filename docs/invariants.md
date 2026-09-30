@@ -478,12 +478,16 @@ completed-run transition reason, merge-revocation destination, and the central
 lane writer. These changes consolidate Human Review routing under the project
 setting; they add no reason code or recovery mechanism.
 
-Scheduled validation repairs (#3447, #3451) refresh the completed-run transition
-fingerprint after reviewing #3429's operational-receipt freshness check and
-#3281's opted-out review routing. Its dynamic reason still selects an existing
+Scheduled validation repairs (#3447, #3448, #3451) refresh the completed-run
+transition fingerprint after reviewing #3429's operational-receipt freshness
+check and #3281's opted-out review routing. The receipt check rejects changed
+completion evidence before review routing; removing only that check recreates
+the prior approved fingerprint. Its dynamic reason still selects an existing
 auto-promotion decision reason or `completed_active_review_transition`; the
 scanner's review boundary is retained. The orchestrator remains the sole lane
 writer; no transition reason or runtime behavior changes in these repairs.
+`TestRepositorySources` and `TestOperationalBodyCompletionSurvivesRestart`
+cover the source fingerprint and refusal of changed receipts.
 
 Runner credential expiry (#3382) no longer rejects the existing renewal
 operation for the same enrolled runner and organization. The host keeps its
@@ -519,9 +523,10 @@ administrator approval. Source identity and administrator-authorized runner
 requirements still match exactly; no mismatch bypass or recovery path is added.
 `TestRunnerPolicyUpgradeKeepsApprovedID` pins a v0.117.1 approval with an explicit
 workspace root and execution shells so host defaults cannot change the fixture.
-The fixture explicitly retains the historical opt-out label; removing it is a
-policy change and rejects the historical approval after #3281's intentional
-review-default change. Zero-valued human-review settings are omitted from policy
+Empty opt-out labels and the historical `requires-human-review` default share
+the approved representation: runtime label matching always recognizes that
+built-in label. Custom opt-out labels remain policy inputs. Zero-valued
+human-review settings are omitted from policy
 JSON, preserving the representation before that field existed, while enabling
 human review changes both the config digest and gate descriptor (#3451).
 Equivalent absent/default host and check settings still match; explicit policy
@@ -1528,6 +1533,13 @@ It explicitly sets `gate.required_status_checks: []`, so pending optional or abs
 CI does not block progress. Reported failed CI still blocks, and native
 base-branch requirements remain authoritative;
 omitting the setting preserves aggregate CI behavior for other projects.
+The existing branch-policy enrichment projects applicable running and unstarted
+checks alongside CI status (#3477), so an optional queued housekeeping job
+cannot hold implementation Rework after CI status already passes that policy.
+Raw check observations and counts remain available for diagnosis; native
+required pending checks, strict branch information, and reported failures remain
+authoritative. `TestBranchPolicyProjectsApplicablePendingChecks` covers the
+projection and preserves omitted and named policies without a scheduler bypass.
 The operator also sets `gate.automated_review: "off"`; pending automated review
 does not create a completion wait in that mode. Required and optional modes
 retain their existing waits and timeout behavior; reported P1 findings still
