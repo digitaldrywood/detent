@@ -61,3 +61,14 @@ The existing specs/helper/config were copied under TMPDIR with only the helper o
 
 
 Publication target refresh merged unified sign-in at ade35a4be65891610b8fb890ce1a3ec145374bbe. The conflicted React bundle was regenerated with make generate (19.9s); TypeScript checking passed. An existing resumed checkout component test was corrected to select Repository configuration explicitly; all 113 selected frontend tests passed. The final browser run passed seven tests (38.5s), adding the incoming sign-in flow to the six onboarding/enrollment checks above. Current scratch evidence uses the same 3244-browser directory; the refreshed upstream hosted-Hub helper natively uses provided scratch. No production runner-first behavior changed, no new test was added, and no MCP/current-head CI credit is claimed.
+
+
+## Recovered merge verification — attempt 7361, generation 1
+
+Completed the recovered merge of develop `11f26bdd299cc6b267ff35bd75f73241d0de5f89` into published PR head `33e03f960ea0f28a3650b22b343ee5e4ff8855e1`. Inspected all 26 recovered paths. Incoming lesson-write removal and settings help match the target; the unfinished runtime notes rewrite was discarded and published notes remain intact. Retained current target invariant documentation, including native dependency ordering. No new runner-first source behavior or tests were added.
+
+`make generate` passed (16.1s) and reproduced the combined tracked bundle. Focused Go diagnostics passed across onboarding, runnerauth, Hub server/client and CLI (15.3s), covering local checks, registration, policy-independent enrollment, migration/archive/intake preservation and heartbeat delivery. Additional focused readiness/startup and incoming runner/orchestrator/project integration checks passed (7.8s). TypeScript checking and 122 selected frontend tests passed (15.6s command, 6.4s Vitest).
+
+All seven existing Playwright regressions passed (25.0s command, 24.4s run), including real-Hub sign-in, first-run runner-first setup, desktop/phone layout and accessibility, enrollment/token flow, and real React/mock-API contextual help at 1280px/390px. Default capacity 1, contextual independent-workspace/agent explanation, policy help, observed checks without attestations, input errors and horizontal bounds remain asserted. Desktop and 390px enrollment screenshots and narrow capacity-help evidence were visually inspected. Screenshots exercise capacity 6 after asserting default 1. All raw evidence remains under provided TMPDIR/3244-browser; fixture servers use ephemeral ports and normal teardown. Chrome DevTools MCP navigation is absent, so no MCP run is claimed. Live port 4000 was untouched.
+
+Migration numbers are unique through 52. Full issue source diff reviewed; no conflict markers or handwritten whitespace errors. The required gate is `true`; no full suite, coverage/race gate or CI waiting was performed. Exact publication evidence is recorded in the canonical issue Workpad.

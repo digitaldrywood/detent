@@ -26,7 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
-	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -43,7 +42,7 @@ const (
 	liveDiffStatsInterval          = 2 * time.Second
 	recentActivityLimit            = 5
 	defaultProjectID               = "default"
-	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
+	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work.\n\n" + repositoryHandoffContract
 	implausibleUsageRuntimeSeconds = int64(1800)
 	implausibleUsageOutputTokens   = int64(1000)
 )
@@ -1223,7 +1222,7 @@ func (r *Runner) runAgentTurn(
 		}
 		ceilingUpdate := update
 		ceilingUpdate.Tokens.TotalTokens += runRequest.sessionTokenOffset
-		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, info.Path, ceilingUpdate, eventAt); err != nil {
+		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, ceilingUpdate); err != nil {
 			return err
 		}
 		observedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, sessionModel)
@@ -3221,7 +3220,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
 			return err
 		}
-		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, update); err != nil {
 			return err
 		}
 		if err := sessionBrake.observe(updateCtx, progress.turnCount(), runResult.Tokens.TotalTokens); err != nil {
@@ -4065,7 +4064,7 @@ type sessionTokenCeiling struct {
 	contextMultiplier  float64
 }
 
-func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Issue, workspacePath string, update AgentUpdate, eventAt time.Time) error {
+func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Issue, update AgentUpdate) error {
 	if update.Type != AgentUpdateTokenUsage || sessionTokenCeilingBypassed(cfg, issue) {
 		return nil
 	}
@@ -4075,18 +4074,13 @@ func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Is
 		return nil
 	}
 
-	err := &SessionTokenCeilingError{
+	return &SessionTokenCeilingError{
 		TotalTokens:        observedTokens,
 		CeilingTokens:      ceiling.tokens,
 		Source:             ceiling.source,
 		ModelContextWindow: ceiling.modelContextWindow,
 		ContextMultiplier:  ceiling.contextMultiplier,
 	}
-	if appendErr := appendSessionTokenCeilingLesson(cfg.Lessons, issue, workspacePath, err, eventAt); appendErr != nil {
-		r.logger.Warn("session token ceiling lesson append failed", "error", appendErr)
-		return errors.Join(err, appendErr)
-	}
-	return err
 }
 
 func (r *Runner) enforceSessionBudgetProjection(
@@ -4189,29 +4183,6 @@ func tokenCeilingOverrideEnabled(value string) bool {
 	default:
 		return false
 	}
-}
-
-func appendSessionTokenCeilingLesson(cfg config.Lessons, issue connector.Issue, workspacePath string, ceilingErr *SessionTokenCeilingError, eventAt time.Time) error {
-	if strings.TrimSpace(workspacePath) == "" {
-		return nil
-	}
-	path := cfg.Path
-	if strings.TrimSpace(path) == "" {
-		path = lessons.DefaultPath
-	}
-	lessonPath, err := promptWorkspaceRelativePath(workspacePath, path)
-	if err != nil {
-		return err
-	}
-	return lessons.Append(lessonPath, lessons.Entry{
-		IssueNumber: githubIssueNumber(issue.Identifier),
-		IssueRef:    issue.Identifier,
-		Title:       issue.Title,
-		FailureKind: FinalStateTokenCeilingExceeded,
-		Symptom:     fmt.Sprintf("session reached %d tokens, above configured ceiling %d", ceilingErr.TotalTokens, ceilingErr.CeilingTokens),
-		Hypothesis:  "the agent session is consuming tokens faster than the configured per-session ceiling permits",
-		Hint:        "retry with a narrower task split, stronger stop conditions, or a deliberate per-issue token ceiling override",
-	}, lessons.AppendOptions{Date: eventAt.UTC(), MaxEntries: cfg.MaxEntries})
 }
 
 func finalStateForTurnError(err error) string {

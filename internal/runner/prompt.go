@@ -763,6 +763,8 @@ func githubTrackerHostname(tracker config.Tracker) string {
 	return parsed.Host
 }
 
+const repositoryHandoffContract = "Use the current Detent completion contract for handoff; Detent owns durable attempt and session records. Ignore earlier instructions to maintain repository notes. Do not create, update, stage, or commit `.detent/notes.md` for runtime handoff. Leave existing notes intact."
+
 func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 	completionFields := ""
 
@@ -772,7 +774,7 @@ func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 			"  completion_generation: \"" + strconv.FormatUint(opts.Generation, 10) + "\"\n"
 	}
 	block := strings.Replace(templates.BlockedHandoff, "{{ completion_fields }}", completionFields, 1)
-	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimSpace(block)
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimSpace(block) + "\n\n" + repositoryHandoffContract
 }
 
 func appendClosingReferenceInstruction(prompt string, issue connector.Issue) string {

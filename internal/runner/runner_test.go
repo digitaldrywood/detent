@@ -3059,6 +3059,7 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
 				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
 				"The orchestrator is the only writer of tracker lane state",
+				repositoryHandoffContract,
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt missing %q", want)
@@ -3136,6 +3137,9 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	}
 	if agentBackend.request.Prompt != orphanResumePrompt {
 		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge", agentBackend.request.Prompt)
+	}
+	if !strings.Contains(agentBackend.request.Prompt, "Ignore earlier instructions to maintain repository notes") || !strings.Contains(agentBackend.request.Prompt, "Do not create, update, stage, or commit `.detent/notes.md`") {
+		t.Fatal("orphan resume retains the legacy repository notes instruction")
 	}
 	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
 		t.Fatalf("SessionStart resume metadata = %#v", sessionStore.started)
@@ -3461,126 +3465,151 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 	}
 }
 
-func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
+func TestRunnerRunKillsSessionAtTokenCeilingWithoutLessonWrites(t *testing.T) {
 	t.Parallel()
 
-	workspacePath := t.TempDir()
-	startedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: workspacePath, Key: "issue-853", Branch: "detent/issue-853"},
+	tests := []struct {
+		name     string
+		path     string
+		enabled  bool
+		existing string
+	}{
+		{name: "disabled default absent"},
+		{name: "disabled default existing", existing: "human-authored lesson\n"},
+		{name: "enabled default existing", enabled: true, existing: "human-authored lesson\n"},
+		{name: "enabled configured existing", path: "project-lessons.md", enabled: true, existing: "configured human-authored lesson\n"},
 	}
-	agentBackend := &fakeCodexClient{
-		updates: []AgentUpdate{
-			{
-				Type:     AgentUpdateTokenUsage,
-				ThreadID: "thread-853",
-				TurnID:   "turn-1",
-				Tokens: AgentTokenUsage{
-					InputTokens:  80,
-					OutputTokens: 10,
-					TotalTokens:  90,
-				},
-			},
-			{
-				Type:     AgentUpdateTokenUsage,
-				ThreadID: "thread-853",
-				TurnID:   "turn-1",
-				Tokens: AgentTokenUsage{
-					InputTokens:  100,
-					OutputTokens: 20,
-					TotalTokens:  120,
-				},
-			},
-		},
-	}
-	sessionStore := &fakeSessionStore{sessionID: 853}
-	clock := newFakeClock(
-		startedAt,
-		startedAt,
-		startedAt.Add(time.Second),
-		startedAt.Add(2*time.Second),
-		startedAt.Add(3*time.Second),
-	)
-
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{
-				Agent: config.Agent{
-					MaxSessionTokens: 100,
-					Lessons: config.Lessons{
-						Path:       ".detent/lessons.md",
-						MaxEntries: 5,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workspacePath := t.TempDir()
+			lessonPath := tt.path
+			if lessonPath == "" {
+				lessonPath = ".detent/lessons.md"
+			}
+			lessonPath = filepath.Join(workspacePath, lessonPath)
+			if tt.existing != "" {
+				if err := os.MkdirAll(filepath.Dir(lessonPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(lessonPath, []byte(tt.existing), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			startedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: workspacePath, Key: "issue-853", Branch: "detent/issue-853"},
+			}
+			agentBackend := &fakeCodexClient{
+				updates: []AgentUpdate{
+					{
+						Type:     AgentUpdateTokenUsage,
+						ThreadID: "thread-853",
+						TurnID:   "turn-1",
+						Tokens: AgentTokenUsage{
+							InputTokens:  80,
+							OutputTokens: 10,
+							TotalTokens:  90,
+						},
+					},
+					{
+						Type:     AgentUpdateTokenUsage,
+						ThreadID: "thread-853",
+						TurnID:   "turn-1",
+						Tokens: AgentTokenUsage{
+							InputTokens:  100,
+							OutputTokens: 20,
+							TotalTokens:  120,
+						},
 					},
 				},
-			},
-			Prompt: "Work on {{ issue.identifier }}",
-		},
-		Workspace:    workspaceBackend,
-		AgentBackend: agentBackend,
-		Store:        sessionStore,
-		Now:          clock.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
+			}
+			sessionStore := &fakeSessionStore{sessionID: 853}
+			clock := newFakeClock(
+				startedAt,
+				startedAt,
+				startedAt.Add(time.Second),
+				startedAt.Add(2*time.Second),
+				startedAt.Add(3*time.Second),
+			)
 
-	var usageUpdates []UsageUpdate
-	result, err := runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-853",
-			Identifier: "digitaldrywood/detent#853",
-			Title:      "Per-session token ceiling",
-		},
-		StartedAt: startedAt,
-		OnUsageUpdate: func(update UsageUpdate) error {
-			usageUpdates = append(usageUpdates, update)
-			return nil
-		},
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want token ceiling error")
-	}
-	if !errors.Is(err, ErrSessionTokenCeilingExceeded) {
-		t.Fatalf("Run() error = %v, want ErrSessionTokenCeilingExceeded", err)
-	}
-	var ceilingErr *SessionTokenCeilingError
-	if !errors.As(err, &ceilingErr) {
-		t.Fatalf("Run() error = %T, want SessionTokenCeilingError", err)
-	}
-	if ceilingErr.TotalTokens != 120 || ceilingErr.CeilingTokens != 100 || ceilingErr.Source != TokenCeilingSourceAbsolute {
-		t.Fatalf("ceiling error = %#v, want total 120 ceiling 100 absolute source", ceilingErr)
-	}
-	if result.FinalState != FinalStateTokenCeilingExceeded {
-		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateTokenCeilingExceeded)
-	}
-	if sessionStore.finished.FinalState != FinalStateTokenCeilingExceeded || sessionStore.finished.TotalTokens != 120 {
-		t.Fatalf("SessionFinish = %#v, want token ceiling final state and 120 tokens", sessionStore.finished)
-	}
-	if sessionStore.usage.Outcome != FinalStateTokenCeilingExceeded || sessionStore.usage.TotalTokens != 120 {
-		t.Fatalf("UsageEvent = %#v, want token ceiling outcome and 120 tokens", sessionStore.usage)
-	}
-	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
-		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
-	}
-	if len(usageUpdates) != 5 {
-		t.Fatalf("usage update count = %d, want workspace start, dispatch baseline, configured identity, and 2 token updates", len(usageUpdates))
-	}
-	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
-		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
-	}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{
+						Agent: config.Agent{
+							MaxSessionTokens: 100,
+							Lessons: config.Lessons{
+								Path:       tt.path,
+								Enabled:    tt.enabled,
+								MaxEntries: 5,
+							},
+						},
+					},
+					Prompt: "Work on {{ issue.identifier }}",
+				},
+				Workspace:    workspaceBackend,
+				AgentBackend: agentBackend,
+				Store:        sessionStore,
+				Now:          clock.Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
 
-	lesson, err := os.ReadFile(filepath.Join(workspacePath, ".detent", "lessons.md"))
-	if err != nil {
-		t.Fatalf("ReadFile(lessons) error = %v", err)
-	}
-	for _, want := range []string{
-		"Failure kind:** token_ceiling_exceeded",
-		"session reached 120 tokens",
-		"configured ceiling 100",
-	} {
-		if !strings.Contains(string(lesson), want) {
-			t.Fatalf("lesson missing %q:\n%s", want, lesson)
-		}
+			var usageUpdates []UsageUpdate
+			result, err := runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-853",
+					Identifier: "digitaldrywood/detent#853",
+					Title:      "Per-session token ceiling",
+				},
+				StartedAt: startedAt,
+				OnUsageUpdate: func(update UsageUpdate) error {
+					usageUpdates = append(usageUpdates, update)
+					return nil
+				},
+			})
+			if err == nil {
+				t.Fatal("Run() error = nil, want token ceiling error")
+			}
+			if !errors.Is(err, ErrSessionTokenCeilingExceeded) {
+				t.Fatalf("Run() error = %v, want ErrSessionTokenCeilingExceeded", err)
+			}
+			var ceilingErr *SessionTokenCeilingError
+			if !errors.As(err, &ceilingErr) {
+				t.Fatalf("Run() error = %T, want SessionTokenCeilingError", err)
+			}
+			if ceilingErr.TotalTokens != 120 || ceilingErr.CeilingTokens != 100 || ceilingErr.Source != TokenCeilingSourceAbsolute {
+				t.Fatalf("ceiling error = %#v, want total 120 ceiling 100 absolute source", ceilingErr)
+			}
+			if result.FinalState != FinalStateTokenCeilingExceeded {
+				t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateTokenCeilingExceeded)
+			}
+			if sessionStore.finished.FinalState != FinalStateTokenCeilingExceeded || sessionStore.finished.TotalTokens != 120 {
+				t.Fatalf("SessionFinish = %#v, want token ceiling final state and 120 tokens", sessionStore.finished)
+			}
+			if sessionStore.usage.Outcome != FinalStateTokenCeilingExceeded || sessionStore.usage.TotalTokens != 120 {
+				t.Fatalf("UsageEvent = %#v, want token ceiling outcome and 120 tokens", sessionStore.usage)
+			}
+			if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
+				t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
+			}
+			if len(usageUpdates) != 5 {
+				t.Fatalf("usage update count = %d, want workspace start, dispatch baseline, configured identity, and 2 token updates", len(usageUpdates))
+			}
+			if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
+				t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
+			}
+
+			lesson, err := os.ReadFile(lessonPath)
+			if tt.existing == "" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("ReadFile(lessons) error = %v, want absent file", err)
+				}
+			} else if err != nil || string(lesson) != tt.existing {
+				t.Fatalf("lesson = %q, error = %v; want unchanged %q", lesson, err, tt.existing)
+			}
+		})
 	}
 }
 
