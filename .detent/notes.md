@@ -1,3 +1,22 @@
+# Issue #3450 handoff
+
+- Key file: `internal/hubserver/database_test.go`. Added `linked_issue_sources` to the expected schema table list, matching the existing migration 49. Exact schema equality and SQLite configuration checks are retained. Production behavior, migrations, and invariants are unchanged.
+- Recorded failure: scheduled run 36758716559, Verify race (0), job 110035613023, development commit `3844f54e75edc8df931d7221c7f62dcb3d71b37e`. The job had exactly one failing test: `TestOpenCreatesHubSchemaAndConfiguresSQLite`, whose expected tables omitted `linked_issue_sources`. No data race report was present.
+- Reproduced unchanged baseline `640b8abc10f0adb4ad580d1835b349796062130e`: `env -u DETENT_API_TOKEN GOMAXPROCS=4 GOTOOLCHAIN=go1.26.6 go test -p 4 ./internal/hubserver -run '^TestOpenCreatesHubSchemaAndConfiguresSQLite$' -count=1` exited 1 with the same mismatch (11.0s command wall time).
+- Passed after repair: `env -u DETENT_API_TOKEN GOMAXPROCS=4 GOTOOLCHAIN=go1.26.6 go test -p 4 ./internal/hubserver -run '^(TestOpenCreatesHubSchemaAndConfiguresSQLite|TestHubMigrationPreservesExistingData|TestLinkedIssueCreation|TestLinkedIssueIntakeAtomicAndNativeEdits)$' -count=1` (5.9s command, 1.207s package). Raw job and diagnostic logs are under provided TMPDIR. No new tests: the existing exact-schema regression reproduced the recorded failure.
+- No generated inputs changed, no full suite/coverage/race suite, no Actions rerun or CI wait. Configured gate is `true` and publishes no status. The next scheduled suite confirms integrated behavior. No unrelated discovery, dependency, tracker lane writes, or live-instance mutation.
+
+## Implementation handoff
+
+- PR: https://github.com/digitaldrywood/detent/pull/3461 targets `develop` and includes Fixes #3450. The initial draft head `71f6ae83b3f5365563c27137f5fcf8cb6e831d71` was mergeable, with no reviews, comments, threads, or check rollup at inspection. Absent checks are expected and provide no test credit.
+- Focused diagnostics above validate the final test source; this update changes notes only. Configured `true` passed immediately before initial publication and runs again on this committed notes update before push. Full checks and CI waits are disabled by repository policy. Quiet window not configured; no-op gate under 1s; PR/merge-group CI, slow checks, and post-merge main-CI not applicable to this worker handoff.
+- Final readiness and exact-head review/check evidence, plus the completion receipt for attempt 7221 / generation 89, belong to the canonical issue #3450 Workpad. It is authoritative; this file records implementation evidence only.
+- Open item: next scheduled validation confirms the integrated repair. Detent owns squash merge, tracker lane transitions, and scheduled green-run closure; the worker performs no lane writes.
+
+Skill draft: no — the existing schema assertion directly reproduces the failure; no new reusable procedure.
+
+# Historical handoffs
+
 # Issue #2976 merge fallback handoff (attempt 7212, generation 80)
 
 - PR #3052 is open against `develop` on the assigned isolated branch; its body includes `Fixes #2976`. Fetched published head: `99f99e34cea4fea794c0ddc7a8cea973c24e2957`.
@@ -6,7 +25,7 @@
 - Key issue files remain `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`. Prior resolution retains develop's audit-only Merging path and the PR's In Progress repair-only filter in the non-Merging decision path.
 - Updated handoff notes with one current Workpad/status fence; prior handoffs are historical.
 
-## Codex Workpad
+## Historical Workpad (#2976 merge fallback)
 
 Plan and result: retain the unpublished resolution, finish and commit the current develop merge while preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
 
@@ -14,16 +33,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
 
-```detent-status
-schema: 1
-status: complete
-fields:
-  completion_work_attempt_id: "7212"
-  completion_generation: "80"
-  completion_cleanliness_resolution: committed
-blockers: []
-human_action: null
-```
+Historical status: complete; attempt 7212; generation 80; cleanliness resolution committed; blockers []; human_action null.
 
 ## Historical handoffs
 
