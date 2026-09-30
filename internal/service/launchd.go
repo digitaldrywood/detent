@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"html"
 	"path/filepath"
 	"strconv"
@@ -76,12 +77,29 @@ func (m *launchdManager) Start(ctx context.Context) error {
 	}
 	if _, err := m.cfg.RunCommand(ctx, "launchctl", "print", m.target()); err != nil {
 		if _, bootstrapErr := m.cfg.RunCommand(ctx, "launchctl", "bootstrap", m.domain(), m.path); bootstrapErr != nil {
+			output, queryErr := m.cfg.RunCommand(ctx, "launchctl", "print-disabled", m.domain())
+			if queryErr == nil && launchdDisabled(output, m.label) {
+				return fmt.Errorf("launchd label %s is disabled; enable it with `launchctl enable %s` and retry: %w", m.label, m.target(), bootstrapErr)
+			}
 			return bootstrapErr
 		}
 		return nil
 	}
 	_, err = m.cfg.RunCommand(ctx, "launchctl", "kickstart", m.target())
 	return err
+}
+
+func launchdDisabled(output, label string) bool {
+	// Match the quoted label exactly so a disabled board does not implicate
+	// its runner. launchctl reports entries as "label" => disabled.
+	for line := range strings.SplitSeq(output, "\n") {
+		key, value, found := strings.Cut(line, "=>")
+		if found && strings.TrimSpace(key) == strconv.Quote(label) {
+			state := strings.TrimSpace(value)
+			return state == "disabled"
+		}
+	}
+	return false
 }
 
 func (m *launchdManager) Restart(ctx context.Context) error {

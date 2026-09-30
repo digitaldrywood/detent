@@ -124,12 +124,19 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    `native_projects`, `display_name`, `capacity`), `service_name:
    detent.runner`, and one `projects:` entry per project whose `workdir` is the
    project's checkout under `--workspace-root` (default `~/detent-runner/NAME`).
-   An existing `global.yaml` is left untouched.
+   An existing `global.yaml` is left untouched; checkout checks use its
+   configured projects and `workdir` paths instead of `--workspace-root`.
 4. With `--service`, installs and starts the `detent.runner` background service
    (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
    separate from a local board's `detent` service on the same host. If a
    project's checkout is missing, it prints the clone step and the
    `detent start --config ... --yes` command to run afterwards instead.
+
+`detent start` and `detent status` default to the runner service when the
+configuration has a `client.hub_url`, including older configurations without
+`service_name`. An explicit `service_name` selects that service. If launchd
+cannot bootstrap a disabled label, the error names it and prints the
+`launchctl enable` command to run before retrying.
 
 The token appears in the command because it is single-use and expires within 15
 minutes; once redeemed it grants nothing. To keep it out of shell history,
